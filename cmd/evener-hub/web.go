@@ -23,10 +23,11 @@ import (
 
 // WebServer wires routes and middleware.
 type WebServer struct {
-	cfg       hubcore.WebConfig
-	appRPC    *appserver.Server
-	sources   *appsource.Registry
-	startedAt time.Time
+	cfg        hubcore.WebConfig
+	appRPC     *appserver.Server
+	navigation *NavigationService
+	sources    *appsource.Registry
+	startedAt  time.Time
 
 	// lastGoodThreads retains each remote source's most recent successful
 	// ListThreads result so a transient list failure doesn't blank that
@@ -79,7 +80,8 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 		frontendHash:     fHash,
 		deletionStoreErr: deletionStoreErr,
 	}
-	web.appRPC = newHubAppServer(cfg, sources)
+	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}})
+	web.appRPC = newHubAppServerWithNavigation(cfg, sources, web.navigation)
 	if deletionStoreErr == nil {
 		_ = web.resumeProjectDeletions()
 	}

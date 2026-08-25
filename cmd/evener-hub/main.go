@@ -409,7 +409,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	startBackground := func(fn func()) {
 		background.Go(fn)
 	}
-
+	// Navigation owns its single next-boundary timer under the hub lifecycle.
+	// Source/mutation hooks are added separately; starting it here ensures a
+	// served hub never retains an expired time-dependent snapshot.
+	startBackground(func() { web.navigation.Start(ctx) })
 	// Populate the roster before serving so the first sidebar request can't hit
 	// an empty roster (the "flash of no sessions" right after a restart). Probes
 	// run concurrently, so this is bounded by ~one probe timeout regardless of

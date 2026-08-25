@@ -1,0 +1,374 @@
+package hub
+
+import (
+	"context"
+	"errors"
+	"regexp"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+)
+
+const navigationTestSessionID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
+
+type testNavigationSource struct {
+	mu           sync.Mutex
+	revision     uint64
+	inputs       navigationBuildInputs
+	nextBoundary time.Time
+	err          error
+	captures     int
+	entered      chan struct{}
+	release      chan struct{}
+	enterOnce    sync.Once
+}
+
+func newTestNavigationSource(now time.Time) *testNavigationSource {
+	node := hubcore.TreeNode{ID: navigationTestSessionID, Title: "one", Project: "p1", Kind: "session", State: "idle", UpdatedAt: now.Add(-time.Hour)}
+	project := hubcore.TreeProject{Key: "p1", Name: "p1", Current: []hubcore.TreeNode{node}}
+	return &testNavigationSource{revision: 1, inputs: navigationBuildInputs{Tree: hubcore.Tree{Projects: []hubcore.TreeProject{project}}}}
+}
+
+func (s *testNavigationSource) Revision() navigationSourceRevision {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return navigationSourceRevision{Inputs: s.revision}
+}
+
+func (s *testNavigationSource) Capture(ctx context.Context, generation string, now time.Time) (navigationSourceSnapshot, error) {
+	s.mu.Lock()
+	s.captures++
+	inputs := cloneNavigationInputs(s.inputs)
+	inputs.GenerationID = generation
+	inputs.Revision = 0
+	next := s.nextBoundary
+	err := s.err
+	entered, release := s.entered, s.release
+	s.mu.Unlock()
+	if entered != nil {
+		s.enterOnce.Do(func() { close(entered) })
+		select {
+		case <-ctx.Done():
+			return navigationSourceSnapshot{}, ctx.Err()
+		case <-release:
+		}
+	}
+	if err != nil {
+		return navigationSourceSnapshot{}, err
+	}
+	return navigationSourceSnapshot{Inputs: inputs, NextBoundary: next}, nil
+}
+
+func (s *testNavigationSource) changeTitle(title string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.inputs.Tree.Projects[0].Current[0].Title = title
+	s.revision++
+}
+
+func (s *testNavigationSource) captureCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.captures
+}
+
+func newTestNavigationService(t *testing.T, source *testNavigationSource, options ...func(*navigationServiceConfig)) *NavigationService {
+	t.Helper()
+	cfg := navigationServiceConfig{
+		Source:     source,
+		Generation: func() (string, error) { return "00112233445566778899aabbccddeeff", nil },
+		Now:        func() time.Time { return time.Unix(1_700_000_000, 0).UTC() },
+	}
+	for _, option := range options {
+		option(&cfg)
+	}
+	return newNavigationService(cfg)
+}
+
+func TestNavigationServiceUsesOneCoreSnapshotAndStableNoOpRevisions(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	service := newTestNavigationService(t, source)
+
+	manifest, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	project, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if source.captureCount() != 1 {
+		t.Fatalf("captures = %d, want one core snapshot", source.captureCount())
+	}
+	if manifest.Generation != project.Generation || manifest.Revision == 0 || project.Revision == 0 {
+		t.Fatalf("manifest=%+v project=%+v", manifest, project)
+	}
+
+	before := service.Stats()
+	mutation, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mutation.Targets) != 0 {
+		t.Fatalf("no-op targets = %+v", mutation.Targets)
+	}
+	if got := service.CurrentRevision((navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}).Semantic()); got != project.Revision {
+		t.Fatalf("project revision = %d, want stable %d", got, project.Revision)
+	}
+	if after := service.Stats(); after.CoreBuilds != before.CoreBuilds+1 {
+		t.Fatalf("core builds before=%+v after=%+v", before, after)
+	}
+}
+
+func TestNavigationServiceEmitsExactDependentTargetsAndWildcard(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	service := newTestNavigationService(t, source)
+	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		t.Fatal(err)
+	}
+
+	source.changeTitle("changed")
+	mutation, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mutation.Targets) != 1 || mutation.Targets[0].Kind != appwire.NavigationTargetProject || mutation.Targets[0].ProjectKey != "p1" {
+		t.Fatalf("targets = %+v, want only project p1", mutation.Targets)
+	}
+
+	mutation, err = service.Refresh(t.Context(), navigationChangeHint{AllLoadedProjects: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(mutation.Targets) != 1 || mutation.Targets[0].Kind != appwire.NavigationTargetAllLoadedProjects {
+		t.Fatalf("wildcard targets = %+v", mutation.Targets)
+	}
+	if service.Capability().Sequence != 2 {
+		t.Fatalf("sequence = %d, want 2 committed invalidations", service.Capability().Sequence)
+	}
+}
+
+func TestNavigationServiceRejectsSnapshotInvalidatedDuringBuild(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	source.entered = make(chan struct{})
+	source.release = make(chan struct{})
+	service := newTestNavigationService(t, source)
+	done := make(chan navigationRepresentation, 1)
+	errs := make(chan error, 1)
+	go func() {
+		representation, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest})
+		done <- representation
+		errs <- err
+	}()
+	<-source.entered
+	service.Invalidate(navigationChangeHint{Projects: []string{"p1"}})
+	close(source.release)
+	if err := <-errs; err != nil {
+		t.Fatal(err)
+	}
+	representation := <-done
+	if representation.Revision != service.CurrentRevision((navigationResourceKey{Kind: navigationResourceManifest}).Semantic()) {
+		t.Fatalf("published stale revision %d", representation.Revision)
+	}
+	if source.captureCount() < 2 {
+		t.Fatalf("captures = %d, want retry after invalidation", source.captureCount())
+	}
+}
+
+func TestNavigationServiceConcurrentRefreshCoalescesCoreBuild(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	service := newTestNavigationService(t, source)
+	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		t.Fatal(err)
+	}
+	source.changeTitle("concurrent")
+
+	start := make(chan struct{})
+	var failures atomic.Int32
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			<-start
+			if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
+				failures.Add(1)
+			}
+		}()
+	}
+	close(start)
+	wg.Wait()
+	if failures.Load() != 0 {
+		t.Fatalf("refresh failures = %d", failures.Load())
+	}
+	if got := source.captureCount(); got > 3 { // initial + one owner; one trailing owner is allowed if a caller arrives after commit.
+		t.Fatalf("captures = %d, concurrent refresh did not coalesce", got)
+	}
+}
+
+func TestNavigationServicePreservesLastGoodAndMapsChurnCancellationTo503(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	service := newTestNavigationService(t, source)
+	good, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.mu.Lock()
+	source.err = errors.New("store read failed")
+	source.revision++
+	source.mu.Unlock()
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{Sources: true}); err == nil {
+		t.Fatal("refresh succeeded after source failure")
+	}
+	if got := service.CurrentRevision((navigationResourceKey{Kind: navigationResourceManifest}).Semantic()); got != good.Revision {
+		t.Fatalf("last-good revision = %d, want %d", got, good.Revision)
+	}
+
+	source.mu.Lock()
+	source.err = nil
+	source.entered = make(chan struct{})
+	source.release = make(chan struct{})
+	source.enterOnce = sync.Once{}
+	source.revision++
+	source.mu.Unlock()
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	_, err = service.Refresh(ctx, navigationChangeHint{Projects: []string{"p1"}})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context cancellation", err)
+	}
+	var status interface{ StatusCode() int }
+	if !errors.As(err, &status) || status.StatusCode() != 503 {
+		t.Fatalf("error = %T %v, want 503 status", err, err)
+	}
+}
+
+func TestNavigationServiceGenerationAndSafeIntegerOverflow(t *testing.T) {
+	generated, err := newNavigationGenerationID()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !regexp.MustCompile(`^[0-9a-f]{32}$`).MatchString(generated) {
+		t.Fatalf("generation %q is not 128-bit lowercase hex", generated)
+	}
+
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	service := newTestNavigationService(t, source)
+	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		t.Fatal(err)
+	}
+	service.mu.Lock()
+	service.sequence = maxNavigationSafeInteger
+	service.mu.Unlock()
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{AllLoadedProjects: true}); err == nil {
+		t.Fatal("sequence overflow succeeded")
+	}
+	if service.Capability().Sequence != maxNavigationSafeInteger {
+		t.Fatalf("unsafe sequence emitted: %d", service.Capability().Sequence)
+	}
+
+	service.mu.Lock()
+	key := (navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}).Semantic()
+	state := service.resources[key]
+	state.Revision = maxNavigationSafeInteger
+	service.resources[key] = state
+	service.mu.Unlock()
+	source.changeTitle("overflow")
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err == nil {
+		t.Fatal("resource revision overflow succeeded")
+	}
+	if got := service.CurrentRevision(key); got != maxNavigationSafeInteger {
+		t.Fatalf("unsafe revision emitted: %d", got)
+	}
+}
+
+func TestNavigationServiceVersionedKeyAtomicallyResolvesResourceVersion(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	service := newTestNavigationService(t, source)
+	request := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1", Offset: 9, Limit: 1}
+	first, err := service.VersionedKey(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Generation != service.Capability().GenerationID || first.Revision == 0 {
+		t.Fatalf("versioned key = %+v, capability = %+v", first, service.Capability())
+	}
+	if first.Offset != 0 || first.Limit != 0 {
+		t.Fatalf("project root key retained irrelevant page fields: %+v", first)
+	}
+
+	source.changeTitle("versioned")
+	if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.VersionedKey(t.Context(), request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if second.Generation != first.Generation || second.Revision <= first.Revision {
+		t.Fatalf("versioned key did not atomically advance: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestNavigationServiceStartUsesExactBoundaryAndResets(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	first := now.Add(24 * time.Hour)
+	second := now.Add(14 * 24 * time.Hour)
+	source.nextBoundary = first
+	waits := make(chan time.Time, 4)
+	releases := make(chan struct{}, 4)
+	service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) {
+		cfg.Now = func() time.Time { return now }
+		cfg.WaitUntil = func(ctx context.Context, boundary time.Time) error {
+			waits <- boundary
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case <-releases:
+				return nil
+			}
+		}
+	})
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { service.Start(ctx); close(done) }()
+	if got := <-waits; !got.Equal(first) {
+		t.Fatalf("first boundary = %v, want %v", got, first)
+	}
+	source.mu.Lock()
+	source.nextBoundary = second
+	source.revision++
+	source.mu.Unlock()
+	service.Invalidate(navigationChangeHint{Time: true})
+	releases <- struct{}{}
+	if got := <-waits; !got.Equal(second) {
+		t.Fatalf("reset boundary = %v, want %v", got, second)
+	}
+	cancel()
+	releases <- struct{}{}
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("scheduler did not stop with lifecycle context")
+	}
+}
+
+func TestNavigationSnapshotBoundaryUsesNearest24HourOr14DayCutover(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	project := hubcore.TreeProject{Key: "p1", Name: "p1", Current: []hubcore.TreeNode{{ID: navigationTestSessionID, Kind: "session", UpdatedAt: now.Add(-23 * time.Hour)}}}
+	tree := hubcore.Tree{Projects: []hubcore.TreeProject{project}}
+	if got, want := navigationSnapshotBoundary(tree, now), now.Add(time.Hour); !got.Equal(want) {
+		t.Fatalf("24h boundary = %v, want %v", got, want)
+	}
+	project.Current = nil
+	project.Recent = []hubcore.TreeNode{{ID: navigationTestSessionID, Kind: "session", UpdatedAt: now.Add(-(14*24 - 1) * time.Hour)}}
+	tree.Projects = []hubcore.TreeProject{project}
+	if got, want := navigationSnapshotBoundary(tree, now), now.Add(time.Hour); !got.Equal(want) {
+		t.Fatalf("14d boundary = %v, want %v", got, want)
+	}
+}
