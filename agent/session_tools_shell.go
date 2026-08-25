@@ -156,7 +156,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			}
 			shellArgs.WorkingDir = resolvedWorkingDir
 			if shellArgs.Mode == shellModeDetached {
-				return runDetachedShell(ctx, env, shellArgs)
+				return runDetachedShell(ctx, env, s, shellArgs)
 			}
 			if se, ok := env.(execenv.StreamingExecutor); ok {
 				if s == nil || s.jobManager == nil {
@@ -361,7 +361,7 @@ type detachedShellToolResult struct {
 	PID    int    `json:"pid"`
 }
 
-func runDetachedShell(ctx context.Context, env execenv.ExecutionEnvironment, args shellArgs) (tool.StateResult, error) {
+func runDetachedShell(ctx context.Context, env execenv.ExecutionEnvironment, s *Session, args shellArgs) (tool.StateResult, error) {
 	detacher, ok := env.(execenv.DetachedExecutor)
 	if !ok {
 		return tool.StateResult{}, execenv.ErrDetachUnsupported
@@ -372,6 +372,9 @@ func runDetachedShell(ctx context.Context, env execenv.ExecutionEnvironment, arg
 	}
 	if started.PID <= 0 {
 		return tool.StateResult{}, errors.New("detached command started without a valid pid")
+	}
+	if s != nil {
+		s.recordDetachedProcess(started)
 	}
 	state := detachedShellToolResult{Type: "shell", Mode: string(shellModeDetached), Status: "started", PID: started.PID}
 	b, _ := json.Marshal(state)

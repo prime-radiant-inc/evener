@@ -279,7 +279,7 @@ func newToolDeps(s *Session) *toolDeps {
 			s.comm.structured = raw
 			s.mu.Unlock()
 		},
-		runningJobIDs:   func() []string { return sessionRunningJobIDs(s) },
+		runningJobIDs:   func() []string { return sessionRunningWorkIDs(s) },
 		turnEndsProcess: s.cfg.TurnEndsProcess,
 		skill: func(name string) (skill.SkillMeta, bool) {
 			meta, ok := s.skills[name]
