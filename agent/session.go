@@ -233,7 +233,21 @@ type Session struct {
 	// responseSideEffectsMu serializes a response's user-visible side-effect
 	// bundle (emit + appendTurn + counter bump) against teardown.
 	// LOCK ORDER: responseSideEffectsMu > mu (Close acquires it before mu).
-	responseSideEffectsMu         sync.Mutex
+	responseSideEffectsMu sync.Mutex
+	// drainAbandonedMu guards drainAbandonedChildren and drainGraceChildren. It is a lock of its own,
+	// not mu, because every drain walk and every drive path reads the set while
+	// holding a subagent row's lock, and mu sits above those.
+	// LOCK ORDER: drainAbandonedMu is a leaf — nothing is acquired under it.
+	drainAbandonedMu sync.Mutex
+	// drainAbandonedChildren maps a direct child SESSION id to the exact
+	// delegate generation the drain gave up waiting on. A resumed generation
+	// under the same child session must not inherit the old gate.
+	drainAbandonedChildren map[string]drainAbandonedChild
+	// drainGraceChildren holds delegates whose first grace window completed and
+	// whose second continuous-stall window is in progress. It is transient to one
+	// DrainJobTree invocation and generation-scoped for the same reason as the
+	// final abandonment record.
+	drainGraceChildren            map[string]drainGraceChild
 	toolEventsWG                  sync.WaitGroup  // in-flight ToolCallStart/End emit pairs; Close() joins before closing events
 	sendersWG                     sync.WaitGroup  // detached event emitters (subagent runs, session namer); Add happens under mu gated on closing so it happens-before Close()'s join
 	disposeWG                     sync.WaitGroup  // in-flight in-turn dispose ops (manage_worktree op=dispose); admitted via beginDispose() under mu gated on closing so the Add happens-before Close()'s join, then Close() joins before draining (spec §P1)
@@ -579,6 +593,11 @@ type Session struct {
 
 	// stuck detection
 	loopDetectionCount int // how many times loop detection has fired
+	// loopEffortEscalated records that loop detection bumped the session's
+	// reasoning effort ("Your reasoning effort has been increased"). While set,
+	// a lower per-task effort override no longer wins over the escalated
+	// configured effort — the steering message must not lie. Guarded by s.mu.
+	loopEffortEscalated bool
 
 	// transcript writer (nil when StateDir is empty, or when opening it failed)
 	transcript *transcript.Writer

@@ -443,7 +443,11 @@ func drainEventsHuman(eventCh <-chan events.SessionEvent, w io.Writer) <-chan st
 				}
 			case events.EventWarning:
 				if d, ok := ev.Data.(events.WarningData); ok {
-					fmt.Fprintf(w, "[warning] %s\n", d.Message) //nolint:errcheck
+					if d.Code != "" {
+						fmt.Fprintf(w, "[warning:%s] %s\n", d.Code, d.Message) //nolint:errcheck
+					} else {
+						fmt.Fprintf(w, "[warning] %s\n", d.Message) //nolint:errcheck
+					}
 				}
 			case events.EventError:
 				if d, ok := ev.Data.(events.ErrorData); ok {

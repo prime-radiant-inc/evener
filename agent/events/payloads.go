@@ -361,7 +361,31 @@ type SteeringInjectedData struct {
 	// Kind names what was injected (events.SteeringKind*). Optional and
 	// additive; absent means the daemon did not say, and the UI shows no kind.
 	Kind string `json:"kind,omitempty"`
+	// TaskCompletion carries the structured dependencies associated with a
+	// tasks-done steering message. It is nil for every other steering kind.
+	TaskCompletion *TaskCompletionSteeringData `json:"task_completion,omitempty"`
 }
+
+// TaskCompletionSteeringData identifies live work that still blocks session
+// completion after the task list itself reaches a terminal state.
+type TaskCompletionSteeringData struct {
+	CompletionState     TaskCompletionState `json:"completion_state"`
+	BlockingDelegateIDs []string            `json:"blocking_delegate_ids"`
+}
+
+// TaskCompletionState is the machine-readable disposition of a terminal task
+// list. It distinguishes a session ready to finish from one still waiting on
+// work that the session explicitly treated as blocking.
+type TaskCompletionState string
+
+const (
+	// TaskCompletionReadyForFinalOutput means no live dependency still blocks
+	// the session after its task list reaches a terminal state.
+	TaskCompletionReadyForFinalOutput TaskCompletionState = "ready_for_final_output"
+	// TaskCompletionWaitingForBlockingDelegates means one or more synchronous
+	// delegate results must arrive before the session decides whether to finish.
+	TaskCompletionWaitingForBlockingDelegates TaskCompletionState = "waiting_for_blocking_delegates"
+)
 
 // QueueChangedData carries an authoritative snapshot of the per-session
 // input queue after a mutation (kata r80p). Preview entries are FIFO with
@@ -459,10 +483,15 @@ type CompactionTurnData struct {
 	Text string `json:"text"`
 }
 
+// WarningCodeDelegateAbandonedByDrain identifies a drain abandonment warning.
+const WarningCodeDelegateAbandonedByDrain = "delegate_abandoned_by_drain"
+
 // WarningData is the payload for an EventWarning event.
 type WarningData struct {
 	Message           string `json:"message"`
 	Source            string `json:"source,omitempty"`
+	Code              string `json:"code,omitempty"`
+	DelegateID        string `json:"delegate_id,omitempty"`
 	Title             string `json:"title,omitempty"`
 	Hint              string `json:"hint,omitempty"`
 	ApproxTokens      int    `json:"approx_tokens,omitempty"`
