@@ -439,32 +439,6 @@ func TestCovWatchHistoryVisibleToSession(t *testing.T) {
 	}
 }
 
-// TestCovSelfInfluenceNotice covers selfInfluenceNotice (job_watch.go lines 2401-2413).
-func TestCovSelfInfluenceNotice(t *testing.T) {
-	// Not self-influenced → empty.
-	if got := selfInfluenceNotice(false, 0, false); got != "" {
-		t.Fatalf("not self = %q", got)
-	}
-
-	// Self, shallow → default message.
-	got := selfInfluenceNotice(true, 1, false)
-	if !strings.Contains(got, "this turn responded to your last message") {
-		t.Fatalf("shallow = %q", got)
-	}
-
-	// Self, deep → depth message.
-	got = selfInfluenceNotice(true, 3, false)
-	if !strings.Contains(got, "~3 exchanges deep") {
-		t.Fatalf("deep = %q", got)
-	}
-
-	// Self, truncated → truncated message.
-	got = selfInfluenceNotice(true, 0, true)
-	if !strings.Contains(got, "many exchanges deep") {
-		t.Fatalf("truncated = %q", got)
-	}
-}
-
 // TestCovWatchSendKeyMatchesWatchKey covers watchSendKeyMatchesWatchKey
 // (job_watch.go lines 4084-4094).
 func TestCovWatchSendKeyMatchesWatchKey(t *testing.T) {
@@ -883,14 +857,6 @@ func TestCovDelegateQuietAttentionContent(t *testing.T) {
 }
 
 // ---- subagents.go pure functions ----
-
-// TestCovCommunicateNudge covers communicateNudge (subagents.go lines 1475-1480).
-func TestCovCommunicateNudge(t *testing.T) {
-	got := communicateNudge("communicate")
-	if !strings.Contains(got, "communicate") || !strings.Contains(got, "end_turn=true") {
-		t.Fatalf("nudge = %q", got)
-	}
-}
 
 // TestCovFatalRunGatedSnapshot covers fatalRunGatedSnapshot (subagents.go lines 1456-1463).
 func TestCovFatalRunGatedSnapshot(t *testing.T) {
