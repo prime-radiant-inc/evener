@@ -47,7 +47,7 @@ func (s *Session) disposeDelegateLanesAtClose(ctx context.Context) {
 
 	// The whole close cascade shares ONE budget (spec §P0, Implementation-order
 	// item 4): reuse an incoming cascade deadline, or mint one here when this is
-	// the initiating close. laneClosePassBudget bounds evaluation + disposal git
+	// the initiating close. LaneClosePassBudget bounds evaluation + disposal git
 	// work only — never the touch+unlock tail below.
 	budgetCtx, cancel := ensureCloseBudget(ctx)
 	defer cancel()
@@ -177,7 +177,7 @@ var closeBudgetMintHook func()
 // ensureCloseBudget returns a context carrying the shared close-cascade deadline.
 // When ctx already carries a deadline (a descendant reached through the close
 // cascade), it is reused unchanged so per-session budgets never stack; otherwise
-// this is the initiating close and a fresh laneClosePassBudget deadline is minted.
+// this is the initiating close and a fresh LaneClosePassBudget deadline is minted.
 func ensureCloseBudget(ctx context.Context) (context.Context, context.CancelFunc) {
 	if _, ok := ctx.Deadline(); ok {
 		return ctx, func() {}
@@ -185,7 +185,7 @@ func ensureCloseBudget(ctx context.Context) (context.Context, context.CancelFunc
 	if closeBudgetMintHook != nil {
 		closeBudgetMintHook()
 	}
-	return context.WithTimeout(ctx, laneClosePassBudget)
+	return context.WithTimeout(ctx, LaneClosePassBudget)
 }
 
 // touchUnlockLaneTail runs the budget-exempt tail for a lane the close pass could
