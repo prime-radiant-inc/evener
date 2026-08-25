@@ -6,8 +6,8 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
-	"strconv"
 	"syscall"
 	"testing"
 	"time"
@@ -25,9 +25,12 @@ import (
 // so each one must launch detached into a session of its own — observable as
 // the daemon leading both its own session and its own process group.
 func TestSpawnDaemonDetachesFromHubSession(t *testing.T) {
-	t.Parallel()
+	// Deliberately serial: this launches a real detached process and waits on
+	// its filesystem rendezvous. Running it in t.Parallel makes the five-second
+	// launch contract compete with this package's process-heavy parallel tests,
+	// turning scheduler starvation into a false detach failure.
 	bin, runDir := writeDetachFakeDaemon(t)
-	entry, err := SpawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{}, 5*time.Second)
+	entry, err := SpawnDaemon(context.Background(), bin, runDir, hubcore.SpawnRequest{Env: detachHelperEnv(runDir)}, 5*time.Second)
 	if err != nil {
 		t.Fatalf("SpawnDaemon: %v", err)
 	}
@@ -37,10 +40,12 @@ func TestSpawnDaemonDetachesFromHubSession(t *testing.T) {
 
 // The resume path launches the same long-lived daemon; it must detach too.
 func TestResumeDaemonDetachesFromHubSession(t *testing.T) {
-	t.Parallel()
+	// Keep the resume half under the same package-serialization boundary as
+	// SpawnDaemon; the rendezvous is an event, not a parallel-test deadline.
 	bin, runDir := writeDetachFakeDaemon(t)
 	entry, err := ResumeDaemon(context.Background(), bin, runDir, hubcore.ResumeRequest{
 		SessionID: hubtest.SessionID(t),
+		Env:       detachHelperEnv(runDir),
 	}, 5*time.Second)
 	if err != nil {
 		t.Fatalf("ResumeDaemon: %v", err)
@@ -49,22 +54,47 @@ func TestResumeDaemonDetachesFromHubSession(t *testing.T) {
 	assertOwnSessionLeader(t, entry.PID)
 }
 
-// writeDetachFakeDaemon installs a stand-in `evener` that rendezvouses with
-// its own PID and then sleeps, giving the test a live process to inspect.
+// writeDetachFakeDaemon points the spawner at this test binary's fast helper.
+// TestMain dispatches the helper before setting up the package's throwaway
+// environment, so the rendezvous is the first child-side event rather than a
+// shell/mkdir/sleep startup sequence competing with the package scheduler.
 func writeDetachFakeDaemon(t *testing.T) (bin, runDir string) {
 	t.Helper()
 	dir := t.TempDir()
-	bin = filepath.Join(dir, "fake-evener")
-	runDir = filepath.Join(dir, "run")
-	if err := os.Mkdir(runDir, 0o755); err != nil {
-		t.Fatalf("create run dir: %v", err)
+	bin, err := os.Executable()
+	if err != nil {
+		t.Fatalf("test executable: %v", err)
 	}
-	script := fmt.Sprintf(`#!/bin/sh
-printf '{"pid":%%s,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}\n' $$ > %[1]s/$$.json
-exec sleep 30
-`, strconv.Quote(runDir))
-	writeFakeEvener(t, bin, script)
+	runDir = filepath.Join(dir, "run")
 	return bin, runDir
+}
+
+func detachHelperEnv(runDir string) []string {
+	return append(os.Environ(), detachHelperRunDirEnv+"="+runDir)
+}
+
+func runDetachFakeDaemon() {
+	runDir := os.Getenv(detachHelperRunDirEnv)
+	if err := os.MkdirAll(runDir, 0o755); err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	path := filepath.Join(runDir, fmt.Sprintf("%d.json", os.Getpid()))
+	f, err := os.OpenFile(path, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		os.Exit(2)
+	}
+	_, writeErr := fmt.Fprintf(f, `{"pid":%d,"address":"127.0.0.1:1","started_at":"2999-01-01T00:00:00Z"}
+`, os.Getpid())
+	closeErr := f.Close()
+	if writeErr != nil || closeErr != nil {
+		fmt.Fprintln(os.Stderr, writeErr, closeErr)
+		os.Exit(2)
+	}
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+	<-signals
 }
 
 // assertOwnSessionLeader proves the daemon cannot receive the terminal
@@ -96,7 +126,9 @@ func reapFakeDaemon(t *testing.T, pid int) {
 	t.Helper()
 	t.Cleanup(func() {
 		if proc, err := os.FindProcess(pid); err == nil {
-			_ = proc.Kill()
+			if err := proc.Signal(syscall.SIGTERM); err != nil {
+				_ = proc.Kill()
+			}
 		}
 	})
 }

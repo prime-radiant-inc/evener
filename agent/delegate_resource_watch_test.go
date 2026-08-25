@@ -86,7 +86,8 @@ func TestStableDelegateWatch_ParentRequiresLeaseEdgeAndPersistedGrant(t *testing
 	if err != nil {
 		t.Fatalf("select model: %v", err)
 	}
-	descriptor, _, err := runtime.describe(context.Background(), args, args.Task, "", nil, selection)
+	toolNameCeiling := root.stableDelegateEffectiveToolNameCeiling(selection, args, "")
+	descriptor, _, err := runtime.describe(context.Background(), args, args.Task, "", nil, selection, toolNameCeiling)
 	if err != nil {
 		t.Fatalf("describe: %v", err)
 	}
@@ -128,7 +129,8 @@ func TestStableDelegateWatch_ParentGrantIsNonTransitive(t *testing.T) {
 		if err != nil {
 			t.Fatalf("select model: %v", err)
 		}
-		descriptor, _, err := runtime.describe(context.Background(), args, args.Task, "", nil, selection)
+		toolNameCeiling := root.stableDelegateEffectiveToolNameCeiling(selection, args, "")
+		descriptor, _, err := runtime.describe(context.Background(), args, args.Task, "", nil, selection, toolNameCeiling)
 		if err != nil {
 			t.Fatalf("describe: %v", err)
 		}

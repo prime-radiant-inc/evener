@@ -269,6 +269,9 @@ type testConfig struct {
 	// per-server timeout. A pointer to zero retains lifecycle cancellation without
 	// adding a wall-clock deadline.
 	mcpConnectTimeout *time.Duration
+	// visionSideChannelTimeout overrides the production vision timeout only for
+	// deterministic package tests. Zero preserves the production timeout.
+	visionSideChannelTimeout time.Duration
 
 	// sessionInitFault injects deterministic failures at external initialization
 	// boundaries. Nil preserves the production implementation.

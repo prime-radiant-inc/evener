@@ -26,7 +26,12 @@ func newTestSession(t *testing.T) *Session {
 	return newSession(t, withConfig(SessionConfig{
 		MaxSubagentDepth: 1,
 		NoProjectPrompts: true,
-		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+			sandboxProber:       bwrapCapableProber(t.TempDir()),
+		},
 	}))
 }
 
@@ -736,6 +741,7 @@ func TestWatchParentGrantIsNotInheritedByGrandchild(t *testing.T) {
 	subCfg.spawn.parentSessionID = "parent"
 	subCfg.spawn.delegationAllowance = 1
 	subCfg.spawn.parentWatchGranted = true
+	subCfg.testOnly.sandboxProber = bwrapCapableProber(dir)
 
 	child, err := NewSession(c, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(dir), subCfg)
 	if err != nil {
