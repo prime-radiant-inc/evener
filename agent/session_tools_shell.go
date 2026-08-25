@@ -201,7 +201,6 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	if err := register(tool.RegisteredTool{
 		Definition: tool.DefGrep(), ReadOnly: true,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
-			_ = ctx
 			pat := stringArg(args, "pattern")
 			path := stringArg(args, "path")
 			glob := stringArg(args, "glob_filter")
@@ -221,7 +220,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 			if v, ok := args["context_lines"].(float64); ok && int(v) > 0 {
 				contextLines = min(int(v), 10)
 			}
-			return env.Grep(pat, path, glob, ci, maxRes, outputMode, contextLines)
+			return env.Grep(ctx, pat, path, glob, ci, maxRes, outputMode, contextLines)
 		},
 	}); err != nil {
 		return err

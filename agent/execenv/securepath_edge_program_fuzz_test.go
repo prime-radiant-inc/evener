@@ -3,6 +3,7 @@
 package execenv
 
 import (
+	"context"
 	"errors"
 	"io/fs"
 	"os"
@@ -341,13 +342,13 @@ func runSecurePathEdgeContractProgram(t *testing.T, program []byte) securePathEd
 	if _, _, err := s.glob(t.Context(), "glob", worktree, "[", false); err == nil {
 		t.Fatal("sandbox glob malformed pattern unexpectedly succeeded")
 	}
-	if _, err := s.grepNative("[", worktree, "", false, 10, ""); err == nil {
+	if _, err := s.grepNative(context.Background(), "[", worktree, "", false, 10, ""); err == nil {
 		t.Fatal("sandbox grep invalid regex unexpectedly succeeded")
 	}
-	if _, err := s.grepNative("needle", filepath.Join(worktree, "missing-grep-base"), "", false, 10, ""); err == nil {
+	if _, err := s.grepNative(context.Background(), "needle", filepath.Join(worktree, "missing-grep-base"), "", false, 10, ""); err == nil {
 		t.Fatal("sandbox grep missing base unexpectedly succeeded")
 	}
-	grep, err := s.grepNative("needle", worktree, "", false, 10, "")
+	grep, err := s.grepNative(context.Background(), "needle", worktree, "", false, 10, "")
 	if err != nil || grep != "visible.txt:1:needle visible" {
 		t.Fatalf("sandbox grep filtered entries = %q, %v", grep, err)
 	}
