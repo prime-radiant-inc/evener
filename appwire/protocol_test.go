@@ -51,8 +51,9 @@ func TestNotificationCatalogWellFormed(t *testing.T) {
 		}
 	}
 	for name, want := range map[string]any{
-		NotifyEvenerDelegateUpdated: EvenerDelegateParams{},
-		NotifyEvenerJobsTreeUpdated: JobsTreeUpdatedParams{},
+		NotifyEvenerDelegateUpdated:       EvenerDelegateParams{},
+		NotifyEvenerJobsTreeUpdated:       JobsTreeUpdatedParams{},
+		NotifyEvenerNavigationInvalidated: NavigationInvalidatedPayload{},
 	} {
 		for _, n := range Notifications {
 			if n.Name != name {
@@ -65,6 +66,52 @@ func TestNotificationCatalogWellFormed(t *testing.T) {
 		}
 		t.Fatalf("notification %q missing from catalog", name)
 	found:
+	}
+}
+
+func TestNavigationInvalidatedPayloadJSON(t *testing.T) {
+	payload := NavigationInvalidatedPayload{
+		GenerationID: "generation-a",
+		Sequence:     7,
+		Targets: []NavigationInvalidationTarget{{
+			Kind:       NavigationTargetProject,
+			ProjectKey: "project-key",
+			Revision:   3,
+		}},
+	}
+	got, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := `{"generationId":"generation-a","sequence":7,"targets":[{"kind":"project","projectKey":"project-key","revision":3}]}`
+	if string(got) != want {
+		t.Fatalf("got %s, want %s", got, want)
+	}
+}
+
+func TestNavigationInvalidationTargetVariants(t *testing.T) {
+	tests := []struct {
+		name   string
+		target NavigationInvalidationTarget
+		want   string
+	}{
+		{"manifest", NavigationInvalidationTarget{Kind: NavigationTargetManifest, Revision: 1}, `{"kind":"manifest","revision":1}`},
+		{"section", NavigationInvalidationTarget{Kind: NavigationTargetSection, Section: "live", Revision: 2}, `{"kind":"section","section":"live","revision":2}`},
+		{"pin catalog", NavigationInvalidationTarget{Kind: NavigationTargetPinCatalog, Revision: 3}, `{"kind":"pin_catalog","revision":3}`},
+		{"pin section", NavigationInvalidationTarget{Kind: NavigationTargetPinSection, SectionID: "pin-a", Revision: 4}, `{"kind":"pin_section","sectionId":"pin-a","revision":4}`},
+		{"catalog", NavigationInvalidationTarget{Kind: NavigationTargetCatalog, Catalog: "projects", Revision: 5}, `{"kind":"catalog","catalog":"projects","revision":5}`},
+		{"all loaded projects", NavigationInvalidationTarget{Kind: NavigationTargetAllLoadedProjects}, `{"kind":"all_loaded_projects"}`},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := json.Marshal(tc.target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != tc.want {
+				t.Fatalf("got %s, want %s", got, tc.want)
+			}
+		})
 	}
 }
 

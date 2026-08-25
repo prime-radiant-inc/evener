@@ -133,6 +133,7 @@ const (
 	NotifyEvenerAuthUpdated            = "evener/auth/updated"
 	NotifyEvenerLaunchUpdated          = "evener/launch/updated"
 	NotifyEvenerAttentionChanged       = "evener/attention/changed"
+	NotifyEvenerNavigationInvalidated  = "evener/navigation/invalidated"
 	NotifyEvenerMarketplaceUpdated     = "evener/marketplace/updated"
 	NotifyEvenerPluginUpdated          = "evener/plugin/updated"
 	// NotifyEvenerSandboxEscalationRequested pushes a harness-raised, human-gated
@@ -187,10 +188,19 @@ type Capabilities struct {
 }
 
 type InitializeResponse struct {
-	ServerInfo      ServerInfo `json:"serverInfo"`
-	ProtocolVersion string     `json:"protocolVersion"`
-	SourceID        string     `json:"sourceId"`
-	Features        FeatureSet `json:"features"`
+	ServerInfo      ServerInfo            `json:"serverInfo"`
+	ProtocolVersion string                `json:"protocolVersion"`
+	SourceID        string                `json:"sourceId"`
+	Features        FeatureSet            `json:"features"`
+	Navigation      *NavigationCapability `json:"navigation,omitempty"`
+}
+
+// NavigationCapability advertises the version and current ordered AppWire
+// invalidation stream for navigation HTTP resources.
+type NavigationCapability struct {
+	Version      int    `json:"version"`
+	GenerationID string `json:"generationId"`
+	Sequence     uint64 `json:"sequence"`
 }
 
 type ServerInfo struct {
@@ -1861,6 +1871,35 @@ type EvenerJobParams struct {
 type EvenerAuthUpdatedParams struct {
 	Provider     string `json:"provider,omitempty"`
 	ActiveSource string `json:"activeSource,omitempty"`
+}
+
+const (
+	NavigationTargetManifest          = "manifest"
+	NavigationTargetSection           = "section"
+	NavigationTargetPinCatalog        = "pin_catalog"
+	NavigationTargetPinSection        = "pin_section"
+	NavigationTargetCatalog           = "catalog"
+	NavigationTargetProject           = "project"
+	NavigationTargetAllLoadedProjects = "all_loaded_projects"
+)
+
+// NavigationInvalidationTarget identifies one loaded navigation resource that
+// clients must revalidate. Revision is omitted only by the wildcard target.
+type NavigationInvalidationTarget struct {
+	Kind       string `json:"kind"`
+	Section    string `json:"section,omitempty"`
+	SectionID  string `json:"sectionId,omitempty"`
+	Catalog    string `json:"catalog,omitempty"`
+	ProjectKey string `json:"projectKey,omitempty"`
+	Revision   uint64 `json:"revision,omitempty"`
+}
+
+// NavigationInvalidatedPayload is the evener/navigation/invalidated
+// notification body. Sequence orders notifications within GenerationID.
+type NavigationInvalidatedPayload struct {
+	GenerationID string                         `json:"generationId"`
+	Sequence     uint64                         `json:"sequence"`
+	Targets      []NavigationInvalidationTarget `json:"targets"`
 }
 
 // EvenerLaunchUpdatedParams is the params shape for the evener/launch/updated

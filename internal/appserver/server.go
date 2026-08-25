@@ -16,6 +16,8 @@ type ServerConfig struct {
 	Version    string
 	SourceID   string
 	Features   appwire.FeatureSet
+	// Navigation is absent until a server supports navigation HTTP resources.
+	Navigation *appwire.NavigationCapability
 	// AdapterNativeInitialize keeps the shared JSON-RPC server usable in tests
 	// for adapters whose upstream protocol owns a different initialize shape.
 	AdapterNativeInitialize bool
@@ -259,7 +261,16 @@ func (s *Server) initialize(_ context.Context, params appwire.InitializeParams) 
 		ProtocolVersion: protocolVersion,
 		SourceID:        s.cfg.SourceID,
 		Features:        s.cfg.Features,
+		Navigation:      navigationCapability(s.cfg.Navigation),
 	}, nil
+}
+
+func navigationCapability(capability *appwire.NavigationCapability) *appwire.NavigationCapability {
+	if capability == nil {
+		return nil
+	}
+	copy := *capability
+	return &copy
 }
 
 type Connection struct {

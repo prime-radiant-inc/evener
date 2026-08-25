@@ -61,6 +61,41 @@ func TestConnectionInitializeAllowsLaterRequests(t *testing.T) {
 	}
 }
 
+func TestInitializeIncludesNavigationCapabilityWhenConfigured(t *testing.T) {
+	server := NewServer(ServerConfig{
+		ServerName: "evener-hub",
+		Version:    "test",
+		SourceID:   "local",
+		Navigation: &appwire.NavigationCapability{
+			Version:      1,
+			GenerationID: "generation-a",
+			Sequence:     7,
+		},
+	})
+
+	response, err := server.initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Navigation == nil {
+		t.Fatal("navigation capability is absent")
+	}
+	if got, want := *response.Navigation, (appwire.NavigationCapability{Version: 1, GenerationID: "generation-a", Sequence: 7}); got != want {
+		t.Fatalf("navigation capability = %+v, want %+v", got, want)
+	}
+}
+
+func TestInitializeOmitsNavigationCapabilityWhenUnconfigured(t *testing.T) {
+	server := NewServer(ServerConfig{ServerName: "evener-hub", Version: "test", SourceID: "local"})
+	response, err := server.initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if response.Navigation != nil {
+		t.Fatalf("navigation capability = %+v, want absent", *response.Navigation)
+	}
+}
+
 func TestConnectionInitializeRejectsMissingOrMismatchedProtocolVersion(t *testing.T) {
 	for _, tc := range []struct {
 		name   string

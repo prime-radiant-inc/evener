@@ -420,6 +420,7 @@ export interface InitializeResponse {
   protocolVersion: string;
   sourceId: string;
   features: FeatureSet;
+  navigation?: NavigationCapability;
 }
 
 export interface InputItem {
@@ -817,6 +818,27 @@ export interface MutationReceipt {
   turnId?: string;
   queueEntryIds?: string[];
   projectionState: string;
+}
+
+export interface NavigationCapability {
+  version: number;
+  generationId: string;
+  sequence: number;
+}
+
+export interface NavigationInvalidatedPayload {
+  generationId: string;
+  sequence: number;
+  targets: NavigationInvalidationTarget[];
+}
+
+export interface NavigationInvalidationTarget {
+  kind: string;
+  section?: string;
+  sectionId?: string;
+  catalog?: string;
+  projectKey?: string;
+  revision?: number;
 }
 
 export interface OutputImage {
@@ -1573,6 +1595,7 @@ export const NOTIFICATION_NAMES = [
   "evener/auth/updated",
   "evener/launch/updated",
   "evener/attention/changed",
+  "evener/navigation/invalidated",
   "evener/marketplace/updated",
   "evener/plugin/updated",
   "evener/thread/resync",
@@ -1726,6 +1749,7 @@ export interface NotificationTypes {
   "evener/auth/updated": EvenerAuthUpdatedParams;
   "evener/launch/updated": EvenerLaunchUpdatedParams;
   "evener/attention/changed": AttentionChangedPayload;
+  "evener/navigation/invalidated": NavigationInvalidatedPayload;
   "evener/marketplace/updated": EmptyParams;
   "evener/plugin/updated": EmptyParams;
   "evener/thread/resync": ThreadResyncParams;

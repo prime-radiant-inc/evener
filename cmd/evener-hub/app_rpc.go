@@ -138,6 +138,7 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 		ServerName: "evener-hub",
 		Version:    Version,
 		SourceID:   "local",
+		Navigation: &appwire.NavigationCapability{Version: 1},
 		Logf: func(format string, args ...any) {
 			fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
 		},
