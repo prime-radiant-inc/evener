@@ -140,8 +140,16 @@ func readOutputWindowSnapshotOnce(fs afero.Fs, path string, offset int64, maxByt
 	return snapshot, nil
 }
 
+func readOutputMetaForSnapshot(fs afero.Fs, path string, outputPath string, retained int64) (total int64, retainedStart int64, retainedStartPartial bool, err error) {
+	total, retainedStart, retainedStartPartial, err = readOutputMetaForFile(fs, path, outputPath, retained)
+	if errors.Is(err, errOutputPendingHandoff) {
+		err = errOutputChanged
+	}
+	return total, retainedStart, retainedStartPartial, err
+}
+
 func readOutputWindowSnapshotAttempt(fs afero.Fs, path string, retainedBytes int64, offset int64, maxBytes int) (OutputWindowSnapshot, error) {
-	totalBytes, retainedStart, retainedStartPartial, err := readOutputMetaForFile(fs, outputMetaPath(path), path, retainedBytes)
+	totalBytes, retainedStart, retainedStartPartial, err := readOutputMetaForSnapshot(fs, outputMetaPath(path), path, retainedBytes)
 	if err != nil {
 		return OutputWindowSnapshot{}, err
 	}
@@ -175,7 +183,7 @@ func readOutputWindowSnapshotAttempt(fs afero.Fs, path string, retainedBytes int
 	if err != nil {
 		return OutputWindowSnapshot{}, fmt.Errorf("jobstore: stat output window snapshot: %w", err)
 	}
-	afterTotal, afterRetainedStart, afterRetainedStartPartial, err := readOutputMetaForFile(fs, outputMetaPath(path), path, afterInfo.Size())
+	afterTotal, afterRetainedStart, afterRetainedStartPartial, err := readOutputMetaForSnapshot(fs, outputMetaPath(path), path, afterInfo.Size())
 	if err != nil {
 		return OutputWindowSnapshot{}, err
 	}
@@ -236,7 +244,7 @@ func readOutputSnapshotOnce(fs afero.Fs, path string, maxBytes int, fromHead boo
 }
 
 func readOutputSnapshotAttempt(fs afero.Fs, path string, retainedBytes int64, maxBytes int, fromHead bool) (OutputSnapshot, error) {
-	totalBytes, retainedStart, retainedStartPartial, err := readOutputMetaForFile(fs, outputMetaPath(path), path, retainedBytes)
+	totalBytes, retainedStart, retainedStartPartial, err := readOutputMetaForSnapshot(fs, outputMetaPath(path), path, retainedBytes)
 	if err != nil {
 		return OutputSnapshot{}, err
 	}
@@ -250,7 +258,7 @@ func readOutputSnapshotAttempt(fs afero.Fs, path string, retainedBytes int64, ma
 	if err != nil {
 		return OutputSnapshot{}, fmt.Errorf("jobstore: stat output snapshot: %w", err)
 	}
-	afterTotal, afterRetainedStart, afterRetainedStartPartial, err := readOutputMetaForFile(fs, outputMetaPath(path), path, afterInfo.Size())
+	afterTotal, afterRetainedStart, afterRetainedStartPartial, err := readOutputMetaForSnapshot(fs, outputMetaPath(path), path, afterInfo.Size())
 	if err != nil {
 		return OutputSnapshot{}, err
 	}
