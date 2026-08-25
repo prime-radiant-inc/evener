@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sort"
 	"sync"
+	"time"
 
 	"primeradiant.com/evener/appwire"
 )
@@ -28,6 +29,10 @@ type Server struct {
 	cfg                            ServerConfig
 	router                         *Router
 	subs                           *Subscriptions
+	keepalivePingInterval          time.Duration
+	keepalivePongTimeout           time.Duration
+	keepaliveTickerFactory         func(time.Duration) webSocketKeepaliveTicker
+	keepaliveDecision              func(bool)
 	projectionMu                   sync.Mutex
 	deliveryMu                     sync.Mutex
 	nextHydrationGeneration        uint64
@@ -41,10 +46,13 @@ type Server struct {
 
 func NewServer(cfg ServerConfig) *Server {
 	s := &Server{
-		cfg:    cfg,
-		router: NewRouter(),
-		subs:   NewSubscriptions(),
-		conns:  map[string]*Connection{},
+		cfg:                    cfg,
+		router:                 NewRouter(),
+		subs:                   NewSubscriptions(),
+		conns:                  map[string]*Connection{},
+		keepalivePingInterval:  keepalivePingInterval,
+		keepalivePongTimeout:   keepalivePongTimeout,
+		keepaliveTickerFactory: newRealWebSocketKeepaliveTicker,
 	}
 	HandleTyped(s.router, appwire.MethodInitialize, s.initialize)
 	return s
@@ -429,10 +437,9 @@ func (c *Connection) HandleMessage(ctx context.Context, msg appwire.Message) app
 		return appwire.ErrorMessage(appwire.NewIntID(0), appwire.InvalidRequest("request message required"))
 	}
 	req := *msg.Request
-	// ping is a connection-level keepalive (the browser's app-level heartbeat,
-	// since browsers can't send WS ping frames from JS). Answer it directly,
-	// before the initialize gate and without the router, so it stays cheap and
-	// can't be starved by a busy handler.
+	// ping is the browser's app-level heartbeat (browsers cannot send WS ping
+	// frames from JS). It bypasses the router, but still runs in this serial
+	// receive/dispatch path and can therefore be starved by a busy handler.
 	if req.Method == appwire.MethodPing {
 		return appwire.ResponseMessage(req.ID, struct{}{})
 	}

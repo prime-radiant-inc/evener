@@ -93,6 +93,7 @@ interface WireMessage {
 }
 
 interface PendingRequest {
+  method: MethodName;
   resolve: (result: unknown) => void;
   reject: (err: Error) => void;
   timer: ReturnType<typeof setTimeout>;
@@ -228,7 +229,7 @@ export class AppwireClient {
         this.pending.delete(id);
         reject(new RequestTimeoutError(`AppwireClient: "${method}" timed out after ${timeoutMs}ms`));
       }, timeoutMs);
-      this.pending.set(id, { resolve: resolve as (result: unknown) => void, reject, timer });
+      this.pending.set(id, { method, resolve: resolve as (result: unknown) => void, reject, timer });
       try {
         socket.send(JSON.stringify({ id, method, params }));
       } catch (err) {
@@ -462,6 +463,13 @@ export class AppwireClient {
     this.reconnectTimer = null;
   }
 
+  private hasPendingOrdinaryRequest(): boolean {
+    for (const slot of this.pending.values()) {
+      if (slot.method !== "ping") return true;
+    }
+    return false;
+  }
+
   // sendHeartbeat sends one app-level ping with an explicit HEARTBEAT_TIMEOUT_MS
   // deadline (reusing request()'s own timeout machinery rather than a second,
   // separately-tracked timer). An open-but-unresponsive socket never recovers
@@ -470,6 +478,7 @@ export class AppwireClient {
   // remains best-effort cleanup: a half-open transport may never emit onclose.
   private sendHeartbeat(): void {
     if (this.connectionState !== "ready") return;
+    if (this.hasPendingOrdinaryRequest()) return;
     const socket = this.socket;
     if (!socket) return;
     this.request("ping", {}, { timeoutMs: HEARTBEAT_TIMEOUT_MS }).catch(() => {
