@@ -56,6 +56,7 @@ type cgroupMount struct {
 type cgroupMembership struct {
 	path        string
 	controllers map[string]bool
+	v2          bool
 }
 
 // resourceCapsFromEnv reads only process-visible resource metadata. A Linux
@@ -71,8 +72,14 @@ func resourceCapsFromEnv(env execenv.ExecutionEnvironment) *schema.ResourceCaps 
 	read := newResourceFileReader(env)
 	cgroupText, cgroupErr := read("/proc/self/cgroup")
 	mountInfoText, _ := read("/proc/self/mountinfo")
-	memberships := parseCgroupMemberships(string(cgroupText))
 	mounts := parseCgroupMounts(string(mountInfoText))
+	if cgroupErr != nil {
+		return &schema.ResourceCaps{}
+	}
+	memberships, validMemberships := parseCgroupMemberships(string(cgroupText))
+	if !validMemberships {
+		return &schema.ResourceCaps{}
+	}
 
 	// A readable root membership without a visible cgroup mount is the normal
 	// bare-host shape on systems where mountinfo is unavailable to the process.
@@ -80,10 +87,7 @@ func resourceCapsFromEnv(env execenv.ExecutionEnvironment) *schema.ResourceCaps 
 	// evidence of a container/cgroup even if its mount metadata cannot be read,
 	// so it must not be represented by host facts.
 	if len(mounts) == 0 {
-		if cgroupErr != nil {
-			return &schema.ResourceCaps{}
-		}
-		if len(memberships) == 0 || cgroupMembershipIsRootOnly(memberships) {
+		if cgroupMembershipIsRootOnly(memberships) {
 			return hostResourceCaps(read)
 		}
 		// Some restricted proc views omit mountinfo even though the standard
@@ -122,56 +126,145 @@ func hostResourceCaps(read resourceFileReader) *schema.ResourceCaps {
 }
 
 func effectiveCPU(read resourceFileReader, mounts []cgroupMount, memberships []cgroupMembership) resourceReading {
-	var v2 *cgroupMount
-	for i := range mounts {
-		if mounts[i].v2 {
-			v2 = &mounts[i]
-			break
-		}
-	}
-	if v2 != nil {
-		path := cgroupPathForMount(*v2, membershipPath(memberships, true, ""))
-		quota := readV2CPU(read, filepath.Join(path, "cpu.max"))
-		cpuset := readCPUSet(read, filepath.Join(path, "cpuset.cpus.effective"))
-		return combineCPUReadings(quota, cpuset)
-	}
-
-	var quota, cpuset resourceReading
-	quota.state = resourceAbsent
-	cpuset.state = resourceAbsent
-	for i := range mounts {
-		mount := mounts[i]
-		if mount.v2 {
-			continue
-		}
-		membership := membershipForV1(memberships, mount)
-		path := cgroupPathForMount(mount, membership.path)
-		switch {
-		case mount.controllers["cpu"]:
-			candidate := readV1CPU(read, filepath.Join(path, "cpu.cfs_quota_us"), filepath.Join(path, "cpu.cfs_period_us"))
-			quota = moreRestrictiveCPUReading(quota, candidate)
-		case mount.controllers["cpuset"]:
-			candidate := readCPUSet(read, filepath.Join(path, "cpuset.cpus"))
-			cpuset = moreRestrictiveCPUReading(cpuset, candidate)
-		}
-	}
+	quota := effectiveCPUQuota(read, mounts, memberships)
+	cpuset := effectiveCPUSet(read, mounts, memberships)
 	return combineCPUReadings(quota, cpuset)
 }
 
 func effectiveMemory(read resourceFileReader, mounts []cgroupMount, memberships []cgroupMembership) resourceReading {
-	for i := range mounts {
-		mount := mounts[i]
-		membership := membershipForV1(memberships, mount)
-		if mount.v2 {
-			path := cgroupPathForMount(mount, membershipPath(memberships, true, ""))
-			return readMemoryLimit(read, filepath.Join(path, "memory.max"), true)
+	membership, ownedByV1 := membershipForV1Controller(memberships, "memory")
+	if ownedByV1 {
+		reading := resourceReading{state: resourceAbsent}
+		found := false
+		for _, mount := range mounts {
+			if mount.v2 || !mount.controllers["memory"] {
+				continue
+			}
+			found = true
+			path, ok := cgroupPathForMount(mount, membership.path)
+			if !ok {
+				return resourceReading{state: resourceUnknown}
+			}
+			candidate := readMemoryLimit(read, filepath.Join(path, "memory.limit_in_bytes"), false)
+			reading = moreRestrictiveReading(reading, candidate)
 		}
-		if mount.controllers["memory"] {
-			path := cgroupPathForMount(mount, membership.path)
-			return readMemoryLimit(read, filepath.Join(path, "memory.limit_in_bytes"), false)
+		if !found {
+			return resourceReading{state: resourceUnknown}
 		}
+		return reading
 	}
-	return resourceReading{state: resourceUnknown}
+
+	membership, ok := v2Membership(memberships)
+	if !ok {
+		return resourceReading{state: resourceUnknown}
+	}
+	reading := resourceReading{state: resourceAbsent}
+	found := false
+	for _, mount := range mounts {
+		if !mount.v2 {
+			continue
+		}
+		found = true
+		candidate := readV2MemoryHierarchy(read, mount, membership.path)
+		reading = moreRestrictiveReading(reading, candidate)
+	}
+	if !found {
+		return resourceReading{state: resourceUnknown}
+	}
+	return reading
+}
+
+func effectiveCPUQuota(read resourceFileReader, mounts []cgroupMount, memberships []cgroupMembership) resourceReading {
+	membership, ownedByV1 := membershipForV1Controller(memberships, "cpu")
+	if ownedByV1 {
+		reading := resourceReading{state: resourceAbsent}
+		found := false
+		for _, mount := range mounts {
+			if mount.v2 || !mount.controllers["cpu"] {
+				continue
+			}
+			found = true
+			path, ok := cgroupPathForMount(mount, membership.path)
+			if !ok {
+				return resourceReading{state: resourceUnknown}
+			}
+			candidate := readV1CPU(read, filepath.Join(path, "cpu.cfs_quota_us"), filepath.Join(path, "cpu.cfs_period_us"))
+			reading = moreRestrictiveReading(reading, candidate)
+		}
+		if !found {
+			return resourceReading{state: resourceUnknown}
+		}
+		return reading
+	}
+
+	membership, ok := v2Membership(memberships)
+	if !ok {
+		return resourceReading{state: resourceAbsent}
+	}
+	reading := resourceReading{state: resourceAbsent}
+	found := false
+	for _, mount := range mounts {
+		if !mount.v2 {
+			continue
+		}
+		found = true
+		candidate := readV2CPUHierarchy(read, mount, membership.path)
+		reading = moreRestrictiveReading(reading, candidate)
+	}
+	if !found {
+		return resourceReading{state: resourceUnknown}
+	}
+	return reading
+}
+
+func effectiveCPUSet(read resourceFileReader, mounts []cgroupMount, memberships []cgroupMembership) resourceReading {
+	membership, ownedByV1 := membershipForV1Controller(memberships, "cpuset")
+	if ownedByV1 {
+		reading := resourceReading{state: resourceAbsent}
+		found := false
+		for _, mount := range mounts {
+			if mount.v2 || !mount.controllers["cpuset"] {
+				continue
+			}
+			found = true
+			path, ok := cgroupPathForMount(mount, membership.path)
+			if !ok {
+				return resourceReading{state: resourceUnknown}
+			}
+			candidate := readCPUSet(read, filepath.Join(path, "cpuset.cpus"))
+			if candidate.state == resourceAbsent {
+				candidate.state = resourceUnknown
+			}
+			reading = moreRestrictiveReading(reading, candidate)
+		}
+		if !found {
+			return resourceReading{state: resourceUnknown}
+		}
+		return reading
+	}
+
+	membership, ok := v2Membership(memberships)
+	if !ok {
+		return resourceReading{state: resourceAbsent}
+	}
+	reading := resourceReading{state: resourceAbsent}
+	found := false
+	for _, mount := range mounts {
+		if !mount.v2 {
+			continue
+		}
+		found = true
+		path, pathOK := cgroupPathForMount(mount, membership.path)
+		if !pathOK {
+			return resourceReading{state: resourceUnknown}
+		}
+		candidate := readCPUSet(read, filepath.Join(path, "cpuset.cpus.effective"))
+		reading = moreRestrictiveReading(reading, candidate)
+	}
+	if !found {
+		return resourceReading{state: resourceUnknown}
+	}
+	return reading
 }
 
 func combineCPUReadings(quota, cpuset resourceReading) resourceReading {
@@ -195,7 +288,7 @@ func combineCPUReadings(quota, cpuset resourceReading) resourceReading {
 	}
 }
 
-func moreRestrictiveCPUReading(current, candidate resourceReading) resourceReading {
+func moreRestrictiveReading(current, candidate resourceReading) resourceReading {
 	if current.state == resourceAbsent {
 		return candidate
 	}
@@ -212,6 +305,50 @@ func moreRestrictiveCPUReading(current, candidate resourceReading) resourceReadi
 		return current
 	}
 	return resourceReading{state: resourceLimited, value: minPositive(current.value, candidate.value)}
+}
+
+func readV2CPUHierarchy(read resourceFileReader, mount cgroupMount, membership string) resourceReading {
+	paths, ok := cgroupPathsToMountRoot(mount, membership)
+	if !ok {
+		return resourceReading{state: resourceUnknown}
+	}
+	if mount.root == "/" && len(paths) > 0 {
+		paths = paths[:len(paths)-1]
+	}
+	if len(paths) == 0 {
+		return resourceReading{state: resourceUnlimited, value: float64(runtime.NumCPU())}
+	}
+	reading := readV2CPU(read, filepath.Join(paths[0], "cpu.max"))
+	if reading.state == resourceAbsent {
+		return reading
+	}
+	for _, path := range paths[1:] {
+		candidate := readV2CPU(read, filepath.Join(path, "cpu.max"))
+		if candidate.state == resourceAbsent {
+			return resourceReading{state: resourceUnknown}
+		}
+		reading = moreRestrictiveReading(reading, candidate)
+	}
+	return reading
+}
+
+func readV2MemoryHierarchy(read resourceFileReader, mount cgroupMount, membership string) resourceReading {
+	paths, ok := cgroupPathsToMountRoot(mount, membership)
+	if !ok {
+		return resourceReading{state: resourceUnknown}
+	}
+	if mount.root == "/" && len(paths) > 0 {
+		paths = paths[:len(paths)-1]
+	}
+	if len(paths) == 0 {
+		return resourceReading{state: resourceUnlimited, value: float64(hostMemoryMB(read))}
+	}
+	reading := resourceReading{state: resourceAbsent}
+	for _, path := range paths {
+		candidate := readMemoryLimit(read, filepath.Join(path, "memory.max"), true)
+		reading = moreRestrictiveReading(reading, candidate)
+	}
+	return reading
 }
 
 func readV2CPU(read resourceFileReader, path string) resourceReading {
@@ -386,26 +523,52 @@ func minPositive(a, b float64) float64 {
 	return b
 }
 
-func parseCgroupMemberships(text string) []cgroupMembership {
+func parseCgroupMemberships(text string) ([]cgroupMembership, bool) {
 	var memberships []cgroupMembership
+	seenHierarchy := make(map[uint64]bool)
+	seenControllers := make(map[string]bool)
 	for line := range strings.SplitSeq(text, "\n") {
-		fields := strings.SplitN(strings.TrimSpace(line), ":", 3)
-		if len(fields) != 3 {
+		line = strings.TrimSpace(line)
+		if line == "" {
 			continue
 		}
+		fields := strings.SplitN(line, ":", 3)
+		if len(fields) != 3 {
+			return nil, false
+		}
+		hierarchy, err := strconv.ParseUint(fields[0], 10, 64)
+		if err != nil || seenHierarchy[hierarchy] || fields[2] == "" || !strings.HasPrefix(fields[2], "/") {
+			return nil, false
+		}
+		seenHierarchy[hierarchy] = true
 		controllers := make(map[string]bool)
-		for controller := range strings.SplitSeq(fields[1], ",") {
-			controller = strings.TrimSpace(controller)
-			if controller != "" && !strings.HasPrefix(controller, "name=") {
+		if hierarchy == 0 {
+			if fields[1] != "" {
+				return nil, false
+			}
+		} else {
+			if fields[1] == "" {
+				return nil, false
+			}
+			for controller := range strings.SplitSeq(fields[1], ",") {
+				controller = strings.TrimSpace(controller)
+				if controller == "" || seenControllers[controller] {
+					return nil, false
+				}
+				seenControllers[controller] = true
+				if strings.HasPrefix(controller, "name=") {
+					continue
+				}
 				controllers[controller] = true
 			}
 		}
 		memberships = append(memberships, cgroupMembership{
 			path:        cleanAbsolute(fields[2]),
 			controllers: controllers,
+			v2:          hierarchy == 0,
 		})
 	}
-	return memberships
+	return memberships, len(memberships) > 0
 }
 
 func parseCgroupMounts(text string) []cgroupMount {
@@ -452,7 +615,7 @@ func addStandardCgroupMounts(mounts []cgroupMount, memberships []cgroupMembershi
 		return mounts
 	}
 	for _, membership := range memberships {
-		if len(membership.controllers) == 0 && membership.path != "/" {
+		if membership.v2 && membership.path != "/" {
 			mounts = append(mounts, cgroupMount{v2: true, root: "/", mountPoint: "/sys/fs/cgroup"})
 			break
 		}
@@ -507,44 +670,66 @@ func cgroupMembershipIsRootOnly(memberships []cgroupMembership) bool {
 	return true
 }
 
-func membershipPath(memberships []cgroupMembership, v2 bool, controller string) string {
+func v2Membership(memberships []cgroupMembership) (cgroupMembership, bool) {
 	for _, membership := range memberships {
-		if v2 {
-			if len(membership.controllers) == 0 {
-				return membership.path
-			}
-			continue
-		}
-		if membership.controllers[controller] {
-			return membership.path
+		if membership.v2 {
+			return membership, true
 		}
 	}
-	return "/"
+	return cgroupMembership{}, false
 }
 
-func membershipForV1(memberships []cgroupMembership, mount cgroupMount) cgroupMembership {
+func membershipForV1Controller(memberships []cgroupMembership, controller string) (cgroupMembership, bool) {
 	for _, membership := range memberships {
-		for controller := range mount.controllers {
-			if membership.controllers[controller] {
-				return membership
-			}
+		if !membership.v2 && membership.controllers[controller] {
+			return membership, true
 		}
 	}
-	return cgroupMembership{path: "/"}
+	return cgroupMembership{}, false
 }
 
-func cgroupPathForMount(mount cgroupMount, membershipPath string) string {
+func cgroupPathForMount(mount cgroupMount, membershipPath string) (string, bool) {
 	membershipPath = cleanAbsolute(membershipPath)
 	root := cleanAbsolute(mount.root)
+	relativeMembership := strings.TrimPrefix(membershipPath, "/")
 	if root != "/" {
 		switch {
 		case membershipPath == root:
-			membershipPath = "/"
+			relativeMembership = ""
 		case strings.HasPrefix(membershipPath, root+"/"):
-			membershipPath = strings.TrimPrefix(membershipPath, root)
+			relativeMembership = strings.TrimPrefix(membershipPath, root+"/")
 		}
 	}
-	return filepath.Join(mount.mountPoint, membershipPath)
+	mountPoint := cleanAbsolute(mount.mountPoint)
+	path := filepath.Join(mountPoint, relativeMembership)
+	rel, err := filepath.Rel(mountPoint, path)
+	if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", false
+	}
+	return path, true
+}
+
+func cgroupPathsToMountRoot(mount cgroupMount, membershipPath string) ([]string, bool) {
+	leaf, ok := cgroupPathForMount(mount, membershipPath)
+	if !ok {
+		return nil, false
+	}
+	mountPoint := cleanAbsolute(mount.mountPoint)
+	paths := make([]string, 0, 4)
+	for current := leaf; ; current = filepath.Dir(current) {
+		paths = append(paths, current)
+		if current == mountPoint {
+			return paths, true
+		}
+		parent := filepath.Dir(current)
+		if parent == current {
+			return nil, false
+		}
+		rel, err := filepath.Rel(mountPoint, parent)
+		if err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+			return nil, false
+		}
+	}
 }
 
 func cleanAbsolute(path string) string {
