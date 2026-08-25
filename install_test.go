@@ -322,6 +322,66 @@ func TestInstallScriptInstallsReleaseArchive(t *testing.T) {
 	}
 }
 
+func TestInstallScriptPreservesDownloadFailuresAndClassifies404(t *testing.T) {
+	t.Parallel()
+	if testing.Short() {
+		t.Skip("release archive install integration test")
+	}
+	if runtime.GOOS == "windows" {
+		t.Skip("install.sh requires a Unix shell")
+	}
+
+	repoRoot, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+	script := filepath.Join(repoRoot, "install.sh")
+
+	for _, tc := range []struct {
+		name       string
+		version    string
+		httpStatus string
+		curlExit   string
+		wantExit   int
+		wantAdvice bool
+	}{
+		{name: "latest 404", version: "latest", httpStatus: "404", curlExit: "22", wantExit: 22, wantAdvice: true},
+		{name: "latest 401", version: "latest", httpStatus: "401", curlExit: "22", wantExit: 22},
+		{name: "latest 403", version: "latest", httpStatus: "403", curlExit: "22", wantExit: 22},
+		{name: "latest 429", version: "latest", httpStatus: "429", curlExit: "22", wantExit: 22},
+		{name: "latest 500", version: "latest", httpStatus: "500", curlExit: "22", wantExit: 22},
+		{name: "latest DNS failure", version: "latest", httpStatus: "000", curlExit: "6", wantExit: 6},
+		{name: "latest TLS failure", version: "latest", httpStatus: "000", curlExit: "35", wantExit: 35},
+		{name: "latest redirect failure", version: "latest", httpStatus: "000", curlExit: "47", wantExit: 47},
+		{name: "latest receive failure", version: "latest", httpStatus: "000", curlExit: "56", wantExit: 56},
+		{name: "pinned 404", version: "v1.2.3", httpStatus: "404", curlExit: "22", wantExit: 22},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			home, out, runErr := runInstallScript(t, script, "Darwin", "arm64", map[string]string{
+				"EVENER_INSTALL_VERSION":     tc.version,
+				"EVENER_FAKE_CURL_HTTP_CODE": tc.httpStatus,
+				"EVENER_FAKE_CURL_EXIT":      tc.curlExit,
+			})
+			if runErr == nil {
+				t.Fatalf("install succeeded; output = %s", out)
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(runErr, &exitErr) {
+				t.Fatalf("run error is not an exit error: %v", runErr)
+			}
+			if got := exitErr.ExitCode(); got != tc.wantExit {
+				t.Fatalf("exit status = %d, want %d; output = %s", got, tc.wantExit, out)
+			}
+			gotAdvice := strings.Contains(out, "EVENER_INSTALL_VERSION=snapshot")
+			if gotAdvice != tc.wantAdvice {
+				t.Fatalf("snapshot advice = %v, want %v; output = %s", gotAdvice, tc.wantAdvice, out)
+			}
+			assertNothingInstalled(t, home, out)
+		})
+	}
+}
+
 // TestInstallScriptRejectsTamperedArchive feeds install.sh a checksums.txt
 // whose digest cannot match the served archive: the install must fail closed
 // at verification, before anything is installed.
@@ -586,9 +646,11 @@ esac
 	writeExecutable(t, filepath.Join(fakeBin, "curl"), `#!/bin/sh
 out=
 url=
+write_format=
 while [ "$#" -gt 0 ]; do
   case "$1" in
     -o) out="$2"; shift 2 ;;
+    -w) write_format="$2"; shift 2 ;;
     -*) shift ;;
     *) url="$1"; shift ;;
   esac
@@ -598,6 +660,17 @@ if [ -z "$out" ]; then
   exit 2
 fi
 printf '%s\n' "$url" >> "$EVENER_FAKE_CURL_URL_FILE"
+http_code=${EVENER_FAKE_CURL_HTTP_CODE:-200}
+if [ -n "${EVENER_FAKE_CURL_404:-}" ] && [ "$(basename "$url")" = "$EVENER_FAKE_CURL_404" ]; then
+  http_code=404
+fi
+if [ -n "$write_format" ]; then
+  printf '%s' "$http_code"
+fi
+if [ -n "${EVENER_FAKE_CURL_EXIT:-}" ]; then
+  cp "$EVENER_FAKE_CURL_ARCHIVE" "$out"
+  exit "$EVENER_FAKE_CURL_EXIT"
+fi
 if [ -n "${EVENER_FAKE_CURL_404:-}" ] && [ "$(basename "$url")" = "$EVENER_FAKE_CURL_404" ]; then
   exit 22
 fi
