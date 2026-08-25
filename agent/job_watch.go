@@ -4287,7 +4287,12 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 		live[child.id] = true
 		// Stop-gating (spec §3): a deliberately stopped child is never resurrected
 		// by a drive for attention that predates the stop. New work clears the gate.
-		if s.childStopGated(child.id) || s.childFatalRunGated(child.id) {
+		// A child the one-shot drain has given up on is skipped for the same
+		// reason and, additionally, for consistency: the drain declares it not
+		// live work, so driving it here would have the drain kicking a child it
+		// has already told the operator it abandoned — and abandoning a queued
+		// notification the drive loop was mid-way through delivering.
+		if s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id) || s.childDrainGracePending(child.id) {
 			continue
 		}
 		if child.peekNotifications() > 0 || child.jobManager.hasPendingWatchSends() {
@@ -4304,13 +4309,14 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 
 // driveChildIfNotStopGated is the wake-edge drive: it skips a stop-gated child so
 // a deliberately stopped child is not resurrected by its own pre-stop notify
-// (spec §3 stop-gating). On a successful handoff it settles the parent's
-// forwarded drive signal for that child.
+// (spec §3 stop-gating), and a child the one-shot drain has abandoned for the
+// same reason driveChildrenWithUndeliveredAttention does. On a successful
+// handoff it settles the parent's forwarded drive signal for that child.
 func (s *Session) driveChildIfNotStopGated(sub *subagent) {
 	if sub == nil || sub.sess == nil {
 		return
 	}
-	if s.childStopGated(sub.sess.id) || s.childFatalRunGated(sub.sess.id) {
+	if s.childStopGated(sub.sess.id) || s.childFatalRunGated(sub.sess.id) || s.childDrainAbandoned(sub.sess.id) || s.childDrainGracePending(sub.sess.id) {
 		return
 	}
 	if s.driveStableDelegateAttention(sub) {
@@ -4425,7 +4431,15 @@ func (s *Session) directStableDelegateForChildSession(childSessionID string) (de
 // generation clears the gate.
 func (s *Session) childStopGated(childSessionID string) bool {
 	row, ok := s.directStableDelegateForChildSession(childSessionID)
-	if !ok || row.currentRunOpen || row.lastOutcome == nil {
+	return ok && delegateRowStopGated(row)
+}
+
+// delegateRowStopGated is childStopGated's verdict on a row the caller already
+// holds. The drain's abandonment pass takes one snapshot per session per pass
+// and asks several questions of each row, so it must not re-snapshot the whole
+// controller to ask this one.
+func delegateRowStopGated(row delegateSnapshot) bool {
+	if row.currentRunOpen || row.lastOutcome == nil {
 		return false
 	}
 	return row.lastOutcome.Status == delegatestore.OutcomeStopped && row.lastOutcome.Reason == "stopped_by_parent"
