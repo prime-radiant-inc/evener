@@ -554,7 +554,10 @@ func (c *delegateTreeController) closeRuntimeTree(ctx context.Context, closeChil
 	children = append(children, pendingCancelPlan.children...)
 	if pending != nil {
 		executeDelegateCancelPlan(pendingCancelPlan)
-		if err := c.joinOrDrainStopForClose(ctx, pending); err != nil {
+		stopCtx, cancelStop := closeStopJoinContext(ctx)
+		err := c.joinOrDrainStopForClose(stopCtx, pending)
+		cancelStop()
+		if err != nil {
 			return err
 		}
 	}
@@ -585,7 +588,10 @@ func (c *delegateTreeController) closeRuntimeTree(ctx context.Context, closeChil
 		}
 		executeDelegateCancelPlan(cancelPlan)
 		children = append(children, cancelPlan.children...)
-		if err := c.drainStopForClose(ctx, c.stopForResult(result)); err != nil {
+		stopCtx, cancelStop := closeStopJoinContext(ctx)
+		err = c.drainStopForClose(stopCtx, c.stopForResult(result))
+		cancelStop()
+		if err != nil {
 			return err
 		}
 	}
