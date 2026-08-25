@@ -14,6 +14,7 @@ import type { StoreApi, UseBoundStore } from "zustand";
 import { create } from "zustand";
 import type {
   HarnessDescriptor,
+  ModelDescriptor,
   Thread,
   Turn,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
@@ -41,6 +42,8 @@ class FakeNewSessionService implements NewSessionService {
   shouldReject: Error | null = null;
   recentProjectsList: string[] = [];
   harnessList: HarnessDescriptor[] = [];
+  modelList: ModelDescriptor[] = [];
+  recentModelList: ModelDescriptor[] = [];
 
   async start(
     params: NewSessionParams,
@@ -57,6 +60,13 @@ class FakeNewSessionService implements NewSessionService {
 
   async harnesses(): Promise<HarnessDescriptor[]> {
     return this.harnessList;
+  }
+
+  async models(): Promise<{
+    data: ModelDescriptor[];
+    recent?: ModelDescriptor[];
+  }> {
+    return { data: this.modelList, recent: this.recentModelList };
   }
 }
 
@@ -300,5 +310,58 @@ describe("NewSessionScreen — recent projects autocomplete", () => {
       /project path/i,
     ) as HTMLInputElement;
     expect(projectInput.value).toBe("/home/work");
+  });
+});
+
+describe("NewSessionScreen — model discovery and selection", () => {
+  it("loads discovered models and shows provider/model labels", async () => {
+    const service = new FakeNewSessionService();
+    service.modelList = [
+      { provider: "anthropic", model: "claude-sonnet-4-5" },
+      { provider: "openai", model: "gpt-5" },
+    ];
+    renderNewSession({ service });
+
+    expect(
+      await screen.findByRole("option", {
+        name: "anthropic / claude-sonnet-4-5",
+      }),
+    ).toBeInTheDocument();
+    expect(
+      screen.getByRole("option", { name: "openai / gpt-5" }),
+    ).toBeInTheDocument();
+  });
+
+  it("forwards the selected provider and model when starting", async () => {
+    const service = new FakeNewSessionService();
+    service.modelList = [{ provider: "openai", model: "gpt-5" }];
+    renderNewSession({ service });
+
+    const modelSelect = await screen.findByLabelText(/model/i);
+    fireEvent.change(modelSelect, { target: { value: "openai\u0000gpt-5" } });
+    fireEvent.change(screen.getByLabelText(/project path/i), {
+      target: { value: "/tmp" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /start/i }));
+
+    await waitFor(() => expect(service.startCalls).toBe(1));
+    expect(service.lastParams?.modelProvider).toBe("openai");
+    expect(service.lastParams?.model).toBe("gpt-5");
+  });
+
+  it("keeps the default model selection out of thread/start params", async () => {
+    const service = new FakeNewSessionService();
+    service.modelList = [{ provider: "openai", model: "gpt-5" }];
+    renderNewSession({ service });
+
+    await screen.findByRole("option", { name: "openai / gpt-5" });
+    fireEvent.change(screen.getByLabelText(/project path/i), {
+      target: { value: "/tmp" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: /start/i }));
+
+    await waitFor(() => expect(service.startCalls).toBe(1));
+    expect(service.lastParams?.modelProvider).toBeUndefined();
+    expect(service.lastParams?.model).toBeUndefined();
   });
 });
