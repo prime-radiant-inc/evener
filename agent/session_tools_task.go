@@ -281,8 +281,18 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 							// signal the agent that the list is exhausted.
 							allDone := taskListAllDone(finalTasks)
 							if allDone && len(finalTasks) > 0 {
-								deps.steer(taskReminderAllDone(deps.resultToolName()), events.SteeringKindTasksDone)
-								msg.WriteString("All tasks complete. ")
+								var blockingDelegateIDs []string
+								if deps.blockingDelegateIDs != nil {
+									blockingDelegateIDs = deps.blockingDelegateIDs()
+								}
+								deps.sendTaskCompletionSteering(taskReminderAllDoneWhileDelegatesRun(deps.resultToolName(), blockingDelegateIDs), blockingDelegateIDs)
+								if len(blockingDelegateIDs) == 0 {
+									msg.WriteString("All tasks complete. ")
+								} else {
+									msg.WriteString("All tasks complete; waiting for delegate(s) ")
+									msg.WriteString(strings.Join(blockingDelegateIDs, ", "))
+									msg.WriteString(". ")
+								}
 							}
 						}
 					}
