@@ -2,6 +2,7 @@ import type {
   Appearance,
   ConceptId,
   Platform,
+  PrototypeFixture,
   RootTab,
   Route,
   ScenarioId,
@@ -63,6 +64,7 @@ export interface PrototypeState {
   newSession: NewSessionDraft;
   voicePreferences: VoicePreferences;
   voice: VoicePrototypeState;
+  readonly sourceFixture: PrototypeFixture;
   projection: ScenarioProjection;
   resetGeneration: number;
 }
@@ -70,6 +72,7 @@ export interface PrototypeState {
 export interface InitialStateOptions {
   platform: Platform;
   preferences: PersistedPreferencesV1;
+  sourceFixture?: PrototypeFixture;
   projection?: ScenarioProjection;
 }
 
