@@ -923,6 +923,13 @@ func readValidPendingOutputMeta(fs afero.Fs, path string, finalMetaPath string, 
 		return outputMeta{}, false, err
 	}
 	if meta.RetainedSHA256 != hash {
+		info, err := fs.Stat(outputPath)
+		if err != nil {
+			return outputMeta{}, false, fmt.Errorf("jobstore: stat output metadata: %w", err)
+		}
+		if info.Size() > retained {
+			return readExpandedPendingOutputMeta(fs, finalMetaPath, outputPath, meta, retained, info.Size())
+		}
 		finalMeta, ok, err := readOutputMeta(fs, finalMetaPath)
 		if err != nil {
 			return outputMeta{}, false, err
@@ -933,6 +940,60 @@ func readValidPendingOutputMeta(fs afero.Fs, path string, finalMetaPath string, 
 		return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
 	}
 	return meta, true, nil
+}
+
+func readExpandedPendingOutputMeta(fs afero.Fs, finalMetaPath string, outputPath string, pendingMeta outputMeta, retained, expandedSize int64) (outputMeta, bool, error) {
+	// Append writes through the current handle before prune publishes pending
+	// metadata, so a reader can observe the append-expanded file while the
+	// pending tail still describes the capped successor.
+	finalMeta, ok, err := readOutputMeta(fs, finalMetaPath)
+	if err != nil {
+		return outputMeta{}, false, err
+	}
+	if !ok {
+		return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
+	}
+	finalRetained, err := outputMetaRetainedBytes(finalMeta)
+	if err != nil {
+		return outputMeta{}, false, err
+	}
+	appendBytes := expandedSize - retained
+	if finalRetained != retained ||
+		pendingMeta.TotalBytes < expandedSize ||
+		pendingMeta.TotalBytes-expandedSize != finalMeta.RetainedStart ||
+		pendingMeta.RetainedStart != finalMeta.RetainedStart+appendBytes {
+		return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
+	}
+	if ok, err := outputFileHasSuffixSHA256(fs, outputPath, appendBytes, retained, pendingMeta.RetainedSHA256); err != nil {
+		if info, statErr := fs.Stat(outputPath); statErr == nil && info.Size() != expandedSize {
+			return outputMeta{}, false, errOutputPendingHandoff
+		}
+		return outputMeta{}, false, err
+	} else if !ok {
+		return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
+	}
+	if ok, err := outputFileHasPrefixSHA256(fs, outputPath, finalRetained, finalMeta.RetainedSHA256); err != nil {
+		if info, statErr := fs.Stat(outputPath); statErr == nil && info.Size() != expandedSize {
+			return outputMeta{}, false, errOutputPendingHandoff
+		}
+		return outputMeta{}, false, err
+	} else if !ok {
+		return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
+	}
+	info, err := fs.Stat(outputPath)
+	if err != nil {
+		return outputMeta{}, false, fmt.Errorf("jobstore: stat output metadata: %w", err)
+	}
+	if info.Size() != expandedSize {
+		return outputMeta{}, false, errOutputPendingHandoff
+	}
+	hash, err := outputFileSHA256(fs, outputPath)
+	if err != nil {
+		return outputMeta{}, false, err
+	}
+	pendingMeta.RetainedStart = pendingMeta.TotalBytes - expandedSize
+	pendingMeta.RetainedSHA256 = hash
+	return pendingMeta, true, nil
 }
 
 // readValidOutputMeta validates final output metadata on the OS filesystem.
@@ -987,15 +1048,18 @@ func pendingOutputMetadataHandoff(finalMeta, pendingMeta outputMeta, retained in
 	if err != nil || pendingRetained != retained {
 		return false
 	}
-	if pendingMeta.TotalBytes == finalMeta.TotalBytes && pendingMeta.RetainedStart == finalMeta.RetainedStart {
+	totalDelta := pendingMeta.TotalBytes - finalMeta.TotalBytes
+	retainedStartDelta := pendingMeta.RetainedStart - finalMeta.RetainedStart
+	if totalDelta <= 0 || retainedStartDelta <= 0 {
 		return false
 	}
-	if pendingMeta.TotalBytes-finalMeta.TotalBytes != pendingMeta.RetainedStart-finalMeta.RetainedStart {
+	if totalDelta != retainedStartDelta {
 		return false
 	}
-	return pendingMeta.RetainedSHA256 == finalMeta.RetainedSHA256 ||
-		pendingMeta.RetainedSHA256 == outputHash ||
-		finalMeta.RetainedSHA256 == outputHash
+	if pendingMeta.RetainedSHA256 != outputHash && finalMeta.RetainedSHA256 != outputHash {
+		return false
+	}
+	return true
 }
 
 func outputMetaRetainedBytes(meta outputMeta) (int64, error) {

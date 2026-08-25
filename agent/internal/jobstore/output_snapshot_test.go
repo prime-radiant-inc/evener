@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -491,19 +492,45 @@ func TestReadOutputSnapshotTruncatedBelowPendingTailIsCorruption(t *testing.T) {
 	}
 }
 
-func TestReadOutputWindowSnapshotPendingSuccessorIsConcurrentChange(t *testing.T) {
-	fs := afero.NewMemMapFs()
-	const path = "/job.log"
-	const oldContent = "AAAA"
-	const nextContent = "BBBB"
-	mustWriteSnapshotFixture(t, fs, path, []byte(oldContent), 4, 0)
-	if err := writeSnapshotMetadataFile(fs, outputPendingMetaPath(outputMetaPath(path)), []byte(nextContent), 8, 4); err != nil {
-		t.Fatalf("write pending metadata: %v", err)
+func TestReadOutputWindowSnapshotUsesProductionPendingPublicationOrder(t *testing.T) {
+	// The append pauses after pruneLocked publishes .pending and before it
+	// opens the replacement file, matching the production writer order.
+	path := filepath.Join(t.TempDir(), "job.log")
+	fs := newSnapshotAppendPruneFS(path)
+	t.Cleanup(fs.releaseOutputReplacement)
+	store, err := createOutputFsWithSync(fs, path, 4, true)
+	if err != nil {
+		t.Fatalf("create output: %v", err)
 	}
+	t.Cleanup(func() { _ = store.Close() })
+	appendOutput(t, store, "AAAA")
 
-	_, err := readOutputWindowSnapshotFs(fs, path, 0, len(nextContent))
-	if !errors.Is(err, ErrOutputChangedDuringRead) {
-		t.Fatalf("snapshot error = %v, want ErrOutputChangedDuringRead", err)
+	appendErr := make(chan error, 1)
+	go func() {
+		_, appendErrValue := store.Append([]byte("BBBB"))
+		appendErr <- appendErrValue
+	}()
+	<-fs.pendingPublished
+	output, err := afero.ReadFile(fs, path)
+	if err != nil {
+		t.Fatalf("read output before replacement: %v", err)
+	}
+	if string(output) != "AAAABBBB" {
+		t.Fatalf("output before replacement = %q, want append-expanded output", output)
+	}
+	if _, err := afero.ReadFile(fs, outputPendingMetaPath(outputMetaPath(path))); err != nil {
+		t.Fatalf("read pending metadata before replacement: %v", err)
+	}
+	got, err := readOutputWindowSnapshotFs(fs, path, 0, len("BBBB"))
+	if err != nil {
+		t.Fatalf("snapshot during pending publication: %v", err)
+	}
+	if string(got.Content) != "AAAA" || got.TotalBytes != 8 || got.RetainedStart != 0 {
+		t.Fatalf("snapshot during pending publication = %+v, want old prefix with successor coordinates", got)
+	}
+	fs.releaseOutputReplacement()
+	if err := <-appendErr; err != nil {
+		t.Fatalf("append: %v", err)
 	}
 }
 
@@ -519,6 +546,53 @@ func TestReadOutputWindowSnapshotPendingMetadataMismatchRemainsCorruption(t *tes
 	_, err := readOutputWindowSnapshotFs(fs, path, 0, len(content))
 	if err == nil || err.Error() != "jobstore: output metadata does not match retained output" {
 		t.Fatalf("snapshot error = %v, want metadata corruption", err)
+	}
+}
+
+func TestReadOutputSnapshotRejectsRollbackStaleAndRepeatedHashPendingMetadata(t *testing.T) {
+	const corruption = "jobstore: output metadata does not match retained output"
+	for name, tc := range map[string]struct {
+		output       string
+		finalContent string
+		finalTotal   int64
+		finalStart   int64
+		pending      string
+		pendingTotal int64
+		pendingStart int64
+	}{
+		"rollback": {
+			output: "BBBB", finalContent: "BBBB", finalTotal: 8, finalStart: 4,
+			pending: "AAAA", pendingTotal: 4, pendingStart: 0,
+		},
+		"stale pending generation": {
+			output: "BBBB", finalContent: "BBBB", finalTotal: 12, finalStart: 8,
+			pending: "AAAA", pendingTotal: 8, pendingStart: 4,
+		},
+		"repeated hash does not match output": {
+			output: "CCCC", finalContent: "AAAA", finalTotal: 4, finalStart: 0,
+			pending: "AAAA", pendingTotal: 8, pendingStart: 4,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			fs := afero.NewMemMapFs()
+			const path = "/job.log"
+			if err := afero.WriteFile(fs, path, []byte(tc.output), 0o644); err != nil {
+				t.Fatalf("write output: %v", err)
+			}
+			if err := writeSnapshotMetadataFile(fs, outputMetaPath(path), []byte(tc.finalContent), tc.finalTotal, tc.finalStart); err != nil {
+				t.Fatalf("write final metadata: %v", err)
+			}
+			if err := writeSnapshotMetadataFile(fs, outputPendingMetaPath(outputMetaPath(path)), []byte(tc.pending), tc.pendingTotal, tc.pendingStart); err != nil {
+				t.Fatalf("write pending metadata: %v", err)
+			}
+
+			if _, err := readOutputWindowSnapshotFs(fs, path, 0, len(tc.output)); err == nil || err.Error() != corruption {
+				t.Fatalf("window snapshot error = %v, want durable metadata corruption", err)
+			}
+			if _, err := readOutputSnapshotFs(fs, path, len(tc.output), false); err == nil || err.Error() != corruption {
+				t.Fatalf("tail snapshot error = %v, want durable metadata corruption", err)
+			}
+		})
 	}
 }
 
@@ -736,6 +810,43 @@ type snapshotPruneProtocolFS struct {
 	afterObservationStatErr error
 }
 
+type snapshotAppendPruneFS struct {
+	afero.Fs
+	path                   string
+	pendingPublished       chan struct{}
+	allowOutputReplacement chan struct{}
+	pendingOnce            sync.Once
+	releaseOnce            sync.Once
+}
+
+func newSnapshotAppendPruneFS(path string) *snapshotAppendPruneFS {
+	return &snapshotAppendPruneFS{
+		Fs:                     afero.NewOsFs(),
+		path:                   path,
+		pendingPublished:       make(chan struct{}),
+		allowOutputReplacement: make(chan struct{}),
+	}
+}
+
+func (fs *snapshotAppendPruneFS) LstatIfPossible(name string) (os.FileInfo, bool, error) {
+	info, err := os.Lstat(name)
+	return info, true, err
+}
+
+func (fs *snapshotAppendPruneFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
+	if name == fs.path+".tmp" {
+		fs.pendingOnce.Do(func() {
+			close(fs.pendingPublished)
+			<-fs.allowOutputReplacement
+		})
+	}
+	return fs.Fs.OpenFile(name, flag, perm)
+}
+
+func (fs *snapshotAppendPruneFS) releaseOutputReplacement() {
+	fs.releaseOnce.Do(func() { close(fs.allowOutputReplacement) })
+}
+
 func newSnapshotPruneProtocolFS(t *testing.T, start snapshotPruneStart) *snapshotPruneProtocolFS {
 	t.Helper()
 	base := afero.NewMemMapFs()
@@ -793,10 +904,10 @@ func (fs *snapshotPruneProtocolFS) Stat(name string) (os.FileInfo, error) {
 
 func (fs *snapshotPruneProtocolFS) publishPending() error {
 	const retained = "BBBB"
-	if err := afero.WriteFile(fs.Fs, fs.path, []byte(retained), 0o644); err != nil {
+	if err := writeSnapshotMetadataFile(fs.Fs, outputPendingMetaPath(outputMetaPath(fs.path)), []byte(retained), 8, 4); err != nil {
 		return err
 	}
-	if err := writeSnapshotMetadataFile(fs.Fs, outputPendingMetaPath(outputMetaPath(fs.path)), []byte(retained), 8, 4); err != nil {
+	if err := afero.WriteFile(fs.Fs, fs.path, []byte(retained), 0o644); err != nil {
 		return err
 	}
 	fs.phase = snapshotPrunePending
