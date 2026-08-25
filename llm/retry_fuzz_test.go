@@ -74,10 +74,10 @@ func fuzzPolicy(useDefault bool, maxRetries int, baseMs, maxDelayMs int32, mult 
 //     retryDelay; this oracle now guards the fix unconditionally.
 //   - When MaxDelay > 0 the returned delay respects the cap: at most 1.5x
 //     MaxDelay, accounting for the documented +/-50% jitter.
-//   - A Retry-After larger than a positive MaxDelay must abort (ok == false),
-//     per the spec that we never wait longer than the cap asks.
-//   - A Retry-After within the cap is honored verbatim (clamped to >= 0), never
-//     jittered.
+//   - A positive Retry-After larger than a positive MaxDelay aborts (ok == false)
+//     only for attempt-counted policies; wall-budgeted rate limits honor the
+//     provider wait even when it exceeds MaxDelay.
+//   - A positive Retry-After within the cap is honored verbatim, never jittered.
 //   - retryDelay is deterministic given a fixed randFloat.
 func FuzzRetryDelay(f *testing.F) {
 	// math.MinInt64 in the retryAfterMs slot means "no Retry-After"; any other
@@ -85,13 +85,16 @@ func FuzzRetryDelay(f *testing.F) {
 	noRA := int64(math.MinInt64)
 	f.Add(false, 10, int32(1000), int32(60000), 2.0, true, 429, noRA, uint64(0), 0)
 	f.Add(true, 0, int32(0), int32(0), 0.0, false, 500, int64(2000), uint64(1<<52), 3)
+	// Default 429 policy honors a 120s provider wait above its 1m MaxDelay.
+	f.Add(true, 10, int32(1000), int32(60000), 2.0, true, 429, int64(120000), uint64(0), 0)
 	f.Add(false, 3, int32(100), int32(0), 10.0, false, 429, noRA, uint64(0), 40)
 	f.Add(false, 5, int32(500), int32(30000), 2.0, true, 503, int64(120000), uint64(1<<40), 2)
 	// base<0 clamp-to-zero; mult<=1 defaulting.
 	f.Add(false, 4, int32(-100), int32(0), 0.5, false, 429, noRA, uint64(0), 1)
 	// backoff exceeds MaxDelay -> cap branch.
 	f.Add(false, 6, int32(1000), int32(5000), 2.0, false, 429, noRA, uint64(0), 5)
-	// negative Retry-After -> clamp to zero.
+	// non-positive Retry-After -> calculated backoff (the zero-wait value must
+	// not collapse a wall-budgeted retry loop into a busy loop).
 	f.Add(false, 3, int32(100), int32(60000), 2.0, false, 429, int64(-50), uint64(0), 0)
 	// Retry-After exactly at the cap -> honored, not aborted.
 	f.Add(false, 3, int32(100), int32(1000), 2.0, false, 429, int64(1000), uint64(0), 0)
@@ -129,9 +132,10 @@ func FuzzRetryDelay(f *testing.F) {
 			t.Fatalf("retryDelay nondeterministic: (%v,%v) then (%v,%v)", delay, ok, delay2, ok2)
 		}
 
-		// Retry-After abort branch: a server ask longer than a positive cap
-		// must refuse to retry.
-		if retryAfter != nil && policy.MaxDelay > 0 && *retryAfter > policy.MaxDelay {
+		// Retry-After abort branch: an attempt-counted policy must refuse a
+		// positive server ask longer than its cap. Wall-budgeted rate limits
+		// deliberately honor the provider's wait above MaxDelay.
+		if retryAfter != nil && *retryAfter > 0 && policy.MaxDelay > 0 && *retryAfter > policy.MaxDelay && !policy.WallBudgetedRateLimit(err) {
 			if ok {
 				t.Fatalf("Retry-After %v > MaxDelay %v but retryDelay returned ok (delay=%v)",
 					*retryAfter, policy.MaxDelay, delay)
@@ -153,9 +157,10 @@ func FuzzRetryDelay(f *testing.F) {
 				delay, policy, n, err)
 		}
 
-		// Retry-After honored verbatim when within the cap.
-		if retryAfter != nil {
-			want := max(*retryAfter, 0)
+		// Positive Retry-After honored verbatim when within the cap. Non-positive
+		// values fall through to calculated backoff instead.
+		if retryAfter != nil && *retryAfter > 0 {
+			want := *retryAfter
 			if delay != want {
 				t.Fatalf("Retry-After within cap not honored: got %v want %v", delay, want)
 			}

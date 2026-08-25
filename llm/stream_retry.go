@@ -76,13 +76,16 @@ type RetryStreamOptions struct {
 // stream-retry control flow shared by the high-level StreamGenerate loop and the
 // agent's per-round model call, so a mid-stream truncation is retried the same
 // way on both paths instead of one path silently lacking it.
+//
+// A rate-limited failure is bounded by the policy's wall budget rather than its
+// attempt count; see [RetryPolicy.RateLimitWallBudget].
 func RetryStream(ctx context.Context, opts RetryStreamOptions, attempt StreamAttempt) error {
 	sleep := opts.Sleep
 	if sleep == nil {
 		sleep = DefaultSleep
 	}
 	maxRetries := max(opts.Policy.MaxRetries, 0)
-	start := time.Now()
+	start := opts.Policy.now()
 	// consumeStreak counts consecutive attempts whose Phase is PhaseConsume or
 	// PhaseSilentStall (the streak rule); capStreak counts the consecutive
 	// suffix of those that are also cap-shaped (the cap rule). PhaseOpen and
@@ -116,27 +119,48 @@ func RetryStream(ctx context.Context, opts RetryStreamOptions, attempt StreamAtt
 			// (FailFastAfter <= 2), the cap-shaped pair reports as "cap" rather
 			// than being subsumed by a coincident streak trip.
 			if capStreak >= 2 {
-				return &ProviderUnhealthyError{Shape: "cap", Attempts: n + 1, Elapsed: time.Since(start), LastErr: err}
+				return &ProviderUnhealthyError{Shape: "cap", Attempts: n + 1, Elapsed: opts.Policy.now().Sub(start), LastErr: err}
 			}
 			if consumeStreak >= opts.FailFastAfter {
-				return &ProviderUnhealthyError{Shape: "stall", Attempts: n + 1, Elapsed: time.Since(start), LastErr: err}
+				return &ProviderUnhealthyError{Shape: "stall", Attempts: n + 1, Elapsed: opts.Policy.now().Sub(start), LastErr: err}
 			}
 		}
 		if rep.PartialOutput && !opts.RetryAfterPartial {
 			return err
 		}
-		if !retryableError(err) || n == maxRetries {
+		if !retryableError(err) {
+			return err
+		}
+		if opts.Policy.WallBudgetedRateLimit(err) {
+			if !opts.Policy.rateLimitBudgetRemains(err, start) {
+				return err
+			}
+		} else if n >= maxRetries {
 			return err
 		}
 		delay, ok := retryDelay(opts.Policy, rand.Float64, err, n)
 		if !ok {
 			return err
 		}
+		if opts.Policy.WallBudgetedRateLimit(err) {
+			remaining := opts.Policy.RateLimitWallBudget - opts.Policy.now().Sub(start)
+			if remaining <= 0 {
+				return err
+			}
+			if delay > remaining {
+				// Wait only to the wall-budget boundary; do not start another
+				// attempt after the policy has expired.
+				delay = remaining
+			}
+		}
 		if opts.Policy.OnRetry != nil {
 			opts.Policy.OnRetry(err, n+1, delay)
 		}
 		if sleepErr := sleep(ctx, delay); sleepErr != nil {
 			return sleepErr
+		}
+		if opts.Policy.WallBudgetedRateLimit(err) && !opts.Policy.rateLimitBudgetRemains(err, start) {
+			return err
 		}
 		// Discard partial output before re-running so the next attempt replaces
 		// what the failed one already streamed.

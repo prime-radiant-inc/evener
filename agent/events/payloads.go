@@ -98,7 +98,10 @@ type AssistantTextResetData struct{}
 // until the current retry group has a consume-phase failure, then the
 // early-stop bound the streak rule will actually enforce. Rendering
 // MaxAttempts once that has happened promises retries the early-stop rule
-// won't spend. GroupElapsedMS is wall-clock time since the retry group's
+// won't spend. Both are zero when the failure is a rate limit the policy
+// retries against a wall-clock budget instead of an attempt count; consumers
+// should render the bare attempt number in that case. GroupElapsedMS is
+// wall-clock time since the retry group's
 // first attempt (one model call, spanning every retry within it), so a
 // client can render how long the current call has been running rather than
 // just an attempt count.
