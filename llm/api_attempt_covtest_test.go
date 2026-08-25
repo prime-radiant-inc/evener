@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net/http"
+	"reflect"
 	"testing"
 	"time"
 
@@ -13,7 +14,7 @@ import (
 // TestCovAPIAttemptContextActiveNilContext covers the nil-ctx early return
 // in APIAttemptContextActive (line 104-105).
 func TestCovAPIAttemptContextActiveNilContext(t *testing.T) {
-	if APIAttemptContextActive(context.TODO()) {
+	if APIAttemptContextActive(nil) {
 		t.Fatal("APIAttemptContextActive(nil) = true, want false")
 	}
 }
@@ -37,9 +38,9 @@ func TestCovAPIAttemptContextActivePartialContext(t *testing.T) {
 // TestCovCredentialMaterialInactiveAttempt covers the !Active() early return
 // in CredentialMaterial (line 158-159).
 func TestCovCredentialMaterialInactiveAttempt(t *testing.T) {
-	a := &APIAttempt{}
+	a := &APIAttempt{meta: APIAttemptMeta{CredentialMaterial: NewAPILogCredentialMaterial([]string{"X-Key"}, nil, "secret")}}
 	got := a.CredentialMaterial()
-	if len(got.HeaderNames) != 0 || len(got.Values) != 0 {
+	if !reflect.DeepEqual(got, APILogCredentialMaterial{}) {
 		t.Fatalf("inactive CredentialMaterial = %+v, want empty", got)
 	}
 }
@@ -47,21 +48,22 @@ func TestCovCredentialMaterialInactiveAttempt(t *testing.T) {
 // TestCovSetRequestBodyInactiveAttempt covers the !Active() early return in
 // SetRequestBody (line 169-170).
 func TestCovSetRequestBodyInactiveAttempt(t *testing.T) {
-	a := &APIAttempt{}
+	wantBody := []byte("original")
+	a := &APIAttempt{meta: APIAttemptMeta{RequestBody: append([]byte(nil), wantBody...), RequestBodyInexact: true}}
 	a.SetRequestBody([]byte("body"), true)
-	// No panic — the inert attempt stays inert.
-	if a.Active() {
-		t.Fatal("inert attempt became active after SetRequestBody")
+	if !reflect.DeepEqual(a.meta.RequestBody, wantBody) || !a.meta.RequestBodyInexact {
+		t.Fatalf("inactive SetRequestBody mutated metadata to body %q, inexact %v", a.meta.RequestBody, a.meta.RequestBodyInexact)
 	}
 }
 
 // TestCovMergeCredentialMaterialInactiveAttempt covers the !Active() early
 // return in MergeCredentialMaterial (line 181-182).
 func TestCovMergeCredentialMaterialInactiveAttempt(t *testing.T) {
-	a := &APIAttempt{}
+	want := NewAPILogCredentialMaterial([]string{"X-Original"}, nil, "original-secret")
+	a := &APIAttempt{meta: APIAttemptMeta{CredentialMaterial: want}}
 	a.MergeCredentialMaterial(NewAPILogCredentialMaterial(nil, nil, "secret"))
-	if a.Active() {
-		t.Fatal("inert attempt became active after MergeCredentialMaterial")
+	if !reflect.DeepEqual(a.meta.CredentialMaterial, want) {
+		t.Fatalf("inactive MergeCredentialMaterial mutated metadata to %+v, want %+v", a.meta.CredentialMaterial, want)
 	}
 }
 
@@ -86,23 +88,32 @@ func TestCovCompleteNilReceiver(t *testing.T) {
 // (line 262-263). This needs a group but no sink bound.
 func TestCovCompleteNilSink(t *testing.T) {
 	group := NewAPIAttemptGroup("ag_nil_sink_complete")
+	sink := &recordingAPIAttemptSink{}
+	ctx := WithAPIAttemptSink(context.Background(), sink)
 	// Manually construct an attempt with a group but nil sink.
 	a := &APIAttempt{
 		group: group,
-		ctx:   context.Background(),
+		ctx:   ctx,
 		meta:  testAPIAttemptMeta(time.Unix(1_700_000_000, 0).UTC()),
 		id:    "test-id",
 		index: 1,
 	}
 	group.pendingAttempts.Add(1)
 	a.Complete(testAPIAttemptResult(time.Unix(1_700_000_000, 0).UTC().Add(time.Millisecond), apilog.AttemptSuccess, nil))
-	// No panic, nothing appended.
+	group.Settle(ctx, apilog.AttemptSuccess)
+	attempts, settlements, _ := sink.snapshot()
+	if len(attempts) != 0 {
+		t.Fatalf("attempt count = %d, want 0 for nil attempt sink", len(attempts))
+	}
+	if len(settlements) != 1 || settlements[0].AttemptGroupID != group.ID || settlements[0].FinalAttemptCount != 0 || settlements[0].Outcome != apilog.AttemptSuccess {
+		t.Fatalf("settlements = %+v, want one successful zero-attempt settlement for %q", settlements, group.ID)
+	}
 }
 
 // TestCovAPIAttemptGroupFromContextNilContext covers the nil-ctx path
 // (line 309-310).
 func TestCovAPIAttemptGroupFromContextNilContext(t *testing.T) {
-	if got := apiAttemptGroupFromContext(context.TODO()); got != nil {
+	if got := apiAttemptGroupFromContext(nil); got != nil {
 		t.Fatalf("apiAttemptGroupFromContext(nil) = %v, want nil", got)
 	}
 }
@@ -110,7 +121,7 @@ func TestCovAPIAttemptGroupFromContextNilContext(t *testing.T) {
 // TestCovAPILogCredentialMaterialFromContextNilContext covers the nil-ctx
 // path in apiLogCredentialMaterialFromContext (line 378-379).
 func TestCovAPILogCredentialMaterialFromContextNilContext(t *testing.T) {
-	_, ok := apiLogCredentialMaterialFromContext(context.TODO())
+	_, ok := apiLogCredentialMaterialFromContext(nil)
 	if ok {
 		t.Fatal("apiLogCredentialMaterialFromContext(nil) should report false")
 	}
@@ -125,6 +136,9 @@ func TestCovSanitizedObservedAPILogErrorAPILogFailureWasObserved(t *testing.T) {
 	// sanitizeAPILogError returns sanitizedAPILogError (not observed).
 	plainErr := errors.New("boom")
 	result := sanitizeAPILogError(plainErr, APILogCredentialMaterial{})
+	if result.Error() != plainErr.Error() {
+		t.Fatalf("sanitized plain error = %q, want %q", result, plainErr)
+	}
 	var observed apiLogObservedFailure
 	if errors.As(result, &observed) {
 		t.Fatalf("plain error should not be observed: %T", result)
@@ -136,6 +150,9 @@ func TestCovSanitizedObservedAPILogErrorAPILogFailureWasObserved(t *testing.T) {
 	result2 := sanitizeAPILogError(observedErr, APILogCredentialMaterial{})
 	if !errors.As(result2, &observed) {
 		t.Fatalf("observed error should stay observed after sanitize: %T", result2)
+	}
+	if result2.Error() != "observed" {
+		t.Fatalf("sanitized observed error = %q, want observed", result2)
 	}
 	// Call the method directly to cover line 333.
 	observed.apiLogFailureWasObserved()
@@ -152,11 +169,9 @@ func TestCovCloneCredentialFreeHTTPHeaderCredentialBearing(t *testing.T) {
 		"X-Secret": []string{"bearer secret-value"},
 	}
 	cloned := cloneCredentialFreeHTTPHeader(header, material.patterns, material.secretNames)
-	if _, ok := cloned["X-Secret"]; ok {
-		t.Fatal("credential-bearing header should be excluded")
-	}
-	if v := cloned["X-Safe"]; len(v) != 1 || v[0] != "ok" {
-		t.Fatalf("safe header = %v, want [ok]", v)
+	want := apilog.EncodedHeader{"X-Safe": []string{"ok"}}
+	if !reflect.DeepEqual(cloned, want) {
+		t.Fatalf("credential-free headers = %#v, want %#v", cloned, want)
 	}
 }
 
@@ -171,11 +186,9 @@ func TestCovCloneCredentialFreeHTTPHeaderCredentialNameEvidence(t *testing.T) {
 		"X-secret-header": []string{"value"},
 	}
 	cloned := cloneCredentialFreeHTTPHeader(header, material.patterns, material.secretNames)
-	if _, ok := cloned["X-secret-header"]; ok {
-		t.Fatal("header with credential evidence in name should be excluded")
-	}
-	if v := cloned["X-Safe"]; len(v) != 1 || v[0] != "ok" {
-		t.Fatalf("safe header = %v, want [ok]", v)
+	want := apilog.EncodedHeader{"X-Safe": []string{"ok"}}
+	if !reflect.DeepEqual(cloned, want) {
+		t.Fatalf("credential-free headers = %#v, want %#v", cloned, want)
 	}
 }
 

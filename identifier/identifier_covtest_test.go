@@ -1,10 +1,13 @@
 package identifier
 
 import (
+	"errors"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"testing"
+
+	"github.com/google/uuid"
 )
 
 // This file closes coverage gaps in the identifier package. Two uncovered
@@ -112,8 +115,11 @@ func TestCovGitBinaryMainRootLocal_WorktreeCandidateHit(t *testing.T) {
 // or the character lookup (line 55) before the BitLen check.
 func TestCovDecodeUUID_Overflow128Bit(t *testing.T) {
 	payload := "zzzzzzzzzzzzzzzzzzzzzz" // 22 'z' chars, decodes to 62^22-1 (131 bits)
-	_, err := DecodeUUID(payload)
-	if err == nil {
-		t.Fatal("expected error for 22-char base62 payload exceeding 128 bits")
+	got, err := DecodeUUID(payload)
+	if !errors.Is(err, errInvalidUUIDPayload) {
+		t.Fatalf("DecodeUUID overflow error = %v, want errInvalidUUIDPayload", err)
+	}
+	if got != uuid.Nil {
+		t.Fatalf("DecodeUUID overflow value = %v, want zero UUID", got)
 	}
 }

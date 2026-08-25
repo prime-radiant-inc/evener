@@ -2,7 +2,9 @@ package llm
 
 import (
 	"net/http"
+	"reflect"
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -44,17 +46,9 @@ func TestCovStructuredCredentialHeaderValuesCookieDecoded(t *testing.T) {
 	// Cookie value with percent-encoded content: session=%41%42
 	// After trimming quotes (none), decoded = "AB" which differs from "%41%42".
 	values := structuredCredentialHeaderValues("Cookie", "session=%41%42")
-	found := map[string]bool{}
-	for _, v := range values {
-		found[v] = true
-	}
-	// The decoded form "AB" should be present.
-	if !found["AB"] {
-		t.Fatalf("expected decoded value 'AB' in %v", values)
-	}
-	// The raw percent-encoded form should also be present.
-	if !found["%41%42"] {
-		t.Fatalf("expected raw value '%%41%%42' in %v", values)
+	want := []string{"%41%42", "AB"}
+	if !reflect.DeepEqual(values, want) {
+		t.Fatalf("structured cookie values = %q, want %q", values, want)
 	}
 }
 
@@ -66,11 +60,13 @@ func TestCovSanitizeRequestForAPILogHostCredential(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Host = "secret-host"
+	req.Header.Set("X-Safe", "kept")
 	// Mark "Host" as a credential header name.
 	material := NewAPILogCredentialMaterial([]string{"Host"}, nil, "secret-host")
-	_, headers := SanitizeRequestForAPILog(req, material)
-	if _, ok := headers["Host"]; ok {
-		t.Fatal("Host header should be excluded when it is a credential")
+	endpoint, headers := SanitizeRequestForAPILog(req, material)
+	wantHeaders := map[string][]string{"X-Safe": {"kept"}}
+	if endpoint != "https://provider.test" || !reflect.DeepEqual(headers, wantHeaders) {
+		t.Fatalf("sanitized request = (%q, %#v), want (%q, %#v)", endpoint, headers, "https://provider.test", wantHeaders)
 	}
 }
 
@@ -83,11 +79,14 @@ func TestCovSanitizeRequestForAPILogHostInHeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	req.Host = "wire.provider.test"
+	req.Header.Set("X-Safe", "kept")
 	// Set a different value in req.Header["Host"] to distinguish it from req.Host.
 	req.Header["Host"] = []string{"should-be-skipped"}
-	_, headers := SanitizeRequestForAPILog(req, APILogCredentialMaterial{})
-	if h := headers["Host"]; len(h) != 1 || h[0] == "should-be-skipped" {
-		t.Fatalf("Host from req.Header should be skipped, got %v", h)
+	endpoint, headers := SanitizeRequestForAPILog(req, APILogCredentialMaterial{})
+	wantHeaders := map[string][]string{"Host": {"wire.provider.test"}, "X-Safe": {"kept"}}
+	if endpoint != "https://provider.test" || !reflect.DeepEqual(headers, wantHeaders) {
+		t.Fatalf("sanitized request = (%q, %#v), want (%q, %#v)", endpoint, headers, "https://provider.test", wantHeaders)
 	}
 }
 
@@ -99,40 +98,27 @@ func TestCovSanitizeRequestForAPILogHostCredentialValue(t *testing.T) {
 		t.Fatal(err)
 	}
 	req.Host = "contains-secret-value"
+	req.Header.Set("X-Safe", "kept")
 	// The host value itself contains a credential value.
 	material := NewAPILogCredentialMaterial(nil, nil, "secret-value")
-	_, headers := SanitizeRequestForAPILog(req, material)
-	if _, ok := headers["Host"]; ok {
-		t.Fatal("Host header should be excluded when its value contains credential evidence")
-	}
-}
-
-// TestCovContainsCredentialDurableStringEvidencePartsJSONMarshalError
-// covers the err != nil path in
-// containsCredentialDurableStringEvidenceParts (api_attempt_sanitize.go
-// line 323-324). json.Marshal of a string always succeeds in Go, so this
-// path is effectively unreachable.
-func TestCovContainsCredentialDurableStringEvidencePartsJSONMarshalError(t *testing.T) {
-	// json.Marshal(string) always returns nil error in Go. The err != nil
-	// check is a defensive guard that cannot be triggered with a plain
-	// string. This test exercises the function with a non-matching value
-	// to cover the encoded path.
-	got := containsCredentialDurableStringEvidenceParts("hello", nil, nil)
-	if got {
-		t.Fatal("plain string with no patterns should not contain credential evidence")
+	endpoint, headers := SanitizeRequestForAPILog(req, material)
+	wantHeaders := map[string][]string{"X-Safe": {"kept"}}
+	if endpoint != "https://provider.test" || !reflect.DeepEqual(headers, wantHeaders) {
+		t.Fatalf("sanitized request = (%q, %#v), want (%q, %#v)", endpoint, headers, "https://provider.test", wantHeaders)
 	}
 }
 
 // TestCovContainsCredentialDurableStringEvidencePartsEncodedMatch covers
 // the path where the JSON-encoded inner string matches a pattern.
 func TestCovContainsCredentialDurableStringEvidencePartsEncodedMatch(t *testing.T) {
-	// A value containing a backslash will be JSON-encoded with an escaped
-	// backslash. The inner string between quotes will differ from the
-	// original. Test that we detect a pattern in the encoded form.
-	// Pattern "secret" should match in the raw string.
-	got := containsCredentialDurableStringEvidenceParts("has secret here", nil, []string{"secret"})
+	raw := "line one\nline two"
+	encodedPattern := `\n`
+	if strings.Contains(raw, encodedPattern) {
+		t.Fatal("fixture raw text already contains the JSON-encoded pattern")
+	}
+	got := containsCredentialDurableStringEvidenceParts(raw, []string{encodedPattern}, nil)
 	if !got {
-		t.Fatal("expected credential evidence in 'has secret here'")
+		t.Fatalf("expected credential evidence for encoded pattern %q in %q", encodedPattern, raw)
 	}
 }
 

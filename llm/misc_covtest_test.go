@@ -1,6 +1,7 @@
 package llm
 
 import (
+	"bytes"
 	"errors"
 	"image"
 	"image/color"
@@ -8,6 +9,7 @@ import (
 	"image/jpeg"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 // TestCovDeclaredKindResponseHeaderTimeout covers the declaredKind method
@@ -83,8 +85,12 @@ func TestCovTruncateForMessageInvalidUTF8(t *testing.T) {
 	// 0xC3 but not 0xA9, producing invalid UTF-8.
 	s := ascii + "é" + strings.Repeat("y", 100)
 	got := truncateForMessage(s)
-	if !strings.HasSuffix(got, "…") {
-		t.Fatalf("truncateForMessage should end with ellipsis, got %q", got[len(got)-10:])
+	want := ascii + "…"
+	if got != want {
+		t.Fatalf("truncateForMessage result length = %d and suffix %q, want exact valid prefix plus ellipsis", len(got), got[len(got)-10:])
+	}
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncateForMessage returned invalid UTF-8: %q", got[len(got)-10:])
 	}
 }
 
@@ -95,11 +101,15 @@ func TestCovRasterMediaTypeGIFFullDecodeError(t *testing.T) {
 	// A truncated multi-frame GIF can achieve this: the first frame decodes
 	// but the second is incomplete.
 	corrupted := createCorruptedMultiFrameGIF(t)
-	_, err := RasterMediaType(corrupted)
-	if err == nil {
-		// On some implementations, a truncated GIF may still decode. The
-		// important thing is we exercise the gif.DecodeAll path.
-		return
+	if _, format, err := image.Decode(bytes.NewReader(corrupted)); err != nil || format != "gif" {
+		t.Fatalf("fixture header decode = format %q, error %v; want gif success", format, err)
+	}
+	if _, err := gif.DecodeAll(bytes.NewReader(corrupted)); err == nil {
+		t.Fatal("fixture unexpectedly passed full GIF decode")
+	}
+	got, err := RasterMediaType(corrupted)
+	if err == nil || got != "" {
+		t.Fatalf("RasterMediaType(corrupted GIF) = (%q, %v), want empty type and decode error", got, err)
 	}
 }
 
@@ -114,13 +124,6 @@ func TestCovRasterMediaTypeJPEG(t *testing.T) {
 	if got != "image/jpeg" {
 		t.Fatalf("RasterMediaType(jpeg) = %q, want image/jpeg", got)
 	}
-}
-
-// TestCovRasterMediaTypeUnsupportedFormat covers the default case in
-// RasterMediaType (media_utils.go line 93). This is effectively unreachable
-// because all registered image formats are handled by the switch.
-func TestCovRasterMediaTypeUnsupportedFormat(t *testing.T) {
-	t.Skip("default case in RasterMediaType is unreachable: all registered image formats are handled by the switch")
 }
 
 // TestCovAPITimeoutSourceForSSENonTimeout covers the non-sseReadTimeoutError
@@ -203,14 +206,14 @@ func TestCovJSONInt64Unknown(t *testing.T) {
 func createCorruptedMultiFrameGIF(t *testing.T) []byte {
 	t.Helper()
 	img := image.NewPaletted(image.Rect(0, 0, 1, 1), color.Palette{color.Black})
-	var buf strings.Builder
+	var buf bytes.Buffer
 	if err := gif.EncodeAll(&buf, &gif.GIF{
 		Image: []*image.Paletted{img, img},
 		Delay: []int{0, 0},
 	}); err != nil {
 		t.Fatal(err)
 	}
-	data := []byte(buf.String())
+	data := buf.Bytes()
 	// Truncate the data to make DecodeAll fail after the first frame.
 	if len(data) > 30 {
 		data = data[:len(data)-5]
@@ -223,9 +226,9 @@ func createMinimalJPEG(t *testing.T) []byte {
 	t.Helper()
 	img := image.NewRGBA(image.Rect(0, 0, 1, 1))
 	img.Set(0, 0, color.RGBA{R: 255, G: 0, B: 0, A: 255})
-	var buf strings.Builder
+	var buf bytes.Buffer
 	if err := jpeg.Encode(&buf, img, &jpeg.Options{Quality: 50}); err != nil {
 		t.Fatal(err)
 	}
-	return []byte(buf.String())
+	return buf.Bytes()
 }
