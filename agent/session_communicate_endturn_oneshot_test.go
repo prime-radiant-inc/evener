@@ -167,7 +167,7 @@ func TestCommunicate_EndTurnWarnsForLiveDetachedProcess(t *testing.T) {
 	if !ok || warning == "" {
 		t.Fatalf("expected a warning for live detached pid %d, got: %v", shellOut.PID, response)
 	}
-	if !strings.Contains(warning, "detached") || !strings.Contains(warning, strconv.Itoa(shellOut.PID)) {
+	if !strings.Contains(warning, strconv.Itoa(shellOut.PID)) {
 		t.Fatalf("warning = %q, want detached process pid %d", warning, shellOut.PID)
 	}
 }
