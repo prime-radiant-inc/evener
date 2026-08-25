@@ -208,7 +208,10 @@ func FuzzSessionToolRoundTailCoverage(f *testing.F) {
 			s.state = SessionProcessing
 			s.comm = communicateResult{}
 			s.mu.Unlock()
-			done, _ := s.deliverIfCommunicated(context.Background(), true)
+			done, _, err := s.deliverIfCommunicated(context.Background(), true)
+			if err != nil {
+				t.Fatalf("deliver ask boundary: %v", err)
+			}
 			if !done || s.State() != SessionAwaiting {
 				t.Fatalf("ask boundary = done %v state %v", done, s.State())
 			}
@@ -227,7 +230,10 @@ func FuzzSessionToolRoundTailCoverage(f *testing.F) {
 			s.state = SessionProcessing
 			s.comm = communicateResult{called: true, reply: "reply"}
 			s.mu.Unlock()
-			done, _ = s.deliverIfCommunicated(context.Background(), false)
+			done, _, err = s.deliverIfCommunicated(context.Background(), false)
+			if err != nil {
+				t.Fatalf("deliver blocked communicate: %v", err)
+			}
 			if done || len(hookAdapter.Requests()) != 1 {
 				t.Fatalf("blocked stop hook = done %v requests %d", done, len(hookAdapter.Requests()))
 			}

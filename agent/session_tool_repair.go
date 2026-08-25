@@ -3,6 +3,7 @@ package agent
 import (
 	"encoding/json"
 	"errors"
+	"fmt"
 	"strings"
 
 	jsonschema "github.com/santhosh-tekuri/jsonschema/v5"
@@ -60,6 +61,10 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 			}
 		}
 	}
+	if errText := unsupportedDelegateWaitOption(call.Name, args); errText != "" {
+		res.PrevalErr = errText
+		return res
+	}
 
 	if err := rejectUnavailableDelegateSandboxControls(t.Definition.Name, t.Definition.Parameters, args); err != nil {
 		res.PrevalErr = err.Error()
@@ -91,6 +96,22 @@ func prepareToolCall(call llm.ToolCallData, t *tool.RegisteredTool, visibleNames
 		}
 	}
 	return res
+}
+
+// unsupportedDelegateWaitOption prevents argument repair from turning an
+// explicitly supplied, unsupported wait knob into an omitted field. That
+// would otherwise let the delegate handler start work while the caller still
+// believes it requested a wait.
+func unsupportedDelegateWaitOption(toolName string, args map[string]any) string {
+	if toolName != "delegate" {
+		return ""
+	}
+	for _, field := range []string{"max_wait_ms", "block", "block_timeout_ms", "background"} {
+		if _, supplied := args[field]; supplied {
+			return fmt.Sprintf("invalid_request: delegate does not support %s; the option was not applied and no delegate was started", field)
+		}
+	}
+	return ""
 }
 
 // changeStrings encodes changes as "kind:field:detail" for the telemetry event.
