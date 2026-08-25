@@ -216,8 +216,31 @@ function reportCleanupFailure(error) {
   console.error(error instanceof Error ? error.message : String(error));
 }
 
-function listSystemProcesses() {
-  return execFileSync("/bin/ps", ["-axo", "pid=,pgid=,command="], { encoding: "utf8" });
+export function filterCrashpadProcessTable(processList) {
+  return processList
+    .split("\n")
+    .filter((line) => {
+      const match = line.match(/^\s*\d+\s+\d+\s+(.+)$/);
+      return match && /(?:^|\/)chrome_crashpad_handler(?:\s|$)/.test(match[1]);
+    })
+    .join("\n");
+}
+
+export function listSystemProcesses({ processTable } = {}) {
+  if (processTable !== undefined) return filterCrashpadProcessTable(processTable);
+  // Stream the complete table through awk and retain only full-argv Crashpad
+  // candidates. Capturing the unfiltered table exceeds execFileSync's 1 MiB
+  // maxBuffer on a process-heavy host. Filtering the command column, rather
+  // than pgrep's comm name, also works on Linux where comm is truncated to 15
+  // bytes and would miss chrome_crashpad_handler.
+  const filter =
+    "line=$0; sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+/, \"\", line); " +
+    "if (line ~ /(^|\\/)chrome_crashpad_handler([[:space:]]|$)/) print $0";
+  return execFileSync(
+    "/bin/bash",
+    ["-o", "pipefail", "-c", `/bin/ps -axo pid=,pgid=,command= | /usr/bin/awk '${filter}'`],
+    { encoding: "utf8" },
+  );
 }
 
 function listSystemProcess(pid) {
@@ -238,7 +261,14 @@ function parseProcesses(processList) {
 }
 
 function commandMatchesProfileProcess(command, databaseArg) {
-  if (!/(?:^|\/)chrome_crashpad_handler(?:\s|$)/.test(command)) return false;
+  const handler = command.match(/(?:^|\/)chrome_crashpad_handler(?=\s|$)/);
+  if (!handler) return false;
+  // ps exposes the executable path and argv as one string, and macOS paths
+  // may contain spaces. An argument such as --arg=/chrome_crashpad_handler
+  // must not become an owned executable; Chrome's argv starts with --, so the
+  // first option is a safe boundary for this identity check.
+  const firstOption = command.search(/\s--(?:\S|$)/);
+  if (firstOption >= 0 && handler.index > firstOption) return false;
   return command.includes(`${databaseArg} `) || command.endsWith(databaseArg);
 }
 

@@ -12,6 +12,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -81,6 +82,8 @@ func TestRuntimeBuildFixtureEnvironmentDropsAmbientHarnessControls(t *testing.T)
 		"MFLAGS",
 		"EVENER_TEST_NPM_FAIL_COMMAND",
 		"EVENER_TEST_NPM_HOLD_COMMAND",
+		"EVENER_TEST_NPM_HOLD_RELEASE",
+		"EVENER_TEST_NPM_HOLD_TERM",
 		"EVENER_TEST_NPM_PID",
 		"EVENER_TEST_NPM_READY",
 		"EVENER_TEST_NPM_TRACK_COMMAND",
@@ -88,6 +91,16 @@ func TestRuntimeBuildFixtureEnvironmentDropsAmbientHarnessControls(t *testing.T)
 		"EVENER_TEST_SHELL_KILLED_REAPED",
 		"EVENER_TEST_SHELL_WAITED_REAPED",
 		"EVENER_TEST_SHELL_WAIT_RELEASE",
+		"EVENER_TEST_WEB_STARTUP_READY",
+		"EVENER_TEST_WEB_STARTUP_RELEASE",
+		"EVENER_TEST_WEB_STARTUP_PID",
+		"EVENER_TEST_WEB_PRE_WAIT_READY",
+		"EVENER_TEST_WEB_PRE_WAIT_SIGNAL",
+		"EVENER_TEST_WEB_FINISH_READY",
+		"EVENER_TEST_WEB_FINISH_SIGNAL",
+		"EVENER_TEST_WEB_CLEANUP_READY",
+		"EVENER_TEST_WEB_CLEANUP_RELEASE",
+		"EVENER_TEST_WEB_CLEANUP_PID",
 		"EVENER_TEST_NODE_HOLD_COMMAND",
 		"EVENER_TEST_NODE_FAIL_COMMAND",
 		"EVENER_TEST_NODE_PID",
@@ -754,14 +767,18 @@ func TestMakeTestWebInterruptDoesNotSignalReapedCheck(t *testing.T) {
 	waitRelease := filepath.Join(fixture.root, "wait-release")
 	killedReaped := filepath.Join(fixture.root, "killed-reaped")
 	recordingShell := filepath.Join(filepath.Dir(fixture.root), "recording-shell")
+	if err := syscall.Mkfifo(waitRelease, 0o600); err != nil {
+		t.Fatalf("make wait release FIFO: %v", err)
+	}
 	writeTestFile(t, recordingShell, []byte(`wait() {
   command wait "$@"
   wait_status=$?
   tracked_pid=$(cat "$EVENER_TEST_NPM_TRACK_PID")
   if [ "${1:-}" = "$tracked_pid" ] && [ "${reaped_gate:-0}" -eq 0 ]; then
     reaped_gate=1
+	    exec 9<> "$EVENER_TEST_SHELL_WAIT_RELEASE"
     : > "$EVENER_TEST_SHELL_WAITED_REAPED"
-    while [ ! -f "$EVENER_TEST_SHELL_WAIT_RELEASE" ]; do :; done
+	    read -r _ <&9
   fi
   return "$wait_status"
 }
@@ -811,15 +828,164 @@ kill() {
 	if err := waitForPathOrExit(waitedReaped, run, readinessTripwire); err != nil {
 		t.Fatalf("Make did not reap the completed typecheck before waiting on the held check: %v; output = %s", err, output.String())
 	}
+	release, err := os.OpenFile(waitRelease, os.O_WRONLY, 0)
+	if err != nil {
+		t.Fatalf("open wait release FIFO: %v", err)
+	}
 	if err := exec.Command("kill", "-TERM", strconv.Itoa(command.Process.Pid)).Run(); err != nil {
+		release.Close()
 		t.Fatalf("signal make test-web: %v", err)
 	}
-	writeTestFile(t, waitRelease, nil, 0o644)
+	if _, err := release.WriteString("release\n"); err != nil {
+		release.Close()
+		t.Fatalf("write wait release FIFO: %v", err)
+	}
+	if err := release.Close(); err != nil {
+		t.Fatalf("close wait release FIFO: %v", err)
+	}
 	if err := run.wait(); err == nil {
 		t.Fatalf("interrupted make test-web exited zero; output = %s", output.String())
 	}
 	if _, err := os.Stat(killedReaped); !os.IsNotExist(err) {
 		t.Fatalf("interrupt signaled a PID after its npm check was reaped: stat err = %v; output = %s", err, output.String())
+	}
+}
+
+func TestMakeTestWebInterruptDuringStartupStopsImmediately(t *testing.T) {
+	for _, signal := range []string{"TERM", "INT"} {
+		t.Run(signal, func(t *testing.T) {
+			fixture := newBuildWebFixture(t)
+			frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
+			writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+			writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+			npmReadyPath := filepath.Join(fixture.root, "held-typecheck.ready")
+			npmPIDPath := filepath.Join(fixture.root, "held-typecheck.pid")
+			npmReleasePath := filepath.Join(fixture.root, "held-typecheck.release")
+			npmTermPath := filepath.Join(fixture.root, "held-typecheck.term")
+			startupReadyPath := filepath.Join(fixture.root, "startup.ready")
+			if err := syscall.Mkfifo(npmReleasePath, 0o600); err != nil {
+				t.Fatalf("make held-child release FIFO: %v", err)
+			}
+
+			command := exec.Command("make", "test-web")
+			command.Dir = fixture.root
+			command.Env = append(fixture.environment(""),
+				"EVENER_TEST_NPM_HOLD_COMMAND=run typecheck",
+				"EVENER_TEST_NPM_READY="+npmReadyPath,
+				"EVENER_TEST_NPM_PID="+npmPIDPath,
+				"EVENER_TEST_NPM_HOLD_RELEASE="+npmReleasePath,
+				"EVENER_TEST_NPM_HOLD_TERM="+npmTermPath,
+				"EVENER_TEST_WEB_PRE_WAIT_READY="+startupReadyPath,
+				"EVENER_TEST_WEB_PRE_WAIT_SIGNAL="+signal,
+			)
+			var output bytes.Buffer
+			command.Stdout = &output
+			command.Stderr = &output
+			if err := command.Start(); err != nil {
+				t.Fatalf("start make test-web: %v", err)
+			}
+			run := startChild(command)
+			if err := waitForPathOrExit(npmReadyPath, run, readinessTripwire); err != nil {
+				t.Fatalf("held first check did not become ready: %v; output = %s", err, output.String())
+			}
+			childRelease, err := os.OpenFile(npmReleasePath, os.O_RDWR, 0)
+			if err != nil {
+				t.Fatalf("open held-child release FIFO: %v", err)
+			}
+			t.Cleanup(func() {
+				_, _ = childRelease.WriteString("cleanup\n")
+				_ = childRelease.Close()
+				if command.ProcessState == nil {
+					_ = command.Process.Kill()
+					<-run.done
+				}
+			})
+			if err := waitForPathOrExit(npmTermPath, run, 2*time.Second); err != nil {
+				t.Fatalf("startup %s did not synchronously terminate held first check: %v; output = %s", signal, err, output.String())
+			}
+			if err := run.wait(); err == nil {
+				t.Fatalf("startup %s exited zero; output = %s", signal, output.String())
+			} else if !strings.Contains(output.String(), "Error "+map[string]string{"TERM": "143", "INT": "130"}[signal]) {
+				t.Fatalf("startup %s did not preserve signal status; output = %s", signal, output.String())
+			}
+		})
+	}
+}
+
+func TestMakeTestWebInterruptDuringExitCleanupPreservesStatus(t *testing.T) {
+	for _, signal := range []string{"TERM", "INT"} {
+		t.Run(signal, func(t *testing.T) {
+			fixture := newBuildWebFixture(t)
+			frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
+			writeTestFile(t, filepath.Join(frontendDir, "package-lock.json"), []byte("{}\n"), 0o644)
+			writeTestFile(t, filepath.Join(frontendDir, "package.json"), []byte("{}\n"), 0o644)
+			readyPath := filepath.Join(fixture.root, "cleanup.ready")
+			releasePath := filepath.Join(fixture.root, "cleanup.release")
+			pidPath := filepath.Join(fixture.root, "cleanup.pid")
+			bashEnv := filepath.Join(fixture.root, "cleanup-shell")
+			if err := syscall.Mkfifo(releasePath, 0o600); err != nil {
+				t.Fatalf("make cleanup release FIFO: %v", err)
+			}
+			writeTestFile(t, bashEnv, []byte(`rm() {
+	case "$0" in *test-web.sh) ;; *) command rm "$@"; return ;; esac
+	printf '%s\n' "$$" > "$EVENER_TEST_WEB_CLEANUP_PID"
+	: > "$EVENER_TEST_WEB_CLEANUP_READY"
+	exec 9<> "$EVENER_TEST_WEB_CLEANUP_RELEASE"
+	while :; do read -r _ <&9 && break; done
+	command rm "$@"
+}
+`), 0o644)
+
+			command := exec.Command("make", "test-web")
+			command.Dir = fixture.root
+			command.Env = append(fixture.environment(""),
+				"BASH_ENV="+bashEnv,
+				"EVENER_TEST_WEB_CLEANUP_READY="+readyPath,
+				"EVENER_TEST_WEB_CLEANUP_RELEASE="+releasePath,
+				"EVENER_TEST_WEB_CLEANUP_PID="+pidPath,
+			)
+			var output bytes.Buffer
+			command.Stdout = &output
+			command.Stderr = &output
+			if err := command.Start(); err != nil {
+				t.Fatalf("start make test-web: %v", err)
+			}
+			run := startChild(command)
+			if err := waitForPathOrExit(readyPath, run, 2*time.Second); err != nil {
+				t.Fatalf("cleanup %s did not reach the signal point: %v; output = %s", signal, err, output.String())
+			}
+			release, err := os.OpenFile(releasePath, os.O_RDWR, 0)
+			if err != nil {
+				t.Fatalf("open cleanup release FIFO: %v", err)
+			}
+			pidData, err := os.ReadFile(pidPath)
+			if err != nil {
+				release.Close()
+				t.Fatalf("read cleanup shell pid: %v", err)
+			}
+			webPID := strings.TrimSpace(string(pidData))
+			t.Cleanup(func() {
+				_, _ = release.WriteString("cleanup\n")
+				_ = release.Close()
+				if command.ProcessState == nil {
+					_ = command.Process.Kill()
+					<-run.done
+				}
+			})
+			if err := exec.Command("kill", "-"+signal, webPID).Run(); err != nil {
+				t.Fatalf("signal cleanup shell: %v", err)
+			}
+			_, _ = release.WriteString("release\n")
+			_ = release.Close()
+			if err := run.wait(); err == nil {
+				t.Fatalf("cleanup %s exited zero; output = %s", signal, output.String())
+			} else if !strings.Contains(output.String(), "Error "+map[string]string{"TERM": "143", "INT": "130"}[signal]) {
+				t.Fatalf("cleanup %s did not preserve signal status; output = %s", signal, output.String())
+			}
+			if !strings.Contains(output.String(), "full logs: ") {
+				t.Fatalf("cleanup %s did not retain evidence after the signal: output = %s", signal, output.String())
+			}
+		})
 	}
 }
 
@@ -970,7 +1136,17 @@ fi
 [ "${EVENER_TEST_NPM_HOLD_COMMAND:-}" != "$*" ] || {
   printf '%s\n' "$$" > "$EVENER_TEST_NPM_PID"
   : > "$EVENER_TEST_NPM_READY"
-  exec sleep 1000
+  if [ -n "${EVENER_TEST_NPM_HOLD_RELEASE:-}" ]; then
+    on_term() {
+      : > "$EVENER_TEST_NPM_HOLD_TERM"
+      exit 143
+    }
+    trap on_term TERM INT
+    exec 9<> "$EVENER_TEST_NPM_HOLD_RELEASE"
+    while :; do read -r _ <&9 && break; done
+  else
+    exec sleep 1000
+  fi
 }
 [ "${EVENER_TEST_NPM_TRACK_COMMAND:-}" != "$*" ] || printf '%s\n' "$$" > "$EVENER_TEST_NPM_TRACK_PID"
 [ "${EVENER_TEST_NPM_FAIL_COMMAND:-}" = "$*" ] && exit 17
@@ -1230,8 +1406,13 @@ func (fixture runtimeBuildFixture) environment(failPackage string) []string {
 			"GNUMAKEFLAGS", "MAKEFLAGS", "MAKELEVEL", "MFLAGS",
 			"EVENER_TEST_GO_LOG", "EVENER_TEST_GO_FAIL_PACKAGE",
 			"EVENER_TEST_NPM_FAIL_COMMAND", "EVENER_TEST_NPM_HOLD_COMMAND", "EVENER_TEST_NPM_PID", "EVENER_TEST_NPM_READY",
+			"EVENER_TEST_NPM_HOLD_RELEASE", "EVENER_TEST_NPM_HOLD_TERM",
 			"EVENER_TEST_NPM_TRACK_COMMAND", "EVENER_TEST_NPM_TRACK_PID", "EVENER_TEST_SHELL_KILLED_REAPED", "EVENER_TEST_SHELL_WAITED_REAPED",
 			"EVENER_TEST_SHELL_WAIT_RELEASE",
+			"EVENER_TEST_WEB_STARTUP_READY", "EVENER_TEST_WEB_STARTUP_RELEASE", "EVENER_TEST_WEB_STARTUP_PID",
+			"EVENER_TEST_WEB_PRE_WAIT_READY", "EVENER_TEST_WEB_PRE_WAIT_SIGNAL",
+			"EVENER_TEST_WEB_FINISH_READY", "EVENER_TEST_WEB_FINISH_SIGNAL",
+			"EVENER_TEST_WEB_CLEANUP_READY", "EVENER_TEST_WEB_CLEANUP_RELEASE", "EVENER_TEST_WEB_CLEANUP_PID",
 			"EVENER_TEST_NODE_HOLD_COMMAND", "EVENER_TEST_NODE_FAIL_COMMAND", "EVENER_TEST_NODE_PID", "EVENER_TEST_NODE_READY", "EVENER_TEST_NODE_TERM", "EVENER_TEST_NODE_RELEASE", "EVENER_TEST_NODE_READY_FD":
 			continue
 		}

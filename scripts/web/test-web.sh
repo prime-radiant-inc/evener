@@ -18,6 +18,7 @@ cd "$script_dir/../../cmd/evener-hub/frontend" || exit 1
 
 dir=""
 active_pids=(); started=(); fail=0; complete=0; interrupt_status=0
+defer_signals=0; stopping=0; finishing=0
 
 forget_pid() {
 	local pid="$1" candidate
@@ -56,22 +57,49 @@ stop_checks() {
 
 finish() {
 	finish_status=$?
+	finishing=1
 	if [ "$interrupt_status" -ne 0 ]; then
 		finish_status="$interrupt_status"
+		interrupt_status=0
 	fi
 	[ "$complete" -eq 1 ] || stop_checks
 	if [ "$complete" -eq 1 ] && [ "$fail" -eq 0 ] && [ "$finish_status" -eq 0 ]; then
 		scratch_rm || finish_status=1
+		if [ -n "${EVENER_TEST_WEB_FINISH_SIGNAL:-}" ]; then
+			[ -z "${EVENER_TEST_WEB_FINISH_READY:-}" ] || : >"$EVENER_TEST_WEB_FINISH_READY"
+			kill -"$EVENER_TEST_WEB_FINISH_SIGNAL" "$$"
+		fi
 	else
 		[ -z "$dir" ] || printf 'full logs: %s\n' "$dir" >&2
 	fi
+	finishing=0
+	consume_interrupt
 	trap - 0; exit "$finish_status"
 }
 
-interrupted() { interrupt_status="$1"; }
+consume_interrupt() {
+	local status="$interrupt_status"
+	[ "$status" -eq 0 ] || interrupted "$status"
+}
 
-handle_interrupt() {
-	[ "$interrupt_status" -eq 0 ] || { stop_checks; exit "$interrupt_status"; }
+interrupted() {
+	local status="$1"
+	if [ "$defer_signals" -eq 1 ]; then
+		interrupt_status="$status"
+		return
+	fi
+	if [ "$stopping" -eq 1 ]; then
+		return
+	fi
+	stopping=1
+	stop_checks
+	stopping=0
+	if [ "$finishing" -eq 1 ]; then
+		[ -z "$dir" ] || printf 'full logs: %s\n' "$dir" >&2
+		trap - 0
+		exit "$status"
+	fi
+	exit "$status"
 }
 
 # The trap is armed before any scratch exists: a crash between mint and arming
@@ -84,13 +112,22 @@ scratch_dir dir evener-test-web
 for c in typecheck test lint; do
 	check_dir="$dir/$c"
 	if ! mkdir -p "$check_dir/home" "$check_dir/tmp" "$check_dir/xdg-config" "$check_dir/xdg-cache" "$check_dir/xdg-state"; then fail=1; break; fi
+	defer_signals=1
 	HOME="$check_dir/home" TMPDIR="$check_dir/tmp" XDG_CONFIG_HOME="$check_dir/xdg-config" XDG_CACHE_HOME="$check_dir/xdg-cache" XDG_STATE_HOME="$check_dir/xdg-state" NODE_DISABLE_COMPILE_CACHE=1 npm run "$c" >"$dir/$c.log" 2>&1 &
 	active_pids+=("$!"); started+=("$c")
+	defer_signals=0
+	consume_interrupt
 done
+
+if [ -n "${EVENER_TEST_WEB_PRE_WAIT_SIGNAL:-}" ]; then
+	[ -z "${EVENER_TEST_WEB_PRE_WAIT_READY:-}" ] || : >"$EVENER_TEST_WEB_PRE_WAIT_READY"
+	kill -"$EVENER_TEST_WEB_PRE_WAIT_SIGNAL" "$$"
+fi
 
 for i in "${!started[@]}"; do
 	c="${started[$i]}"
 	pid="${active_pids[0]}"
+	defer_signals=1
 	if wait "$pid"; then check_status=0; else check_status=$?; fi
 	# A signal can interrupt wait before its child is reaped. When that
 	# happens, the trap only records the signal and the job remains owned until
@@ -101,7 +138,8 @@ for i in "${!started[@]}"; do
 		forget_pid "$pid"
 	fi
 	printf '%s\n' "$check_status" >"$dir/$c.status"
-	handle_interrupt
+	defer_signals=0
+	consume_interrupt
 done
 
 for c in typecheck test lint; do
