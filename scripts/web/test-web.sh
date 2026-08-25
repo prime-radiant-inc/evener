@@ -17,16 +17,48 @@ script_dir="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd -P)"
 cd "$script_dir/../../cmd/evener-hub/frontend" || exit 1
 
 dir=""
-pids=""; started=""; fail=0; complete=0
+active_pids=(); started=(); fail=0; complete=0; interrupt_status=0
+
+forget_pid() {
+	local pid="$1" candidate
+	local -a remaining=()
+	for candidate in "${active_pids[@]-}"; do
+		[ -n "$candidate" ] || continue
+		[ "$candidate" = "$pid" ] || remaining+=("$candidate")
+	done
+	active_pids=()
+	for candidate in "${remaining[@]-}"; do
+		[ -n "$candidate" ] && active_pids+=("$candidate")
+	done
+}
+
+owned_job_is_running() {
+	local pid="$1" candidate
+	for candidate in $(jobs -pr); do
+		[ "$candidate" = "$pid" ] && return 0
+	done
+	return 1
+}
 
 stop_checks() {
-	for pid in $pids; do kill -TERM "$pid" 2>/dev/null || :; done
-	for pid in $pids; do wait "$pid" 2>/dev/null || :; done
-	pids=""
+	local pid
+	for pid in "${active_pids[@]-}"; do
+		[ -n "$pid" ] || continue
+		owned_job_is_running "$pid" || continue
+		kill -TERM "$pid" 2>/dev/null || :
+	done
+	for pid in "${active_pids[@]-}"; do
+		[ -n "$pid" ] || continue
+		wait "$pid" 2>/dev/null || :
+	done
+	active_pids=()
 }
 
 finish() {
 	finish_status=$?
+	if [ "$interrupt_status" -ne 0 ]; then
+		finish_status="$interrupt_status"
+	fi
 	[ "$complete" -eq 1 ] || stop_checks
 	if [ "$complete" -eq 1 ] && [ "$fail" -eq 0 ] && [ "$finish_status" -eq 0 ]; then
 		scratch_rm || finish_status=1
@@ -36,7 +68,11 @@ finish() {
 	trap - 0; exit "$finish_status"
 }
 
-interrupted() { stop_checks; exit "$1"; }
+interrupted() { interrupt_status="$1"; }
+
+handle_interrupt() {
+	[ "$interrupt_status" -eq 0 ] || { stop_checks; exit "$interrupt_status"; }
+}
 
 # The trap is armed before any scratch exists: a crash between mint and arming
 # would leak the directory (the trap-before-mkdir ordering the audit enforces).
@@ -49,15 +85,23 @@ for c in typecheck test lint; do
 	check_dir="$dir/$c"
 	if ! mkdir -p "$check_dir/home" "$check_dir/tmp" "$check_dir/xdg-config" "$check_dir/xdg-cache" "$check_dir/xdg-state"; then fail=1; break; fi
 	HOME="$check_dir/home" TMPDIR="$check_dir/tmp" XDG_CONFIG_HOME="$check_dir/xdg-config" XDG_CACHE_HOME="$check_dir/xdg-cache" XDG_STATE_HOME="$check_dir/xdg-state" NODE_DISABLE_COMPILE_CACHE=1 npm run "$c" >"$dir/$c.log" 2>&1 &
-	pids="$pids $!"; started="$started $c"
+	active_pids+=("$!"); started+=("$c")
 done
 
-set -- $pids
-for c in $started; do
-	pid=$1; shift
+for i in "${!started[@]}"; do
+	c="${started[$i]}"
+	pid="${active_pids[0]}"
 	if wait "$pid"; then check_status=0; else check_status=$?; fi
-	pids="$*"
+	# A signal can interrupt wait before its child is reaped. When that
+	# happens, the trap only records the signal and the job remains owned until
+	# stop_checks can terminate and reap it. A completed wait removes the job
+	# from Bash's job table, which is the completion/ownership handoff and not a
+	# PID liveness guess vulnerable to reuse.
+	if [ "$interrupt_status" -eq 0 ] || ! owned_job_is_running "$pid"; then
+		forget_pid "$pid"
+	fi
 	printf '%s\n' "$check_status" >"$dir/$c.status"
+	handle_interrupt
 done
 
 for c in typecheck test lint; do
