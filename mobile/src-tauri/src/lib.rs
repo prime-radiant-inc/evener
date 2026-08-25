@@ -135,21 +135,19 @@ pub fn command_handler<R: tauri::Runtime>(
     ]
 }
 
+#[cfg(test)]
 const MOBILE_SUSPENDED_EVENT: &str = "tauri://suspended";
 
 fn install_suspended_preview_clear<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    store: std::sync::Arc<profile::ProfileStore>,
+    _app: &tauri::AppHandle<R>,
+    _store: std::sync::Arc<profile::ProfileStore>,
 ) {
-    use tauri::Listener;
     // Don't clear previews immediately on suspend. iOS shows a paste
     // permission dialog that briefly suspends the WKWebView, and the
     // resulting tauri://suspended event can fire asynchronously after
     // the app resumes — wiping a preview that was just created. The
     // 5-minute TTL (PREVIEW_TTL_SECS) is the security boundary for
     // preview secrets in native memory.
-    let _ = app;
-    let _ = store;
 }
 
 pub mod appwire_transport;
@@ -326,9 +324,6 @@ mod tests {
             .unwrap();
 
         // Preview must still exist — suspend no longer clears previews.
-        assert!(matches!(
-            store.cancel_preview(&preview.preview_id),
-            Ok(())
-        ));
+        assert!(matches!(store.cancel_preview(&preview.preview_id), Ok(())));
     }
 }
