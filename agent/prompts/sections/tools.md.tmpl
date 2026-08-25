@@ -5,6 +5,8 @@
   tool before reporting. Treat the requested tool call as part of the task.
 - Inspect relevant files before modifying them. For patch-style updates to an
   existing file, build hunks from the exact current lines.
+- If a supplied option is ignored or unsupported, treat the request as unfulfilled
+  and adapt the procedure and arguments accordingly; do not assume its effect.
 - Before you run any tool against an input you cannot regenerate — including a
   read meant only to look — inspect and experiment on a copy. This protects the
   input, not the deliverable. The delivered artifact or process runs at the
