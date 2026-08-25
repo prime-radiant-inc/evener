@@ -10,6 +10,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	taskpkg "primeradiant.com/evener/agent/task"
@@ -1655,27 +1656,235 @@ func TestTaskListTool_UpdateShowsAllComplete(t *testing.T) {
 	if updateRes.IsError {
 		t.Fatalf("update error: %s", updateRes.Output)
 	}
-	if !strings.Contains(updateRes.Output, "All tasks complete") {
-		t.Fatalf("response should say 'All tasks complete': %s", updateRes.Output)
+	assertTaskListDone(t, sess)
+	completion := singleTaskCompletionLLMPayload(t, sess)
+	if completion.CompletionState != "ready_for_final_output" {
+		t.Fatalf("completion state = %q, want ready_for_final_output", completion.CompletionState)
+	}
+	if len(completion.BlockingDelegateIDs) != 0 {
+		t.Fatalf("blocking delegate IDs = %v, want none", completion.BlockingDelegateIDs)
+	}
+}
+
+func TestTaskListTool_UpdateNamesBlockingDelegateDependency(t *testing.T) {
+	root, fixture, entered, release := newBlockingColdDelegateRuntime(t)
+
+	outcomes := make(chan stableDelegateSendOutcome, 1)
+	go func() {
+		outcomes <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "resolve the open question", 60_000)
+	}()
+	<-entered
+
+	ctx := context.Background()
+	root.reg.ExecuteCall(ctx, root.env, llm.ToolCallData{
+		ID:   "task-append",
+		Name: "task_list",
+		Arguments: json.RawMessage(`{
+			"action": "append",
+			"tasks": [{"type": "research", "description": "Finish the answer", "prompt": "Finish it"}]
+		}`),
+	})
+	updateRes := root.reg.ExecuteCall(ctx, root.env, llm.ToolCallData{
+		ID:        "task-done",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "done"}]}`),
+	})
+	if updateRes.IsError {
+		t.Fatalf("update error: %s", updateRes.Output)
+	}
+	assertTaskListDone(t, root)
+	if got := root.delegateController.blockingDelegateIDs(root.delegateRootSessionID, root.owningDelegateID); !reflect.DeepEqual(got, []string{fixture.delegateID}) {
+		t.Fatalf("live blocking delegate IDs = %v, want [%s]", got, fixture.delegateID)
+	}
+	completion := singleTaskCompletionLLMPayload(t, root)
+	if completion.CompletionState != "waiting_for_blocking_delegates" {
+		t.Fatalf("completion state = %q, want waiting_for_blocking_delegates", completion.CompletionState)
+	}
+	if !reflect.DeepEqual(completion.BlockingDelegateIDs, []string{fixture.delegateID}) {
+		t.Fatalf("model completion payload = %+v, want blocking delegate %s", completion, fixture.delegateID)
 	}
 
-	// Steering should be a SYSTEM-REMINDER so models treat it like other task steering.
+	close(release)
+	outcome := <-outcomes
+	if outcome.result.Err != nil || outcome.result.Status != "completed" || outcome.commit == nil {
+		t.Fatalf("blocking delegate outcome = %#v", outcome.result)
+	}
+	abortUnpersistedStableDelegateOutcome(t, outcome)
+}
+
+func TestTaskListTool_UpdateLeavesBackgroundDelegateOutOfDependencyReminder(t *testing.T) {
+	root, fixture, entered, release := newBlockingColdDelegateRuntime(t)
+
+	outcomes := make(chan stableDelegateSendOutcome, 1)
+	go func() {
+		outcomes <- (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "resolve in background", 0)
+	}()
+	<-entered
+
+	ctx := context.Background()
+	root.reg.ExecuteCall(ctx, root.env, llm.ToolCallData{
+		ID:   "task-append",
+		Name: "task_list",
+		Arguments: json.RawMessage(`{
+			"action": "append",
+			"tasks": [{"type": "research", "description": "Finish the answer", "prompt": "Finish it"}]
+		}`),
+	})
+	updateRes := root.reg.ExecuteCall(ctx, root.env, llm.ToolCallData{
+		ID:        "task-done",
+		Name:      "task_list",
+		Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "done"}]}`),
+	})
+	if updateRes.IsError {
+		t.Fatalf("update error: %s", updateRes.Output)
+	}
+	assertTaskListDone(t, root)
+	if got := root.delegateController.blockingDelegateIDs(root.delegateRootSessionID, root.owningDelegateID); len(got) != 0 {
+		t.Fatalf("live blocking delegate IDs = %v, want none", got)
+	}
+	completion := singleTaskCompletionLLMPayload(t, root)
+	if completion.CompletionState != "ready_for_final_output" || len(completion.BlockingDelegateIDs) != 0 {
+		t.Fatalf("model completion payload = %+v, want ready with no blocking delegates", completion)
+	}
+
+	close(release)
+	outcome := <-outcomes
+	if outcome.result.Err != nil || outcome.result.Action != "started" {
+		t.Fatalf("background delegate outcome = %#v", outcome.result)
+	}
+}
+
+func TestTaskListTool_UpdateIgnoresTerminalDelegates(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		failed bool
+	}{
+		{name: "completed"},
+		{name: "failed", failed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			fixture := newColdStableDelegateFixture(t, "")
+			if tc.failed {
+				fixture.client.Register(&fakeErrAdapter{
+					name: "openai",
+					steps: []func(llm.Request) (llm.Response, error){
+						func(llm.Request) (llm.Response, error) {
+							return llm.Response{}, llm.ErrorFromHTTPStatus("openai", 403, "scripted delegate failure", nil, nil)
+						},
+					},
+				})
+			} else {
+				fixture.adapter.steps = []func(llm.Request) llm.Response{
+					func(llm.Request) llm.Response { return communicateResponse(true, "done") },
+				}
+			}
+			root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+			if err != nil {
+				t.Fatalf("restore root: %v", err)
+			}
+			defer root.Close()
+
+			outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "resolve terminally", 60_000)
+			if outcome.result.Err != nil {
+				t.Fatalf("terminal delegate error: %v", outcome.result.Err)
+			}
+			wantStatus := "completed"
+			if tc.failed {
+				wantStatus = "failed"
+			}
+			if got := string(outcome.result.Status); got != wantStatus {
+				t.Fatalf("terminal delegate status = %q, want %q", got, wantStatus)
+			}
+			abortUnpersistedStableDelegateOutcome(t, outcome)
+
+			ctx := context.Background()
+			root.reg.ExecuteCall(ctx, root.env, llm.ToolCallData{
+				ID:   "task-append",
+				Name: "task_list",
+				Arguments: json.RawMessage(`{
+					"action": "append",
+					"tasks": [{"type": "research", "description": "Finish the answer", "prompt": "Finish it"}]
+				}`),
+			})
+			updateRes := root.reg.ExecuteCall(ctx, root.env, llm.ToolCallData{
+				ID:        "task-done",
+				Name:      "task_list",
+				Arguments: json.RawMessage(`{"action": "update", "updates": [{"id": 1, "status": "done"}]}`),
+			})
+			if updateRes.IsError {
+				t.Fatalf("update error: %s", updateRes.Output)
+			}
+			assertTaskListDone(t, root)
+			if got := root.delegateController.blockingDelegateIDs(root.delegateRootSessionID, root.owningDelegateID); len(got) != 0 {
+				t.Fatalf("live blocking delegate IDs = %v, want none", got)
+			}
+			completion := singleTaskCompletionLLMPayload(t, root)
+			if completion.CompletionState != "ready_for_final_output" || len(completion.BlockingDelegateIDs) != 0 {
+				t.Fatalf("model completion payload = %+v, want ready with no blocking delegates", completion)
+			}
+		})
+	}
+}
+
+func assertTaskListDone(t *testing.T, sess *Session) {
+	t.Helper()
+	tasks := sess.getOrCreateTaskStore().View()
+	if len(tasks) != 1 || tasks[0].Status != taskpkg.TaskDone {
+		t.Fatalf("task list = %v, want one done task", tasks)
+	}
+}
+
+type taskCompletionLLMPayload struct {
+	CompletionState     string   `json:"completion_state"`
+	BlockingDelegateIDs []string `json:"blocking_delegate_ids"`
+}
+
+func singleTaskCompletionLLMPayload(t *testing.T, sess *Session) taskCompletionLLMPayload {
+	t.Helper()
 	sess.mu.Lock()
-	queue := make([]string, 0, len(sess.steeringQueue))
-	for _, m := range sess.steeringQueue {
-		queue = append(queue, m.Text)
+	var matches []steeringMessage
+	for _, message := range sess.steeringQueue {
+		if message.Kind == events.SteeringKindTasksDone {
+			matches = append(matches, message)
+		}
 	}
 	sess.mu.Unlock()
-	if len(queue) == 0 {
-		t.Fatal("expected steering message after all tasks complete, got none")
+	if len(matches) != 1 {
+		t.Fatalf("tasks-done steering count = %d, want 1", len(matches))
 	}
-	last := queue[len(queue)-1]
-	if !strings.Contains(last, "<SYSTEM-REMINDER>") {
-		t.Fatalf("all-done steering should be wrapped in <SYSTEM-REMINDER>: %s", last)
+	return parseTaskCompletionLLMPayload(t, steeringMessageToLLM(matches[0]))
+}
+
+func parseTaskCompletionLLMPayload(t *testing.T, message llm.Message) taskCompletionLLMPayload {
+	t.Helper()
+	const (
+		start = "<evener-task-completion>"
+		end   = "</evener-task-completion>"
+	)
+	text := message.Text()
+	if strings.Count(text, start) != 1 || strings.Count(text, end) != 1 {
+		t.Fatalf("model-consumed tasks-done message has no unique machine payload")
 	}
-	if !strings.Contains(last, "completed all tasks") {
-		t.Fatalf("all-done steering should say 'completed all tasks': %s", last)
+	jsonStart := strings.Index(text, start) + len(start)
+	jsonEnd := strings.Index(text[jsonStart:], end)
+	if jsonEnd < 0 {
+		t.Fatal("model-consumed tasks-done message has an unterminated machine payload")
 	}
+	raw := text[jsonStart : jsonStart+jsonEnd]
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &fields); err != nil {
+		t.Fatalf("decode model-consumed task completion payload: %v", err)
+	}
+	for _, field := range []string{"completion_state", "blocking_delegate_ids"} {
+		if _, ok := fields[field]; !ok {
+			t.Fatalf("model-consumed task completion payload missing machine field %q", field)
+		}
+	}
+	var payload taskCompletionLLMPayload
+	if err := json.Unmarshal([]byte(raw), &payload); err != nil {
+		t.Fatalf("decode typed model-consumed task completion payload: %v", err)
+	}
+	return payload
 }
 
 func TestTaskListTool_UpdateStaysMinimalWhenBlocked(t *testing.T) {
