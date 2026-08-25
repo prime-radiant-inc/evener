@@ -305,12 +305,19 @@ test("Copy preserves the original ANSI-bearing text exactly", async () => {
 });
 
 // The language/copy corner control is a floating pill, not a header band -
-// it sits on the hover-wash fill (matching other floating chrome) and draws
-// no border of its own.
-test("the language/copy header is a fill with no border", () => {
+// at rest it carries no background of its own (the copy icon reads as bare
+// chrome); the hover wash appears only on hover/focus, and it draws no border
+// of its own.
+test("the language/copy header has no resting fill and gains the hover wash on hover, with no border", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = stripCssComments(readFileSync(join(here, "codeblock.module.css"), "utf8"));
   const rule = /\.header\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
-  expect(rule).toContain("background: var(--hover-1)");
+  // At rest the header is transparent - no persistent background pill behind
+  // the corner copy icon (matching usermessageitem.module.css's .actions).
+  expect(rule).toContain("background: transparent");
+  expect(rule).not.toContain("--hover-1");
+  // The hover wash moves to a .root:hover .header / .header:focus-within rule,
+  // so the block hover (not a resting fill) is what brings the surface forward.
+  expect(css).toMatch(/\.root:hover\s+\.header/);
   expect(rule).not.toContain("border-bottom");
 });
