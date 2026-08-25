@@ -260,8 +260,8 @@ func TestDelegateCallResponseReportsSelectedAgentCapabilities(t *testing.T) {
 	if !slices.Equal(state.Tools, wantTools) {
 		t.Fatalf("delegate result tools = %v, want registry-derived %v", state.Tools, wantTools)
 	}
-	if state.Sandbox != nil {
-		t.Fatalf("delegate result sandbox = %#v, want inherited unsandboxed metadata", state.Sandbox)
+	if state.Sandbox == nil || state.Sandbox.Mode != "read-only" || !state.Sandbox.Network {
+		t.Fatalf("delegate result sandbox = %#v, want effective read-only sandbox with network", state.Sandbox)
 	}
 }
 
