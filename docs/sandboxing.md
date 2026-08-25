@@ -21,6 +21,24 @@ command line (or a resumed session's persisted config), never from a tool call.
 Sandboxing is opt-in on purpose. The default stays off so existing workflows are
 unchanged; turn it on when you want a session's blast radius contained.
 
+There is one deliberate delegate safety floor: a delegate whose structured tool
+scope contains no workspace-mutation tool (`write_file`, `edit_file`,
+`apply_patch`, or `manage_worktree`) receives a private `read-only` sandbox even
+when its parent session is off. This covers roles such as exploration and review
+whose shell is intended for inspection; the kernel wrapper confines that shell
+and every descendant, while the delegate's own session scratch remains writable.
+A parent already running `restricted` keeps that narrower read scope and applies
+the same write block without widening reads. A role with an explicit mutation
+tool follows the normal delegate floor. An explicit delegate `sandbox` argument
+does **not** bypass the structured read-only floor: `read-only` is accepted when
+it is also compatible with the parent's boundary, while `off`,
+`workspace-write`, and ordinary `restricted` are rejected because they permit
+persistent workspace writes. A net-only request is applied to the mandatory
+write-blocked policy and may only preserve or tighten the parent's network
+boundary. The same structured scope and sandbox policy are revalidated before
+a stable delegate is restored, and a write-blocked delegate cannot relax that
+inherited floor for its own descendants.
+
 ## Flags
 
 | Flag | Values | Default | Meaning |

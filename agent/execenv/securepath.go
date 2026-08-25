@@ -87,6 +87,23 @@ func newSandboxFS(p *sandbox.ResolvedPolicy, scratchDir string) *sandboxFS {
 	return &sandboxFS{policy: policy, rootFds: map[string]int{}}
 }
 
+// newScratchSandboxFS builds the narrow fd-anchored layer used by an
+// unsandboxed environment for its already-provisioned session scratch root.
+// The ordinary sandbox policy cannot be used here: ModeOff intentionally keeps
+// the workspace's existing byte-for-byte behavior, while this one root still
+// needs the same no-symlink, race-safe write primitive as an enforced grant.
+func newScratchSandboxFS(root string) *sandboxFS {
+	policy := &sandbox.ResolvedPolicy{
+		Mode: sandbox.ModeRestricted,
+		FileTool: sandbox.AccessScope{
+			Read:       sandbox.ReadWorktreeOnly,
+			ReadRoots:  []string{root},
+			WriteRoots: []string{root},
+		},
+	}
+	return newSandboxFS(policy, "")
+}
+
 // Denial reasons. The masked/protected reasons drive audit-log redaction to a
 // <denied> token (the basename of a secret path is itself sensitive); the others
 // redact to a basename.

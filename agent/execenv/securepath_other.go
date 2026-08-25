@@ -75,6 +75,6 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 	return nil, 0, errSandboxUnsupported()
 }
 
-func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
+func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
 	return "", errSandboxUnsupported()
 }

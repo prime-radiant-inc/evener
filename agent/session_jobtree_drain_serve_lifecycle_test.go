@@ -97,7 +97,12 @@ func TestServeDrainAbandonsARealStopPendingDelegate(t *testing.T) {
 	d.releaseKick(t)
 	d.assertParked(t, "serve drain should initially wait on the real stopped delegate")
 
-	clk.Advance(DrainStallTimeout + time.Second)
+	clk.Advance(DrainStallTimeout)
+	d.recheck <- time.Time{}
+	d.releaseKick(t)
+	d.assertParked(t, "first interactive grace window must not abandon the real stopped delegate")
+
+	clk.Advance(DrainStallTimeout + time.Nanosecond)
 	d.recheck <- time.Time{}
 	d.releaseKick(t)
 	<-d.done

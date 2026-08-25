@@ -99,6 +99,7 @@ type Descriptor struct {
 
 type SandboxSnapshot struct {
 	Mode               string   `json:"mode"`
+	WriteBlocked       bool     `json:"write_blocked,omitempty"`
 	Network            *bool    `json:"network,omitempty"`
 	DenylistAdd        []string `json:"denylist_add,omitempty"`
 	DenylistRemove     []string `json:"denylist_remove,omitempty"`
