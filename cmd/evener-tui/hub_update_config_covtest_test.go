@@ -495,12 +495,14 @@ func TestCovHandleLaunchSettingsEditRequest(t *testing.T) {
 func TestCovHandleTextInputResult(t *testing.T) {
 	var apiKey appwire.AuthApiKeySetParams
 	var login appwire.AuthLoginCompleteParams
+	loginCalls := 0
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthApiKeySet, func(_ context.Context, params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
 			apiKey = params
 			return appwire.AuthStatusResponse{Provider: params.Provider, SignedIn: true}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthLoginComplete, func(_ context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
+			loginCalls++
 			login = params
 			return appwire.AuthLoginCompleteResponse{Status: appwire.AuthStatusResponse{Provider: params.Provider, SignedIn: true}}, nil
 		})
@@ -566,15 +568,32 @@ func TestCovHandleTextInputResult(t *testing.T) {
 		t.Fatal("cmd should not be nil for oauth-redirect with valid value and client")
 	}
 	loginResult, ok := cmd().(launchconfig.AuthLoginCompleteResultMsg)
-	if !ok || loginResult.Err != nil || !loginResult.Status.SignedIn || login.Provider != "openai" || login.FlowID != "flow1" || login.RedirectURL != "http://redirect" {
+	if !ok || loginResult.Err != nil || !loginResult.Status.SignedIn || login.Provider != "openai" || login.FlowID != "flow1" || login.RedirectURL != "http://redirect" || loginCalls != 1 {
 		t.Fatalf("oauth-complete result = %#v, params = %#v", loginResult, login)
 	}
 
 	// oauth-redirect: malformed tag (no second colon).
 	m = newHubModel(client, "http://hub.test")
 	m.followupModal = &tuipick.TextInputModal{}
-	_, _ = m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "oauth-redirect:malformed", Value: "http://redirect"})
-	// followupModal is cleared even when parts is too short.
+	unchangedErr := errors.New("preserve unrelated state")
+	m.err = unchangedErr
+	m.authLoginProvider = "unchanged-provider"
+	m.authLoginFlowID = "unchanged-flow"
+	beforeLoginCalls := loginCalls
+	got, cmd = m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "oauth-redirect:malformed", Value: "http://redirect"})
+	after := got.(hubModel)
+	if cmd != nil {
+		t.Fatalf("malformed oauth redirect returned command %v", cmd)
+	}
+	if after.followupModal != nil {
+		t.Fatal("malformed oauth redirect did not clear followupModal")
+	}
+	if loginCalls != beforeLoginCalls {
+		t.Fatalf("malformed oauth redirect made %d auth requests, want none", loginCalls-beforeLoginCalls)
+	}
+	if !errors.Is(after.err, unchangedErr) || after.authLoginProvider != "unchanged-provider" || after.authLoginFlowID != "unchanged-flow" {
+		t.Fatalf("malformed oauth redirect changed unrelated state: err=%v provider=%q flow=%q", after.err, after.authLoginProvider, after.authLoginFlowID)
+	}
 
 	// launch-override: cancelled.
 	m = hubModel{session: newModel(nil), followupModal: &tuipick.TextInputModal{}}
@@ -588,7 +607,7 @@ func TestCovHandleTextInputResult(t *testing.T) {
 	modal := launchconfig.NewLaunchOverridesModal()
 	m.launchOverridesModal = &modal
 	got, _ = m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "launch-override:model", Value: "newmodel"})
-	after := got.(hubModel)
+	after = got.(hubModel)
 	if after.followupModal != nil {
 		t.Fatal("followupModal should be cleared")
 	}

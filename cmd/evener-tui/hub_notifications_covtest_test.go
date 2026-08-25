@@ -68,6 +68,7 @@ func TestCovRemovePendingByID(t *testing.T) {
 // TestCovRefreshPluginsPanel exercises plugin panel refresh.
 func TestCovRefreshPluginsPanel(t *testing.T) {
 	var calls []string
+	var browseParams appwire.MarketplaceBrowseParams
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
 			calls = append(calls, appwire.MethodEvenerMarketplaceList)
@@ -77,15 +78,43 @@ func TestCovRefreshPluginsPanel(t *testing.T) {
 			calls = append(calls, appwire.MethodEvenerPluginList)
 			return appwire.PluginListResponse{}, nil
 		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceBrowse, func(_ context.Context, params appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, error) {
+			calls = append(calls, appwire.MethodEvenerMarketplaceBrowse)
+			browseParams = params
+			return appwire.MarketplaceBrowseResponse{
+				Name:        "official",
+				Description: "response-only catalog",
+				Plugins:     []appwire.MarketplaceCatalogPlugin{{Name: "sentinel-plugin"}},
+			}, nil
+		})
 	})
 	defer cleanup()
 	panel := launchconfig.NewPluginsPanel()
+	updated, _ := panel.Update(launchconfig.MarketplaceListResultMsg{List: appwire.MarketplaceListResponse{
+		Marketplaces: []appwire.MarketplaceEntry{{Name: "official"}},
+	}})
+	panel = updated.(launchconfig.PluginsPanel)
+	updated, _ = panel.Update(tea.KeyMsg{Type: tea.KeyRight})
+	panel = updated.(launchconfig.PluginsPanel)
+	updated, openBrowse := panel.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	panel = updated.(launchconfig.PluginsPanel)
+	if panel.BrowseMarketplace() != "official" {
+		t.Fatalf("open marketplace = %q, want official", panel.BrowseMarketplace())
+	}
+	if openBrowse == nil {
+		t.Fatal("opening marketplace did not return browse request command")
+	}
+	request, ok := openBrowse().(launchconfig.MarketplaceBrowseRequestMsg)
+	if !ok || request.Name != "official" {
+		t.Fatalf("open-browse request = %#v", request)
+	}
 	m := newHubModel(client, "http://hub.test")
 	m.pluginsPanel = &panel
 	batch, ok := m.refreshPluginsPanel()().(tea.BatchMsg)
-	if !ok || len(batch) != 2 {
-		t.Fatalf("refresh result = %#v, want two-command batch", batch)
+	if !ok || len(batch) != 3 {
+		t.Fatalf("refresh result = %#v, want three-command batch", batch)
 	}
+	marketplaceSeen, pluginSeen, browseSeen := false, false, false
 	for _, command := range batch {
 		message := command()
 		switch result := message.(type) {
@@ -93,16 +122,29 @@ func TestCovRefreshPluginsPanel(t *testing.T) {
 			if result.Err != nil || len(result.List.Marketplaces) != 1 || result.List.Marketplaces[0].Name != "official" {
 				t.Fatalf("marketplace refresh result = %#v", result)
 			}
+			marketplaceSeen = true
 		case launchconfig.PluginListResultMsg:
 			if result.Err != nil {
 				t.Fatalf("plugin refresh result = %#v", result)
 			}
+			pluginSeen = true
+		case launchconfig.MarketplaceBrowseResultMsg:
+			if result.Err != nil || result.Name != "official" || result.Response.Description != "response-only catalog" || len(result.Response.Plugins) != 1 || result.Response.Plugins[0].Name != "sentinel-plugin" {
+				t.Fatalf("browse refresh result = %#v", result)
+			}
+			browseSeen = true
 		default:
 			t.Fatalf("refresh command returned %T", message)
 		}
 	}
-	if len(calls) != 2 || calls[0] != appwire.MethodEvenerMarketplaceList || calls[1] != appwire.MethodEvenerPluginList {
+	if !marketplaceSeen || !pluginSeen || !browseSeen {
+		t.Fatalf("refresh results seen: marketplace=%v plugin=%v browse=%v", marketplaceSeen, pluginSeen, browseSeen)
+	}
+	if len(calls) != 3 || calls[0] != appwire.MethodEvenerMarketplaceList || calls[1] != appwire.MethodEvenerPluginList || calls[2] != appwire.MethodEvenerMarketplaceBrowse {
 		t.Fatalf("refresh calls = %#v", calls)
+	}
+	if browseParams.Name != "official" {
+		t.Fatalf("browse params = %#v, want official", browseParams)
 	}
 }
 

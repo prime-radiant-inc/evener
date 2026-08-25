@@ -7,6 +7,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/clipboard"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
@@ -386,13 +387,20 @@ func TestCovMatchesAsyncSessionRef(t *testing.T) {
 func TestCovReplayKeyBurst(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.mode = hubModeDashboard
-	got, cmd := m.replayKeyBurst(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r', 'n'}})
+	m.rows = []hubRow{
+		{kind: hubRowProject, projectKey: "project", groupKey: "project", title: "Project"},
+		{kind: hubRowSession, groupKey: "project", title: "Session", live: true, state: "active"},
+	}
+	got, cmd := m.replayKeyBurst(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'j', 'j'}})
 	after := got.(hubModel)
-	if after.mode != hubModeSpawn {
-		t.Fatalf("mode = %v, want spawn after replayed n", after.mode)
+	if after.selected != 2 {
+		t.Fatalf("selection = %d, want exact two-step move from 0 to 2", after.selected)
+	}
+	if after.mode != hubModeDashboard {
+		t.Fatalf("mode = %v, want dashboard after navigation burst", after.mode)
 	}
 	if cmd != nil {
-		t.Fatal("nil-client r+n burst should not return a command")
+		t.Fatal("navigation burst should not return a command")
 	}
 }
 
@@ -608,19 +616,24 @@ func TestCovHubReadCaptureCutOn(t *testing.T) {
 	f := newHubFrameFeed()
 	c := f.BeginCapture()
 	c.CutOn(appwire.NewIntID(42))
-	before := appwire.Notification{Method: appwire.NotifyTurnStarted}
-	after := appwire.Notification{Method: appwire.NotifyTurnCompleted}
-	f.Observe(appwire.Message{Notification: &before}, nil)
+	beforeWrongResponse := appwire.Notification{Method: appwire.NotifyTurnStarted}
+	betweenResponses := appwire.Notification{Method: appwire.NotifyItemStarted}
+	postCut := appwire.Notification{Method: appwire.NotifyTurnCompleted}
+	f.Observe(appwire.Message{Notification: &beforeWrongResponse}, nil)
 	f.Observe(appwire.Message{Response: &appwire.Response{ID: appwire.NewIntID(7)}}, nil)
+	f.Observe(appwire.Message{Notification: &betweenResponses}, nil)
 	f.Observe(appwire.Message{Response: &appwire.Response{ID: appwire.NewIntID(42)}}, nil)
-	f.Observe(appwire.Message{Notification: &after}, nil)
+	f.Observe(appwire.Message{Notification: &postCut}, nil)
 	frames := c.BeforeCut()
-	if len(frames) != 1 || frames[0].Method != appwire.NotifyTurnStarted {
+	if len(frames) != 2 || frames[0].Method != appwire.NotifyTurnStarted || frames[1].Method != appwire.NotifyItemStarted {
 		t.Fatalf("before-cut frames = %#v", frames)
 	}
 	c.Release()
 	if got, ok := takeHubNotification(f); !ok || got.Method != appwire.NotifyTurnCompleted {
 		t.Fatalf("released post-cut notification = %#v, ok=%v", got, ok)
+	}
+	if got, ok := takeHubNotification(f); ok {
+		t.Fatalf("unexpected extra released notification = %#v", got)
 	}
 }
 
@@ -973,9 +986,11 @@ func TestCovFetchCurrentHubSession(t *testing.T) {
 	}
 
 	// Valid ref.
+	readCalls := 0
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-			return appwire.ThreadReadResponse{Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: params.Ref}}}, nil
+			readCalls++
+			return appwire.ThreadReadResponse{Thread: responseOnlyHubThread(params.Ref)}, nil
 		})
 	})
 	defer cleanup()
@@ -989,6 +1004,10 @@ func TestCovFetchCurrentHubSession(t *testing.T) {
 	if !ok || msg.err != nil || msg.ref != m.detail.Ref || msg.capture == nil {
 		t.Fatalf("current session result = %#v", msg)
 	}
+	assertResponseOnlyHubSession(t, msg)
+	if readCalls != 1 {
+		t.Fatalf("thread/read calls = %d, want 1", readCalls)
+	}
 	msg.capture.Release()
 }
 
@@ -1001,14 +1020,18 @@ func TestCovFetchCurrentHubStatus(t *testing.T) {
 	}
 
 	// Valid ref.
+	readCalls, taskCalls, authCalls := 0, 0, 0
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-			return appwire.ThreadReadResponse{Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: params.Ref}}}, nil
+			readCalls++
+			return appwire.ThreadReadResponse{Thread: responseOnlyHubThread(params.Ref)}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerTasksList, func(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
-			return appwire.TaskListResponse{}, nil
+			taskCalls++
+			return appwire.TaskListResponse{Data: []task.Task{{ID: 91, Description: "wrapper response task"}}}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthStatus, func(context.Context, appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
+			authCalls++
 			return appwire.AuthStatusResponse{Provider: "openai", Supported: true}, nil
 		})
 	})
@@ -1021,6 +1044,13 @@ func TestCovFetchCurrentHubStatus(t *testing.T) {
 	msg, ok := cmd().(hubStatusMsg)
 	if !ok || msg.err != nil || msg.taskErr != nil || msg.authErr != nil || !msg.auth.Supported {
 		t.Fatalf("current status result = %#v", msg)
+	}
+	assertResponseOnlyHubDetail(t, msg.detail)
+	if len(msg.tasks) != 1 || msg.tasks[0].ID != 91 || msg.tasks[0].Description != "wrapper response task" {
+		t.Fatalf("wrapper status tasks = %#v", msg.tasks)
+	}
+	if readCalls != 1 || taskCalls != 1 || authCalls != 1 {
+		t.Fatalf("wrapper handler calls: thread/read=%d tasks/list=%d auth/status=%d, want 1 each", readCalls, taskCalls, authCalls)
 	}
 }
 

@@ -4,7 +4,9 @@ import (
 	"context"
 	"testing"
 
+	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
 	"primeradiant.com/evener/internal/appserver"
 )
@@ -394,17 +396,21 @@ func TestCovSendHubAction(t *testing.T) {
 
 // TestCovFetchHubStatus exercises status fetch.
 func TestCovFetchHubStatus(t *testing.T) {
+	readCalls, taskCalls, authCalls := 0, 0, 0
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			readCalls++
 			if params.Ref != "local:01TEST" || !params.IncludeTurns || params.ItemsView != "full" {
 				t.Errorf("thread/read params = %#v", params)
 			}
-			return appwire.ThreadReadResponse{Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: params.Ref}}}, nil
+			return appwire.ThreadReadResponse{Thread: responseOnlyHubThread(params.Ref)}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerTasksList, func(ctx context.Context, p appwire.TaskListParams) (appwire.TaskListResponse, error) {
-			return appwire.TaskListResponse{}, nil
+			taskCalls++
+			return appwire.TaskListResponse{Data: []task.Task{{ID: 73, Description: "response-only task"}}}, nil
 		})
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthStatus, func(context.Context, appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
+			authCalls++
 			return appwire.AuthStatusResponse{Provider: "openai", Supported: true}, nil
 		})
 	})
@@ -413,6 +419,13 @@ func TestCovFetchHubStatus(t *testing.T) {
 	msg, ok := fetchHubStatus(client, ref)().(hubStatusMsg)
 	if !ok || msg.err != nil || msg.taskErr != nil || msg.authErr != nil || !msg.auth.Supported {
 		t.Fatalf("status result = %#v", msg)
+	}
+	assertResponseOnlyHubDetail(t, msg.detail)
+	if len(msg.tasks) != 1 || msg.tasks[0].ID != 73 || msg.tasks[0].Description != "response-only task" {
+		t.Fatalf("status tasks = %#v, want response-only task", msg.tasks)
+	}
+	if readCalls != 1 || taskCalls != 1 || authCalls != 1 {
+		t.Fatalf("handler calls: thread/read=%d tasks/list=%d auth/status=%d, want 1 each", readCalls, taskCalls, authCalls)
 	}
 }
 
@@ -523,7 +536,7 @@ func TestCovFetchHubSessionRead(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 			calls = append(calls, params)
-			return appwire.ThreadReadResponse{Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: params.Ref}}}, nil
+			return appwire.ThreadReadResponse{Thread: responseOnlyHubThread(params.Ref)}, nil
 		})
 	})
 	defer cleanup()
@@ -533,6 +546,7 @@ func TestCovFetchHubSessionRead(t *testing.T) {
 	if !ok || msg.err != nil || msg.ref != ref.String() || msg.capture == nil {
 		t.Fatalf("captured session read result = %#v", msg)
 	}
+	assertResponseOnlyHubSession(t, msg)
 	msg.capture.Release()
 
 	// Without feed (nil).
@@ -540,6 +554,7 @@ func TestCovFetchHubSessionRead(t *testing.T) {
 	if !ok || msg.err != nil || msg.expectedState != "expected" || msg.expectedRefreshToken != 1 || msg.capture != nil {
 		t.Fatalf("uncaptured session read result = %#v", msg)
 	}
+	assertResponseOnlyHubSession(t, msg)
 	if len(calls) != 2 || !calls[0].Subscribe || !calls[0].ReplaceSubscription || calls[1].Subscribe || calls[1].ReplaceSubscription {
 		t.Fatalf("thread/read calls = %#v", calls)
 	}
@@ -737,4 +752,39 @@ func containsStr(s, substr string) bool {
 		}
 	}
 	return false
+}
+
+func responseOnlyHubThread(ref string) appwire.Thread {
+	return appwire.Thread{
+		ID:        "response-thread-id",
+		SessionID: "response-session-id",
+		Name:      "Response-only title",
+		CWD:       "/response/working-dir",
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+		Turns: []appwire.Turn{{
+			ID: "response-turn-id",
+			Items: []appwire.ThreadItem{{
+				ID:     "response-item-id",
+				TurnID: "response-turn-id",
+				Type:   "userMessage",
+				Text:   "response-only user message",
+			}},
+		}},
+		Evener: appwire.EvenerThread{Ref: ref},
+	}
+}
+
+func assertResponseOnlyHubDetail(t *testing.T, detail hubSessionDetail) {
+	t.Helper()
+	if detail.SessionID != "response-session-id" || detail.Title != "Response-only title" || detail.State != appwire.ThreadStatusActive || detail.WorkingDir != "/response/working-dir" || detail.TurnCount != 1 {
+		t.Fatalf("translated response detail = %#v", detail)
+	}
+}
+
+func assertResponseOnlyHubSession(t *testing.T, msg hubSessionMsg) {
+	t.Helper()
+	assertResponseOnlyHubDetail(t, msg.detail)
+	if len(msg.messages) != 1 || msg.messages[0].Kind != transcript.MsgUser || msg.messages[0].Text != "response-only user message" || msg.messages[0].TurnID != "response-turn-id" {
+		t.Fatalf("translated response messages = %#v", msg.messages)
+	}
 }
