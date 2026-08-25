@@ -85,10 +85,10 @@ func (s *Session) delegateSandboxSchemaForEnv(env execenv.ExecutionEnvironment) 
 	if !delegateSandboxBackendAvailable(host) {
 		return tool.DelegateSandboxSchema{Available: false}
 	}
-	parentMode, parentNetwork := parentSandboxModeNetForEnv(env)
+	parentMode, parentNetwork, parentWriteBlocked := parentSandboxFloorForEnv(env)
 	modes := make([]string, 0, len(sandbox.AllModes()))
 	for _, mode := range sandbox.AllModes() {
-		if mode.AtLeastAsConfining(parentMode) {
+		if delegateSandboxModeAllowed(mode, parentMode, parentNetwork, parentWriteBlocked) {
 			modes = append(modes, mode.String())
 		}
 	}
@@ -181,11 +181,11 @@ func (s *Session) parentSandboxModeNet() (sandbox.Mode, bool) {
 	return mode, network
 }
 
-func parentSandboxModeNetForEnv(env execenv.ExecutionEnvironment) (sandbox.Mode, bool) {
+func parentSandboxFloorForEnv(env execenv.ExecutionEnvironment) (sandbox.Mode, bool, bool) {
 	if le, ok := env.(*execenv.LocalExecutionEnvironment); ok && le.Sandbox != nil && le.Sandbox.Enforced() {
-		return le.Sandbox.Mode, le.Sandbox.Network
+		return le.Sandbox.Mode, le.Sandbox.Network, le.Sandbox.WriteBlocked
 	}
-	return sandbox.ModeOff, true
+	return sandbox.ModeOff, true, false
 }
 
 // parentSandboxFloor returns every enforced parent axis that a child must not
@@ -193,10 +193,7 @@ func parentSandboxModeNetForEnv(env execenv.ExecutionEnvironment) (sandbox.Mode,
 // keeps ModeRestricted's narrow reads while removing its ordinary workspace
 // writes.
 func (s *Session) parentSandboxFloor() (sandbox.Mode, bool, bool) {
-	if le, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok && le.Sandbox != nil && le.Sandbox.Enforced() {
-		return le.Sandbox.Mode, le.Sandbox.Network, le.Sandbox.WriteBlocked
-	}
-	return sandbox.ModeOff, true, false
+	return parentSandboxFloorForEnv(s.currentEnv())
 }
 
 // readOnlyDelegateSandbox returns the enforced box for a structured read-only
@@ -264,6 +261,10 @@ func delegateSandboxBlocksPersistentWrites(policy *sandbox.SandboxPolicy) bool {
 // explicit write-capable mode is contradictory and fails before admission.
 func (s *Session) applyParentWriteBlockedFloor(sandboxMode string, policy *sandbox.SandboxPolicy) (*sandbox.SandboxPolicy, error) {
 	_, _, parentWriteBlocked := s.parentSandboxFloor()
+	return applyWriteBlockedFloor(parentWriteBlocked, sandboxMode, policy)
+}
+
+func applyWriteBlockedFloor(parentWriteBlocked bool, sandboxMode string, policy *sandbox.SandboxPolicy) (*sandbox.SandboxPolicy, error) {
 	if !parentWriteBlocked {
 		return policy, nil
 	}
@@ -278,6 +279,19 @@ func (s *Session) applyParentWriteBlockedFloor(sandboxMode string, policy *sandb
 		return nil, fmt.Errorf("invalid_request: sandbox %q permits persistent workspace writes that the parent sandbox forbids", strings.TrimSpace(sandboxMode))
 	}
 	return policy, nil
+}
+
+// delegateSandboxModeAllowed applies the same explicit-request validation used by
+// createDelegate, including the separate parent WriteBlocked floor. Keeping the
+// schema predicate on that path prevents it from advertising a mode that create
+// will reject after provider validation.
+func delegateSandboxModeAllowed(mode sandbox.Mode, parentMode sandbox.Mode, parentNetwork, parentWriteBlocked bool) bool {
+	policy, err := buildDelegateSandboxPolicy(mode.String(), nil, parentMode, parentNetwork)
+	if err != nil {
+		return false
+	}
+	_, err = applyWriteBlockedFloor(parentWriteBlocked, mode.String(), policy)
+	return err == nil
 }
 
 // restoreDelegateSandboxFloor validates and, for a legacy descriptor with no
