@@ -108,6 +108,146 @@ describe("prototype reducer", () => {
     expect(next.projection.fixture.sessions).toEqual([]);
   });
 
+  it("always rebuilds scenarios and reset from the immutable unprojected source", () => {
+    const baseline = initial();
+    expect(Object.isFrozen(baseline.sourceFixture)).toBe(true);
+    expect(Object.isFrozen(baseline.sourceFixture.sessions)).toBe(true);
+
+    const empty = reducePrototype(baseline, {
+      type: "setScenario",
+      scenario: "empty",
+    });
+    const restored = reducePrototype(empty, {
+      type: "setScenario",
+      scenario: "baseline",
+    });
+    expect(restored.projection.fixture).toEqual(canonicalFixture);
+
+    const offline = reducePrototype(restored, {
+      type: "setScenario",
+      scenario: "offline",
+    });
+    expect(offline.projection.fixture.sessions[0]?.updatedLabel).toBe(
+      `stale · ${canonicalFixture.sessions[0]?.updatedLabel}`,
+    );
+    expect(
+      reducePrototype(offline, { type: "setScenario", scenario: "offline" }),
+    ).toBe(offline);
+
+    const online = reducePrototype(offline, {
+      type: "setScenario",
+      scenario: "baseline",
+    });
+    expect(online.projection.fixture.sessions).toEqual(
+      canonicalFixture.sessions,
+    );
+    expect(online.projection.fixture.hubs).toEqual(canonicalFixture.hubs);
+
+    const reset = reducePrototype(empty, { type: "reset" });
+    expect(reset.projection.fixture).toEqual(canonicalFixture);
+    expect(reset.sourceFixture).toBe(baseline.sourceFixture);
+  });
+
+  it("treats root tabs as depth-zero replacement destinations", () => {
+    const root = initial();
+    expect(
+      reducePrototype(root, { type: "navigateRoot", tab: "sessions" }),
+    ).toBe(root);
+
+    const conversation = reducePrototype(root, {
+      type: "openSession",
+      sessionId: "session-native-client",
+      focusItemId: "item-assistant-plan",
+    });
+    const search = reducePrototype(conversation, {
+      type: "navigateRoot",
+      tab: "search",
+    });
+    expect(search).toMatchObject({
+      route: { kind: "root", tab: "search" },
+      history: [],
+      selectedSessionId: null,
+      focusedItemId: null,
+    });
+    expect(
+      reducePrototype(search, { type: "navigateRoot", tab: "search" }),
+    ).toBe(search);
+  });
+
+  it("keeps route, selected session, and focus synchronized through every push and pop", () => {
+    const root = initial();
+    const conversationA = reducePrototype(root, {
+      type: "openSession",
+      sessionId: "session-native-client",
+      focusItemId: "item-assistant-plan",
+    });
+    expect(conversationA).toMatchObject({
+      selectedSessionId: "session-native-client",
+      focusedItemId: "item-assistant-plan",
+    });
+
+    const workB = reducePrototype(conversationA, {
+      type: "openWork",
+      sessionId: "session-pairing-review",
+    });
+    expect(workB).toMatchObject({
+      route: { kind: "work", sessionId: "session-pairing-review" },
+      selectedSessionId: "session-pairing-review",
+      focusedItemId: null,
+    });
+
+    const voiceB = reducePrototype(workB, {
+      type: "openVoice",
+      sessionId: "session-pairing-review",
+    });
+    expect(voiceB).toMatchObject({
+      route: { kind: "voice", sessionId: "session-pairing-review" },
+      selectedSessionId: "session-pairing-review",
+      focusedItemId: null,
+    });
+
+    const backToWork = reducePrototype(voiceB, { type: "goBack" });
+    expect(backToWork).toMatchObject({
+      route: { kind: "work", sessionId: "session-pairing-review" },
+      selectedSessionId: "session-pairing-review",
+      focusedItemId: null,
+    });
+    const backToConversation = reducePrototype(backToWork, { type: "goBack" });
+    expect(backToConversation).toMatchObject({
+      route: {
+        kind: "conversation",
+        sessionId: "session-native-client",
+        focusItemId: "item-assistant-plan",
+      },
+      selectedSessionId: "session-native-client",
+      focusedItemId: "item-assistant-plan",
+    });
+    const backToRoot = reducePrototype(backToConversation, { type: "goBack" });
+    expect(backToRoot).toMatchObject({
+      route: { kind: "root", tab: "sessions" },
+      history: [],
+      selectedSessionId: null,
+      focusedItemId: null,
+    });
+  });
+
+  it("rejects missing destination references and invalid conversation focus", () => {
+    const state = initial();
+    for (const action of [
+      { type: "openSession", sessionId: "missing" },
+      {
+        type: "openSession",
+        sessionId: "session-native-client",
+        focusItemId: "missing",
+      },
+      { type: "openWork", sessionId: "missing" },
+      { type: "openVoice", sessionId: "missing" },
+      { type: "openSearchResult", resultId: "missing" },
+    ] as const) {
+      expect(reducePrototype(state, action)).toBe(state);
+    }
+  });
+
   it("pushes and pops routes in order and closes overlays first", () => {
     const root = initial();
     const conversation = reducePrototype(root, {

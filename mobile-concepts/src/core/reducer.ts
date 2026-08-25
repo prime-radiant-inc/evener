@@ -15,17 +15,28 @@ const emptyAnswer: QuestionAnswerState = {
   submitted: false,
 };
 
-function initialProjection(options: InitialStateOptions) {
+function initialProjection(
+  options: InitialStateOptions,
+  sourceFixture: PrototypeFixture,
+) {
   return (
     options.projection ??
-    projectScenario(canonicalFixture, options.preferences.scenario)
+    projectScenario(sourceFixture, options.preferences.scenario)
   );
+}
+
+function immutableSourceFixture(options: InitialStateOptions) {
+  return projectScenario(
+    options.sourceFixture ?? options.projection?.fixture ?? canonicalFixture,
+    "baseline",
+  ).fixture;
 }
 
 export function createInitialState(
   options: InitialStateOptions,
 ): PrototypeState {
-  const projection = initialProjection(options);
+  const sourceFixture = immutableSourceFixture(options);
+  const projection = initialProjection(options, sourceFixture);
   return {
     concept: options.preferences.concept,
     platform: options.platform,
@@ -42,7 +53,7 @@ export function createInitialState(
     refreshState: "idle",
     sessionQuery: "",
     globalQuery: "",
-    selectedSessionId: projection.selectedSessionId,
+    selectedSessionId: null,
     focusedItemId: null,
     expandedToolIds: new Set(),
     expandedWorkIds: new Set(),
@@ -60,6 +71,7 @@ export function createInitialState(
     },
     voicePreferences: { speakResponses: true, rate: "normal" },
     voice: { stepIndex: 0, muted: false, stopped: false, ended: false },
+    sourceFixture,
     projection,
     resetGeneration: 0,
   };
@@ -69,12 +81,41 @@ function hasSession(state: PrototypeState, sessionId: string): boolean {
   return state.projection.fixture.sessions.some(({ id }) => id === sessionId);
 }
 
+function hasFocusItem(
+  state: PrototypeState,
+  sessionId: string,
+  itemId: string,
+): boolean {
+  return state.projection.fixture.transcript.some(
+    (item) => item.id === itemId && item.sessionId === sessionId,
+  );
+}
+
+function routeSelection(
+  route: Route,
+): Pick<PrototypeState, "selectedSessionId" | "focusedItemId"> {
+  switch (route.kind) {
+    case "conversation":
+      return {
+        selectedSessionId: route.sessionId,
+        focusedItemId: route.focusItemId ?? null,
+      };
+    case "work":
+    case "voice":
+      return { selectedSessionId: route.sessionId, focusedItemId: null };
+    case "gallery":
+    case "root":
+      return { selectedSessionId: null, focusedItemId: null };
+  }
+}
+
 function pushRoute(state: PrototypeState, route: Route): PrototypeState {
   return {
     ...state,
     route,
     history: [...state.history, state.route],
     overlay: null,
+    ...routeSelection(route),
   };
 }
 
@@ -85,8 +126,7 @@ function popRoute(state: PrototypeState): PrototypeState {
     ...state,
     route,
     history: state.history.slice(0, -1),
-    focusedItemId:
-      route.kind === "conversation" ? (route.focusItemId ?? null) : null,
+    ...routeSelection(route),
   };
 }
 
@@ -209,6 +249,7 @@ export function reducePrototype(
         ? state
         : { ...state, concept: action.concept };
     case "setScenario": {
+      if (state.scenario === action.scenario) return state;
       const preferences = {
         version: 1 as const,
         concept: state.concept,
@@ -220,9 +261,14 @@ export function reducePrototype(
       const rebuilt = createInitialState({
         platform: state.platform,
         preferences,
-        projection: projectScenario(state.projection.fixture, action.scenario),
+        sourceFixture: state.sourceFixture,
+        projection: projectScenario(state.sourceFixture, action.scenario),
       });
-      return { ...rebuilt, resetGeneration: state.resetGeneration };
+      return {
+        ...rebuilt,
+        sourceFixture: state.sourceFixture,
+        resetGeneration: state.resetGeneration,
+      };
     }
     case "setAppearance":
       return state.appearance === action.appearance
@@ -237,19 +283,30 @@ export function reducePrototype(
         ? state
         : { ...state, reducedMotion: action.reducedMotion };
     case "navigateRoot":
-      return pushRoute(state, { kind: "root", tab: action.tab });
+      return state.route.kind === "root" && state.route.tab === action.tab
+        ? state
+        : {
+            ...state,
+            route: { kind: "root", tab: action.tab },
+            history: [],
+            overlay: null,
+            selectedSessionId: null,
+            focusedItemId: null,
+          };
     case "openSession": {
-      if (!hasSession(state, action.sessionId)) return state;
+      if (
+        !hasSession(state, action.sessionId) ||
+        (action.focusItemId !== undefined &&
+          !hasFocusItem(state, action.sessionId, action.focusItemId))
+      ) {
+        return state;
+      }
       const route: Route = {
         kind: "conversation",
         sessionId: action.sessionId,
         ...(action.focusItemId ? { focusItemId: action.focusItemId } : {}),
       };
-      return {
-        ...pushRoute(state, route),
-        selectedSessionId: action.sessionId,
-        focusedItemId: action.focusItemId ?? null,
-      };
+      return pushRoute(state, route);
     }
     case "openWork":
       return hasSession(state, action.sessionId)
@@ -295,17 +352,20 @@ export function reducePrototype(
       const result = state.projection.fixture.search.find(
         ({ id }) => id === action.resultId,
       );
-      if (!result) return state;
+      if (
+        !result ||
+        !hasSession(state, result.sessionId) ||
+        (result.itemId !== null &&
+          !hasFocusItem(state, result.sessionId, result.itemId))
+      ) {
+        return state;
+      }
       const route: Route = {
         kind: "conversation",
         sessionId: result.sessionId,
         ...(result.itemId ? { focusItemId: result.itemId } : {}),
       };
-      return {
-        ...pushRoute(state, route),
-        selectedSessionId: result.sessionId,
-        focusedItemId: result.itemId,
-      };
+      return pushRoute(state, route);
     }
     case "toggleTool":
       return state.projection.fixture.transcript.some(
@@ -512,9 +572,14 @@ export function reducePrototype(
           reducedMotion: false,
           scenario: "baseline",
         },
-        projection: projectScenario(state.projection.fixture, "baseline"),
+        sourceFixture: state.sourceFixture,
+        projection: projectScenario(state.sourceFixture, "baseline"),
       });
-      return { ...reset, resetGeneration: state.resetGeneration + 1 };
+      return {
+        ...reset,
+        sourceFixture: state.sourceFixture,
+        resetGeneration: state.resetGeneration + 1,
+      };
     }
     default:
       return assertNever(action);
