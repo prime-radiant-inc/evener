@@ -2,10 +2,13 @@ package hub
 
 import (
 	"context"
+	"path/filepath"
 	"slices"
 	"sort"
 	"strings"
+	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -14,17 +17,61 @@ import (
 
 var ensureManagedCodexSourcesForList = ensureManagedCodexSources
 
+// threadListSourceTimeout prevents one unavailable or busy source from
+// holding the Hub's roster RPC open forever. Sources are queried concurrently,
+// so the total wait is bounded by this duration rather than by the number of
+// configured sources.
+var threadListSourceTimeout = 3 * time.Second
+
 func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
 	var threads []appwire.Thread
 	liveIDs := map[string]struct{}{}
-	if err := ensureManagedCodexSourcesForList(ctx, cfg, sources, params); err != nil {
+	if err := ensureManagedCodexSourcesForListBounded(ctx, cfg, sources, params); err != nil {
 		return appwire.ThreadListResponse{}, err
 	}
-	for _, source := range sources.All() {
+	allSources := sources.All()
+	type sourceResult struct {
+		index int
+		resp  appwire.ThreadListResponse
+		err   error
+	}
+	results := make(chan sourceResult, len(allSources))
+	for index, source := range allSources {
 		if !sourceAllowedForList(source.ID(), params) {
 			continue
 		}
-		resp, err := source.ListThreads(ctx, params)
+		go func(index int, source appsource.Source) {
+			sourceCtx, cancel := context.WithTimeout(ctx, threadListSourceTimeout)
+			defer cancel()
+			done := make(chan sourceResult, 1)
+			go func() {
+				resp, err := source.ListThreads(sourceCtx, params)
+				done <- sourceResult{index: index, resp: resp, err: err}
+			}()
+			select {
+			case result := <-done:
+				results <- result
+			case <-sourceCtx.Done():
+				results <- sourceResult{index: index, err: sourceCtx.Err()}
+			}
+		}(index, source)
+	}
+	listed := make([]sourceResult, 0, len(allSources))
+	for _, source := range allSources {
+		if !sourceAllowedForList(source.ID(), params) {
+			continue
+		}
+		select {
+		case result := <-results:
+			listed = append(listed, result)
+		case <-ctx.Done():
+			return appwire.ThreadListResponse{}, ctx.Err()
+		}
+	}
+	slices.SortFunc(listed, func(a, b sourceResult) int { return a.index - b.index })
+	for _, result := range listed {
+		source := allSources[result.index]
+		resp, err := result.resp, result.err
 		if err != nil {
 			if sourceExplicitlyRequestedForList(source.ID(), params) {
 				return appwire.ThreadListResponse{}, err
@@ -53,10 +100,7 @@ func hubThreadList(ctx context.Context, cfg hubcore.WebConfig, sources *appsourc
 			if _, ok := liveIDs[threadListSourceKey("local", entry.ID)]; ok {
 				continue
 			}
-			thread, err := pastEntryThread(cfg, entry, false)
-			if err != nil {
-				return appwire.ThreadListResponse{}, err
-			}
+			thread := pastEntryThreadForList(cfg, entry)
 			if appThreadMatches(thread, params) {
 				threads = append(threads, thread)
 			}
@@ -120,6 +164,24 @@ func ensureManagedCodexSources(ctx context.Context, cfg hubcore.WebConfig, sourc
 	return nil
 }
 
+func ensureManagedCodexSourcesForListBounded(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadListParams) error {
+	if cfg.CodexLauncher == nil || sources == nil {
+		return nil
+	}
+	callCtx, cancel := context.WithTimeout(ctx, threadListSourceTimeout)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		done <- ensureManagedCodexSourcesForList(callCtx, cfg, sources, params)
+	}()
+	select {
+	case err := <-done:
+		return err
+	case <-callCtx.Done():
+		return callCtx.Err()
+	}
+}
+
 func threadListSourceID(defaultSourceID string, thread appwire.Thread) string {
 	if thread.Source != "" {
 		return thread.Source
@@ -166,10 +228,7 @@ func mergePastMetadataForList(cfg hubcore.WebConfig, sourceID string, live appwi
 	if !ok {
 		return live
 	}
-	past, err := pastEntryThread(cfg, entry, false)
-	if err != nil {
-		return live
-	}
+	past := pastEntryThreadForList(cfg, entry)
 	if live.ID == "" {
 		live.ID = past.ID
 	}
@@ -207,6 +266,62 @@ func mergePastMetadataForList(cfg hubcore.WebConfig, sourceID string, live appwi
 		live.Evener.Profile = past.Evener.Profile
 	}
 	return live
+}
+
+// pastEntryThreadForList is deliberately metadata-only. pastEntryThread also
+// loads delegate history and persisted task state, which is appropriate for a
+// single thread/read but makes a roster request scale with every transcript's
+// event log. The list response only needs fields that can enrich a live row.
+func pastEntryThreadForList(cfg hubcore.WebConfig, entry hubcore.PastEntry) appwire.Thread {
+	title := schema.SessionDisplayName(entry.Meta)
+	if title == "" {
+		title = entry.Meta.ID
+	}
+	name := title
+	if name == "" || name == strings.TrimSpace(entry.Meta.ID) {
+		name = hubcore.ShortID(strings.TrimSpace(entry.Meta.ID))
+	}
+	cwd := entry.Meta.EnvInfo.WorkingDir
+	ref := appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ID}.String()
+	parentRef := ""
+	if entry.Meta.ParentSessionID != "" {
+		parentRef = appwire.Ref{SourceID: "local", ThreadID: entry.Meta.ParentSessionID}.String()
+	}
+	kind := "session"
+	if entry.Meta.IsSubagent {
+		kind = "subagent"
+	} else if entry.Meta.ParentSessionID != "" {
+		kind = "fork"
+	}
+	status := appwire.ThreadStatusNotLoaded
+	if cfg.Roster != nil {
+		if subState, live := cfg.Roster.SubagentState(entry.Meta.ID); live {
+			subState = strings.TrimSpace(subState)
+			if subState == "" {
+				subState = appwire.ThreadStatusActive
+			}
+			status = subState
+		}
+	}
+	return appwire.Thread{
+		ID:            entry.Meta.ID,
+		SessionID:     entry.Meta.ID,
+		Preview:       title,
+		Name:          name,
+		ModelProvider: entry.Meta.Model,
+		CreatedAt:     hubcore.UnixSeconds(hubcore.OrderCreatedAt(entry.Meta.CreatedAt, entry.Meta.UpdatedAt)),
+		UpdatedAt:     hubcore.UnixSeconds(hubcore.OrderUpdatedAt(entry.Meta.UpdatedAt, entry.Meta.CreatedAt)),
+		Status:        appwire.ThreadStatus{Type: status},
+		Path:          filepath.Base(cwd),
+		CWD:           cwd,
+		Source:        "local",
+		Evener: appwire.EvenerThread{
+			Ref:       ref,
+			ParentRef: parentRef,
+			Kind:      kind,
+			Profile:   entry.Meta.ProfileID,
+		},
+	}
 }
 
 func appThreadMatches(thread appwire.Thread, params appwire.ThreadListParams) bool {
