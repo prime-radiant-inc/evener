@@ -2,8 +2,9 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseJavaScript } from "@babel/parser";
-import { parseFragment, parse as parseHtml } from "parse5";
+import { parse as parseHtml } from "parse5";
 import postcss from "postcss";
+import { SaxesParser } from "saxes";
 import { parse as parseToml } from "smol-toml";
 
 /** @typedef {{ code: string, file: string, detail: string }} BoundaryViolation */
@@ -168,6 +169,59 @@ function jsxAttributeText(node) {
   return literalText(node);
 }
 
+function collectBindingPattern(node, bindings) {
+  if (!node) return;
+  if (node.type === "Identifier") bindings.add(node.name);
+  else if (node.type === "RestElement")
+    collectBindingPattern(node.argument, bindings);
+  else if (node.type === "AssignmentPattern")
+    collectBindingPattern(node.left, bindings);
+  else if (node.type === "ArrayPattern")
+    node.elements.forEach((item) => {
+      collectBindingPattern(item, bindings);
+    });
+  else if (node.type === "ObjectPattern")
+    node.properties.forEach((property) => {
+      collectBindingPattern(property.value ?? property.argument, bindings);
+    });
+}
+
+function isValueReference(node, parent) {
+  if (node.type !== "Identifier" || !parent) return true;
+  if (
+    ["MemberExpression", "OptionalMemberExpression"].includes(parent.type) &&
+    parent.property === node &&
+    !parent.computed
+  )
+    return false;
+  if (
+    [
+      "VariableDeclarator",
+      "FunctionDeclaration",
+      "FunctionExpression",
+      "ClassDeclaration",
+      "ClassExpression",
+      "ImportSpecifier",
+      "ImportDefaultSpecifier",
+      "ImportNamespaceSpecifier",
+      "LabeledStatement",
+    ].includes(parent.type) &&
+    (parent.id === node || parent.local === node || parent.label === node)
+  )
+    return false;
+  if (
+    ["ObjectProperty", "ObjectMethod", "ClassProperty"].includes(parent.type) &&
+    parent.key === node &&
+    !parent.computed
+  )
+    return false;
+  return !parent.type.startsWith("TS");
+}
+
+function pathRoot(value) {
+  return value?.split(".")[0] ?? null;
+}
+
 function oneLine(message) {
   return String(message).replace(/\s+/g, " ").trim();
 }
@@ -195,10 +249,24 @@ function scanJavaScript(file, text) {
   const violations = [];
   const tauriInvokeBindings = new Set();
   const tauriNamespaces = new Set();
+  const declaredBindings = new Set();
   const found = new Map();
   const record = (code, detail) => {
     if (!found.has(code)) found.set(code, violation(code, file, detail));
   };
+
+  for (const statement of ast.program.body) {
+    if (statement.type === "ImportDeclaration")
+      statement.specifiers.forEach((binding) => {
+        collectBindingPattern(binding.local, declaredBindings);
+      });
+    if (statement.type === "VariableDeclaration")
+      statement.declarations.forEach((declaration) => {
+        collectBindingPattern(declaration.id, declaredBindings);
+      });
+    if (["FunctionDeclaration", "ClassDeclaration"].includes(statement.type))
+      collectBindingPattern(statement.id, declaredBindings);
+  }
 
   walkAst(ast, (node) => {
     if (node.type !== "ImportDeclaration") return;
@@ -227,7 +295,7 @@ function scanJavaScript(file, text) {
     }
   });
 
-  walkAst(ast, (node) => {
+  walkAst(ast, (node, parent) => {
     if (
       [
         "ImportDeclaration",
@@ -249,6 +317,13 @@ function scanJavaScript(file, text) {
       (node.type === "CallExpression" && node.callee?.type === "Import")
     ) {
       const specifier = literalText(node.source ?? node.arguments?.[0]);
+      if (specifier === null) {
+        record(
+          "dynamic-import",
+          "dynamic import target must reduce to a static safe local string",
+        );
+        return;
+      }
       if (specifier && isProductionMobileSpecifier(file, specifier)) {
         record(
           "production-mobile-import",
@@ -257,6 +332,21 @@ function scanJavaScript(file, text) {
       }
       if (specifier && REMOTE_URL.test(specifier))
         record("remote-import", "dynamic remote import is forbidden");
+      if (
+        /^[A-Za-z][A-Za-z0-9+.-]*:/.test(specifier) &&
+        !REMOTE_URL.test(specifier)
+      )
+        record(
+          "dynamic-import",
+          "dynamic import protocol is not a safe local target",
+        );
+      if (specifier === "@tauri-apps/api/core")
+        record("native-invoke", "dynamic Tauri core import is forbidden");
+      if (specifier.startsWith("@tauri-apps/plugin-"))
+        record(
+          "production-plugin",
+          `dynamic Tauri plugin is forbidden: ${specifier}`,
+        );
       return;
     }
 
@@ -267,7 +357,10 @@ function scanJavaScript(file, text) {
       const callee = memberPath(node.callee);
       const globalCallee = browserGlobalName(callee);
       const networkRule = NETWORK_API_PATTERNS.find(
-        (item) => item.kind === "call" && item.name === globalCallee,
+        (item) =>
+          item.kind === "call" &&
+          item.name === globalCallee &&
+          !declaredBindings.has(pathRoot(callee)),
       );
       if (networkRule) {
         record(
@@ -317,7 +410,10 @@ function scanJavaScript(file, text) {
       const constructorName = memberPath(node.callee);
       const globalConstructor = browserGlobalName(constructorName);
       const networkRule = NETWORK_API_PATTERNS.find(
-        (item) => item.kind === "construct" && item.name === globalConstructor,
+        (item) =>
+          item.kind === "construct" &&
+          item.name === globalConstructor &&
+          !declaredBindings.has(pathRoot(constructorName)),
       );
       if (networkRule) {
         record(
@@ -346,16 +442,109 @@ function scanJavaScript(file, text) {
         );
     }
 
-    const expressionPath = memberPath(node);
-    if (expressionPath?.startsWith("navigator.mediaDevices"))
+    if (
+      node.type === "VariableDeclarator" &&
+      node.id?.type === "ObjectPattern"
+    ) {
+      const source = browserGlobalName(memberPath(node.init));
+      for (const property of node.id.properties) {
+        const key = String(propertyName(property) ?? "");
+        if (
+          source === "navigator" &&
+          ["mediaDevices", "getUserMedia"].includes(key)
+        )
+          record("media-capture", "media capture capability is forbidden");
+        if (source === "navigator" && key === "geolocation")
+          record("geolocation", "geolocation capability is forbidden");
+        if (
+          (source === "navigator" && key === "serviceWorker") ||
+          (["window", "globalThis", "self"].includes(source) &&
+            ["Notification", "PushManager"].includes(key))
+        )
+          record(
+            "notification-push",
+            "notifications or push capability is forbidden",
+          );
+        if (source === "navigator" && key === "vibrate")
+          record("haptics", "vibration capability is forbidden");
+        if (
+          ["window", "globalThis", "self"].includes(source) &&
+          ["speechSynthesis", "SpeechSynthesisUtterance"].includes(key)
+        )
+          record(
+            "speech-synthesis",
+            "speech synthesis capability is forbidden",
+          );
+        if (
+          ["window", "globalThis", "self"].includes(source) &&
+          ["SpeechRecognition", "webkitSpeechRecognition"].includes(key)
+        )
+          record(
+            "speech-recognition",
+            "speech recognition capability is forbidden",
+          );
+        if (
+          ["window", "globalThis", "self"].includes(source) &&
+          ["AudioContext", "webkitAudioContext"].includes(key)
+        )
+          record("audio-context", "audio context capability is forbidden");
+      }
+    }
+
+    const rawExpressionPath = memberPath(node);
+    const expressionPath = browserGlobalName(rawExpressionPath);
+    const isUnshadowedBrowserReference =
+      isValueReference(node, parent) &&
+      !declaredBindings.has(pathRoot(rawExpressionPath));
+    if (
+      isUnshadowedBrowserReference &&
+      expressionPath?.startsWith("navigator.mediaDevices")
+    )
       record("media-capture", "media capture capability is forbidden");
-    if (expressionPath?.startsWith("navigator.geolocation"))
+    if (
+      isUnshadowedBrowserReference &&
+      expressionPath?.startsWith("navigator.geolocation")
+    )
       record("geolocation", "geolocation capability is forbidden");
-    if (expressionPath?.startsWith("PushManager"))
+    if (
+      isUnshadowedBrowserReference &&
+      ["speechSynthesis", "SpeechSynthesisUtterance"].includes(expressionPath)
+    )
+      record("speech-synthesis", "speech synthesis capability is forbidden");
+    if (
+      isUnshadowedBrowserReference &&
+      ["SpeechRecognition", "webkitSpeechRecognition"].includes(expressionPath)
+    )
+      record(
+        "speech-recognition",
+        "speech recognition capability is forbidden",
+      );
+    if (
+      isUnshadowedBrowserReference &&
+      ["AudioContext", "webkitAudioContext"].includes(expressionPath)
+    )
+      record("audio-context", "audio context capability is forbidden");
+    if (
+      isUnshadowedBrowserReference &&
+      [
+        "showOpenFilePicker",
+        "showSaveFilePicker",
+        "showDirectoryPicker",
+      ].includes(expressionPath)
+    )
+      record("file-access", "file picker capability is forbidden");
+    if (
+      isUnshadowedBrowserReference &&
+      (expressionPath === "Notification" ||
+        expressionPath?.startsWith("PushManager") ||
+        expressionPath?.startsWith("navigator.serviceWorker"))
+    )
       record(
         "notification-push",
         "notifications or push capability is forbidden",
       );
+    if (isUnshadowedBrowserReference && expressionPath === "navigator.vibrate")
+      record("haptics", "vibration capability is forbidden");
 
     if (
       ["ObjectProperty", "ObjectMethod", "ClassProperty"].includes(node.type)
@@ -479,18 +668,80 @@ function stripRustNonCode(text) {
   return output;
 }
 
+function escapeRegExp(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
 function scanRust(file, text) {
   const code = stripRustNonCode(text);
   const violations = [];
-  const handler = /tauri::generate_handler!\s*\[([^\]]*)\]/s.exec(code);
-  if (
-    handler?.[1].trim() ||
-    /#\s*\[\s*tauri::command\b|\.invoke_handler\s*\(/.test(code)
-  ) {
-    violations.push(
-      violation("invoke-handler", file, "native invoke handlers are forbidden"),
+  const commandAliases = new Set();
+  const handlerAliases = new Set();
+  const tauriAliases = new Set(["tauri"]);
+  for (const match of code.matchAll(
+    /\buse\s+tauri\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/g,
+  ))
+    tauriAliases.add(match[1]);
+  for (const match of code.matchAll(
+    /\buse\s+tauri::(?:\{([^}]*)\}|(command|generate_handler)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?)\s*;/g,
+  )) {
+    const imports = match[1]
+      ? match[1].split(",").map((item) => item.trim())
+      : [`${match[2]}${match[3] ? ` as ${match[3]}` : ""}`];
+    for (const item of imports) {
+      const imported =
+        /^(command|generate_handler)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/.exec(
+          item,
+        );
+      if (!imported) continue;
+      const local = imported[2] ?? imported[1];
+      (imported[1] === "command" ? commandAliases : handlerAliases).add(local);
+    }
+  }
+
+  const recordHandler = (detail) =>
+    violations.push(violation("invoke-handler", file, detail));
+  for (const tauriAlias of tauriAliases) {
+    const pattern = new RegExp(
+      `#\\s*\\[\\s*${escapeRegExp(tauriAlias)}::command\\b`,
+      "g",
+    );
+    for (const _match of code.matchAll(pattern))
+      recordHandler(
+        `native Tauri command attribute is forbidden: ${tauriAlias}`,
+      );
+  }
+  for (const alias of commandAliases) {
+    const pattern = new RegExp(`#\\s*\\[\\s*${escapeRegExp(alias)}\\b`, "g");
+    for (const _match of code.matchAll(pattern))
+      recordHandler(`imported Tauri command attribute is forbidden: ${alias}`);
+  }
+
+  const scanHandlerMacros = (pattern, name) => {
+    for (const match of code.matchAll(pattern)) {
+      if (match[1].trim())
+        recordHandler(`native invoke handler macro is forbidden: ${name}`);
+    }
+  };
+  for (const tauriAlias of tauriAliases)
+    scanHandlerMacros(
+      new RegExp(
+        `${escapeRegExp(tauriAlias)}::generate_handler!\\s*\\[([^\\]]*)\\]`,
+        "gs",
+      ),
+      `${tauriAlias}::generate_handler`,
+    );
+  for (const alias of handlerAliases) {
+    scanHandlerMacros(
+      new RegExp(
+        `(?<![:A-Za-z0-9_])${escapeRegExp(alias)}!\\s*\\[([^\\]]*)\\]`,
+        "gs",
+      ),
+      alias,
     );
   }
+  for (const _match of code.matchAll(/\.invoke_handler\s*\(/g))
+    recordHandler("native invoke_handler builder call is forbidden");
   if (/\btauri_plugin_[A-Za-z0-9_]+\b/.test(code)) {
     violations.push(
       violation(
@@ -541,11 +792,31 @@ function traverseHtml(node, visitor) {
   if (node.content) traverseHtml(node.content, visitor);
 }
 
-function scanMarkup(file, text) {
+function scanEmbeddedScript(file, text) {
+  return scanJavaScript(file, text).map((item) =>
+    item.code === "remote-url" || item.code === "remote-import"
+      ? remoteAsset(file, "remote inline markup runtime URL is forbidden")
+      : item,
+  );
+}
+
+function scanHtmlMarkup(file, text) {
   const violations = [];
-  const document = /\.html?$/i.test(file)
-    ? parseHtml(text)
-    : parseFragment(text);
+  const parseErrors = [];
+  const document = parseHtml(text, {
+    onParseError: (error) => parseErrors.push(error),
+  });
+  for (const error of parseErrors.filter(
+    (item) => item.code !== "missing-doctype",
+  )) {
+    violations.push(
+      violation(
+        "malformed-asset",
+        file,
+        `HTML parser rejected input: ${error.code}`,
+      ),
+    );
+  }
   traverseHtml(document, (node) => {
     for (const attribute of node.attrs ?? []) {
       if (REMOTE_URL.test(attribute.value))
@@ -589,19 +860,75 @@ function scanMarkup(file, text) {
         !type ||
         /^(?:module|text\/javascript|application\/javascript)$/i.test(type)
       ) {
-        for (const item of scanJavaScript(
-          file,
-          (node.childNodes ?? []).map((child) => child.value ?? "").join(""),
-        )) {
-          violations.push(
-            item.code === "remote-url" || item.code === "remote-import"
-              ? remoteAsset(file, "remote inline HTML runtime URL is forbidden")
-              : item,
-          );
-        }
+        violations.push(
+          ...scanEmbeddedScript(
+            file,
+            (node.childNodes ?? []).map((child) => child.value ?? "").join(""),
+          ),
+        );
       }
     }
   });
+  return sorted(violations);
+}
+
+function scanXmlMarkup(file, text) {
+  const violations = [];
+  const parseErrors = [];
+  const frames = [];
+  const parser = new SaxesParser({ xmlns: true });
+  parser.on("error", (error) => parseErrors.push(oneLine(error.message)));
+  parser.on("processinginstruction", (instruction) => {
+    if (REMOTE_URL.test(instruction.body))
+      violations.push(
+        remoteAsset(
+          file,
+          `remote XML processing instruction is forbidden: ${instruction.target}`,
+        ),
+      );
+  });
+  parser.on("doctype", (doctype) => {
+    if (REMOTE_URL.test(doctype))
+      violations.push(remoteAsset(file, "remote XML doctype is forbidden"));
+  });
+  parser.on("opentag", (node) => {
+    for (const attribute of Object.values(node.attributes)) {
+      if (attribute.name === "xmlns" || attribute.prefix === "xmlns") continue;
+      if (REMOTE_URL.test(attribute.value))
+        violations.push(
+          remoteAsset(
+            file,
+            `remote XML/SVG attribute is forbidden: ${attribute.name}`,
+          ),
+        );
+    }
+    frames.push({ name: node.local.toLowerCase(), text: "" });
+  });
+  const appendText = (value) => {
+    if (frames.length) frames.at(-1).text += value;
+  };
+  parser.on("text", appendText);
+  parser.on("cdata", appendText);
+  parser.on("closetag", () => {
+    const frame = frames.pop();
+    if (!frame) return;
+    if (frame.name === "style") violations.push(...scanCss(file, frame.text));
+    if (frame.name === "script")
+      violations.push(...scanEmbeddedScript(file, frame.text));
+  });
+  try {
+    parser.write(text).close();
+  } catch (error) {
+    parseErrors.push(oneLine(error.message));
+  }
+  for (const detail of new Set(parseErrors))
+    violations.push(
+      violation(
+        "malformed-asset",
+        file,
+        `XML parser rejected input: ${detail}`,
+      ),
+    );
   return sorted(violations);
 }
 
@@ -651,8 +978,8 @@ export function scanText(file, text) {
   const extension = path.extname(file).toLowerCase();
   if (SOURCE_EXTENSIONS.has(extension)) return scanJavaScript(file, text);
   if (extension === ".css") return scanCss(file, text);
-  if ([".html", ".htm", ".svg", ".xml"].includes(extension))
-    return scanMarkup(file, text);
+  if ([".html", ".htm"].includes(extension)) return scanHtmlMarkup(file, text);
+  if ([".svg", ".xml"].includes(extension)) return scanXmlMarkup(file, text);
   if ([".json", ".webmanifest"].includes(extension))
     return scanMetadata(file, text);
   return [];
@@ -1016,10 +1343,125 @@ export function validateTauriConfig(config, htmlCsp) {
   return sorted(violations);
 }
 
+function localRustDependencyPath(value) {
+  if (
+    typeof value !== "string" ||
+    !value.trim() ||
+    path.posix.isAbsolute(value) ||
+    path.win32.isAbsolute(value) ||
+    REMOTE_URL.test(value)
+  )
+    return false;
+  const packageRoot = "/concept-package";
+  const resolved = path.posix.resolve(
+    packageRoot,
+    "src-tauri",
+    value.replaceAll("\\", "/"),
+  );
+  return resolved.startsWith(`${packageRoot}/`);
+}
+
+function validateAllowedDependency(
+  table,
+  dependency,
+  declaration,
+  file,
+  violations,
+) {
+  const malformed = (detail) =>
+    violations.push(violation("malformed-manifest", file, detail));
+  const forbiddenSource = (detail) =>
+    violations.push(violation("rust-dependency-source", file, detail));
+  if (typeof declaration === "string") {
+    if (!declaration.trim())
+      malformed(`${table}.${dependency} version is empty`);
+    return;
+  }
+  if (
+    !declaration ||
+    typeof declaration !== "object" ||
+    Array.isArray(declaration)
+  ) {
+    malformed(`${table}.${dependency} must be a string or dependency table`);
+    return;
+  }
+  const allowedKeys = new Set([
+    "version",
+    "features",
+    "default-features",
+    "optional",
+    "package",
+    "path",
+  ]);
+  for (const key of Object.keys(declaration)) {
+    if (!allowedKeys.has(key))
+      forbiddenSource(
+        `${table}.${dependency} declaration key is forbidden: ${key}`,
+      );
+  }
+  if (
+    Object.hasOwn(declaration, "package") &&
+    declaration.package !== dependency
+  )
+    violations.push(
+      violation(
+        "rust-dependency",
+        file,
+        `${table}.${dependency} may not rename package ${String(declaration.package)}`,
+      ),
+    );
+  for (const key of ["git", "registry", "workspace"]) {
+    if (Object.hasOwn(declaration, key))
+      forbiddenSource(`${table}.${dependency} source is forbidden: ${key}`);
+  }
+  if (
+    Object.hasOwn(declaration, "path") &&
+    !localRustDependencyPath(declaration.path)
+  )
+    forbiddenSource(
+      `${table}.${dependency} path must remain in the concept package`,
+    );
+  if (
+    !Object.hasOwn(declaration, "version") &&
+    !Object.hasOwn(declaration, "path")
+  )
+    malformed(
+      `${table}.${dependency} requires a reviewed version or local path`,
+    );
+  if (
+    Object.hasOwn(declaration, "version") &&
+    (typeof declaration.version !== "string" || !declaration.version.trim())
+  )
+    malformed(`${table}.${dependency}.version must be a nonempty string`);
+  if (
+    Object.hasOwn(declaration, "features") &&
+    (!Array.isArray(declaration.features) ||
+      declaration.features.some((feature) => typeof feature !== "string"))
+  )
+    malformed(`${table}.${dependency}.features must be a string array`);
+  for (const key of ["default-features", "optional"]) {
+    if (
+      Object.hasOwn(declaration, key) &&
+      typeof declaration[key] !== "boolean"
+    )
+      malformed(`${table}.${dependency}.${key} must be boolean`);
+  }
+}
+
 function inspectDependencyTables(value, file, violations, ancestry = []) {
   if (!value || typeof value !== "object" || Array.isArray(value)) return;
   for (const [key, child] of Object.entries(value)) {
     const lower = key.toLowerCase();
+    if (["patch", "replace"].includes(lower)) {
+      violations.push(
+        violation(
+          "rust-dependency-source",
+          file,
+          `Cargo ${[...ancestry, key].join(".")} overrides are forbidden`,
+        ),
+      );
+      continue;
+    }
     if (
       ["dependencies", "build-dependencies", "dev-dependencies"].includes(lower)
     ) {
@@ -1048,23 +1490,14 @@ function inspectDependencyTables(value, file, violations, ancestry = []) {
               `${lower} dependency is forbidden: ${dependency}`,
             ),
           );
-        if (
-          allowed.has(dependency) &&
-          !(
-            typeof declaration === "string" ||
-            (declaration &&
-              typeof declaration === "object" &&
-              !Array.isArray(declaration))
-          )
-        ) {
-          violations.push(
-            violation(
-              "malformed-manifest",
-              file,
-              `${lower}.${dependency} must be a string or dependency table`,
-            ),
+        if (allowed.has(dependency))
+          validateAllowedDependency(
+            lower,
+            dependency,
+            declaration,
+            file,
+            violations,
           );
-        }
       }
     } else {
       inspectDependencyTables(child, file, violations, [...ancestry, key]);
