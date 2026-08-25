@@ -90,6 +90,25 @@ var fixtures = map[string]map[string]any{
 		},
 		"required": []string{"header"},
 	},
+	"one_of_conditional": {
+		"type":                 "object",
+		"additionalProperties": false,
+		"properties": map[string]any{
+			"task":        map[string]any{"type": "string"},
+			"sandbox":     map[string]any{"type": "string", "enum": []string{"off", "read-only", "workspace-write", "restricted"}},
+			"sandbox_net": map[string]any{"type": "boolean"},
+		},
+		"required": []string{"task"},
+		"oneOf": []any{
+			map[string]any{"not": map[string]any{"required": []string{"sandbox_net"}}},
+			map[string]any{
+				"required": []string{"sandbox", "sandbox_net"},
+				"properties": map[string]any{
+					"sandbox": map[string]any{"enum": []string{"read-only", "workspace-write", "restricted"}},
+				},
+			},
+		},
+	},
 }
 
 // TestValidMode_Conforms is the central valid-mode contract: across many seeds,
@@ -123,6 +142,49 @@ func TestAdjacentMode_ProducesViolations(t *testing.T) {
 		}
 		if violations == 0 {
 			t.Fatalf("%s: Adjacent mode produced zero violations in %d draws", name, n)
+		}
+	}
+}
+
+func TestOneOfConditional_ValidSelectsOneBranch(t *testing.T) {
+	schema := fixtures["one_of_conditional"]
+	for seed := range 300 {
+		value := Generator(schema, Valid).Example(seed)
+		if ok, why := conforms(value, schema); !ok {
+			t.Fatalf("seed=%d: valid value does not conform: %s\nvalue=%#v", seed, why, value)
+		}
+		args := value.(map[string]any)
+		_, hasNet := args["sandbox_net"]
+		_, hasSandbox := args["sandbox"]
+		if hasNet && !hasSandbox {
+			t.Fatalf("seed=%d: sandbox_net requires sandbox: %#v", seed, args)
+		}
+	}
+}
+
+func TestOneOfConditional_AdjacentExploresNegativeBranch(t *testing.T) {
+	schema := fixtures["one_of_conditional"]
+	violations := 0
+	for seed := range 300 {
+		if ok, _ := conforms(Generator(schema, Adjacent).Example(seed), schema); !ok {
+			violations++
+		}
+	}
+	if violations == 0 {
+		t.Fatal("Adjacent mode produced no oneOf violations")
+	}
+}
+
+func TestOneOfConditional_RejectsInvalidCombinations(t *testing.T) {
+	schema := fixtures["one_of_conditional"]
+	for _, value := range []map[string]any{
+		{"task": "x", "sandbox_net": false},
+		{"task": "x", "sandbox": "off", "sandbox_net": false},
+	} {
+		if ok, why := conforms(value, schema); ok {
+			t.Fatalf("invalid value conformed: %#v", value)
+		} else if why == "" {
+			t.Fatalf("invalid value %#v had no failure reason", value)
 		}
 	}
 }
@@ -258,6 +320,22 @@ func TestRequired_AlwaysPresent(t *testing.T) {
 // agent module's schema-aware tool fuzz target.
 
 func conforms(v any, schema map[string]any) (bool, string) {
+	if branches := oneOfSchemas(schema); len(branches) > 0 {
+		matches := 0
+		for _, branch := range branches {
+			if ok, _ := conforms(v, branch); ok {
+				matches++
+			}
+		}
+		if matches != 1 {
+			return false, "oneOf matched " + itoa(matches) + " branches"
+		}
+	}
+	if not, ok := schema["not"].(map[string]any); ok {
+		if matches, _ := conforms(v, not); matches {
+			return false, "not branch matched"
+		}
+	}
 	if enum := enumValues(schema); len(enum) > 0 {
 		if !containsAny(enum, v) {
 			return false, "value not in enum"

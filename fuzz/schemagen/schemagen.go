@@ -1,6 +1,6 @@
 // Package schemagen turns a JSON Schema (the subset evener's tool and protocol
 // surfaces actually use: type/properties/required/enum/additionalProperties/
-// items) into generated values. It generates BOTH schema-conforming values
+// items/oneOf (with required-only not branches) into generated values. It generates BOTH schema-conforming values
 // (Valid mode) and schema-adjacent ones (Adjacent mode: wrong types,
 // missing-required, out-of-enum, extra-when-closed) so a property test can feed
 // a real validator/handler adversarial-but-structured input.
@@ -71,6 +71,10 @@ func genValue(s Source, schema map[string]any, mode Mode, depth int) any {
 	if schema == nil {
 		schema = map[string]any{}
 	}
+	if branches := oneOfSchemas(schema); len(branches) > 0 {
+		branch := draw(s, branches, "one_of")
+		return genValue(s, mergeOneOfBranch(schema, branch), mode, depth)
+	}
 
 	if enum := enumValues(schema); len(enum) > 0 {
 		if mode == Valid {
@@ -113,6 +117,7 @@ func genValue(s Source, schema map[string]any, mode Mode, depth int) any {
 func genObject(s Source, schema map[string]any, mode Mode, depth int) any {
 	props := asSchemaMap(schema["properties"])
 	required := stringList(schema["required"])
+	forbidden := forbiddenProperties(schema)
 	open := additionalPropsAllowed(schema)
 
 	obj := map[string]any{}
@@ -135,6 +140,9 @@ func genObject(s Source, schema map[string]any, mode Mode, depth int) any {
 	for _, name := range sortedKeys(props) {
 		sub := asSchemaMap(props[name])
 		isRequired := contains(required, name)
+		if contains(forbidden, name) {
+			continue
+		}
 		if name == skip {
 			continue
 		}

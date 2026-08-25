@@ -3,6 +3,7 @@ package schemagen
 import (
 	"encoding/json"
 	"fmt"
+	"maps"
 	"math"
 	"reflect"
 	"slices"
@@ -28,6 +29,102 @@ const (
 // in-process shapes are accepted. An absent type returns nil (any type allowed).
 func schemaTypes(schema map[string]any) []string {
 	return stringList(schema["type"])
+}
+
+// oneOfSchemas returns the object branches of a oneOf keyword. JSON-decoded
+// schemas use []any; native test schemas commonly use []map[string]any.
+func oneOfSchemas(schema map[string]any) []map[string]any {
+	switch branches := schema["oneOf"].(type) {
+	case []any:
+		out := make([]map[string]any, 0, len(branches))
+		for _, branch := range branches {
+			if m, ok := branch.(map[string]any); ok {
+				out = append(out, m)
+			}
+		}
+		return out
+	case []map[string]any:
+		return append([]map[string]any(nil), branches...)
+	default:
+		return nil
+	}
+}
+
+// mergeOneOfBranch combines the outer schema with the selected branch. A branch
+// is a conjunction with its parent, not a replacement: outer required fields and
+// properties still apply. The small merge also preserves branch not-required
+// exclusions, which is the shape used by the tool schemas.
+func mergeOneOfBranch(schema, branch map[string]any) map[string]any {
+	merged := make(map[string]any, len(schema)+len(branch))
+	for key, value := range schema {
+		if key != "oneOf" {
+			merged[key] = value
+		}
+	}
+	for key, value := range branch {
+		switch key {
+		case "properties":
+			merged["properties"] = mergeSchemaProperties(merged["properties"], value)
+		case "required":
+			merged["required"] = mergeRequired(stringList(merged["required"]), stringList(value))
+		default:
+			merged[key] = value
+		}
+	}
+	return merged
+}
+
+func mergeSchemaProperties(parent, branch any) map[string]any {
+	merged := make(map[string]any)
+	maps.Copy(merged, asSchemaMap(parent))
+	for name, value := range asSchemaMap(branch) {
+		if parentSchema, ok := merged[name].(map[string]any); ok {
+			if branchSchema, ok := value.(map[string]any); ok {
+				merged[name] = mergeSchemaMaps(parentSchema, branchSchema)
+				continue
+			}
+		}
+		merged[name] = value
+	}
+	return merged
+}
+
+func mergeSchemaMaps(parent, branch map[string]any) map[string]any {
+	merged := make(map[string]any, len(parent)+len(branch))
+	maps.Copy(merged, parent)
+	for key, value := range branch {
+		switch key {
+		case "properties":
+			merged[key] = mergeSchemaProperties(merged[key], value)
+		case "required":
+			merged[key] = mergeRequired(stringList(merged[key]), stringList(value))
+		default:
+			merged[key] = value
+		}
+	}
+	return merged
+}
+
+func mergeRequired(parent, branch []string) []string {
+	seen := make(map[string]struct{}, len(parent)+len(branch))
+	merged := make([]string, 0, len(parent)+len(branch))
+	for _, name := range append(parent, branch...) {
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		merged = append(merged, name)
+	}
+	sort.Strings(merged)
+	return merged
+}
+
+func forbiddenProperties(schema map[string]any) []string {
+	not, ok := schema["not"].(map[string]any)
+	if !ok {
+		return nil
+	}
+	return stringList(not["required"])
 }
 
 // enumValues returns the schema's enum members, or nil. Members are returned as
