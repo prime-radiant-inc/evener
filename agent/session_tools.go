@@ -260,16 +260,111 @@ func (s *Session) RegisterTool(name, description string, params map[string]any, 
 	s.reportPromptRenderFailure(promptWarning)
 }
 
+const (
+	// visionReasoningEffort deliberately caps image and document descriptions
+	// below the session's reasoning effort. This side-channel does perception-
+	// shaped work, where inheriting a top-tier effort adds latency without
+	// improving the description contract.
+	visionReasoningEffort = "low"
+	// visionSideChannelTimeout is an explicit caller-owned ceiling. The adapter
+	// timeout remains a defense in depth for provider transports, while this
+	// context also cancels deterministic/non-HTTP adapters and all cleanup
+	// attached to the side-channel call.
+	visionSideChannelTimeout = 2 * time.Minute
+)
+
+func (s *Session) visionSideChannelDuration() time.Duration {
+	if timeout := s.cfg.testOnly.visionSideChannelTimeout; timeout > 0 {
+		return timeout
+	}
+	return visionSideChannelTimeout
+}
+
+type visionSideChannelResult struct {
+	description string
+	elapsed     time.Duration
+	usage       llm.Usage
+}
+
+// visionSideChannelStats is the machine-readable accounting contract carried
+// in successful image-description steering. Token fields are present only when
+// the provider reported usage; usage_available distinguishes an unavailable
+// report from a real report whose counters happen to be zero.
+type visionSideChannelStats struct {
+	ElapsedMS                int64 `json:"elapsed_ms"`
+	UsageAvailable           bool  `json:"usage_available"`
+	InputTokens              *int  `json:"input_tokens,omitempty"`
+	OutputTokens             *int  `json:"output_tokens,omitempty"`
+	ReasoningTokens          *int  `json:"reasoning_tokens,omitempty"`
+	ReasoningTokensEstimated *int  `json:"reasoning_tokens_estimated,omitempty"`
+	CacheReadTokens          *int  `json:"cache_read_tokens,omitempty"`
+	CacheWriteTokens         *int  `json:"cache_write_tokens,omitempty"`
+	CacheWrite1hTokens       *int  `json:"cache_write_1h_tokens,omitempty"`
+}
+
+const (
+	visionSideChannelStatsOpen  = "<evener:vision_side_channel_stats>"
+	visionSideChannelStatsClose = "</evener:vision_side_channel_stats>"
+)
+
 // describeImage makes a side-channel API call with no tools to describe an image
 // using the model's native vision. Returns the text description, or "" on error.
 // The call includes context from the current task so the description is relevant.
 func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
-	if len(r.ImageData) == 0 {
+	return s.describeImageCall(ctx, r).description
+}
+
+// describeImageSteering preserves describeImage's text contract while appending
+// machine-readable side-channel accounting to the model-facing steering
+// message. The accounting is emitted only after a non-empty response succeeds,
+// so failures cannot claim successful usage or latency.
+func (s *Session) describeImageSteering(ctx context.Context, r tool.ExecResult) string {
+	result := s.describeImageCall(ctx, r)
+	if result.description == "" {
 		return ""
+	}
+	return result.description + "\n" + formatVisionSideChannelStats(result)
+}
+
+func formatVisionSideChannelStats(result visionSideChannelResult) string {
+	stats := visionSideChannelStats{
+		ElapsedMS:      result.elapsed.Milliseconds(),
+		UsageAvailable: visionUsageAvailable(result.usage),
+	}
+	if stats.UsageAvailable {
+		stats.InputTokens = new(result.usage.InputTokens)
+		stats.OutputTokens = new(result.usage.OutputTokens)
+		stats.ReasoningTokens = result.usage.ReasoningTokens
+		stats.ReasoningTokensEstimated = result.usage.ReasoningTokensEstimated
+		stats.CacheReadTokens = result.usage.CacheReadTokens
+		stats.CacheWriteTokens = result.usage.CacheWriteTokens
+		stats.CacheWrite1hTokens = result.usage.CacheWrite1hTokens
+	}
+	payload, err := json.Marshal(stats)
+	if err != nil {
+		return ""
+	}
+	return visionSideChannelStatsOpen + string(payload) + visionSideChannelStatsClose
+}
+
+func visionUsageAvailable(usage llm.Usage) bool {
+	return usage.InputTokens != 0 ||
+		usage.OutputTokens != 0 ||
+		usage.TotalTokens != 0 ||
+		usage.ReasoningTokens != nil ||
+		usage.ReasoningTokensEstimated != nil ||
+		usage.CacheReadTokens != nil ||
+		usage.CacheWriteTokens != nil ||
+		usage.CacheWrite1hTokens != nil
+}
+
+func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visionSideChannelResult {
+	if len(r.ImageData) == 0 {
+		return visionSideChannelResult{}
 	}
 	// Skip for explorer agents — they're just inventorying files, not analyzing images.
 	if s.cfg.AgentName == "explorer" {
-		return ""
+		return visionSideChannelResult{}
 	}
 
 	// Use the caller's stated purpose as the vision prompt. The calling LLM
@@ -305,21 +400,17 @@ func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
 		}}
 	}
 
-	// Snapshot the model inputs under s.mu: the vision side-channel runs during
-	// the round, so a concurrent SetModel/SetReasoningEffort (which mutate these
-	// under s.mu) must not race these reads (PRI-1958 A2/A4).
-	effortOverride := ""
-	store := s.getOrCreateTaskStore()
-	if current, ok := store.CurrentInProgress(); ok {
-		effortOverride = normalizeTaskEffort(strings.TrimSpace(current.ReasoningEffort))
-	}
+	// Snapshot the profile under s.mu: the vision side-channel runs during the
+	// round, so a concurrent SetModel (which mutates it under s.mu) must not race
+	// this read (PRI-1958 A2/A4). The fixed low vision cap below is deliberately
+	// independent of the session/task reasoning effort.
 	s.mu.Lock()
 	profile := s.profile
-	effort := strings.TrimSpace(s.cfg.ReasoningEffort)
 	s.mu.Unlock()
-	if effortOverride != "" {
-		effort = effortOverride
-	}
+
+	visionTimeout := s.visionSideChannelDuration()
+	visionCtx, cancel := context.WithTimeout(ctx, visionTimeout)
+	defer cancel()
 	req := llm.Request{
 		Model:    profile.Model(),
 		Provider: profile.ID(),
@@ -335,34 +426,35 @@ func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
 		// No tools — force text-only response.
 		AdapterTimeout: &llm.AdapterTimeout{
 			Connect:    10 * time.Second,
-			Request:    2 * time.Minute,
+			Request:    visionTimeout,
 			StreamRead: 30 * time.Second,
 		},
 	}
-	// Vision descriptions need sufficient reasoning to be accurate.
-	// Floor at "high" regardless of the current task's effort level. Use the
-	// shared rank so "max" (and any future top-tier name) isn't downgraded.
-	if llm.ReasoningEffortRank(effort) < llm.ReasoningEffortRank("high") {
-		effort = "high"
-	}
 	// This request is built manually (not via buildModelRequest), so clamp the
-	// effort to the model's supported levels here too — otherwise a top-tier
-	// alias like "max"/"xhigh" can reach a model that doesn't accept it. Gated
-	// on SupportsReasoning so a model explicitly declared non-reasoning
-	// (providers.toml reasoning=false) never gets reasoning_effort on the wire.
+	// fixed vision cap to the model's supported levels here too. A model whose
+	// cheapest level is above the cap gets that level rather than a value it
+	// would reject. Gate on SupportsReasoning so non-reasoning models never get
+	// reasoning_effort on the wire.
 	if profile.SupportsReasoning() {
-		effort = llm.ClampReasoningEffort(effort, profile.ReasoningEffortLevels())
+		effort := llm.ClampReasoningEffort(visionReasoningEffort, profile.ReasoningEffortLevels())
 		req.ReasoningEffort = &effort
 	}
 	s.applyModelRequestMetadata(profile, &req)
 
-	resp, err := s.client.Complete(ctx, req)
+	start := s.sclock().Now()
+	resp, err := s.client.Complete(visionCtx, req)
+	elapsed := s.sclock().Now().Sub(start)
+	elapsed = max(elapsed, 0)
 	if err != nil {
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("vision side-channel failed: %v", err)})
-		return ""
+		return visionSideChannelResult{}
 	}
 
-	return strings.TrimSpace(resp.Message.Text())
+	return visionSideChannelResult{
+		description: strings.TrimSpace(resp.Message.Text()),
+		elapsed:     elapsed,
+		usage:       resp.Usage,
+	}
 }
 
 func (s *Session) canonicalToolName(name string) string {
