@@ -62,6 +62,18 @@ verification: every fictional transition is explicit, deterministic, locally rec
 
 const transcript = [
   {
+    id: "item-question-release-focus",
+    sessionId: "session-mobile-release",
+    kind: "question",
+    questionId: "question-release-focus",
+  },
+  {
+    id: "item-question-release-checks",
+    sessionId: "session-mobile-release",
+    kind: "question",
+    questionId: "question-release-checks",
+  },
+  {
     id: "item-user-goal",
     sessionId: "session-native-client",
     kind: "user",

@@ -160,7 +160,77 @@ function propertyName(node) {
 }
 
 function browserGlobalName(value) {
-  return value?.replace(/^(?:window|globalThis|self)\./, "") ?? value;
+  let normalized = value;
+  while (/^(?:window|globalThis|self)\./.test(normalized ?? "")) {
+    normalized = normalized?.replace(/^(?:window|globalThis|self)\./, "");
+  }
+  return normalized;
+}
+
+function bindingPropertyChain(pattern, localName, chain = []) {
+  if (!pattern) return null;
+  if (pattern.type === "Identifier")
+    return pattern.name === localName ? chain : null;
+  if (pattern.type === "AssignmentPattern")
+    return bindingPropertyChain(pattern.left, localName, chain);
+  if (pattern.type !== "ObjectPattern") return null;
+  for (const property of pattern.properties) {
+    if (property.type !== "ObjectProperty") continue;
+    const key = propertyName(property);
+    if (!key) continue;
+    const found = bindingPropertyChain(property.value, localName, [
+      ...chain,
+      key,
+    ]);
+    if (found) return found;
+  }
+  return null;
+}
+
+function resolveBrowserReference(nodePath, seenBindings = new Set()) {
+  const node = nodePath?.node;
+  if (!node) return null;
+  if (
+    [
+      "TSAsExpression",
+      "TSTypeAssertion",
+      "TSNonNullExpression",
+      "TypeCastExpression",
+      "ParenthesizedExpression",
+      "ChainExpression",
+    ].includes(node.type)
+  ) {
+    return resolveBrowserReference(nodePath.get("expression"), seenBindings);
+  }
+  if (node.type === "Identifier") {
+    const binding = nodePath.scope.getBinding(node.name);
+    if (!binding) return node.name;
+    if (seenBindings.has(binding)) return null;
+    const declaration = binding.path.isVariableDeclarator()
+      ? binding.path
+      : binding.path.findParent((candidate) => candidate.isVariableDeclarator());
+    if (!declaration) return null;
+    const initPath = declaration.get("init");
+    if (!initPath?.node) return null;
+    const nextSeen = new Set(seenBindings);
+    nextSeen.add(binding);
+    const source = resolveBrowserReference(initPath, nextSeen);
+    if (!source) return null;
+    if (declaration.node.id.type === "Identifier") return source;
+    const chain = bindingPropertyChain(declaration.node.id, node.name);
+    return chain?.length ? `${source}.${chain.join(".")}` : null;
+  }
+  if (
+    node.type !== "MemberExpression" &&
+    node.type !== "OptionalMemberExpression"
+  ) {
+    return null;
+  }
+  const object = resolveBrowserReference(nodePath.get("object"), seenBindings);
+  const property = node.computed
+    ? literalText(node.property)
+    : node.property?.name;
+  return object && property ? `${object}.${property}` : null;
 }
 
 function jsxAttributeText(node) {
@@ -168,10 +238,6 @@ function jsxAttributeText(node) {
   if (node.type === "JSXExpressionContainer")
     return literalText(node.expression);
   return literalText(node);
-}
-
-function pathRoot(value) {
-  return value?.split(".")[0] ?? null;
 }
 
 function oneLine(message) {
@@ -235,15 +301,9 @@ function scanJavaScript(file, text) {
 
   const scanExecutableNode = (nodePath) => {
     const { node } = nodePath;
-    const isUnboundBrowserReference = (referencePath) => {
-      const reference = memberPath(referencePath?.node);
-      const root = pathRoot(reference);
-      return (
-        Boolean(root) &&
-        referencePath.isReferenced() &&
-        !referencePath.scope.getBinding(root)
-      );
-    };
+    const isUnboundBrowserReference = (referencePath) =>
+      Boolean(resolveBrowserReference(referencePath)) &&
+      referencePath.isReferenced();
     if (
       [
         "ImportDeclaration",
@@ -304,7 +364,9 @@ function scanJavaScript(file, text) {
     ) {
       const calleePath = nodePath.get("callee");
       const callee = memberPath(calleePath.node);
-      const globalCallee = browserGlobalName(callee);
+      const globalCallee = browserGlobalName(
+        resolveBrowserReference(calleePath),
+      );
       const networkRule = NETWORK_API_PATTERNS.find(
         (item) =>
           item.kind === "call" &&
@@ -369,7 +431,7 @@ function scanJavaScript(file, text) {
 
     if (node.type === "NewExpression") {
       const constructorPath = nodePath.get("callee");
-      const constructorName = memberPath(constructorPath.node);
+      const constructorName = resolveBrowserReference(constructorPath);
       const globalConstructor = browserGlobalName(constructorName);
       const networkRule = NETWORK_API_PATTERNS.find(
         (item) =>
@@ -419,7 +481,7 @@ function scanJavaScript(file, text) {
       node.id?.type === "ObjectPattern"
     ) {
       const sourcePath = nodePath.get("init");
-      const source = browserGlobalName(memberPath(sourcePath.node));
+      const source = browserGlobalName(resolveBrowserReference(sourcePath));
       if (!isUnboundBrowserReference(sourcePath)) return;
       for (const property of node.id.properties) {
         const key = String(propertyName(property) ?? "");
@@ -476,7 +538,7 @@ function scanJavaScript(file, text) {
       }
     }
 
-    const rawExpressionPath = memberPath(node);
+    const rawExpressionPath = resolveBrowserReference(nodePath);
     const expressionPath = browserGlobalName(rawExpressionPath);
     const isUnshadowedBrowserReference =
       nodePath.isReferenced() && isUnboundBrowserReference(nodePath);
