@@ -444,6 +444,15 @@ func stableDelegateStatusTool(s *Session, delegateID string, maxChars int) (any,
 // child-owned pending is a drive signal, not the parent's news to hear:
 // settling it there would silence the child's own undelivered notification.
 func consumeTerminalJobNotification(s *Session, jm *jobManager, rec *jobstore.JobRecord) {
+	markTerminalJobNotificationConsumed(s, jm, rec, true)
+}
+
+// markTerminalJobNotificationConsumed persists the consumed disposition and,
+// when removeQueued is true, applies the ordinary status-read behavior of
+// removing matching queue entries. Terminal-drain cuts pass false: they have
+// already removed only the exact pre-cut queue identities, and removing by job
+// ID here could erase a fresh post-cut generation of the same job.
+func markTerminalJobNotificationConsumed(s *Session, jm *jobManager, rec *jobstore.JobRecord, removeQueued bool) {
 	if jm == nil || rec == nil || rec.TerminalGen == "" {
 		return
 	}
@@ -468,7 +477,7 @@ func consumeTerminalJobNotification(s *Session, jm *jobManager, rec *jobstore.Jo
 		return
 	}
 	rec.NotifyState = jobstore.NotifyConsumed
-	if jm.consume != nil {
+	if removeQueued && jm.consume != nil {
 		jm.consume(rec.JobID)
 	}
 	// Settle the parent's forwarded COPY too, for the same reason a delivery
