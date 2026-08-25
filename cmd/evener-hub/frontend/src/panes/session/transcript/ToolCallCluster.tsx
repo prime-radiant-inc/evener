@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useId, useState } from "react";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { useThreadsStore } from "../../../stores/threads";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -46,10 +46,13 @@ function clusterHeader(
 
 // A cluster has its own local disclosure because it is a derived presentation
 // of a current adjacent run, not a durable per-item disclosure. The existing
-// dynamic VirtualList measures the row after this native details body changes
-// height; no viewport or scroll state belongs in this component.
+// dynamic VirtualList measures the row after this body changes height; no
+// viewport or scroll state belongs in this component. The wrapper is a plain
+// div (not a native <details>): ToolRow renders the real disclosure button
+// with aria-expanded, and the body below is a sibling rendered on `open`.
 export function ToolCallCluster({ items, turn, sessionRef }: ToolCallClusterProps) {
   const [open, setOpen] = useState(false);
+  const bodyId = useId();
   // Same by-ref selector ToolCallItem.tsx's own summaryCwd/openBesideCwd use
   // (copied from fileOpenBeside.tsx) - snapshot-only ThreadModel state, so a
   // shell-led folded cluster's header strips its redundant "cd <cwd> && "
@@ -57,7 +60,7 @@ export function ToolCallCluster({ items, turn, sessionRef }: ToolCallClusterProp
   const cwd = useThreadsStore((s) => (sessionRef !== undefined ? s.threads.get(sessionRef)?.cwd : undefined));
   const header = clusterHeader(items, cwd);
   return (
-    <details className={CLASS.cluster} data-testid="tool-call-cluster" open={open}>
+    <div className={CLASS.cluster} data-testid="tool-call-cluster">
       <ToolRow
         summary={header.summary}
         summaryLink={header.summaryLink}
@@ -65,9 +68,10 @@ export function ToolCallCluster({ items, turn, sessionRef }: ToolCallClusterProp
         expandable
         expanded={open}
         onToggle={() => setOpen((current) => !current)}
+        bodyId={bodyId}
       />
       {open && (
-        <div className={CLASS.body} data-testid="tool-call-cluster-body">
+        <div id={bodyId} className={CLASS.body} data-testid="tool-call-cluster-body">
           {items.map((item) => (
             <ToolCallItem
               key={item.id}
@@ -79,6 +83,6 @@ export function ToolCallCluster({ items, turn, sessionRef }: ToolCallClusterProp
           ))}
         </div>
       )}
-    </details>
+    </div>
   );
 }

@@ -455,6 +455,20 @@ describe("initial load", () => {
     await screen.findByText(/no sessions yet/i);
   });
 
+  test("the decorative aria-hidden rail chevron is a non-focusable span", async () => {
+    renderRail();
+    await screen.findByText("Live session");
+    const chevron = screen.getAllByTestId("rail-chevron")[0];
+    if (chevron === undefined) throw new Error("rail chevron did not render");
+    expect(chevron.tagName).toBe("SPAN");
+    expect(chevron.getAttribute("aria-hidden")).toBe("true");
+    expect(chevron.getAttribute("tabindex")).toBe(null);
+
+    const user = userEvent.setup();
+    await user.click(chevron);
+    expect(document.activeElement).not.toBe(chevron);
+  });
+
   // kata p5w9. This effect's duty is "the rail has data", not "fetch again":
   // the tree it renders is kept current by evener/tree/changed pushes, so a
   // remount with one already loaded has nothing to go and get. Mobile makes
