@@ -541,6 +541,29 @@ test("discovers only the Crashpad helper for the exact canonical private profile
   );
 });
 
+test("streams a process-heavy table while preserving full-argv candidates", (context) => {
+  const profileDir = mkdtempSync(path.join(tmpdir(), "browser-helper-stream-test-"));
+  context.after(() => rmSync(profileDir, { recursive: true, force: true }));
+  const exactDatabase = `--database=${path.join(realpathSync(profileDir), "Crashpad")}`;
+  const processTableOverOneMiB = "  1   1 /usr/bin/unrelated --noise\n".repeat(70_000);
+  const processTable = `${processTableOverOneMiB}
+  510   300 /Applications/Google Chrome/chrome_crashpad_handler ${exactDatabase}
+  511   301 /Applications/Google Chrome/chrome_crashpad_h ${exactDatabase}
+  512   302 /usr/bin/tool --arg=/chrome_crashpad_handler ${exactDatabase}`;
+  assert.ok(processTable.length > 1_048_576);
+  const candidates = browserGuardProcess.listSystemProcesses({ processTable });
+  assert.match(candidates, /\b510\s+300\s+.*chrome_crashpad_handler/);
+  assert.doesNotMatch(candidates, /\b511\s+301\s+/);
+  assert.match(candidates, /\b512\s+302\s+.*--arg=/);
+  assert.deepEqual(
+    browserGuardProcess.findMacOSProfileProcesses(profileDir, {
+      platform: "darwin",
+      listProcesses: () => candidates,
+    }),
+    [{ pid: 510, pgid: 300, databaseArg: exactDatabase }],
+  );
+});
+
 test("does not treat an unrelated process that reused a captured Crashpad PID as owned", () => {
   assert.equal(typeof browserGuardProcess.profileProcessIdentityRunning, "function");
   const identity = {
