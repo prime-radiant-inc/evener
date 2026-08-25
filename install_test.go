@@ -373,6 +373,9 @@ func TestInstallScriptPreservesDownloadFailuresAndClassifies404(t *testing.T) {
 			if got := exitErr.ExitCode(); got != tc.wantExit {
 				t.Fatalf("exit status = %d, want %d; output = %s", got, tc.wantExit, out)
 			}
+			if !strings.Contains(out, fakeCurlDiagnostic) {
+				t.Fatalf("curl diagnostic sentinel was lost; output = %s", out)
+			}
 			gotAdvice := strings.Contains(out, "EVENER_INSTALL_VERSION=snapshot")
 			if gotAdvice != tc.wantAdvice {
 				t.Fatalf("snapshot advice = %v, want %v; output = %s", gotAdvice, tc.wantAdvice, out)
@@ -615,6 +618,8 @@ func installArchiveRoot(osName, arch string) string {
 	return "evener_" + strings.ToLower(osName) + "_" + installArch(arch)
 }
 
+const fakeCurlDiagnostic = "curl-diagnostic-7f3c"
+
 func assertNothingInstalled(t *testing.T, home, out string) {
 	t.Helper()
 	if _, err := os.Stat(filepath.Join(home, ".local", "share", "evener", "bin", "evener")); !os.IsNotExist(err) {
@@ -664,15 +669,21 @@ http_code=${EVENER_FAKE_CURL_HTTP_CODE:-200}
 if [ -n "${EVENER_FAKE_CURL_404:-}" ] && [ "$(basename "$url")" = "$EVENER_FAKE_CURL_404" ]; then
   http_code=404
 fi
+if [ -n "$write_format" ] && [ "$write_format" != '%{http_code}' ]; then
+	echo "invalid write format" >&2
+	exit 2
+fi
 if [ -n "$write_format" ]; then
-  printf '%s' "$http_code"
+	printf '%s' "$http_code"
 fi
 if [ -n "${EVENER_FAKE_CURL_EXIT:-}" ]; then
-  cp "$EVENER_FAKE_CURL_ARCHIVE" "$out"
-  exit "$EVENER_FAKE_CURL_EXIT"
+	echo "curl-diagnostic-7f3c" >&2
+	cp "$EVENER_FAKE_CURL_ARCHIVE" "$out"
+	exit "$EVENER_FAKE_CURL_EXIT"
 fi
 if [ -n "${EVENER_FAKE_CURL_404:-}" ] && [ "$(basename "$url")" = "$EVENER_FAKE_CURL_404" ]; then
-  exit 22
+	echo "curl-diagnostic-7f3c" >&2
+	exit 22
 fi
 case "$(basename "$url")" in
   checksums.txt)
