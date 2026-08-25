@@ -64,6 +64,10 @@ type realWebSocketKeepaliveTicker struct {
 func (t realWebSocketKeepaliveTicker) Chan() <-chan time.Time { return t.ticker.C }
 func (t realWebSocketKeepaliveTicker) Stop()                  { t.ticker.Stop() }
 
+func newRealWebSocketKeepaliveTicker(interval time.Duration) webSocketKeepaliveTicker {
+	return realWebSocketKeepaliveTicker{ticker: time.NewTicker(interval)}
+}
+
 type webSocketReadGate struct {
 	mu        sync.Mutex
 	available bool
@@ -136,7 +140,7 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	gate := newWebSocketReadGate()
-	go runWebSocketKeepalive(ctx, ws, cancel, gate, s.keepalivePingInterval, s.keepalivePongTimeout)
+	go runWebSocketKeepaliveWithTicker(ctx, ws, cancel, gate, s.keepalivePongTimeout, s.keepaliveTickerFactory(s.keepalivePingInterval), s.keepaliveDecision)
 
 	runWebSocketReceiveLoop(ctx, ws, transport, conn, gate)
 }

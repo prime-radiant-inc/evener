@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -47,17 +48,20 @@ func TestServeWebSocketHandlesAppWire(t *testing.T) {
 
 func TestServeWebSocketKeepsBusyRPCAliveAndDetectsIdlePeerLoss(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
-	server.keepalivePingInterval = time.Millisecond
 	server.keepalivePongTimeout = 5 * time.Millisecond
+	ticker := newControlledKeepaliveTicker()
+	decision := make(chan bool, 2)
+	server.keepaliveTickerFactory = func(time.Duration) webSocketKeepaliveTicker { return ticker }
+	server.keepaliveDecision = func(ok bool) { decision <- ok }
 
 	handlerStarted := make(chan struct{})
 	releaseHandler := make(chan struct{})
-	var handlerBusy atomic.Bool
+	var releaseOnce sync.Once
+	release := func() { releaseOnce.Do(func() { close(releaseHandler) }) }
+	defer release()
 	HandleTyped(server.Router(), appwire.MethodThreadList, func(ctx context.Context, _ appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
-		handlerBusy.Store(true)
 		close(handlerStarted)
 		<-releaseHandler
-		handlerBusy.Store(false)
 		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "th_held"}}}, nil
 	})
 	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
@@ -65,18 +69,13 @@ func TestServeWebSocketKeepsBusyRPCAliveAndDetectsIdlePeerLoss(t *testing.T) {
 
 	var answerPings atomic.Bool
 	answerPings.Store(true)
-	busyPingSeen := make(chan struct{}, 1)
 	idlePingSeen := make(chan struct{}, 1)
 	ctx := context.Background()
 	wsConn, _, err := websocket.Dial(ctx, "ws"+httpServer.URL[len("http"):], &websocket.DialOptions{
 		HTTPClient: httpServer.Client(),
 		OnPingReceived: func(context.Context, []byte) bool {
-			seen := idlePingSeen
-			if handlerBusy.Load() {
-				seen = busyPingSeen
-			}
 			select {
-			case seen <- struct{}{}:
+			case idlePingSeen <- struct{}{}:
 			default:
 			}
 			return answerPings.Load()
@@ -105,17 +104,18 @@ func TestServeWebSocketKeepsBusyRPCAliveAndDetectsIdlePeerLoss(t *testing.T) {
 		t.Fatal("ordinary RPC handler did not become ready")
 	}
 
-	// Keep the serial HandleMessage call held longer than the server's native
-	// ping interval plus pong deadline. The timer controls the requested hold
-	// duration; the assertions below use the RPC result and control-frame event,
-	// not elapsed time, as the behavior oracle.
-	hold := time.NewTimer(server.keepalivePingInterval + server.keepalivePongTimeout + server.keepalivePingInterval)
+	// Drive the actual ServeWebSocket keepalive goroutine while HandleMessage is
+	// held in the serial reader/dispatch path. The decision is emitted only
+	// after the gate has observed the busy reader, so release is not time-based.
+	ticker.Tick()
 	select {
-	case <-hold.C:
-		close(releaseHandler)
+	case attempted := <-decision:
+		if attempted {
+			t.Fatal("keepalive attempted a ping while the serial RPC handler was busy")
+		}
+		release()
 	case <-time.After(time.Second):
-		hold.Stop()
-		t.Fatal("held RPC did not reach its release point")
+		t.Fatal("keepalive did not report the busy-reader decision")
 	}
 
 	select {
@@ -126,16 +126,19 @@ func TestServeWebSocketKeepsBusyRPCAliveAndDetectsIdlePeerLoss(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("held RPC did not complete after exact release")
 	}
-	select {
-	case <-busyPingSeen:
-		t.Fatal("server pinged while the serial RPC handler was busy")
-	default:
-	}
-
 	// Once ordinary work is gone, an unanswered native ping must still retire
 	// the connection. The client remains a real coder/websocket peer, but stops
 	// answering control pings to model a silent half-open transport.
 	answerPings.Store(false)
+	ticker.Tick()
+	select {
+	case attempted := <-decision:
+		if !attempted {
+			t.Fatal("keepalive did not observe the available reader")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("keepalive did not report the idle-reader decision")
+	}
 	select {
 	case <-idlePingSeen:
 	case <-time.After(time.Second):
