@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -21,6 +22,22 @@ import (
 // JavaScript transports revisions as numbers. Never publish a value that cannot
 // round-trip through Number.MAX_SAFE_INTEGER.
 const maxNavigationSafeInteger uint64 = 9_007_199_254_740_991
+
+// Named service defaults make the retained-cache and independent-build bounds
+// observable rather than hiding protocol behavior in constructor literals.
+const (
+	defaultNavigationCacheEntries = 256
+	defaultNavigationCacheBytes   = int64(64 << 20)
+	defaultNavigationBuildTimeout = 15 * time.Second
+	defaultNavigationRetryAfter   = 5 * time.Second
+	// A tiny collection window lets requests released together join one service
+	// refresh flight even when a capture itself is faster than goroutine dispatch.
+	defaultNavigationRefreshCoalesceWindow = time.Millisecond
+)
+
+// buildNavigationServiceProjection is a narrow test seam proving resource
+// misses reuse the retained core projection rather than rebuilding it.
+var buildNavigationServiceProjection = buildNavigationProjection
 
 type navigationSourceRevision struct {
 	Inputs uint64
@@ -45,32 +62,35 @@ type navigationChangeHint struct {
 }
 
 type navigationServiceConfig struct {
-	Source     navigationSource
-	Generation func() (string, error)
-	Now        func() time.Time
-	WaitUntil  func(context.Context, time.Time) error
-	Cache      *navigationRepresentationCache
+	Source       navigationSource
+	Generation   func() (string, error)
+	Now          func() time.Time
+	WaitUntil    func(context.Context, time.Time) error
+	Cache        *navigationRepresentationCache
+	BuildTimeout time.Duration
+	RetryAfter   time.Duration
 }
 
 type navigationResourceState struct {
-	Revision          uint64
-	Fingerprint       navigationFingerprint
-	lastNotifiedBuild uint64
+	Revision     uint64
+	Fingerprint  navigationFingerprint
+	Present      bool
+	Dependencies []navigationResourceKey // semantic target-bearing keys
 }
 
 type navigationCoreSnapshot struct {
-	inputs       navigationBuildInputs
-	projection   navigationProjection
+	projection   navigationProjection // immutable deep snapshot; never source aliases
 	source       navigationSourceRevision
 	epoch        uint64
 	nextBoundary time.Time
 }
 
 type navigationBuildFlight struct {
-	done    chan struct{}
-	changes map[navigationResourceKey]bool
-	err     error
-	id      uint64
+	done      chan struct{}
+	changes   map[navigationResourceKey]bool
+	err       error
+	id        uint64
+	committed bool
 }
 
 type navigationServiceStats struct {
@@ -79,25 +99,29 @@ type navigationServiceStats struct {
 }
 
 // NavigationService owns the coherent, revisioned navigation generation for a
-// single hub. Source capture is deliberately separate from projection: it lets
-// us reject a snapshot whenever an input changes between capture and publish.
+// single hub. Its source capture and pure projection are separated so a changed
+// source can never publish an incoherent projection under an older key.
 type NavigationService struct {
 	mu sync.Mutex
 
-	source     navigationSource
-	generation string
-	genErr     error
-	now        func() time.Time
-	waitUntil  func(context.Context, time.Time) error
-	cache      *navigationRepresentationCache
+	source       navigationSource
+	generation   string
+	genErr       error
+	now          func() time.Time
+	waitUntil    func(context.Context, time.Time) error
+	buildTimeout time.Duration
+	retryAfter   time.Duration
+	coalesceWait time.Duration
+	cache        *navigationRepresentationCache
 
 	core       *navigationCoreSnapshot
-	resources  map[navigationResourceKey]navigationResourceState // semantic keys
+	resources  map[navigationResourceKey]navigationResourceState // includes tombstones
 	sequence   uint64
 	epoch      uint64
 	flight     *navigationBuildFlight
 	buildID    uint64
 	coreBuilds uint64
+	wake       chan struct{}
 }
 
 func newNavigationService(cfg navigationServiceConfig) *NavigationService {
@@ -119,16 +143,26 @@ func newNavigationService(cfg navigationServiceConfig) *NavigationService {
 	}
 	cache := cfg.Cache
 	if cache == nil {
-		cache = newNavigationRepresentationCache(256, 64<<20)
+		cache = newNavigationRepresentationCache(defaultNavigationCacheEntries, defaultNavigationCacheBytes)
+	}
+	if cfg.BuildTimeout <= 0 {
+		cfg.BuildTimeout = defaultNavigationBuildTimeout
+	}
+	if cfg.RetryAfter <= 0 {
+		cfg.RetryAfter = defaultNavigationRetryAfter
 	}
 	return &NavigationService{
-		source:     cfg.Source,
-		generation: id,
-		genErr:     err,
-		now:        now,
-		waitUntil:  waitUntil,
-		cache:      cache,
-		resources:  make(map[navigationResourceKey]navigationResourceState),
+		source:       cfg.Source,
+		generation:   id,
+		genErr:       err,
+		now:          now,
+		waitUntil:    waitUntil,
+		buildTimeout: cfg.BuildTimeout,
+		retryAfter:   cfg.RetryAfter,
+		coalesceWait: defaultNavigationRefreshCoalesceWindow,
+		cache:        cache,
+		resources:    make(map[navigationResourceKey]navigationResourceState),
+		wake:         make(chan struct{}, 1),
 	}
 }
 
@@ -155,18 +189,27 @@ func waitForNavigationBoundary(ctx context.Context, boundary time.Time) error {
 	}
 }
 
-// Invalidate marks a source-side change. The next reader or explicit refresh
-// takes a new capture; an in-flight capture is re-read before it can publish.
+// Invalidate marks source-side state dirty and immediately resets a scheduler
+// wait. Task 7 owns producer hooks; this method is intentionally idempotent.
 func (s *NavigationService) Invalidate(navigationChangeHint) {
 	s.mu.Lock()
 	s.epoch++
 	s.mu.Unlock()
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
 }
 
-func (s *NavigationService) Capability() appwire.NavigationCapability {
+// Capability is nil when generation construction failed. That omission is
+// deliberate: clients must not receive a malformed/unstable navigation surface.
+func (s *NavigationService) Capability() *appwire.NavigationCapability {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return appwire.NavigationCapability{Version: 1, GenerationID: s.generation, Sequence: s.sequence}
+	if s.genErr != nil {
+		return nil
+	}
+	return &appwire.NavigationCapability{Version: 1, GenerationID: s.generation, Sequence: s.sequence}
 }
 
 func (s *NavigationService) Stats() navigationServiceStats {
@@ -177,59 +220,53 @@ func (s *NavigationService) Stats() navigationServiceStats {
 	return stats
 }
 
-// CurrentRevision returns the revision of one semantic resource. It is useful
-// for assertions; transport callers should use VersionedKey so generation and
-// revision come from one lock acquisition.
+// CurrentRevision is assertion-oriented. HTTP must use VersionedKey, which
+// reads generation and semantic revision under one lock after a coherent build.
 func (s *NavigationService) CurrentRevision(key navigationResourceKey) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.resources[key.Semantic()].Revision
 }
 
-// VersionedKey atomically resolves the current generation and semantic resource
-// revision after ensuring a coherent core snapshot exists. HTTP must use this
-// rather than reading Capability and CurrentRevision independently.
+// VersionedKey atomically obtains the current semantic resource version. It is
+// paired internally with the immutable core projection selected by
+// Representation, so a new projection's bytes cannot enter an old cache key.
 func (s *NavigationService) VersionedKey(ctx context.Context, key navigationResourceKey) (navigationResourceKey, error) {
-	if _, err := s.ensureSnapshot(ctx, false); err != nil {
-		return navigationResourceKey{}, err
+	_, versioned, _, err := s.versionedCore(ctx, key)
+	return versioned, err
+}
+
+func (s *NavigationService) versionedCore(ctx context.Context, key navigationResourceKey) (*navigationBuildFlight, navigationResourceKey, navigationProjection, error) {
+	flight, err := s.ensureSnapshot(ctx, false)
+	if err != nil {
+		return nil, navigationResourceKey{}, navigationProjection{}, err
 	}
 	semantic := key.Semantic()
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	state, ok := s.resources[semantic]
-	if !ok {
-		return navigationResourceKey{}, navigationNotFoundError{kind: semantic.Kind}
+	if s.core == nil {
+		return nil, navigationResourceKey{}, navigationProjection{}, errors.New("navigation core unavailable")
 	}
-	key = key.canonical()
-	key.Generation = s.generation
-	key.Revision = state.Revision
-	return key, nil
+	state, ok := s.resources[semantic]
+	if !ok || !state.Present {
+		return nil, navigationResourceKey{}, navigationProjection{}, navigationNotFoundError{kind: semantic.Kind}
+	}
+	versioned := key.canonical()
+	versioned.Generation = s.generation
+	versioned.Revision = state.Revision
+	// navigationProjection retains only deep-cloned input and derived maps. A
+	// value copy is enough to bind this request to the exact core selected above.
+	return flight, versioned, s.core.projection, nil
 }
 
-// Representation resolves a supplied (possibly stale) request key to the
-// current coherent version and asks the encoded-resource cache for that exact
-// immutable representation.
+// Representation captures a versioned key and its immutable core projection in
+// one service transaction, then caches bytes only under that paired version.
 func (s *NavigationService) Representation(ctx context.Context, key navigationResourceKey) (navigationRepresentation, error) {
-	versioned, err := s.VersionedKey(ctx, key)
+	_, versioned, projection, err := s.versionedCore(ctx, key)
 	if err != nil {
 		return navigationRepresentation{}, err
 	}
-	s.mu.Lock()
-	core := s.core
-	s.mu.Unlock()
-	if core == nil {
-		return navigationRepresentation{}, errors.New("navigation core unavailable")
-	}
 	representation, err := s.cache.Get(ctx, versioned, func(context.Context) (navigationRepresentation, error) {
-		// A resource revision is part of its wire object, but is not part of its
-		// semantic fingerprint. Rebuild this pure projection from the retained
-		// core inputs with the version selected above.
-		inputs := cloneNavigationInputs(core.inputs)
-		inputs.Revision = versioned.Revision
-		projection, err := buildNavigationProjection(inputs)
-		if err != nil {
-			return navigationRepresentation{}, err
-		}
 		object, _, err := projection.Resource(versioned)
 		if err != nil {
 			return navigationRepresentation{}, err
@@ -259,41 +296,30 @@ func (s *NavigationService) Representation(ctx context.Context, key navigationRe
 
 func gzipNavigation(input []byte) ([]byte, error) {
 	var buffer bytes.Buffer
-	zw := gzip.NewWriter(&buffer)
-	if _, err := zw.Write(input); err != nil {
+	writer := gzip.NewWriter(&buffer)
+	if _, err := writer.Write(input); err != nil {
 		return nil, err
 	}
-	if err := zw.Close(); err != nil {
+	if err := writer.Close(); err != nil {
 		return nil, err
 	}
 	return buffer.Bytes(), nil
 }
 
-// Refresh captures and commits a current snapshot before returning the exact
-// mutation targets. Explicit refreshes always perform one build; concurrent
-// callers join the same build flight.
+// Refresh always requests a new source capture, but all concurrent callers join
+// its service-owned flight. Caller cancellation stops only that caller's wait.
 func (s *NavigationService) Refresh(ctx context.Context, hint navigationChangeHint) (hubapi.NavigationMutation, error) {
-	if s.wouldOverflowSequence(hint) {
+	if s.sequenceAtSafeLimit() {
 		return hubapi.NavigationMutation{}, errors.New("navigation sequence exceeds JavaScript safe integer")
 	}
 	flight, err := s.ensureSnapshot(ctx, true)
 	if err != nil {
 		return hubapi.NavigationMutation{}, err
 	}
-	targets, err := s.commitTargets(flight.id, flight.changes, hint)
-	if err != nil {
-		return hubapi.NavigationMutation{}, err
-	}
-	s.mu.Lock()
-	generation := s.generation
-	s.mu.Unlock()
-	return hubapi.NavigationMutation{GenerationID: generation, Targets: targets}, nil
+	return s.commitFlightTargets(flight, hint)
 }
 
-func (s *NavigationService) wouldOverflowSequence(hint navigationChangeHint) bool {
-	if len(hint.Projects) == 0 && !hint.Sources && !hint.Time && !hint.AllLoadedProjects {
-		return false
-	}
+func (s *NavigationService) sequenceAtSafeLimit() bool {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.sequence >= maxNavigationSafeInteger
@@ -312,25 +338,38 @@ func (s *NavigationService) ensureSnapshot(ctx context.Context, force bool) (*na
 	revision := s.source.Revision()
 	s.mu.Lock()
 	if !force && s.core != nil && s.core.source == revision && s.core.epoch == s.epoch {
-		flight := &navigationBuildFlight{changes: map[navigationResourceKey]bool{}, id: s.buildID}
+		flight := &navigationBuildFlight{changes: map[navigationResourceKey]bool{}, id: s.buildID, done: closedNavigationDone()}
 		s.mu.Unlock()
 		return flight, nil
 	}
-	if existing := s.flight; existing != nil {
+	if flight := s.flight; flight != nil {
 		s.mu.Unlock()
-		select {
-		case <-ctx.Done():
-			return nil, navigationUnavailable(ctx.Err())
-		case <-existing.done:
-			return existing, existing.err
-		}
+		return s.waitFlight(ctx, flight)
 	}
 	flight := &navigationBuildFlight{done: make(chan struct{})}
 	s.flight = flight
 	s.mu.Unlock()
+	buildCtx, cancel := context.WithTimeout(context.Background(), s.buildTimeout)
+	go func() {
+		defer cancel()
+		s.buildSnapshot(buildCtx, revision, flight)
+	}()
+	return s.waitFlight(ctx, flight)
+}
 
-	s.buildSnapshot(ctx, revision, flight)
-	return flight, flight.err
+func closedNavigationDone() chan struct{} {
+	done := make(chan struct{})
+	close(done)
+	return done
+}
+
+func (s *NavigationService) waitFlight(ctx context.Context, flight *navigationBuildFlight) (*navigationBuildFlight, error) {
+	select {
+	case <-ctx.Done():
+		return nil, navigationUnavailable(ctx.Err())
+	case <-flight.done:
+		return flight, flight.err
+	}
 }
 
 func (s *NavigationService) generationError() error {
@@ -339,7 +378,7 @@ func (s *NavigationService) generationError() error {
 	return s.genErr
 }
 
-func (s *NavigationService) buildSnapshot(ctx context.Context, initial navigationSourceRevision, flight *navigationBuildFlight) {
+func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigationSourceRevision, flight *navigationBuildFlight) {
 	defer func() {
 		s.mu.Lock()
 		if s.flight == flight {
@@ -348,8 +387,20 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, initial navigatio
 		close(flight.done)
 		s.mu.Unlock()
 	}()
-
-	wanted := initial
+	// Keep the newly-created flight joinable long enough to collect callers that
+	// were released concurrently. Without this bounded window, a fast capture can
+	// finish between scheduler turns and turn one concurrent refresh burst into a
+	// serial run of redundant captures.
+	if s.coalesceWait > 0 {
+		timer := time.NewTimer(s.coalesceWait)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			flight.err = navigationUnavailable(ctx.Err())
+			return
+		case <-timer.C:
+		}
+	}
 	for {
 		if err := ctx.Err(); err != nil {
 			flight.err = navigationUnavailable(err)
@@ -369,27 +420,31 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, initial navigatio
 			return
 		}
 		inputs := cloneNavigationInputs(snapshot.Inputs)
+		inputs.Tree = snapshot.Inputs.Tree.Snapshot()
 		inputs.GenerationID = generation
-		inputs.Revision = 0 // fingerprints must not change merely because a revision did.
-		projection, err := buildNavigationProjection(inputs)
+		inputs.Revision = 0 // semantic fingerprints never include transport revision.
+		projection, err := buildNavigationServiceProjection(inputs)
 		if err != nil {
 			flight.err = err
 			return
 		}
-		fingerprints, err := navigationResourceFingerprints(projection)
+		fingerprints, dependencies, err := navigationLogicalFingerprints(projection)
 		if err != nil {
 			flight.err = err
 			return
 		}
+		// Compare immediately before publication. Any source/Invalidate movement
+		// rejects this full build and retries; publication never mixes a newer core
+		// with an older resource version.
 		after := s.source.Revision()
 		s.mu.Lock()
-		invalidated := s.epoch != epoch || after != wanted
-		if invalidated {
+		stale := s.epoch != epoch || after != expected || s.source.Revision() != after
+		if stale {
 			s.mu.Unlock()
-			wanted = after
+			expected = s.source.Revision()
 			continue
 		}
-		changes, states, err := navigationNextStates(s.resources, fingerprints)
+		changes, states, err := navigationNextStates(s.resources, fingerprints, dependencies)
 		if err != nil {
 			s.mu.Unlock()
 			flight.err = err
@@ -399,112 +454,216 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, initial navigatio
 		s.buildID++
 		flight.id = s.buildID
 		flight.changes = changes
-		s.core = &navigationCoreSnapshot{inputs: inputs, projection: projection, source: after, epoch: epoch, nextBoundary: snapshot.NextBoundary}
+		s.core = &navigationCoreSnapshot{projection: projection, source: after, epoch: epoch, nextBoundary: snapshot.NextBoundary}
 		s.coreBuilds++
 		s.mu.Unlock()
 		return
 	}
 }
 
-func navigationNextStates(previous map[navigationResourceKey]navigationResourceState, fingerprints map[navigationResourceKey]navigationFingerprint) (map[navigationResourceKey]bool, map[navigationResourceKey]navigationResourceState, error) {
-	next := make(map[navigationResourceKey]navigationResourceState, len(fingerprints))
+func navigationNextStates(previous map[navigationResourceKey]navigationResourceState, fingerprints map[navigationResourceKey]navigationFingerprint, dependencies map[navigationResourceKey][]navigationResourceKey) (map[navigationResourceKey]bool, map[navigationResourceKey]navigationResourceState, error) {
+	next := make(map[navigationResourceKey]navigationResourceState, len(previous)+len(fingerprints))
 	changes := make(map[navigationResourceKey]bool)
-	for key, fingerprint := range fingerprints {
-		old, exists := previous[key]
-		if !exists {
-			next[key] = navigationResourceState{Revision: 1, Fingerprint: fingerprint}
+	keys := make(map[navigationResourceKey]bool, len(previous)+len(fingerprints))
+	for key := range previous {
+		keys[key] = true
+	}
+	for key := range fingerprints {
+		keys[key] = true
+	}
+	for key := range keys {
+		old, existed := previous[key]
+		fingerprint, present := fingerprints[key]
+		if !existed {
+			next[key] = navigationResourceState{Revision: 1, Fingerprint: fingerprint, Present: present, Dependencies: cloneNavigationDependencies(dependencies[key])}
 			changes[key] = true
 			continue
 		}
-		if old.Fingerprint != fingerprint {
+		changed := old.Present != present || (present && old.Fingerprint != fingerprint)
+		if changed {
 			if old.Revision >= maxNavigationSafeInteger {
 				return nil, nil, errors.New("navigation resource revision exceeds JavaScript safe integer")
 			}
 			old.Revision++
-			old.Fingerprint = fingerprint
 			changes[key] = true
 		}
+		if present {
+			old.Fingerprint = fingerprint
+			old.Dependencies = cloneNavigationDependencies(dependencies[key])
+		}
+		old.Present = present
 		next[key] = old
 	}
 	return changes, next, nil
 }
 
-func navigationResourceFingerprints(projection navigationProjection) (map[navigationResourceKey]navigationFingerprint, error) {
-	keys := []navigationResourceKey{
-		{Kind: navigationResourceManifest}, {Kind: navigationResourceLive}, {Kind: navigationResourceNeedsYou},
-		{Kind: navigationResourcePinCatalog}, {Kind: navigationResourceProjects}, {Kind: navigationResourceArchivedProjects}, {Kind: navigationResourceTestRuns},
-	}
-	for _, section := range projection.pinSections {
-		keys = append(keys, navigationResourceKey{Kind: navigationResourcePinSection, SectionID: section.id})
-	}
-	for project := range projection.projects {
-		keys = append(keys, navigationResourceKey{Kind: navigationResourceProject, ProjectKey: project})
-	}
-	for ref := range projection.locations {
-		keys = append(keys, navigationResourceKey{Kind: navigationResourceLocation, ID: ref})
-	}
-	out := make(map[navigationResourceKey]navigationFingerprint, len(keys))
-	for _, key := range keys {
-		_, fingerprint, err := projection.Resource(key)
-		if err != nil {
-			return nil, err
-		}
-		out[key.Semantic()] = fingerprint
-	}
-	return out, nil
+func cloneNavigationDependencies(in []navigationResourceKey) []navigationResourceKey {
+	return append([]navigationResourceKey(nil), in...)
 }
 
-func (s *NavigationService) commitTargets(buildID uint64, changes map[navigationResourceKey]bool, hint navigationChangeHint) (hubapi.NavigationArray[appwire.NavigationInvalidationTarget], error) {
+// navigationLogicalFingerprints covers complete logical resources, not just a
+// first page. It therefore changes a shared section/catalog/project revision on
+// off-page edits, membership changes, descendant changes, and removals.
+func navigationLogicalFingerprints(projection navigationProjection) (map[navigationResourceKey]navigationFingerprint, map[navigationResourceKey][]navigationResourceKey, error) {
+	fingerprints := make(map[navigationResourceKey]navigationFingerprint)
+	dependencies := make(map[navigationResourceKey][]navigationResourceKey)
+	put := func(key navigationResourceKey, value any, deps ...navigationResourceKey) error {
+		fingerprint, err := navigationLogicalFingerprint(value)
+		if err != nil {
+			return err
+		}
+		key = key.Semantic()
+		fingerprints[key] = fingerprint
+		for _, dep := range deps {
+			dependencies[key] = append(dependencies[key], dep.Semantic())
+		}
+		return nil
+	}
+	manifest, _, err := projection.Resource(navigationResourceKey{Kind: navigationResourceManifest})
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := put(navigationResourceKey{Kind: navigationResourceManifest}, manifest, navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		return nil, nil, err
+	}
+	if err := put(navigationResourceKey{Kind: navigationResourceLive}, navigationLogicalNodes(projection, projection.live), navigationResourceKey{Kind: navigationResourceLive}); err != nil {
+		return nil, nil, err
+	}
+	if err := put(navigationResourceKey{Kind: navigationResourceNeedsYou}, navigationLogicalNodes(projection, projection.needsYou), navigationResourceKey{Kind: navigationResourceNeedsYou}); err != nil {
+		return nil, nil, err
+	}
+	pinCatalog := make([]hubapi.NavigationPinSectionDescriptor, 0, len(projection.pinSections))
+	for _, section := range projection.pinSections {
+		pinCatalog = append(pinCatalog, hubapi.NavigationPinSectionDescriptor{ID: section.id, Name: section.name, Count: len(section.rows)})
+		key := navigationResourceKey{Kind: navigationResourcePinSection, SectionID: section.id}
+		if err := put(key, navigationLogicalNodes(projection, section.rows), key); err != nil {
+			return nil, nil, err
+		}
+	}
+	if err := put(navigationResourceKey{Kind: navigationResourcePinCatalog}, pinCatalog, navigationResourceKey{Kind: navigationResourcePinCatalog}); err != nil {
+		return nil, nil, err
+	}
+	for _, kind := range []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns} {
+		projects := projection.catalogs[kind]
+		logical := make([]hubapi.NavigationProjectSummary, 0, len(projects))
+		for _, project := range projects {
+			logical = append(logical, projection.projectSummary(project))
+		}
+		key := navigationResourceKey{Kind: kind}
+		if err := put(key, logical, key); err != nil {
+			return nil, nil, err
+		}
+	}
+	for projectKey, project := range projection.projects {
+		logical := struct {
+			Project  hubapi.NavigationProjectSummary
+			Current  hubapi.NavigationArray[hubapi.NavigationSessionSummary]
+			Recent   hubapi.NavigationArray[hubapi.NavigationSessionSummary]
+			Archived hubapi.NavigationArray[hubapi.NavigationSessionSummary]
+		}{Project: projection.projectSummary(project)}
+		current, _ := project.TierRows("current")
+		recent, _ := project.TierRows("recent")
+		archived, _ := project.TierRows("archived")
+		logical.Current = navigationLogicalNodes(projection, current)
+		logical.Recent = navigationLogicalNodes(projection, recent)
+		logical.Archived = navigationLogicalNodes(projection, archived)
+		key := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: projectKey}
+		if err := put(key, logical, key); err != nil {
+			return nil, nil, err
+		}
+	}
+	for ref, location := range projection.locations {
+		key := navigationResourceKey{Kind: navigationResourceLocation, ID: ref}
+		var dep navigationResourceKey
+		if location.ProjectKey != "" {
+			dep = navigationResourceKey{Kind: navigationResourceProject, ProjectKey: location.ProjectKey}
+		} else if location.Tier == "live" || location.Tier == "needs_you" {
+			dep = navigationResourceKey{Kind: navigationResourceKind(location.Tier)}
+		}
+		if err := put(key, location, dep); err != nil {
+			return nil, nil, err
+		}
+	}
+	return fingerprints, dependencies, nil
+}
+
+func navigationLogicalNodes(projection navigationProjection, rows []hubcore.TreeNode) hubapi.NavigationArray[hubapi.NavigationSessionSummary] {
+	out := make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], len(rows))
+	for index, row := range rows {
+		out[index] = navigationLogicalNode(projection, row)
+	}
+	return out
+}
+
+func navigationLogicalNode(projection navigationProjection, row hubcore.TreeNode) hubapi.NavigationSessionSummary {
+	summary := navigationProjector{projection: projection}.projectShallow(row)
+	summary.Children = navigationLogicalNodes(projection, row.Children)
+	return summary
+}
+
+func navigationLogicalFingerprint(value any) (navigationFingerprint, error) {
+	encoded, err := json.Marshal(value)
+	if err != nil {
+		return navigationFingerprint{}, err
+	}
+	return sha256.Sum256(encoded), nil
+}
+
+// commitFlightTargets makes a shared capture one logical mutation. Joined
+// refresh calls must not replay its exact invalidations or advance sequence a
+// second time after the first caller has committed them.
+func (s *NavigationService) commitFlightTargets(flight *navigationBuildFlight, hint navigationChangeHint) (hubapi.NavigationMutation, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if hint.AllLoadedProjects {
-		if s.sequence >= maxNavigationSafeInteger {
-			return nil, errors.New("navigation sequence exceeds JavaScript safe integer")
+	if flight.committed {
+		return hubapi.NavigationMutation{GenerationID: s.generation, Targets: hubapi.NavigationArray[appwire.NavigationInvalidationTarget]{}}, nil
+	}
+	mutation, err := s.commitTargetsLocked(flight.changes, hint)
+	if err == nil {
+		flight.committed = true
+	}
+	return mutation, err
+}
+
+func (s *NavigationService) commitTargetsLocked(changes map[navigationResourceKey]bool, hint navigationChangeHint) (hubapi.NavigationMutation, error) {
+	targetSet := make(map[string]appwire.NavigationInvalidationTarget)
+	for key, changed := range changes {
+		if !changed {
+			continue
 		}
-		s.sequence++
-		return hubapi.NavigationArray[appwire.NavigationInvalidationTarget]{{Kind: appwire.NavigationTargetAllLoadedProjects}}, nil
-	}
-	selected := make(map[navigationResourceKey]bool)
-	for _, project := range hint.Projects {
-		selected[(navigationResourceKey{Kind: navigationResourceProject, ProjectKey: project}).Semantic()] = true
-	}
-	if hint.Sources {
-		selected[(navigationResourceKey{Kind: navigationResourceManifest}).Semantic()] = true
-	}
-	if hint.Time {
-		for key, changed := range changes {
-			if changed {
-				selected[key] = true
+		state := s.resources[key]
+		for _, dependency := range state.Dependencies {
+			dependencyState, exists := s.resources[dependency]
+			if !exists {
+				dependencyState = state
+			}
+			if target, ok := navigationTargetForResource(dependency, dependencyState.Revision); ok {
+				targetSet[navigationTargetIdentity(target)] = target
 			}
 		}
 	}
-	keys := make([]navigationResourceKey, 0, len(selected))
-	for key := range selected {
-		keys = append(keys, key)
+	if len(targetSet) == 0 {
+		return hubapi.NavigationMutation{GenerationID: s.generation, Targets: hubapi.NavigationArray[appwire.NavigationInvalidationTarget]{}}, nil
 	}
-	sort.Slice(keys, func(i, j int) bool { return keys[i].String() < keys[j].String() })
-	targets := make(hubapi.NavigationArray[appwire.NavigationInvalidationTarget], 0, len(keys))
-	for _, key := range keys {
-		state, exists := s.resources[key]
-		if !exists || !changes[key] || state.lastNotifiedBuild == buildID {
-			continue
-		}
-		target, ok := navigationTargetForResource(key, state.Revision)
-		if !ok {
-			continue
-		}
-		state.lastNotifiedBuild = buildID
-		s.resources[key] = state
+	targets := make(hubapi.NavigationArray[appwire.NavigationInvalidationTarget], 0, len(targetSet)+1)
+	for _, target := range targetSet {
 		targets = append(targets, target)
 	}
-	if len(targets) == 0 {
-		return targets, nil
+	sort.Slice(targets, func(i, j int) bool {
+		return navigationTargetIdentity(targets[i]) < navigationTargetIdentity(targets[j])
+	})
+	if hint.AllLoadedProjects {
+		targets = append(targets, appwire.NavigationInvalidationTarget{Kind: appwire.NavigationTargetAllLoadedProjects})
 	}
 	if s.sequence >= maxNavigationSafeInteger {
-		return nil, errors.New("navigation sequence exceeds JavaScript safe integer")
+		return hubapi.NavigationMutation{}, errors.New("navigation sequence exceeds JavaScript safe integer")
 	}
 	s.sequence++
-	return targets, nil
+	return hubapi.NavigationMutation{GenerationID: s.generation, Targets: targets}, nil
+}
+
+func navigationTargetIdentity(target appwire.NavigationInvalidationTarget) string {
+	return string(target.Kind) + "\x00" + target.Section + "\x00" + target.SectionID + "\x00" + target.Catalog + "\x00" + target.ProjectKey
 }
 
 func navigationTargetForResource(key navigationResourceKey, revision uint64) (appwire.NavigationInvalidationTarget, bool) {
@@ -526,28 +685,73 @@ func navigationTargetForResource(key navigationResourceKey, revision uint64) (ap
 	}
 }
 
-// Start owns the single lifecycle scheduler. Each elapsed boundary forces a
-// fresh coherent capture, then uses that capture's exact next boundary.
+// Start owns a resettable lifecycle scheduler. Empty snapshots and failures are
+// retried; invalidation wakes an earlier-boundary wait immediately.
 func (s *NavigationService) Start(ctx context.Context) {
 	for {
-		flight, err := s.ensureSnapshot(ctx, false)
+		_, err := s.ensureSnapshot(ctx, false)
+		if ctx.Err() != nil {
+			return
+		}
 		if err != nil {
-			return
+			if !s.waitRetryOrWake(ctx) {
+				return
+			}
+			continue
 		}
-		_ = flight
 		s.mu.Lock()
-		core := s.core
+		boundary := time.Time{}
+		if s.core != nil {
+			boundary = s.core.nextBoundary
+		}
 		s.mu.Unlock()
-		if core == nil || core.nextBoundary.IsZero() {
+		if boundary.IsZero() {
+			if !s.waitRetryOrWake(ctx) {
+				return
+			}
+			continue
+		}
+		elapsed, keepGoing := s.waitBoundaryOrWake(ctx, boundary)
+		if !keepGoing {
 			return
 		}
-		if err := s.waitUntil(ctx, core.nextBoundary); err != nil {
-			return
+		if elapsed {
+			s.Invalidate(navigationChangeHint{Time: true})
+			_, _ = s.Refresh(ctx, navigationChangeHint{Time: true})
 		}
-		s.Invalidate(navigationChangeHint{Time: true})
-		if _, err := s.Refresh(ctx, navigationChangeHint{Time: true}); err != nil {
-			return
+	}
+}
+
+func (s *NavigationService) waitRetryOrWake(ctx context.Context) bool {
+	timer := time.NewTimer(s.retryAfter)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return false
+	case <-s.wake:
+		return true
+	case <-timer.C:
+		return true
+	}
+}
+
+func (s *NavigationService) waitBoundaryOrWake(ctx context.Context, boundary time.Time) (elapsed, keepGoing bool) {
+	waitCtx, cancel := context.WithCancel(ctx)
+	done := make(chan error, 1)
+	go func() { done <- s.waitUntil(waitCtx, boundary) }()
+	select {
+	case <-ctx.Done():
+		cancel()
+		return false, false
+	case <-s.wake:
+		cancel()
+		return false, true
+	case err := <-done:
+		cancel()
+		if err != nil {
+			return false, ctx.Err() == nil
 		}
+		return true, true
 	}
 }
 
@@ -579,8 +783,9 @@ func (key navigationResourceKey) Semantic() navigationResourceKey {
 	return key
 }
 
-// webNavigationSource bridges the existing request-owned tree assembly to the
-// service boundary without letting the pure projector read mutable server state.
+// webNavigationSource takes a fresh deep snapshot at the service clock. It
+// deliberately bypasses the legacy 30-second TreeCache: tier classification and
+// scheduler boundaries must agree exactly at 24h and 14d.
 type webNavigationSource struct{ web *WebServer }
 
 func (s webNavigationSource) Revision() navigationSourceRevision {
@@ -601,7 +806,11 @@ func (s webNavigationSource) Capture(ctx context.Context, generation string, now
 	if s.web == nil {
 		return navigationSourceSnapshot{}, errors.New("navigation web source is unavailable")
 	}
-	tree, attention, live, authority := s.web.memoTreeWithAuthority(ctx)
+	snapshot := s.web.navigationSnapshot(ctx)
+	decisions := s.web.archiveDecisions()
+	tree := hubcore.BuildTreeAtWithProjects(snapshot.metas, snapshot.live, decisions, now, snapshot.projects)
+	_, attention := hubcore.DeriveAttention(snapshot.metas, snapshot.live, decisions)
+	authority := favoriteAuthorityForNavigation(snapshot, tree)
 	favorites, err := s.web.favoriteDecisions()
 	if err != nil {
 		return navigationSourceSnapshot{}, err
@@ -617,12 +826,10 @@ func (s webNavigationSource) Capture(ctx context.Context, generation string, now
 	favoriteView := hubcore.ClassifyFavoriteDecisions(favorites, authority).Presentation
 	pinView := classifySessionPins(assignments, authority)
 	assignments = canonicalPinAssignments(assignments, pinView)
-	inputs := navigationBuildInputsFromTreeSnapshot(generation, 0, tree, s.web.apiTreeSources(), hubAttentionSummaryFromCore(attention), live, favoriteView, projectFavoritePresentation(favoriteView), sections, assignments)
+	inputs := navigationBuildInputsFromTreeSnapshot(generation, 0, tree, s.web.apiTreeSources(), hubAttentionSummaryFromCore(attention), snapshot.live, favoriteView, projectFavoritePresentation(favoriteView), sections, assignments)
 	return navigationSourceSnapshot{Inputs: inputs, NextBoundary: navigationSnapshotBoundary(tree, now)}, nil
 }
 
-// Navigation age labels have two time-dependent cutovers. The service owns one
-// timer for the nearest one; source-driven changes reset it through Invalidate.
 func navigationSnapshotBoundary(tree hubcore.Tree, now time.Time) time.Time {
 	var nearest time.Time
 	consider := func(updated time.Time) {
@@ -631,10 +838,7 @@ func navigationSnapshotBoundary(tree hubcore.Tree, now time.Time) time.Time {
 		}
 		for _, age := range []time.Duration{24 * time.Hour, 14 * 24 * time.Hour} {
 			boundary := updated.Add(age)
-			if !boundary.After(now) {
-				continue
-			}
-			if nearest.IsZero() || boundary.Before(nearest) {
+			if boundary.After(now) && (nearest.IsZero() || boundary.Before(nearest)) {
 				nearest = boundary
 			}
 		}

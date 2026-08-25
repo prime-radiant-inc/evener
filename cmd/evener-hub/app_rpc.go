@@ -143,8 +143,7 @@ func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Reg
 	if navigation != nil {
 		capability = nil
 		capabilityProvider = func() *appwire.NavigationCapability {
-			current := navigation.Capability()
-			return &current
+			return navigation.Capability()
 		}
 	}
 	server := appserver.NewServer(appserver.ServerConfig{

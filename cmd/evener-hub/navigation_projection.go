@@ -690,6 +690,7 @@ func (p navigationProjection) Resource(key navigationResourceKey) (any, navigati
 	if err != nil {
 		return nil, navigationFingerprint{}, err
 	}
+	resource = navigationResourceWithRevision(resource, key.Revision)
 	encoded, err := json.Marshal(resource)
 	if err != nil {
 		return nil, navigationFingerprint{}, fmt.Errorf("encode navigation resource: %w", err)
@@ -698,6 +699,38 @@ func (p navigationProjection) Resource(key navigationResourceKey) (any, navigati
 		return nil, navigationFingerprint{}, fmt.Errorf("navigation manifest exceeds %d bytes", maxNavigationManifestBytes)
 	}
 	return resource, sha256.Sum256(encoded), nil
+}
+
+// navigationResourceWithRevision stamps the service-owned semantic revision on
+// a detached response value. A retained projection is built at revision zero
+// for fingerprinting; rebuilding it for every cache miss would reopen the
+// source/coherence boundary and is both wasteful and unsafe.
+func navigationResourceWithRevision(resource any, revision uint64) any {
+	switch value := resource.(type) {
+	case hubapi.NavigationManifest:
+		value.Revision = revision
+		return value
+	case hubapi.NavigationSectionResource:
+		value.Revision = revision
+		return value
+	case hubapi.NavigationPinSectionCatalog:
+		value.Revision = revision
+		return value
+	case hubapi.NavigationProjectCatalog:
+		value.Revision = revision
+		return value
+	case hubapi.NavigationProjectResource:
+		value.Revision = revision
+		return value
+	case hubapi.NavigationProjectPage:
+		value.Revision = revision
+		return value
+	case hubapi.NavigationSessionLocation:
+		value.Revision = revision
+		return value
+	default:
+		return resource
+	}
 }
 
 func (p navigationProjection) projectSummary(project hubcore.TreeProject) hubapi.NavigationProjectSummary {
