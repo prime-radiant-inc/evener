@@ -150,9 +150,10 @@ func (s *sandboxFS) glob(ctx context.Context, tool, base, pattern string, includ
 
 // grepNative runs the native (ripgrep-absent) grep beneath a policy-checked base,
 // walking a secureDirFS so symlinks are never followed and refusing to descend
-// into masked subtrees. The per-file matching/formatting is shared with the off
-// path via grepAccum, so output semantics are identical.
-func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
+// into masked subtrees. cancelFS makes the walk and file opens observe ctx. The
+// per-file matching/formatting is shared with the off path via grepAccum, so
+// output semantics are identical.
+func (s *sandboxFS) grepNative(ctx context.Context, pattern, base, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
 	globFilters, err := expandGrepFilter(globFilter)
 	if err != nil {
 		return "", err
@@ -171,7 +172,7 @@ func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive
 	if err != nil {
 		return "", err
 	}
-	fsys := &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s}
+	fsys := cancelFS{ctx: ctx, fsys: &secureDirFS{baseFd: baseFd, basePath: canonical, fs: s}}
 	// Never list or read into a masked subtree while collecting .gitignore
 	// rules — see the matching comment in glob above.
 	ignores := loadIgnoreSet(fsys, func(relPath string) bool {
@@ -179,6 +180,9 @@ func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive
 	})
 	excludedByIgnore := 0
 	err = secureBrowseWalkDir(fsys, ".", func(rel string, d fs.DirEntry, walkErr error) error {
+		if cancelErr := ctx.Err(); cancelErr != nil {
+			return cancelErr
+		}
 		if walkErr != nil {
 			return nil //nolint:nilerr // skip unreadable / symlink-refused entries and keep walking
 		}
@@ -220,6 +224,9 @@ func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive
 		}
 		data, rerr := secureBrowseReadFile(fsys, rel)
 		if rerr != nil {
+			if cancelErr := ctx.Err(); cancelErr != nil {
+				return cancelErr
+			}
 			return nil //nolint:nilerr // best-effort grep: skip unreadable files
 		}
 		if bytes.IndexByte(data, 0) >= 0 {
@@ -231,6 +238,9 @@ func (s *sandboxFS) grepNative(pattern, base, globFilter string, caseInsensitive
 		return nil
 	})
 	if err != nil {
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 	result := a.finish()

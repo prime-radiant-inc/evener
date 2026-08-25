@@ -166,14 +166,11 @@ make lint-golangci   # struct tags (and everything else golangci covers)
 make lint-naming     # TOML data files
 ```
 
-If `make lint` reports tagliatelle findings under `llm/providers/` or
-`server/appwire_` — paths those `path:` exclusions cover — check for a
-stale cache before believing them. golangci-lint's cache is shared across
-worktrees; when it replays entries recorded under a different checkout's
-absolute path, the reported paths come back as `../../…` and stop matching
-the anchored regexes. `golangci-lint cache clean` fixes it. Only the two
-`path:` exclusions are exposed this way; the per-package `overrides` match
-on package path and are immune.
+The Make lint targets use a worktree-scoped golangci-lint cache, so findings
+under `llm/providers/` or `server/appwire_` are evaluated against this tree's
+paths rather than a sibling checkout's. If an external invocation still uses
+the global cache, `make lint-cache-clean` clears only the Make-managed cache;
+use that invocation's own cache-clean command for its global cache.
 
 ## Adding a new surface
 

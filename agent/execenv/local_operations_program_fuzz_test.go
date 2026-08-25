@@ -3,6 +3,7 @@
 package execenv
 
 import (
+	"context"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -263,23 +264,23 @@ func localFilesystemProgramGrep(t *testing.T, env *LocalExecutionEnvironment, to
 	// not - can observe this stub.
 	env.lookPath = func(string) (string, error) { return "", errors.New("local filesystem program disables ripgrep") }
 
-	content, err := env.Grep("needle", "", "", false, 0, "")
+	content, err := env.Grep(context.Background(), "needle", "", "", false, 0, "")
 	if err != nil || !strings.Contains(content, "docs/readme.txt:2:needle "+token) || strings.Contains(content, ".hidden") || strings.Contains(content, "binary.bin") {
 		t.Fatalf("Grep content fallback = %q, %v", content, err)
 	}
-	files, err := env.Grep("needle", "pkg", "*.go", true, 10, "files_with_matches")
+	files, err := env.Grep(context.Background(), "needle", "pkg", "*.go", true, 10, "files_with_matches")
 	if err != nil || files != "main.go" {
 		t.Fatalf("Grep files-with-matches fallback = %q, %v", files, err)
 	}
-	counts, err := env.Grep("needle", "", "*.txt", false, 100, "count")
+	counts, err := env.Grep(context.Background(), "needle", "", "*.txt", false, 100, "count")
 	if err != nil || !strings.Contains(counts, "docs/readme.txt:1") || strings.Contains(counts, ".hidden") {
 		t.Fatalf("Grep count fallback = %q, %v", counts, err)
 	}
-	capped, err := env.Grep("needle", "", "", true, 1, "")
+	capped, err := env.Grep(context.Background(), "needle", "", "", true, 1, "")
 	if err != nil || capped == "" || strings.Count(capped, "\n") != 0 {
 		t.Fatalf("Grep capped fallback = %q, %v", capped, err)
 	}
-	if _, err := env.Grep("[", "", "", false, 100, ""); err == nil || !strings.Contains(err.Error(), "invalid regex") {
+	if _, err := env.Grep(context.Background(), "[", "", "", false, 100, ""); err == nil || !strings.Contains(err.Error(), "invalid regex") {
 		t.Fatalf("Grep invalid regex error = %v", err)
 	}
 
@@ -288,7 +289,7 @@ func localFilesystemProgramGrep(t *testing.T, env *LocalExecutionEnvironment, to
 	if len(program) > 0 {
 		mode = modes[int(program[0])%len(modes)]
 	}
-	selected, err := env.Grep("needle", "", "*.txt", false, 3, mode)
+	selected, err := env.Grep(context.Background(), "needle", "", "*.txt", false, 3, mode)
 	if err != nil {
 		t.Fatalf("Grep selected mode %q: %v", mode, err)
 	}
