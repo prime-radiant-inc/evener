@@ -441,6 +441,12 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	t.Parallel()
 	var jobID string
 	watchArmed := make(chan struct{})
+	// budgetCrossed holds the watch-arming turn open until the test has driven
+	// the budget crossing. The escalation is turn-paced, so without the hold the
+	// drain can complete that turn and reach the final warning before the
+	// cleared notification is queued, and the fresh-episode assertions then read
+	// an episode the notification never interrupted.
+	budgetCrossed := make(chan struct{})
 	kickReady := make(chan struct{})
 	kickRelease := make(chan struct{})
 	var kickReadyOnce sync.Once
@@ -454,6 +460,7 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 		},
 		func(llm.Request) llm.Response {
 			close(watchArmed)
+			<-budgetCrossed
 			return finalResponse("watching; it will finish")
 		},
 		func(llm.Request) llm.Response { return finalResponse("the watch was cleared; reconsidering") },
@@ -489,15 +496,15 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 		res, err := sess.drainJobTreeWith(ctx, feedRechecks(ctx), kick, sess.ProcessInputKind)
 		done <- drainResult{res, err}
 	}()
+	// Registered after the join above so it runs before it: a t.Fatal between
+	// here and the release below would otherwise strand the held turn and leave
+	// the join waiting on a drain that can never finish.
+	releaseWatchTurn := sync.OnceFunc(func() { close(budgetCrossed) })
+	t.Cleanup(releaseWatchTurn)
 	select {
 	case <-watchArmed:
 	case d := <-done:
 		t.Fatalf("drain returned before the live watch was armed: (%q, %v)", d.res, d.err)
-	}
-	select {
-	case <-kickReady:
-	case d := <-done:
-		t.Fatalf("drain returned before the next episode boundary: (%q, %v)", d.res, d.err)
 	}
 
 	sess.jobManager.mu.Lock()
@@ -531,6 +538,12 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	sess.jobManager.mu.Unlock()
 	if stillLive {
 		t.Fatal("budget-crossing delivery left the watch live")
+	}
+	releaseWatchTurn()
+	select {
+	case <-kickReady:
+	case d := <-done:
+		t.Fatalf("drain returned before the next episode boundary: (%q, %v)", d.res, d.err)
 	}
 	close(kickRelease)
 

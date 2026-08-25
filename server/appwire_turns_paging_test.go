@@ -101,6 +101,81 @@ func turnIDs(turns []appwire.Turn) []string {
 	return out
 }
 
+type cloneCountingJSONValue struct {
+	calls *int
+}
+
+func (v cloneCountingJSONValue) MarshalJSON() ([]byte, error) {
+	(*v.calls)++
+	return []byte(`{"value":"excluded"}`), nil
+}
+
+func installTurnSnapshotForTest(srv *Server, turns []appwire.Turn) {
+	srv.mu.Lock()
+	srv.appTurns = &appTurnSnapshot{threadID: "th_1", turns: turns}
+	srv.mu.Unlock()
+}
+
+func countedCloneTurn(id string, calls *int) appwire.Turn {
+	return appwire.Turn{
+		ID: id,
+		Error: &appwire.TurnError{
+			CodexErrorInfo: cloneCountingJSONValue{calls: calls},
+		},
+	}
+}
+
+func TestServerAppWireLatestWindowClonesOnlyReturnedTurns(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	var excludedCloneCalls int
+	installTurnSnapshotForTest(srv, []appwire.Turn{
+		countedCloneTurn("turn_1", &excludedCloneCalls),
+		countedCloneTurn("turn_2", &excludedCloneCalls),
+		{ID: "turn_3", Items: []appwire.ThreadItem{{Raw: json.RawMessage(`{"value":"latest"}`)}}},
+	})
+
+	got, cursor := srv.appLatestTurns("th_1", 1)
+	if ids := turnIDs(got); !reflect.DeepEqual(ids, []string{"turn_3"}) || cursor != "2" {
+		t.Fatalf("latest window = %v (cursor %q), want [turn_3] (cursor 2)", ids, cursor)
+	}
+	if excludedCloneCalls != 0 {
+		t.Fatalf("latest window deep-cloned %d excluded turn value(s), want 0", excludedCloneCalls)
+	}
+
+	got[0].Items[0].Raw[0] = 'X'
+	again, _ := srv.appLatestTurns("th_1", 1)
+	if string(again[0].Items[0].Raw) != `{"value":"latest"}` {
+		t.Fatalf("latest window aliases installed state: %s", again[0].Items[0].Raw)
+	}
+}
+
+func TestServerAppWireOlderPageClonesOnlyReturnedTurns(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	var excludedCloneCalls int
+	installTurnSnapshotForTest(srv, []appwire.Turn{
+		countedCloneTurn("turn_1", &excludedCloneCalls),
+		countedCloneTurn("turn_2", &excludedCloneCalls),
+		{ID: "turn_3", Items: []appwire.ThreadItem{{Raw: json.RawMessage(`{"value":"page"}`)}}},
+		countedCloneTurn("turn_4", &excludedCloneCalls),
+	})
+
+	got := srv.appPageTurns("th_1", "3", 1)
+	if ids := turnIDs(got.Data); !reflect.DeepEqual(ids, []string{"turn_3"}) || got.NextCursor != "2" {
+		t.Fatalf("older page = %v (cursor %q), want [turn_3] (cursor 2)", ids, got.NextCursor)
+	}
+	if excludedCloneCalls != 0 {
+		t.Fatalf("older page deep-cloned %d excluded turn value(s), want 0", excludedCloneCalls)
+	}
+
+	got.Data[0].Items[0].Raw[0] = 'X'
+	again := srv.appPageTurns("th_1", "3", 1)
+	if string(again.Data[0].Items[0].Raw) != `{"value":"page"}` {
+		t.Fatalf("older page aliases installed state: %s", again.Data[0].Items[0].Raw)
+	}
+}
+
 func TestDaemonThreadReadWindowsAndTurnsListPagesToHead(t *testing.T) {
 	srv := seedTranscriptServer(t, 4)
 	conn := srv.AppServer().NewConnection("test")

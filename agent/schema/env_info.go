@@ -1,5 +1,13 @@
 package schema
 
+// ResourceCaps records the effective CPU and memory available to the process.
+// Zero values mean that the corresponding value could not be established
+// without treating an untrusted host observation as a container fact.
+type ResourceCaps struct {
+	CPUs     float64 `json:"cpus,omitempty"`
+	MemoryMB int64   `json:"memory_mb,omitempty"` // whole MiB, rounded down
+}
+
 // EnvironmentInfo holds the working directory, platform, version, date, and
 // git/workspace details describing the environment an agent runs in.
 type EnvironmentInfo struct {
@@ -15,4 +23,5 @@ type EnvironmentInfo struct {
 	GitUntrackedFiles     int           `json:"git_untracked_files"`                // count of untracked files
 	GitRecentCommitTitles []string      `json:"git_recent_commit_titles,omitempty"` // recent commit subject lines
 	Workspace             WorkspaceInfo `json:"workspace"`                          // detected build/workspace layout
+	Resources             *ResourceCaps `json:"resources,omitempty"`                // effective process resource caps, when observable
 }
