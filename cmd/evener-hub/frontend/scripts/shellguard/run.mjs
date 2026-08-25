@@ -94,7 +94,8 @@ async function main() {
   } catch (error) {
     throw new Error(describeBrowserStartupFailure({ error, subsystem: "launch" }));
   }
-  const { vitePort, cdpPort, cleanup } = guard;
+  const { vitePort, cleanup } = guard;
+  let cdpPort;
 
   try {
     try {
@@ -105,6 +106,7 @@ async function main() {
       );
     }
     try {
+      cdpPort = await guard.waitForChrome();
       await waitForHttp(
         `http://127.0.0.1:${cdpPort}/json/version`,
         "chrome devtools endpoint",

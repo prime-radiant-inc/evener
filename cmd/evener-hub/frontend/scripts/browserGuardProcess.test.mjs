@@ -848,6 +848,42 @@ test("a Vite that never launched aborts its own wait and is not blamed on Chrome
   assert.equal(existsSync(guard.profileDir), false);
 });
 
+test("hands the caller Chrome's dynamically bound DevTools port after delayed readiness", async (context) => {
+  const { guard, children } = await startFakeGuard();
+  reapOnTeardown(context, guard, children);
+
+  const ready = guard.waitForChrome();
+  setTimeout(() => {
+    children[1].stderr.emit(
+      "data",
+      "startup noise\nDevTools listening on ws://127.0.0.1:45678/devtools/browser/test\n",
+    );
+  }, 10);
+
+  assert.equal(await ready, 45678);
+  assert.equal(
+    guard.getChromeArgv().find((arg) => arg.startsWith("--remote-debugging-port=")),
+    "--remote-debugging-port=0",
+  );
+
+  const cleanup = guard.cleanup();
+  for (const child of children) child.exit();
+  await cleanup;
+});
+
+test("fails the readiness handoff immediately when Chrome start fails", async (context) => {
+  const { guard, children } = await startFakeGuard();
+  reapOnTeardown(context, guard, children);
+  const ready = guard.waitForChrome();
+  children[1].failLaunch(launchError("EACCES", "spawn /fake/chrome EACCES"));
+
+  await assert.rejects(ready, /spawn \/fake\/chrome EACCES/);
+
+  const cleanup = guard.cleanup();
+  children[0].exit();
+  await cleanup;
+});
+
 // FakeChild.failLaunch above is a MODEL of Node's failed-spawn behaviour, and a
 // model that cannot happen in production is a green test that guards nothing.
 // This runs the real thing: real spawn(), a real non-executable file for Chrome

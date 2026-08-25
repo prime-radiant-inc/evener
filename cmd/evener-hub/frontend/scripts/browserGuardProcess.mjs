@@ -12,6 +12,7 @@ const CHROME_CANDIDATES = [
 ];
 
 const CHILD_EXIT_GRACE_MS = 2_000;
+const CHROME_READINESS_TIMEOUT_MS = 30_000;
 const SIGNAL_EXIT_CODES = { SIGINT: 130, SIGTERM: 143 };
 
 /**
@@ -593,7 +594,6 @@ export async function startBrowserGuard({
 }) {
   const resolvedChrome = chromeBinary ?? findChrome();
   const vitePort = await findAvailablePort();
-  const cdpPort = await findAvailablePort([vitePort]);
   const profileDir = mkdtempSync(path.join(tmpdir(), profilePrefix));
   let vite = null;
   let chrome = null;
@@ -602,6 +602,27 @@ export async function startBrowserGuard({
   let viteLaunchError = null;
   let chromeLaunchError = null;
   let chromeArgv = [];
+  let cdpPort = 0;
+  let resolveChromeReady;
+  let rejectChromeReady;
+  let chromeReadySettled = false;
+  const chromeReady = new Promise((resolve, reject) => {
+    resolveChromeReady = (port) => {
+      if (chromeReadySettled) return;
+      chromeReadySettled = true;
+      cdpPort = port;
+      resolve(port);
+    };
+    rejectChromeReady = (error) => {
+      if (chromeReadySettled) return;
+      chromeReadySettled = true;
+      reject(error);
+    };
+  });
+  // A guard normally awaits this promise, but attach a rejection handler here
+  // too so a child that exits while startup is being abandoned cannot become an
+  // unhandled rejection during cleanup.
+  chromeReady.catch(() => {});
   const lifecycle = createBrowserProcessCleanup({
     profileDir,
     processTarget,
@@ -649,7 +670,10 @@ export async function startBrowserGuard({
       "--headless=new",
       "--disable-gpu",
       ...chromeProfileIsolationArgs(platform),
-      `--remote-debugging-port=${cdpPort}`,
+      // Let Chrome bind the port itself and report the bound endpoint on stderr.
+      // Picking a free port, closing it, then asking Chrome to reuse it is a
+      // TOCTOU race when several guards start together.
+      "--remote-debugging-port=0",
       `--user-data-dir=${profileDir}`,
       "--no-first-run",
       "--disable-extensions",
@@ -671,9 +695,20 @@ export async function startBrowserGuard({
     );
     chrome.on("error", (error) => {
       chromeLaunchError ??= error;
+      rejectChromeReady(error);
     });
     chrome.stderr?.on("data", (chunk) => {
       chromeErr += chunk;
+      const match = chromeErr.match(/DevTools listening on ws:\/\/(?:127\.0\.0\.1|localhost|\[::1\]):(\d+)\//);
+      if (match) resolveChromeReady(Number(match[1]));
+    });
+    chrome.once("exit", (code, signal) => {
+      if (chromeReadySettled) return;
+      const error = new Error(
+        `Chrome exited before DevTools readiness (code ${code ?? "unknown"}, signal ${signal ?? "none"})`,
+      );
+      chromeLaunchError ??= error;
+      rejectChromeReady(error);
     });
     lifecycle.addChild(chrome, {
       processGroupId: useProcessGroups && Number.isInteger(chrome.pid) ? chrome.pid : null,
@@ -694,6 +729,21 @@ export async function startBrowserGuard({
     getChromeLaunchError: () => chromeLaunchError,
     chromeBinary: resolvedChrome,
     getChromeArgv: () => chromeArgv,
+    // This promise is the process/devtools readiness handoff. The caller must
+    // use its returned port rather than probing a port selected before Chrome
+    // started, which could be claimed by another concurrent guard.
+    waitForChrome: () => {
+      let timer;
+      return Promise.race([
+        chromeReady,
+        new Promise((_, reject) => {
+          timer = setTimeout(
+            () => reject(new Error("Chrome DevTools readiness line never appeared")),
+            CHROME_READINESS_TIMEOUT_MS,
+          );
+        }),
+      ]).finally(() => clearTimeout(timer));
+    },
     cleanup: lifecycle.cleanup,
   };
 }

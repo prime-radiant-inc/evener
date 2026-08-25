@@ -218,7 +218,8 @@ async function main() {
     // commonest environment failure there is and it reached here unframed.
     throw new Error(describeBrowserStartupFailure({ error, subsystem: "launch" }));
   }
-  const { vitePort, cdpPort } = guard;
+  const { vitePort } = guard;
+  let cdpPort;
 
   let failed = 0;
   const warnings = [];
@@ -231,6 +232,7 @@ async function main() {
       );
     }
     try {
+      cdpPort = await guard.waitForChrome();
       await waitForHttp(
         `http://127.0.0.1:${cdpPort}/json/version`,
         "chrome devtools endpoint",
