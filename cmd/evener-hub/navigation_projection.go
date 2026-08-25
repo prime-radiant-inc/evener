@@ -74,6 +74,8 @@ type navigationResourceKey struct {
 	Tier       string
 	Offset     uint32
 	Limit      uint32
+	Generation string
+	Revision   uint64
 }
 
 // navigationFingerprint is the semantic content fingerprint used by the
