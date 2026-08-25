@@ -12,6 +12,11 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
+type drainAbandonedChild struct {
+	delegateID string
+	generation uint64
+}
+
 // DrainStallTimeout bounds how long the one-shot drain will keep blocking on a
 // subtree that is outstanding but has NO live or deliverable component anywhere
 // (a genuine stall — see drainSubtreeIsStalled). It is a defense-in-depth
@@ -599,7 +604,7 @@ func (s *Session) markDrainAbandonedDelegates(now, drainStartedAt time.Time) {
 			continue
 		}
 		if tracked && (s.cfg.TurnEndsProcess || row.pendingStopSeq != 0) && delegateAbandonedByDrain(row, now, drainStartedAt) {
-			s.recordDrainAbandonedChild(child.id, row.id)
+			s.recordDrainAbandonedChild(child.id, row.id, row.generation)
 			continue
 		}
 		child.markDrainAbandonedDelegates(now, drainStartedAt)
@@ -612,20 +617,23 @@ func (s *Session) markDrainAbandonedDelegates(now, drainStartedAt time.Time) {
 // longer outstanding at all, and the drain quiesces normally instead of
 // reaching the stall watchdog's give-up. Warning at the decision point is the
 // only placement that reports the abandonment on every path.
-func (s *Session) recordDrainAbandonedChild(childSessionID, delegateID string) {
+func (s *Session) recordDrainAbandonedChild(childSessionID, delegateID string, generation uint64) {
 	s.drainAbandonedMu.Lock()
 	if s.drainAbandonedChildren == nil {
-		s.drainAbandonedChildren = make(map[string]string)
+		s.drainAbandonedChildren = make(map[string]drainAbandonedChild)
 	}
-	_, already := s.drainAbandonedChildren[childSessionID]
-	s.drainAbandonedChildren[childSessionID] = delegateID
+	previous, already := s.drainAbandonedChildren[childSessionID]
+	s.drainAbandonedChildren[childSessionID] = drainAbandonedChild{delegateID: delegateID, generation: generation}
 	s.drainAbandonedMu.Unlock()
-	if already {
+	if already && previous.delegateID == delegateID && previous.generation == generation {
 		return
 	}
-	s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
-		"no longer waiting on delegate %s: its stop has been pending %s with the run still open, so waiting cannot dispose of it",
-		delegateID, DrainStallTimeout)})
+	s.emit(events.EventWarning, events.WarningData{
+		Message:    fmt.Sprintf("no longer waiting on delegate %s: its stop has been pending %s with the run still open, so waiting cannot dispose of it", delegateID, DrainStallTimeout),
+		Source:     "drain",
+		Code:       events.WarningCodeDelegateAbandonedByDrain,
+		DelegateID: delegateID,
+	})
 }
 
 // childDrainAbandoned reports whether the one-shot drain has given up waiting on
@@ -637,10 +645,14 @@ func (s *Session) childDrainAbandoned(childSessionID string) bool {
 	if s == nil || childSessionID == "" {
 		return false
 	}
+	row, ok := s.directStableDelegateForChildSession(childSessionID)
+	if !ok {
+		return false
+	}
 	s.drainAbandonedMu.Lock()
 	defer s.drainAbandonedMu.Unlock()
-	_, abandoned := s.drainAbandonedChildren[childSessionID]
-	return abandoned
+	abandoned, exists := s.drainAbandonedChildren[childSessionID]
+	return exists && abandoned.generation == row.generation
 }
 
 // subtreeUndisposableStoppedDelegates names the delegates this session and its
@@ -658,7 +670,7 @@ func (s *Session) subtreeUndisposableStoppedDelegates() []string {
 		}
 		if s.childDrainAbandoned(child.id) {
 			s.drainAbandonedMu.Lock()
-			ids = append(ids, s.drainAbandonedChildren[child.id])
+			ids = append(ids, s.drainAbandonedChildren[child.id].delegateID)
 			s.drainAbandonedMu.Unlock()
 			continue
 		}

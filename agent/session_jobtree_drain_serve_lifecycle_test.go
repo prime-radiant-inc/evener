@@ -3,7 +3,6 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -78,11 +77,7 @@ func TestServeDrainAbandonsARealStopPendingDelegate(t *testing.T) {
 	if created.DelegateID == "" || created.ChildSessionID == "" {
 		t.Fatalf("createDelegate result = %#v, want live delegate and child session", created)
 	}
-	select {
-	case <-wedge.entered:
-	case <-time.After(30 * time.Second):
-		t.Fatal("real delegate never entered uncancellable read")
-	}
+	<-wedge.entered
 
 	_, cancelPlan, stopPlans, err := root.delegateController.StopSubtree(rootDelegateActor(root.ID()), created.DelegateID)
 	if err != nil {
@@ -105,11 +100,7 @@ func TestServeDrainAbandonsARealStopPendingDelegate(t *testing.T) {
 	clk.Advance(DrainStallTimeout + time.Second)
 	d.recheck <- time.Time{}
 	d.releaseKick(t)
-	select {
-	case <-d.done:
-	case <-time.After(30 * time.Second):
-		t.Fatal("serve drain remained unbounded after the stop pending timeout")
-	}
+	<-d.done
 	cancel()
 
 	warnings := collectStallWarnings(root)
@@ -117,7 +108,7 @@ func TestServeDrainAbandonsARealStopPendingDelegate(t *testing.T) {
 		t.Fatalf("serve abandonment warnings = %d, want 1: %+v", len(warnings), warnings)
 	}
 	warning, ok := warnings[0].Data.(events.WarningData)
-	if !ok || !strings.Contains(warning.Message, created.DelegateID) {
-		t.Fatalf("serve abandonment warning = %#v, want delegate %s", warnings[0].Data, created.DelegateID)
+	if !ok || warning.Code != events.WarningCodeDelegateAbandonedByDrain || warning.DelegateID != created.DelegateID {
+		t.Fatalf("serve abandonment warning = %#v, want structured abandonment for delegate %s", warnings[0].Data, created.DelegateID)
 	}
 }

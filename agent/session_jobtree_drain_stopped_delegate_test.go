@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"strings"
 	"testing"
 	"time"
 
@@ -271,7 +270,8 @@ func TestDrainAbandonsStopRequestedDelegateGoneUnresponsive(t *testing.T) {
 	}
 	named := false
 	for _, w := range warnings {
-		if strings.Contains(w.Data.(events.WarningData).Message, f.delegateID) {
+		warning, ok := w.Data.(events.WarningData)
+		if ok && warning.Code == events.WarningCodeDelegateAbandonedByDrain && warning.DelegateID == f.delegateID {
 			named = true
 		}
 	}
@@ -315,8 +315,8 @@ func TestDrainKeepsWaitingOnADelegateWhoseStopCompletes(t *testing.T) {
 		t.Fatal("a delegate that honoured its stop inside the bound was abandoned anyway")
 	}
 	for _, w := range collectStallWarnings(f.root) {
-		if strings.Contains(w.Data.(events.WarningData).Message, "no longer waiting on delegate") {
-			t.Fatalf("a delegate that honoured its stop must emit no abandonment warning, got %q", w.Data.(events.WarningData).Message)
+		if warning, ok := w.Data.(events.WarningData); ok && warning.Code == events.WarningCodeDelegateAbandonedByDrain {
+			t.Fatalf("a delegate that honoured its stop must emit no abandonment event, got %#v", warning)
 		}
 	}
 
@@ -468,6 +468,58 @@ func TestServeSessionAbandonsAStopRequestedDelegateAfterBound(t *testing.T) {
 	oneShot.root.markDrainAbandonedDelegates(oneShot.clk.Now(), oneShotStart)
 	if !oneShot.root.childDrainAbandoned(oneShot.child.ID()) {
 		t.Fatal("control: the same shape in a one-shot run must be abandoned")
+	}
+}
+
+func TestDrainAbandonmentDoesNotFenceSuccessorGeneration(t *testing.T) {
+	f := newWedgedDelegateFixtureIn(t, "dlg_abandonment_successor", false)
+	f.requestStop(t)
+	drainStartedAt := f.clk.Now()
+	f.clk.Advance(DrainStallTimeout + time.Second)
+	f.root.markDrainAbandonedDelegates(f.clk.Now(), drainStartedAt)
+	if !f.root.childDrainAbandoned(f.child.ID()) {
+		t.Fatal("precondition: generation one must be abandoned")
+	}
+
+	result, err := f.root.delegateController.FinishGeneration(f.lease, delegateFinish{
+		outcome: delegatestore.OutcomeStopped,
+		reason:  "stopped_by_parent",
+		endedAt: f.clk.Now(),
+	})
+	if err != nil {
+		t.Fatalf("FinishGeneration: %v", err)
+	}
+	if err := f.root.executeDelegateMutationPlans(result); err != nil {
+		t.Fatalf("execute finish plans: %v", err)
+	}
+	if _, err := f.root.delegateController.Reconcile(emptyDelegateReconcileEvidence(f.root.delegateController)); err != nil {
+		t.Fatalf("Reconcile stop completion: %v", err)
+	}
+
+	reservation, err := f.root.delegateController.ReserveStart(rootDelegateActor(f.root.ID()), f.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart successor: %v", err)
+	}
+	started, err := f.root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart successor: %v", err)
+	}
+	if err := f.root.delegateController.AttachRuntime(started.lease, f.child); err != nil {
+		t.Fatalf("AttachRuntime successor: %v", err)
+	}
+	if _, err := f.root.delegateController.BeginStartInput(started.lease); err != nil {
+		t.Fatalf("BeginStartInput successor: %v", err)
+	}
+
+	row := f.snapshot(t)
+	if row.generation != started.lease.generation || !row.currentRunOpen || row.pendingStopSeq != 0 {
+		t.Fatalf("successor row = %#v, want a new running generation", row)
+	}
+	if f.root.childDrainAbandoned(f.child.ID()) {
+		t.Fatal("generation-one abandonment fenced the resumed generation")
+	}
+	if outstanding, err := f.root.treeHasOutstandingWork(); err != nil || !outstanding {
+		t.Fatalf("successor generation was omitted from drain accounting: outstanding=%v err=%v", outstanding, err)
 	}
 }
 
