@@ -99,15 +99,15 @@ func TestCovFocusTool_DirNextNormal(t *testing.T) {
 func TestCovFocusTool_HiddenToolsSkipped(t *testing.T) {
 	m := model{
 		messages: []transcript.ChatMessage{
-			{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Name: "a", Hidden: true}},
-			{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Name: "b"}},
+			{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Name: "visible-before"}},
+			{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Name: "hidden", Hidden: true}},
+			{Kind: transcript.MsgTool, Tool: &transcript.ToolCallInfo{Name: "visible-after"}},
 		},
-		focusedToolIdx: -1,
+		focusedToolIdx: 0,
 	}
 	m.focusTool(1)
-	// Should default to the last visible tool (index 1)
-	if m.focusedToolIdx != 1 {
-		t.Fatalf("hidden tool should be skipped: %d, want 1", m.focusedToolIdx)
+	if m.focusedToolIdx != 2 {
+		t.Fatalf("next focus stopped on hidden tool: index=%d, want visible index 2", m.focusedToolIdx)
 	}
 }
 
@@ -143,11 +143,17 @@ func TestCovAddHistory_EscapesNewlines(t *testing.T) {
 
 func TestCovAddHistory_CapsAtMaxEntries(t *testing.T) {
 	m := model{}
-	for range inputhistory.MaxHistoryEntries + 10 {
-		m.addHistory("entry")
+	for i := range inputhistory.MaxHistoryEntries + 10 {
+		m.addHistory("entry" + itoa(i))
 	}
-	if len(m.history) > inputhistory.MaxHistoryEntries {
-		t.Fatalf("history count = %d, should cap at %d", len(m.history), inputhistory.MaxHistoryEntries)
+	if len(m.history) != inputhistory.MaxHistoryEntries {
+		t.Fatalf("history count = %d, want exactly %d", len(m.history), inputhistory.MaxHistoryEntries)
+	}
+	if got, want := m.history[0], "entry10"; got != want {
+		t.Fatalf("oldest retained history = %q, want %q", got, want)
+	}
+	if got, want := m.history[len(m.history)-1], "entry"+itoa(inputhistory.MaxHistoryEntries+9); got != want {
+		t.Fatalf("newest retained history = %q, want %q", got, want)
 	}
 }
 

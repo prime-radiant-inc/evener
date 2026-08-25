@@ -14,12 +14,18 @@ import (
 
 // scriptedCovProgram is a minimal tuiProgram for testing run().
 type scriptedCovProgram struct {
-	model tea.Model
-	err   error
+	model    tea.Model
+	err      error
+	runCalls *int
 }
 
-func (p *scriptedCovProgram) Run() (tea.Model, error) { return p.model, p.err }
-func (p *scriptedCovProgram) Send(tea.Msg)            {}
+func (p *scriptedCovProgram) Run() (tea.Model, error) {
+	if p.runCalls != nil {
+		*p.runCalls++
+	}
+	return p.model, p.err
+}
+func (p *scriptedCovProgram) Send(tea.Msg) {}
 
 // ---- Run: flag.ErrHelp returns 0 --------------------------------------------
 
@@ -131,6 +137,9 @@ func TestCovRun_ProgramErrorReturns1(t *testing.T) {
 	if code := run(); code != 1 {
 		t.Fatalf("run with program error = %d, want 1", code)
 	}
+	if got, want := stderr.String(), "evener-tui: program crash\n"; got != want {
+		t.Fatalf("program error stderr = %q, want %q", got, want)
+	}
 }
 
 // ---- run(): success returns 0 and prints post-quit message -------------------
@@ -167,8 +176,11 @@ func TestCovRun_SuccessReturns0(t *testing.T) {
 	if code := run(); code != 0 {
 		t.Fatalf("run success = %d, want 0", code)
 	}
-	if !bytes.Contains(stdout.Bytes(), []byte("goodbye")) {
-		t.Fatalf("stdout should contain post-quit message: %q", stdout.String())
+	if got, want := stdout.String(), "goodbye\n"; got != want {
+		t.Fatalf("success stdout = %q, want %q", got, want)
+	}
+	if stderr.Len() != 0 {
+		t.Fatalf("success stderr = %q, want empty", stderr.String())
 	}
 }
 
@@ -192,17 +204,23 @@ func TestCovRun_DebugModeNoAltScreen(t *testing.T) {
 	initThemeFromStateDir = func(string) {}
 	applyTerminalBg = func() {}
 	resetTerminalBg = func() {}
-	var programOptsCount int
+	var programOptsCount, constructorCalls, programRunCalls int
 	newTUIProgram = func(model tea.Model, opts ...tea.ProgramOption) tuiProgram {
+		constructorCalls++
 		programOptsCount = len(opts)
-		return &scriptedCovProgram{model: model, err: nil}
+		return &scriptedCovProgram{model: model, runCalls: &programRunCalls}
 	}
 	t.Cleanup(func() {
 		processArgs, standardError = oldArgs, oldErr
 		parseStartupOptions, ensureUserConfigDirs, warmModelCatalog, startHubClient = oldParse, oldDirs, oldWarm, oldStart
 		probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram = oldProbe, oldInit, oldApply, oldReset, oldProgram
 	})
-	run()
+	if code := run(); code != 0 {
+		t.Fatalf("debug run = %d, want 0; stderr=%q", code, stderr.String())
+	}
+	if constructorCalls != 1 || programRunCalls != 1 {
+		t.Fatalf("constructor calls=%d program Run calls=%d, want 1 each", constructorCalls, programRunCalls)
+	}
 	if programOptsCount != 0 {
 		t.Fatalf("debug mode should pass 0 program opts (no alt screen), got %d", programOptsCount)
 	}

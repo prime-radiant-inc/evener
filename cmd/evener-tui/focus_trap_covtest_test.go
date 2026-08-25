@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"reflect"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -61,9 +62,8 @@ func TestCovTopmostOverlayName_QuestionOverlayDeferred(t *testing.T) {
 	overlay := newQuestionOverlay("ref", nil, 80)
 	overlay.deferred = true
 	m.questionOverlay = overlay
-	// A deferred question overlay should NOT trap.
-	if got := topmostOverlayName(m); got == "question-overlay" {
-		t.Fatalf("deferred question overlay should not be topmost: %q", got)
+	if got := topmostOverlayName(m); got != "" {
+		t.Fatalf("deferred question overlay topmost name = %q, want empty", got)
 	}
 }
 
@@ -72,9 +72,8 @@ func TestCovTopmostOverlayName_QuestionOverlayNonSessionMode(t *testing.T) {
 	m.mode = hubModeDashboard
 	overlay := newQuestionOverlay("ref", nil, 80)
 	m.questionOverlay = overlay
-	// Question overlay should not be topmost outside session mode.
-	if got := topmostOverlayName(m); got == "question-overlay" {
-		t.Fatalf("question overlay should not be topmost outside session mode: %q", got)
+	if got := topmostOverlayName(m); got != "" {
+		t.Fatalf("dashboard question overlay topmost name = %q, want empty", got)
 	}
 }
 
@@ -107,19 +106,32 @@ func TestCovKeyAllowedThroughTrap_EnterRejected(t *testing.T) {
 // ---- dispatchOverlayKey: various overlay names -------------------------------
 
 func TestCovDispatchOverlayKey_UnknownName(t *testing.T) {
-	m := newHubModel(nil, "")
-	updated, _ := m.dispatchOverlayKey("unknown-overlay", tea.KeyMsg{Type: tea.KeyEnter})
-	if updated.(hubModel).mode != m.mode {
-		t.Fatalf("unknown overlay name should be a no-op")
+	m := hubModel{
+		mode:     hubModeSession,
+		width:    91,
+		height:   42,
+		selected: 3,
+		notices:  []noticePanel{{Title: "keep me"}},
+	}
+	updated, cmd := m.dispatchOverlayKey("unknown-overlay", tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatalf("unknown overlay returned command %T, want nil", cmd)
+	}
+	if got := updated.(hubModel); !reflect.DeepEqual(got, m) {
+		t.Fatalf("unknown overlay changed model:\n got: %#v\nwant: %#v", got, m)
 	}
 }
 
 func TestCovDispatchOverlayKey_SessionPanelNonEsc(t *testing.T) {
 	m := newHubModel(nil, "")
 	m.sessionPanel = &hubSessionPanel{}
-	updated, _ := m.dispatchOverlayKey("session-panel", tea.KeyMsg{Type: tea.KeyEnter})
-	if updated.(hubModel).sessionPanel == nil {
-		t.Fatalf("non-esc key on session-panel should not close it")
+	updated, cmd := m.dispatchOverlayKey("session-panel", tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(hubModel)
+	if got.sessionPanel != m.sessionPanel {
+		t.Fatalf("non-esc key replaced or closed session panel")
+	}
+	if cmd != nil {
+		t.Fatalf("non-esc session-panel key returned command %T, want nil", cmd)
 	}
 }
 
@@ -133,7 +145,12 @@ func TestCovDispatchOverlayKey_Picker(t *testing.T) {
 	m := newSessionHubModel(nil)
 	picker := tuipick.NewModelPicker(nil, "", 80)
 	m.sessionModelPicker = &picker
-	updated, _ := m.dispatchOverlayKey("picker", tea.KeyMsg{Type: tea.KeyEsc})
-	// Should not panic; the picker should be closed by updateSessionKey.
-	_ = updated
+	updated, cmd := m.dispatchOverlayKey("picker", tea.KeyMsg{Type: tea.KeyEsc})
+	got := updated.(hubModel)
+	if got.sessionModelPicker != nil {
+		t.Fatalf("esc through picker trap left picker open")
+	}
+	if cmd != nil {
+		t.Fatalf("closing picker returned command %T, want nil", cmd)
+	}
 }

@@ -191,29 +191,6 @@ func TestCovComposerPanelView_ForkModeFooter(t *testing.T) {
 	}
 }
 
-func TestCovComposerPanelView_ScrollBrowseFooter(t *testing.T) {
-	withTestColorProfile(t)
-	p := composerPanel{
-		Label:       "",
-		ChipContext: composerContext{Mode: "BROWSE", Harness: "evener"},
-		Width:       80,
-	}
-	got := p.View()
-	// scroll-browse mode is determined by composerModeForFooter which maps label
-	// to "compose" for empty label — so we test the scroll-browse case directly.
-	p2 := composerPanel{
-		Label:       "",
-		ChipContext: composerContext{Harness: "evener"},
-		Width:       80,
-	}
-	got2 := p2.View()
-	// The BROWSE mode panel renders a browse indicator; the default
-	// panel does not. The views must differ.
-	if got == got2 {
-		t.Fatalf("views should differ between BROWSE mode and default")
-	}
-}
-
 // ---- filepathBase ------------------------------------------------------------
 
 func TestCovFilepathBase_EmptyReturnsEmpty(t *testing.T) {
@@ -289,20 +266,18 @@ func TestCovRenderQueuePreview_EmptyList(t *testing.T) {
 func TestCovRenderQueuePreview_LongEntryTruncated(t *testing.T) {
 	withTestColorProfile(t)
 	longLine := strings.Repeat("x", 100)
-	got := renderQueuePreview([]string{longLine}, 30)
-	if !strings.Contains(got, "…") {
-		t.Fatalf("long entry should be truncated with ellipsis:\n%s", got)
+	got := ansiPattern.ReplaceAllString(renderQueuePreview([]string{longLine}, 30), "")
+	want := "queued (1)\n  1. " + strings.Repeat("x", 23) + "…\n"
+	if got != want {
+		t.Fatalf("truncated queue preview = %q, want %q", got, want)
 	}
 }
 
 func TestCovRenderQueuePreview_MultiLineEntryUsesFirstLine(t *testing.T) {
 	withTestColorProfile(t)
-	got := renderQueuePreview([]string{"first line\nsecond line"}, 80)
-	if !strings.Contains(got, "first line") {
-		t.Fatalf("queue preview should show first line:\n%s", got)
-	}
-	if strings.Contains(got, "second line") {
-		t.Fatalf("queue preview should not show second line:\n%s", got)
+	got := ansiPattern.ReplaceAllString(renderQueuePreview([]string{"first line\nsecond line"}, 80), "")
+	if want := "queued (1)\n  1. first line\n"; got != want {
+		t.Fatalf("multiline queue preview = %q, want %q", got, want)
 	}
 }
 
@@ -310,36 +285,29 @@ func TestCovRenderQueuePreview_MultiLineEntryUsesFirstLine(t *testing.T) {
 
 func TestCovRenderComposerDraft_SimpleLine(t *testing.T) {
 	got := renderComposerDraft("hello", 80, 5)
-	if !strings.Contains(got, "> hello") {
-		t.Fatalf("draft should show '> hello':\n%s", got)
-	}
-}
-
-func TestCovRenderComposerDraft_CursorAtEnd(t *testing.T) {
-	got := renderComposerDraft("hi", 80, 5)
-	if !strings.Contains(got, "█") {
-		t.Fatalf("draft should show cursor glyph:\n%s", got)
+	if want := "> hello█\n"; got != want {
+		t.Fatalf("simple draft = %q, want %q", got, want)
 	}
 }
 
 func TestCovRenderComposerDraft_MaxLinesOneShowsEllipsis(t *testing.T) {
 	got := renderComposerDraft("line1\nline2\nline3", 80, 1)
-	if !strings.Contains(got, "...") {
-		t.Fatalf("maxLines=1 should show ellipsis:\n%s", got)
+	if want := "> ...█\n"; got != want {
+		t.Fatalf("one-line truncated draft = %q, want %q", got, want)
 	}
 }
 
 func TestCovRenderComposerDraft_ExceedsMaxLinesShowsEllipsis(t *testing.T) {
 	got := renderComposerDraft("a\nb\nc\nd\ne", 80, 3)
-	if !strings.Contains(got, "...") {
-		t.Fatalf("exceeding maxLines should show ellipsis:\n%s", got)
+	if want := "> ...\n  d\n  e█\n"; got != want {
+		t.Fatalf("three-line truncated draft = %q, want %q", got, want)
 	}
 }
 
 func TestCovRenderComposerDraft_WidthLE2NoWrap(t *testing.T) {
 	got := renderComposerDraft("no wrap here", 2, 5)
-	if !strings.Contains(got, "no wrap here") {
-		t.Fatalf("width<=2 should disable wrap:\n%s", got)
+	if want := "> no wrap here█\n"; got != want {
+		t.Fatalf("width<=2 draft = %q, want %q", got, want)
 	}
 }
 

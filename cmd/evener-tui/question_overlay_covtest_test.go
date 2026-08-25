@@ -2,6 +2,7 @@ package tui
 
 import (
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -57,24 +58,22 @@ func TestCovAskResolutionText_OptionEmptyLabels(t *testing.T) {
 
 func TestCovAskResolutionText_FreeText(t *testing.T) {
 	q := askQuestion{Resolution: &askResolution{Kind: askResolutionFree, Text: "hello"}}
-	got := askResolutionText(q)
-	if !strings.Contains(got, "free text:") || !strings.Contains(got, "hello") {
-		t.Fatalf("free text resolution = %q, want free text with hello", got)
+	if got, want := askResolutionText(q), `free text: "hello"`; got != want {
+		t.Fatalf("free text resolution = %q, want %q", got, want)
 	}
 }
 
 func TestCovAskResolutionText_DecideWithLeaning(t *testing.T) {
 	q := askQuestion{Resolution: &askResolution{Kind: askResolutionDecide, Leaning: " go short "}}
-	got := askResolutionText(q)
-	if !strings.Contains(got, "you decide") || !strings.Contains(got, "go short") {
-		t.Fatalf("decide with leaning = %q", got)
+	if got, want := askResolutionText(q), `you decide — leaning: "go short"`; got != want {
+		t.Fatalf("decide with leaning = %q, want %q", got, want)
 	}
 }
 
 func TestCovAskResolutionText_DecideNoLeaning(t *testing.T) {
 	q := askQuestion{Resolution: &askResolution{Kind: askResolutionDecide, Leaning: "  "}}
-	if got := askResolutionText(q); !strings.Contains(got, "you decide") || strings.Contains(got, "leaning") {
-		t.Fatalf("decide no leaning = %q, want just you decide", got)
+	if got := askResolutionText(q); got != "you decide" {
+		t.Fatalf("decide no leaning = %q, want %q", got, "you decide")
 	}
 }
 
@@ -83,9 +82,8 @@ func TestCovAskResolutionText_Fallback(t *testing.T) {
 		IfUnanswered: "default action",
 		Resolution:   &askResolution{Kind: askResolutionFallback},
 	}
-	got := askResolutionText(q)
-	if !strings.Contains(got, "fallback") || !strings.Contains(got, "default action") {
-		t.Fatalf("fallback = %q", got)
+	if got, want := askResolutionText(q), `do your stated fallback ("default action")`; got != want {
+		t.Fatalf("fallback = %q, want %q", got, want)
 	}
 }
 
@@ -105,16 +103,14 @@ func TestCovUnansweredWarning_Zero(t *testing.T) {
 }
 
 func TestCovUnansweredWarning_One(t *testing.T) {
-	got := unansweredWarning(1)
-	if !strings.Contains(got, "1 unanswered") {
-		t.Fatalf("one = %q, want contains '1 unanswered'", got)
+	if got, want := unansweredWarning(1), "submit with 1 unanswered → it resolves as skipped"; got != want {
+		t.Fatalf("one unanswered = %q, want %q", got, want)
 	}
 }
 
 func TestCovUnansweredWarning_Many(t *testing.T) {
-	got := unansweredWarning(5)
-	if !strings.Contains(got, "5 unanswered") || !strings.Contains(got, "they resolve") {
-		t.Fatalf("many = %q", got)
+	if got, want := unansweredWarning(5), "submit with 5 unanswered → they resolve as skipped"; got != want {
+		t.Fatalf("many unanswered = %q, want %q", got, want)
 	}
 }
 
@@ -196,10 +192,14 @@ func TestCovUpdateQuestionKey_DotWithMultipleRunesDoesNotOpen(t *testing.T) {
 
 func TestCovUpdateQuestionKey_UnhandledKeyDropped(t *testing.T) {
 	o := *newQuestionOverlay("ref", []askQuestion{twoOptionQuestion("Q1", false, "")}, 80)
-	before := o.idx
-	o = sendKey(o, tea.KeyMsg{Type: tea.KeyCtrlC})
-	if o.idx != before {
-		t.Fatalf("unhandled key changed state: idx = %d, want %d", o.idx, before)
+	o.questions[0].Note = "preserve"
+	before := o
+	updated, cmd := o.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd != nil {
+		t.Fatalf("unhandled question key returned command %T, want nil", cmd)
+	}
+	if !reflect.DeepEqual(updated, before) {
+		t.Fatalf("unhandled question key changed overlay state")
 	}
 }
 
@@ -240,9 +240,13 @@ func TestCovUpdateReviewKey_UnhandledKeyDropped(t *testing.T) {
 	questions := []askQuestion{twoOptionQuestion("Q1", false, "")}
 	o := *newQuestionOverlay("ref", questions, 80)
 	o.idx = len(o.questions) // at review
-	o = sendKey(o, tea.KeyMsg{Type: tea.KeyCtrlC})
-	if o.ReadyToSubmit() {
-		t.Fatalf("unhandled key should not set readyToSubmit")
+	before := o
+	updated, cmd := o.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd != nil {
+		t.Fatalf("unhandled review key returned command %T, want nil", cmd)
+	}
+	if !reflect.DeepEqual(updated, before) {
+		t.Fatalf("unhandled review key changed overlay state")
 	}
 }
 
@@ -250,9 +254,13 @@ func TestCovUpdateReviewKey_UnhandledKeyDropped(t *testing.T) {
 
 func TestCovUpdate_NonKeyMsgDropped(t *testing.T) {
 	o := *newQuestionOverlay("ref", []askQuestion{twoOptionQuestion("Q1", false, "")}, 80)
-	updated, _ := o.Update(tea.WindowSizeMsg{Width: 100, Height: 50})
-	if updated.idx != 0 {
-		t.Fatalf("non-key msg changed state: idx = %d, want 0", updated.idx)
+	o.questions[0].Note = "preserve"
+	updated, cmd := o.Update(tea.WindowSizeMsg{Width: 100, Height: 50})
+	if cmd != nil {
+		t.Fatalf("non-key message returned command %T, want nil", cmd)
+	}
+	if !reflect.DeepEqual(updated, o) {
+		t.Fatalf("non-key message changed overlay state, including fixed width %d", o.width)
 	}
 }
 
@@ -477,6 +485,9 @@ func TestCovToggleAskOverlay_InvalidRefAddsSystemMessage(t *testing.T) {
 	if m2.questionOverlay != nil {
 		t.Fatalf("toggleAskOverlay with invalid ref should not open overlay")
 	}
+	if len(m2.session.messages) != 1 || m2.session.messages[0].Kind != transcript.MsgSystem || m2.session.messages[0].Text != "Session ref is invalid." {
+		t.Fatalf("invalid ref messages = %#v, want one exact system diagnostic", m2.session.messages)
+	}
 }
 
 // ---- sameAskHeaders ---------------------------------------------------------
@@ -643,8 +654,9 @@ func TestCovApplyPickerSelection_FreeWithExistingText(t *testing.T) {
 	if o.valueEditor == nil {
 		t.Fatalf("free row did not open value editor")
 	}
-	// The initial text should be "previous" — we check by looking at the editor's current value.
-	// Since we can't easily read the modal's internal value, we just verify the editor opened.
+	if view := ansiPattern.ReplaceAllString(o.valueEditor.View(), ""); !strings.Contains(view, "> previous_") {
+		t.Fatalf("free editor did not preserve existing answer:\n%s", view)
+	}
 }
 
 func TestCovApplyPickerSelection_DecideWithExistingLeaning(t *testing.T) {
@@ -658,6 +670,9 @@ func TestCovApplyPickerSelection_DecideWithExistingLeaning(t *testing.T) {
 	o = sendKey(o, tea.KeyMsg{Type: tea.KeyEnter})
 	if o.valueEditor == nil {
 		t.Fatalf("decide row did not open value editor")
+	}
+	if view := ansiPattern.ReplaceAllString(o.valueEditor.View(), ""); !strings.Contains(view, "> prev lean_") {
+		t.Fatalf("decide editor did not preserve existing leaning:\n%s", view)
 	}
 }
 
@@ -706,7 +721,15 @@ func TestCovAskQuestionArgs_JSONRoundTrip(t *testing.T) {
 		t.Fatalf("marshal: %v", err)
 	}
 	decoded := decodeAskUserArgsJSON(string(data))
-	if len(decoded) != 1 {
-		t.Fatalf("decoded len = %d, want 1", len(decoded))
+	want := []askQuestion{{
+		Header:       original.Header,
+		Question:     original.Question,
+		Options:      original.Options,
+		MultiSelect:  original.MultiSelect,
+		Why:          original.Why,
+		IfUnanswered: original.IfUnanswered,
+	}}
+	if !reflect.DeepEqual(decoded, want) {
+		t.Fatalf("decoded questions = %#v, want %#v", decoded, want)
 	}
 }

@@ -1,327 +1,86 @@
 package tui
 
 import (
+	"strings"
 	"testing"
 )
 
-// ---- sampleRenderFromRealWidget: various sample names -----------------------
+// Every named sample must prove its own semantic fixture reached the real
+// widget. Recognition plus a non-empty view lets every branch return the same
+// arbitrary rendering; the per-sample marker and pairwise comparison do not.
+func TestCovSampleRenderFromRealWidget_SemanticFixtures(t *testing.T) {
+	withTestColorProfile(t)
+	tests := []struct {
+		name   string
+		width  int
+		marker string
+	}{
+		{"dashboard-narrow", 60, "EVENER LIVE"},
+		{"dashboard-normal", 80, "EVENER LIVE"},
+		{"dashboard-wide", 200, "EVENER LIVE"},
+		{"session-idle", 80, "draft stays visible"},
+		{"session-streaming", 80, "What agent harness is running"},
+		{"session-busy-steer", 80, "Please also check old TUI command parity"},
+		{"session-busy-readonly", 80, "draft kept"},
+		{"session-browse", 80, "What agent harness is running"},
+		{"session-fork", 80, "edited prompt"},
+		{"ask-card-pending", 80, "Which datastore for the ingest path?"},
+		{"ask-chip-waiting", 80, "question waiting"},
+		{"ask-overlay-single", 80, "Ready to deploy the migration?"},
+		{"ask-overlay-multi-review", 80, "review answers"},
+		{"spawn-evener", 80, "Implement the next TUI task"},
+		{"spawn-codex", 80, "codex-local"},
+		{"spawn-auth-required", 80, "OpenAI login required"},
+		{"model-picker", 80, "openai/gpt-5.5"},
+		{"theme-picker", 80, "Select theme"},
+		{"auth-overlay", 80, "Signed in with Evener-owned OAuth state."},
+		{"agents-picker", 80, "worker - restore auth commands"},
+		{"help-overlay", 80, "/help"},
+		{"diagnostics", 80, "Start failed: model provider is not reported"},
+		{"appshell-normal", 80, "Live now"},
+		{"appshell-loading", 80, "Loading hub dashboard..."},
+		{"appshell-error", 80, "Could not reach the configured Hub."},
+		{"topbar-session", 80, "Restore hub TUI widgets"},
+		{"actionbar-normal", 80, "enter open"},
+		{"actionbar-wrapped", 40, "ctrl+o dashboard"},
+		{"picker-empty", 80, "No matching"},
+		{"picker-disabled", 80, "source does not advertise clear"},
+		{"picker-error", 80, "provider listing failed"},
+	}
 
-func TestCovSampleRenderFromRealWidget_DashboardNarrow(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("dashboard-narrow", 60)
-	if !ok {
-		t.Fatalf("dashboard-narrow should be a recognized sample")
+	views := make(map[string]string, len(tests))
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			rendered, ok := sampleRenderFromRealWidget(tt.name, tt.width)
+			if !ok {
+				t.Fatalf("sample %q was not recognized", tt.name)
+			}
+			if rendered.Name != tt.name || rendered.Width != tt.width || rendered.Theme != "dark" {
+				t.Fatalf("sample metadata = {Name:%q Width:%d Theme:%q}, want {%q %d dark}", rendered.Name, rendered.Width, rendered.Theme, tt.name, tt.width)
+			}
+			plain := ansiPattern.ReplaceAllString(rendered.View, "")
+			if !strings.Contains(plain, tt.marker) {
+				t.Fatalf("sample %q missing fixture marker %q:\n%s", tt.name, tt.marker, plain)
+			}
+			views[tt.name] = plain
+		})
 	}
-	if r.Name != "dashboard-narrow" {
-		t.Fatalf("name = %q, want dashboard-narrow", r.Name)
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
 
-func TestCovSampleRenderFromRealWidget_DashboardNormal(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("dashboard-normal", 80)
-	if !ok {
-		t.Fatalf("dashboard-normal should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_DashboardWide(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("dashboard-wide", 200)
-	if !ok {
-		t.Fatalf("dashboard-wide should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_SessionIdle(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("session-idle", 80)
-	if !ok {
-		t.Fatalf("session-idle should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_SessionStreaming(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("session-streaming", 80)
-	if !ok {
-		t.Fatalf("session-streaming should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_SessionBusySteer(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("session-busy-steer", 80)
-	if !ok {
-		t.Fatalf("session-busy-steer should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_SessionBusyReadonly(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("session-busy-readonly", 80)
-	if !ok {
-		t.Fatalf("session-busy-readonly should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_SessionBrowse(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("session-browse", 80)
-	if !ok {
-		t.Fatalf("session-browse should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_SessionFork(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("session-fork", 80)
-	if !ok {
-		t.Fatalf("session-fork should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_AskCardPending(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("ask-card-pending", 80)
-	if !ok {
-		t.Fatalf("ask-card-pending should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_AskChipWaiting(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("ask-chip-waiting", 80)
-	if !ok {
-		t.Fatalf("ask-chip-waiting should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_AskOverlaySingle(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("ask-overlay-single", 80)
-	if !ok {
-		t.Fatalf("ask-overlay-single should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_AskOverlayMultiReview(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("ask-overlay-multi-review", 80)
-	if !ok {
-		t.Fatalf("ask-overlay-multi-review should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_SpawnEvener(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("spawn-evener", 80)
-	if !ok {
-		t.Fatalf("spawn-evener should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_SpawnCodex(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("spawn-codex", 80)
-	if !ok {
-		t.Fatalf("spawn-codex should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_SpawnAuthRequired(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("spawn-auth-required", 80)
-	if !ok {
-		t.Fatalf("spawn-auth-required should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_ModelPicker(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("model-picker", 80)
-	if !ok {
-		t.Fatalf("model-picker should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_ThemePicker(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("theme-picker", 80)
-	if !ok {
-		t.Fatalf("theme-picker should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_AuthOverlay(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("auth-overlay", 80)
-	if !ok {
-		t.Fatalf("auth-overlay should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_AgentsPicker(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("agents-picker", 80)
-	if !ok {
-		t.Fatalf("agents-picker should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_HelpOverlay(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("help-overlay", 80)
-	if !ok {
-		t.Fatalf("help-overlay should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_Diagnostics(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("diagnostics", 80)
-	if !ok {
-		t.Fatalf("diagnostics should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_AppShellNormal(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("appshell-normal", 80)
-	if !ok {
-		t.Fatalf("appshell-normal should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_AppShellLoading(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("appshell-loading", 80)
-	if !ok {
-		t.Fatalf("appshell-loading should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_AppShellError(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("appshell-error", 80)
-	if !ok {
-		t.Fatalf("appshell-error should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_TopbarSession(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("topbar-session", 80)
-	if !ok {
-		t.Fatalf("topbar-session should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_ActionbarNormal(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("actionbar-normal", 80)
-	if !ok {
-		t.Fatalf("actionbar-normal should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_ActionbarWrapped(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("actionbar-wrapped", 40)
-	if !ok {
-		t.Fatalf("actionbar-wrapped should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_PickerEmpty(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("picker-empty", 80)
-	if !ok {
-		t.Fatalf("picker-empty should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_PickerDisabled(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("picker-disabled", 80)
-	if !ok {
-		t.Fatalf("picker-disabled should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
-	}
-}
-
-func TestCovSampleRenderFromRealWidget_PickerError(t *testing.T) {
-	r, ok := sampleRenderFromRealWidget("picker-error", 80)
-	if !ok {
-		t.Fatalf("picker-error should be a recognized sample")
-	}
-	if r.View == "" {
-		t.Fatalf("view should be non-empty")
+	for i, left := range tests {
+		for _, right := range tests[i+1:] {
+			if views[left.name] == views[right.name] {
+				t.Errorf("samples %q and %q rendered identically", left.name, right.name)
+			}
+		}
 	}
 }
 
 func TestCovSampleRenderFromRealWidget_UnknownReturnsFalse(t *testing.T) {
-	_, ok := sampleRenderFromRealWidget("nonexistent-sample", 80)
+	rendered, ok := sampleRenderFromRealWidget("nonexistent-sample", 80)
 	if ok {
-		t.Fatalf("unknown sample should return ok=false")
+		t.Fatalf("unknown sample returned ok=true: %+v", rendered)
+	}
+	if rendered.Name != "" || rendered.Width != 0 || rendered.View != "" || len(rendered.Contains) != 0 || rendered.Theme != "" {
+		t.Fatalf("unknown sample = %+v, want zero render", rendered)
 	}
 }

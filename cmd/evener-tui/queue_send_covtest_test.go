@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/appwire/appwiretest"
 	"primeradiant.com/evener/cmd/evener-tui/internal/clipboard"
 )
 
@@ -122,12 +123,35 @@ func TestCovSendHubDrainAsSteer_WithPreQueueDepth(t *testing.T) {
 	}
 }
 
-func TestCovSendHubDrainAsSteer_NoAttachmentsPreQueueDepthZero(t *testing.T) {
-	// With no attachments and nil client, TurnDrainAsSteer will panic.
-	// Instead, test the cmd construction returns non-nil.
-	cmd := sendHubDrainAsSteer(nil, appwire.Ref{SourceID: "local", ThreadID: "01"}, "text", "draft", nil, 42)
-	if cmd == nil {
-		t.Fatalf("sendHubDrainAsSteer should return a non-nil cmd")
+func TestCovSendHubDrainAsSteer_ExecutesCommandWithoutAttachments(t *testing.T) {
+	transport := appwiretest.NewScriptedTransport()
+	client := appwire.NewClient(transport)
+	client.Start(t.Context())
+
+	gotMethod := make(chan string, 1)
+	go func() {
+		req := <-transport.Sent()
+		gotMethod <- req.Request.Method
+		transport.DeliverError(req.Request.ID, -32000, "drain rejected")
+	}()
+
+	ref := appwire.Ref{SourceID: "local", ThreadID: "01"}
+	msg := sendHubDrainAsSteer(client, ref, "text", "draft", nil, 42, 5)()
+	if method := <-gotMethod; method != appwire.MethodTurnDrainAsSteer {
+		t.Fatalf("command sent method %q, want %q", method, appwire.MethodTurnDrainAsSteer)
+	}
+	dm, ok := msg.(hubDrainAsSteerMsg)
+	if !ok {
+		t.Fatalf("command message type = %T, want hubDrainAsSteerMsg", msg)
+	}
+	if dm.ref != ref.String() || dm.text != "text" || dm.draft != "draft" || dm.preQueueDepth != 5 {
+		t.Fatalf("command result lost submission state: %+v", dm)
+	}
+	if dm.hadAttachment || dm.trackedAttachmentSubmit || len(dm.submittedAttachments) != 0 {
+		t.Fatalf("attachment-free command reported attachments: %+v", dm)
+	}
+	if dm.err == nil || dm.err.Error() != "appwire turn/drainAsSteer: drain rejected" {
+		t.Fatalf("command error = %v, want exact transport failure", dm.err)
 	}
 }
 

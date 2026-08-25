@@ -20,18 +20,10 @@ func TestCovNoticePanelView_ExplicitState(t *testing.T) {
 		NextAction: "retry",
 		State:      "active",
 	}
-	got := n.View()
-	if !strings.Contains(got, "Something happened") {
-		t.Fatalf("view should contain summary:\n%s", got)
-	}
-	if !strings.Contains(got, "source") || !strings.Contains(got, "hub") {
-		t.Fatalf("view should contain source:\n%s", got)
-	}
-	if !strings.Contains(got, "cause") || !strings.Contains(got, "timeout") {
-		t.Fatalf("view should contain cause/reason:\n%s", got)
-	}
-	if !strings.Contains(got, "next") || !strings.Contains(got, "retry") {
-		t.Fatalf("view should contain next action:\n%s", got)
+	got := ansiPattern.ReplaceAllString(n.View(), "")
+	want := "▍ ● Something happened\n  source hub · cause timeout\n  next  retry"
+	if got != want {
+		t.Fatalf("notice view = %q, want %q", got, want)
 	}
 }
 
@@ -43,9 +35,13 @@ func TestCovNoticePanelView_EmptyStateDefaultsToIdle(t *testing.T) {
 		NextAction: "do nothing",
 	}
 	got := n.View()
-	// Should render without error.
-	if !strings.Contains(got, "idle test") {
-		t.Fatalf("view should contain summary:\n%s", got)
+	n.State = "idle"
+	if want := n.View(); got != want {
+		t.Fatalf("empty state render differs from explicit idle:\nempty: %q\n idle: %q", got, want)
+	}
+	n.State = "active"
+	if active := n.View(); got == active {
+		t.Fatalf("empty state render is indistinguishable from active state")
 	}
 }
 
@@ -56,9 +52,9 @@ func TestCovNoticePanelView_EmptySummaryFallsBackToTitle(t *testing.T) {
 		Source:     "hub",
 		NextAction: "act",
 	}
-	got := n.View()
-	if !strings.Contains(got, "My Title") {
-		t.Fatalf("view should fall back to title when summary empty:\n%s", got)
+	got := ansiPattern.ReplaceAllString(n.View(), "")
+	if want := "▍ ● My Title\n  source hub · cause \n  next  act"; got != want {
+		t.Fatalf("title fallback view = %q, want %q", got, want)
 	}
 }
 
@@ -73,20 +69,17 @@ func TestCovNoticePanelText_AllFields(t *testing.T) {
 		Reason:     "conn refused",
 		NextAction: "retry now",
 	}.Text()
-	for _, want := range []string{"Full Notice", "Something broke", "category: net", "source: hub", "reason: conn refused", "next: retry now"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("text missing %q:\n%s", want, got)
-		}
+	plain := ansiPattern.ReplaceAllString(got, "")
+	want := "Full Notice\nSomething broke\ncategory: net\nsource: hub\nreason: conn refused\nnext: retry now"
+	if plain != want {
+		t.Fatalf("notice text = %q, want %q", plain, want)
 	}
 }
 
 func TestCovNoticePanelText_OnlyTitle(t *testing.T) {
 	got := noticePanel{Title: "Just Title"}.Text()
-	if !strings.Contains(got, "Just Title") {
-		t.Fatalf("text should contain title:\n%s", got)
-	}
-	if strings.Contains(got, "category:") {
-		t.Fatalf("text should not contain category when empty:\n%s", got)
+	if plain := ansiPattern.ReplaceAllString(got, ""); plain != "Just Title" {
+		t.Fatalf("title-only text = %q, want %q", plain, "Just Title")
 	}
 }
 

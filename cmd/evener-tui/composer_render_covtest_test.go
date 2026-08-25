@@ -30,8 +30,14 @@ func TestCovRenderComposerChipStrip_FullContext(t *testing.T) {
 		Width:      120,
 	}
 	got := renderComposerChipStrip(ctx)
-	if !strings.Contains(got, "evener") {
-		t.Fatalf("chip strip should contain harness:\n%s", got)
+	plain := ansiPattern.ReplaceAllString(got, "")
+	for _, want := range []string{"harness evener", "model openai/gpt-5", "branch main", "project", "connected", "http://hub:8080"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("full chip strip missing %q:\n%s", want, plain)
+		}
+	}
+	if width := lipgloss.Width(got); width != ctx.Width {
+		t.Fatalf("chip strip width = %d, want %d", width, ctx.Width)
 	}
 }
 
@@ -49,8 +55,12 @@ func TestCovRenderComposerChipStrip_NarrowWidth(t *testing.T) {
 		Mode:       "QUEUE",
 	}
 	got := renderComposerChipStrip(ctx)
-	if got == "" {
-		t.Fatalf("chip strip should render even at narrow width")
+	plain := ansiPattern.ReplaceAllString(got, "")
+	if !strings.Contains(plain, "harness") || !strings.Contains(plain, "…") {
+		t.Fatalf("narrow chip strip should preserve leading context and show truncation:\n%s", plain)
+	}
+	if width := lipgloss.Width(got); width != ctx.Width {
+		t.Fatalf("narrow chip strip width = %d, want %d", width, ctx.Width)
 	}
 }
 
@@ -58,8 +68,11 @@ func TestCovRenderComposerChipStrip_NoContext(t *testing.T) {
 	withTestColorProfile(t)
 	ctx := composerContext{Width: 80}
 	got := renderComposerChipStrip(ctx)
-	if got == "" {
-		t.Fatalf("chip strip should render even with no context")
+	if plain := ansiPattern.ReplaceAllString(got, ""); strings.TrimSpace(plain) != "" {
+		t.Fatalf("context-free chip strip should contain only band padding: %q", plain)
+	}
+	if width := lipgloss.Width(got); width != ctx.Width {
+		t.Fatalf("context-free chip strip width = %d, want %d", width, ctx.Width)
 	}
 }
 
@@ -72,8 +85,8 @@ func TestCovRenderComposerChipStrip_AwaitingMode(t *testing.T) {
 		Connected: true,
 	}
 	got := renderComposerChipStrip(ctx)
-	if got == "" {
-		t.Fatalf("chip strip should render with awaiting mode")
+	if plain := ansiPattern.ReplaceAllString(got, ""); !strings.Contains(plain, "● AWAITING") {
+		t.Fatalf("awaiting chip strip lost mode marker: %q", plain)
 	}
 }
 
@@ -86,8 +99,8 @@ func TestCovRenderComposerChipStrip_ForkMode(t *testing.T) {
 		Connected: true,
 	}
 	got := renderComposerChipStrip(ctx)
-	if got == "" {
-		t.Fatalf("chip strip should render with fork mode")
+	if plain := ansiPattern.ReplaceAllString(got, ""); !strings.Contains(plain, "● FORK DRAFT") {
+		t.Fatalf("fork chip strip lost mode marker: %q", plain)
 	}
 }
 
@@ -99,8 +112,11 @@ func TestCovFitRightContent_StatusFitsWithMode(t *testing.T) {
 	ctx := composerContext{Connected: true, HubAddr: "http://hub", Provider: "openai"}
 	modeFrag := renderModeChip("QUEUE", th)
 	got := fitRightContent(ctx, th, modeFrag, 100)
-	if got == "" {
-		t.Fatalf("fitRightContent should render when room is generous")
+	plain := ansiPattern.ReplaceAllString(got, "")
+	for _, want := range []string{"connected", "http://hub", "● QUEUE"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("generous right content missing %q: %q", want, plain)
+		}
 	}
 }
 
@@ -110,8 +126,12 @@ func TestCovFitRightContent_TightRoomOnlyMode(t *testing.T) {
 	ctx := composerContext{Connected: true, HubAddr: "http://hub", Provider: "openai"}
 	modeFrag := renderModeChip("QUEUE", th)
 	got := fitRightContent(ctx, th, modeFrag, 10)
-	if got == "" {
-		t.Fatalf("fitRightContent should render mode at tight room")
+	plain := ansiPattern.ReplaceAllString(got, "")
+	if plain != "…  ● QUEUE" {
+		t.Fatalf("tight right content = %q, want truncated health plus full mode", plain)
+	}
+	if width := lipgloss.Width(got); width != 10 {
+		t.Fatalf("tight right content width = %d, want 10", width)
 	}
 }
 
@@ -130,8 +150,9 @@ func TestCovFitRightContent_StatusOnlyNoMode(t *testing.T) {
 	th := tuitheme.ActiveTheme()
 	ctx := composerContext{Connected: true, HubAddr: "http://hub", Provider: "openai"}
 	got := fitRightContent(ctx, th, "", 80)
-	if got == "" {
-		t.Fatalf("fitRightContent with status but no mode should render status")
+	plain := ansiPattern.ReplaceAllString(got, "")
+	if !strings.Contains(plain, "connected") || !strings.Contains(plain, "http://hub") {
+		t.Fatalf("status-only content lost health or address: %q", plain)
 	}
 }
 
@@ -140,8 +161,8 @@ func TestCovFitRightContent_ModeOnlyNoStatus(t *testing.T) {
 	th := tuitheme.ActiveTheme()
 	modeFrag := renderModeChip("QUEUE", th)
 	got := fitRightContent(composerContext{}, th, modeFrag, 80)
-	if got == "" {
-		t.Fatalf("fitRightContent with mode but no status should render mode")
+	if plain := ansiPattern.ReplaceAllString(got, ""); plain != "● QUEUE" {
+		t.Fatalf("mode-only content = %q, want %q", plain, "● QUEUE")
 	}
 }
 
@@ -151,8 +172,11 @@ func TestCovFitRightContent_VerySmallRoomTruncates(t *testing.T) {
 	ctx := composerContext{Connected: true, HubAddr: "http://hub", Provider: "openai"}
 	modeFrag := renderModeChip("QUEUE", th)
 	got := fitRightContent(ctx, th, modeFrag, 3)
-	if got == "" {
-		t.Fatalf("fitRightContent should still render something at very small room")
+	if width := lipgloss.Width(got); width != 3 {
+		t.Fatalf("very-small right content width = %d, want 3: %q", width, ansiPattern.ReplaceAllString(got, ""))
+	}
+	if plain := ansiPattern.ReplaceAllString(got, ""); !strings.HasSuffix(plain, "…") {
+		t.Fatalf("very-small right content should signal truncation: %q", plain)
 	}
 }
 
@@ -204,8 +228,11 @@ func TestCovRenderChipStatus_HealthTruncatedByBudget(t *testing.T) {
 	th := tuitheme.ActiveTheme()
 	ctx := composerContext{Connected: true, HubAddr: "http://hub:9999", Provider: "openai"}
 	got := renderChipStatus(ctx, th, 3)
-	if got == "" {
-		t.Fatalf("health truncated should still render something")
+	if width := lipgloss.Width(got); width != 3 {
+		t.Fatalf("truncated health width = %d, want 3", width)
+	}
+	if plain := ansiPattern.ReplaceAllString(got, ""); !strings.HasSuffix(plain, "…") {
+		t.Fatalf("truncated health should end in ellipsis: %q", plain)
 	}
 }
 
@@ -214,8 +241,12 @@ func TestCovRenderChipStatus_RetryTruncatedByBudget(t *testing.T) {
 	th := tuitheme.ActiveTheme()
 	ctx := composerContext{Connected: true, Retry: "rate limited — attempt 2/3 — retrying in 30s"}
 	got := renderChipStatus(ctx, th, 40)
-	if got == "" {
-		t.Fatalf("retry truncated should still render something")
+	plain := ansiPattern.ReplaceAllString(got, "")
+	if !strings.Contains(plain, "connected") || !strings.Contains(plain, "rate limited") || !strings.HasSuffix(plain, "…") {
+		t.Fatalf("truncated retry lost priority or truncation signal: %q", plain)
+	}
+	if width := lipgloss.Width(got); width != 40 {
+		t.Fatalf("truncated retry width = %d, want 40", width)
 	}
 }
 
@@ -434,8 +465,8 @@ func TestCovFormatExactGap_Zero(t *testing.T) {
 
 func TestCovComposeProviderModel_BothPresent(t *testing.T) {
 	got := composeProviderModel("openai", "gpt-5")
-	if !strings.Contains(got, "openai") || !strings.Contains(got, "gpt-5") {
-		t.Fatalf("provider+model = %q, want contains both", got)
+	if got != "openai/gpt-5" {
+		t.Fatalf("provider+model = %q, want openai/gpt-5", got)
 	}
 }
 

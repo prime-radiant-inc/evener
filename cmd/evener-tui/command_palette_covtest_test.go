@@ -29,8 +29,11 @@ func TestCovViewWithMaxHeight_WithFilter(t *testing.T) {
 	p.panel.SetFilter("alpha")
 	got := p.ViewWithMaxHeight(20)
 	plain := ansiPattern.ReplaceAllString(got, "")
-	if !strings.Contains(plain, "alpha") {
-		t.Fatalf("view should show filtered item:\n%s", plain)
+	if !strings.Contains(plain, "Filter: alpha") || !strings.Contains(plain, "> /alpha") {
+		t.Fatalf("filtered palette lost filter text or selected match:\n%s", plain)
+	}
+	if strings.Contains(plain, "/beta") {
+		t.Fatalf("filtered palette retained non-matching command:\n%s", plain)
 	}
 }
 
@@ -41,8 +44,8 @@ func TestCovViewWithMaxHeight_NoFilterShowsPlaceholder(t *testing.T) {
 	}, 80)
 	got := p.ViewWithMaxHeight(0)
 	plain := ansiPattern.ReplaceAllString(got, "")
-	if !strings.Contains(plain, "filter") {
-		t.Fatalf("view should show filter placeholder:\n%s", plain)
+	if !strings.Contains(plain, "Filter: type to filter...") || !strings.Contains(plain, "> /alpha") {
+		t.Fatalf("unfiltered palette lost placeholder or selected command:\n%s", plain)
 	}
 }
 
@@ -51,9 +54,11 @@ func TestCovViewWithMaxHeight_NarrowWidth(t *testing.T) {
 	p := newCommandPalette("Test", []commandPaletteEntry{
 		{Item: tuipick.PickerPanelItem{ID: "a", Label: "/alpha"}},
 	}, 30)
-	got := p.ViewWithMaxHeight(0)
-	if got == "" {
-		t.Fatalf("narrow width should still render")
+	plain := ansiPattern.ReplaceAllString(p.ViewWithMaxHeight(0), "")
+	for _, want := range []string{"Test", "Filter: type to filter...", "> /alpha", "enter run"} {
+		if !strings.Contains(plain, want) {
+			t.Fatalf("narrow palette lost %q:\n%s", want, plain)
+		}
 	}
 }
 
@@ -82,29 +87,29 @@ func TestCovPaletteItemWindow_MaxRowsGECountShowsAll(t *testing.T) {
 
 func TestCovPaletteItemWindow_NegativeCursorClamped(t *testing.T) {
 	start, end := paletteItemWindow(10, -5, 3)
-	if start < 0 || end < 0 {
-		t.Fatalf("negative cursor = (%d,%d), should be non-negative", start, end)
+	if start != 0 || end != 3 {
+		t.Fatalf("negative cursor = (%d,%d), want (0,3)", start, end)
 	}
 }
 
 func TestCovPaletteItemWindow_CursorBeyondCount(t *testing.T) {
 	start, end := paletteItemWindow(5, 100, 3)
-	if end > 5 {
-		t.Fatalf("cursor beyond count = (%d,%d), end should not exceed count", start, end)
+	if start != 2 || end != 5 {
+		t.Fatalf("cursor beyond count = (%d,%d), want (2,5)", start, end)
 	}
 }
 
 func TestCovPaletteItemWindow_WindowNearEnd(t *testing.T) {
 	start, end := paletteItemWindow(10, 9, 3)
-	if end != 10 {
-		t.Fatalf("window near end = (%d,%d), end should be 10", start, end)
+	if start != 7 || end != 10 {
+		t.Fatalf("window near end = (%d,%d), want (7,10)", start, end)
 	}
 }
 
 func TestCovPaletteItemWindow_WindowNearStart(t *testing.T) {
 	start, end := paletteItemWindow(10, 0, 3)
-	if start != 0 {
-		t.Fatalf("window near start = (%d,%d), start should be 0", start, end)
+	if start != 0 || end != 3 {
+		t.Fatalf("window near start = (%d,%d), want (0,3)", start, end)
 	}
 }
 
@@ -152,16 +157,42 @@ func TestCovSelectedEntry_Found(t *testing.T) {
 
 func TestCovCommandPaletteEntriesForRows_SessionMode(t *testing.T) {
 	entries := commandPaletteEntriesForRows(hubModeSession, hubSessionCapabilities{Send: true}, nil)
-	if len(entries) == 0 {
-		t.Fatalf("session mode should produce entries")
+	commands := commandPaletteCommandSet(entries)
+	for _, want := range []string{"help", "dashboard", "details"} {
+		if !commands[want] {
+			t.Fatalf("session palette missing /%s: %v", want, commands)
+		}
+	}
+	for _, wrongScope := range []string{"new", "refresh"} {
+		if commands[wrongScope] {
+			t.Fatalf("session palette contains dashboard-only /%s: %v", wrongScope, commands)
+		}
 	}
 }
 
 func TestCovCommandPaletteEntriesForRows_DashboardMode(t *testing.T) {
 	entries := commandPaletteEntriesForRows(hubModeDashboard, hubSessionCapabilities{}, nil)
-	if len(entries) == 0 {
-		t.Fatalf("dashboard mode should produce entries")
+	commands := commandPaletteCommandSet(entries)
+	for _, want := range []string{"new", "refresh", "quit"} {
+		if !commands[want] {
+			t.Fatalf("dashboard palette missing /%s: %v", want, commands)
+		}
 	}
+	for _, wrongScope := range []string{"help", "details", "interrupt"} {
+		if commands[wrongScope] {
+			t.Fatalf("dashboard palette contains session-only /%s: %v", wrongScope, commands)
+		}
+	}
+}
+
+func commandPaletteCommandSet(entries []commandPaletteEntry) map[string]bool {
+	commands := make(map[string]bool)
+	for _, entry := range entries {
+		if entry.Kind == commandPaletteCommand {
+			commands[entry.Command] = true
+		}
+	}
+	return commands
 }
 
 func TestCovCommandPaletteEntriesForRows_WithSessionRows(t *testing.T) {

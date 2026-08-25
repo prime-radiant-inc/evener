@@ -38,18 +38,16 @@ func TestCovModelAndProfile_Neither(t *testing.T) {
 func TestCovWriteModelOrProviderLine_WithModel(t *testing.T) {
 	var b strings.Builder
 	writeModelOrProviderLine(&b, "gpt-5", "openai")
-	got := b.String()
-	if !strings.Contains(got, "Model:") || !strings.Contains(got, "gpt-5") || !strings.Contains(got, "openai") {
-		t.Fatalf("with model = %q", got)
+	if got, want := b.String(), "Model:    gpt-5 (openai)\n"; got != want {
+		t.Fatalf("model line = %q, want %q", got, want)
 	}
 }
 
 func TestCovWriteModelOrProviderLine_NoModelWithProfile(t *testing.T) {
 	var b strings.Builder
 	writeModelOrProviderLine(&b, "", "openai")
-	got := b.String()
-	if !strings.Contains(got, "Provider:") || !strings.Contains(got, "openai") {
-		t.Fatalf("no model with profile = %q", got)
+	if got, want := b.String(), "Provider: openai\n"; got != want {
+		t.Fatalf("provider line = %q, want %q", got, want)
 	}
 }
 
@@ -196,10 +194,9 @@ func TestCovCapabilityList_All(t *testing.T) {
 		Fork: true, Resume: true, Shutdown: true, ChangeModel: true,
 	}
 	got := capabilityList(caps)
-	for _, want := range []string{"send", "steer", "interrupt", "compact", "clear", "fork", "resume", "shutdown", "change model"} {
-		if !strings.Contains(got, want) {
-			t.Fatalf("capabilityList missing %q: %s", want, got)
-		}
+	want := "send, steer, interrupt, compact, clear, fork, resume, shutdown, change model"
+	if got != want {
+		t.Fatalf("all capabilities = %q, want %q", got, want)
 	}
 }
 
@@ -212,11 +209,8 @@ func TestCovCapabilityList_None(t *testing.T) {
 
 func TestCovCapabilityList_Partial(t *testing.T) {
 	got := capabilityList(hubSessionCapabilities{Send: true, Compact: true})
-	if !strings.Contains(got, "send") || !strings.Contains(got, "compact") {
-		t.Fatalf("partial caps = %q", got)
-	}
-	if strings.Contains(got, "steer") {
-		t.Fatalf("partial caps should not contain steer: %q", got)
+	if want := "send, compact"; got != want {
+		t.Fatalf("partial capabilities = %q, want %q", got, want)
 	}
 }
 
