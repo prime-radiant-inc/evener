@@ -29,6 +29,7 @@
     "jsdom": "29.1.1",
     "parse5": "8.0.1",
     "postcss": "8.5.26",
+    "saxes": "6.0.0",
     "smol-toml": "1.8.0",
     "typescript": "6.0.3",
     "vite": "8.1.5",
