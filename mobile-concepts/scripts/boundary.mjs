@@ -454,6 +454,17 @@ function scanJavaScript(file, text) {
           ["mediaDevices", "getUserMedia"].includes(key)
         )
           record("media-capture", "media capture capability is forbidden");
+        if (
+          (source === "navigator" && key === "sendBeacon") ||
+          (["window", "globalThis", "self"].includes(source) &&
+            ["fetch", "XMLHttpRequest", "WebSocket", "EventSource"].includes(
+              key,
+            ))
+        )
+          record(
+            "network-api",
+            `${key} is forbidden in the offline concept lab`,
+          );
         if (source === "navigator" && key === "geolocation")
           record("geolocation", "geolocation capability is forbidden");
         if (
@@ -496,6 +507,14 @@ function scanJavaScript(file, text) {
     const isUnshadowedBrowserReference =
       isValueReference(node, parent) &&
       !declaredBindings.has(pathRoot(rawExpressionPath));
+    if (
+      isUnshadowedBrowserReference &&
+      NETWORK_API_PATTERNS.some((item) => item.name === expressionPath)
+    )
+      record(
+        "network-api",
+        `${expressionPath} is forbidden in the offline concept lab`,
+      );
     if (
       isUnshadowedBrowserReference &&
       expressionPath?.startsWith("navigator.mediaDevices")
@@ -678,16 +697,31 @@ function scanRust(file, text) {
   const commandAliases = new Set();
   const handlerAliases = new Set();
   const tauriAliases = new Set(["tauri"]);
+  const crateAliasEdges = [
+    ...code.matchAll(
+      /\buse\s+([A-Za-z_][A-Za-z0-9_]*)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/g,
+    ),
+    ...code.matchAll(
+      /\bextern\s+crate\s+([A-Za-z_][A-Za-z0-9_]*)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/g,
+    ),
+  ].map((match) => ({ source: match[1], local: match[2] }));
+  let foundCrateAlias = true;
+  while (foundCrateAlias) {
+    foundCrateAlias = false;
+    for (const edge of crateAliasEdges) {
+      if (tauriAliases.has(edge.source) && !tauriAliases.has(edge.local)) {
+        tauriAliases.add(edge.local);
+        foundCrateAlias = true;
+      }
+    }
+  }
   for (const match of code.matchAll(
-    /\buse\s+tauri\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/g,
-  ))
-    tauriAliases.add(match[1]);
-  for (const match of code.matchAll(
-    /\buse\s+tauri::(?:\{([^}]*)\}|(command|generate_handler)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?)\s*;/g,
+    /\buse\s+([A-Za-z_][A-Za-z0-9_]*)::(?:\{([^}]*)\}|(command|generate_handler)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?)\s*;/g,
   )) {
-    const imports = match[1]
-      ? match[1].split(",").map((item) => item.trim())
-      : [`${match[2]}${match[3] ? ` as ${match[3]}` : ""}`];
+    if (!tauriAliases.has(match[1])) continue;
+    const imports = match[2]
+      ? match[2].split(",").map((item) => item.trim())
+      : [`${match[3]}${match[4] ? ` as ${match[4]}` : ""}`];
     for (const item of imports) {
       const imported =
         /^(command|generate_handler)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/.exec(
@@ -703,7 +737,7 @@ function scanRust(file, text) {
     violations.push(violation("invoke-handler", file, detail));
   for (const tauriAlias of tauriAliases) {
     const pattern = new RegExp(
-      `#\\s*\\[\\s*${escapeRegExp(tauriAlias)}::command\\b`,
+      `#\\s*\\[\\s*(?<![A-Za-z0-9_])${escapeRegExp(tauriAlias)}::command\\b`,
       "g",
     );
     for (const _match of code.matchAll(pattern))
@@ -726,7 +760,7 @@ function scanRust(file, text) {
   for (const tauriAlias of tauriAliases)
     scanHandlerMacros(
       new RegExp(
-        `${escapeRegExp(tauriAlias)}::generate_handler!\\s*\\[([^\\]]*)\\]`,
+        `(?<![A-Za-z0-9_])${escapeRegExp(tauriAlias)}::generate_handler!\\s*\\[([^\\]]*)\\]`,
         "gs",
       ),
       `${tauriAlias}::generate_handler`,
@@ -819,6 +853,8 @@ function scanHtmlMarkup(file, text) {
   }
   traverseHtml(document, (node) => {
     for (const attribute of node.attrs ?? []) {
+      if (attribute.name === "xmlns" || attribute.name.startsWith("xmlns:"))
+        continue;
       if (REMOTE_URL.test(attribute.value))
         violations.push(
           remoteAsset(
