@@ -1071,10 +1071,10 @@ function effortSelect(): HTMLSelectElement {
   return screen.getByLabelText("Effort") as HTMLSelectElement;
 }
 
-function effortOptionLabels(): string[] {
+function effortOptionValues(): string[] {
   return within(effortSelect())
     .getAllByRole("option")
-    .map((option) => option.textContent ?? "");
+    .map((option) => (option as HTMLOptionElement).value);
 }
 
 async function pickModel(user: ReturnType<typeof userEvent.setup>, query: string, qualified: string): Promise<void> {
@@ -1108,14 +1108,14 @@ test("the Effort select offers the selected model's own ladder and re-derives it
 
   await pickModel(user, "gpt-5", "openai/gpt-5");
   await waitFor(() =>
-    expect(effortOptionLabels()).toEqual(["(default)", "minimal", "low", "medium", "high", "xhigh", "max", "none"]),
+    expect(effortOptionValues()).toEqual(["", "minimal", "low", "medium", "high", "xhigh", "max", "none"]),
   );
 
   // A chosen level the next model's ladder doesn't name can't stay selected -
   // the select must never display a value it doesn't offer.
   await user.selectOptions(effortSelect(), "xhigh");
   await pickModel(user, "sonnet", "anthropic/claude-sonnet-4-5");
-  await waitFor(() => expect(effortOptionLabels()).toEqual(["(default)", "low", "medium", "high", "none"]));
+  await waitFor(() => expect(effortOptionValues()).toEqual(["", "low", "medium", "high", "none"]));
   expect(effortSelect().value).toBe("");
 });
 
@@ -1134,7 +1134,7 @@ test("a model the catalog says cannot reason disables the Effort select and clea
   await settled();
 
   await pickModel(user, "sonnet", "anthropic/claude-sonnet-4-5");
-  await waitFor(() => expect(effortOptionLabels()).toEqual(["(default)", "low", "medium", "high", "none"]));
+  await waitFor(() => expect(effortOptionValues()).toEqual(["", "low", "medium", "high", "none"]));
   await user.selectOptions(effortSelect(), "high");
 
   await pickModel(user, "gpt-5", "openai/gpt-5");
@@ -1170,7 +1170,7 @@ test("with Model left at '(default)', the Effort select follows the hub's resolv
   // fallback doesn't preselect it - Model stays "(default)" and the ladder
   // still has to be gpt-5's own.
   expect(modelTrigger().textContent).toContain("(default)");
-  await waitFor(() => expect(effortOptionLabels()).toEqual(["(default)", "low", "high", "none"]));
+  await waitFor(() => expect(effortOptionValues()).toEqual(["", "low", "high", "none"]));
 });
 
 test("the classic ladder remains when the hub can't enumerate the model's own levels", async () => {
@@ -1181,7 +1181,7 @@ test("the classic ladder remains when the hub can't enumerate the model's own le
   await settled();
 
   await pickModel(user, "gpt-5", "openai/gpt-5");
-  await waitFor(() => expect(effortOptionLabels()).toEqual(["(default)", "minimal", "low", "medium", "high", "none"]));
+  await waitFor(() => expect(effortOptionValues()).toEqual(["", "minimal", "low", "medium", "high", "none"]));
 });
 
 // The pane-level modelCatalog (the Effort select's source of
@@ -1279,7 +1279,7 @@ test.each(["pane response first", "picker response first"] as const)(
         });
       }
 
-      expect(effortOptionLabels()).toEqual(["(default)", "minimal", "low", "medium", "high", "xhigh", "max", "none"]);
+      expect(effortOptionValues()).toEqual(["", "minimal", "low", "medium", "high", "xhigh", "max", "none"]);
     } finally {
       vi.useRealTimers();
     }
@@ -1717,14 +1717,14 @@ test("an effort the fallback ladder cannot name is still offered, not silently s
   await settled();
 
   await pickModel(user, "gpt-5", "openai/gpt-5");
-  await waitFor(() => expect(effortOptionLabels()).toContain("xhigh"));
+  await waitFor(() => expect(effortOptionValues()).toContain("xhigh"));
   await user.selectOptions(effortSelect(), "xhigh");
 
   await pickModel(user, "sonnet", "anthropic/claude-sonnet-4-5");
   // The fallback ladder took over (it starts at "minimal", the real one did
   // not) and still offers the preserved level, because state still holds it.
-  await waitFor(() => expect(effortOptionLabels()).toContain("minimal"));
-  expect(effortOptionLabels()).toContain("xhigh");
+  await waitFor(() => expect(effortOptionValues()).toContain("minimal"));
+  expect(effortOptionValues()).toContain("xhigh");
 
   const displayed = effortSelect().value;
   expect(displayed).toBe("xhigh");

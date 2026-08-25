@@ -114,6 +114,73 @@ describe("mergeScopedCatalog", () => {
     expect(mergeCatalogEntry(existing, richer)).toEqual(richer);
   });
 
+  test("does not merge entries with different providers", () => {
+    const existing = {
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "GPT-5",
+      supportsReasoning: true,
+    };
+    const incoming = {
+      provider: "anthropic",
+      model: "gpt-5",
+      displayName: "Claude",
+      supportsVision: true,
+    };
+
+    expect(mergeCatalogEntry(existing, incoming)).toEqual(incoming);
+  });
+
+  test("does not merge entries with different models", () => {
+    const existing = {
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "GPT-5",
+      supportsReasoning: true,
+    };
+    const incoming = {
+      provider: "openai",
+      model: "gpt-5-mini",
+      displayName: "GPT-5 mini",
+      supportsVision: true,
+    };
+
+    expect(mergeCatalogEntry(existing, incoming)).toEqual(incoming);
+  });
+
+  test("applies explicit false and zero updates instead of treating them as missing", () => {
+    const existing = {
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "GPT-5",
+      contextWindow: 128000,
+      supportsTools: true,
+      supportsVision: true,
+      maxOutputTokens: 16384,
+      supportsWebSearch: true,
+      supportsReasoning: true,
+      inputCostPerMillion: 3,
+      outputCostPerMillion: 15,
+      reasoningEffortLevels: ["low", "high"],
+    };
+    const incoming = {
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "GPT-5",
+      contextWindow: 0,
+      supportsTools: false,
+      supportsVision: false,
+      maxOutputTokens: 0,
+      supportsWebSearch: false,
+      supportsReasoning: false,
+      inputCostPerMillion: 0,
+      outputCostPerMillion: 0,
+      reasoningEffortLevels: [],
+    };
+
+    expect(mergeCatalogEntry(existing, incoming)).toEqual(incoming);
+  });
+
   test("applies an explicit non-reasoning update instead of retaining stale levels", () => {
     const existing = {
       provider: "openai",

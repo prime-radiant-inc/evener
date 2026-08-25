@@ -14,16 +14,19 @@ function key(provider: string, model: string): string {
   return `${provider}/${model}`;
 }
 
-// Catalog responses can arrive from more than one loader. Keep the stable
-// provider/model identity from the existing entry, and only let the incoming
-// response replace fields it actually knows. In particular, a scoped-list
-// fallback has displayName === "" and no capability fields; it must not erase
-// metadata a picker or an earlier enrichment already supplied.
+// Catalog responses can arrive from more than one loader. Entries are only
+// mergeable when their provider/model identities match; callers that merge
+// independently loaded catalogs must never create a hybrid identity. For a
+// same-identity merge, only let the incoming response replace fields it
+// actually knows. In particular, a scoped-list fallback has displayName === ""
+// and no capability fields; it must not erase metadata a picker or an earlier
+// enrichment already supplied.
 export function mergeCatalogEntry(
   existing: ModelCatalogEntry | undefined,
   incoming: ModelCatalogEntry,
 ): ModelCatalogEntry {
   if (existing === undefined) return incoming;
+  if (existing.provider !== incoming.provider || existing.model !== incoming.model) return incoming;
 
   const merged: ModelCatalogEntry = { ...existing };
   if (incoming.displayName !== "") merged.displayName = incoming.displayName;
@@ -47,7 +50,7 @@ export function mergeCatalogEntry(
     merged.reasoningEffortLevels = [];
   }
 
-  return { ...merged, provider: existing.provider, model: existing.model };
+  return merged;
 }
 
 // Apply a later catalog snapshot without allowing a less-informed snapshot to
