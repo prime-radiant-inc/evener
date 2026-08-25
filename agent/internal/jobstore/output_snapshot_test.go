@@ -493,44 +493,74 @@ func TestReadOutputSnapshotTruncatedBelowPendingTailIsCorruption(t *testing.T) {
 }
 
 func TestReadOutputWindowSnapshotUsesProductionPendingPublicationOrder(t *testing.T) {
-	// The append pauses after pruneLocked publishes .pending and before it
-	// opens the replacement file, matching the production writer order.
+	// Capture the capped retained size before the append starts. The append then
+	// pauses after pruneLocked publishes .pending and before it opens the
+	// replacement file, matching the production writer order.
 	path := filepath.Join(t.TempDir(), "job.log")
 	fs := newSnapshotAppendPruneFS(path)
-	t.Cleanup(fs.releaseOutputReplacement)
 	store, err := createOutputFsWithSync(fs, path, 4, true)
 	if err != nil {
 		t.Fatalf("create output: %v", err)
 	}
-	t.Cleanup(func() { _ = store.Close() })
+	var (
+		appendDone    chan error
+		appendStarted bool
+		appendJoined  bool
+	)
+	t.Cleanup(func() {
+		// The append holds OutputStore.mu while waiting for the replacement gate;
+		// release it before joining the append or closing the store.
+		fs.releaseInitialMetadataValidation()
+		fs.releaseOutputReplacement()
+		if appendStarted && !appendJoined {
+			<-appendDone
+		}
+		_ = store.Close()
+	})
 	appendOutput(t, store, "AAAA")
+	fs.armInitialRetainedSize()
 
-	appendErr := make(chan error, 1)
+	type snapshotResult struct {
+		got OutputWindowSnapshot
+		err error
+	}
+	snapshotDone := make(chan snapshotResult, 1)
+	go func() {
+		got, err := readOutputWindowSnapshotFs(fs, path, 0, len("BBBB"))
+		snapshotDone <- snapshotResult{got: got, err: err}
+	}()
+	<-fs.initialRetainedSizeCaptured
+
+	appendDone = make(chan error, 1)
+	appendStarted = true
 	go func() {
 		_, appendErrValue := store.Append([]byte("BBBB"))
-		appendErr <- appendErrValue
+		appendDone <- appendErrValue
 	}()
 	<-fs.pendingPublished
-	output, err := afero.ReadFile(fs, path)
-	if err != nil {
-		t.Fatalf("read output before replacement: %v", err)
+	fs.releaseInitialMetadataValidation()
+	result := <-snapshotDone
+	if result.err != nil {
+		t.Fatalf("snapshot during pending publication: %v", result.err)
 	}
-	if string(output) != "AAAABBBB" {
-		t.Fatalf("output before replacement = %q, want append-expanded output", output)
-	}
-	if _, err := afero.ReadFile(fs, outputPendingMetaPath(outputMetaPath(path))); err != nil {
-		t.Fatalf("read pending metadata before replacement: %v", err)
-	}
-	got, err := readOutputWindowSnapshotFs(fs, path, 0, len("BBBB"))
-	if err != nil {
-		t.Fatalf("snapshot during pending publication: %v", err)
-	}
+	got := result.got
 	if string(got.Content) != "AAAA" || got.TotalBytes != 8 || got.RetainedStart != 0 {
 		t.Fatalf("snapshot during pending publication = %+v, want old prefix with successor coordinates", got)
 	}
+	// Keep the real writer paused and take a second observation at the captured
+	// Stat boundary. This drives the handoff predicate through the public
+	// snapshot path without calling either production validation helper.
+	fs.forceCappedObservation.Store(true)
+	_, err = readOutputWindowSnapshotFs(fs, path, 0, len("BBBB"))
+	fs.forceCappedObservation.Store(false)
+	if err == nil || err.Error() != "jobstore: output metadata does not match retained output" {
+		t.Fatalf("snapshot with capped observation error = %v, want metadata corruption", err)
+	}
 	fs.releaseOutputReplacement()
-	if err := <-appendErr; err != nil {
-		t.Fatalf("append: %v", err)
+	appendErr := <-appendDone
+	appendJoined = true
+	if appendErr != nil {
+		t.Fatalf("append: %v", appendErr)
 	}
 }
 
@@ -812,20 +842,36 @@ type snapshotPruneProtocolFS struct {
 
 type snapshotAppendPruneFS struct {
 	afero.Fs
-	path                   string
-	pendingPublished       chan struct{}
-	allowOutputReplacement chan struct{}
-	pendingOnce            sync.Once
-	releaseOnce            sync.Once
+	path                           string
+	pendingPublished               chan struct{}
+	allowOutputReplacement         chan struct{}
+	initialRetainedSizeCaptured    chan struct{}
+	allowInitialMetadataValidation chan struct{}
+	pendingOnce                    sync.Once
+	releaseOnce                    sync.Once
+	initialOnce                    sync.Once
+	initialReleaseOnce             sync.Once
+	captureInitialStat             atomic.Bool
+	statCalls                      atomic.Int32
+	outputHashOpen                 atomic.Bool
+	finalMetaAfterOutputHash       atomic.Bool
+	forceCappedObservation         atomic.Bool
+	initialInfo                    atomic.Value
 }
 
 func newSnapshotAppendPruneFS(path string) *snapshotAppendPruneFS {
 	return &snapshotAppendPruneFS{
-		Fs:                     afero.NewOsFs(),
-		path:                   path,
-		pendingPublished:       make(chan struct{}),
-		allowOutputReplacement: make(chan struct{}),
+		Fs:                             afero.NewOsFs(),
+		path:                           path,
+		pendingPublished:               make(chan struct{}),
+		allowOutputReplacement:         make(chan struct{}),
+		initialRetainedSizeCaptured:    make(chan struct{}),
+		allowInitialMetadataValidation: make(chan struct{}),
 	}
+}
+
+func (fs *snapshotAppendPruneFS) armInitialRetainedSize() {
+	fs.captureInitialStat.Store(true)
 }
 
 func (fs *snapshotAppendPruneFS) LstatIfPossible(name string) (os.FileInfo, bool, error) {
@@ -835,12 +881,55 @@ func (fs *snapshotAppendPruneFS) LstatIfPossible(name string) (os.FileInfo, bool
 
 func (fs *snapshotAppendPruneFS) OpenFile(name string, flag int, perm os.FileMode) (afero.File, error) {
 	if name == fs.path+".tmp" {
-		fs.pendingOnce.Do(func() {
-			close(fs.pendingPublished)
-			<-fs.allowOutputReplacement
-		})
+		<-fs.allowOutputReplacement
 	}
 	return fs.Fs.OpenFile(name, flag, perm)
+}
+
+func (fs *snapshotAppendPruneFS) Open(name string) (afero.File, error) {
+	if name == fs.path {
+		fs.outputHashOpen.Store(true)
+		fs.finalMetaAfterOutputHash.Store(false)
+	}
+	if name == outputMetaPath(fs.path) && fs.outputHashOpen.Load() {
+		fs.finalMetaAfterOutputHash.Store(true)
+	}
+	return fs.Fs.Open(name)
+}
+
+func (fs *snapshotAppendPruneFS) Rename(oldpath, newpath string) error {
+	err := fs.Fs.Rename(oldpath, newpath)
+	if err == nil && newpath == outputPendingMetaPath(outputMetaPath(fs.path)) {
+		fs.pendingOnce.Do(func() { close(fs.pendingPublished) })
+	}
+	return err
+}
+
+func (fs *snapshotAppendPruneFS) Stat(name string) (os.FileInfo, error) {
+	info, err := fs.Fs.Stat(name)
+	if name == fs.path && fs.captureInitialStat.Load() {
+		call := fs.statCalls.Add(1)
+		fs.initialOnce.Do(func() {
+			fs.initialInfo.Store(info)
+			close(fs.initialRetainedSizeCaptured)
+			<-fs.allowInitialMetadataValidation
+		})
+		// The parent has no expanded-pending validation: its first post-hash
+		// Stat is the outer observation. Keep that observation at the captured
+		// size so the original metadata-corruption error is returned. On the
+		// corrected path, that Stat is the expanded helper's entry boundary and
+		// must report the actual expanded size.
+		if fs.forceCappedObservation.Load() || (call == 2 && fs.finalMetaAfterOutputHash.Load()) {
+			if captured := fs.initialInfo.Load(); captured != nil {
+				return captured.(os.FileInfo), nil
+			}
+		}
+	}
+	return info, err
+}
+
+func (fs *snapshotAppendPruneFS) releaseInitialMetadataValidation() {
+	fs.initialReleaseOnce.Do(func() { close(fs.allowInitialMetadataValidation) })
 }
 
 func (fs *snapshotAppendPruneFS) releaseOutputReplacement() {
