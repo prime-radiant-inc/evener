@@ -360,6 +360,10 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		_ = hubListener.Close()
 		return fmt.Errorf("load deletion state: %w", err)
 	}
+	transcriptDisplayStore, transcriptDisplayStoreErr := hubcore.NewTranscriptDisplayStore(hubStateRoot)
+	if transcriptDisplayStoreErr != nil {
+		_, _ = fmt.Fprintf(stderr, "[hub] transcript display state: %v\n", transcriptDisplayStoreErr)
+	}
 
 	// Resolve the registry root once for this hub process. Launch configuration
 	// may override XDG_CONFIG_HOME for a child, so the child must receive this
@@ -368,32 +372,34 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 	// Web
 	web := NewWebServer(hubcore.WebConfig{
-		HubAddr:             cfg.Addr,
-		AuthToken:           authToken,
-		MobileBaseURL:       cfg.MobileBaseURL,
-		HubStateRoot:        cfg.HubStateRoot,
-		LaunchConfigRoot:    cmdutil.DefaultConfigRoot(),
-		PluginRoot:          pluginRoot,
-		RunDir:              runDir,
-		PastIndexPath:       pastIndexDB,
-		Roster:              roster,
-		Past:                past,
-		Archive:             archive,
-		Favorite:            favorite,
-		PinSections:         pinSections,
-		Spawner:             spawner,
-		DeletionStore:       deletionStore,
-		PastPerPage:         cfg.PastResultsPerPage,
-		StateDir:            stateDir,
-		CredsStore:          credsStore,
-		ProviderConfig:      loadedProviderConfig,
-		ProvidersConfigPath: providersConfigPath,
-		CodexSources:        cfg.CodexSources,
-		CodexLaunches:       cfg.CodexLaunches,
-		CodexLauncher:       codexLauncher,
-		PokeAttention:       pokeAttention,
-		Inputs:              inputs,
-		RemoteThreadCache:   remoteCache,
+		HubAddr:                   cfg.Addr,
+		AuthToken:                 authToken,
+		MobileBaseURL:             cfg.MobileBaseURL,
+		HubStateRoot:              cfg.HubStateRoot,
+		LaunchConfigRoot:          cmdutil.DefaultConfigRoot(),
+		PluginRoot:                pluginRoot,
+		TranscriptDisplayStore:    transcriptDisplayStore,
+		TranscriptDisplayStoreErr: transcriptDisplayStoreErr,
+		RunDir:                    runDir,
+		PastIndexPath:             pastIndexDB,
+		Roster:                    roster,
+		Past:                      past,
+		Archive:                   archive,
+		Favorite:                  favorite,
+		PinSections:               pinSections,
+		Spawner:                   spawner,
+		DeletionStore:             deletionStore,
+		PastPerPage:               cfg.PastResultsPerPage,
+		StateDir:                  stateDir,
+		CredsStore:                credsStore,
+		ProviderConfig:            loadedProviderConfig,
+		ProvidersConfigPath:       providersConfigPath,
+		CodexSources:              cfg.CodexSources,
+		CodexLaunches:             cfg.CodexLaunches,
+		CodexLauncher:             codexLauncher,
+		PokeAttention:             pokeAttention,
+		Inputs:                    inputs,
+		RemoteThreadCache:         remoteCache,
 	})
 
 	// Navigation invalidation hooks: Roster/PastIndex's onChange hook already

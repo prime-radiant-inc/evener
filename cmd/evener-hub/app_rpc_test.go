@@ -9872,6 +9872,8 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerHarnessesList,
 		appwire.MethodEvenerCommandList,
 		appwire.MethodEvenerSettingsOverview,
+		appwire.MethodEvenerSettingsTranscriptDisplayGet,
+		appwire.MethodEvenerSettingsTranscriptDisplayPatch,
 		appwire.MethodEvenerMarketplaceList,
 		appwire.MethodEvenerMarketplaceAdd,
 		appwire.MethodEvenerMarketplaceRemove,

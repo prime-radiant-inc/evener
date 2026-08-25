@@ -33,29 +33,31 @@ type RelayLifecycleHooks struct {
 
 // WebConfig is everything the web server needs.
 type WebConfig struct {
-	HubAddr             string
-	AuthToken           string // capability token gating every non-exempt route
-	MobileBaseURL       string // optional external origin used for mobile pairing QR codes
-	HubStateRoot        string // root of hub-level machine state (auth-token, index.db, deletions/); defaults to cmdutil.DefaultStateRoot()
-	LaunchConfigRoot    string // root of the layered launch config (launch.toml, projects/<id>/{launch.toml,meta.toml}); user-editable, so distinct from HubStateRoot — defaults to cmdutil.DefaultConfigRoot() when empty
-	RunDir              string // run directory where rendezvous files live
-	PastIndexPath       string // path to the SQLite past-index DB, for display in settings
-	Roster              *Roster
-	Past                *PastIndex
-	Spawner             Spawner             // optional; nil disables spawn
-	ResumeLocks         *ResumeLocks        // per-session resume serialization shared by the REST and RPC paths; nil → each path falls back to its own lock
-	DeletionStore       *DeletionStore      // host-authoritative deletion fences; production persists this under HubStateRoot
-	PastPerPage         int                 // results per page for /past; defaults to 50 when zero
-	StateDir            string              // root of the projects/<sha> state directory; needed for ForkSession
-	CredsStore          *credentials.Store  // credentials store; passed to auth controller
-	PluginDirs          []string            // explicit plugin dirs; when empty, default to ~/.config/evener/plugins/*
-	PluginRoot          string              // internal/plugins.Manager store root; "" → plugins.DefaultRoot() (~/.config/evener/plugins). Distinct from PluginDirs above: this is the marketplace/install registry root, not the explicit --plugin-dir scan list. Tests/sandboxes point this inside their own temp root so plugin/marketplace mutations never touch the real store.
-	MCPConfigPath       string              // MCP config file path; when empty, default to ~/.config/evener/mcp.json
-	ProviderConfig      *providercfg.Config // instance-to-tag mapping; nil when providers.toml absent (env path)
-	ProvidersConfigPath string              // path to providers.toml; forwarded to the auth controller
-	CodexSources        []appsource.CodexSourceConfig
-	CodexLaunches       []codexlaunch.CodexLaunchConfig
-	CodexLauncher       *codexlaunch.CodexLauncher
+	HubAddr                   string
+	AuthToken                 string                  // capability token gating every non-exempt route
+	MobileBaseURL             string                  // optional external origin used for mobile pairing QR codes
+	HubStateRoot              string                  // root of hub-level machine state (auth-token, index.db, deletions/); defaults to cmdutil.DefaultStateRoot()
+	LaunchConfigRoot          string                  // root of the layered launch config (launch.toml, projects/<id>/{launch.toml,meta.toml}); user-editable, so distinct from HubStateRoot — defaults to cmdutil.DefaultConfigRoot() when empty
+	TranscriptDisplayStore    *TranscriptDisplayStore // hub-authoritative Desktop/Mobile transcript-display defaults; nil → load from HubStateRoot
+	TranscriptDisplayStoreErr error                   // diagnostic returned while loading the injected store; retained for startup diagnostics
+	RunDir                    string                  // run directory where rendezvous files live
+	PastIndexPath             string                  // path to the SQLite past-index DB, for display in settings
+	Roster                    *Roster
+	Past                      *PastIndex
+	Spawner                   Spawner             // optional; nil disables spawn
+	ResumeLocks               *ResumeLocks        // per-session resume serialization shared by the REST and RPC paths; nil → each path falls back to its own lock
+	DeletionStore             *DeletionStore      // host-authoritative deletion fences; production persists this under HubStateRoot
+	PastPerPage               int                 // results per page for /past; defaults to 50 when zero
+	StateDir                  string              // root of the projects/<sha> state directory; needed for ForkSession
+	CredsStore                *credentials.Store  // credentials store; passed to auth controller
+	PluginDirs                []string            // explicit plugin dirs; when empty, default to ~/.config/evener/plugins/*
+	PluginRoot                string              // internal/plugins.Manager store root; "" → plugins.DefaultRoot() (~/.config/evener/plugins). Distinct from PluginDirs above: this is the marketplace/install registry root, not the explicit --plugin-dir scan list. Tests/sandboxes point this inside their own temp root so plugin/marketplace mutations never touch the real store.
+	MCPConfigPath             string              // MCP config file path; when empty, default to ~/.config/evener/mcp.json
+	ProviderConfig            *providercfg.Config // instance-to-tag mapping; nil when providers.toml absent (env path)
+	ProvidersConfigPath       string              // path to providers.toml; forwarded to the auth controller
+	CodexSources              []appsource.CodexSourceConfig
+	CodexLaunches             []codexlaunch.CodexLaunchConfig
+	CodexLauncher             *codexlaunch.CodexLauncher
 
 	Archive     *ArchiveStore    // archive decision store; nil when not configured (tree uses empty decisions)
 	Favorite    *FavoriteStore   // favorite decision store; nil when not configured

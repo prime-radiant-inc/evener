@@ -156,18 +156,19 @@ func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Reg
 			fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
 		},
 		Features: appwire.FeatureSet{
-			ThreadList:        true,
-			ThreadTurnsList:   true,
-			TurnStart:         true,
-			TurnSteer:         true,
-			ThreadClear:       false,
-			ThreadShutdown:    true,
-			ForkFromTurn:      true,
-			Tasks:             true,
-			TranscriptList:    true,
-			ModelList:         true,
-			DirectoryComplete: true,
-			Auth:              true,
+			ThreadList:                true,
+			ThreadTurnsList:           true,
+			TurnStart:                 true,
+			TurnSteer:                 true,
+			ThreadClear:               false,
+			ThreadShutdown:            true,
+			ForkFromTurn:              true,
+			Tasks:                     true,
+			TranscriptList:            true,
+			ModelList:                 true,
+			DirectoryComplete:         true,
+			Auth:                      true,
+			TranscriptDisplaySettings: true,
 		},
 	})
 	hubStateRoot := cfg.HubStateRoot
@@ -204,6 +205,7 @@ func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Reg
 	registerArchiveHandler(server, cfg, func() *NavigationService { return navigation })
 	registerMiscHandlers(server, cfg, sources)
 	registerPluginAutoUpgradeHandlers(server, plugins.NewManager(cfg.PluginRoot))
+	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)
 	return server
 }
 
