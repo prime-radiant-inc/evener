@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"testing"
 
@@ -8,6 +9,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/launchconfig"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
+	"primeradiant.com/evener/internal/appserver"
 )
 
 // TestCovHandleAuthLoginStart exercises both the error and success paths of
@@ -146,12 +148,22 @@ func TestCovHandleInstanceSetDefault(t *testing.T) {
 	}
 
 	// With client.
-	client, cleanup := newTestHubClient(t, nil)
+	var params appwire.InstanceSetDefaultParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerInstanceSetDefault, func(_ context.Context, got appwire.InstanceSetDefaultParams) (appwire.InstanceListResponse, error) {
+			params = got
+			return appwire.InstanceListResponse{}, nil
+		})
+	})
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
 	_, cmd = m.handleInstanceSetDefault(launchconfig.InstanceSetDefaultMsg{Name: "inst1"})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
+	}
+	result, ok := cmd().(launchconfig.InstanceMutateResultMsg)
+	if !ok || result.Err != nil || params.Name != "inst1" {
+		t.Fatalf("set-default result = %#v, params = %#v", result, params)
 	}
 }
 
@@ -163,12 +175,22 @@ func TestCovHandleInstanceRemove(t *testing.T) {
 		t.Fatal("cmd should be nil with no client")
 	}
 
-	client, cleanup := newTestHubClient(t, nil)
+	var params appwire.InstanceRemoveParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerInstanceRemove, func(_ context.Context, got appwire.InstanceRemoveParams) (appwire.InstanceListResponse, error) {
+			params = got
+			return appwire.InstanceListResponse{}, nil
+		})
+	})
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
 	_, cmd = m.handleInstanceRemove(launchconfig.InstanceRemoveMsg{Name: "inst1"})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
+	}
+	result, ok := cmd().(launchconfig.InstanceMutateResultMsg)
+	if !ok || result.Err != nil || params.Name != "inst1" {
+		t.Fatalf("remove result = %#v, params = %#v", result, params)
 	}
 }
 
@@ -180,7 +202,13 @@ func TestCovHandleInstanceCreateSubmit(t *testing.T) {
 		t.Fatal("cmd should be nil with no client")
 	}
 
-	client, cleanup := newTestHubClient(t, nil)
+	var params appwire.InstanceCreateParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerInstanceCreate, func(_ context.Context, got appwire.InstanceCreateParams) (appwire.InstanceListResponse, error) {
+			params = got
+			return appwire.InstanceListResponse{}, nil
+		})
+	})
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
 	_, cmd = m.handleInstanceCreateSubmit(launchconfig.InstanceCreateSubmitMsg{
@@ -188,6 +216,10 @@ func TestCovHandleInstanceCreateSubmit(t *testing.T) {
 	})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
+	}
+	result, ok := cmd().(launchconfig.InstanceMutateResultMsg)
+	if !ok || result.Err != nil || params.Name != "new" {
+		t.Fatalf("create result = %#v, params = %#v", result, params)
 	}
 }
 
@@ -199,7 +231,13 @@ func TestCovHandleInstanceEditSubmit(t *testing.T) {
 		t.Fatal("cmd should be nil with no client")
 	}
 
-	client, cleanup := newTestHubClient(t, nil)
+	var params appwire.InstanceEditParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerInstanceEdit, func(_ context.Context, got appwire.InstanceEditParams) (appwire.InstanceListResponse, error) {
+			params = got
+			return appwire.InstanceListResponse{}, nil
+		})
+	})
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
 	_, cmd = m.handleInstanceEditSubmit(launchconfig.InstanceEditSubmitMsg{
@@ -208,11 +246,29 @@ func TestCovHandleInstanceEditSubmit(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
 	}
+	result, ok := cmd().(launchconfig.InstanceMutateResultMsg)
+	if !ok || result.Err != nil || params.Name != "edit" {
+		t.Fatalf("edit result = %#v, params = %#v", result, params)
+	}
 }
 
 // TestCovHandleCredentialsAction exercises all action branches.
 func TestCovHandleCredentialsAction(t *testing.T) {
-	client, cleanup := newTestHubClient(t, nil)
+	var calls []string
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthLogout, func(_ context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
+			calls = append(calls, "logout:"+params.Provider)
+			return appwire.AuthLogoutResponse{Status: appwire.AuthStatusResponse{Provider: params.Provider}}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthLoginStart, func(_ context.Context, params appwire.AuthLoginStartParams) (appwire.AuthLoginStartResponse, error) {
+			calls = append(calls, "oauth:"+params.Provider)
+			return appwire.AuthLoginStartResponse{Provider: params.Provider, FlowID: "flow-1", URL: "https://auth.example"}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthTest, func(_ context.Context, params appwire.AuthTestParams) (appwire.AuthTestResponse, error) {
+			calls = append(calls, "test:"+params.Provider)
+			return appwire.AuthTestResponse{Provider: params.Provider}, nil
+		})
+	})
 	defer cleanup()
 
 	for _, tc := range []struct {
@@ -235,10 +291,30 @@ func TestCovHandleCredentialsAction(t *testing.T) {
 				// logout/oauth/test should produce a cmd when client is set.
 				t.Fatalf("action %q should produce a cmd with client", tc.action)
 			}
+			if cmd != nil {
+				result := cmd()
+				switch tc.action {
+				case "logout":
+					if msg, ok := result.(launchconfig.AuthApiKeySetResultMsg); !ok || msg.Err != nil || msg.Status.Provider != "inst" {
+						t.Fatalf("logout result = %#v", result)
+					}
+				case "oauth":
+					if msg, ok := result.(launchconfig.AuthLoginStartResultMsg); !ok || msg.Err != nil || msg.Provider != "inst" || msg.FlowID != "flow-1" {
+						t.Fatalf("oauth result = %#v", result)
+					}
+				case "test":
+					if msg, ok := result.(launchconfig.AuthTestResultMsg); !ok || msg.Err != nil || msg.Provider != "inst" || msg.Response.Provider != "inst" {
+						t.Fatalf("test result = %#v", result)
+					}
+				}
+			}
 			if tc.action == "unknown" && cmd != nil {
 				t.Fatal("unknown action should produce no cmd")
 			}
 		})
+	}
+	if len(calls) != 3 || calls[0] != "logout:inst" || calls[1] != "oauth:inst" || calls[2] != "test:inst" {
+		t.Fatalf("credential action calls = %#v", calls)
 	}
 
 	// Without client: logout/oauth/test should return nil cmd.
@@ -248,7 +324,10 @@ func TestCovHandleCredentialsAction(t *testing.T) {
 		if cmd != nil {
 			t.Fatalf("action %q without client should return nil cmd", action)
 		}
-		_ = got
+		after := got.(hubModel)
+		if after.client != nil || after.followupModal != nil || after.err != nil {
+			t.Fatalf("action %q mutated nil-client model: %#v", action, after)
+		}
 	}
 }
 
@@ -299,12 +378,22 @@ func TestCovHandleLaunchOverridesOpen(t *testing.T) {
 	}
 
 	// With client: should produce a schema cmd.
-	client, cleanup := newTestHubClient(t, nil)
+	called := false
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerLaunchSchema, func(context.Context, appwire.EmptyParams) (appwire.LaunchOptionSchemaResponse, error) {
+			called = true
+			return appwire.LaunchOptionSchemaResponse{}, nil
+		})
+	})
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
 	_, cmd = m.handleLaunchOverridesOpen(launchconfig.LaunchOverridesOpenMsg{})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
+	}
+	result, ok := cmd().(launchconfig.LaunchSchemaResultMsg)
+	if !ok || result.Err != nil || !called {
+		t.Fatalf("launch schema result = %#v, called=%v", result, called)
 	}
 }
 
@@ -404,7 +493,18 @@ func TestCovHandleLaunchSettingsEditRequest(t *testing.T) {
 
 // TestCovHandleTextInputResult exercises all tag-prefix branches.
 func TestCovHandleTextInputResult(t *testing.T) {
-	client, cleanup := newTestHubClient(t, nil)
+	var apiKey appwire.AuthApiKeySetParams
+	var login appwire.AuthLoginCompleteParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthApiKeySet, func(_ context.Context, params appwire.AuthApiKeySetParams) (appwire.AuthStatusResponse, error) {
+			apiKey = params
+			return appwire.AuthStatusResponse{Provider: params.Provider, SignedIn: true}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthLoginComplete, func(_ context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
+			login = params
+			return appwire.AuthLoginCompleteResponse{Status: appwire.AuthStatusResponse{Provider: params.Provider, SignedIn: true}}, nil
+		})
+	})
 	defer cleanup()
 
 	// credential-set: cancelled.
@@ -437,6 +537,10 @@ func TestCovHandleTextInputResult(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("cmd should not be nil for credential-set with client")
 	}
+	apiResult, ok := cmd().(launchconfig.AuthApiKeySetResultMsg)
+	if !ok || apiResult.Err != nil || !apiResult.Status.SignedIn || apiKey.Provider != "openai" || apiKey.Value != "sk-xxx" {
+		t.Fatalf("api-key result = %#v, params = %#v", apiResult, apiKey)
+	}
 
 	// oauth-redirect: cancelled.
 	m = newHubModel(client, "http://hub.test")
@@ -461,6 +565,10 @@ func TestCovHandleTextInputResult(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("cmd should not be nil for oauth-redirect with valid value and client")
 	}
+	loginResult, ok := cmd().(launchconfig.AuthLoginCompleteResultMsg)
+	if !ok || loginResult.Err != nil || !loginResult.Status.SignedIn || login.Provider != "openai" || login.FlowID != "flow1" || login.RedirectURL != "http://redirect" {
+		t.Fatalf("oauth-complete result = %#v, params = %#v", loginResult, login)
+	}
 
 	// oauth-redirect: malformed tag (no second colon).
 	m = newHubModel(client, "http://hub.test")
@@ -484,19 +592,27 @@ func TestCovHandleTextInputResult(t *testing.T) {
 	if after.followupModal != nil {
 		t.Fatal("followupModal should be cleared")
 	}
+	if after.launchOverridesModal == nil || after.launchOverridesModal.Current().Model != "newmodel" || after.err != nil {
+		t.Fatalf("launch override edit result: modal=%#v err=%v", after.launchOverridesModal, after.err)
+	}
 
 	// launch-override: with modal, ApplyEdit error.
 	m = hubModel{session: newModel(nil), followupModal: &tuipick.TextInputModal{}}
 	modal = launchconfig.NewLaunchOverridesModal()
 	m.launchOverridesModal = &modal
 	got, _ = m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "launch-override:model", Value: ""})
-	// Empty value — ApplyEdit may succeed or fail depending on field.
-	_ = got
+	after = got.(hubModel)
+	if after.launchOverridesModal == nil || after.launchOverridesModal.Current().Model != "" || after.err != nil {
+		t.Fatalf("empty launch override edit result: modal=%#v err=%v", after.launchOverridesModal, after.err)
+	}
 
 	// settings-edit: malformed (no second colon).
 	m = hubModel{session: newModel(nil)}
-	_, _ = m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "settings-edit:malformed", Value: "x"})
-	// Should not crash.
+	got, cmd = m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "settings-edit:malformed", Value: "x"})
+	after = got.(hubModel)
+	if cmd != nil || after.followupModal != nil || after.launchSettingsPanel != nil || after.err != nil {
+		t.Fatalf("malformed settings edit mutated model or returned cmd: model=%#v cmd=%v", after, cmd)
+	}
 
 	// settings-edit: cancelled.
 	m = hubModel{session: newModel(nil), followupModal: &tuipick.TextInputModal{}}
@@ -515,7 +631,10 @@ func TestCovHandleTextInputResult(t *testing.T) {
 	// No matching tag prefix: should not crash.
 	m = hubModel{session: newModel(nil)}
 	got, _ = m.handleTextInputResult(tuipick.TextInputResultMsg{Tag: "unknown:tag", Value: "x"})
-	_ = got
+	after = got.(hubModel)
+	if after.followupModal != nil || after.launchOverridesModal != nil || after.launchSettingsPanel != nil || after.err != nil {
+		t.Fatalf("unknown tag mutated model: %#v", after)
+	}
 }
 
 // TestCovHandleAuthApiKeySetResult exercises error and success paths.
@@ -536,13 +655,23 @@ func TestCovHandleAuthApiKeySetResult(t *testing.T) {
 	}
 
 	// Success with panel and client.
-	client, cleanup := newTestHubClient(t, nil)
+	listed := false
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerInstanceList, func(context.Context, appwire.EmptyParams) (appwire.InstanceListResponse, error) {
+			listed = true
+			return appwire.InstanceListResponse{}, nil
+		})
+	})
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
 	m.credentialsPanel = newCredentialsPanelForTest()
 	_, cmd := m.handleAuthApiKeySetResult(launchconfig.AuthApiKeySetResultMsg{})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with panel and client")
+	}
+	result, ok := cmd().(launchconfig.InstanceListResultMsg)
+	if !ok || result.Err != nil || !listed {
+		t.Fatalf("instance refresh result = %#v, listed=%v", result, listed)
 	}
 }
 
@@ -588,13 +717,23 @@ func TestCovHandleAuthLoginCompleteResult(t *testing.T) {
 	}
 
 	// Success with panel and client.
-	client, cleanup := newTestHubClient(t, nil)
+	listed := false
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerInstanceList, func(context.Context, appwire.EmptyParams) (appwire.InstanceListResponse, error) {
+			listed = true
+			return appwire.InstanceListResponse{}, nil
+		})
+	})
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
 	m.credentialsPanel = newCredentialsPanelForTest()
 	_, cmd := m.handleAuthLoginCompleteResult(launchconfig.AuthLoginCompleteResultMsg{})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with panel and client")
+	}
+	result, ok := cmd().(launchconfig.InstanceListResultMsg)
+	if !ok || result.Err != nil || !listed {
+		t.Fatalf("instance refresh result = %#v, listed=%v", result, listed)
 	}
 }
 
@@ -644,7 +783,13 @@ func TestCovHandleMarketplaceAddSubmit(t *testing.T) {
 		t.Fatal("cmd should be nil without client")
 	}
 
-	client, cleanup := newTestHubClient(t, nil)
+	var params appwire.MarketplaceAddParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceAdd, func(_ context.Context, got appwire.MarketplaceAddParams) (appwire.MarketplaceListResponse, error) {
+			params = got
+			return appwire.MarketplaceListResponse{}, nil
+		})
+	})
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
 	_, cmd = m.handleMarketplaceAddSubmit(launchconfig.MarketplaceAddSubmitMsg{
@@ -652,6 +797,10 @@ func TestCovHandleMarketplaceAddSubmit(t *testing.T) {
 	})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
+	}
+	result, ok := cmd().(launchconfig.MarketplaceMutateResultMsg)
+	if !ok || result.Err != nil || params.Name != "mp1" {
+		t.Fatalf("marketplace add result = %#v, params = %#v", result, params)
 	}
 }
 
@@ -663,12 +812,22 @@ func TestCovHandleMarketplaceRemove(t *testing.T) {
 		t.Fatal("cmd should be nil without client")
 	}
 
-	client, cleanup := newTestHubClient(t, nil)
+	var params appwire.MarketplaceNameParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceRemove, func(_ context.Context, got appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
+			params = got
+			return appwire.MarketplaceListResponse{}, nil
+		})
+	})
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
 	_, cmd = m.handleMarketplaceRemove(launchconfig.MarketplaceRemoveMsg{Name: "mp1"})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
+	}
+	result, ok := cmd().(launchconfig.MarketplaceMutateResultMsg)
+	if !ok || result.Err != nil || params.Name != "mp1" {
+		t.Fatalf("marketplace remove result = %#v, params = %#v", result, params)
 	}
 }
 
@@ -680,12 +839,22 @@ func TestCovHandleMarketplaceRefresh(t *testing.T) {
 		t.Fatal("cmd should be nil without client")
 	}
 
-	client, cleanup := newTestHubClient(t, nil)
+	var params appwire.MarketplaceNameParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceRefresh, func(_ context.Context, got appwire.MarketplaceNameParams) (appwire.MarketplaceListResponse, error) {
+			params = got
+			return appwire.MarketplaceListResponse{}, nil
+		})
+	})
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
 	_, cmd = m.handleMarketplaceRefresh(launchconfig.MarketplaceRefreshMsg{Name: "mp1"})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
+	}
+	result, ok := cmd().(launchconfig.MarketplaceMutateResultMsg)
+	if !ok || result.Err != nil || params.Name != "mp1" {
+		t.Fatalf("marketplace refresh result = %#v, params = %#v", result, params)
 	}
 }
 
@@ -697,12 +866,22 @@ func TestCovHandleMarketplaceBrowseRequest(t *testing.T) {
 		t.Fatal("cmd should be nil without client")
 	}
 
-	client, cleanup := newTestHubClient(t, nil)
+	var params appwire.MarketplaceBrowseParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceBrowse, func(_ context.Context, got appwire.MarketplaceBrowseParams) (appwire.MarketplaceBrowseResponse, error) {
+			params = got
+			return appwire.MarketplaceBrowseResponse{}, nil
+		})
+	})
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
 	_, cmd = m.handleMarketplaceBrowseRequest(launchconfig.MarketplaceBrowseRequestMsg{Name: "mp1"})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
+	}
+	result, ok := cmd().(launchconfig.MarketplaceBrowseResultMsg)
+	if !ok || result.Err != nil || result.Name != "mp1" || params.Name != "mp1" {
+		t.Fatalf("marketplace browse result = %#v, params = %#v", result, params)
 	}
 }
 
@@ -732,10 +911,34 @@ func TestCovHandlePluginAction(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("cmd should be nil without client")
 	}
-	_ = got
+	if got.(hubModel).err != nil {
+		t.Fatalf("nil-client plugin action set error: %v", got.(hubModel).err)
+	}
 
 	// With client, each action.
-	client, cleanup := newTestHubClient(t, nil)
+	var calls []string
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerPluginInstall, func(_ context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+			calls = append(calls, "install:"+params.Marketplace+"/"+params.Plugin)
+			return appwire.PluginListResponse{}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerPluginUpgrade, func(_ context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+			calls = append(calls, "upgrade:"+params.Marketplace+"/"+params.Plugin)
+			return appwire.PluginListResponse{}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerPluginRemove, func(_ context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+			calls = append(calls, "remove:"+params.Marketplace+"/"+params.Plugin)
+			return appwire.PluginListResponse{}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerPluginEnable, func(_ context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+			calls = append(calls, "enable:"+params.Marketplace+"/"+params.Plugin)
+			return appwire.PluginListResponse{}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerPluginDisable, func(_ context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
+			calls = append(calls, "disable:"+params.Marketplace+"/"+params.Plugin)
+			return appwire.PluginListResponse{}, nil
+		})
+	})
 	defer cleanup()
 	for _, action := range []string{"install", "upgrade", "remove", "enable", "disable", "unknown"} {
 		t.Run(action, func(t *testing.T) {
@@ -747,8 +950,25 @@ func TestCovHandlePluginAction(t *testing.T) {
 			if action == "unknown" && cmd != nil {
 				t.Fatal("cmd should be nil for unknown action")
 			}
-			_ = got
+			if cmd != nil {
+				result, ok := cmd().(launchconfig.PluginMutateResultMsg)
+				if !ok || result.Err != nil {
+					t.Fatalf("plugin %s result = %#v", action, result)
+				}
+			}
+			if got.(hubModel).err != nil {
+				t.Fatalf("plugin %s set model error: %v", action, got.(hubModel).err)
+			}
 		})
+	}
+	want := []string{"install:mp/p", "upgrade:mp/p", "remove:mp/p", "enable:mp/p", "disable:mp/p"}
+	if len(calls) != len(want) {
+		t.Fatalf("plugin calls = %#v, want %#v", calls, want)
+	}
+	for i := range want {
+		if calls[i] != want[i] {
+			t.Fatalf("plugin calls = %#v, want %#v", calls, want)
+		}
 	}
 }
 
@@ -760,12 +980,22 @@ func TestCovHandlePluginSetAutoUpgrade(t *testing.T) {
 		t.Fatal("cmd should be nil without client")
 	}
 
-	client, cleanup := newTestHubClient(t, nil)
+	var params appwire.PluginSetAutoUpgradeParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerPluginSetAutoUpgrade, func(_ context.Context, got appwire.PluginSetAutoUpgradeParams) (appwire.PluginListResponse, error) {
+			params = got
+			return appwire.PluginListResponse{}, nil
+		})
+	})
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
 	_, cmd = m.handlePluginSetAutoUpgrade(launchconfig.PluginSetAutoUpgradeMsg{Plugin: "p", Marketplace: "mp", AutoUpgrade: true})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
+	}
+	result, ok := cmd().(launchconfig.PluginMutateResultMsg)
+	if !ok || result.Err != nil || params.Plugin != "p" || params.Marketplace != "mp" || !params.AutoUpgrade {
+		t.Fatalf("auto-upgrade result = %#v, params = %#v", result, params)
 	}
 }
 
@@ -792,7 +1022,10 @@ func TestCovHandleLaunchResult(t *testing.T) {
 	// Non-schema message with no panel.
 	m = hubModel{}
 	got, _ = m.handleLaunchResult(launchconfig.LaunchResolveResultMsg{})
-	_ = got
+	after = got.(hubModel)
+	if after.launchOverridesModal != nil || after.launchSettingsPanel != nil || after.err != nil {
+		t.Fatalf("unrouted launch result mutated model: %#v", after)
+	}
 }
 
 // Ensure we reference tea.Msg where needed.

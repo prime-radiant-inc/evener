@@ -1,14 +1,16 @@
 package tui
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-tui/internal/launchconfig"
 	pendingpkg "primeradiant.com/evener/cmd/evener-tui/internal/pending"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
+	"primeradiant.com/evener/internal/appserver"
 )
 
 // --- hub_notifications.go ---
@@ -65,16 +67,43 @@ func TestCovRemovePendingByID(t *testing.T) {
 
 // TestCovRefreshPluginsPanel exercises plugin panel refresh.
 func TestCovRefreshPluginsPanel(t *testing.T) {
-	client, cleanup := newTestHubClient(t, nil)
+	var calls []string
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerMarketplaceList, func(context.Context, appwire.EmptyParams) (appwire.MarketplaceListResponse, error) {
+			calls = append(calls, appwire.MethodEvenerMarketplaceList)
+			return appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{{Name: "official"}}}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerPluginList, func(context.Context, appwire.EmptyParams) (appwire.PluginListResponse, error) {
+			calls = append(calls, appwire.MethodEvenerPluginList)
+			return appwire.PluginListResponse{}, nil
+		})
+	})
 	defer cleanup()
-	// Without a pluginsPanel set, refreshPluginsPanel would panic (calls
-	// m.pluginsPanel.BrowseMarketplace on nil). The function is only called
-	// when m.pluginsPanel != nil (guarded in applyHubNotification). We can't
-	// easily construct a real PluginsPanel here, so this test exercises the
-	// path by ensuring the function exists and compiles. The 0% coverage
-	// gap is best closed through an integration test that opens the panel.
-	_ = client
-	_ = cleanup
+	panel := launchconfig.NewPluginsPanel()
+	m := newHubModel(client, "http://hub.test")
+	m.pluginsPanel = &panel
+	batch, ok := m.refreshPluginsPanel()().(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("refresh result = %#v, want two-command batch", batch)
+	}
+	for _, command := range batch {
+		message := command()
+		switch result := message.(type) {
+		case launchconfig.MarketplaceListResultMsg:
+			if result.Err != nil || len(result.List.Marketplaces) != 1 || result.List.Marketplaces[0].Name != "official" {
+				t.Fatalf("marketplace refresh result = %#v", result)
+			}
+		case launchconfig.PluginListResultMsg:
+			if result.Err != nil {
+				t.Fatalf("plugin refresh result = %#v", result)
+			}
+		default:
+			t.Fatalf("refresh command returned %T", message)
+		}
+	}
+	if len(calls) != 2 || calls[0] != appwire.MethodEvenerMarketplaceList || calls[1] != appwire.MethodEvenerPluginList {
+		t.Fatalf("refresh calls = %#v", calls)
+	}
 }
 
 // TestCovApplyQueueState exercises queue state application.
@@ -287,53 +316,63 @@ func TestCovSubscribeNewChildren(t *testing.T) {
 	}
 }
 
-// TestCovScheduleModelRetryTick exercises the tick scheduler.
-func TestCovScheduleModelRetryTick(t *testing.T) {
-	cmd := scheduleModelRetryTick()
-	if cmd == nil {
-		t.Fatal("should produce a cmd")
-	}
-}
-
 // TestCovReconcilePendingFromNotification exercises pending reconciliation.
 func TestCovReconcilePendingFromNotification(t *testing.T) {
 	pending := pendingpkg.NewPendingCoordinator(pendingpkg.RealClock{}, func(tea.Msg) {})
 
 	// Steering injected.
+	pending.Register(appwire.MethodTurnDrainAsSteer, "queued steering", "local:01TEST")
 	n := appwire.Notification{
 		Method: appwire.NotifyEvenerSteeringInjected,
-		Params: mustJSON(appwire.EvenerSteeringInjectedParams{Text: "steer text"}),
+		Params: mustJSON(appwire.EvenerSteeringInjectedParams{Ref: "local:01TEST", Text: "steer text"}),
 	}
 	reconcilePendingFromNotification(pending, n)
+	if pending.TryReconcile(appwire.MethodTurnDrainAsSteer, "anything", "local:01TEST") {
+		t.Fatal("steering notification left its pending mutation registered")
+	}
 
 	// Item started (userMessage).
+	pending.Register(appwire.MethodTurnStart, "hello", "local:01TEST")
 	n = appwire.Notification{
 		Method: appwire.NotifyItemStarted,
 		Params: mustJSON(appwire.ItemLifecycleParams{
+			Ref:  "local:01TEST",
 			Item: appwire.ThreadItem{Type: "userMessage", Text: "hello"},
 		}),
 	}
 	reconcilePendingFromNotification(pending, n)
+	if pending.TryReconcile(appwire.MethodTurnStart, "hello", "local:01TEST") {
+		t.Fatal("item-started notification left its pending turn registered")
+	}
 
 	// Turn completed.
+	pending.Register(appwire.MethodTurnStart, "completed input", "local:01TEST")
 	n = appwire.Notification{
 		Method: appwire.NotifyTurnCompleted,
 		Params: mustJSON(appwire.TurnCompletedParams{
+			Ref: "local:01TEST",
 			Turn: appwire.Turn{
 				Items: []appwire.ThreadItem{
-					{Type: "userMessage", Text: "hello"},
+					{Type: "userMessage", Text: "completed input"},
 				},
 			},
 		}),
 	}
 	reconcilePendingFromNotification(pending, n)
+	if pending.TryReconcile(appwire.MethodTurnStart, "completed input", "local:01TEST") {
+		t.Fatal("turn-completed notification left its pending turn registered")
+	}
 
-	// Invalid JSON: no panic.
+	// Invalid JSON must not reconcile an unrelated pending mutation.
+	pending.Register(appwire.MethodTurnStart, "still pending", "local:01TEST")
 	n = appwire.Notification{
 		Method: appwire.NotifyTurnCompleted,
 		Params: json.RawMessage(`invalid`),
 	}
 	reconcilePendingFromNotification(pending, n)
+	if !pending.TryReconcile(appwire.MethodTurnStart, "still pending", "local:01TEST") {
+		t.Fatal("invalid notification unexpectedly removed pending mutation")
+	}
 }
 
 // TestCovNotificationPendingRef exercises ref extraction.
@@ -516,11 +555,20 @@ func TestCovHandleEscalationKey(t *testing.T) {
 
 // TestCovSendHubEscalationResolve exercises the resolve command builder.
 func TestCovSendHubEscalationResolve(t *testing.T) {
-	client, cleanup := newTestHubClient(t, nil)
+	var params appwire.SandboxEscalationResolveParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerSandboxEscalationResolve, func(_ context.Context, got appwire.SandboxEscalationResolveParams) (appwire.EmptyResponse, error) {
+			params = got
+			return appwire.EmptyResponse{}, nil
+		})
+	})
 	defer cleanup()
-	cmd := sendHubEscalationResolve(client, "local:01TEST", "esc1", true)
-	if cmd == nil {
-		t.Fatal("should produce a cmd")
+	msg, ok := sendHubEscalationResolve(client, "local:01TEST", "esc1", true)().(hubEscalationResolvedMsg)
+	if !ok || msg.err != nil || msg.ref != "local:01TEST" || msg.id != "esc1" || !msg.approve {
+		t.Fatalf("resolve result = %#v", msg)
+	}
+	if params.Ref != "local:01TEST" || params.EscalationID != "esc1" || !params.Approve {
+		t.Fatalf("resolve params = %#v", params)
 	}
 }
 
@@ -632,6 +680,3 @@ func TestCovPromptHeadEscalation(t *testing.T) {
 		t.Fatal("should not add message for no escalation")
 	}
 }
-
-// ensure time import is used
-var _ = time.Now

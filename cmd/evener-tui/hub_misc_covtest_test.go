@@ -3,12 +3,14 @@ package tui
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/clipboard"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
+	"primeradiant.com/evener/internal/appserver"
 )
 
 // --- hub_browse.go ---
@@ -72,16 +74,28 @@ func TestCovMoveBrowsePage(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.session.scrollMode = true
 	m.session.viewport.Height = 10
+	m.session.viewport.SetContent(strings.Repeat("line\n", 50))
+	m.session.viewport.GotoBottom()
+	bottom := m.session.viewport.YOffset
 
 	// Up.
 	m.moveBrowsePage(-1)
+	if m.session.viewport.YOffset >= bottom {
+		t.Fatalf("page up offset = %d, want below bottom %d", m.session.viewport.YOffset, bottom)
+	}
 	// Down.
 	m.moveBrowsePage(1)
+	if m.session.viewport.YOffset != bottom {
+		t.Fatalf("page down offset = %d, want bottom %d", m.session.viewport.YOffset, bottom)
+	}
 
 	// With zero viewport height.
 	m.session.viewport.Height = 0
 	m.moveBrowsePage(-1)
 	m.moveBrowsePage(1)
+	if m.session.viewport.YOffset != bottom {
+		t.Fatalf("zero-height page movement changed offset to %d, want %d", m.session.viewport.YOffset, bottom)
+	}
 }
 
 // TestCovMoveBrowseSelection exercises selection movement.
@@ -96,12 +110,18 @@ func TestCovMoveBrowseSelection(t *testing.T) {
 	}
 	m.session.scrollMode = true
 
-	// Move down from no selection.
-	m.browseSelected = -1
-	m.moveBrowseSelection(1)
-
-	// Move up.
+	// Move up from the last message.
+	m.browseSelected = 2
 	m.moveBrowseSelection(-1)
+	if m.browseSelected != 1 {
+		t.Fatalf("selection after up = %d, want 1", m.browseSelected)
+	}
+
+	// Move back down.
+	m.moveBrowseSelection(1)
+	if m.browseSelected != 2 {
+		t.Fatalf("selection after down = %d, want 2", m.browseSelected)
+	}
 
 	// Empty messages: resets selection.
 	m.session.messages = nil
@@ -192,12 +212,15 @@ func TestCovStartForkDraft(t *testing.T) {
 	// Non-user message.
 	m = newSessionHubModel(nil)
 	m.session.messages = []transcript.ChatMessage{
-		{Kind: transcript.MsgUser, Text: "response"},
+		{Kind: transcript.MsgSystem, Text: "response"},
 	}
 	m.browseSelected = 0
 	m.startForkDraft()
 	if m.forkDraft != nil {
 		t.Fatal("should not create fork draft for non-user message")
+	}
+	if got := m.session.messages[len(m.session.messages)-1].Text; got != "Select a user message to fork." {
+		t.Fatalf("non-user refusal = %q", got)
 	}
 
 	// User message with no entry index.
@@ -233,6 +256,9 @@ func TestCovStartForkDraft(t *testing.T) {
 	m.startForkDraft()
 	if m.forkDraft == nil {
 		t.Fatal("should create fork draft")
+	}
+	if m.forkDraft.EntryIndex != 1 || m.forkDraft.OriginalText != "hello" {
+		t.Fatalf("fork draft = %#v, want transcript entry 1 and original message", m.forkDraft)
 	}
 }
 
@@ -360,8 +386,14 @@ func TestCovMatchesAsyncSessionRef(t *testing.T) {
 func TestCovReplayKeyBurst(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.mode = hubModeDashboard
-	got, _ := m.replayKeyBurst(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r', 'n'}})
-	_ = got
+	got, cmd := m.replayKeyBurst(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r', 'n'}})
+	after := got.(hubModel)
+	if after.mode != hubModeSpawn {
+		t.Fatalf("mode = %v, want spawn after replayed n", after.mode)
+	}
+	if cmd != nil {
+		t.Fatal("nil-client r+n burst should not return a command")
+	}
 }
 
 // TestCovUpdateMouse exercises mouse handling.
@@ -369,12 +401,18 @@ func TestCovUpdateMouse(t *testing.T) {
 	// Not in session mode: no-op.
 	m := hubModel{}
 	got, _ := m.updateMouse(tea.MouseMsg{})
-	_ = got
+	after := got.(hubModel)
+	if after.mode != hubModeDashboard || after.session.scrollMode {
+		t.Fatalf("non-session mouse changed model: mode=%v scroll=%v", after.mode, after.session.scrollMode)
+	}
 
 	// In session mode with scroll wheel.
 	m = newSessionHubModel(nil)
 	got, _ = m.updateMouse(tea.MouseMsg{Action: tea.MouseActionPress, Button: tea.MouseButtonWheelUp})
-	_ = got
+	after = got.(hubModel)
+	if !after.session.scrollMode {
+		t.Fatal("session wheel should enter transcript browse mode")
+	}
 }
 
 // TestCovMouseWheelScrollsTranscript exercises wheel detection.
@@ -428,7 +466,9 @@ func TestCovActivateDashboardRow(t *testing.T) {
 	// Empty rows.
 	m := hubModel{}
 	got, _ := m.activateDashboardRow(nil)
-	_ = got
+	if got.(hubModel).mode != hubModeDashboard {
+		t.Fatal("empty activation should preserve dashboard mode")
+	}
 
 	// Launch row.
 	m = newHubModel(nil, "http://hub.test")
@@ -445,33 +485,45 @@ func TestCovActivateDashboardRow(t *testing.T) {
 	rows = []hubRow{{kind: hubRowRecentToggle, projectKey: "p1", groupKey: "g1"}}
 	m.selected = 0
 	got, _ = m.activateDashboardRow(rows)
-	_ = got
+	after = got.(hubModel)
+	if !after.dashboardRecentOpen["g1"] {
+		t.Fatal("recent toggle should open the selected group")
+	}
 
 	// Recent toggle with empty projectKey: no-op.
 	m = newHubModel(nil, "http://hub.test")
 	rows = []hubRow{{kind: hubRowRecentToggle, projectKey: ""}}
 	m.selected = 0
 	got, _ = m.activateDashboardRow(rows)
-	_ = got
+	if got.(hubModel).dashboardRecentOpen[""] {
+		t.Fatal("empty recent project key should not mutate expansion state")
+	}
 
 	// Project row.
 	m = newHubModel(nil, "http://hub.test")
 	rows = []hubRow{{kind: hubRowProject, projectKey: "p1", groupKey: "g1"}}
 	m.selected = 0
 	got, _ = m.activateDashboardRow(rows)
-	_ = got
+	after = got.(hubModel)
+	if !after.dashboardProjectClosed["g1"] {
+		t.Fatal("project activation should collapse the selected group")
+	}
 
 	// Project row with empty key: no-op.
 	m = newHubModel(nil, "http://hub.test")
 	rows = []hubRow{{kind: hubRowProject, projectKey: ""}}
 	m.selected = 0
 	got, _ = m.activateDashboardRow(rows)
-	_ = got
+	if got.(hubModel).dashboardProjectClosed[""] {
+		t.Fatal("empty project key should not mutate collapse state")
+	}
 
 	// Session row without client.
 	m = hubModel{selected: 0, rows: []hubRow{{kind: hubRowSession, ref: appwire.Ref{SourceID: "local", ThreadID: "01TEST"}}}}
 	got, _ = m.activateDashboardRow(m.rows)
-	_ = got
+	if got.(hubModel).mode != hubModeDashboard {
+		t.Fatal("session activation without a client should preserve dashboard mode")
+	}
 }
 
 // TestCovRunCommandPaletteCommand exercises command palette dispatch.
@@ -479,42 +531,49 @@ func TestCovRunCommandPaletteCommand(t *testing.T) {
 	m := newSessionHubModel(nil)
 	// Unknown command: no-op.
 	got, _ := m.runCommandPaletteCommand("unknown")
-	_ = got
+	if len(got.(hubModel).session.messages) != 0 {
+		t.Fatal("unknown command should not add a session message")
+	}
 
 	// Help command.
 	got, _ = m.runCommandPaletteCommand("help")
-	_ = got
+	after := got.(hubModel)
+	if len(after.session.messages) == 0 || !contains(after.session.messages[len(after.session.messages)-1].Text, "Available commands:") {
+		t.Fatalf("help did not surface command help: %#v", after.session.messages)
+	}
 }
 
 // --- hub_frames.go ---
-
-// TestCovHubFrameFeedSetTransportCloser exercises the transport closer setter.
-func TestCovHubFrameFeedSetTransportCloser(t *testing.T) {
-	f := newHubFrameFeed()
-	called := false
-	f.SetTransportCloser(func() error {
-		called = true
-		return nil
-	})
-	// The closer is only called during teardown (after close).
-	_ = called
-}
 
 // TestCovHubFrameFeedObserveNotification exercises notification observation.
 func TestCovHubFrameFeedObserveNotification(t *testing.T) {
 	f := newHubFrameFeed()
 	n := appwire.Notification{Method: appwire.NotifyTurnStarted}
 	f.Observe(appwire.Message{Notification: &n}, nil)
-	// Should not panic.
+	if got, ok := takeHubNotification(f); !ok || got.Method != appwire.NotifyTurnStarted {
+		t.Fatalf("notification = %#v, ok=%v", got, ok)
+	}
 }
 
 // TestCovHubFrameFeedObserveError exercises error observation.
 func TestCovHubFrameFeedObserveError(t *testing.T) {
 	f := newHubFrameFeed()
-	f.SetTransportCloser(func() error { return nil })
+	closed := false
+	f.SetTransportCloser(func() error {
+		closed = true
+		return nil
+	})
+	n := appwire.Notification{Method: appwire.NotifyItemStarted}
+	f.Observe(appwire.Message{Notification: &n}, nil)
 	f.Observe(appwire.Message{}, errors.New("connection lost"))
-	if f.notifications == nil {
-		t.Fatal("notifications channel should still exist")
+	if !closed {
+		t.Fatal("transport closer was not called when the feed ended")
+	}
+	if got, ok := takeHubNotification(f); !ok || got.Method != appwire.NotifyItemStarted {
+		t.Fatalf("queued notification = %#v, ok=%v", got, ok)
+	}
+	if _, ok := takeHubNotification(f); ok {
+		t.Fatal("notification channel should be closed after connection error")
 	}
 }
 
@@ -526,11 +585,22 @@ func TestCovHubFrameFeedBeginCapture(t *testing.T) {
 		t.Fatal("should return capture")
 	}
 
-	// Second capture inherits first's frames.
+	n := appwire.Notification{Method: appwire.NotifyItemStarted}
+	f.Observe(appwire.Message{Notification: &n}, nil)
+
+	// Second capture supersedes the first and inherits its held frames.
 	c2 := f.BeginCapture()
 	if c2 == nil {
 		t.Fatal("should return second capture")
 	}
+	frames := c2.BeforeCut()
+	if len(frames) != 1 || frames[0].Method != appwire.NotifyItemStarted {
+		t.Fatalf("inherited frames = %#v", frames)
+	}
+	if frames := c.BeforeCut(); frames != nil {
+		t.Fatalf("superseded capture returned %#v", frames)
+	}
+	c2.Release()
 }
 
 // TestCovHubReadCaptureCutOn exercises cut ID setting.
@@ -538,7 +608,20 @@ func TestCovHubReadCaptureCutOn(t *testing.T) {
 	f := newHubFrameFeed()
 	c := f.BeginCapture()
 	c.CutOn(appwire.NewIntID(42))
-	// Should not panic.
+	before := appwire.Notification{Method: appwire.NotifyTurnStarted}
+	after := appwire.Notification{Method: appwire.NotifyTurnCompleted}
+	f.Observe(appwire.Message{Notification: &before}, nil)
+	f.Observe(appwire.Message{Response: &appwire.Response{ID: appwire.NewIntID(7)}}, nil)
+	f.Observe(appwire.Message{Response: &appwire.Response{ID: appwire.NewIntID(42)}}, nil)
+	f.Observe(appwire.Message{Notification: &after}, nil)
+	frames := c.BeforeCut()
+	if len(frames) != 1 || frames[0].Method != appwire.NotifyTurnStarted {
+		t.Fatalf("before-cut frames = %#v", frames)
+	}
+	c.Release()
+	if got, ok := takeHubNotification(f); !ok || got.Method != appwire.NotifyTurnCompleted {
+		t.Fatalf("released post-cut notification = %#v, ok=%v", got, ok)
+	}
 }
 
 // TestCovHubReadCaptureBeforeCut exercises frame retrieval.
@@ -554,16 +637,24 @@ func TestCovHubReadCaptureBeforeCut(t *testing.T) {
 func TestCovHubReadCaptureRelease(t *testing.T) {
 	f := newHubFrameFeed()
 	c := f.BeginCapture()
+	n := appwire.Notification{Method: appwire.NotifyItemCompleted}
+	f.Observe(appwire.Message{Notification: &n}, nil)
 	c.Release()
-	// Should not panic.
+	if got, ok := takeHubNotification(f); !ok || got.Method != appwire.NotifyItemCompleted {
+		t.Fatalf("released notification = %#v, ok=%v", got, ok)
+	}
 }
 
 // TestCovHubReadCaptureAbandon exercises abandon.
 func TestCovHubReadCaptureAbandon(t *testing.T) {
 	f := newHubFrameFeed()
 	c := f.BeginCapture()
+	n := appwire.Notification{Method: appwire.NotifyItemStarted}
+	f.Observe(appwire.Message{Notification: &n}, nil)
 	c.Abandon()
-	// Should not panic.
+	if got, ok := takeHubNotification(f); !ok || got.Method != appwire.NotifyItemStarted {
+		t.Fatalf("abandoned notification = %#v, ok=%v", got, ok)
+	}
 }
 
 // TestCovHubFrameFeedObserveWithCapture exercises observation while capturing.
@@ -572,7 +663,22 @@ func TestCovHubFrameFeedObserveWithCapture(t *testing.T) {
 	c := f.BeginCapture()
 	n := appwire.Notification{Method: appwire.NotifyTurnStarted}
 	f.Observe(appwire.Message{Notification: &n}, nil)
-	_ = c
+	if _, ok := takeHubNotification(f); ok {
+		t.Fatal("captured notification escaped before release")
+	}
+	c.Release()
+	if got, ok := takeHubNotification(f); !ok || got.Method != appwire.NotifyTurnStarted {
+		t.Fatalf("released captured notification = %#v, ok=%v", got, ok)
+	}
+}
+
+func takeHubNotification(f *hubFrameFeed) (appwire.Notification, bool) {
+	select {
+	case notification, ok := <-f.Notifications():
+		return notification, ok
+	default:
+		return appwire.Notification{}, false
+	}
 }
 
 // --- hub_status.go ---
@@ -867,13 +973,23 @@ func TestCovFetchCurrentHubSession(t *testing.T) {
 	}
 
 	// Valid ref.
-	client, cleanup := newTestHubClient(t, nil)
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return appwire.ThreadReadResponse{Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: params.Ref}}}, nil
+		})
+	})
 	defer cleanup()
 	m = newSessionHubModel(client)
 	m.frames = newHubFrameFeed()
-	if cmd := fetchCurrentHubSession(&m, ""); cmd == nil {
+	cmd := fetchCurrentHubSession(&m, "")
+	if cmd == nil {
 		t.Fatal("should produce a cmd for valid ref")
 	}
+	msg, ok := cmd().(hubSessionMsg)
+	if !ok || msg.err != nil || msg.ref != m.detail.Ref || msg.capture == nil {
+		t.Fatalf("current session result = %#v", msg)
+	}
+	msg.capture.Release()
 }
 
 // TestCovFetchCurrentHubStatus exercises status fetch.
@@ -885,11 +1001,26 @@ func TestCovFetchCurrentHubStatus(t *testing.T) {
 	}
 
 	// Valid ref.
-	client, cleanup := newTestHubClient(t, nil)
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			return appwire.ThreadReadResponse{Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: params.Ref}}}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerTasksList, func(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
+			return appwire.TaskListResponse{}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthStatus, func(context.Context, appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
+			return appwire.AuthStatusResponse{Provider: "openai", Supported: true}, nil
+		})
+	})
 	defer cleanup()
 	m = newSessionHubModel(client)
-	if cmd := fetchCurrentHubStatus(&m, ""); cmd == nil {
+	cmd := fetchCurrentHubStatus(&m, "")
+	if cmd == nil {
 		t.Fatal("should produce a cmd for valid ref")
+	}
+	msg, ok := cmd().(hubStatusMsg)
+	if !ok || msg.err != nil || msg.taskErr != nil || msg.authErr != nil || !msg.auth.Supported {
+		t.Fatalf("current status result = %#v", msg)
 	}
 }
 
@@ -953,12 +1084,43 @@ func TestCovHubModelInit(t *testing.T) {
 	}
 
 	// With client: batch cmd.
-	client, cleanup := newTestHubClient(t, nil)
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+			return appwire.ThreadListResponse{}, nil
+		})
+	})
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
 	m.frames = newHubFrameFeed()
-	if cmd := m.Init(); cmd == nil {
+	notification := appwire.Notification{Method: appwire.NotifyTurnStarted}
+	m.frames.Observe(appwire.Message{Notification: &notification}, nil)
+	cmd := m.Init()
+	if cmd == nil {
 		t.Fatal("Init should return cmd with client")
+	}
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok || len(batch) != 2 {
+		t.Fatalf("Init result = %#v, want two-command batch", batch)
+	}
+	seenTree, seenNotification := false, false
+	for _, command := range batch {
+		switch msg := command().(type) {
+		case hubTreeMsg:
+			if msg.err != nil {
+				t.Fatalf("tree fetch failed: %v", msg.err)
+			}
+			seenTree = true
+		case hubNotificationMsg:
+			if !msg.ok || msg.notification.Method != appwire.NotifyTurnStarted {
+				t.Fatalf("notification result = %#v", msg)
+			}
+			seenNotification = true
+		default:
+			t.Fatalf("Init command returned %T", msg)
+		}
+	}
+	if !seenTree || !seenNotification {
+		t.Fatalf("Init outcomes: tree=%v notification=%v", seenTree, seenNotification)
 	}
 }
 
@@ -970,6 +1132,10 @@ func TestCovReconnectHub(t *testing.T) {
 	}, 1, 0)
 	if cmd == nil {
 		t.Fatal("should produce a cmd")
+	}
+	msg, ok := cmd().(hubReconnectMsg)
+	if !ok || msg.err != nil || msg.attempt != 1 || msg.client != nil || msg.frames != nil {
+		t.Fatalf("reconnect result = %#v", msg)
 	}
 }
 

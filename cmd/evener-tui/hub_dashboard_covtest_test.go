@@ -114,6 +114,9 @@ func TestCovToggleDashboardProject(t *testing.T) {
 
 	// Empty key: no-op.
 	m.toggleDashboardProject("")
+	if len(m.dashboardProjectClosed) != 0 || m.dashboardProjectClosed[""] {
+		t.Fatalf("empty toggle mutated closed map: %#v", m.dashboardProjectClosed)
+	}
 }
 
 // TestCovSetDashboardProjectExpanded exercises explicit expand/collapse.
@@ -135,6 +138,9 @@ func TestCovSetDashboardProjectExpanded(t *testing.T) {
 
 	// Empty key: no-op.
 	m.setDashboardProjectExpanded("", true)
+	if len(m.dashboardProjectClosed) != 1 || !m.dashboardProjectClosed["proj1"] || m.dashboardProjectClosed[""] {
+		t.Fatalf("empty expansion mutated closed map: %#v", m.dashboardProjectClosed)
+	}
 }
 
 // TestCovToggleDashboardRecent exercises recent toggle.
@@ -153,6 +159,9 @@ func TestCovToggleDashboardRecent(t *testing.T) {
 
 	// Empty: no-op.
 	m.toggleDashboardRecent("")
+	if len(m.dashboardRecentOpen) != 0 || m.dashboardRecentOpen[""] {
+		t.Fatalf("empty recent toggle mutated open map: %#v", m.dashboardRecentOpen)
+	}
 }
 
 // TestCovFocusDashboardProject exercises focusing a project.
@@ -171,6 +180,9 @@ func TestCovFocusDashboardProject(t *testing.T) {
 	}
 	if !m.dashboardProjectExpanded("proj1") {
 		t.Fatal("project should be expanded")
+	}
+	if m.selected != 1 {
+		t.Fatalf("selected = %d, want project row index 1", m.selected)
 	}
 
 	// Empty key: returns to dashboard.
@@ -195,10 +207,16 @@ func TestCovSetSelectedDashboardProjectExpanded(t *testing.T) {
 
 	// Empty rows: no-op.
 	m.setSelectedDashboardProjectExpanded(nil, true)
+	if len(m.dashboardProjectClosed) != 0 {
+		t.Fatalf("empty rows mutated closed map: %#v", m.dashboardProjectClosed)
+	}
 
 	// Non-project row: no-op.
 	m.selected = 0
 	m.setSelectedDashboardProjectExpanded(m.rows, true)
+	if len(m.dashboardProjectClosed) != 0 {
+		t.Fatalf("launch row mutated closed map: %#v", m.dashboardProjectClosed)
+	}
 
 	// Empty projectKey: no-op.
 	m.rows = []hubRow{
@@ -207,6 +225,9 @@ func TestCovSetSelectedDashboardProjectExpanded(t *testing.T) {
 	}
 	m.selected = 1
 	m.setSelectedDashboardProjectExpanded(m.rows, true)
+	if len(m.dashboardProjectClosed) != 0 {
+		t.Fatalf("empty project key mutated closed map: %#v", m.dashboardProjectClosed)
+	}
 }
 
 // TestCovClampSelection exercises selection clamping.
@@ -250,14 +271,14 @@ func TestCovFilterHubRows(t *testing.T) {
 
 	// Filter by project name.
 	filtered := filterHubRows(rows, "proj1")
-	if len(filtered) != 2 {
-		t.Fatalf("len = %d, want 2 (project + child)", len(filtered))
+	if len(filtered) != 2 || filtered[0].title != "Proj1" || filtered[1].title != "Session A" {
+		t.Fatalf("filtered = %#v, want Proj1 and Session A", filtered)
 	}
 
 	// Filter by model.
 	filtered = filterHubRows(rows, "gpt-5")
-	if len(filtered) != 2 {
-		t.Fatalf("len = %d, want 2 (project + child matching model)", len(filtered))
+	if len(filtered) != 2 || filtered[0].title != "Proj2" || filtered[1].title != "Session B" {
+		t.Fatalf("filtered = %#v, want Proj2 and Session B", filtered)
 	}
 
 	// Empty query: all rows.
@@ -333,8 +354,23 @@ func TestCovBuildDashboardRows(t *testing.T) {
 		},
 	}
 	rows = buildDashboardRows(tree)
-	if len(rows) < 3 {
-		t.Fatalf("len = %d, want at least 3 (project + 2 sessions)", len(rows))
+	if len(rows) != 5 {
+		t.Fatalf("rows = %#v, want project, two project sessions, orphan group, and orphan", rows)
+	}
+	want := []struct {
+		kind  hubRowKind
+		title string
+	}{
+		{hubRowProject, "Proj1"},
+		{hubRowSession, "Session A"},
+		{hubRowSession, "Session B"},
+		{hubRowProject, "(no project)"},
+		{hubRowSession, "Orphan"},
+	}
+	for i, expected := range want {
+		if rows[i].kind != expected.kind || rows[i].title != expected.title {
+			t.Fatalf("row[%d] = %#v, want kind %v title %q", i, rows[i], expected.kind, expected.title)
+		}
 	}
 
 	// With live sessions that have children.
@@ -352,8 +388,8 @@ func TestCovBuildDashboardRows(t *testing.T) {
 		},
 	}
 	rows = buildDashboardRows(tree)
-	if len(rows) < 3 {
-		t.Fatalf("len = %d, want at least 3 (project + parent + child)", len(rows))
+	if len(rows) != 3 || rows[0].kind != hubRowProject || rows[0].title != "Proj1" || rows[1].title != "Parent" || rows[2].title != "Child" {
+		t.Fatalf("rows = %#v, want project, parent, child", rows)
 	}
 }
 
@@ -413,12 +449,9 @@ func TestCovFoldedDashboardRows(t *testing.T) {
 		dashboardProjectClosed: map[string]bool{},
 	}
 	rows := m.foldedDashboardRows()
-	// Should have launch + project + live + recent toggle
-	if len(rows) < 3 {
-		t.Fatalf("len = %d, want at least 3", len(rows))
-	}
-	if rows[0].kind != hubRowLaunch {
-		t.Fatal("first row should be launch")
+	// Closed recents are represented by a toggle, not the recent session.
+	if len(rows) != 4 || rows[0].kind != hubRowLaunch || rows[1].kind != hubRowProject || rows[2].title != "Live" || rows[3].kind != hubRowRecentToggle {
+		t.Fatalf("folded rows = %#v, want launch, project, live, recent toggle", rows)
 	}
 
 	// With collapsed project: skip sessions.
@@ -432,11 +465,8 @@ func TestCovFoldedDashboardRows(t *testing.T) {
 	m.dashboardProjectClosed = map[string]bool{}
 	m.dashboardRecentOpen = map[string]bool{"g1": true}
 	rows = m.foldedDashboardRows()
-	// Should include the recent session row too.
-	for _, row := range rows {
-		if row.title == "Recent" {
-			return // found it
-		}
+	if len(rows) != 5 || rows[4].kind != hubRowSession || rows[4].title != "Recent" {
+		t.Fatalf("expanded rows = %#v, want recent session after toggle", rows)
 	}
 }
 

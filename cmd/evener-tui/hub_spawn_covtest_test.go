@@ -1,13 +1,14 @@
 package tui
 
 import (
-	"errors"
+	"context"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/launchconfig"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
+	"primeradiant.com/evener/internal/appserver"
 )
 
 // TestCovUpdateSpawnKeyEsc exercises the esc key path that closes the spawn form.
@@ -52,8 +53,9 @@ func TestCovUpdateSpawnKeyTab(t *testing.T) {
 	m.spawnDirInput.SetValue("/tmp/nonexistent")
 	got, _ = m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyTab})
 	after = got.(hubModel)
-	// Should advance focus since path doesn't match a recent dir.
-	_ = after
+	if after.spawnFocus == hubSpawnFieldDir {
+		t.Fatal("tab on a custom path should advance focus")
+	}
 
 	// Tab advances focus from non-dir fields.
 	m = newHubModel(nil, "http://hub.test")
@@ -100,7 +102,10 @@ func TestCovUpdateSpawnKeyEnter(t *testing.T) {
 	m.openSpawnForm()
 	m.setSpawnFocus(hubSpawnFieldModel)
 	got, _ = m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyEnter})
-	_ = got
+	after = got.(hubModel)
+	if after.err == nil {
+		t.Fatal("enter on empty model field should surface the no-models error")
+	}
 
 	// Enter on dir: advances focus.
 	m = newHubModel(nil, "http://hub.test")
@@ -114,7 +119,13 @@ func TestCovUpdateSpawnKeyEnter(t *testing.T) {
 	}
 
 	// Enter on prompt: submits (needs client + model set for evener harness).
-	client, cleanup := newTestHubClient(t, nil)
+	var started appwire.ThreadStartParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, func(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+			started = params
+			return appwire.ThreadStartResponse{Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:01NEW"}}}, nil
+		})
+	})
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
 	m.mode = hubModeSpawn
@@ -123,10 +134,17 @@ func TestCovUpdateSpawnKeyEnter(t *testing.T) {
 	m.spawnModels = []tuipick.ModelPickerItem{{ID: "openai/gpt-5", Display: "GPT 5"}}
 	m.setSpawnFocus(hubSpawnFieldPrompt)
 	m.session.setInputValue("do something")
-	got, _ = m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyEnter})
+	got, cmd := m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyEnter})
 	after = got.(hubModel)
 	if !after.spawnSubmitting {
 		t.Fatal("enter on prompt with text should submit")
+	}
+	msg, ok := cmd().(hubSpawnMsg)
+	if !ok || msg.err != nil || msg.resp.Ref != "local:01NEW" {
+		t.Fatalf("spawn result = %#v", msg)
+	}
+	if started.Harness != "evener" || started.Model != "openai/gpt-5" || len(started.Input) != 1 || started.Input[0].Text != "do something" {
+		t.Fatalf("thread/start params = %#v", started)
 	}
 }
 
@@ -150,7 +168,10 @@ func TestCovUpdateSpawnKeySpace(t *testing.T) {
 	m.openSpawnForm()
 	m.setSpawnFocus(hubSpawnFieldModel)
 	got, _ = m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
-	_ = got
+	after = got.(hubModel)
+	if after.err == nil {
+		t.Fatal("space on empty model field should surface the no-models error")
+	}
 }
 
 // TestCovUpdateSpawnKeyCtrlL exercises ctrl+l opening launch overrides.
@@ -162,7 +183,13 @@ func TestCovUpdateSpawnKeyCtrlL(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("ctrl+l should produce a command")
 	}
-	_ = got
+	if got.(hubModel).launchOverridesModal != nil {
+		t.Fatal("ctrl+l should defer opening the modal until its command is handled")
+	}
+	msg, ok := cmd().(launchconfig.LaunchOverridesOpenMsg)
+	if !ok || msg.Initial != nil {
+		t.Fatalf("ctrl+l command result = %#v, want empty initial overrides", msg)
+	}
 }
 
 // TestCovUpdateSpawnKeyCtrlLWithOverrides exercises ctrl+l with existing overrides.
@@ -175,7 +202,16 @@ func TestCovUpdateSpawnKeyCtrlLWithOverrides(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("ctrl+l should produce a command")
 	}
-	_ = got
+	msg, ok := cmd().(launchconfig.LaunchOverridesOpenMsg)
+	if !ok || msg.Initial == nil || msg.Initial.Model != "test/model" {
+		t.Fatalf("ctrl+l command result = %#v, want copied initial overrides", msg)
+	}
+	if msg.Initial == m.spawnLaunchOverrides {
+		t.Fatal("ctrl+l should pass a copy, not the mutable form pointer")
+	}
+	if got.(hubModel).spawnLaunchOverrides.Model != "test/model" {
+		t.Fatal("ctrl+l should preserve form overrides")
+	}
 }
 
 // TestCovUpdateSpawnKeyCtrlU exercises ctrl+u clearing dir field.
@@ -237,9 +273,9 @@ func TestCovUpdateSpawnKeyLaunchOverridesModal(t *testing.T) {
 	modal := launchconfig.NewLaunchOverridesModal()
 	m.launchOverridesModal = &modal
 	got, _ := m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyEsc})
-	// Esc with launchOverridesModal set — the modal may handle esc; the test
-	// exercises the modal-routing path. Just ensure no panic.
-	_ = got
+	if got.(hubModel).launchOverridesModal != nil {
+		t.Fatal("esc should close the launch overrides modal")
+	}
 }
 
 // TestCovUpdateSpawnKeyNonPromptNoOp exercises keys on non-prompt non-dir fields.
@@ -249,14 +285,23 @@ func TestCovUpdateSpawnKeyNonPromptNoOp(t *testing.T) {
 	m.openSpawnForm()
 	m.setSpawnFocus(hubSpawnFieldHarness)
 	got, _ := m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'x'}})
-	// Should be a no-op (returns model unchanged).
-	_ = got
+	after := got.(hubModel)
+	if after.spawnHarness != m.spawnHarness || after.spawnFocus != hubSpawnFieldHarness || after.session.input.Value() != "" {
+		t.Fatalf("non-prompt key mutated form: harness=%q focus=%v input=%q", after.spawnHarness, after.spawnFocus, after.session.input.Value())
+	}
 }
 
 // TestCovActivateSpawnModelField exercises the model activation paths.
 func TestCovActivateSpawnModelField(t *testing.T) {
 	// No models, not evener harness, with client: fetches models.
-	client, cleanup := newTestHubClient(t, nil)
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
+			if params.Harness != "codex" {
+				t.Errorf("harness = %q, want codex", params.Harness)
+			}
+			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Model: "codex-large"}}}, nil
+		})
+	})
 	defer cleanup()
 	m := newHubModel(client, "http://hub.test")
 	m.spawnHarness = "codex"
@@ -267,7 +312,13 @@ func TestCovActivateSpawnModelField(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("should produce a fetch cmd for non-evener harness with client")
 	}
-	_ = got
+	msg, ok := cmd().(hubModelsMsg)
+	if !ok || msg.err != nil || msg.harness != "codex" || len(msg.models) != 1 || msg.models[0].ID != "codex-large" {
+		t.Fatalf("model fetch result = %#v", msg)
+	}
+	if got.(hubModel).err != nil {
+		t.Fatalf("model activation set error before fetch: %v", got.(hubModel).err)
+	}
 
 	// No models, not evener harness, no client: sets error.
 	m = newHubModel(nil, "http://hub.test")
@@ -312,7 +363,13 @@ func TestCovSubmitSpawnForm(t *testing.T) {
 	}
 
 	// Already submitting: no-op.
-	client, cleanup := newTestHubClient(t, nil)
+	var started appwire.ThreadStartParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, func(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+			started = params
+			return appwire.ThreadStartResponse{Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:01SPAWN"}}}, nil
+		})
+	})
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
 	m.spawnSubmitting = true
@@ -373,6 +430,13 @@ func TestCovSubmitSpawnForm(t *testing.T) {
 	}
 	if cmd == nil {
 		t.Fatal("should produce a spawn command")
+	}
+	msg, ok := cmd().(hubSpawnMsg)
+	if !ok || msg.err != nil || msg.resp.Ref != "local:01SPAWN" {
+		t.Fatalf("spawn result = %#v", msg)
+	}
+	if started.Harness != "evener" || started.Model != "openai/gpt-5" || len(started.Input) != 1 || started.Input[0].Text != "do something" {
+		t.Fatalf("thread/start params = %#v", started)
 	}
 }
 
@@ -693,22 +757,6 @@ func TestCovAdvanceSpawnFocus(t *testing.T) {
 	}
 }
 
-// TestCovResizeSpawnInput exercises resize.
-func TestCovResizeSpawnInput(t *testing.T) {
-	m := newHubModel(nil, "http://hub.test")
-	m.openSpawnForm()
-	// Should not panic.
-	m.resizeSpawnInput()
-}
-
-// TestCovResizeSpawnInputFrom exercises resize from prevHeight.
-func TestCovResizeSpawnInputFrom(t *testing.T) {
-	m := newHubModel(nil, "http://hub.test")
-	m.openSpawnForm()
-	// No change in height: no-op.
-	m.resizeSpawnInputFrom(m.session.input.Height())
-}
-
 // TestCovNextSpawnRecentDir exercises recent dir cycling.
 func TestCovNextSpawnRecentDir(t *testing.T) {
 	// Empty recents.
@@ -929,8 +977,13 @@ func TestCovUpdateSpawnKeyFollowupAndOverrides(t *testing.T) {
 	overridesModal := launchconfig.NewLaunchOverridesModal()
 	m.launchOverridesModal = &overridesModal
 	got, _ := m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyEsc})
-	// Should route to followup modal first.
-	_ = got
+	after := got.(hubModel)
+	if after.followupModal != nil {
+		t.Fatal("esc should close the topmost followup modal")
+	}
+	if after.launchOverridesModal == nil {
+		t.Fatal("closing followup must preserve the underlying launch overrides modal")
+	}
 }
 
 // TestCovUpdateSpawnKeyModelPicker exercises the model picker path.
@@ -946,6 +999,3 @@ func TestCovUpdateSpawnKeyModelPicker(t *testing.T) {
 		t.Fatal("Esc on picker should close it")
 	}
 }
-
-// ensure errors import is used
-var _ = errors.New

@@ -2,10 +2,8 @@ package tui
 
 import (
 	"context"
-	"errors"
 	"testing"
 
-	tea "github.com/charmbracelet/bubbletea"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
 	"primeradiant.com/evener/internal/appserver"
@@ -220,37 +218,32 @@ func TestCovBuildModelPickerItems(t *testing.T) {
 
 // TestCovFormatHubUpgradeResult exercises upgrade result formatting.
 func TestCovFormatHubUpgradeResult(t *testing.T) {
-	// Channel.
-	resp := appwire.UpgradeResponse{Channel: "stable"}
-	if got := formatHubUpgradeResult(resp); !contains(got, "stable") {
-		t.Fatalf("got %q, want to contain 'stable'", got)
+	tests := []struct {
+		name string
+		resp appwire.UpgradeResponse
+		want string
+	}{
+		{name: "channel", resp: appwire.UpgradeResponse{Channel: "stable"}, want: "Evener upgraded to stable."},
+		{name: "release fallback", resp: appwire.UpgradeResponse{Release: "v1.2.3"}, want: "Evener upgraded to v1.2.3."},
+		{name: "requested fallback", resp: appwire.UpgradeResponse{}, want: "Evener upgraded to requested channel."},
+		{
+			name: "all installation details",
+			resp: appwire.UpgradeResponse{
+				Channel:        "stable",
+				Archive:        "/tmp/archive.tar.gz",
+				ShareBinDir:    "/usr/local/share",
+				BinDir:         "/usr/local/bin",
+				RestartMessage: "Restart to apply",
+			},
+			want: "Evener upgraded to stable.\nArchive: /tmp/archive.tar.gz\nInstalled: /usr/local/share\nSymlinks: /usr/local/bin\nRestart to apply",
+		},
 	}
-
-	// No channel: falls to release.
-	resp = appwire.UpgradeResponse{Release: "v1.2.3"}
-	if got := formatHubUpgradeResult(resp); !contains(got, "v1.2.3") {
-		t.Fatalf("got %q, want to contain 'v1.2.3'", got)
-	}
-
-	// No channel or release: fallback.
-	resp = appwire.UpgradeResponse{}
-	if got := formatHubUpgradeResult(resp); !contains(got, "requested channel") {
-		t.Fatalf("got %q, want to contain 'requested channel'", got)
-	}
-
-	// With all fields.
-	resp = appwire.UpgradeResponse{
-		Channel:        "stable",
-		Archive:        "/tmp/archive.tar.gz",
-		ShareBinDir:    "/usr/local/share",
-		BinDir:         "/usr/local/bin",
-		RestartMessage: "Restart to apply",
-	}
-	got := formatHubUpgradeResult(resp)
-	for _, want := range []string{"stable", "/tmp/archive.tar.gz", "/usr/local/share", "/usr/local/bin", "Restart to apply"} {
-		if !contains(got, want) {
-			t.Fatalf("got %q, missing %q", got, want)
-		}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := formatHubUpgradeResult(tc.resp); got != tc.want {
+				t.Fatalf("formatHubUpgradeResult() = %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
 
@@ -273,7 +266,13 @@ func TestCovFetchHubTasksSync(t *testing.T) {
 
 // TestCovRunHubGoal exercises the /goal command dispatch.
 func TestCovRunHubGoal(t *testing.T) {
-	client, cleanup := newTestHubClient(t, nil)
+	var goals []appwire.GoalSetParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodGoalSet, func(_ context.Context, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
+			goals = append(goals, params)
+			return appwire.GoalSetResponse{Started: params.Objective != ""}, nil
+		})
+	})
 	defer cleanup()
 	m := newSessionHubModel(client)
 
@@ -283,6 +282,9 @@ func TestCovRunHubGoal(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("status should produce no cmd")
 	}
+	if got := m.session.messages[len(m.session.messages)-1].Text; got != "Goal: in_progress 3" {
+		t.Fatalf("status message = %q, want cached goal status", got)
+	}
 
 	// /goal status with nil goal: shows hint.
 	m.detail.Goal = nil
@@ -290,17 +292,31 @@ func TestCovRunHubGoal(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("status with nil goal should produce no cmd")
 	}
+	if got := m.session.messages[len(m.session.messages)-1].Text; got != "No goal set. Use /goal <objective> to set one." {
+		t.Fatalf("nil-goal status message = %q", got)
+	}
 
 	// /goal clear: sends clear to hub.
 	cmd = m.runHubGoal("clear")
 	if cmd == nil {
 		t.Fatal("clear should produce a cmd")
 	}
+	clearMsg, ok := cmd().(hubGoalMsg)
+	if !ok || clearMsg.err != nil || !clearMsg.cleared || clearMsg.started {
+		t.Fatalf("clear result = %#v, want successful cleared goal", clearMsg)
+	}
 
 	// /goal <objective>: sends set to hub.
 	cmd = m.runHubGoal("build the feature")
 	if cmd == nil {
 		t.Fatal("set objective should produce a cmd")
+	}
+	setMsg, ok := cmd().(hubGoalMsg)
+	if !ok || setMsg.err != nil || setMsg.cleared || !setMsg.started {
+		t.Fatalf("set result = %#v, want successful started goal", setMsg)
+	}
+	if len(goals) != 2 || goals[0].Objective != "" || goals[1].Objective != "build the feature" {
+		t.Fatalf("goal calls = %#v, want clear then objective", goals)
 	}
 
 	// /goal with invalid ref.
@@ -313,24 +329,65 @@ func TestCovRunHubGoal(t *testing.T) {
 
 // TestCovSendHubInput exercises the send hub input command builder.
 func TestCovSendHubInput(t *testing.T) {
-	client, cleanup := newTestHubClient(t, nil)
+	var got appwire.TurnStartParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+			got = params
+			return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn-7"}}, nil
+		})
+	})
 	defer cleanup()
 	ref := appwire.Ref{SourceID: "local", ThreadID: "01TEST"}
 	cmd := sendHubInput(client, ref, "hello", "draft", nil)
-	if cmd == nil {
-		t.Fatal("should produce a cmd")
+	msg, ok := cmd().(hubSendMsg)
+	if !ok || msg.err != nil || msg.turnID != "turn-7" || msg.ref != ref.String() || msg.text != "hello" || msg.draft != "draft" {
+		t.Fatalf("send result = %#v", msg)
+	}
+	if got.Ref != ref.String() || len(got.Input) != 1 || got.Input[0].Type != "text" || got.Input[0].Text != "hello" || got.ClientMutationID == "" {
+		t.Fatalf("turn/start params = %#v", got)
 	}
 }
 
 // TestCovSendHubAction exercises the action command builder.
 func TestCovSendHubAction(t *testing.T) {
-	client, cleanup := newTestHubClient(t, nil)
+	var calls []string
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodTurnInterrupt, func(_ context.Context, params appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
+			calls = append(calls, "interrupt:"+params.Ref)
+			if params.ClientMutationID == "" {
+				t.Error("interrupt client mutation ID is empty")
+			}
+			return appwire.EmptyResponse{}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadCompactStart, func(_ context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
+			calls = append(calls, "compact:"+params.Ref)
+			return appwire.EmptyResponse{}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadShutdown, func(_ context.Context, params appwire.ThreadShutdownParams) (appwire.EmptyResponse, error) {
+			calls = append(calls, "shutdown:"+params.Ref)
+			return appwire.EmptyResponse{}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+			calls = append(calls, "model:"+params.Ref+":"+params.ModelProvider+"/"+params.Model)
+			return appwire.EmptyResponse{}, nil
+		})
+	})
 	defer cleanup()
 	ref := appwire.Ref{SourceID: "local", ThreadID: "01TEST"}
 	for _, action := range []string{"interrupt", "compact", "shutdown", "openai/gpt-5"} {
 		cmd := sendHubAction(client, ref, action)
-		if cmd == nil {
-			t.Fatalf("action %q should produce a cmd", action)
+		msg, ok := cmd().(hubActionMsg)
+		if !ok || msg.err != nil {
+			t.Fatalf("action %q result = %#v", action, msg)
+		}
+	}
+	want := []string{"interrupt:local:01TEST", "compact:local:01TEST", "shutdown:local:01TEST", "model:local:01TEST:openai/gpt-5"}
+	if len(calls) != len(want) {
+		t.Fatalf("calls = %#v, want %#v", calls, want)
+	}
+	for i := range want {
+		if calls[i] != want[i] {
+			t.Fatalf("calls = %#v, want %#v", calls, want)
 		}
 	}
 }
@@ -338,52 +395,84 @@ func TestCovSendHubAction(t *testing.T) {
 // TestCovFetchHubStatus exercises status fetch.
 func TestCovFetchHubStatus(t *testing.T) {
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			if params.Ref != "local:01TEST" || !params.IncludeTurns || params.ItemsView != "full" {
+				t.Errorf("thread/read params = %#v", params)
+			}
+			return appwire.ThreadReadResponse{Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: params.Ref}}}, nil
+		})
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerTasksList, func(ctx context.Context, p appwire.TaskListParams) (appwire.TaskListResponse, error) {
 			return appwire.TaskListResponse{}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerAuthStatus, func(context.Context, appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
+			return appwire.AuthStatusResponse{Provider: "openai", Supported: true}, nil
 		})
 	})
 	defer cleanup()
 	ref := appwire.Ref{SourceID: "local", ThreadID: "01TEST"}
-	cmd := fetchHubStatus(client, ref)
-	if cmd == nil {
-		t.Fatal("should produce a cmd")
+	msg, ok := fetchHubStatus(client, ref)().(hubStatusMsg)
+	if !ok || msg.err != nil || msg.taskErr != nil || msg.authErr != nil || !msg.auth.Supported {
+		t.Fatalf("status result = %#v", msg)
 	}
 }
 
 // TestCovFetchHubTranscriptTargets exercises target fetch.
 func TestCovFetchHubTranscriptTargets(t *testing.T) {
-	client, cleanup := newTestHubClient(t, nil)
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerThreadTranscriptsList, func(_ context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
+			if params.Ref != "local:01TEST" {
+				t.Errorf("ref = %q, want local:01TEST", params.Ref)
+			}
+			return appwire.ThreadTranscriptListResponse{Data: []appwire.ThreadTranscriptTarget{{Ref: "local:01CHILD"}}}, nil
+		})
+	})
 	defer cleanup()
 	ref := appwire.Ref{SourceID: "local", ThreadID: "01TEST"}
-	cmd := fetchHubTranscriptTargets(client, ref)
-	if cmd == nil {
-		t.Fatal("should produce a cmd")
+	msg, ok := fetchHubTranscriptTargets(client, ref)().(hubTranscriptTargetsMsg)
+	if !ok || msg.err != nil || len(msg.targets) != 1 || msg.targets[0].Ref != "local:01CHILD" {
+		t.Fatalf("transcript targets result = %#v", msg)
 	}
 }
 
 // TestCovFetchHubModelsForHarness exercises model fetch for harness.
 func TestCovFetchHubModelsForHarness(t *testing.T) {
-	client, cleanup := newTestHubClient(t, nil)
+	var calls []appwire.ModelListParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
+			calls = append(calls, params)
+			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
+		})
+	})
 	defer cleanup()
-	cmd := fetchHubModelsForHarness(client, "codex", "/tmp")
-	if cmd == nil {
-		t.Fatal("should produce a cmd")
+	msg, ok := fetchHubModelsForHarness(client, "codex", "/tmp")().(hubModelsMsg)
+	if !ok || msg.err != nil || msg.harness != "codex" || len(msg.models) != 1 || msg.models[0].ID != "gpt-5" {
+		t.Fatalf("harness model result = %#v", msg)
 	}
 
 	// Empty harness (trimmed).
-	cmd = fetchHubModelsForHarness(client, "  ", "/tmp")
-	if cmd == nil {
-		t.Fatal("should produce a cmd even with empty harness")
+	msg, ok = fetchHubModelsForHarness(client, "  ", "/tmp")().(hubModelsMsg)
+	if !ok || msg.err != nil || msg.harness != "" || len(msg.models) != 1 || msg.models[0].ID != "openai/gpt-5" {
+		t.Fatalf("default model result = %#v", msg)
+	}
+	if len(calls) != 2 || calls[0].Harness != "codex" || calls[0].CWD != "/tmp" || calls[1].Harness != "" || calls[1].CWD != "/tmp" {
+		t.Fatalf("model/list calls = %#v", calls)
 	}
 }
 
 // TestCovFetchHubSessionModels exercises session model fetch.
 func TestCovFetchHubSessionModels(t *testing.T) {
-	client, cleanup := newTestHubClient(t, nil)
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
+			if params.CWD != "/tmp/work" || params.Harness != "" {
+				t.Errorf("model/list params = %#v", params)
+			}
+			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
+		})
+	})
 	defer cleanup()
-	cmd := fetchHubSessionModels(client, "/tmp")
-	if cmd == nil {
-		t.Fatal("should produce a cmd")
+	msg, ok := fetchHubSessionModels(client, " /tmp/work ")().(hubSessionModelsMsg)
+	if !ok || msg.err != nil || len(msg.models) != 1 || msg.models[0].ID != "openai/gpt-5" {
+		t.Fatalf("session models result = %#v", msg)
 	}
 }
 
@@ -393,39 +482,66 @@ func TestCovFetchHubSpawnOptions(t *testing.T) {
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerProjectsRecent, func(ctx context.Context, p appwire.ProjectsRecentParams) (appwire.ProjectsRecentResponse, error) {
 			return appwire.ProjectsRecentResponse{Data: []string{"/tmp/recent"}}, nil
 		})
+		appserver.HandleTyped(app.Router(), appwire.MethodModelList, func(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
+			if params.CWD != "/tmp" {
+				t.Errorf("model/list cwd = %q, want /tmp", params.CWD)
+			}
+			return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}, nil
+		})
 	})
 	defer cleanup()
-	cmd := fetchHubSpawnOptions(client, "/tmp")
-	if cmd == nil {
-		t.Fatal("should produce a cmd")
+	msg, ok := fetchHubSpawnOptions(client, "/tmp")().(hubSpawnOptionsMsg)
+	if !ok || msg.err != nil || msg.modelErr != nil || len(msg.harnesses) != 1 || msg.harnesses[0] != "evener" || msg.harnessKinds["evener"] != "evener" || len(msg.models) != 1 || len(msg.recentDirs) != 1 || msg.recentDirs[0] != "/tmp/recent" {
+		t.Fatalf("spawn options result = %#v", msg)
 	}
 }
 
 // TestCovSubscribeChildActivity exercises the subscription command.
 func TestCovSubscribeChildActivity(t *testing.T) {
-	client, cleanup := newTestHubClient(t, nil)
+	called := false
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			called = true
+			if params.Ref != "local:01CHILD" || params.IncludeTurns || !params.Subscribe || params.ReplaceSubscription {
+				t.Errorf("child subscription params = %#v", params)
+			}
+			return appwire.ThreadReadResponse{}, nil
+		})
+	})
 	defer cleanup()
-	cmd := subscribeChildActivity(client, "local:01CHILD")
-	if cmd == nil {
-		t.Fatal("should produce a cmd")
+	if msg := subscribeChildActivity(client, "local:01CHILD")(); msg != nil {
+		t.Fatalf("fire-and-forget result = %#v, want nil", msg)
+	}
+	if !called {
+		t.Fatal("thread/read subscription was not called")
 	}
 }
 
 // TestCovFetchHubSessionRead exercises the session read command builder.
 func TestCovFetchHubSessionRead(t *testing.T) {
-	client, cleanup := newTestHubClient(t, nil)
+	var calls []appwire.ThreadReadParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+			calls = append(calls, params)
+			return appwire.ThreadReadResponse{Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: params.Ref}}}, nil
+		})
+	})
 	defer cleanup()
 	feed := newHubFrameFeed()
 	ref := appwire.Ref{SourceID: "local", ThreadID: "01TEST"}
-	cmd := fetchHubSessionRead(feed, client, ref, "", 0, true, true)
-	if cmd == nil {
-		t.Fatal("should produce a cmd")
+	msg, ok := fetchHubSessionRead(feed, client, ref, "", 0, true, true)().(hubSessionMsg)
+	if !ok || msg.err != nil || msg.ref != ref.String() || msg.capture == nil {
+		t.Fatalf("captured session read result = %#v", msg)
 	}
+	msg.capture.Release()
 
 	// Without feed (nil).
-	cmd = fetchHubSessionRead(nil, client, ref, "expected", 1, false, false)
-	if cmd == nil {
-		t.Fatal("should produce a cmd even with nil feed")
+	msg, ok = fetchHubSessionRead(nil, client, ref, "expected", 1, false, false)().(hubSessionMsg)
+	if !ok || msg.err != nil || msg.expectedState != "expected" || msg.expectedRefreshToken != 1 || msg.capture != nil {
+		t.Fatalf("uncaptured session read result = %#v", msg)
+	}
+	if len(calls) != 2 || !calls[0].Subscribe || !calls[0].ReplaceSubscription || calls[1].Subscribe || calls[1].ReplaceSubscription {
+		t.Fatalf("thread/read calls = %#v", calls)
 	}
 }
 
@@ -506,67 +622,107 @@ func TestCovTextInput(t *testing.T) {
 
 // TestCovSendHubClear exercises clear command builder.
 func TestCovSendHubClear(t *testing.T) {
-	client, cleanup := newTestHubClient(t, nil)
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadClear, func(_ context.Context, params appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
+			if params.Ref != "local:01TEST" {
+				t.Errorf("ref = %q", params.Ref)
+			}
+			return appwire.ThreadClearResponse{Ref: "local:01CLEARED"}, nil
+		})
+	})
 	defer cleanup()
 	ref := appwire.Ref{SourceID: "local", ThreadID: "01TEST"}
-	cmd := sendHubClear(client, ref)
-	if cmd == nil {
-		t.Fatal("should produce a cmd")
+	msg, ok := sendHubClear(client, ref)().(hubClearMsg)
+	if !ok || msg.err != nil || msg.resp.Ref != "local:01CLEARED" {
+		t.Fatalf("clear result = %#v", msg)
 	}
 }
 
 // TestCovSendHubFork exercises fork command builder.
 func TestCovSendHubFork(t *testing.T) {
-	client, cleanup := newTestHubClient(t, nil)
+	var got appwire.ThreadForkParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadFork, func(_ context.Context, params appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
+			got = params
+			return appwire.ThreadForkResponse{Thread: appwire.Thread{Evener: appwire.EvenerThread{Ref: "local:01FORK"}}}, nil
+		})
+	})
 	defer cleanup()
 	ref := appwire.Ref{SourceID: "local", ThreadID: "01TEST"}
-	cmd := sendHubFork(client, ref, hubForkRequest{EntryIndex: 1, EditedMessage: "edited", Label: "test"})
-	if cmd == nil {
-		t.Fatal("should produce a cmd")
+	msg, ok := sendHubFork(client, ref, hubForkRequest{EntryIndex: 7, EditedMessage: "edited", Label: "test"})().(hubForkMsg)
+	if !ok || msg.err != nil || msg.resp.Ref != "local:01FORK" || msg.aside {
+		t.Fatalf("fork result = %#v", msg)
+	}
+	if got.Ref != ref.String() || got.SourceTurnID != "7" || got.EditedInput != "edited" || got.Label != "test" {
+		t.Fatalf("thread/fork params = %#v", got)
 	}
 }
 
 // TestCovSendHubGoalCmd exercises goal command builder.
 func TestCovSendHubGoalCmd(t *testing.T) {
-	client, cleanup := newTestHubClient(t, nil)
+	var got []appwire.GoalSetParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodGoalSet, func(_ context.Context, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
+			got = append(got, params)
+			return appwire.GoalSetResponse{Started: params.Objective != ""}, nil
+		})
+	})
 	defer cleanup()
 	ref := appwire.Ref{SourceID: "local", ThreadID: "01TEST"}
-	cmd := sendHubGoal(client, ref, "build it")
-	if cmd == nil {
-		t.Fatal("should produce a cmd")
+	set, ok := sendHubGoal(client, ref, "build it")().(hubGoalMsg)
+	if !ok || set.err != nil || set.cleared || !set.started {
+		t.Fatalf("set result = %#v", set)
 	}
 
 	// Empty objective: cleared=true.
-	cmd = sendHubGoal(client, ref, "")
-	if cmd == nil {
-		t.Fatal("should produce a cmd for clear")
+	clear, ok := sendHubGoal(client, ref, "")().(hubGoalMsg)
+	if !ok || clear.err != nil || !clear.cleared || clear.started {
+		t.Fatalf("clear result = %#v", clear)
+	}
+	if len(got) != 2 || got[0].Ref != ref.String() || got[0].Objective != "build it" || got[1].Objective != "" {
+		t.Fatalf("goal/set params = %#v", got)
 	}
 }
 
 // TestCovSendHubEffortAction exercises effort command builder.
 func TestCovSendHubEffortAction(t *testing.T) {
-	client, cleanup := newTestHubClient(t, nil)
+	var got appwire.ThreadReasoningEffortSetParams
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodThreadReasoningEffortSet, func(_ context.Context, params appwire.ThreadReasoningEffortSetParams) (appwire.EmptyResponse, error) {
+			got = params
+			return appwire.EmptyResponse{}, nil
+		})
+	})
 	defer cleanup()
 	ref := appwire.Ref{SourceID: "local", ThreadID: "01TEST"}
-	cmd := sendHubEffortAction(client, ref, "high")
-	if cmd == nil {
-		t.Fatal("should produce a cmd")
+	msg, ok := sendHubEffortAction(client, ref, "high")().(hubActionMsg)
+	if !ok || msg.err != nil || msg.action != "effort" || got.Ref != ref.String() || got.ReasoningEffort != "high" {
+		t.Fatalf("effort result = %#v, params = %#v", msg, got)
 	}
 }
 
 // TestCovSendHubUpgrade exercises upgrade command builder.
 func TestCovSendHubUpgrade(t *testing.T) {
-	client, cleanup := newTestHubClient(t, nil)
+	var requested []string
+	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerUpgrade, func(_ context.Context, params appwire.UpgradeParams) (appwire.UpgradeResponse, error) {
+			requested = append(requested, params.Requested)
+			return appwire.UpgradeResponse{Channel: params.Requested}, nil
+		})
+	})
 	defer cleanup()
-	cmd := sendHubUpgrade(client, "stable")
-	if cmd == nil {
-		t.Fatal("should produce a cmd")
+	msg, ok := sendHubUpgrade(client, "stable")().(hubUpgradeMsg)
+	if !ok || msg.err != nil || msg.resp.Channel != "stable" {
+		t.Fatalf("upgrade result = %#v", msg)
 	}
 
 	// With whitespace.
-	cmd = sendHubUpgrade(client, "  stable  ")
-	if cmd == nil {
-		t.Fatal("should produce a cmd")
+	msg, ok = sendHubUpgrade(client, "  snapshot  ")().(hubUpgradeMsg)
+	if !ok || msg.err != nil || msg.resp.Channel != "snapshot" {
+		t.Fatalf("trimmed upgrade result = %#v", msg)
+	}
+	if len(requested) != 2 || requested[0] != "stable" || requested[1] != "snapshot" {
+		t.Fatalf("upgrade requests = %#v", requested)
 	}
 }
 
@@ -582,7 +738,3 @@ func containsStr(s, substr string) bool {
 	}
 	return false
 }
-
-// ensure imports are used
-var _ = errors.New
-var _ tea.Msg = hubTreeMsg{}
