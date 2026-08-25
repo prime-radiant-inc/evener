@@ -235,17 +235,16 @@ async fn run_connection(
     mut control: mpsc::UnboundedReceiver<ConnectionControl>,
 ) {
     #[allow(clippy::result_large_err)]
-    let accepted = tokio_tungstenite::accept_hdr_async(
-        stream,
-        |_request: &Request, mut response: Response| {
-            response.headers_mut().insert(
-                "Sec-WebSocket-Protocol",
-                "evener-appwire-v3".parse().unwrap(),
-            );
+    let accepted =
+        tokio_tungstenite::accept_hdr_async(stream, |request: &Request, mut response: Response| {
+            if let Some(protocol) = request.headers().get("Sec-WebSocket-Protocol") {
+                response
+                    .headers_mut()
+                    .insert("Sec-WebSocket-Protocol", protocol.clone());
+            }
             Ok(response)
-        },
-    )
-    .await;
+        })
+        .await;
     let Ok(mut socket) = accepted else {
         connection_finished(connection_id, &observations, &active_control);
         return;
