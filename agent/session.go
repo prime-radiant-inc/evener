@@ -181,7 +181,8 @@ type Session struct {
 	//   flag and kickFunc callback, the naming name-state, envTracker,
 	//   envContextState, currentRoundRecorder, salvagedTurnRound, and the worktree
 	//   occupancy fields (worktreeRestoreEnv, worktreeCurrentPath,
-	//   worktreeCurrentManaged, worktreeGitVersionOK, worktreeLiveWorkStub). It
+	//   worktreeCurrentManaged, worktreeGitVersionOK, worktreeLiveWorkStub), and
+	//   detachedProcesses. It
 	//   does NOT guard reg — the tool.Registry self-synchronizes.
 	mu sync.Mutex
 
@@ -471,6 +472,12 @@ type Session struct {
 
 	jobManager *jobManager
 
+	// detachedProcesses contains processes this session explicitly launched with
+	// mode:"detached". They are not managed jobs (and must not hold the one-shot
+	// drain open), but they remain session-owned for end_turn warnings until the
+	// launcher's completion receipt closes. Guarded by mu.
+	detachedProcesses []sessionDetachedProcess
+
 	// context management
 	contextMgr *contextmgr.Manager
 	strategy   contextmgr.Strategy
@@ -676,6 +683,11 @@ type Session struct {
 	systemPromptOverride string
 	cachedSystemPrompt   string
 	promptSourceLog      []promptSource
+}
+
+type sessionDetachedProcess struct {
+	pid  int
+	done <-chan struct{}
 }
 
 type notificationRetry struct {
