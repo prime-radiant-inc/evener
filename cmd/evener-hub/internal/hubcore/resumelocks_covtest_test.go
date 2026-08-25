@@ -48,17 +48,39 @@ func TestCovNewResumeLocks(t *testing.T) {
 // TestCovResumeLocksConcurrent verifies For is safe under concurrent access.
 func TestCovResumeLocksConcurrent(t *testing.T) {
 	r := NewResumeLocks()
+	start := make(chan struct{})
+	results := make(chan *sync.Mutex, 20)
 	var wg sync.WaitGroup
 	for range 20 {
 		wg.Add(1)
 		wg.Go(func() {
 			defer wg.Done()
-			_ = r.For("shared")
+			<-start
+			results <- r.For("shared")
 		})
 	}
+	close(start)
 	wg.Wait()
-	if r.For("shared") == nil {
-		t.Fatal("For(shared) returned nil after concurrent access")
+	close(results)
+
+	var want *sync.Mutex
+	count := 0
+	for got := range results {
+		if got == nil {
+			t.Fatal("For(shared) returned nil during concurrent access")
+		}
+		if want == nil {
+			want = got
+		} else if got != want {
+			t.Fatalf("For(shared) returned distinct mutexes: %p and %p", want, got)
+		}
+		count++
+	}
+	if count != 20 {
+		t.Fatalf("concurrent results = %d, want 20", count)
+	}
+	if got := r.For("shared"); got != want {
+		t.Fatalf("subsequent For(shared) = %p, want %p", got, want)
 	}
 }
 
