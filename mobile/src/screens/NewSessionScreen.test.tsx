@@ -193,6 +193,7 @@ describe("NewSessionScreen — start success", () => {
     service.thread = makeThread({
       id: "thread-xyz",
       preview: "My new session",
+      evener: { ...makeThread().evener, ref: "local:thread-xyz" },
     });
     const navigation = createFakeNavigationStore();
     renderNewSession({ service, navigation });
@@ -203,7 +204,7 @@ describe("NewSessionScreen — start success", () => {
 
     await waitFor(() => expect(service.startCalls).toBe(1));
     expect(navigation.getState().pushConversation).toHaveBeenCalledWith({
-      sessionId: "thread-xyz",
+      sessionId: "local:thread-xyz",
       title: "My new session",
     });
   });
@@ -213,6 +214,7 @@ describe("NewSessionScreen — start success", () => {
     service.thread = makeThread({
       id: "thread-abc",
       preview: "preview text only",
+      evener: { ...makeThread().evener, ref: "local:thread-abc" },
     });
     const navigation = createFakeNavigationStore();
     renderNewSession({ service, navigation });
@@ -223,7 +225,7 @@ describe("NewSessionScreen — start success", () => {
 
     await waitFor(() => expect(service.startCalls).toBe(1));
     expect(navigation.getState().pushConversation).toHaveBeenCalledWith({
-      sessionId: "thread-abc",
+      sessionId: "local:thread-abc",
       title: "preview text only",
     });
   });
