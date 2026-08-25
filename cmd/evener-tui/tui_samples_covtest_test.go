@@ -3,6 +3,8 @@ package tui
 import (
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
 )
 
 // Every named sample has an independent required/forbidden signature. The
@@ -10,6 +12,7 @@ import (
 // signature before inequality is considered.
 func TestCovSampleRenderFromRealWidget_SemanticFixtures(t *testing.T) {
 	withTestColorProfile(t)
+	tuitheme.SetTheme("dark")
 	tests := []struct {
 		name      string
 		width     int
@@ -20,10 +23,10 @@ func TestCovSampleRenderFromRealWidget_SemanticFixtures(t *testing.T) {
 		{"dashboard-normal", 80, []string{"EVENER LIVE", "dashboard  q quit"}, []string{"\nq quit", "details"}},
 		{"dashboard-wide", 200, []string{"EVENER LIVE", "details", "Action:   enter launches"}, []string{"\nq quit"}},
 		{"session-idle", 80, []string{"draft stays visible", "enter send"}, []string{"all task steps completed", "FORK DRAFT"}},
-		{"session-streaming", 80, []string{"\n┃ > What agent harness", "all task steps completed"}, []string{"esc/i/q: compose", "▶ ┃ >"}},
+		{"session-streaming", 80, []string{"\n┃  > What agent harness", "all task steps completed"}, []string{"esc/i/q: compose", "▶ ┃  >"}},
 		{"session-busy-steer", 80, []string{"Please also check old TUI command parity", "ctrl+s steer"}, []string{"read-only:", "draft kept"}},
 		{"session-busy-readonly", 80, []string{"draft kept", "read-only:"}, []string{"ctrl+s steer", "Please also check"}},
-		{"session-browse", 80, []string{"▶ ┃ > What agent harness", "esc/i/q: compose"}, []string{"\n┃ > What agent harness", "draft stays visible"}},
+		{"session-browse", 80, []string{"▶ ┃  > What agent harness", "esc/i/q: compose"}, []string{"\n┃  > What agent harness", "draft stays visible"}},
 		{"session-fork", 80, []string{"edited prompt", "FORK DRAFT"}, []string{"draft stays visible", "ctrl+s steer"}},
 		{"ask-card-pending", 80, []string{"Which datastore for the ingest path?", "● IDLE"}, []string{"● YOUR MOVE", "Ready to deploy"}},
 		{"ask-chip-waiting", 80, []string{"question waiting", "● YOUR MOVE"}, []string{"● IDLE", "review answers"}},
