@@ -66,6 +66,71 @@ var predicateRepoTemplate struct {
 	err  error
 }
 
+type predicateGitRunner func(string, ...string) (string, error)
+
+type predicateMaintenanceProbe struct {
+	ready                chan struct{}
+	release              chan struct{}
+	exited               chan struct{}
+	publishedWhileActive bool
+	mutatorErr           error
+}
+
+func newPredicateMaintenanceProbe() *predicateMaintenanceProbe {
+	return &predicateMaintenanceProbe{
+		ready:   make(chan struct{}),
+		release: make(chan struct{}),
+		exited:  make(chan struct{}),
+	}
+}
+
+func (p *predicateMaintenanceProbe) run(real predicateGitRunner) predicateGitRunner {
+	return func(dir string, args ...string) (string, error) {
+		out, err := real(dir, args...)
+		if err != nil {
+			return out, err
+		}
+		if slicesContain(args, "commit") && !slicesContain(args, "maintenance.auto=false") {
+			go func() {
+				lock := filepath.Join(dir, ".git", "objects", "maintenance.lock")
+				p.mutatorErr = os.WriteFile(lock, []byte("maintenance\n"), 0o644)
+				close(p.ready)
+				if p.mutatorErr != nil {
+					close(p.exited)
+					return
+				}
+				<-p.release
+				p.mutatorErr = os.Remove(lock)
+				close(p.exited)
+			}()
+			<-p.ready
+		}
+		return out, nil
+	}
+}
+
+func (p *predicateMaintenanceProbe) published() {
+	select {
+	case <-p.ready:
+		select {
+		case <-p.exited:
+		default:
+			p.publishedWhileActive = true
+		}
+		close(p.release)
+	default:
+	}
+}
+
+func slicesContain(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
 func TestMain(m *testing.M) {
 	code := m.Run()
 	if predicateRepoTemplate.root != "" {
@@ -79,7 +144,7 @@ func TestMain(m *testing.M) {
 func initRepo(t *testing.T) (root, initialSHA string) {
 	t.Helper()
 	predicateRepoTemplate.Do(func() {
-		predicateRepoTemplate.root, predicateRepoTemplate.sha, predicateRepoTemplate.err = buildPredicateRepoTemplate()
+		predicateRepoTemplate.root, predicateRepoTemplate.sha, predicateRepoTemplate.err = buildPredicateRepoTemplate(runGitRaw)
 	})
 	if predicateRepoTemplate.err != nil {
 		t.Fatalf("build repo template: %v", predicateRepoTemplate.err)
@@ -92,7 +157,7 @@ func initRepo(t *testing.T) (root, initialSHA string) {
 	return root, predicateRepoTemplate.sha
 }
 
-func buildPredicateRepoTemplate() (root, initialSHA string, err error) {
+func buildPredicateRepoTemplate(run predicateGitRunner) (root, initialSHA string, err error) {
 	base, err := os.MkdirTemp("", "evener-worktree-predicate-template-*")
 	if err != nil {
 		return "", "", err
@@ -101,29 +166,56 @@ func buildPredicateRepoTemplate() (root, initialSHA string, err error) {
 	if err := os.MkdirAll(root, 0o755); err != nil {
 		return "", "", err
 	}
-	if _, err := runGitRaw(root, "init", "-q", "-b", "main"); err != nil {
+	if _, err := run(root, "init", "-q", "-b", "main"); err != nil {
 		return "", "", err
 	}
-	if _, err := runGitRaw(root, "config", "user.email", "test@example.com"); err != nil {
+	if _, err := run(root, "config", "user.email", "test@example.com"); err != nil {
 		return "", "", err
 	}
-	if _, err := runGitRaw(root, "config", "user.name", "Test"); err != nil {
+	if _, err := run(root, "config", "user.name", "Test"); err != nil {
 		return "", "", err
 	}
 	if err := os.WriteFile(filepath.Join(root, "f.txt"), []byte("hi\n"), 0o644); err != nil {
 		return "", "", err
 	}
-	if _, err := runGitRaw(root, "add", "f.txt"); err != nil {
+	if _, err := run(root, "add", "f.txt"); err != nil {
 		return "", "", err
 	}
-	if _, err := runGitRaw(root, "commit", "-q", "-m", "init"); err != nil {
+	if _, err := run(root, "-c", "maintenance.auto=false", "commit", "-q", "-m", "init"); err != nil {
 		return "", "", err
 	}
-	out, err := runGitRaw(root, "rev-parse", "HEAD")
+	out, err := run(root, "rev-parse", "HEAD")
 	if err != nil {
 		return "", "", err
 	}
 	return root, strings.TrimSpace(out), nil
+}
+
+func TestPredicateFixturePublishesAfterSeedMaintenance(t *testing.T) {
+	probe := newPredicateMaintenanceProbe()
+	root, _, err := buildPredicateRepoTemplate(probe.run(runGitRaw))
+	if err != nil {
+		t.Fatalf("build repo template: %v", err)
+	}
+	defer os.RemoveAll(filepath.Dir(root))
+
+	destination := filepath.Join(t.TempDir(), "repo")
+	if err := os.CopyFS(destination, os.DirFS(root)); err != nil {
+		t.Fatalf("copy repo template: %v", err)
+	}
+	probe.published()
+
+	select {
+	case <-probe.ready:
+		<-probe.exited
+	default:
+	}
+	if probe.mutatorErr != nil {
+		t.Fatalf("maintenance mutator: %v", probe.mutatorErr)
+	}
+	if probe.publishedWhileActive {
+		t.Fatal("fixture publication overlapped the post-commit maintenance mutator")
+	}
 }
 
 // addWorktree adds a worktree at <root>/<name> on a new branch <name>

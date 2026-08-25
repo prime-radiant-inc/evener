@@ -55,6 +55,71 @@ var (
 	intgMCPServerDir       string
 )
 
+type worktreeGitRunner func(string, ...string) (string, error)
+
+type worktreeMaintenanceProbe struct {
+	ready                chan struct{}
+	release              chan struct{}
+	exited               chan struct{}
+	publishedWhileActive bool
+	mutatorErr           error
+}
+
+func newWorktreeMaintenanceProbe() *worktreeMaintenanceProbe {
+	return &worktreeMaintenanceProbe{
+		ready:   make(chan struct{}),
+		release: make(chan struct{}),
+		exited:  make(chan struct{}),
+	}
+}
+
+func (p *worktreeMaintenanceProbe) run(real worktreeGitRunner) worktreeGitRunner {
+	return func(dir string, args ...string) (string, error) {
+		out, err := real(dir, args...)
+		if err != nil {
+			return out, err
+		}
+		if worktreeSlicesContain(args, "commit") && !worktreeSlicesContain(args, "maintenance.auto=false") {
+			go func() {
+				lock := filepath.Join(dir, ".git", "objects", "maintenance.lock")
+				p.mutatorErr = os.WriteFile(lock, []byte("maintenance\n"), 0o644)
+				close(p.ready)
+				if p.mutatorErr != nil {
+					close(p.exited)
+					return
+				}
+				<-p.release
+				p.mutatorErr = os.Remove(lock)
+				close(p.exited)
+			}()
+			<-p.ready
+		}
+		return out, nil
+	}
+}
+
+func worktreeSlicesContain(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
+			return true
+		}
+	}
+	return false
+}
+
+func (p *worktreeMaintenanceProbe) published() {
+	select {
+	case <-p.ready:
+		select {
+		case <-p.exited:
+		default:
+			p.publishedWhileActive = true
+		}
+		close(p.release)
+	default:
+	}
+}
+
 func TestMain(m *testing.M) {
 	for _, key := range []string{"GOCACHE", "GOPATH", "GOMODCACHE"} {
 		if out, err := exec.Command("go", "env", key).Output(); err == nil {
@@ -176,43 +241,7 @@ func wtGit(t *testing.T, dir string, args ...string) string {
 func worktreeBaseRepo(t *testing.T) (string, string) {
 	t.Helper()
 	wtBaseRepoOnce.Do(func() {
-		dir, err := os.MkdirTemp("", "evener-worktree-base-*")
-		if err != nil {
-			errWtBaseRepo = err
-			return
-		}
-		wtBaseRepoPath = dir
-
-		if _, err := runWorktreeGit(dir, "init", "-b", "main"); err != nil {
-			errWtBaseRepo = fmt.Errorf("git init: %w", err)
-			return
-		}
-		if _, err := runWorktreeGit(dir, "config", "user.email", "test@example.com"); err != nil {
-			errWtBaseRepo = fmt.Errorf("git config user.email: %w", err)
-			return
-		}
-		if _, err := runWorktreeGit(dir, "config", "user.name", "Test"); err != nil {
-			errWtBaseRepo = fmt.Errorf("git config user.name: %w", err)
-			return
-		}
-		if err := os.WriteFile(filepath.Join(dir, "README"), []byte("main-checkout\n"), 0o644); err != nil {
-			errWtBaseRepo = fmt.Errorf("write README: %w", err)
-			return
-		}
-		if _, err := runWorktreeGit(dir, "add", "README"); err != nil {
-			errWtBaseRepo = fmt.Errorf("git add README: %w", err)
-			return
-		}
-		if _, err := runWorktreeGit(dir, "commit", "-m", "initial"); err != nil {
-			errWtBaseRepo = fmt.Errorf("git commit: %w", err)
-			return
-		}
-		head, err := runWorktreeGit(dir, "rev-parse", "HEAD")
-		if err != nil {
-			errWtBaseRepo = fmt.Errorf("git rev-parse HEAD: %w", err)
-			return
-		}
-		wtBaseRepoHead = strings.TrimSpace(head)
+		wtBaseRepoPath, wtBaseRepoHead, errWtBaseRepo = buildWorktreeBaseRepo(runWorktreeGit)
 	})
 	if errWtBaseRepo != nil {
 		t.Fatalf("worktree base repo: %v", errWtBaseRepo)
@@ -220,9 +249,44 @@ func worktreeBaseRepo(t *testing.T) (string, string) {
 	return wtBaseRepoPath, wtBaseRepoHead
 }
 
+func buildWorktreeBaseRepo(run worktreeGitRunner) (path, head string, err error) {
+	dir, err := os.MkdirTemp("", "evener-worktree-base-*")
+	if err != nil {
+		return "", "", err
+	}
+	if _, err := run(dir, "init", "-b", "main"); err != nil {
+		return dir, "", fmt.Errorf("git init: %w", err)
+	}
+	if _, err := run(dir, "config", "user.email", "test@example.com"); err != nil {
+		return dir, "", fmt.Errorf("git config user.email: %w", err)
+	}
+	if _, err := run(dir, "config", "user.name", "Test"); err != nil {
+		return dir, "", fmt.Errorf("git config user.name: %w", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "README"), []byte("main-checkout\n"), 0o644); err != nil {
+		return dir, "", fmt.Errorf("write README: %w", err)
+	}
+	if _, err := run(dir, "add", "README"); err != nil {
+		return dir, "", fmt.Errorf("git add README: %w", err)
+	}
+	if _, err := run(dir, "-c", "maintenance.auto=false", "commit", "-m", "initial"); err != nil {
+		return dir, "", fmt.Errorf("git commit: %w", err)
+	}
+	head, err = run(dir, "rev-parse", "HEAD")
+	if err != nil {
+		return dir, "", fmt.Errorf("git rev-parse HEAD: %w", err)
+	}
+	return dir, strings.TrimSpace(head), nil
+}
+
 func copyWorktreeBaseRepo(t *testing.T, dst string) {
 	t.Helper()
 	base, _ := worktreeBaseRepo(t)
+	copyWorktreeBaseRepoFrom(t, base, dst)
+}
+
+func copyWorktreeBaseRepoFrom(t *testing.T, base, dst string) {
+	t.Helper()
 	for _, rel := range []string{
 		"README",
 		filepath.Join(".git", "HEAD"),
@@ -247,6 +311,31 @@ func copyWorktreeBaseRepo(t *testing.T, dst string) {
 		return linkWorktreeFixtureRelFileNoTest(base, dst, rel)
 	}); err != nil {
 		t.Fatalf("copy worktree base repo objects: %v", err)
+	}
+}
+
+func TestWorktreeFixturePublishesAfterSeedMaintenance(t *testing.T) {
+	probe := newWorktreeMaintenanceProbe()
+	base, _, err := buildWorktreeBaseRepo(probe.run(runWorktreeGit))
+	if err != nil {
+		t.Fatalf("build worktree base repo: %v", err)
+	}
+	defer os.RemoveAll(base)
+
+	destination := filepath.Join(t.TempDir(), "repo")
+	copyWorktreeBaseRepoFrom(t, base, destination)
+	probe.published()
+
+	select {
+	case <-probe.ready:
+		<-probe.exited
+	default:
+	}
+	if probe.mutatorErr != nil {
+		t.Fatalf("maintenance mutator: %v", probe.mutatorErr)
+	}
+	if probe.publishedWhileActive {
+		t.Fatal("fixture publication overlapped the post-commit maintenance mutator")
 	}
 }
 
