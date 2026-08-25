@@ -795,11 +795,32 @@ func TestRelaySessionStaleEpochNotificationCannotPublish(t *testing.T) {
 	result := <-read
 	result.result.Handoff.Commit()
 
+	session := relaySessionFor(t, source)
 	lease.session.mu.Lock()
 	staleEpoch := lease.session.connection.epoch
 	lease.session.mu.Unlock()
+	// Hold the publisher after it has accepted a live notification. This is an
+	// event barrier, not a timing assumption: the stale notification is queued
+	// behind the blocked job and the epoch is revoked before the publisher can
+	// dequeue it.
+	observeRelayFrame(t, session, relayDelta("thread-1", "barrier"))
+	barrier := <-deliveries
+	if got := decodeRelayDelta(t, barrier.Notification); got != "barrier" {
+		t.Fatalf("barrier delivery = %q, want barrier", got)
+	}
+	session.observe(staleEpoch, appwire.Message{Notification: new(relayDelta("thread-1", "stale"))}, nil)
 	lease.session.disconnect(staleEpoch)
-	lease.session.observe(staleEpoch, appwire.Message{Notification: new(relayDelta("thread-1", "stale"))}, nil)
+	recoveryCall := <-daemon.reads
+	recoveryCall.transport.recv <- appwire.ResponseMessage(
+		recoveryCall.request.ID,
+		relaySnapshot("thread-1", "recovered"),
+	)
+	barrier.Acknowledge()
+	resync := <-deliveries
+	if resync.Notification.Method != appwire.NotifyEvenerThreadResync {
+		t.Fatalf("recovery delivery = %+v, want resync", resync.Notification)
+	}
+	resync.Acknowledge()
 	select {
 	case delivery := <-deliveries:
 		t.Fatalf("stale epoch published %+v", delivery.Notification)
