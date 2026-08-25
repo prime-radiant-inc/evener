@@ -8,6 +8,33 @@ import (
 	"time"
 )
 
+type controlledKeepaliveTicker struct {
+	c       chan time.Time
+	stopped chan struct{}
+}
+
+func newControlledKeepaliveTicker() *controlledKeepaliveTicker {
+	return &controlledKeepaliveTicker{c: make(chan time.Time), stopped: make(chan struct{})}
+}
+
+func (t *controlledKeepaliveTicker) Chan() <-chan time.Time { return t.c }
+
+func (t *controlledKeepaliveTicker) Stop() {
+	select {
+	case <-t.stopped:
+	default:
+		close(t.stopped)
+	}
+}
+
+func (t *controlledKeepaliveTicker) Tick() {
+	select {
+	case t.c <- time.Time{}:
+	case <-t.stopped:
+		panic("controlled keepalive ticker stopped")
+	}
+}
+
 type scriptedPinger struct {
 	calls    atomic.Int64
 	failFrom int64 // ping number (1-based) at and after which Ping returns an error
@@ -139,22 +166,53 @@ func TestWebSocketKeepaliveSkipsPingsWhileReaderIsUnavailable(t *testing.T) {
 	gate := newWebSocketReadGate()
 	gate.readerUnavailable()
 	pinger := &scriptedPinger{started: make(chan int64, 1)}
+	ticker := newControlledKeepaliveTicker()
+	decision := make(chan bool, 2)
+	done := make(chan struct{})
 
-	go runWebSocketKeepalive(ctx, pinger, func() {}, gate, time.Millisecond, time.Second)
+	go func() {
+		defer close(done)
+		runWebSocketKeepaliveWithTicker(ctx, pinger, func() {}, gate, time.Second, ticker, func(ok bool) {
+			decision <- ok
+		})
+	}()
+	ticker.Tick()
+	select {
+	case got := <-decision:
+		if got {
+			t.Fatal("keepalive attempted a ping while reader was unavailable")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("keepalive did not observe the controlled tick")
+	}
 	select {
 	case got := <-pinger.started:
 		t.Fatalf("ping %d started while reader was unavailable", got)
-	case <-time.After(20 * time.Millisecond):
+	default:
 	}
 
 	gate.readerAvailable()
+	ticker.Tick()
 	select {
-	case got := <-pinger.started:
-		if got != 1 {
-			t.Fatalf("resumed ping = %d, want 1", got)
+	case got := <-decision:
+		if !got {
+			t.Fatal("keepalive did not observe reader availability")
 		}
-		stop()
+		select {
+		case ping := <-pinger.started:
+			if ping != 1 {
+				t.Fatalf("resumed ping = %d, want 1", ping)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("ping did not resume after reader became available")
+		}
 	case <-time.After(time.Second):
-		t.Fatal("ping did not resume after reader became available")
+		t.Fatal("keepalive did not observe reader availability")
+	}
+	stop()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("keepalive did not stop after cleanup")
 	}
 }
