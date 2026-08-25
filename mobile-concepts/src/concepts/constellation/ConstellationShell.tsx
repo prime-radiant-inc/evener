@@ -1,4 +1,4 @@
-import type { ReactNode } from "react";
+import type { CSSProperties, ReactNode } from "react";
 import type { PlatformPrimitives } from "../../core/platform";
 import type { PrototypeAction, PrototypeState } from "../../core/state";
 import { Icon, type IconName } from "../shared/Icon";
@@ -27,6 +27,26 @@ export interface ConstellationShellProps {
   children: ReactNode;
 }
 
+type ConstellationEdgeStyles = CSSProperties & {
+  "--co-edge-top": string;
+  "--co-edge-right": string;
+  "--co-edge-bottom": string;
+  "--co-edge-left": string;
+};
+
+function edgeStyles(primitives: PlatformPrimitives): ConstellationEdgeStyles {
+  const source = (edge: "top" | "right" | "bottom" | "left") =>
+    primitives.safeArea === "ios-environment"
+      ? `env(safe-area-inset-${edge}, 0px)`
+      : `var(--safe-area-${edge}, 0px)`;
+  return {
+    "--co-edge-top": source("top"),
+    "--co-edge-right": source("right"),
+    "--co-edge-bottom": source("bottom"),
+    "--co-edge-left": source("left"),
+  };
+}
+
 export function ConstellationShell({
   state,
   primitives,
@@ -40,6 +60,11 @@ export function ConstellationShell({
   children,
 }: ConstellationShellProps) {
   const activeTab = state.route.kind === "root" ? state.route.tab : null;
+  const iconTarget = `${primitives.minimumTarget}px`;
+  const topPadding =
+    primitives.title === "large-or-inline"
+      ? "max(0.85rem, var(--co-edge-top))"
+      : "max(0.75rem, var(--co-edge-top))";
   return (
     <div
       className="concept-constellation"
@@ -63,15 +88,30 @@ export function ConstellationShell({
           ? "reduced"
           : "full"
       }
+      style={edgeStyles(primitives)}
     >
       <main className="co-scroll" data-route={routeName}>
-        <header className="co-topbar">
+        <header
+          className="co-topbar"
+          style={{
+            paddingTop: topPadding,
+            paddingRight: "max(1rem, var(--co-edge-right))",
+            paddingLeft: "max(1rem, var(--co-edge-left))",
+          }}
+        >
           <div className="co-topbar__leading">
             {pushed ? (
               <button
                 className="co-icon-action"
                 type="button"
                 aria-label={pushed === "close" ? "Close" : "Back"}
+                data-icon-target={iconTarget}
+                style={{
+                  width: iconTarget,
+                  minWidth: iconTarget,
+                  height: iconTarget,
+                  minHeight: iconTarget,
+                }}
                 onClick={() => dispatch({ type: "goBack" })}
               >
                 <Icon name={pushed === "close" ? "close" : "back"} decorative />
@@ -94,11 +134,27 @@ export function ConstellationShell({
             </button>
           </div>
         </header>
-        <div className="co-route-content">{children}</div>
+        <div
+          className="co-route-content"
+          style={{
+            paddingRight: "max(1rem, var(--co-edge-right))",
+            paddingLeft: "max(1rem, var(--co-edge-left))",
+          }}
+        >
+          {children}
+        </div>
       </main>
 
       {activeTab ? (
-        <nav className="co-root-nav" aria-label="Primary">
+        <nav
+          className="co-root-nav"
+          aria-label="Primary"
+          style={{
+            paddingRight: "max(0.55rem, var(--co-edge-right))",
+            paddingBottom: "max(0.35rem, var(--co-edge-bottom))",
+            paddingLeft: "max(0.55rem, var(--co-edge-left))",
+          }}
+        >
           {rootNavigation.map((item) => (
             <button
               type="button"

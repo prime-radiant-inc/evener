@@ -288,12 +288,10 @@ describe("Constellation living-system composition", () => {
     });
   });
 
-  it("uses one scroll owner, viewport/safe/keyboard vars, wrapping text, and no remote assets", () => {
+  it("uses one scroll owner, viewport/keyboard vars, wrapping text, and no remote assets", () => {
     expect(constellationCss).toContain(
       "height: var(--visual-viewport-height, 100dvh)",
     );
-    expect(constellationCss).toContain("var(--safe-area-left)");
-    expect(constellationCss).toContain("var(--safe-area-right)");
     expect(constellationCss).toContain("var(--keyboard-inset-height");
     expect(constellationCss).toContain("var(--keyboard-inset, 0px)");
     expect(constellationCss).toContain("overflow-wrap: anywhere");
