@@ -754,8 +754,8 @@ var (
 		return execCommandContext(ctx, name, args...).Output()
 	}
 	shellStat              = os.Stat
-	grepReadFile           = os.ReadFile
-	grepWalk               = filepath.WalkDir
+	grepReadFile           = fs.ReadFile
+	grepWalk               = fs.WalkDir
 	listReadDir            = os.ReadDir
 	streamBeforeSignalOnce = func(func()) {}
 	streamAfterTimer       = func(func()) {}
@@ -1418,7 +1418,7 @@ func buildRipgrepArgsWithFilters(outputMode string, caseInsensitive bool, globFi
 // Grep searches path for pattern, honoring the glob filter, case
 // sensitivity, result cap, output mode, and context window the caller asked
 // for.
-func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
+func (e *LocalExecutionEnvironment) Grep(ctx context.Context, pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
 	globFilters, err := expandGrepFilter(globFilter)
 	if err != nil {
 		return "", err
@@ -1437,18 +1437,17 @@ func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter
 		// read-only). Its kernel wrapping is M3 defense-in-depth, not something to
 		// rely on here: correctness over speed for a sandboxed session. grepNative
 		// policy-checks the base itself and skips masked subtrees.
-		return sfs.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines)
+		return sfs.grepNative(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines)
 	}
 
 	rg, err := e.findExecutable("rg")
 	if err != nil {
 		// Fallback to native Go regex search when ripgrep is absent
-		return e.grepNative(pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines)
+		return e.grepNative(ctx, pattern, dir, globFilter, caseInsensitive, maxResults, outputMode, ctxLines)
 	}
 
 	args := buildRipgrepArgsWithFilters(outputMode, caseInsensitive, globFilters, pattern, dir, ctxLines)
 
-	ctx := context.Background()
 	if maxResults <= 0 {
 		maxResults = 100
 	}
@@ -1468,7 +1467,7 @@ func (e *LocalExecutionEnvironment) Grep(pattern string, path string, globFilter
 	return res.Stdout + res.Stderr, err
 }
 
-func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
+func (e *LocalExecutionEnvironment) grepNative(ctx context.Context, pattern, path, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error) {
 	globFilters, err := expandGrepFilter(globFilter)
 	if err != nil {
 		return "", err
@@ -1481,18 +1480,59 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 	if err != nil {
 		return "", err
 	}
+	path = filepath.Clean(path)
+	// Walk a directory from its own fs.FS root so returned paths remain relative
+	// to the requested directory. An explicitly named file is rooted at its
+	// parent instead; fs.WalkDir needs the basename in that case, while grep's
+	// output contract still treats the file as ".".
+	walkRoot := "."
+	singleFile := false
+	if info, statErr := os.Lstat(path); statErr == nil {
+		if info.Mode()&os.ModeSymlink != 0 {
+			// fs.WalkDir follows a symlink when it is the walk root. Keep the
+			// recursive no-directory-symlink-follow contract by classifying the
+			// target before constructing the DirFS. A symlink to a regular file
+			// remains an explicitly named file and is read through as before.
+			target, targetErr := os.Stat(path)
+			targetRegular := targetErr == nil && target.Mode().IsRegular()
+			if !targetRegular {
+				return "", nil
+			}
+		}
+		if !info.IsDir() {
+			walkRoot = filepath.Base(path)
+			singleFile = true
+			path = filepath.Dir(path)
+		}
+	}
+	// fs.WalkDir does not descend through directory symlinks, matching the
+	// secureDirFS policy on the sandboxed arm while retaining file-symlink
+	// behavior for the unsandboxed fallback.
+	fsys := cancelFS{ctx: ctx, fsys: os.DirFS(path)}
 	// No masking concept off the sandboxed path: no-op skip.
-	ignores := loadIgnoreSet(os.DirFS(path), nil)
+	ignoreFS := fsys
+	if singleFile {
+		// Preserve the old single-file behavior: ignore rules are rooted at the
+		// file argument, which cannot contain a .gitignore tree of its own.
+		ignoreFS = cancelFS{ctx: ctx, fsys: os.DirFS(filepath.Join(path, walkRoot))}
+	}
+	ignores := loadIgnoreSet(ignoreFS, nil)
 	excludedByIgnore := 0
 
-	err = grepWalk(path, func(p string, d fs.DirEntry, err error) error {
+	err = grepWalk(fsys, walkRoot, func(p string, d fs.DirEntry, err error) error {
+		if cancelErr := ctx.Err(); cancelErr != nil {
+			return cancelErr
+		}
 		if err != nil {
 			return nil //nolint:nilerr // best-effort grep: skip unreadable entries and keep walking
 		}
-		relPath, _ := filepath.Rel(path, p)
+		relPath := filepath.FromSlash(p)
+		if singleFile {
+			relPath = "."
+		}
 		relSlash := filepath.ToSlash(relPath)
 		if d.IsDir() {
-			if p != path {
+			if p != "." {
 				if strings.HasPrefix(d.Name(), ".") {
 					return filepath.SkipDir
 				}
@@ -1520,8 +1560,11 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 				return nil
 			}
 		}
-		data, err := grepReadFile(p)
+		data, err := grepReadFile(fsys, p)
 		if err != nil {
+			if cancelErr := ctx.Err(); cancelErr != nil {
+				return cancelErr
+			}
 			return nil //nolint:nilerr // best-effort grep: skip unreadable files and keep walking
 		}
 		// Skip binary files
@@ -1534,6 +1577,9 @@ func (e *LocalExecutionEnvironment) grepNative(pattern, path, globFilter string,
 		return nil
 	})
 	if err != nil {
+		return "", err
+	}
+	if err := ctx.Err(); err != nil {
 		return "", err
 	}
 	result := a.finish()

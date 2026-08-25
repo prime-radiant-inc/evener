@@ -400,22 +400,22 @@ func runProcessRuntimeProgram(t *testing.T, program []byte) processRuntimeTrace 
 		}
 		return "/fixture/rg", nil
 	}
-	grep, err := env.Grep("x; touch never", "sub", "*.go", true, 2, "")
+	grep, err := env.Grep(context.Background(), "x; touch never", "sub", "*.go", true, 2, "")
 	if err != nil || grep != "one\ntwo" {
 		t.Fatalf("Grep ripgrep success = %q, %v", grep, err)
 	}
 	if request := factory.command("grep-success").request; !strings.Contains(request, "'x; touch never'") || !strings.Contains(request, "'*.go'") {
 		t.Fatalf("Grep did not shell-quote adversarial arguments: %q", request)
 	}
-	grep, err = env.Grep("nothing", "sub", "", false, 1, "")
+	grep, err = env.Grep(context.Background(), "nothing", "sub", "", false, 1, "")
 	if err != nil || grep != "" {
 		t.Fatalf("Grep no-match = %q, %v", grep, err)
 	}
-	grep, err = env.Grep("broken", "sub", "", false, 1, "")
+	grep, err = env.Grep(context.Background(), "broken", "sub", "", false, 1, "")
 	if err == nil || grep != "partialdiagnostic" {
 		t.Fatalf("Grep failure = %q, %v", grep, err)
 	}
-	grep, err = env.Grep("default-cap", "sub", "", false, 0, "")
+	grep, err = env.Grep(context.Background(), "default-cap", "sub", "", false, 0, "")
 	if err != nil || grep != "one\ntwo" {
 		t.Fatalf("Grep default cap = %q, %v", grep, err)
 	}
