@@ -135,6 +135,9 @@ func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any
 		wait = int(clampJobBlockTimeout(wait).Milliseconds())
 	}
 	if target == runtimeMessageAliasCaller {
+		if wait > 0 {
+			return nil, errors.New("invalid_request: max_wait_ms is not supported for the caller route; no message was delivered")
+		}
 		if s == nil || s.delegateController == nil {
 			return nil, errors.New("delegate controller is unavailable")
 		}

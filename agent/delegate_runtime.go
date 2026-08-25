@@ -788,18 +788,25 @@ func (runtime delegateRuntime) send(ctx context.Context, delegateID, message str
 	if err != nil {
 		return failed(err)
 	}
-	if plans, steerErr := s.delegateController.Steer(ctx, actor, delegateID, message); steerErr == nil {
-		_ = s.executeDelegateMutationPlans(plans)
-		return stableDelegateSendOutcome{result: sendMessageResult{
-			Target:              delegateID,
-			DelegateID:          delegateID,
-			Type:                delegateResourceType,
-			Status:              jobstore.StatusRunning,
-			RunningInBackground: true,
-			Action:              "steered",
-		}}
-	} else if !errors.Is(steerErr, errDelegateTargetBusy) {
-		return failed(steerErr)
+	if maxWaitMS > 0 {
+		if observe := s.cfg.testOnly.delegateSendBeforePositiveWaitAdmission; observe != nil {
+			observe()
+		}
+	}
+	if maxWaitMS == 0 {
+		if plans, steerErr := s.delegateController.Steer(ctx, actor, delegateID, message); steerErr == nil {
+			_ = s.executeDelegateMutationPlans(plans)
+			return stableDelegateSendOutcome{result: sendMessageResult{
+				Target:              delegateID,
+				DelegateID:          delegateID,
+				Type:                delegateResourceType,
+				Status:              jobstore.StatusRunning,
+				RunningInBackground: true,
+				Action:              "steered",
+			}}
+		} else if !errors.Is(steerErr, errDelegateTargetBusy) {
+			return failed(steerErr)
+		}
 	}
 	reservation, err := s.delegateController.ReserveStart(actor, delegateID)
 	if err != nil {
