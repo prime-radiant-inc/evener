@@ -663,11 +663,20 @@ func (s *Server) appProjectionThreadID() string {
 	return s.status.SessionID
 }
 
-// appAllTurns returns the whole installed snapshot for threadID, oldest-first.
-// It is the one authority: thread/read, the latest window, and older pages all
-// derive from this slice, so they cannot disagree with each other or with what
-// subscribers were sent.
+// appAllTurns returns a defensive copy of the whole installed snapshot for
+// threadID, oldest-first.
 func (s *Server) appAllTurns(threadID string) []appwire.Turn {
+	snapshot := s.appTurnSnapshotForID(threadID)
+	if snapshot == nil {
+		return nil
+	}
+	return snapshot.Snapshot()
+}
+
+// appTurnSnapshotForID selects the installed snapshot shared by full reads,
+// latest windows, and older pages. Callers use the snapshot's locking accessors
+// so the three views cannot disagree with each other or with subscriber state.
+func (s *Server) appTurnSnapshotForID(threadID string) *appTurnSnapshot {
 	s.mu.RLock()
 	snapshot := s.appTurns
 	installed := s.appThreadID == threadID && snapshot != nil && snapshot.threadID == threadID
@@ -681,7 +690,7 @@ func (s *Server) appAllTurns(threadID string) []appwire.Turn {
 	if !installed {
 		return nil
 	}
-	return snapshot.Snapshot()
+	return snapshot
 }
 
 func transcriptHeader(path string, maxLineBytes int) transcript.Header {
@@ -713,12 +722,20 @@ func transcriptHeader(path string, maxLineBytes int) transcript.Header {
 // and returns the cursor for the page before them. A limit of zero or less
 // returns the whole thread with no cursor.
 func (s *Server) appLatestTurns(threadID string, limit int) ([]appwire.Turn, string) {
-	return appwire.WindowTurns(s.appAllTurns(threadID), limit)
+	snapshot := s.appTurnSnapshotForID(threadID)
+	if snapshot == nil {
+		return nil, ""
+	}
+	return snapshot.Latest(limit)
 }
 
 // appPageTurns pages backward through the installed snapshot from cursor.
 func (s *Server) appPageTurns(threadID, cursor string, limit int) appwire.ThreadTurnsListResponse {
-	return appwire.PageTurns(s.appAllTurns(threadID), cursor, limit)
+	snapshot := s.appTurnSnapshotForID(threadID)
+	if snapshot == nil {
+		return appwire.ThreadTurnsListResponse{}
+	}
+	return snapshot.Page(cursor, limit)
 }
 
 // handleAppThreadTurnsList pages turns backward (older) for lazy transcript

@@ -344,10 +344,29 @@ func (s *appTurnSnapshot) Snapshot() []appwire.Turn {
 	return s.snapshotLocked()
 }
 
+func (s *appTurnSnapshot) Latest(limit int) ([]appwire.Turn, string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	turns, cursor := appwire.WindowTurns(s.turns, limit)
+	return cloneAppTurns(turns), cursor
+}
+
+func (s *appTurnSnapshot) Page(cursor string, limit int) appwire.ThreadTurnsListResponse {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	page := appwire.PageTurns(s.turns, cursor, limit)
+	page.Data = cloneAppTurns(page.Data)
+	return page
+}
+
 func (s *appTurnSnapshot) snapshotLocked() []appwire.Turn {
-	turns := make([]appwire.Turn, len(s.turns))
+	return cloneAppTurns(s.turns)
+}
+
+func cloneAppTurns(source []appwire.Turn) []appwire.Turn {
+	turns := make([]appwire.Turn, len(source))
 	for i := range turns {
-		turns[i] = cloneAppTurn(s.turns[i])
+		turns[i] = cloneAppTurn(source[i])
 	}
 	return turns
 }
