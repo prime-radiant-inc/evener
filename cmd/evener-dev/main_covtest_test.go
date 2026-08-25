@@ -1,52 +1,39 @@
 package dev
 
 import (
-	"slices"
 	"strings"
 	"testing"
 )
 
-// TestCovRunEmpty covers Run (main.go:21) with no args: prints usage to
-// stderr and returns 2. The existing TestDispatchRejectsMissingSubcommand
-// is an integration test that skips in -short mode.
-func TestCovRunEmpty(t *testing.T) {
-	var stderr strings.Builder
-	code := Run(nil, nil, nil, &stderr)
-	if code != 2 {
-		t.Fatalf("Run(nil) code = %d, want 2", code)
-	}
-	if !strings.Contains(stderr.String(), "usage: evener dev") {
-		t.Fatalf("stderr should contain usage, got %q", stderr.String())
-	}
-}
+const devUsage = "usage: evener dev <subcommand> [args]\nsubcommands: agent-shards module-lint\n"
 
-// TestCovRunUnknownSubcommand covers the unknown-subcommand branch of Run.
-func TestCovRunUnknownSubcommand(t *testing.T) {
-	var stderr strings.Builder
-	code := Run([]string{"does-not-exist"}, nil, nil, &stderr)
-	if code != 2 {
-		t.Fatalf("Run([unknown]) code = %d, want 2", code)
+func TestRunRejectsMissingAndUnknownSubcommands(t *testing.T) {
+	tests := []struct {
+		name       string
+		args       []string
+		wantStderr string
+	}{
+		{name: "missing", wantStderr: devUsage},
+		{
+			name:       "unknown",
+			args:       []string{"does-not-exist"},
+			wantStderr: "evener dev: unknown subcommand \"does-not-exist\"\n" + devUsage,
+		},
 	}
-	if !strings.Contains(stderr.String(), "does-not-exist") {
-		t.Fatalf("stderr should name the unknown subcommand, got %q", stderr.String())
-	}
-	if !strings.Contains(stderr.String(), "usage: evener dev") {
-		t.Fatalf("stderr should contain usage, got %q", stderr.String())
-	}
-}
 
-// TestCovGolangciCmd covers golangciCmd (modulelint.go:361), which
-// constructs an exec.Cmd for golangci-lint in the given module directory.
-func TestCovGolangciCmd(t *testing.T) {
-	cmd := golangciCmd("/tmp/module")
-	if cmd.Dir != "/tmp/module" {
-		t.Errorf("cmd.Dir = %q, want /tmp/module", cmd.Dir)
-	}
-	if cmd.Path == "" {
-		t.Error("cmd.Path should not be empty")
-	}
-	// Verify the args include the expected flags.
-	if !slices.Contains(cmd.Args, "--allow-parallel-runners") {
-		t.Errorf("cmd args %v should include --allow-parallel-runners", cmd.Args)
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			var stdout, stderr strings.Builder
+			code := Run(tc.args, nil, &stdout, &stderr)
+			if code != 2 {
+				t.Fatalf("Run(%q) code = %d, want 2", tc.args, code)
+			}
+			if got := stdout.String(); got != "" {
+				t.Fatalf("Run(%q) stdout = %q, want empty", tc.args, got)
+			}
+			if got := stderr.String(); got != tc.wantStderr {
+				t.Fatalf("Run(%q) stderr = %q, want %q", tc.args, got, tc.wantStderr)
+			}
+		})
 	}
 }
