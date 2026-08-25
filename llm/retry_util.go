@@ -121,10 +121,12 @@ func Retry[T any](ctx context.Context, policy RetryPolicy, sleep SleepFunc, rand
 }
 
 func retryDelay(policy RetryPolicy, randFloat func() float64, err error, n int) (time.Duration, bool) {
-	// Prefer server-provided Retry-After when present.
+	// Prefer a positive server-provided Retry-After when present. Non-positive
+	// values mean retry immediately according to the header, but an immediate
+	// retry is unsafe for wall-budgeted rate limits; use calculated backoff.
 	var e Error
-	if errors.As(err, &e) && e.RetryAfter() != nil {
-		d := max(*e.RetryAfter(), 0)
+	if errors.As(err, &e) && e.RetryAfter() != nil && *e.RetryAfter() > 0 {
+		d := *e.RetryAfter()
 		if policy.MaxDelay > 0 && d > policy.MaxDelay && !policy.WallBudgetedRateLimit(err) {
 			// Attempt-counted policies retain the existing spec behavior. A
 			// wall-budgeted rate limit deliberately honors the provider's
