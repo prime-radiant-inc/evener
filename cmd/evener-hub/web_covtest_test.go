@@ -62,9 +62,11 @@ func TestCovLaunchOverridesWithExistingSandbox(t *testing.T) {
 func TestCovLaunchOverridesWithEmptySandbox(t *testing.T) {
 	overrides := &appwire.LaunchConfigLayer{Model: "preserved", Sandbox: "  ", SkillsDirs: []string{"skills"}}
 	wantInput := *overrides
-	result := launchOverridesWithAccessMode(overrides, "restricted")
+	wantInput.SkillsDirs = append([]string(nil), overrides.SkillsDirs...)
 	wantResult := wantInput
+	wantResult.SkillsDirs = append([]string(nil), wantInput.SkillsDirs...)
 	wantResult.Sandbox = "restricted"
+	result := launchOverridesWithAccessMode(overrides, "restricted")
 	if result == overrides {
 		t.Fatal("launchOverridesWithAccessMode mutated in place; want a copied layer")
 	}

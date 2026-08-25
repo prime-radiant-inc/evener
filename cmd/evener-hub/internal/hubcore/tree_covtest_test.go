@@ -177,33 +177,35 @@ func TestCovResolveProjectMapLiveWithProjectID(t *testing.T) {
 func TestCovFavoriteCandidatesCoversAllKinds(t *testing.T) {
 	tree := Tree{
 		favoriteLive: []TreeNode{
-			{ID: "live-1", Kind: "session"},
+			{ID: "live-1", Kind: "session", Title: "live"},
 		},
 		Projects: []TreeProject{
 			{allCurrent: []TreeNode{
 				{ID: "", Kind: "session"},       // empty ID skipped
 				{ID: "live-1", Kind: "session"}, // duplicate skipped
-				{ID: "fork-1", Kind: "fork"},
+				{ID: "fork-1", Kind: "fork", Title: "fork"},
 				{Kind: "cluster", Children: []TreeNode{
-					{ID: "child-1", Kind: "session"},
-					{ID: "child-2", Kind: "fork"},
+					{ID: "child-1", Kind: "session", Title: "child session"},
+					{ID: "child-2", Kind: "fork", Title: "child fork"},
 					{ID: "child-3", Kind: "subagent"}, // skipped
 				}},
 				{ID: "other-1", Kind: "other"}, // skipped
 			}},
 			{allRecent: []TreeNode{
-				{ID: "recent-1", Kind: "session"},
+				{ID: "recent-1", Kind: "session", Title: "recent"},
 			}},
 		},
 	}
 	got := tree.FavoriteCandidates()
-	ids := make([]string, 0, len(got))
-	for _, n := range got {
-		ids = append(ids, n.ID)
+	want := []TreeNode{
+		{ID: "live-1", Kind: "session", Title: "live"},
+		{ID: "fork-1", Kind: "fork", Title: "fork"},
+		{ID: "child-1", Kind: "session", Title: "child session"},
+		{ID: "child-2", Kind: "fork", Title: "child fork"},
+		{ID: "recent-1", Kind: "session", Title: "recent"},
 	}
-	want := []string{"live-1", "fork-1", "child-1", "child-2", "recent-1"}
-	if !reflect.DeepEqual(ids, want) {
-		t.Fatalf("FavoriteCandidates IDs = %v, want exact ordered IDs %v", ids, want)
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("FavoriteCandidates = %#v, want exact ordered nodes %#v", got, want)
 	}
 }
 
@@ -293,12 +295,23 @@ func TestCovInferRemoteSourcesFromRef(t *testing.T) {
 	threads := []appwire.Thread{
 		{ID: "t1", Source: "", Evener: appwire.EvenerThread{Ref: "remote1:s1"}},
 	}
-	sources := inferRemoteSources(threads, true)
-	want := map[string]RemoteSourceSnapshot{
-		"remote1": {Threads: threads, Complete: true},
+	wantInput := []appwire.Thread{
+		{ID: "t1", Source: "", Evener: appwire.EvenerThread{Ref: "remote1:s1"}},
 	}
+	want := map[string]RemoteSourceSnapshot{
+		"remote1": {
+			Threads: []appwire.Thread{
+				{ID: "t1", Source: "", Evener: appwire.EvenerThread{Ref: "remote1:s1"}},
+			},
+			Complete: true,
+		},
+	}
+	sources := inferRemoteSources(threads, true)
 	if !reflect.DeepEqual(sources, want) {
 		t.Fatalf("sources = %#v, want %#v", sources, want)
+	}
+	if !reflect.DeepEqual(threads, wantInput) {
+		t.Fatalf("input threads mutated: got %#v, want %#v", threads, wantInput)
 	}
 }
 

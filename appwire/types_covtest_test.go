@@ -64,7 +64,7 @@ func TestCovWSTransportPing(t *testing.T) {
 	if err := tr.Ping(successCtx); err != nil {
 		t.Fatalf("Ping success: unexpected error: %v", err)
 	}
-	if err := tr.Ping(errorCtx); !errors.Is(err, wantErr) {
+	if err := tr.Ping(errorCtx); err != wantErr {
 		t.Fatalf("Ping error = %v, want %v", err, wantErr)
 	}
 	if calls != 2 {

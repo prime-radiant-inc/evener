@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"net"
 	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"testing"
@@ -163,8 +164,9 @@ func TestCovRespondOnce(t *testing.T) {
 	c := &Call{reply: make(chan reply, 1)}
 	c.RespondText("first")
 	first, ok := <-c.reply
-	if !ok || first.text != "first" {
-		t.Fatalf("first reply = %#v, %v; want text first", first, ok)
+	wantFirst := reply{text: "first"}
+	if !ok || !reflect.DeepEqual(first, wantFirst) {
+		t.Fatalf("first reply = %#v, %v; want %#v, true", first, ok, wantFirst)
 	}
 	c.RespondText("second")
 	if second, ok := <-c.reply; ok {
