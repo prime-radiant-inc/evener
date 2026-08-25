@@ -11,12 +11,34 @@ import (
 type scriptedPinger struct {
 	calls    atomic.Int64
 	failFrom int64 // ping number (1-based) at and after which Ping returns an error
+	started  chan int64
 }
 
 func (p *scriptedPinger) Ping(ctx context.Context) error {
 	n := p.calls.Add(1)
+	if p.started != nil {
+		select {
+		case p.started <- n:
+		default:
+		}
+	}
 	if p.failFrom > 0 && n >= p.failFrom {
 		return errors.New("ping failed")
+	}
+	return nil
+}
+
+type deferrablePinger struct {
+	calls   atomic.Int64
+	started chan int64
+}
+
+func (p *deferrablePinger) Ping(ctx context.Context) error {
+	n := p.calls.Add(1)
+	p.started <- n
+	if n == 1 {
+		<-ctx.Done()
+		return ctx.Err()
 	}
 	return nil
 }
@@ -26,7 +48,7 @@ func TestWebSocketKeepaliveCancelsConnectionWhenPingFails(t *testing.T) {
 	canceled := make(chan struct{})
 	pinger := &scriptedPinger{failFrom: 1}
 
-	go runWebSocketKeepalive(ctx, pinger, func() { close(canceled) }, time.Millisecond, 50*time.Millisecond)
+	go runWebSocketKeepalive(ctx, pinger, func() { close(canceled) }, newWebSocketReadGate(), time.Millisecond, 50*time.Millisecond)
 
 	select {
 	case <-canceled:
@@ -40,7 +62,7 @@ func TestWebSocketKeepaliveSurvivesHealthyPings(t *testing.T) {
 	canceled := make(chan struct{})
 	pinger := &scriptedPinger{failFrom: 0} // never fails
 
-	go runWebSocketKeepalive(ctx, pinger, func() { close(canceled) }, time.Millisecond, 50*time.Millisecond)
+	go runWebSocketKeepalive(ctx, pinger, func() { close(canceled) }, newWebSocketReadGate(), time.Millisecond, 50*time.Millisecond)
 
 	select {
 	case <-canceled:
@@ -59,7 +81,7 @@ func TestWebSocketKeepaliveStopsOnContextCancel(t *testing.T) {
 
 	go func() {
 		defer close(done)
-		runWebSocketKeepalive(ctx, pinger, func() {}, time.Millisecond, 50*time.Millisecond)
+		runWebSocketKeepalive(ctx, pinger, func() {}, newWebSocketReadGate(), time.Millisecond, 50*time.Millisecond)
 	}()
 
 	cancel()
@@ -67,5 +89,72 @@ func TestWebSocketKeepaliveStopsOnContextCancel(t *testing.T) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("keepalive did not return after context cancellation")
+	}
+}
+
+func TestWebSocketKeepaliveDefersActivePingWhileReaderIsUnavailable(t *testing.T) {
+	ctx, stop := context.WithCancel(t.Context())
+	defer stop()
+	gate := newWebSocketReadGate()
+	pinger := &deferrablePinger{started: make(chan int64, 2)}
+	canceled := make(chan struct{}, 1)
+
+	go runWebSocketKeepalive(ctx, pinger, func() { canceled <- struct{}{} }, gate, time.Millisecond, time.Second)
+	select {
+	case got := <-pinger.started:
+		if got != 1 {
+			t.Fatalf("first ping = %d, want 1", got)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("first ping did not start")
+	}
+
+	gate.readerUnavailable()
+	select {
+	case <-canceled:
+		t.Fatal("deferred ping canceled the connection")
+	default:
+	}
+
+	gate.readerAvailable()
+	select {
+	case got := <-pinger.started:
+		if got != 2 {
+			t.Fatalf("second ping = %d, want 2", got)
+		}
+		stop()
+	case <-time.After(time.Second):
+		t.Fatal("second ping did not start")
+	}
+	select {
+	case <-canceled:
+		t.Fatal("deferred ping canceled the connection")
+	default:
+	}
+}
+
+func TestWebSocketKeepaliveSkipsPingsWhileReaderIsUnavailable(t *testing.T) {
+	ctx, stop := context.WithCancel(t.Context())
+	defer stop()
+	gate := newWebSocketReadGate()
+	gate.readerUnavailable()
+	pinger := &scriptedPinger{started: make(chan int64, 1)}
+
+	go runWebSocketKeepalive(ctx, pinger, func() {}, gate, time.Millisecond, time.Second)
+	select {
+	case got := <-pinger.started:
+		t.Fatalf("ping %d started while reader was unavailable", got)
+	case <-time.After(20 * time.Millisecond):
+	}
+
+	gate.readerAvailable()
+	select {
+	case got := <-pinger.started:
+		if got != 1 {
+			t.Fatalf("resumed ping = %d, want 1", got)
+		}
+		stop()
+	case <-time.After(time.Second):
+		t.Fatal("ping did not resume after reader became available")
 	}
 }
