@@ -18,6 +18,7 @@
   },
   "devDependencies": {
     "@babel/parser": "8.0.4",
+    "@babel/traverse": "8.0.4",
     "@biomejs/biome": "2.5.5",
     "@tauri-apps/cli": "2.11.4",
     "@testing-library/jest-dom": "6.9.1",
