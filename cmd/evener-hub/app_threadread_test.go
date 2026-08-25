@@ -757,6 +757,50 @@ func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 	}
 }
 
+func TestMergePastThreadForReadDoesNotReadSavedTurnsWhenLiveWindowPresent(t *testing.T) {
+	cfg, params := seedBoundedPastThread(t)
+	entry, ok := pastEntryForRead(cfg, params)
+	if !ok {
+		t.Fatal("past thread not found")
+	}
+	path := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID+".transcript.jsonl")
+	if err := os.WriteFile(path, []byte(`{"kind":"header","format_version":1}`+"\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	liveTurns := []appwire.Turn{{ID: "turn_live", ItemsView: "full"}}
+
+	got, err := mergePastThreadForRead(cfg, params, appwire.Thread{
+		ID:        entry.Meta.ID,
+		SessionID: entry.Meta.ID,
+		Turns:     liveTurns,
+	})
+	if err != nil {
+		t.Fatalf("merge live window with unreadable saved transcript: %v", err)
+	}
+	if !reflect.DeepEqual(got.Turns, liveTurns) {
+		t.Fatalf("merged turns = %+v, want live window %+v", got.Turns, liveTurns)
+	}
+	if got.ModelProvider != entry.Meta.Model || got.CWD != entry.Meta.EnvInfo.WorkingDir {
+		t.Fatalf("merged metadata = model %q cwd %q, want %q %q", got.ModelProvider, got.CWD, entry.Meta.Model, entry.Meta.EnvInfo.WorkingDir)
+	}
+}
+
+func TestMergePastThreadForReadUsesSavedTurnsWhenLiveResponseHasNone(t *testing.T) {
+	cfg, params := seedBoundedPastThread(t)
+	entry, ok := pastEntryForRead(cfg, params)
+	if !ok {
+		t.Fatal("past thread not found")
+	}
+
+	got, err := mergePastThreadForRead(cfg, params, appwire.Thread{ID: entry.Meta.ID, SessionID: entry.Meta.ID})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Turns) != entry.Meta.TurnCount {
+		t.Fatalf("merged turns = %d, want saved fallback %d", len(got.Turns), entry.Meta.TurnCount)
+	}
+}
+
 func TestPastThreadReadUsesBoundedSavedTranscript(t *testing.T) {
 	cfg, params := seedBoundedPastThread(t)
 	full, ok := requirePastThreadForRead(t, cfg, params)
