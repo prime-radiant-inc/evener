@@ -2,6 +2,7 @@ import { readdirSync, readFileSync } from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { parse as parseJavaScript } from "@babel/parser";
+import traverseJavaScript from "@babel/traverse";
 import { parse as parseHtml } from "parse5";
 import postcss from "postcss";
 import { SaxesParser } from "saxes";
@@ -169,55 +170,6 @@ function jsxAttributeText(node) {
   return literalText(node);
 }
 
-function collectBindingPattern(node, bindings) {
-  if (!node) return;
-  if (node.type === "Identifier") bindings.add(node.name);
-  else if (node.type === "RestElement")
-    collectBindingPattern(node.argument, bindings);
-  else if (node.type === "AssignmentPattern")
-    collectBindingPattern(node.left, bindings);
-  else if (node.type === "ArrayPattern")
-    node.elements.forEach((item) => {
-      collectBindingPattern(item, bindings);
-    });
-  else if (node.type === "ObjectPattern")
-    node.properties.forEach((property) => {
-      collectBindingPattern(property.value ?? property.argument, bindings);
-    });
-}
-
-function isValueReference(node, parent) {
-  if (node.type !== "Identifier" || !parent) return true;
-  if (
-    ["MemberExpression", "OptionalMemberExpression"].includes(parent.type) &&
-    parent.property === node &&
-    !parent.computed
-  )
-    return false;
-  if (
-    [
-      "VariableDeclarator",
-      "FunctionDeclaration",
-      "FunctionExpression",
-      "ClassDeclaration",
-      "ClassExpression",
-      "ImportSpecifier",
-      "ImportDefaultSpecifier",
-      "ImportNamespaceSpecifier",
-      "LabeledStatement",
-    ].includes(parent.type) &&
-    (parent.id === node || parent.local === node || parent.label === node)
-  )
-    return false;
-  if (
-    ["ObjectProperty", "ObjectMethod", "ClassProperty"].includes(parent.type) &&
-    parent.key === node &&
-    !parent.computed
-  )
-    return false;
-  return !parent.type.startsWith("TS");
-}
-
 function pathRoot(value) {
   return value?.split(".")[0] ?? null;
 }
@@ -249,24 +201,10 @@ function scanJavaScript(file, text) {
   const violations = [];
   const tauriInvokeBindings = new Set();
   const tauriNamespaces = new Set();
-  const declaredBindings = new Set();
   const found = new Map();
   const record = (code, detail) => {
     if (!found.has(code)) found.set(code, violation(code, file, detail));
   };
-
-  for (const statement of ast.program.body) {
-    if (statement.type === "ImportDeclaration")
-      statement.specifiers.forEach((binding) => {
-        collectBindingPattern(binding.local, declaredBindings);
-      });
-    if (statement.type === "VariableDeclaration")
-      statement.declarations.forEach((declaration) => {
-        collectBindingPattern(declaration.id, declaredBindings);
-      });
-    if (["FunctionDeclaration", "ClassDeclaration"].includes(statement.type))
-      collectBindingPattern(statement.id, declaredBindings);
-  }
 
   walkAst(ast, (node) => {
     if (node.type !== "ImportDeclaration") return;
@@ -295,7 +233,17 @@ function scanJavaScript(file, text) {
     }
   });
 
-  walkAst(ast, (node, parent) => {
+  const scanExecutableNode = (nodePath) => {
+    const { node } = nodePath;
+    const isUnboundBrowserReference = (referencePath) => {
+      const reference = memberPath(referencePath?.node);
+      const root = pathRoot(reference);
+      return (
+        Boolean(root) &&
+        referencePath.isReferenced() &&
+        !referencePath.scope.getBinding(root)
+      );
+    };
     if (
       [
         "ImportDeclaration",
@@ -354,13 +302,14 @@ function scanJavaScript(file, text) {
       node.type === "CallExpression" ||
       node.type === "OptionalCallExpression"
     ) {
-      const callee = memberPath(node.callee);
+      const calleePath = nodePath.get("callee");
+      const callee = memberPath(calleePath.node);
       const globalCallee = browserGlobalName(callee);
       const networkRule = NETWORK_API_PATTERNS.find(
         (item) =>
           item.kind === "call" &&
           item.name === globalCallee &&
-          !declaredBindings.has(pathRoot(callee)),
+          isUnboundBrowserReference(calleePath),
       );
       if (networkRule) {
         record(
@@ -379,41 +328,54 @@ function scanJavaScript(file, text) {
           "showOpenFilePicker",
           "showSaveFilePicker",
           "showDirectoryPicker",
-        ].includes(callee)
+        ].includes(globalCallee) &&
+        isUnboundBrowserReference(calleePath)
       ) {
         record("file-access", "file picker capability is forbidden");
       }
       if (
-        callee?.includes("getUserMedia") ||
-        callee?.startsWith("navigator.mediaDevices")
+        isUnboundBrowserReference(calleePath) &&
+        (globalCallee === "getUserMedia" ||
+          globalCallee?.startsWith("navigator.mediaDevices"))
       ) {
         record("media-capture", "media capture capability is forbidden");
       }
-      if (callee?.startsWith("speechSynthesis"))
+      if (
+        globalCallee?.startsWith("speechSynthesis") &&
+        isUnboundBrowserReference(calleePath)
+      )
         record("speech-synthesis", "speech synthesis capability is forbidden");
-      if (callee?.startsWith("navigator.geolocation"))
+      if (
+        globalCallee?.startsWith("navigator.geolocation") &&
+        isUnboundBrowserReference(calleePath)
+      )
         record("geolocation", "geolocation capability is forbidden");
       if (
-        callee?.includes("showNotification") ||
-        callee?.startsWith("navigator.serviceWorker")
+        isUnboundBrowserReference(calleePath) &&
+        (globalCallee?.includes("showNotification") ||
+          globalCallee?.startsWith("navigator.serviceWorker"))
       ) {
         record(
           "notification-push",
           "notifications or push capability is forbidden",
         );
       }
-      if (callee === "navigator.vibrate")
+      if (
+        globalCallee === "navigator.vibrate" &&
+        isUnboundBrowserReference(calleePath)
+      )
         record("haptics", "vibration capability is forbidden");
     }
 
     if (node.type === "NewExpression") {
-      const constructorName = memberPath(node.callee);
+      const constructorPath = nodePath.get("callee");
+      const constructorName = memberPath(constructorPath.node);
       const globalConstructor = browserGlobalName(constructorName);
       const networkRule = NETWORK_API_PATTERNS.find(
         (item) =>
           item.kind === "construct" &&
           item.name === globalConstructor &&
-          !declaredBindings.has(pathRoot(constructorName)),
+          isUnboundBrowserReference(constructorPath),
       );
       if (networkRule) {
         record(
@@ -424,18 +386,28 @@ function scanJavaScript(file, text) {
       if (
         ["SpeechRecognition", "webkitSpeechRecognition"].includes(
           globalConstructor,
-        )
+        ) &&
+        isUnboundBrowserReference(constructorPath)
       ) {
         record(
           "speech-recognition",
           "speech recognition capability is forbidden",
         );
       }
-      if (globalConstructor === "SpeechSynthesisUtterance")
+      if (
+        globalConstructor === "SpeechSynthesisUtterance" &&
+        isUnboundBrowserReference(constructorPath)
+      )
         record("speech-synthesis", "speech synthesis capability is forbidden");
-      if (["AudioContext", "webkitAudioContext"].includes(globalConstructor))
+      if (
+        ["AudioContext", "webkitAudioContext"].includes(globalConstructor) &&
+        isUnboundBrowserReference(constructorPath)
+      )
         record("audio-context", "audio context capability is forbidden");
-      if (globalConstructor === "Notification")
+      if (
+        globalConstructor === "Notification" &&
+        isUnboundBrowserReference(constructorPath)
+      )
         record(
           "notification-push",
           "notifications or push capability is forbidden",
@@ -446,7 +418,9 @@ function scanJavaScript(file, text) {
       node.type === "VariableDeclarator" &&
       node.id?.type === "ObjectPattern"
     ) {
-      const source = browserGlobalName(memberPath(node.init));
+      const sourcePath = nodePath.get("init");
+      const source = browserGlobalName(memberPath(sourcePath.node));
+      if (!isUnboundBrowserReference(sourcePath)) return;
       for (const property of node.id.properties) {
         const key = String(propertyName(property) ?? "");
         if (
@@ -505,8 +479,7 @@ function scanJavaScript(file, text) {
     const rawExpressionPath = memberPath(node);
     const expressionPath = browserGlobalName(rawExpressionPath);
     const isUnshadowedBrowserReference =
-      isValueReference(node, parent) &&
-      !declaredBindings.has(pathRoot(rawExpressionPath));
+      nodePath.isReferenced() && isUnboundBrowserReference(nodePath);
     if (
       isUnshadowedBrowserReference &&
       NETWORK_API_PATTERNS.some((item) => item.name === expressionPath)
@@ -620,7 +593,8 @@ function scanJavaScript(file, text) {
         record("remote-url", "HTTP(S) runtime literal is forbidden");
       }
     }
-  });
+  };
+  traverseJavaScript(ast, { enter: scanExecutableNode });
 
   violations.push(...found.values());
   return sorted(violations);
@@ -697,14 +671,31 @@ function scanRust(file, text) {
   const commandAliases = new Set();
   const handlerAliases = new Set();
   const tauriAliases = new Set(["tauri"]);
+  const bracedUseTrees = [
+    ...code.matchAll(
+      /\buse\s+(?:::)?\s*([A-Za-z_][A-Za-z0-9_]*)::\{([^}]*)\}\s*;/g,
+    ),
+  ];
   const crateAliasEdges = [
     ...code.matchAll(
-      /\buse\s+([A-Za-z_][A-Za-z0-9_]*)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/g,
+      /\buse\s+(?:::)?\s*([A-Za-z_][A-Za-z0-9_]*)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/g,
     ),
     ...code.matchAll(
       /\bextern\s+crate\s+([A-Za-z_][A-Za-z0-9_]*)\s+as\s+([A-Za-z_][A-Za-z0-9_]*)\s*;/g,
     ),
   ].map((match) => ({ source: match[1], local: match[2] }));
+  for (const match of bracedUseTrees) {
+    for (const item of match[2].split(",").map((part) => part.trim())) {
+      const selfImport = /^self(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?$/.exec(
+        item,
+      );
+      if (selfImport)
+        crateAliasEdges.push({
+          source: match[1],
+          local: selfImport[1] ?? match[1],
+        });
+    }
+  }
   let foundCrateAlias = true;
   while (foundCrateAlias) {
     foundCrateAlias = false;
@@ -716,7 +707,7 @@ function scanRust(file, text) {
     }
   }
   for (const match of code.matchAll(
-    /\buse\s+([A-Za-z_][A-Za-z0-9_]*)::(?:\{([^}]*)\}|(command|generate_handler)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?)\s*;/g,
+    /\buse\s+(?:::)?\s*([A-Za-z_][A-Za-z0-9_]*)::(?:\{([^}]*)\}|(command|generate_handler)(?:\s+as\s+([A-Za-z_][A-Za-z0-9_]*))?)\s*;/g,
   )) {
     if (!tauriAliases.has(match[1])) continue;
     const imports = match[2]

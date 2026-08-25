@@ -155,6 +155,81 @@ test("network globals remain forbidden through executable aliases", () => {
   );
 });
 
+test("browser-global provenance follows lexical scope and shadowing", () => {
+  const clean = `
+    const window = localWindow;
+    const { fetch: request } = window;
+    request('/x');
+
+    function run(fetch) {
+      const request = fetch;
+      return request('/x');
+    }
+
+    function nested(window, AudioContext) {
+      const { WebSocket: LocalSocket, speechSynthesis: synth } = window;
+      new LocalSocket('/x');
+      new AudioContext();
+      synth.speak(message);
+    }
+
+    {
+      const navigator = localNavigator;
+      const { sendBeacon: beacon, geolocation, vibrate } = navigator;
+      beacon('/x');
+      geolocation.getCurrentPosition(done);
+      vibrate(20);
+    }
+
+    try {
+      localWork();
+    } catch (Notification) {
+      const Notify = Notification;
+      new Notify('local');
+    }
+  `;
+  assert.deepEqual(scanText("src/local-scopes.ts", clean), []);
+
+  const globalControls = `
+    const { fetch: request } = window;
+    function run() {
+      const requestAgain = fetch;
+      return requestAgain('/x');
+    }
+    {
+      const { sendBeacon: beacon, geolocation } = navigator;
+      beacon('/x');
+      geolocation.getCurrentPosition(done);
+    }
+    const Notify = Notification;
+    const Audio = AudioContext;
+  `;
+  const found = codes(scanText("src/global-scopes.ts", globalControls));
+  for (const expected of [
+    "network-api",
+    "geolocation",
+    "notification-push",
+    "audio-context",
+  ]) {
+    assert.ok(found.includes(expected), expected);
+  }
+
+  for (const [source, label] of [
+    ["const { fetch: request } = window", "fetch"],
+    ["const { XMLHttpRequest: Request } = globalThis", "XMLHttpRequest"],
+    ["const { WebSocket: Socket } = self", "WebSocket"],
+    ["const { EventSource: Events } = window", "EventSource"],
+    ["const { sendBeacon: beacon } = navigator", "sendBeacon"],
+  ]) {
+    assert.ok(
+      codes(scanText("src/global-destructure.ts", source)).includes(
+        "network-api",
+      ),
+      label,
+    );
+  }
+});
+
 test("scanner rejects runtime URLs, dynamic remote imports, invokes, plugins, and credentials", () => {
   const cases = [
     ["const endpoint = 'http://example.invalid'", "remote-url"],
@@ -460,6 +535,31 @@ test("Rust scanner follows chained use and extern-crate Tauri provenance", async
         let _ = handlers![first];
         let _ = external_runtime::generate_handler![second];
       }
+    `,
+  });
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const handlers = scanSource(root).filter(
+    (item) => item.code === "invoke-handler",
+  );
+  assert.equal(handlers.length, 4);
+});
+
+test("Rust scanner follows self aliases and absolute Tauri use trees", async (t) => {
+  const root = await fixture({
+    "src-tauri/src/lib.rs": `
+      use tauri::{self as runtime};
+      use ::tauri::command as mobile_command;
+      use ::tauri::generate_handler as handlers;
+      #[runtime::command]
+      fn first() {}
+      #[mobile_command]
+      fn second() {}
+      fn wire() {
+        let _ = runtime::generate_handler![first];
+        let _ = handlers![second];
+      }
+      // #[runtime::command]
+      const NOTE: &str = "handlers![fake] use ::tauri::command as fake";
     `,
   });
   t.after(() => rm(root, { recursive: true, force: true }));
