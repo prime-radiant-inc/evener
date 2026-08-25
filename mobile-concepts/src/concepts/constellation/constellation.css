@@ -134,8 +134,8 @@
   z-index: 2;
   display: flex;
   min-width: 0;
-  padding: max(0.75rem, var(--safe-area-top)) max(1rem, var(--safe-area-right))
-    0.8rem max(1rem, var(--safe-area-left));
+  padding: max(0.75rem, var(--co-edge-top)) max(1rem, var(--co-edge-right))
+    0.8rem max(1rem, var(--co-edge-left));
   border-bottom: 1px solid var(--co-line);
   align-items: flex-start;
   justify-content: space-between;
@@ -239,17 +239,17 @@
 .co-route-content {
   width: min(100%, 58rem);
   margin-inline: auto;
-  padding: 1rem max(1rem, var(--safe-area-right))
+  padding: 1rem max(1rem, var(--co-edge-right))
     calc(1.5rem + var(--keyboard-inset-height, var(--keyboard-inset, 0px)))
-    max(1rem, var(--safe-area-left));
+    max(1rem, var(--co-edge-left));
 }
 
 .co-root-nav {
   position: relative;
   z-index: 2;
   display: grid;
-  padding: 0.35rem max(0.55rem, var(--safe-area-right))
-    max(0.35rem, var(--safe-area-bottom)) max(0.55rem, var(--safe-area-left));
+  padding: 0.35rem max(0.55rem, var(--co-edge-right))
+    max(0.35rem, var(--co-edge-bottom)) max(0.55rem, var(--co-edge-left));
   border-top: 1px solid var(--co-line);
   grid-template-columns: repeat(4, minmax(0, 1fr));
   background: color-mix(in srgb, var(--co-bg) 96%, transparent);
@@ -791,6 +791,24 @@
   cursor: pointer;
   font-weight: 700;
   text-align: left;
+}
+
+.co-disclosure-summary {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.co-disclosure-summary > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.co-disclosure-summary [data-state-label] {
+  flex: 0 0 auto;
 }
 
 [data-disclosure-state="expanded"] > button svg {
@@ -1452,7 +1470,7 @@
 }
 
 .concept-constellation[data-title="large-or-inline"] .co-topbar {
-  padding-top: max(0.85rem, var(--safe-area-top));
+  padding-top: max(0.85rem, var(--co-edge-top));
 }
 
 .concept-constellation[data-elevation="tonal-elevation"] {
@@ -1485,14 +1503,6 @@
 .concept-constellation[data-back="system-predictive"] .co-icon-action {
   border-radius: 1rem;
   background: var(--co-raised);
-}
-
-.concept-constellation[data-safe-area="ios-environment"] {
-  --co-safe-area-mode: env(safe-area-inset-top);
-}
-
-.concept-constellation[data-safe-area="android-insets"] {
-  --co-safe-area-mode: var(--safe-area-top);
 }
 
 .concept-constellation[data-navigation="material-navigation-bar"]
@@ -1711,13 +1721,13 @@
 
 @media (max-width: 31rem) {
   .co-route-content {
-    padding-right: max(0.65rem, var(--safe-area-right));
-    padding-left: max(0.65rem, var(--safe-area-left));
+    padding-right: max(0.65rem, var(--co-edge-right));
+    padding-left: max(0.65rem, var(--co-edge-left));
   }
 
   .co-topbar {
-    padding-right: max(0.65rem, var(--safe-area-right));
-    padding-left: max(0.65rem, var(--safe-area-left));
+    padding-right: max(0.65rem, var(--co-edge-right));
+    padding-left: max(0.65rem, var(--co-edge-left));
     gap: 0.3rem;
   }
 
