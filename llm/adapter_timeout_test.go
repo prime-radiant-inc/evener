@@ -55,9 +55,13 @@ func TestApplyAdapterTimeout_Streaming(t *testing.T) {
 	ctx, cancel := ApplyAdapterTimeout(ctx, timeout, true)
 	defer cancel()
 
-	_, ok := ctx.Deadline()
-	if ok {
-		t.Error("expected no deadline for streaming (stream_read is per-event)")
+	deadline, ok := ctx.Deadline()
+	if !ok {
+		t.Fatal("expected streaming wall deadline")
+	}
+	remaining := time.Until(deadline)
+	if remaining < 4*time.Second || remaining > 6*time.Second {
+		t.Errorf("expected ~5s remaining, got %v", remaining)
 	}
 }
 

@@ -118,7 +118,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 }
 
 // runningJobsEndTurnWarning builds the end_turn=true warning naming this
-// session's still-running jobs. Warn-first (2026-08-06 ruling): the
+// session's still-running managed jobs or detached processes. Warn-first (2026-08-06 ruling): the
 // communicate call still succeeds, there is no refusal path.
 //
 // The promise the warning can make depends on whether the session outlives the
@@ -132,12 +132,26 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 // disposed of (see undisposedBackgroundJobsMessage), which is a remedy, not a
 // reprieve — so this warning must not imply the job is safe.
 func runningJobsEndTurnWarning(jobIDs []string, turnEndsProcess bool) string {
+	detached := false
+	for _, id := range jobIDs {
+		if strings.HasPrefix(id, "detached process ") {
+			detached = true
+			break
+		}
+	}
+	noun := "job(s)"
+	if detached {
+		noun = "job(s) or detached process(es)"
+	}
 	outcome := "each job remains notification-armed and will report separately on completion."
 	if turnEndsProcess {
 		outcome = "a job that finishes is reported in a further turn, but this run's process exits once that work is drained, so a job that keeps running is killed at exit rather than reported on later."
 	}
-	return fmt.Sprintf("ending turn while %d job(s) are still running: %s. The call still succeeds; %s",
-		len(jobIDs), strings.Join(jobIDs, ", "), outcome)
+	if detached {
+		outcome = "a detached process has no completion notification, so its result is not collected by this run."
+	}
+	return fmt.Sprintf("ending turn while %d %s are still running: %s. The call still succeeds; %s",
+		len(jobIDs), noun, strings.Join(jobIDs, ", "), outcome)
 }
 
 func registerSkillTool(reg *tool.Registry, deps *toolDeps) {

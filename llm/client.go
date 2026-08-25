@@ -150,9 +150,9 @@ func (c *Client) Stream(ctx context.Context, req Request) (Stream, error) {
 	if err := req.Validate(); err != nil {
 		return nil, err
 	}
-	// Stream defaults to phase-bounded connection, response-header, and per-line
-	// stream-read timeouts without adding an overall stream deadline. Caller-supplied
-	// context and HTTP client policies remain authoritative.
+	// Stream defaults to a bounded connection, HTTP-attempt lifetime, and per-line
+	// stream-read profile. The request lifetime includes response headers and body
+	// consumption; caller-supplied context and HTTP client policies remain authoritative.
 	if req.AdapterTimeout == nil {
 		at := DefaultAdapterTimeout()
 		req.AdapterTimeout = &at
