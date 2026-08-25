@@ -3,6 +3,7 @@ package appwire
 import (
 	"bytes"
 	"encoding/json"
+	"os"
 	"reflect"
 	"testing"
 )
@@ -250,8 +251,23 @@ func TestFeatureSetTranscriptDisplayJSONField(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !bytes.Contains(encoded, []byte(`"transcriptDisplaySettings":false`)) {
-		t.Fatalf("feature JSON missing transcript display field: %s", encoded)
+	if bytes.Contains(encoded, []byte(`"transcriptDisplaySettings"`)) {
+		t.Fatalf("false feature must be omitted: %s", encoded)
+	}
+	encoded, err = json.Marshal(FeatureSet{TranscriptDisplaySettings: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"transcriptDisplaySettings":true`)) {
+		t.Fatalf("true feature missing from JSON: %s", encoded)
+	}
+
+	generated, err := os.ReadFile("../cmd/evener-hub/frontend/src/protocol/types.gen.ts")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(generated, []byte("transcriptDisplaySettings?: boolean;")) {
+		t.Fatal("generated TypeScript feature field is not optional")
 	}
 }
 

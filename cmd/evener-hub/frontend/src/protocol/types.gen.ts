@@ -405,7 +405,7 @@ export interface FeatureSet {
   modelList: boolean;
   directoryComplete: boolean;
   auth: boolean;
-  transcriptDisplaySettings: boolean;
+  transcriptDisplaySettings?: boolean;
 }
 
 export interface GitHeadParams {
