@@ -37,12 +37,18 @@ function TranscriptContent({
       return (
         <div className="co-tool-disclosure">
           <Disclosure
-            summary={<span>{item.label}</span>}
+            summary={
+              <span className="co-disclosure-summary">
+                <span>{item.label}</span>
+                <span data-state-label aria-hidden="true">
+                  <StatusLabel state={item.status} />
+                </span>
+              </span>
+            }
             expanded={state.expandedToolIds.has(item.id)}
             onToggle={() => dispatch({ type: "toggleTool", itemId: item.id })}
           >
             <div className="co-tool-detail">
-              <StatusLabel state={item.status} />
               <dl>
                 <div>
                   <dt>Arguments</dt>

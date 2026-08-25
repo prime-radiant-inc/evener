@@ -109,16 +109,20 @@ function WorkTree({
               Level {item.depth + 1} · Parent: {item.parentTitle ?? "Session"}
             </p>
             <Disclosure
-              summary={<span>{item.node.title}</span>}
+              summary={
+                <span className="co-disclosure-summary">
+                  <span>{item.node.title}</span>
+                  <span data-state-label aria-hidden="true">
+                    <StatusLabel state={item.node.state} />
+                  </span>
+                </span>
+              }
               expanded={state.expandedWorkIds.has(item.node.id)}
               onToggle={() =>
                 dispatch({ type: "toggleWork", nodeId: item.node.id })
               }
             >
               <div className="co-work-node__detail">
-                <span data-state-label>
-                  <StatusLabel state={item.node.state} />
-                </span>
                 <dl>
                   <div>
                     <dt>Type</dt>
