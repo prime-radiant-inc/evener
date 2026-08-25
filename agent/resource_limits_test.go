@@ -21,13 +21,17 @@ import (
 // privileged container.
 type resourceFixtureEnv struct {
 	*execenv.LocalExecutionEnvironment
-	files map[string]string
+	files      map[string]string
+	readErrors map[string]error
 }
 
 func (e *resourceFixtureEnv) Platform() string  { return "linux" }
 func (e *resourceFixtureEnv) OSVersion() string { return "Linux fixture" }
 
 func (e *resourceFixtureEnv) ReadHostFile(path string) ([]byte, error) {
+	if err := e.readErrors[path]; err != nil {
+		return nil, err
+	}
 	content, ok := e.files[path]
 	if !ok {
 		return nil, fs.ErrNotExist
@@ -346,6 +350,107 @@ func TestEnvironmentInfoRecognizesPositivelyResolvedRootMembership(t *testing.T)
 		"/proc/meminfo":             fixtureHostMemInfo(65536000),
 	}
 	assertResourceCaps(t, resourceCapsJSON(t, newResourceFixtureEnv(t, files)), float64(runtime.NumCPU()), 64000)
+}
+
+func TestEnvironmentInfoHandlesCgroupV2NamespaceRoot(t *testing.T) {
+	t.Parallel()
+	const mountInfo = "29 23 0:26 / /sys/fs/cgroup rw,nosuid,nodev,noexec,relatime - cgroup2 cgroup rw,nsdelegate\n"
+	tests := []struct {
+		name        string
+		membership  string
+		files       map[string]string
+		readErrors  map[string]error
+		wantCPU     float64
+		wantMemory  float64
+		wantUnknown bool
+	}{
+		{
+			name:       "finite visible root",
+			membership: "/",
+			files: map[string]string{
+				"/sys/fs/cgroup/cpu.max":    "125000 100000\n",
+				"/sys/fs/cgroup/memory.max": "402653184\n",
+			},
+			wantCPU:    1.25,
+			wantMemory: 384,
+		},
+		{
+			name:       "explicitly unlimited visible root",
+			membership: "/",
+			files: map[string]string{
+				"/sys/fs/cgroup/cpu.max":    "max 100000\n",
+				"/sys/fs/cgroup/memory.max": "max\n",
+			},
+			wantCPU:    float64(runtime.NumCPU()),
+			wantMemory: 64000,
+		},
+		{
+			name:       "absent global root files preserve descendant limits",
+			membership: "/docker/fixture",
+			files: map[string]string{
+				"/sys/fs/cgroup/docker/fixture/cpu.max":    "100000 100000\n",
+				"/sys/fs/cgroup/docker/fixture/memory.max": "2147483648\n",
+				"/sys/fs/cgroup/docker/cpu.max":            "max 100000\n",
+				"/sys/fs/cgroup/docker/memory.max":         "max\n",
+			},
+			wantCPU:    1,
+			wantMemory: 2048,
+		},
+		{
+			name:       "malformed visible root is unknown",
+			membership: "/workload",
+			files: map[string]string{
+				"/sys/fs/cgroup/workload/cpu.max":    "100000 100000\n",
+				"/sys/fs/cgroup/workload/memory.max": "1073741824\n",
+				"/sys/fs/cgroup/cpu.max":             "not-a-quota\n",
+				"/sys/fs/cgroup/memory.max":          "not-a-limit\n",
+			},
+			wantUnknown: true,
+		},
+		{
+			name:       "unreadable visible root is unknown",
+			membership: "/workload",
+			files: map[string]string{
+				"/sys/fs/cgroup/workload/cpu.max":    "100000 100000\n",
+				"/sys/fs/cgroup/workload/memory.max": "1073741824\n",
+			},
+			readErrors: map[string]error{
+				"/sys/fs/cgroup/cpu.max":    fs.ErrPermission,
+				"/sys/fs/cgroup/memory.max": fs.ErrPermission,
+			},
+			wantUnknown: true,
+		},
+		{
+			name:       "finite visible root folds with descendants",
+			membership: "/team/leaf",
+			files: map[string]string{
+				"/sys/fs/cgroup/team/leaf/cpu.max":    "max 100000\n",
+				"/sys/fs/cgroup/team/leaf/memory.max": "max\n",
+				"/sys/fs/cgroup/team/cpu.max":         "200000 100000\n",
+				"/sys/fs/cgroup/team/memory.max":      "536870912\n",
+				"/sys/fs/cgroup/cpu.max":              "125000 100000\n",
+				"/sys/fs/cgroup/memory.max":           "402653184\n",
+			},
+			wantCPU:    1.25,
+			wantMemory: 384,
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			files := maps.Clone(tt.files)
+			files["/proc/self/cgroup"] = "0::" + tt.membership + "\n"
+			files["/proc/self/mountinfo"] = mountInfo
+			files["/proc/meminfo"] = fixtureHostMemInfo(65536000)
+			env := newResourceFixtureEnv(t, files)
+			env.readErrors = tt.readErrors
+			wire := resourceCapsJSON(t, env)
+			if tt.wantUnknown {
+				assertResourceCapsUnknown(t, wire)
+				return
+			}
+			assertResourceCaps(t, wire, tt.wantCPU, tt.wantMemory)
+		})
+	}
 }
 
 func TestEnvironmentInfoSelectsHybridHierarchyByControllerMembership(t *testing.T) {

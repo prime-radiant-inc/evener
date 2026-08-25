@@ -312,19 +312,23 @@ func readV2CPUHierarchy(read resourceFileReader, mount cgroupMount, membership s
 	if !ok {
 		return resourceReading{state: resourceUnknown}
 	}
-	if mount.root == "/" && len(paths) > 0 {
-		paths = paths[:len(paths)-1]
-	}
 	if len(paths) == 0 {
 		return resourceReading{state: resourceUnlimited, value: float64(runtime.NumCPU())}
 	}
-	reading := readV2CPU(read, filepath.Join(paths[0], "cpu.max"))
-	if reading.state == resourceAbsent {
-		return reading
-	}
-	for _, path := range paths[1:] {
+	reading := resourceReading{state: resourceAbsent}
+	for i, path := range paths {
 		candidate := readV2CPU(read, filepath.Join(path, "cpu.max"))
 		if candidate.state == resourceAbsent {
+			// Some process views expose descendant controller files but omit the
+			// global hierarchy root. Preserve that shape after a descendant was
+			// resolved, but do not skip a present mount-root file: a private cgroup
+			// namespace rewrites its delegated root to "/".
+			if mount.root == "/" && i == len(paths)-1 && len(paths) > 1 {
+				continue
+			}
+			if i == 0 {
+				return candidate
+			}
 			return resourceReading{state: resourceUnknown}
 		}
 		reading = moreRestrictiveReading(reading, candidate)
@@ -337,15 +341,18 @@ func readV2MemoryHierarchy(read resourceFileReader, mount cgroupMount, membershi
 	if !ok {
 		return resourceReading{state: resourceUnknown}
 	}
-	if mount.root == "/" && len(paths) > 0 {
-		paths = paths[:len(paths)-1]
-	}
 	if len(paths) == 0 {
 		return resourceReading{state: resourceUnlimited, value: float64(hostMemoryMB(read))}
 	}
 	reading := resourceReading{state: resourceAbsent}
-	for _, path := range paths {
+	for i, path := range paths {
 		candidate := readMemoryLimit(read, filepath.Join(path, "memory.max"), true)
+		if candidate.state == resourceAbsent {
+			if mount.root == "/" && i == len(paths)-1 && len(paths) > 1 {
+				continue
+			}
+			return resourceReading{state: resourceUnknown}
+		}
 		reading = moreRestrictiveReading(reading, candidate)
 	}
 	return reading
@@ -434,8 +441,8 @@ func readCPUSet(read resourceFileReader, path string) resourceReading {
 func readMemoryLimit(read resourceFileReader, path string, v2 bool) resourceReading {
 	b, err := read(path)
 	if err != nil {
-		if errors.Is(err, fs.ErrNotExist) {
-			return resourceReading{state: resourceUnknown}
+		if v2 && errors.Is(err, fs.ErrNotExist) {
+			return resourceReading{state: resourceAbsent}
 		}
 		return resourceReading{state: resourceUnknown}
 	}
