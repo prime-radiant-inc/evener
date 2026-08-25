@@ -1,6 +1,6 @@
 //go:build evenerfuzz
 
-package main
+package hub
 
 import (
 	"bytes"
@@ -50,7 +50,7 @@ func FuzzFinalMainBootstrap(f *testing.F) {
 		}
 		if mode == 6 {
 			oldExecutable := hubExecutable
-			hubExecutable = func() (string, error) { return filepath.Join(root, "evener-hub"), nil }
+			hubExecutable = func() (string, error) { return filepath.Join(root, "evener"), nil }
 			t.Cleanup(func() { hubExecutable = oldExecutable })
 			if err := os.WriteFile(filepath.Join(root, "evener"), []byte("#!/bin/sh\n"), 0o755); err != nil {
 				t.Fatal(err)
@@ -120,17 +120,16 @@ func FuzzFinalMainProcessBoundary(f *testing.F) {
 	f.Add(false)
 	f.Add(true)
 	f.Fuzz(func(t *testing.T, fail bool) {
-		oldRun, oldExit := hubRunMain, hubExit
-		t.Cleanup(func() { hubRunMain, hubExit = oldRun, oldExit })
-		exited := 0
+		oldRun := hubRunMain
+		t.Cleanup(func() { hubRunMain = oldRun })
 		hubRunMain = func([]string, io.Writer, mainDeps) error {
 			if fail {
 				return errors.New("stop")
 			}
 			return nil
 		}
-		hubExit = func(code int) { exited = code }
-		main()
+		var stderr bytes.Buffer
+		exited := Run(nil, nil, nil, &stderr)
 		if fail && exited != 1 {
 			t.Fatalf("exit code = %d", exited)
 		}

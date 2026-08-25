@@ -1,7 +1,7 @@
 # Failure modes — symptom → what it is → confirm with → mechanics
 
 A recognize/diagnose table. Each row: the **symptom** you notice, **what it
-actually is**, the exact **`evener-doctor`** invocation (and durable record) that
+actually is**, the exact **`evener doctor`** invocation (and durable record) that
 confirms it, and the **mechanics** behind it. The doctor persona's "known
 gotchas" are seeded from this. Cite Go **symbols**, never `file:line`.
 
@@ -17,7 +17,7 @@ gotchas" are seeded from this. Cite Go **symbols**, never `file:line`.
   (Self-influence itself is **normal**: watches always deliver, and a
   self-influenced delivery is informed by a depth-gradient line, not dropped. The
   failure is only the *unbounded* case the fuse had to terminate.)
-- **Confirm:** `evener-doctor watches <sel> --self-loops` — it surfaces only watches
+- **Confirm:** `evener doctor watches <sel> --self-loops` — it surfaces only watches
   whose fuse fired. A watch with `runaway_drops > 0` is confirmed; its
   `max_self_influence_depth` reached the fuse. A merely self-influenced but
   **bounded** watch (`runaway_drops == 0`) is healthy and is **not** listed.
@@ -34,7 +34,7 @@ gotchas" are seeded from this. Cite Go **symbols**, never `file:line`.
 - **Symptom:** `grep -c watch_send_pending jobs.jsonl` says N; the real delivery
   count is lower.
 - **What it is:** pending frames **coalesce latest-wins** into one delivery.
-- **Confirm:** `evener-doctor watches <sel>` — the `distinct deliveries (… ) from N
+- **Confirm:** `evener doctor watches <sel>` — the `distinct deliveries (… ) from N
   pending lines` line, with `[latest-wins coalescing collapsed — expected]` when
   they differ.
 - **Mechanics:** `jobstore.FoldWatchSends` coalesces by `WatchSendKey` +
@@ -47,11 +47,11 @@ gotchas" are seeded from this. Cite Go **symbols**, never `file:line`.
   not terminal; the three terminals are delivered, dropped, **evicted**. A drop is
   a real non-delivery (carries a `DiagnosticReason`); an eviction is a coalesced-out
   pending frame.
-- **Confirm:** `evener-doctor watches <sel>` shows each settled delivery's terminal
+- **Confirm:** `evener doctor watches <sel>` shows each settled delivery's terminal
   + `reason=`; the per-watch line breaks out `(X delivered, Y dropped, Z evicted)`.
 - **Mechanics:** `jobstore.EventWatchSendDelivered` / `…Dropped` / `…Evicted`.
   `FoldWatchSends` returns only **pending** state (discards terminal payloads), so
-  `evener-doctor watches` reads terminals from a raw event scan
+  `evener doctor watches` reads terminals from a raw event scan
   (`Event.WatchSend *WatchSendState`), deduped by `DeliveryID`.
 
 ---
@@ -62,7 +62,7 @@ gotchas" are seeded from this. Cite Go **symbols**, never `file:line`.
 - **Symptom:** "the agent called `delegate_send` 5 times" — but it never did.
 - **What it is:** the tool **name appears as text** in assistant prose — not a
   structural invocation.
-- **Confirm:** `evener-doctor transcript <sel> --count delegate_send` →
+- **Confirm:** `evener doctor transcript <sel> --count delegate_send` →
   `delegate_send: 0 calls (1 textual mention(s) in assistant text — not invocations)`.
 - **Mechanics:** a real call is a content part with `Kind == llm.ContentToolCall`
   and `ToolCall.Name == <tool>` (`writeAssistantContent`'s predicate). Substring
@@ -74,7 +74,7 @@ gotchas" are seeded from this. Cite Go **symbols**, never `file:line`.
 - **What it is:** the parser guessed the JSONL shape (looked for top-level keys; a
   tool call is nested at `entry.Turn.Message.Content[].ToolCall.Name`; a steering
   turn is `schema.TurnSteering`).
-- **Confirm:** `evener-doctor transcript <sel> --format outline` (turn map) and
+- **Confirm:** `evener doctor transcript <sel> --format outline` (turn map) and
   `--count <tool>`. The result tool resolves via `effectiveResultToolName`
   (`meta.Config.ResultToolName` else `communicate`).
 - **Mechanics:** `transcript.Entry{Kind, Seq, Turn}` wraps a `schema.Turn`; the
@@ -90,7 +90,7 @@ gotchas" are seeded from this. Cite Go **symbols**, never `file:line`.
   place; `find` across one bucket misses them.
 - **What it is:** parent / delegate / observer sessions live in **different
   project-hash buckets** (origin/cwd differ).
-- **Confirm:** `evener-doctor tree <sel> --observers` links them — delegate edges
+- **Confirm:** `evener doctor tree <sel> --observers` links them — delegate edges
   from the root `delegatestore.Fold` (each stable descriptor resolves its child
   transcript ref, so a cross-bucket child links), observer edges from
   `schema.SessionMeta.ObservedBy`.
@@ -103,17 +103,17 @@ gotchas" are seeded from this. Cite Go **symbols**, never `file:line`.
 ## Mechanics shapes (architecture.md / job-control.md)
 
 These are real failure modes; map each to the durable record that confirms it,
-and be honest where `evener-doctor` cannot yet confirm one directly.
+and be honest where `evener doctor` cannot yet confirm one directly.
 
 | Symptom | What it is | Confirm with |
 |---|---|---|
-| A coordinator stops reacting ("deaf coordinator"); turns stall | the agent loop is wedged or a watch-outbox drain stalled (`docs/architecture.md` level-by-level coordinator / single-hop forwarding) | `evener-doctor transcript <sel> --format outline` (last turns) + `evener-doctor watches <sel>` (undrained pending); root-cause is partly live-only — say so |
-| A shell job or stable delegate shows `runtime_lost` / `supervision_lost` | the runtime vanished (`docs/job-control.md` status/reason) | `evener-doctor jobs <sel>` reads shell JobRecords and stable delegate aggregates without repairing either journal |
-| `legacy_delegate_state` | retired delegate activation JobRecords remain in `jobs.jsonl`; flag-day restore must refuse them | `evener-doctor jobs <sel>` reports the exact fail-closed code and IDs; do not migrate or delete the evidence |
-| `legacy_delegate_watch_state` | a watch still addresses a retired delegate activation job | `evener-doctor jobs <sel>` reports the exact fail-closed code and watch IDs; start from fresh compatible state |
-| A hook blocked or failed a tool | `hook_blocked` / `hook_failed` (`docs/hooks.md`) | not yet a `evener-doctor` view — read the transcript turn; emit category `hook_blocked`/`hook_failed` |
-| A provider error stalled a call | `provider_error` (`docs/llm-providers.md`) | `evener-doctor apilog <sel> --errors` reads canonical attempt outcomes. Correlate `attempt_group_id` with semantic turn provenance when a model-produced assistant turn exists. A terminal provider failure may exist only in the API log: no assistant turn is appended, so there is no assistant-turn join to require or infer. |
+| A coordinator stops reacting ("deaf coordinator"); turns stall | the agent loop is wedged or a watch-outbox drain stalled (`docs/architecture.md` level-by-level coordinator / single-hop forwarding) | `evener doctor transcript <sel> --format outline` (last turns) + `evener doctor watches <sel>` (undrained pending); root-cause is partly live-only — say so |
+| A shell job or stable delegate shows `runtime_lost` / `supervision_lost` | the runtime vanished (`docs/job-control.md` status/reason) | `evener doctor jobs <sel>` reads shell JobRecords and stable delegate aggregates without repairing either journal |
+| `legacy_delegate_state` | retired delegate activation JobRecords remain in `jobs.jsonl`; flag-day restore must refuse them | `evener doctor jobs <sel>` reports the exact fail-closed code and IDs; do not migrate or delete the evidence |
+| `legacy_delegate_watch_state` | a watch still addresses a retired delegate activation job | `evener doctor jobs <sel>` reports the exact fail-closed code and watch IDs; start from fresh compatible state |
+| A hook blocked or failed a tool | `hook_blocked` / `hook_failed` (`docs/hooks.md`) | not yet a `evener doctor` view — read the transcript turn; emit category `hook_blocked`/`hook_failed` |
+| A provider error stalled a call | `provider_error` (`docs/llm-providers.md`) | `evener doctor apilog <sel> --errors` reads canonical attempt outcomes. Correlate `attempt_group_id` with semantic turn provenance when a model-produced assistant turn exists. A terminal provider failure may exist only in the API log: no assistant turn is appended, so there is no assistant-turn join to require or infer. |
 
-Where a shape has no first-class `evener-doctor` confirm path yet, that gap is a
+Where a shape has no first-class `evener doctor` confirm path yet, that gap is a
 candidate for the next subcommand or runbook — note it in the Finding rather than
 pretending the tool covers it.

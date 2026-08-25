@@ -1,4 +1,4 @@
-package main
+package hub
 
 import (
 	"encoding/json"
@@ -165,6 +165,7 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/api/git/head", s.handleApiGitHead)
 	mux.HandleFunc("/api/search", s.handleApiSearch)
 	mux.HandleFunc("/api/health", s.handleAPIHealth)
+	mux.HandleFunc("/api/mobile/pairing", s.handleAPIMobilePairing)
 	mux.HandleFunc("/api/upgrade", s.handleAPIUpgrade)
 	mux.HandleFunc("/api/tree/project", s.handleAPITreeProject)
 	mux.HandleFunc("/api/tree", s.handleAPITree)

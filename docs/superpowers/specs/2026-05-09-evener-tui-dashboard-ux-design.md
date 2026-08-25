@@ -6,7 +6,7 @@ Linear: PRI-1542
 
 ## Summary
 
-`evener-tui` should open as a live operations console, not as a history browser. The home dashboard shows only live sessions, grouped by project. From there, a user can drill into a project to see that project's live sessions plus recent ended sessions, or open any session into a chat-first workspace.
+`evener tui` should open as a live operations console, not as a history browser. The home dashboard shows only live sessions, grouped by project. From there, a user can drill into a project to see that project's live sessions plus recent ended sessions, or open any session into a chat-first workspace.
 
 The session workspace is not a modal child of the dashboard. It is a peer workspace with its own focus stack. `esc` belongs to session focus: it moves from composing into transcript browse/fork mode and back again. Returning to the dashboard is explicit through a global overview action (`ctrl+o`) or `/dashboard`.
 
@@ -454,7 +454,7 @@ Unit tests:
 
 Integration tests:
 
-- Start `evener-tui` with a hub tree containing live and ended sessions; root renders live only.
+- Start `evener tui` with a hub tree containing live and ended sessions; root renders live only.
 - Open a live session, replay transcript, and tail a live event without duplicate messages.
 - Open an ended project session and resume it through hub.
 - Clear a session and verify the TUI navigates to the new returned ref.
@@ -470,7 +470,7 @@ Manual UX checks:
 
 ## Acceptance Criteria
 
-- `evener-tui` starts on a live-only project-grouped dashboard.
+- `evener tui` starts on a live-only project-grouped dashboard.
 - A user can drill from dashboard project header to project view.
 - Project view shows live sessions first and recent project history second.
 - Opening a session gives a chat-first workspace.

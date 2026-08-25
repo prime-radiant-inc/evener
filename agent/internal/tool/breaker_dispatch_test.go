@@ -42,11 +42,11 @@ func registerBreakerFake(t *testing.T, r *Registry, name string, fn func(calls i
 	t.Helper()
 	fake := &breakerFake{fn: fn}
 	err := r.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{
+		Definition: llm.ToolDefinition{
 			Name:        name,
 			Description: "breaker test fake",
 			Parameters:  map[string]any{"type": "object"},
-		}},
+		},
 		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
 			fake.calls++
 			return fake.fn(fake.calls)
@@ -398,11 +398,11 @@ func TestBreakerDispatch_DifferentLargeErrorsUnderTruncationDoNotPark(t *testing
 	r := NewRegistry()
 	calls := 0
 	err := r.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{
+		Definition: llm.ToolDefinition{
 			Name:        "verbose",
 			Description: "breaker test fake",
 			Parameters:  map[string]any{"type": "object"},
-		}},
+		},
 		Limit: schema.ToolOutputLimit{MaxChars: 80, Strategy: schema.TruncTail},
 		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
 			calls++

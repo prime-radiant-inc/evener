@@ -395,14 +395,12 @@ func FuzzGenerateCore(f *testing.F) {
 				c.Register(objAdapter())
 				p := "give me an object"
 				return GenerateObjectOptions{
-					GenerateOptions: GenerateOptions{
-						Client:   c,
-						Model:    "m",
-						Provider: "stub",
-						Prompt:   &p,
-						Sleep:    noSleep,
-					},
-					Schema: objSchema,
+					Client:   c,
+					Model:    "m",
+					Provider: "stub",
+					Prompt:   &p,
+					Sleep:    noSleep,
+					Schema:   objSchema,
 				}
 			}
 

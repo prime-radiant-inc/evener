@@ -8,9 +8,9 @@ help text, and tests should refer to those rows instead of hard-coding names.
 | Variable | Description |
 |---|---|
 | `EVENER_ALLOWED_DECISIONS` | Restricts tool-decision modes allowed by the active profile. |
-| `EVENER_HUB_ADDR` | Default hub address for `evener-tui`. |
-| `EVENER_HUB_AUTH_TOKEN` | Hub capability token for `evener-tui`. |
-| `EVENER_HUB_BIN` | Path to the `evener-hub` binary used by `evener-tui` autostart. |
+| `EVENER_HUB_ADDR` | Default hub address for `evener tui`. |
+| `EVENER_HUB_AUTH_TOKEN` | Hub capability token for `evener tui`. |
+| `EVENER_HUB_BIN` | Path to the `evener hub` binary used by `evener tui` autostart. |
 | `EVENER_LOGIN_HEADLESS` | Overrides OpenAI login flow detection: `1` for device-code, `0` for browser. |
 | `EVENER_MODEL` | Default model as `provider/model` when `--model` is omitted. |
 | `EVENER_OPENAI_RESPONSES_CONTINUATION` | Default OpenAI Responses continuation mode: `off` or `auto`. The default is `off`; `--openai-responses-continuation` and hub launch settings override it. On resume, an explicit launch value layers over the persisted session snapshot. `auto` is reserved for future continuation enablement and may allow provider-side storage/retention and affect provider-token/cost behavior. |
@@ -18,8 +18,8 @@ help text, and tests should refer to those rows instead of hard-coding names.
 | `EVENER_PROVIDERS_CONFIG` | Path to `providers.toml`. |
 | `EVENER_REASONING_EFFORT` | Default reasoning effort: `minimal`, `low`, `medium`, `high`, `xhigh`, `max`, or `none`. |
 | `EVENER_SESSION_ORIGIN` | Marks a session's launch origin (e.g. `test`) so the hub groups agentic-test runs. |
-| `EVENER_STATE_DIR` | Overrides the per-invocation project/session state directory (`evener run --state-dir`, hub-spawned daemons, `evener-doctor`); does not override the Evener state root (see `XDG_STATE_HOME`). |
-| `EVENER_TUI_LOG_FILE` | Writes `evener-tui` startup diagnostics to this file. |
+| `EVENER_STATE_DIR` | Overrides the per-invocation project/session state directory (`evener run --state-dir`, hub-spawned daemons, `evener doctor`); does not override the Evener state root (see `XDG_STATE_HOME`). |
+| `EVENER_TUI_LOG_FILE` | Writes `evener tui` startup diagnostics to this file. |
 | `LLM_MODEL` | Model for `llmcall` when `--model` is unset; checked before `EVENER_MODEL`. |
 | `LLM_PROVIDER` | Provider for `llmcall` when `--provider` is unset; checked before `EVENER_PROVIDER`. |
 
@@ -30,10 +30,10 @@ set them by hand.
 
 | Variable | Description |
 |---|---|
-| `EVENER_HUB_SPAWNED` | Set by `evener-hub` for spawned `evener serve` daemons. |
-| `EVENER_HUB_SPAWNED_CODEX` | Set by `evener-hub` for spawned Codex app-server processes. |
+| `EVENER_HUB_SPAWNED` | Set by `evener hub` for spawned `evener serve` daemons. |
+| `EVENER_HUB_SPAWNED_CODEX` | Set by `evener hub` for spawned Codex app-server processes. |
 | `EVENER_HUB_TOKEN` | Per-hub bearer token passed to spawned `evener serve` daemons. |
-| `EVENER_RUN_DIR` | Rendezvous directory passed by `evener-hub` to spawned daemons. |
+| `EVENER_RUN_DIR` | Rendezvous directory passed by `evener hub` to spawned daemons. |
 | `EVENER_SCRATCH_DIR` | Evener-provided private scratch directory for one live session. It may be deleted when the session closes or Evener restarts; move durable artifacts into the workspace or another durable location. |
 
 ## Provider Configuration
@@ -107,5 +107,5 @@ process environments.
 | `EVENER_RECORD_APPWIRE` | Records raw AppWire WebSocket frames to `appwire-frames.jsonl` (under the state root) for fuzz-corpus harvesting when set to `1`, `true`, `yes`, or `on`. Default off; no behavior change when unset. |
 | `EVENER_RECORD_HTTP` | Records inbound hub HTTP requests to `hub-http.jsonl` (under the state root) for fuzz-corpus harvesting when set to `1`, `true`, `yes`, or `on`. Default off; no behavior change when unset. |
 | `EVENER_FUZZ_RECORD` | Master switch enabling the AppWire and hub HTTP fuzz-corpus recorders by default when set to `1`, `true`, `yes`, or `on`. A per-recorder variable (`EVENER_RECORD_APPWIRE`/`EVENER_RECORD_HTTP`) overrides it. Intended for local development; unset everywhere else. Provider attempts are recorded independently in each attached session API log. |
-| `EVENER_FUZZ_CAPTURE_ENV` | Marks a dedicated capture box so `evener-fuzz-harvest --keep-values` is permitted (real, unscrubbed values; local-only, never committed). Ignored for a personal evener state root source. |
+| `EVENER_FUZZ_CAPTURE_ENV` | Marks a dedicated capture box so `evener fuzz-harvest --keep-values` is permitted (real, unscrubbed values; local-only, never committed). Ignored for a personal evener state root source. |
 | `OPENAI_CHATGPT_CLIENT_ID` | OpenAI OAuth client id override for tests and development. |

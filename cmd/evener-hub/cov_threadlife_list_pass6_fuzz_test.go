@@ -1,4 +1,4 @@
-package main
+package hub
 
 import (
 	"context"
@@ -87,14 +87,13 @@ func FuzzThreadLifecycleListPass6(f *testing.F) {
 		registry := appsource.NewRegistry()
 		registry.Add(source)
 
-		okSpawner := &fakeRPCModelContractSpawner{fakeRPCSpawner: fakeRPCSpawner{
+		okSpawner := &fakeRPCModelContractSpawner{
 			spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
 				return rendezvous.Entry{ThreadID: "past", SessionID: "past", PID: 7}, nil
 			},
 			resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
 				return rendezvous.Entry{ThreadID: "past", SessionID: "past", PID: 7}, nil
-			},
-		}, contract: appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}}
+			}, contract: appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}}
 		cfg := hubcore.WebConfig{HubStateRoot: t.TempDir(), Past: past, Spawner: okSpawner}
 
 		_ = launchSourceID(appwire.ThreadStartParams{Harness: "evener"})
@@ -114,14 +113,13 @@ func FuzzThreadLifecycleListPass6(f *testing.F) {
 		source.turnErr = errors.New("turn")
 		_, _ = hubThreadStart(ctx, cfg, registry, appwire.ThreadStartParams{Model: "openai/gpt-5", Input: []appwire.InputItem{{Type: "text", Text: "go"}}})
 		source.turnErr = nil
-		failSpawner := &fakeRPCModelContractSpawner{fakeRPCSpawner: fakeRPCSpawner{
+		failSpawner := &fakeRPCModelContractSpawner{
 			spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
 				return rendezvous.Entry{}, errors.New("spawn")
 			},
 			resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
 				return rendezvous.Entry{}, errors.New("resume")
-			},
-		}, contract: appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}}
+			}, contract: appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}}}
 		_, _ = hubThreadStart(ctx, hubcore.WebConfig{Spawner: failSpawner, HubStateRoot: t.TempDir()}, registry, appwire.ThreadStartParams{Model: "openai/gpt-5"})
 		emptyReg := appsource.NewRegistry()
 		_, _ = hubThreadStart(ctx, cfg, emptyReg, appwire.ThreadStartParams{Model: "openai/gpt-5"})

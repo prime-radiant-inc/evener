@@ -10,7 +10,7 @@
 
 **Depends on:** Pass 1 — tokens listed below must already exist on `:root` and the Google Fonts link must already be loaded in `app.html`.
 
-**Tech stack:** CSS, manual visual verification in `evener-hub` running locally on `127.0.0.1:9180`.
+**Tech stack:** CSS, manual visual verification in `evener hub` running locally on `127.0.0.1:9180`.
 
 ---
 
@@ -143,13 +143,13 @@ Voice-by-surface map (paste this on the side of your monitor):
   .mono { font-family: var(--font-mono); }
   ```
 
-- [ ] **Step 3 — verify visually.** Build the hub (`make build-hub`) and run it locally (`./evener-hub`). Open `http://127.0.0.1:9180`. Body prose should now render in Hanken Grotesk. Anything that explicitly sets `font-family: ui-monospace, ...` will still be in the system mono (we migrate those in later tasks). Open dev tools, inspect `<body>`, confirm computed `font-family` resolves to `"Hanken Grotesk", -apple-system, ...`.
+- [ ] **Step 3 — verify visually.** Build the hub (`make build-hub`) and run it locally (`./evener`). Open `http://127.0.0.1:9180`. Body prose should now render in Hanken Grotesk. Anything that explicitly sets `font-family: ui-monospace, ...` will still be in the system mono (we migrate those in later tasks). Open dev tools, inspect `<body>`, confirm computed `font-family` resolves to `"Hanken Grotesk", -apple-system, ...`.
 
 - [ ] **Step 4 — commit.**
   ```
   ui: switch body font-family to --font-sans; add .mono utility
 
-  Pass 2 of the evener-hub typography migration. Body now inherits Hanken
+  Pass 2 of the evener hub typography migration. Body now inherits Hanken
   Grotesk; .mono is the escape hatch for spans that need explicit mono
   without a dedicated class.
   ```
@@ -1398,7 +1398,7 @@ Voice-by-surface map (paste this on the side of your monitor):
 
 - [ ] **Step 1 — build.** Run `make build-hub` from the repo root. Confirm the binary builds clean. Run `make test` to make sure no Go test cares about CSS bytes. Run `make lint-naming` to confirm namingcheck still passes.
 
-- [ ] **Step 2 — visual sweep.** Launch `./evener-hub` against a working hub config and walk every surface in both themes:
+- [ ] **Step 2 — visual sweep.** Launch `./evener` against a working hub config and walk every surface in both themes:
 
   | Surface | Check |
   | --- | --- |
@@ -1445,7 +1445,7 @@ Voice-by-surface map (paste this on the side of your monitor):
   ```
   ui: pass 2 — verify type migration across surfaces, document exceptions
 
-  Closes Pass 2 of the evener-hub UI overhaul. All font-size, font-family,
+  Closes Pass 2 of the evener hub UI overhaul. All font-size, font-family,
   and line-height declarations in style.css now reference tokens, except
   for the documented exceptions (9px carets, 0.85em inline code, line-
   height: 1 on icon-aligned chrome).

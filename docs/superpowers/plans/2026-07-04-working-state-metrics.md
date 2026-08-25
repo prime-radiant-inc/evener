@@ -4,7 +4,7 @@
 
 **Goal:** Wire the already-collected working-state and token-usage data end-to-end — persist per-session work time and cumulative token totals, surface them (plus current-turn elapsed) in one consolidated status row across web and TUI, relocate the floating liveness line into that row, and delete the ghost header poller.
 
-**Architecture:** The daemon (agent module) holds `createdAt`/`workMillis`/cumulative-usage in-memory, seeds them from `SessionMeta` on restore, accumulates work at the single per-turn terminal boundary (`finishProcessingAtBoundary`, including the `Close()`-mid-turn case), and persists them via `Meta()`/autosave. A new `EventTurnEnded` carries per-turn duration to the appwire projector; metrics ride the wire on `appwire.EvenerThread` (pointer `Usage`), on the REST `StatusInfo`, and (for ended sessions) through the `WorkspaceData`→`SessionDetail` carrier chain. The hub web UI renders one status row fed by a lean `/state` fetch, refreshed event-driven (`evener-hub:status-refresh`) with a 30s fallback and a client 10s tick; quiet/stall liveness moves into that row's spans. The TUI mirrors the fields onto `hubSessionDetail`.
+**Architecture:** The daemon (agent module) holds `createdAt`/`workMillis`/cumulative-usage in-memory, seeds them from `SessionMeta` on restore, accumulates work at the single per-turn terminal boundary (`finishProcessingAtBoundary`, including the `Close()`-mid-turn case), and persists them via `Meta()`/autosave. A new `EventTurnEnded` carries per-turn duration to the appwire projector; metrics ride the wire on `appwire.EvenerThread` (pointer `Usage`), on the REST `StatusInfo`, and (for ended sessions) through the `WorkspaceData`→`SessionDetail` carrier chain. The hub web UI renders one status row fed by a lean `/state` fetch, refreshed event-driven (`evener hub:status-refresh`) with a 30s fallback and a client 10s tick; quiet/stall liveness moves into that row's spans. The TUI mirrors the fields onto `hubSessionDetail`.
 
 **Tech Stack:** Go (agent module: session/events/contextmgr/schema; root module: server, internal/appprojector, cmd/evener-hub, cmd/evener-tui; appwire wire types), htmx + vanilla JS (status row, liveness relocation), jstest (JSDOM).
 
@@ -287,7 +287,7 @@ Adds the sealed event + payload the boundary emits (A4 references it; land the t
     }
     ```
   - Add to `EvenerThread` (after `Goal`, line ~196): `Usage *EvenerUsage \`json:"usage,omitempty"\``, `WorkMillis int64 \`json:"workMillis,omitempty"\``, `ActiveTurnStartedAt int64 \`json:"activeTurnStartedAt,omitempty"\``. (Pointer for Usage per L5 — a value struct's `omitempty` never omits.)
-  - **No catalog change:** the catalog (`TestDaemonRouterMatchesCatalog`) enumerates `Method*`/`Notify*` constants only; adding struct fields does not touch it. If A7 surfaces a need for a new appwire *method*, STOP — that is a surfaced ambiguity and a one-commit atom across the catalog + both routers (server + evener-hub) with the bidirectional cross-checks; do not fold it in silently.
+  - **No catalog change:** the catalog (`TestDaemonRouterMatchesCatalog`) enumerates `Method*`/`Notify*` constants only; adding struct fields does not touch it. If A7 surfaces a need for a new appwire *method*, STOP — that is a surfaced ambiguity and a one-commit atom across the catalog + both routers (server + evener hub) with the bidirectional cross-checks; do not fold it in silently.
 - [ ] **Implement — daemon accessors** (`agent`): add three Session methods (in `agent/session_state.go` or a small `agent/session_metrics.go`):
   ```go
   func (s *Session) WorkMillisSnapshot() int64 { s.mu.Lock(); defer s.mu.Unlock(); return s.workMillis }
@@ -362,14 +362,14 @@ Adds the sealed event + payload the boundary emits (A4 references it; land the t
 
 ### Task B4 — Event-driven refresh wiring (dispatch + 30s fallback + 10s active tick)
 
-- [ ] **Failing test (jstest)** — add `cmd/evener-hub/jstest/test-status-refresh.js` (plain Node/JSDOM script, `pass()`/`process.exit`): stub htmx (`window.htmx = { trigger: (el, name) => { triggers.push([el, name]); } }`); drive the renderer's `THREAD_STATUS_CHANGED`, `turn/started`, `turn/completed` paths; assert each fires `htmx.trigger(document.body, "evener-hub:status-refresh")` (NOT `document.dispatchEvent` — an `every … from:body` listener never sees a `dispatchEvent`). Assert the 10s tick fires a refresh only while a turn is active. Run `cd cmd/evener-hub/jstest && NODE_PATH=… node test-status-refresh.js` → fail.
-- [ ] **Implement — template trigger** (`cmd/evener-hub/templates/partials/workspace.html` ~104–110): change `#input-status` `hx-trigger` from `load, every 2s` to `load, evener-hub:status-refresh from:body, every 30s`.
+- [ ] **Failing test (jstest)** — add `cmd/evener-hub/jstest/test-status-refresh.js` (plain Node/JSDOM script, `pass()`/`process.exit`): stub htmx (`window.htmx = { trigger: (el, name) => { triggers.push([el, name]); } }`); drive the renderer's `THREAD_STATUS_CHANGED`, `turn/started`, `turn/completed` paths; assert each fires `htmx.trigger(document.body, "evener hub:status-refresh")` (NOT `document.dispatchEvent` — an `every … from:body` listener never sees a `dispatchEvent`). Assert the 10s tick fires a refresh only while a turn is active. Run `cd cmd/evener-hub/jstest && NODE_PATH=… node test-status-refresh.js` → fail.
+- [ ] **Implement — template trigger** (`cmd/evener-hub/templates/partials/workspace.html` ~104–110): change `#input-status` `hx-trigger` from `load, every 2s` to `load, evener hub:status-refresh from:body, every 30s`.
 - [ ] **Implement — dispatch** (`cmd/evener-hub/assets/renderer.js`):
-  - In `THREAD_STATUS_CHANGED` (~899–910), alongside the existing `document.dispatchEvent(evener-hub:thread-status)`, add `if (window.htmx) window.htmx.trigger(document.body, "evener-hub:status-refresh");`.
-  - At the `turn/started` and `turn/completed` handling sites (the frame handlers that process `NotifyTurnStarted`/`NotifyTurnCompleted`), fire the same `htmx.trigger(document.body, "evener-hub:status-refresh")`.
-  - Add a client 10s tick: while `this.state === "active"`, `setInterval(() => window.htmx && window.htmx.trigger(document.body, "evener-hub:status-refresh"), 10000)` (context-gauge + work-time freshness), started on entering active and cleared on leaving/teardown (mirror `startLivenessTimer` lifecycle at ~2088–2091 and the teardown at ~106–109).
+  - In `THREAD_STATUS_CHANGED` (~899–910), alongside the existing `document.dispatchEvent(evener hub:thread-status)`, add `if (window.htmx) window.htmx.trigger(document.body, "evener hub:status-refresh");`.
+  - At the `turn/started` and `turn/completed` handling sites (the frame handlers that process `NotifyTurnStarted`/`NotifyTurnCompleted`), fire the same `htmx.trigger(document.body, "evener hub:status-refresh")`.
+  - Add a client 10s tick: while `this.state === "active"`, `setInterval(() => window.htmx && window.htmx.trigger(document.body, "evener hub:status-refresh"), 10000)` (context-gauge + work-time freshness), started on entering active and cleared on leaving/teardown (mirror `startLivenessTimer` lifecycle at ~2088–2091 and the teardown at ~106–109).
 - [ ] **Run** the new jstest → pass; sanity-run existing renderer jstests to confirm no break. Run `go test ./cmd/evener-hub/... -run 'State|Workspace' -count=1` (template still parses).
-- [ ] **Commit** — `git add cmd/evener-hub/templates/partials/workspace.html cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-status-refresh.js` → `feat(hub-web): event-driven status-row refresh (evener-hub:status-refresh + 30s fallback + 10s active tick)`.
+- [ ] **Commit** — `git add cmd/evener-hub/templates/partials/workspace.html cmd/evener-hub/assets/renderer.js cmd/evener-hub/jstest/test-status-refresh.js` → `feat(hub-web): event-driven status-row refresh (evener hub:status-refresh + 30s fallback + 10s active tick)`.
 
 ### Task B5 — Relocate liveness into the status row; re-bind across swaps; port both jstest suites
 
@@ -398,7 +398,7 @@ Adds the sealed event + payload the boundary emits (A4 references it; land the t
 
 ### Task C2 — End-to-end scenario cards
 
-Use the e2e-scenario-testing skill. Build fresh binaries (`go build -o /tmp/evener ./cmd/evener`, `evener-hub`, `evener-tui`), run a live model per `reference_evener_live_run` (`--model oai-work/<model>`), and author falsifiable scenario cards:
+Use the e2e-scenario-testing skill. Build fresh binaries (`go build -o /tmp/evener ./cmd/evener`, `evener hub`, `evener tui`), run a live model per `reference_evener_live_run` (`--model oai-work/<model>`), and author falsifiable scenario cards:
 
 - [ ] **Card: turn completes → metrics advance across surfaces.** Start a session, send one prompt to completion; assert the web status row and the TUI show a non-zero work time and non-zero `↑/↓` tokens that increased from before the turn.
 - [ ] **Card: interrupt → work time advances.** Start a long turn, interrupt it; assert work time increased (interrupted turns count) and the turn renders `interrupted` (not `completed`) — validates the A6 status-preservation refinement.

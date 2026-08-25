@@ -347,8 +347,7 @@ func TestAPILogErrorSanitizationDetachesOriginalErrorBehavior(t *testing.T) {
 	if errors.Is(flat, raw) || errors.Is(flat, cause) || errors.Unwrap(flat) != nil {
 		t.Fatalf("sanitized error retained original graph: %v", flat)
 	}
-	var recovered *recoverableAPILogError
-	if errors.As(flat, &recovered) {
+	if recovered, ok := errors.AsType[*recoverableAPILogError](flat); ok {
 		t.Fatalf("sanitized error recovered raw object: %#v", recovered)
 	}
 

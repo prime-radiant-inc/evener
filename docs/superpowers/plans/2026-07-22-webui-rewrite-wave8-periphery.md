@@ -307,7 +307,7 @@ chokepoint. Steps:
 5. **Barrel (chokepoint `widgets/index.ts`):** add the export line for `ModelCatalog` (and any new
    shared widget T3/T4/T5 report needing a barrel entry — collected at dispatch, appended once).
 6. **Gate:** full suite (tsc→vitest, count up); `npm run build` + restore placeholder; Biome; **live
-   smoke** against a fake-`$HOME` hub (`evener-hub` holds a host-global flock at `$HOME/.evener/hub.lock`
+   smoke** against a fake-`$HOME` hub (`evener hub` holds a host-global flock at `$HOME/.evener/hub.lock`
    — `.superpowers/project_web_rearchitecture_study`; W5 close lesson): `/thread/{ref}` opens one
    chrome-stripped pane with a live composer, `/settings/providers` lands on credentials, the interim
    model picker still works (widget stub), an empty doc-open call no-ops cleanly. Suggested tier:

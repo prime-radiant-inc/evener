@@ -1,4 +1,4 @@
-package main
+package fuzzharvest
 
 import (
 	"bytes"
@@ -50,8 +50,7 @@ func scenarioAbortGateCatchesSecretInEnumValue(t *testing.T) {
 	if err == nil {
 		t.Fatalf("Process did NOT abort on a secret in an enum value; output=%s", out)
 	}
-	var leak *SecretLeakError
-	if !errors.As(err, &leak) {
+	if _, ok := errors.AsType[*SecretLeakError](err); !ok {
 		t.Fatalf("expected *SecretLeakError, got %T: %v", err, err)
 	}
 	if out != nil {
@@ -93,8 +92,7 @@ func scenarioKeepValuesEntropyQuarantineAborts(t *testing.T) {
 	if err == nil {
 		t.Fatal("entropy quarantine did not abort on a high-entropy token")
 	}
-	var leak *SecretLeakError
-	if !errors.As(err, &leak) {
+	if _, ok := errors.AsType[*SecretLeakError](err); !ok {
 		t.Fatalf("expected *SecretLeakError, got %T", err)
 	}
 }

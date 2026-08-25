@@ -1,4 +1,4 @@
-package main
+package hub
 
 import (
 	"fmt"
@@ -30,6 +30,8 @@ var testEnvRoot string
 // leaves it alone, and the parent's single RemoveAll collects everything.
 const testEnvRootVar = "EVENER_HUB_TEST_ENV_ROOT"
 
+const detachHelperRunDirEnv = "EVENER_HUB_DETACH_HELPER_RUN_DIR"
+
 // retiredEvenerEnvVars are names the product no longer declares but that a
 // developer machine may still export from when it did. envvars cannot list them
 // (nothing reads them any more), so they are carried here.
@@ -60,6 +62,10 @@ func productEvenerEnvVars() []envvars.Var {
 }
 
 func TestMain(m *testing.M) {
+	if os.Getenv(detachHelperRunDirEnv) != "" {
+		runDetachFakeDaemon()
+		os.Exit(0)
+	}
 	root, inherited := os.LookupEnv(testEnvRootVar)
 	if inherited {
 		if _, err := os.Stat(root); err != nil {

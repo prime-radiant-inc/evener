@@ -147,7 +147,7 @@ func TestStartHubClientHonorsNoAutoStartForLocalHub(t *testing.T) {
 func TestStartHubClientPassesStateDirAndLogFileToLocalHub(t *testing.T) {
 	stateDir := filepath.Join(t.TempDir(), "state", "evener")
 	logFile := filepath.Join(t.TempDir(), "evener-tui.log")
-	hubBin := filepath.Join(t.TempDir(), "evener-hub")
+	hubBin := filepath.Join(t.TempDir(), "evener")
 	writeExecutable(t, hubBin)
 	var got HubStartRequest
 	started := false
@@ -188,7 +188,7 @@ func TestStartHubClientReloadsAuthTokenAfterAutoStart(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("XDG_STATE_HOME", "")
-	hubBin := filepath.Join(t.TempDir(), "evener-hub")
+	hubBin := filepath.Join(t.TempDir(), "evener")
 	writeExecutable(t, hubBin)
 
 	started := false
@@ -372,7 +372,7 @@ func TestStartupErrorScreenNamesFailureKind(t *testing.T) {
 		err  StartupError
 		want string
 	}{
-		{name: "missing binary", err: StartupError{Kind: StartupErrorMissingHubBinary, Detail: "not found"}, want: "Cannot find evener-hub binary"},
+		{name: "missing binary", err: StartupError{Kind: StartupErrorMissingHubBinary, Detail: "not found"}, want: "Cannot find evener binary (hub subcommand)"},
 		{name: "bind failure", err: StartupError{Kind: StartupErrorBindFailure, Addr: "http://127.0.0.1:9180", Detail: "address already in use"}, want: "Hub failed to bind"},
 		{name: "unhealthy", err: StartupError{Kind: StartupErrorUnhealthyHub, Addr: "http://127.0.0.1:9180", Detail: "timeout"}, want: "did not become healthy"},
 		{name: "incompatible", err: StartupError{Kind: StartupErrorIncompatibleAPI, Addr: "http://127.0.0.1:9180", Detail: "old protocol"}, want: "Hub API is incompatible"},
@@ -449,7 +449,7 @@ func writeExecutable(t *testing.T, path string) {
 
 func writeTempExecutable(t *testing.T) string {
 	t.Helper()
-	path := filepath.Join(t.TempDir(), "evener-hub")
+	path := filepath.Join(t.TempDir(), "evener")
 	writeExecutable(t, path)
 	return path
 }

@@ -31,9 +31,10 @@ type toolDeps struct {
 	emit func(kind events.EventKind, data events.EventData)
 
 	// steering queue access for the communicate handler.
-	steer           func(msg, kind string)
-	drainSteering   func() []steeringMessage
-	prependSteering func(entries []steeringMessage)
+	steer               func(msg, kind string)
+	steerTaskCompletion func(msg string, blockingDelegateIDs []string)
+	drainSteering       func() []steeringMessage
+	prependSteering     func(entries []steeringMessage)
 
 	// abort returns a non-nil error when the session is closing (= Session.abortIfClosing).
 	abort func(ctx context.Context) error
@@ -57,6 +58,10 @@ type toolDeps struct {
 	// taskGuard exposes task-store access and the task reminder bookkeeping,
 	// all guarded by the session's own mutex.
 	taskGuard taskGuard
+
+	// blockingDelegateIDs reports this session's live inline-waited delegates.
+	// Background delegates and terminal delegates are intentionally excluded.
+	blockingDelegateIDs func() []string
 
 	// goalGuard exposes goal-store access. The goal store has its own mutex.
 	goalGuard goalGuard
@@ -125,6 +130,20 @@ type toolDeps struct {
 	openArtifact func(ref string) (artifactReadSeekCloser, error)
 }
 
+// sendTaskCompletionSteering keeps direct toolDeps constructions compatible
+// with the pre-metadata contract: their generic steer callback still delivers
+// the model-visible machine payload and tasks-done kind. Normal sessions take
+// the typed callback branch and retain the parallel event metadata as well.
+func (d *toolDeps) sendTaskCompletionSteering(msg string, blockingDelegateIDs []string) {
+	if d.steerTaskCompletion != nil {
+		d.steerTaskCompletion(msg, blockingDelegateIDs)
+		return
+	}
+	if d.steer != nil {
+		d.steer(msg, events.SteeringKindTasksDone)
+	}
+}
+
 type artifactReadSeekCloser interface {
 	io.ReaderAt
 	io.Seeker
@@ -150,7 +169,6 @@ func (g readGuard) ReadBeforeWriteWarning(path string) string {
 type taskGuard struct {
 	getOrCreateTaskStore func() *taskpkg.TaskStore
 	markUsed             func()
-	setReasoningEffort   func(effort string)
 }
 
 func (g taskGuard) Store() *taskpkg.TaskStore { return g.getOrCreateTaskStore() }
@@ -158,8 +176,6 @@ func (g taskGuard) Store() *taskpkg.TaskStore { return g.getOrCreateTaskStore() 
 // MarkUsed records that the task_list tool was invoked this round (updates the
 // reminder counters under s.mu).
 func (g taskGuard) MarkUsed() { g.markUsed() }
-
-func (g taskGuard) SetReasoningEffort(effort string) { g.setReasoningEffort(effort) }
 
 // goalGuard is a thin lazy-accessor facade over the session's goal store.
 // The goal store carries its own mutex (unlike taskGuard which uses s.mu).
@@ -182,13 +198,14 @@ type webDeps struct {
 // unchanged. Built once in registerCoreTools.
 func newToolDeps(s *Session) *toolDeps {
 	return &toolDeps{
-		registerTool:    s.cfg.testOnly.registerTool,
-		emit:            s.emit,
-		steer:           s.SteerKind,
-		drainSteering:   s.drainSteeringForCommunicate,
-		prependSteering: s.prependSteering,
-		abort:           s.abortIfClosing,
-		resultToolName:  s.resultToolName,
+		registerTool:        s.cfg.testOnly.registerTool,
+		emit:                s.emit,
+		steer:               s.SteerKind,
+		steerTaskCompletion: s.SteerTaskCompletion,
+		drainSteering:       s.drainSteeringForCommunicate,
+		prependSteering:     s.prependSteering,
+		abort:               s.abortIfClosing,
+		resultToolName:      s.resultToolName,
 		cmdTimeouts: func() (int, int) {
 			return s.cfg.DefaultCommandTimeoutMS, s.cfg.MaxCommandTimeoutMS
 		},
@@ -204,7 +221,12 @@ func newToolDeps(s *Session) *toolDeps {
 				s.taskToolLastRound = s.totalRounds
 				s.mu.Unlock()
 			},
-			setReasoningEffort: s.SetReasoningEffort,
+		},
+		blockingDelegateIDs: func() []string {
+			if s.delegateController == nil {
+				return nil
+			}
+			return s.delegateController.blockingDelegateIDs(s.delegateRootSessionID, s.owningDelegateID)
 		},
 		goalGuard: goalGuard{
 			getOrCreateGoalStore: s.getOrCreateGoalStore,
@@ -322,7 +344,7 @@ func buildProfileToolRegistry(defs []llm.ToolDefinition) *tool.Registry {
 	reg := tool.NewRegistry()
 	for _, td := range defs {
 		_ = reg.Register(tool.RegisteredTool{
-			Tool:        llm.Tool{Definition: td},
+			Definition:  td,
 			OmitPurpose: td.Name == "communicate",
 			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 				return nil, errors.New("tool executor not wired")

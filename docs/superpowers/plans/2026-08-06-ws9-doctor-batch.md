@@ -1,9 +1,9 @@
-# WS9: evener-doctor Batch Study Tooling Implementation Plan
+# WS9: evener doctor Batch Study Tooling Implementation Plan
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** The next fleet-wide session study is one command plus judgment on
-flagged sessions: evener-doctor gains session enumeration, per-session
+flagged sessions: evener doctor gains session enumeration, per-session
 mechanical health metrics, and a batch runbook driver emitting deduped
 Findings.
 
@@ -43,7 +43,7 @@ scan). The Finding contract and runbook format are
 
 ---
 
-### Task 1: `evener-doctor sessions` — enumeration
+### Task 1: `evener doctor sessions` — enumeration
 
 **Files:**
 - Create: `agent/doctor/sessions.go`, `agent/doctor/sessions_test.go`
@@ -57,7 +57,7 @@ scan). The Finding contract and runbook format are
   `ParentSessionID`, delegate/observer counts (meta `ObservedBy`, jobs
   fold), and an outcome hint: the final `communicate`-family call's
   end_turn/status when the last assistant turn carries one, else `none`.
-  CLI: `evener-doctor sessions [--since DUR] [--bucket B | --all] [--json]`,
+  CLI: `evener doctor sessions [--since DUR] [--bucket B | --all] [--json]`,
   sorted by last activity, human table by default.
 - Consumes: `schema.ListSessionMetas`, transcript reader, existing bucket
   resolution used by `locate`.
@@ -67,9 +67,9 @@ scan). The Finding contract and runbook format are
   filtering, ordering, parent linkage, and the outcome hint.
 - [ ] **Step 2: Implement; test green.**
 - [ ] **Step 3: CLI wiring + help text; `--json` snapshot test.**
-- [ ] **Step 4: Commit** (`feat(evener-doctor): sessions enumeration for batch studies`).
+- [ ] **Step 4: Commit** (`feat(evener doctor): sessions enumeration for batch studies`).
 
-### Task 2: `evener-doctor transcript --health` — mechanical per-session metrics
+### Task 2: `evener doctor transcript --health` — mechanical per-session metrics
 
 **Files:**
 - Create: `agent/doctor/health.go`, `agent/doctor/health_test.go`
@@ -102,20 +102,20 @@ scan). The Finding contract and runbook format are
   run_timeout zero-output job.
 - [ ] **Step 2: Implement; green.**
 - [ ] **Step 3: CLI flag + `--json`; human output is a compact table.**
-- [ ] **Step 4: Commit** (`feat(evener-doctor): transcript --health mechanical session metrics`).
+- [ ] **Step 4: Commit** (`feat(evener doctor): transcript --health mechanical session metrics`).
 
-### Task 3: `evener-doctor audit` — batch runbook driver
+### Task 3: `evener doctor audit` — batch runbook driver
 
 **Files:**
 - Create: `agent/doctor/audit.go`, `agent/doctor/audit_test.go`
 - Modify: `cmd/evener-doctor/main.go`
 
 **Interfaces:**
-- Produces: `evener-doctor audit --runbook NAME --sessions <sel,...> |
+- Produces: `evener doctor audit --runbook NAME --sessions <sel,...> |
   --since DUR [--json]`. Read
   `references/finding-contract.md` first; Findings emitted must satisfy it
   (signature, severity, category, title, description, evidence with the
-  reproducing evener-doctor invocation, suggestedFix routing). The driver:
+  reproducing evener doctor invocation, suggestedFix routing). The driver:
   resolves the session set (reusing Task 1), runs the runbook's mechanical
   checks per session, dedups Findings by `signature` across sessions
   (one Finding, N affected sessions listed in evidence), and prints a
@@ -135,9 +135,9 @@ scan). The Finding contract and runbook format are
   assert dedup, the summary table, and contract-valid Finding JSON.
 - [ ] **Step 2: Implement; green.**
 - [ ] **Step 3: Document the `audit:` block in `writing-runbooks.md`.**
-- [ ] **Step 4: Commit** (`feat(evener-doctor): audit — batch runbook driver with deduped findings`).
+- [ ] **Step 4: Commit** (`feat(evener doctor): audit — batch runbook driver with deduped findings`).
 
-### Task 4: `evener-doctor apilog --health`
+### Task 4: `evener doctor apilog --health`
 
 **Files:**
 - Modify: `agent/doctor/apilog.go`, `cmd/evener-doctor/main.go`
@@ -156,7 +156,7 @@ scan). The Finding contract and runbook format are
 - [ ] **Step 1: Failing test** over a fixture log with a 4-attempt group,
   an unsettled tail, and a 403; assert the verdict fields.
 - [ ] **Step 2: Implement; green; commit**
-  (`feat(evener-doctor): apilog --health one-line session API verdict`).
+  (`feat(evener doctor): apilog --health one-line session API verdict`).
 
 ### Task 5: Study-pattern runbooks + skill doc update
 
@@ -178,7 +178,7 @@ scan). The Finding contract and runbook format are
   routing per the contract.
 
 - [ ] **Step 1: Write the four runbooks; run each through
-  `evener-doctor audit` against the Task 3 fixtures (extend fixtures per
+  `evener doctor audit` against the Task 3 fixtures (extend fixtures per
   runbook so each has one tripping and one healthy session).**
 - [ ] **Step 2: Update SKILL.md's command table.**
 - [ ] **Step 3: Gates green; commit**
@@ -186,9 +186,9 @@ scan). The Finding contract and runbook format are
 
 ## Acceptance (whole workstream)
 
-- `evener-doctor sessions --since 120h --json | wc -l` reproduces the study's
+- `evener doctor sessions --since 120h --json | wc -l` reproduces the study's
   464-session enumeration in one command (manual check against local state).
-- `evener-doctor audit --runbook error-loop --since 120h` surfaces the known
+- `evener doctor audit --runbook error-loop --since 120h` surfaces the known
   loop sessions (034163AU8MmLapfXKT7nMu at minimum) with contract-valid
   Findings.
 - All commands loud-error on unreadable files; zero-finding healthy fixture

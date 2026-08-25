@@ -14,7 +14,6 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/llm"
 )
 
 const (
@@ -140,7 +139,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 	}
 	// shell
 	if err := register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: tool.DefShell()},
+		Definition: tool.DefShell(),
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			shellArgs, err := parseShellToolArgs(args)
 			if err != nil {
@@ -174,7 +173,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 
 	// list_dir (Gemini-aligned)
 	_ = reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: tool.DefListDir(), ReadOnly: true},
+		Definition: tool.DefListDir(), ReadOnly: true,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			path := stringArg(args, "path")
@@ -200,7 +199,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 
 	// grep
 	if err := register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: tool.DefGrep(), ReadOnly: true},
+		Definition: tool.DefGrep(), ReadOnly: true,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			pat := stringArg(args, "pattern")
@@ -230,7 +229,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 
 	// glob
 	if err := register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: tool.DefGlob(), ReadOnly: true},
+		Definition: tool.DefGlob(), ReadOnly: true,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			pat := stringArg(args, "pattern")
 			path := stringArg(args, "path")
@@ -263,7 +262,7 @@ func registerShellTools(reg *tool.Registry, s *Session, deps *toolDeps) error {
 
 	// apply_patch (OpenAI-specific; best-effort implementation lives in this repo)
 	_ = reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: tool.DefApplyPatch()},
+		Definition: tool.DefApplyPatch(),
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			patch := fmt.Sprint(args["patch"])

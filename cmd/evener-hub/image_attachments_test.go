@@ -1,4 +1,4 @@
-package main
+package hub
 
 // Tests for image-attachment round-trip across the evener wire surface (kata
 // t5j6). Each test exercises one of the five inbound paths a client uses to

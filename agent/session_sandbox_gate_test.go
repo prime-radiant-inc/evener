@@ -79,8 +79,7 @@ func TestRestoreFailsClosedWhenHostCannotEnforce(t *testing.T) {
 	if err == nil {
 		t.Fatal("restore on a host that cannot enforce restricted must fail closed")
 	}
-	var ref *sandbox.RefusalError
-	if !errors.As(err, &ref) {
+	if _, ok := errors.AsType[*sandbox.RefusalError](err); !ok {
 		t.Errorf("want a *sandbox.RefusalError, got %T: %v", err, err)
 	}
 }

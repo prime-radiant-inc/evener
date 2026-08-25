@@ -402,7 +402,7 @@ func TestRegister_InvalidNameAndMissingExecutor(t *testing.T) {
 
 	// Invalid tool name (empty).
 	err := r.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: ""}},
+		Definition: llm.ToolDefinition{Name: ""},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
 		},
@@ -413,7 +413,7 @@ func TestRegister_InvalidNameAndMissingExecutor(t *testing.T) {
 
 	// Invalid tool name (space).
 	err = r.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "bad name"}},
+		Definition: llm.ToolDefinition{Name: "bad name"},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
 		},
@@ -424,7 +424,7 @@ func TestRegister_InvalidNameAndMissingExecutor(t *testing.T) {
 
 	// Nil executor.
 	err = r.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "no_exec", Description: "x"}},
+		Definition: llm.ToolDefinition{Name: "no_exec", Description: "x"},
 	})
 	if err == nil || !strings.Contains(err.Error(), "missing executor") {
 		t.Fatalf("expected missing-executor error, got %v", err)
@@ -434,7 +434,7 @@ func TestRegister_InvalidNameAndMissingExecutor(t *testing.T) {
 func TestRegister_BridgesExecuteAndAppliesDefaultLimit(t *testing.T) {
 	r := NewRegistry()
 	if err := r.Register(RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "apply_patch", Description: "x"}},
+		Definition: llm.ToolDefinition{Name: "apply_patch", Description: "x"},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "bridged", nil
 		},

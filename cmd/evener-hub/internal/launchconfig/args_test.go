@@ -14,16 +14,16 @@ func checkToArgs_AllFields(t *testing.T) {
 		ReasoningEffort:             "medium",
 		ContextStrategy:             "compact",
 		OpenAIResponsesContinuation: "auto",
-		MaxRounds:                   ptrInt(200),
-		MaxSubagentDepth:            ptrInt(2),
-		NoProjectPrompts:            ptrBool(true),
-		NonInteractive:              ptrBool(true),
-		AppReplaySize:               ptrInt(4096),
+		MaxRounds:                   new(200),
+		MaxSubagentDepth:            new(2),
+		NoProjectPrompts:            new(true),
+		NonInteractive:              new(true),
+		AppReplaySize:               new(4096),
 		SystemPromptMode:            "file",
 		SystemPromptFile:            "/system.md",
 		SystemPromptAppendMode:      "file",
 		SystemPromptAppendFile:      "/append.md",
-		Verbose:                     ptrBool(true),
+		Verbose:                     new(true),
 		TraceFile:                   "/tmp/trace.out",
 		CPUProfile:                  "/tmp/cpu.pprof",
 		ExportATIFPath:              "/tmp/session.atif.json",
@@ -109,11 +109,11 @@ func checkToArgs_Sandbox(t *testing.T) {
 		{"explicit off", Layer{Sandbox: "off"}, []string{"--sandbox", "off"}},
 		// sandbox_net without a non-off mode is suppressed: evener ignores the flag
 		// without a sandbox, so passing it alone would be a silent no-op.
-		{"net on, no mode", Layer{SandboxNet: ptrBool(true)}, nil},
-		{"net off, no mode", Layer{SandboxNet: ptrBool(false)}, nil},
-		{"net with off mode", Layer{Sandbox: "off", SandboxNet: ptrBool(false)}, []string{"--sandbox", "off"}},
-		{"mode and net", Layer{Sandbox: "workspace-write", SandboxNet: ptrBool(false)}, []string{"--sandbox", "workspace-write", "--sandbox-net", "off"}},
-		{"restricted and net on", Layer{Sandbox: "restricted", SandboxNet: ptrBool(true)}, []string{"--sandbox", "restricted", "--sandbox-net", "on"}},
+		{"net on, no mode", Layer{SandboxNet: new(true)}, nil},
+		{"net off, no mode", Layer{SandboxNet: new(false)}, nil},
+		{"net with off mode", Layer{Sandbox: "off", SandboxNet: new(false)}, []string{"--sandbox", "off"}},
+		{"mode and net", Layer{Sandbox: "workspace-write", SandboxNet: new(false)}, []string{"--sandbox", "workspace-write", "--sandbox-net", "off"}},
+		{"restricted and net on", Layer{Sandbox: "restricted", SandboxNet: new(true)}, []string{"--sandbox", "restricted", "--sandbox-net", "on"}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -126,7 +126,7 @@ func checkToArgs_Sandbox(t *testing.T) {
 }
 
 func checkToArgs_BoolFalseDoesNotEmitFlag(t *testing.T) {
-	got := ToArgs(Resolved{Effective: Layer{NoProjectPrompts: ptrBool(false), NonInteractive: ptrBool(false)}})
+	got := ToArgs(Resolved{Effective: Layer{NoProjectPrompts: new(false), NonInteractive: new(false)}})
 	for _, a := range got {
 		if a == "--no-project-prompts" {
 			t.Errorf("ToArgs should not emit --no-project-prompts when value is false; got %v", got)

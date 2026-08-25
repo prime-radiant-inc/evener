@@ -1,4 +1,4 @@
-package main
+package hub
 
 import (
 	"context"
@@ -23,7 +23,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
-	"primeradiant.com/evener/rendezvous"
 )
 
 var favoriteRevalidationTreeTime = time.Date(2026, 7, 27, 12, 0, 0, 0, time.UTC)
@@ -191,7 +190,7 @@ func TestAPITreeFavoriteRevalidation_MemoReturnsOneGenerationDuringPastRebuildGa
 	}
 	inputs := &hubcore.InputsVersion{}
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
-		Entry:     rendezvous.Entry{PID: 1},
+		PID:       1,
 		SessionID: oldID,
 		Status:    "active",
 	})
@@ -300,7 +299,7 @@ func TestAPITreeFavoriteRevalidation_RepeatedPageCursorIsIncomplete(t *testing.T
 	targetID := hubtest.SessionID(t)
 	targetRef := "remote:" + targetID
 	source := &paginatedRevalidationSource{
-		scriptedAppSource: scriptedAppSource{id: "remote"},
+		id: "remote",
 		pages: map[string]appwire.ThreadListResponse{
 			"":     {Data: []appwire.Thread{revalidationClosedThread("remote", targetID, favoriteRevalidationTreeTime)}, NextCursor: "loop"},
 			"loop": {NextCursor: "loop"},
@@ -323,7 +322,7 @@ func TestAPITreeFavoriteRevalidation_SourceFieldConflictWithoutRefIsDormant(t *t
 	id := hubtest.SessionID(t)
 	ref := "remote-a:" + id
 	source := &revalidationRemoteSource{
-		scriptedAppSource: scriptedAppSource{id: "remote-a"},
+		id: "remote-a",
 		response: appwire.ThreadListResponse{Data: []appwire.Thread{{
 			ID: id, Source: "remote-b", CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(),
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
@@ -348,7 +347,7 @@ func TestAPITreeFavoriteRevalidation_MalformedParentRefIsDormant(t *testing.T) {
 	parentRef := "remote:" + parentID
 	childRef := "remote:" + childID
 	source := &revalidationRemoteSource{
-		scriptedAppSource: scriptedAppSource{id: "remote"},
+		id: "remote",
 		response: appwire.ThreadListResponse{Data: []appwire.Thread{
 			{ID: parentID, Source: "remote", Evener: appwire.EvenerThread{Ref: parentRef}, CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(), Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed}},
 			{ID: childID, Source: "remote", Evener: appwire.EvenerThread{Ref: childRef, ParentRef: parentID}, CreatedAt: favoriteRevalidationTreeTime.Unix(), UpdatedAt: favoriteRevalidationTreeTime.Unix(), Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed}},

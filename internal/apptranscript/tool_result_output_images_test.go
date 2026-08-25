@@ -50,8 +50,8 @@ func TestToolResultOutputImagesMatchesTheLiveDescriptorFieldForField(t *testing.
 			t.Errorf("field %s: live=%v, replayed=%v", name, liveField.Interface(), replayedValue.Field(i).Interface())
 		}
 	}
-	for i := range liveValue.Type().NumField() {
-		name := liveValue.Type().Field(i).Name
+	for field := range liveValue.Type().Fields() {
+		name := field.Name
 		if _, found := replayedType.FieldByName(name); !found {
 			t.Errorf("events.OutputImage field %s is dropped by ToolResultOutputImages", name)
 		}

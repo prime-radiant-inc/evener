@@ -446,7 +446,7 @@ func (g *owedBootstrapRestore) add(owner *Session, sub *subagent, start delegate
 		}
 	}
 	target.mu.Unlock()
-	g.restored = append(g.restored, owedBootstrapRuntime{deferredOwedDelegateAttentionStart: deferredOwedDelegateAttentionStart{owner: owner, sub: sub, started: start}})
+	g.restored = append(g.restored, owedBootstrapRuntime{owner: owner, sub: sub, started: start})
 	return nil
 }
 func (g *owedBootstrapRestore) open() {
@@ -2128,12 +2128,10 @@ func delegateRestoreOperationalIOError(err error) bool {
 	if err == nil || errors.Is(err, os.ErrNotExist) {
 		return false
 	}
-	var pathErr *os.PathError
-	if errors.As(err, &pathErr) {
+	if _, ok := errors.AsType[*os.PathError](err); ok {
 		return true
 	}
-	var syscallErr *os.SyscallError
-	if errors.As(err, &syscallErr) {
+	if _, ok := errors.AsType[*os.SyscallError](err); ok {
 		return true
 	}
 	var errno syscall.Errno

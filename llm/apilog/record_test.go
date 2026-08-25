@@ -33,24 +33,23 @@ func validAPIAttemptRecord(t *testing.T) APIAttemptRecord {
 			HistoryMode: "messages",
 		},
 		Response: &APIAttemptResponse{
-			StatusCode:    recordTestInt(200),
+			StatusCode:    new(200),
 			Body:          EncodeBody([]byte{0x00, 0xff, 0x80, '\n'}),
 			Model:         "gpt-test-2026-07-15",
 			FinishReason:  "stop",
-			TextLength:    recordTestInt(17),
-			ToolCallCount: recordTestInt(2),
+			TextLength:    new(17),
+			ToolCallCount: new(2),
 			Usage: Usage{
-				InputTokens:  recordTestInt(12),
-				OutputTokens: recordTestInt(4),
-				TotalTokens:  recordTestInt(16),
+				InputTokens:  new(12),
+				OutputTokens: new(4),
+				TotalTokens:  new(16),
 			},
 		},
 		Outcome: AttemptSuccess,
 	}
 }
 
-func recordTestInt(value int) *int { return &value }
-
+//go:fix inline
 func validSettlement(t *testing.T) APIAttemptGroupSettlement {
 	t.Helper()
 	return APIAttemptGroupSettlement{
@@ -223,18 +222,18 @@ func TestMarshalRecordIgnoresCredentialCoincidencesInNumericMetadata(t *testing.
 	record.Request.Headers = EncodedHeader{"X-Safe": {"abcdefghij"}}
 	record.Request.Body = EncodeBody([]byte("abcdefghij"))
 	record.Response = &APIAttemptResponse{
-		StatusCode:    recordTestInt(201),
+		StatusCode:    new(201),
 		Body:          EncodeBody([]byte("abcdefghij")),
 		Model:         "model",
 		FinishReason:  "stop",
-		TextLength:    recordTestInt(1),
-		ToolCallCount: recordTestInt(1),
+		TextLength:    new(1),
+		ToolCallCount: new(1),
 		Usage: Usage{
-			InputTokens:      recordTestInt(1),
-			OutputTokens:     recordTestInt(1),
-			TotalTokens:      recordTestInt(1),
-			CacheReadTokens:  recordTestInt(1),
-			CacheWriteTokens: recordTestInt(1),
+			InputTokens:      new(1),
+			OutputTokens:     new(1),
+			TotalTokens:      new(1),
+			CacheReadTokens:  new(1),
+			CacheWriteTokens: new(1),
 		},
 	}
 	record = record.WithForbiddenProviderEvidence([]string{"1"}, nil)

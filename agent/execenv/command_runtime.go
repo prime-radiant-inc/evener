@@ -68,6 +68,7 @@ type systemCommandRuntime struct {
 	outputReader     *os.File
 	outputDone       chan error
 	terminationGrace time.Duration
+	signalName       string
 }
 
 type commandOutputWriteError struct {
@@ -147,6 +148,7 @@ func (c *systemCommandRuntime) Start() error {
 
 func (c *systemCommandRuntime) Wait() error {
 	processErr := c.cmd.Wait()
+	c.signalName = processSignalName(c.cmd.ProcessState)
 	if c.outputDone == nil {
 		return processErr
 	}
@@ -239,8 +241,7 @@ func (c *systemCommandRuntime) outputResult() (bool, error) {
 }
 
 func (c *systemCommandRuntime) forcedCloseOutputError(err error) error {
-	var writeErr *commandOutputWriteError
-	if errors.As(err, &writeErr) {
+	if _, ok := errors.AsType[*commandOutputWriteError](err); ok {
 		return err
 	}
 	if errors.Is(err, os.ErrClosed) {
@@ -267,11 +268,23 @@ func (c *systemCommandRuntime) PID() int {
 }
 
 func (c *systemCommandRuntime) ExitCode(err error) (int, bool) {
-	var exitErr *exec.ExitError
-	if errors.As(err, &exitErr) {
+	if exitErr, ok := errors.AsType[*exec.ExitError](err); ok {
 		return processExitCode(exitErr), true
 	}
 	return 0, false
+}
+
+// SignalName reports the signal recorded in the child's wait status. It is an
+// optional command-runtime capability so scripted and non-local runtimes keep
+// the existing commandRuntime contract. Wait must have returned first.
+func (c *systemCommandRuntime) SignalName() string { return c.signalName }
+
+func cmdSignalName(cmd commandRuntime) string {
+	reporter, ok := cmd.(interface{ SignalName() string })
+	if !ok {
+		return ""
+	}
+	return reporter.SignalName()
 }
 
 func (c *systemCommandRuntime) Terminate() { terminateProcessGroup(c.PID()) }

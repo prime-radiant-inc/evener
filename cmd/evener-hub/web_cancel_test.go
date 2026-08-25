@@ -1,4 +1,4 @@
-package main
+package hub
 
 // Tests for POST /s/<id>/cancel-queued (issue #23): the hub REST fallback
 // for the queue-preview row's cancel action (and the removal half of the

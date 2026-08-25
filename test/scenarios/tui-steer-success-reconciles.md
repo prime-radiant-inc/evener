@@ -27,14 +27,14 @@ Driver: tmux send-keys / capture-pane.
 ## Pre-state
 
 - `tmux` installed.
-- `evener-hub` reachable on an isolated `$HOME` and free port
+- `evener hub` reachable on an isolated `$HOME` and free port
   (never Jesse's port `9180` — see the Setup checklist in
   `docs/developing-evener/agentic-testing.md`). Token at
   `$HOME/.evener/auth-token`. The pane captures below land in that
   checklist's own `$run` directory, never a fixed `/tmp/pane-*.txt`
   that a second agent running this card would overwrite between this
   card's capture and its grep (kata `k2rx`).
-- `./evener-tui` built fresh from this branch.
+- `./evener` built fresh from this branch.
 - Anthropic OAuth or API key configured for
   `anthropic/claude-haiku-4-5-20251001`.
 - The tmux session name is derived from this run's own scratch dir
@@ -61,7 +61,7 @@ Driver: tmux send-keys / capture-pane.
 2. **Launch the TUI in tmux**:
    ```
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "./evener-tui --hub-addr 127.0.0.1:$PORT --debug"
+     "./evener tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    ```
 

@@ -2,7 +2,7 @@
 
 Evener records OpenAI provider attempts in the canonical private per-session API log:
 `<state-dir>/sessions/<session-id>.api.jsonl`. Semantic transcripts do not contain
-provider attempt records or bodies. Use `evener-doctor apilog` so selectors and project
+provider attempt records or bodies. Use `evener doctor apilog` so selectors and project
 buckets resolve through Evener's own state model.
 
 ## Quick Audit
@@ -10,13 +10,13 @@ buckets resolve through Evener's own state model.
 Run a per-session summary:
 
 ```sh
-evener-doctor apilog <selector> --summary
+evener doctor apilog <selector> --summary
 ```
 
 Look for large uncached prompt spikes:
 
 ```sh
-evener-doctor apilog <selector> --cache-spikes --threshold 50000
+evener doctor apilog <selector> --cache-spikes --threshold 50000
 ```
 
 `<selector>` may be a session ID or transcript ref. Add `--state-dir <path>` when

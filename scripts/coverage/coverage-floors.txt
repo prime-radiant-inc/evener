@@ -11,25 +11,24 @@
 # calls.
 #
 # The rows are a ratchet, not a target to force. 100% is not reachable
-# everywhere: identifier alone carries two defensive branches no input can
-# enter — ValidateProjectID's base62 suffix loop, unreachable because the
-# preceding character loop already restricts the value to alphanumerics and
-# hyphen while the suffix sits after the last hyphen, and projectID's empty-name
+# everywhere: identifier carries defensive branches no input can enter —
+# ValidateProjectID's base62 suffix loop, unreachable because the preceding
+# character loop already restricts the value to alphanumerics and hyphen
+# while the suffix sits after the last hyphen, and projectID's empty-name
 # fallback, unreachable because readableProjectPath already returns "project"
-# itself — and others sit behind dependencies with no injection seam
-# (uuid.NewV7 failing). Those are left in place as defence rather than contorted
-# around for a percentage.
+# itself. Those are left in place as defence rather than contorted around for
+# a percentage.
 #
 # 2026-08-19 basis reset (hand edit, not a regression): the infra-standardization
 # branch deleted ~5.5k lines of audit tests plus the namingcheck/docscheck
 # packages and the fuzzcov coverage modes — all root-module, all well-covered —
 # so the root and llm floors move down to the post-deletion basis.
-. 95.0
-agent 92.5
+. 97.3
+agent 94.7
 auth 100.0
 envvars 100.0
-fuzz 99.7
-identifier 95.6
+fuzz 100.0
+identifier 99.2
 invariant 100.0
-llm 97.0
+llm 99.0
 web 96.1

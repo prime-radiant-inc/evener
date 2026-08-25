@@ -1,4 +1,4 @@
-package main
+package hub
 
 import (
 	"context"
@@ -201,8 +201,7 @@ func classifyCredentialTestError(err error) (string, string) {
 	}
 
 	statusCode := 0
-	var llmErr llm.Error
-	if errors.As(err, &llmErr) {
+	if llmErr, ok := errors.AsType[llm.Error](err); ok {
 		statusCode = llmErr.StatusCode()
 	}
 	if statusCode == 0 {

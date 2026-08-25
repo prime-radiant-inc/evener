@@ -6,7 +6,6 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/rendezvous"
 )
 
 // An active session is listed TWICE in the rail: once in the auto-grouped Live
@@ -68,7 +67,7 @@ func fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnState(t *testing.T) {
 				EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/evener"},
 			}}
 			live := []LiveEntry{{
-				Entry:     rendezvous.Entry{PID: 1},
+				PID:       1,
 				SessionID: "01DOUBLELISTED",
 				Status:    status,
 			}}
@@ -102,7 +101,7 @@ func fuzzScenarioBuildTree_LiveAndProjectRowsAgreeOnAPendingAsk(t *testing.T) {
 		EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/projects/evener"},
 	}}
 	live := []LiveEntry{{
-		Entry:      rendezvous.Entry{PID: 1},
+		PID:        1,
 		SessionID:  "01ASKING",
 		Status:     appwire.ThreadStatusAwaiting,
 		PendingAsk: true,

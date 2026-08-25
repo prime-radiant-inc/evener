@@ -163,8 +163,7 @@ func structSchema(t reflect.Type, overrides map[reflect.Type]map[string]any, vis
 // collectFields populates props/required for t's exported fields, flattening
 // promoted fields of anonymous (embedded) structs as encoding/json does.
 func collectFields(t reflect.Type, overrides map[reflect.Type]map[string]any, visited map[reflect.Type]bool, props map[string]any, required *[]string) {
-	for i := 0; i < t.NumField(); i++ {
-		f := t.Field(i)
+	for f := range t.Fields() {
 		tag := f.Tag.Get("json")
 		if tag == "-" {
 			continue // explicitly skipped

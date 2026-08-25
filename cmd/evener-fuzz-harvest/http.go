@@ -1,4 +1,4 @@
-package main
+package fuzzharvest
 
 import (
 	"encoding/json"
@@ -42,7 +42,7 @@ func harvestHTTP(r *runner, paths []string) {
 			if !ok {
 				return
 			}
-			status, err := r.emit.EmitUint8String(r.dir(dirWebHandler), idx, safe)
+			status, err := r.emit.emitUint8String(r.dir(dirWebHandler), idx, safe)
 			if err != nil {
 				r.logf("emit error http: %v", err)
 				return

@@ -1,4 +1,4 @@
-package main
+package hub
 
 import (
 	"context"
@@ -565,7 +565,7 @@ func liveStackBinaries(t *testing.T, repoRoot string) string {
 			return
 		}
 		liveStackBuild.dir = dir
-		for _, target := range []string{"./cmd/evener", "./cmd/evener-hub"} {
+		for _, target := range []string{"./cmd/evener/"} {
 			build := exec.Command("go", "build", "-o", filepath.Join(dir, filepath.Base(target)), target)
 			build.Dir = repoRoot
 			if out, buildErr := build.CombinedOutput(); buildErr != nil {
@@ -647,7 +647,7 @@ func startHubStackOnProvider(t *testing.T, providersTOML, model string) hubStack
 		t.Fatalf("release hub port: %v", err)
 	}
 
-	hub := exec.Command(filepath.Join(binDir, "evener-hub"), "--addr", hubAddr, "--evener", filepath.Join(binDir, "evener"))
+	hub := exec.Command(filepath.Join(binDir, "evener"), "hub", "--addr", hubAddr, "--evener", filepath.Join(binDir, "evener"))
 	hub.Env = append(os.Environ(),
 		"HOME="+home,
 		"XDG_CONFIG_HOME="+configDir,

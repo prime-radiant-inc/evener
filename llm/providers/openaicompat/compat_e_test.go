@@ -19,7 +19,7 @@ func toolReq(model string) llm.Request {
 }
 
 func TestSupportsStrictMode_AddsStrictFalseWhenExplicitlyTrue(t *testing.T) {
-	body := requestBody(t, toolReq("m"), false, ModelCompat{Quirks: ProviderQuirks{SupportsStrictMode: boolp(true)}})
+	body := requestBody(t, toolReq("m"), false, ModelCompat{Quirks: ProviderQuirks{SupportsStrictMode: new(true)}})
 	tools := body["tools"].([]map[string]any)
 	fn := tools[0]["function"].(map[string]any)
 	got, present := fn["strict"]
@@ -33,8 +33,8 @@ func TestSupportsStrictMode_AddsStrictFalseWhenExplicitlyTrue(t *testing.T) {
 
 func TestSupportsStrictMode_DefaultOmitsStrict(t *testing.T) {
 	for _, q := range []ProviderQuirks{
-		{},                                 // nil → today's behavior
-		{SupportsStrictMode: boolp(false)}, // explicit false → still omit
+		{},                               // nil → today's behavior
+		{SupportsStrictMode: new(false)}, // explicit false → still omit
 	} {
 		body := requestBody(t, toolReq("m"), false, ModelCompat{Quirks: q})
 		tools := body["tools"].([]map[string]any)
@@ -47,7 +47,7 @@ func TestSupportsStrictMode_DefaultOmitsStrict(t *testing.T) {
 
 func TestThinkingFormat_QwenChatTemplate(t *testing.T) {
 	effortReq := plainReq("m")
-	effortReq.ReasoningEffort = strp("high")
+	effortReq.ReasoningEffort = new("high")
 
 	// With effort: chat_template_kwargs with enable_thinking + preserve_thinking.
 	body := requestBody(t, effortReq, false, ModelCompat{Quirks: ProviderQuirks{ThinkingFormat: "qwen-chat-template"}})
@@ -65,7 +65,7 @@ func TestThinkingFormat_QwenChatTemplate(t *testing.T) {
 
 func TestThinkingFormat_ChatTemplate_VerbatimKwargs(t *testing.T) {
 	effortReq := plainReq("m")
-	effortReq.ReasoningEffort = strp("high")
+	effortReq.ReasoningEffort = new("high")
 
 	kwargs := map[string]any{"enable_thinking": true, "thinking_budget": int64(2048)}
 	body := requestBody(t, effortReq, false, ModelCompat{Quirks: ProviderQuirks{

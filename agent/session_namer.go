@@ -63,17 +63,15 @@ func nameSession(ctx context.Context, client *llm.Client, profile *provider.Prof
 	maxTokens := 80
 	temp := 0.0
 	res, err := llm.GenerateObject(callCtx, llm.GenerateObjectOptions{
-		GenerateOptions: llm.GenerateOptions{
-			Client:      client,
-			Provider:    profile.CheapProvider(),
-			Model:       model,
-			System:      ptrString(sessionNamerSystemPrompt),
-			Prompt:      ptrString(sessionNamerUserPrompt(source, text)),
-			Temperature: &temp,
-			MaxTokens:   &maxTokens,
-			Sleep:       sleep,
-		},
-		Schema: sessionNameSchema(),
+		Client:      client,
+		Provider:    profile.CheapProvider(),
+		Model:       model,
+		System:      new(sessionNamerSystemPrompt),
+		Prompt:      new(sessionNamerUserPrompt(source, text)),
+		Temperature: &temp,
+		MaxTokens:   &maxTokens,
+		Sleep:       sleep,
+		Schema:      sessionNameSchema(),
 	})
 	if err != nil {
 		return sessionNameResult{}, fmt.Errorf("session namer: %w", err)
@@ -207,8 +205,7 @@ func sanitizeSessionName(name string) string {
 	return name
 }
 
-func ptrString(s string) *string { return &s }
-
+//go:fix inline
 func (s *Session) launchInitialPromptNamer(ctx context.Context, input string) {
 	if s.stateDir == "" && !s.cfg.testOnly.forceSessionNamer {
 		return

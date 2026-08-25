@@ -22,7 +22,7 @@ is no `.sb-row` class and no `data-ref` attribute.
 
 ## Pre-state
 
-- Freshly built `evener-hub` on an isolated `$HOME` and a kernel-assigned port
+- Freshly built `evener hub` on an isolated `$HOME` and a kernel-assigned port
   (Setup checklist in `docs/developing-evener/agentic-testing.md`). The frontend must be built
   (`make build-web`) before the hub, or the SPA is a placeholder.
 - Browser authenticated to the test hub (`/auth?token=$TOKEN&next=/`).

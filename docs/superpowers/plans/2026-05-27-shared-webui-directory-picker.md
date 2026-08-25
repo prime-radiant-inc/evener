@@ -2,11 +2,11 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Make every evener-hub web UI path/directory autocomplete use the same picker behavior as the top-screen project directory picker.
+**Goal:** Make every evener hub web UI path/directory autocomplete use the same picker behavior as the top-screen project directory picker.
 
 **Architecture:** Extract the existing canonical directory picker behavior from `cmd/evener-hub/assets/spawn.js` into a shared `window.EvenerDirPicker.open(options)` helper in a new `cmd/evener-hub/assets/dir-picker.js`. Update the top spawn `working_dir` chip and all settings/advanced path controls to call the shared helper, preserving their caller-specific accept behavior through callbacks.
 
-**Tech Stack:** Plain browser JavaScript, JSDOM JavaScript tests, existing evener-hub Appwire `completeDirs` RPC and `/api/dirs` fallback.
+**Tech Stack:** Plain browser JavaScript, JSDOM JavaScript tests, existing evener hub Appwire `completeDirs` RPC and `/api/dirs` fallback.
 
 ---
 
@@ -191,7 +191,7 @@ Expected: FAIL or file-read error for missing `../assets/dir-picker.js`.
 Create `cmd/evener-hub/assets/dir-picker.js` with this content:
 
 ```javascript
-// dir-picker.js — shared directory picker used by all evener-hub web UI path controls.
+// dir-picker.js — shared directory picker used by all evener hub web UI path controls.
 (function (global) {
   "use strict";
 

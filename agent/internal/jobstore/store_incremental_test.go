@@ -505,8 +505,7 @@ func referenceFieldPaths(t reflect.Type, prefix string, seen map[reflect.Type]bo
 	seen[t] = true
 	defer delete(seen, t)
 	var out []string
-	for i := range t.NumField() {
-		f := t.Field(i)
+	for f := range t.Fields() {
 		path := prefix + "." + f.Name
 		ft := f.Type
 		switch ft.Kind() {

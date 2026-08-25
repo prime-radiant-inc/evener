@@ -36,7 +36,7 @@ If a real `evener serve` session encounters a provider error naturally:
 - Hub projections follow the owning status and keep steer/send available for a
   subsequent turn.
 - The semantic transcript remains readable. Provider-attempt diagnostics are
-  available separately through `evener-doctor apilog <SID> --errors` or explicit
+  available separately through `evener doctor apilog <SID> --errors` or explicit
   API-log expansion, but neither artifact determines the live state.
 
 Falsification: the daemon still reports `processing` after the failed request

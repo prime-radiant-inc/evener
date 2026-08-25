@@ -11,9 +11,9 @@ A session row is addressed by `[data-session-ref="local:<SID>"]`. Section headin
 1. Follow `docs/developing-evener/agentic-testing.md`'s isolated setup exactly:
    - `run=$(mktemp -d -t evener-e2e-XXXXXX)`
    - `make build-web`
-   - build fresh `evener-hub` and `evener` binaries into `$run`
+   - build fresh `evener hub` and `evener` binaries into `$run`
    - `export HOME="$run/home"; unset XDG_STATE_HOME`
-   - start `"$run/evener-hub" -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &`
+   - start `"$run/evener" hub -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &`
    - derive `PORT` from the hub log, set `HUB=http://127.0.0.1:$PORT`, read `TOKEN`
 2. Create a **dedicated Chrome profile** under the same run dir, for example `PROFILE="$run/chrome-profile"`.
 3. Prepare at least three top-level local sessions plus one project row:

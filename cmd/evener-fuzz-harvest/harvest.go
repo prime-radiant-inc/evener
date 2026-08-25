@@ -1,4 +1,4 @@
-package main
+package fuzzharvest
 
 import (
 	"errors"
@@ -60,8 +60,7 @@ func (r *runner) logf(format string, args ...any) {
 func (r *runner) scrub(st *surfaceStat, san *Sanitizer, raw []byte, sse bool) ([]byte, bool) {
 	out, err := sanitizerProcess(san, raw, sse)
 	if err != nil {
-		var leak *SecretLeakError
-		if errors.As(err, &leak) {
+		if _, ok := errors.AsType[*SecretLeakError](err); ok {
 			st.leaks++
 			r.leaks++
 			r.logf("LEAK dropped seed: %v", err)
@@ -100,7 +99,7 @@ func (r *runner) recordEmit(st *surfaceStat, status emitStatus) {
 // emitBytesTo scrubs+emits a single-arg seed to one or more target dirs.
 func (r *runner) emitBytesTo(st *surfaceStat, out []byte, dirs ...string) {
 	for _, d := range dirs {
-		status, err := r.emit.EmitBytes(d, out)
+		status, err := r.emit.emitBytes(d, out)
 		if err != nil {
 			r.logf("emit error %s: %v", d, err)
 			continue

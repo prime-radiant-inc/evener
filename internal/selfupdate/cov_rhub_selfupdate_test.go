@@ -143,8 +143,8 @@ func tarGz(t *testing.T, entries map[string][]byte, dirs map[string]bool) []byte
 
 func TestExtractReleaseArchiveMissingBinary(t *testing.T) {
 	root := "evener_linux_amd64"
-	// Only the first binary present → extraction must report the first missing one.
-	entries := map[string][]byte{path.Join(root, installBinaries[0]): []byte("x")}
+	// Empty archive → extraction must report the missing binary.
+	entries := map[string][]byte{}
 	archivePath := filepath.Join(t.TempDir(), "a.tar.gz")
 	if err := os.WriteFile(archivePath, tarGz(t, entries, nil), 0o600); err != nil {
 		t.Fatalf("seed: %v", err)

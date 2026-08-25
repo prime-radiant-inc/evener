@@ -6,7 +6,7 @@
 
 **Architecture:** The session loop continues to retain the provider's original tool calls for validation and dispatch, while `appendAssistantTurn` creates a copy-on-write semantic-history message that replaces only non-empty syntactically invalid tool arguments with `{}`. Assistant persistence becomes durable and precedes the live-history append; `emitAssistantResponse` propagates a persistence failure, and its existing position before tool dispatch makes the round stop safely. The one historical orphan result is converted in place to a semantic steering note after a byte-for-byte backup and an open-writer check.
 
-**Tech Stack:** Go, `encoding/json`, Evener's `llm`/`schema`/`transcript` packages, deterministic scripted provider and filesystem boundaries, `evener-doctor`, JSONL transcript v2.
+**Tech Stack:** Go, `encoding/json`, Evener's `llm`/`schema`/`transcript` packages, deterministic scripted provider and filesystem boundaries, `evener doctor`, JSONL transcript v2.
 
 ## Global Constraints
 
@@ -15,7 +15,7 @@
 - Preserve the original `llm.Response` and the `resp.ToolCalls()` values used for pre-validation and dispatch.
 - Sanitize only non-empty `ToolCallData.Arguments` for which `json.Valid` is false; leave empty and syntactically valid values unchanged.
 - Preserve call ID, item ID, name, type, parsed arguments, thought signature, text, thinking, usage, and response-attempt metadata.
-- Do not change provider serializers, transcript schemas, `repairOrphanedToolResults`, `evener-doctor`, the doctoring skill, or any other historical session.
+- Do not change provider serializers, transcript schemas, `repairOrphanedToolResults`, `evener doctor`, the doctoring skill, or any other historical session.
 - Use deterministic provider/filesystem boundaries; no provider credentials, network model behavior, sleeps, or ambient machine state in default tests.
 - Repair transcript `seq=3070` only after confirming no process has the file open and making a byte-for-byte backup beside it.
 - The existing `webui-workspace-shell` baseline is not globally green: identifier-audit, AppWire protocol/client-mutation, and dependent TUI tests already fail. Scoped agent tests must pass, and the final full-suite run must add no failures outside that recorded baseline.
@@ -573,7 +573,7 @@ no tool or result can follow a failed assistant append."
 - Create operational backup: `/Users/jesse/.local/state/evener/projects/Users-jesse-prime-radiant-toil-suite-evener-uo4YId7isa/sessions/033wtttaNuBna9dXsZMO34.transcript.jsonl.backup-before-malformed-tool-history-repair-20260729`
 
 **Interfaces:**
-- Consumes: transcript v2 `transcript.Entry`/`schema.Turn` format and `evener-doctor` canonical readers.
+- Consumes: transcript v2 `transcript.Entry`/`schema.Turn` format and `evener doctor` canonical readers.
 - Produces: the same transcript sequence and timestamps, with orphan result `seq=3070` replaced by a model-visible semantic steering note.
 
 - [ ] **Step 1: Build the branch's canonical doctor and capture the pre-repair evidence**

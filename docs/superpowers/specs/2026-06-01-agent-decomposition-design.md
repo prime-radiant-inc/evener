@@ -46,7 +46,7 @@ Two distinct wins, **separated** because the review proved they are:
    `agent.X`→`pkg.X` at all sites), never a `type X = pkg.X` alias (an alias keeps
    `agent.X` alive and defeats the point).
 5. **CI gates are hardcoded lists (A-M4/B-M3).** `evener-docscheck` and
-   `evener-internalcheck` enumerate `libraryPackages` literally
+   `evener internalcheck` enumerate `libraryPackages` literally
    (`cmd/evener-docscheck/main.go:36`, `cmd/evener-internalcheck/main.go:35`); they do
    **not** auto-cover new packages. → Every chunk that adds a public package edits
    both lists, and we add a test asserting the lists cover all `agent/**` public
@@ -180,7 +180,7 @@ can embed `schema.ToolOutputLimit` with identical tags. The tool registry
 4. Move/split the white-box tests (per-chunk task — several mix moved types with
    engine-only internals like `spawnConfig`; budget the surgery, don't assume
    "tests come free").
-5. Update `evener-docscheck` + `evener-internalcheck` lists if a public package was
+5. Update `evener-docscheck` + `evener internalcheck` lists if a public package was
    added.
 6. Gate: build + vet + `-race` + golangci across all four go.work modules; commit.
 

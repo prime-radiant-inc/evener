@@ -236,10 +236,14 @@ func TestEveryLintTargetIsPhonyAndHasARule(t *testing.T) {
 	}
 }
 
+const lintCacheCleanExemptionComment = "# lint-cache-clean is an intentional local cleanup action; keep it out of LINT_TARGETS so required lint runs can reuse the cache they are checking."
+
 // makefileLintingRuleNames returns every rule name declared in
 // make/linting.mk, excluding the `lint` alias itself (the target
-// LINT_TARGETS feeds, not a member of it) and directive lines like
-// .PHONY.
+// LINT_TARGETS feeds, not a member of it), the one explicitly documented local
+// cleanup action, and directive lines like .PHONY. The cleanup exception is
+// deliberately narrow and requires the exact adjacent comment next to that
+// one rule; it is not a general allowlist for disconnected lint rules.
 func makefileLintingRuleNames(t *testing.T) []string {
 	t.Helper()
 	raw, err := os.ReadFile("make/linting.mk")
@@ -247,13 +251,20 @@ func makefileLintingRuleNames(t *testing.T) []string {
 		t.Fatalf("reading make/linting.mk: %v", err)
 	}
 	var names []string
+	var previous string
 	for line := range strings.Lines(string(raw)) {
 		line = strings.TrimRight(line, "\n")
 		name, _, ok := ruleLineName(line)
 		if !ok || name == "lint" {
+			previous = line
+			continue
+		}
+		if name == "lint-cache-clean" && strings.TrimSpace(previous) == lintCacheCleanExemptionComment {
+			previous = line
 			continue
 		}
 		names = append(names, name)
+		previous = line
 	}
 	return names
 }
@@ -273,10 +284,10 @@ func makefileLintingRuleNames(t *testing.T) []string {
 // still runs it — but the required gate silently stopped calling it.
 //
 // Every one of make/linting.mk's rules was checked against `make -n lint`
-// before this test was written, and each is genuinely required: none is
-// exempt, so this test hardcodes no allowlist. If a future lint-family rule
-// is deliberately NOT gate material, say so in a comment next to its rule
-// rather than adding a silent skip here.
+// before this test was written, and each is genuinely required except for the
+// one explicitly documented local cleanup action above. That narrow exception
+// is recognized only for lint-cache-clean and only with its exact adjacent
+// comment; a future lint-family rule must not gain a silent skip here.
 func TestEveryLintingRuleIsInLintTargets(t *testing.T) {
 	t.Parallel()
 	rules := makefileLintingRuleNames(t)
@@ -772,11 +783,11 @@ func TestEveryGeneratedRegionIsInTheStalenessDiff(t *testing.T) {
 // you are reading this because the map and LINT_TARGETS disagree, the question
 // is which of them is wrong, not which is easier to edit.
 var lintGateCommands = map[string]string{
-	"lint-naming":        "go run ./cmd/evener-tomlcheck",
+	"lint-naming":        "go run ./cmd/evener-dev/bin tomlcheck",
 	"lint-gofmt":         "gofmt -l",
 	"lint-evenerfuzz":    "-tags evenerfuzz",
 	"lint-eval":          "-tags eval ",
-	"lint-internal":      "go run ./cmd/evener-internalcheck",
+	"lint-internal":      "go run ./cmd/evener-dev/bin internalcheck",
 	"lint-golangci":      "module-lint",
 	"lint-generated":     "docs/appwire-protocol.md",
 	"lint-fuzz-registry": "scripts/fuzz/fuzz-registry-check.sh",

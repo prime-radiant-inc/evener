@@ -61,7 +61,7 @@ So the assertion is **absence of the element**, not an empty one.
 3. Launch it: `POST /api/spawn
    {"prompt":"hi","harness":"evener","model":"ollama/gemma4:e4b","working_dir":"<dir>"}`.
    Poll `GET /api/sessions/local:$SID` to `state: idle`, then read the
-   transcript with `go run ./cmd/evener-doctor transcript "$SID"
+   transcript with `go run ./cmd/evener doctor transcript "$SID"
    --state-dir "$state" --format outline --range last:30`.
 
 ### Browser

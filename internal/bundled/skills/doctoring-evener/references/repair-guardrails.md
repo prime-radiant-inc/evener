@@ -14,7 +14,7 @@ The discipline is adopted wholesale from meta-doctor's repair pipeline:
 | **Diagnose** — run runbooks → Findings | read-only | **Autonomous.** No mutation. |
 | **Extend** — author a *new* runbook | adds a runbook, not the doctor's own machinery | **Autonomous authoring**, subject to the runbook contract (zero-on-healthy, stable signature). This is also how the corpus stays evergreen. |
 | **Heal — runbook repair** — fix an *existing* runbook | one runbook | **Propose + light validation.** Re-run the runbook against a **known-healthy** and a **known-broken** target; the repair must emit **zero** findings on healthy and **catch** the broken case before it lands. |
-| **Heal — core-skill / doctor-tool repair** — the `doctoring-evener` skill, the persona, a reference, **or the evener-doctor Go tools** (`agent/doctor` + `cmd/evener-doctor`) | the doctor's own foundation | **Propose-only + review + a validation gate — NEVER silently applied.** A human (or an explicitly-authorized higher-authority agent) approves before it is written. |
+| **Heal — core-skill / doctor-tool repair** — the `doctoring-evener` skill, the persona, a reference, **or the evener doctor Go tools** (`agent/doctor` + `cmd/evener-doctor`) | the doctor's own foundation | **Propose-only + review + a validation gate — NEVER silently applied.** A human (or an explicitly-authorized higher-authority agent) approves before it is written. |
 
 ## The one-line rule
 
@@ -22,7 +22,7 @@ The discipline is adopted wholesale from meta-doctor's repair pipeline:
 > propose-plus-validate. Core-skill and doctor-tool repair are **propose-only
 > behind review + a validation gate** — that tier can corrupt the doctor itself.
 
-Diagnosis is pure over cold artifacts. `evener-doctor` reads the shell/watch and
+Diagnosis is pure over cold artifacts. `evener doctor` reads the shell/watch and
 stable delegate journals through read-only event readers and folds; it must not
 open an append-capable store, truncate a tail, construct a Session, call a
 provider, or trigger hooks/nudges/salvage. The exact
@@ -47,7 +47,7 @@ operator to a fresh compatible state root.
 **does not apply** — independent prose rewrites are essentially never
 byte-identical. These go through **review + the consult/validation gate** (does it
 still match the verified §8 facts? does it still describe the real
-`evener-doctor` surface?), not a byte-vote.
+`evener doctor` surface?), not a byte-vote.
 
 ## Why this shape
 

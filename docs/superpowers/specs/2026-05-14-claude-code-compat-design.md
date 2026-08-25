@@ -234,7 +234,7 @@ Existing files touched, additive only:
 ## Open Questions
 
 1. **Hook ordering across config tiers.** When global, project, and CLI all declare `PreToolUse` matchers for the same tool, what order do they execute in? Settled in SP1: global → project → CLI → plugin-provided.
-2. **`userConfig` UX surfaces.** CLI prompts inline. `evener-tui` prompts inline. `evener-hub` web form. For non-interactive runs, `--plugin-option <plugin>.<key>=<value>` flag or refuse-with-clear-error. (SP7)
+2. **`userConfig` UX surfaces.** CLI prompts inline. `evener tui` prompts inline. `evener hub` web form. For non-interactive runs, `--plugin-option <plugin>.<key>=<value>` flag or refuse-with-clear-error. (SP7)
 3. **Project-vs-user plugin precedence.** When the same plugin name exists in both `~/.config/evener/plugins/foo/` and `<project>/.evener/plugins/foo/`, the project copy wins. `--plugin-dir` wins over both. (SP-A)
 
 ## Rollout

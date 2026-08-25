@@ -48,7 +48,7 @@ there is one markup to assert against, not two.
   into the isolated `$HOME` — the sanctioned "copy in a scratch
   credentials.toml first" recipe from `docs/developing-evener/agentic-testing.md`. Nothing
   in this card ever writes to the real `~/.evener`.
-- `evener-hub` built fresh and started against that hermetic env on a
+- `evener hub` built fresh and started against that hermetic env on a
   kernel-assigned port (`-addr 127.0.0.1:0`, read `$PORT` back out of
   the hub's own log — Setup checklist). A frontend built with
   `make build-web` before the hub binary, or the browser steps have no
@@ -92,7 +92,7 @@ there is one markup to assert against, not two.
 
 ### TUI
 
-4. In a tmux session running `evener-tui --hub-addr 127.0.0.1:$PORT`, send
+4. In a tmux session running `evener tui --hub-addr 127.0.0.1:$PORT`, send
    `n` (opens the spawn form focused on Prompt,
    `cmd/evener-tui/hub_keys.go:95`), then `BTab BTab` to reach the Model
    field (field order Prompt/Harness/Model/Dir,

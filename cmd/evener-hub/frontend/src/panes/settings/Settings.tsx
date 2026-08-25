@@ -22,6 +22,7 @@ import { CodexLaunchSection } from "./sections/launchCodex";
 import { LaunchServerSection } from "./sections/launchServer";
 import { MarketplacesPluginsSection } from "./sections/marketplacesPlugins";
 import { McpSection } from "./sections/mcp";
+import { MobileSection } from "./sections/mobile";
 import { NotificationsSection } from "./sections/notifications";
 import { PlaceholderSection } from "./sections/PlaceholderSection";
 import { PluginsDirsSection } from "./sections/pluginsDirs";
@@ -77,6 +78,7 @@ const SECTION_COMPONENTS: Record<string, ComponentType<{ sectionId: string }>> =
   display: DisplaySection,
   notifications: NotificationsSection,
   hub: HubSection,
+  mobile: MobileSection,
   storage: StorageSection,
   about: AboutSection,
 };

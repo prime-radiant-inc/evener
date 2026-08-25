@@ -10,7 +10,7 @@
 // seed in which a secret survived and fails the run. --keep-values (gated to a
 // designated capture box, ignored for a personal evener state root) preserves real values
 // for local-only campaigns and is never committed.
-package main
+package fuzzharvest
 
 import (
 	"errors"
@@ -39,11 +39,10 @@ const defaultMaxSeedBytes = 32768
 
 var allSurfaces = []string{"sse", "toolargs", "appwire", "http", "jobs"}
 
-func main() {
-	osExit(run(os.Args[1:], os.Stdout, os.Stderr))
+func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
+	return run(args, stdout, stderr)
 }
 
-var osExit = os.Exit
 var harvestDiscoverSources = discoverSources
 var harvestCoreToolNames = agent.CoreToolNames
 var harvestGitleaksScan = gitleaksScan
@@ -52,7 +51,7 @@ var harvestResolveStateBase = doctor.ResolveStateBase
 var harvestIsDir = isDir
 
 func run(args []string, stdout, stderr io.Writer) int {
-	fs := flag.NewFlagSet("evener-fuzz-harvest", flag.ContinueOnError)
+	fs := flag.NewFlagSet("evener fuzz-harvest", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 
 	var stateDirs stringSlice

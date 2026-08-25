@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Rebuild `evener-tui` as a polished Bubble Tea hub client with dashboard, project drilldown, session workspace, command parity, Evener-owned OpenAI OAuth, spawn/model discovery, transcript browse/fork, and end-to-end tmux coverage.
+**Goal:** Rebuild `evener tui` as a polished Bubble Tea hub client with dashboard, project drilldown, session workspace, command parity, Evener-owned OpenAI OAuth, spawn/model discovery, transcript browse/fork, and end-to-end tmux coverage.
 
-**Architecture:** Keep `evener-tui` hub-backed only. Split the current hub model into a top-level app shell plus focused Dashboard, Project, Session, Auth, Spawn, Palette, Command Registry, and Styles modules. All backend work goes through `internal/hubapi.Client`; no direct daemon or filesystem discovery from the TUI. The `evener-hub` branch predates the main-line OpenAI auth commits, so integrate those commits into this branch and expose auth through the hub rather than having the TUI read auth files directly.
+**Architecture:** Keep `evener tui` hub-backed only. Split the current hub model into a top-level app shell plus focused Dashboard, Project, Session, Auth, Spawn, Palette, Command Registry, and Styles modules. All backend work goes through `internal/hubapi.Client`; no direct daemon or filesystem discovery from the TUI. The `evener hub` branch predates the main-line OpenAI auth commits, so integrate those commits into this branch and expose auth through the hub rather than having the TUI read auth files directly.
 
 **Tech Stack:** Go, Bubble Tea, Bubbles, Lip Gloss, `httptest`, `tmux`, Evener hub JSON/SSE APIs.
 
@@ -22,7 +22,7 @@
 
 ## Branch And Auth Integration Facts
 
-- `evener-hub` branched from `main` at `d3114c9` on 2026-05-07.
+- `evener hub` branched from `main` at `d3114c9` on 2026-05-07.
 - The Evener-owned OpenAI auth stack landed on `main` after that branch point on 2026-05-08.
 - Source commits to integrate:
   - `c72f4b1 feat: add OpenAI auth foundations`
@@ -38,7 +38,7 @@
   - `6885106 fix: stream OAuth-backed OpenAI responses`
   - `0bf4745 fix: stabilize OpenAI OAuth streamed tool calls`
   - `01e93ba Add TUI-local OpenAI auth helper`
-  - `84c92a8 feat: add OpenAI login flow to evener-tui`
+  - `84c92a8 feat: add OpenAI login flow to evener tui`
   - `f8a17f4 fix: refresh TUI OpenAI auth status on demand`
   - `48933a9 fix: harden TUI OpenAI auth lifecycle`
   - `018a67a refactor: route TUI auth through provider context`
@@ -140,7 +140,7 @@ Interpretation:
 
 - exit `0` means the commit is present in that target.
 - exit `1` means it is absent.
-- The auth commits are present in local `main`, absent from the `evener-hub` merge base, and absent from current `HEAD`.
+- The auth commits are present in local `main`, absent from the `evener hub` merge base, and absent from current `HEAD`.
 - This means the branch predated auth; do not describe this as a dropped/deleted feature.
 
 - [ ] **Step 2: Create the parity checklist**
@@ -208,7 +208,7 @@ Expected:
 
 - Auth package, CLI commands, OpenAI adapter auth resolution, and old TUI auth support appear in the worktree.
 - Conflicts in `cmd/evener-tui/*` are expected because hub TUI work also changed those files.
-- Resolve conflicts in favor of: hub-backed navigation and sessions from `evener-hub`, auth lifecycle and provider-context behavior from `main`.
+- Resolve conflicts in favor of: hub-backed navigation and sessions from `evener hub`, auth lifecycle and provider-context behavior from `main`.
 
 - [ ] **Step 5: Validate auth foundation after integration**
 
@@ -279,7 +279,7 @@ go test ./internal/hubapi ./cmd/evener-hub -run 'Auth|OpenAI' -count=1
 
 - [ ] **Step 9: Adapt TUI auth UX over hub APIs**
 
-`evener-tui` must support:
+`evener tui` must support:
 
 - `/auth`
 - `/auth openai`
@@ -546,7 +546,7 @@ Expected: pass.
 
 ```bash
 git add cmd/evener-tui/command_registry.go cmd/evener-tui/command_registry_test.go
-git commit -m "test(evener-tui): define hub command registry contract"
+git commit -m "test(evener tui): define hub command registry contract"
 ```
 
 ## Task 2: Add The App Shell And Mode Routing
@@ -702,7 +702,7 @@ Expected: pass.
 
 ```bash
 git add cmd/evener-tui/app_modes.go cmd/evener-tui/app_model.go cmd/evener-tui/app_model_test.go cmd/evener-tui/main.go
-git commit -m "feat(evener-tui): add hub app shell"
+git commit -m "feat(evener tui): add hub app shell"
 ```
 
 ## Task 3: Build The Live Dashboard Component
@@ -931,7 +931,7 @@ Expected: pass.
 
 ```bash
 git add cmd/evener-tui/dashboard_model.go cmd/evener-tui/dashboard_view.go cmd/evener-tui/dashboard_model_test.go cmd/evener-tui/app_model.go
-git commit -m "feat(evener-tui): render live dashboard"
+git commit -m "feat(evener tui): render live dashboard"
 ```
 
 ## Task 4: Add Project Drilldown
@@ -1093,7 +1093,7 @@ Expected: pass.
 
 ```bash
 git add cmd/evener-tui/project_model.go cmd/evener-tui/project_model_test.go cmd/evener-tui/app_model.go cmd/evener-tui/dashboard_model.go
-git commit -m "feat(evener-tui): add project drilldown"
+git commit -m "feat(evener tui): add project drilldown"
 ```
 
 ## Task 5: Make Hub Model Discovery Correct For Spawn
@@ -1204,7 +1204,7 @@ Expected: pass.
 
 ```bash
 git add cmd/evener-hub/web.go cmd/evener-hub/web_test.go
-git commit -m "fix(evener-hub): filter live OpenRouter models for tools"
+git commit -m "fix(evener hub): filter live OpenRouter models for tools"
 ```
 
 ## Task 6: Build Spawn Form Component
@@ -1391,7 +1391,7 @@ Expected: pass.
 
 ```bash
 git add cmd/evener-tui/spawn_model.go cmd/evener-tui/spawn_model_test.go cmd/evener-tui/app_model.go cmd/evener-tui/hub_commands.go
-git commit -m "feat(evener-tui): add first-class spawn form"
+git commit -m "feat(evener tui): add first-class spawn form"
 ```
 
 ## Task 7: Build Hub-Native Session Surface
@@ -1569,7 +1569,7 @@ Expected: pass.
 
 ```bash
 git add cmd/evener-tui/session_surface.go cmd/evener-tui/session_surface_test.go cmd/evener-tui/app_model.go cmd/evener-tui/hub_commands.go
-git commit -m "feat(evener-tui): add hub-native session surface"
+git commit -m "feat(evener tui): add hub-native session surface"
 ```
 
 ## Task 8: Move All Session Slash Commands To Registry Dispatch
@@ -1674,7 +1674,7 @@ Expected: pass.
 
 ```bash
 git add cmd/evener-tui/command_registry.go cmd/evener-tui/session_surface.go cmd/evener-tui/session_surface_test.go cmd/evener-tui/hub_commands.go cmd/evener-tui/app_model.go
-git commit -m "feat(evener-tui): unify slash command dispatch"
+git commit -m "feat(evener tui): unify slash command dispatch"
 ```
 
 ## Task 9: Add Transcript Reducer With Replay/Live Dedupe
@@ -1784,7 +1784,7 @@ Expected: pass.
 
 ```bash
 git add cmd/evener-tui/session_reducer.go cmd/evener-tui/session_reducer_test.go cmd/evener-tui/session_surface.go internal/hubapi/types.go
-git commit -m "feat(evener-tui): add transcript reducer"
+git commit -m "feat(evener tui): add transcript reducer"
 ```
 
 ## Task 10: Add Bubble Tea Styling And Theme Tokens
@@ -1882,7 +1882,7 @@ Expected: pass.
 
 ```bash
 git add cmd/evener-tui/styles.go cmd/evener-tui/dashboard_view.go cmd/evener-tui/project_model.go cmd/evener-tui/session_surface.go cmd/evener-tui/spawn_model.go cmd/evener-tui/theme_test.go
-git commit -m "style(evener-tui): add polished terminal styles"
+git commit -m "style(evener tui): add polished terminal styles"
 ```
 
 ## Task 11: Add Full Tmux E2E Coverage
@@ -2020,7 +2020,7 @@ Expected: pass. If tmux is missing, tests should skip with a clear message.
 
 ```bash
 git add cmd/evener-tui/tmux_e2e_test.go
-git commit -m "test(evener-tui): cover hub tui end to end"
+git commit -m "test(evener tui): cover hub tui end to end"
 ```
 
 ## Task 12: Delete Dead Embedded/Direct Paths After Parity
@@ -2070,7 +2070,7 @@ Expected: pass.
 
 ```bash
 git add cmd/evener-tui
-git commit -m "refactor(evener-tui): remove direct session mode"
+git commit -m "refactor(evener tui): remove direct session mode"
 ```
 
 ## Task 13: Final Verification And Build
@@ -2104,8 +2104,8 @@ Run:
 
 ```bash
 go build -o ./evener ./cmd/evener
-go build -o ./evener-hub ./cmd/evener-hub
-go build -o ./evener-tui ./cmd/evener-tui
+go build -o ./evener ./cmd/evener/
+go build -o ./evener ./cmd/evener/
 ```
 
 Expected: all builds exit 0.
@@ -2126,7 +2126,7 @@ Expected: dashboard renders. If an old hub is already running, restart it before
 ```bash
 git status --short
 git add <only files changed by this task>
-git commit -m "fix(evener-tui): finalize hub tui verification"
+git commit -m "fix(evener tui): finalize hub tui verification"
 ```
 
 Only commit if there are actual fixes.

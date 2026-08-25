@@ -1,4 +1,4 @@
-package main
+package hub
 
 // Whether a provider authenticates at all is a registry fact. envvars/providers.go
 // carries one row per provider with its auth modes, and envvars.RequiresNoCredential

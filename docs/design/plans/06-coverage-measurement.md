@@ -166,7 +166,7 @@ All four prior open questions are settled by Jesse's decisions (top of file). Re
 2. `cmd/evener-fuzzcov/main.go`: profile parser + `mode: set` merge (union) + per-package rollup + report printer (focus %, floor, pkg %). (~80 LoC)
 3. `cmd/evener-fuzzcov`: focus-set machinery — parse `focus` specs, resolve `file.go#Func` to line ranges via `go/parser`, compute per-target focus %. (~40–60 LoC)
 4. `cmd/evener-fuzzcov`: ratchet (`scripts/coverage/fuzzcov-floors.txt` read + `--bless` upward-only rewrite) + gap-map scan (signature grep → package set; subtract fuzzed set; apply reason-required ignore-list) + `--check` exit logic. (~70–100 LoC)
-5. `scripts/fuzz/fuzz-coverage.sh`: consume `run-fuzz.sh --list`, run each module's coverage command into a temp dir, call `evener-fuzzcov`. (~60–90 LoC)
+5. `scripts/fuzz/fuzz-coverage.sh`: consume `run-fuzz.sh --list`, run each module's coverage command into a temp dir, call `evener fuzzcov`. (~60–90 LoC)
 6. `Makefile`: `fuzz-coverage` target + `.PHONY` (`Makefile:1`).
 7. `fuzz/README.md`: document `make fuzz-coverage`, the focus-set/ratchet model, and `--bless`, next to `make fuzz` / `fuzz-nightly`.
 8. Commit the initial `scripts/coverage/fuzzcov-floors.txt` (measured current focus %s as the starting ratchet) and `scripts/coverage/fuzzcov-ignore.txt`.

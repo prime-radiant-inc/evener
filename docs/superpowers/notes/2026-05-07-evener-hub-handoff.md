@@ -3,7 +3,7 @@
 Date: 2026-05-07
 Author: Bot, mid-session before context compaction
 
-This note captures the state of the evener-hub feature work so a fresh session (post-compact) can pick up cleanly. If anything here disagrees with the code, trust the code.
+This note captures the state of the evener hub feature work so a fresh session (post-compact) can pick up cleanly. If anything here disagrees with the code, trust the code.
 
 ## What was built
 
@@ -17,7 +17,7 @@ Two stacked branches off `main` (tip `d3114c9` at session start; advanced to `d3
   - D-5: `working_dir` exposed on `/status`.
   - All D items have unit tests; an integration test under `cmd/evener/serve_test.go` (skip-by-default, requires `EVENER_TEST_PROVIDER`/`EVENER_TEST_MODEL` + API key) walks the rendezvous lifecycle end-to-end.
 
-- **`evener-hub`** (30 commits, branched off Phase A) — Phase B: the `cmd/evener-hub` sibling binary.
+- **`evener hub`** (30 commits, branched off Phase A) — Phase B: the `cmd/evener-hub` sibling binary.
   - 22 implementation commits per the plan in `docs/superpowers/plans/2026-05-07-evener-hub.md`, plus 1 review-fix commit (C1/C2/C3) and 7 follow-up review-fix commits (C4, I1, I2, I3, I5, two minor refactors).
   - Subsystems: `config` (TOML loader), `flock` (~/.evener/hub.lock), `security` (Origin/Host guard), `roster` (fsnotify + StatusProber + two-strikes pruning), `proxy` (per-daemon-cached `httputil.ReverseProxy` + SSE passthrough with `Last-Event-ID` forwarding), `past` (`agent.SessionMeta` glob index + substring search + replay), `spawn` (template loader + subprocess fork + `WaitForRendezvous` + Resume helper), `web` (per-page template sets, embed.FS for htmx/marked/css), `assets/renderer.js` (client-side SSE coalescing).
   - Vendored: `htmx.min.js@2.0.4` and `marked.min.js@12.0.0` (via `embed.FS`).
@@ -27,12 +27,12 @@ Two stacked branches off `main` (tip `d3114c9` at session start; advanced to `d3
 
 ```
 .worktrees/evener-daemon-prereqs   ← branch: evener-daemon-prereqs
-.worktrees/evener-hub              ← branch: evener-hub  (depends on evener-daemon-prereqs as ancestor)
+.worktrees/evener-hub              ← branch: evener hub  (depends on evener-daemon-prereqs as ancestor)
 ```
 
 Spec and plans copied into both worktrees as untracked `docs/superpowers/{specs,plans}` files (not committed). The canonical originals live in the main worktree at `/Users/jesse/Documents/GitHub/prime-radiant-inc/evener/docs/superpowers/{specs,plans}`.
 
-Build artifacts (`./evener`, `./evener-hub`) live in the `evener-hub` worktree from the demo build at 18:46 PT.
+Build artifacts (`./evener`, `./evener`) live in the `evener hub` worktree from the demo build at 18:46 PT.
 
 ## Verification
 
@@ -49,7 +49,7 @@ Build artifacts (`./evener`, `./evener-hub`) live in the `evener-hub` worktree f
 ## Architecture as built (one-screen summary)
 
 ```
-browser  ──HTTPS/SSE──▶  evener-hub :9180  ──HTTPS/SSE──▶  evener serve daemon (loopback ephemeral port)
+browser  ──HTTPS/SSE──▶  evener hub :9180  ──HTTPS/SSE──▶  evener serve daemon (loopback ephemeral port)
                               │                              │ writes
                               ▼                              ▼
                        ~/.evener/run/<pid>.json (rendezvous protocol — Phase A)
@@ -84,12 +84,12 @@ The reviewer's adversarial pass also noted these informational items (left as-is
 ## Demo replay (how to bring it back up from a fresh session)
 
 ```bash
-# From the evener-hub worktree:
+# From the evener hub worktree:
 cd /Users/jesse/Documents/GitHub/prime-radiant-inc/evener/.worktrees/evener-hub
 
 # (Re)build:
 go build -o evener ./cmd/evener
-go build -o evener-hub ./cmd/evener-hub
+go build -o ./evener ./cmd/evener/
 
 # Optional: tidy hub config (or use the pre-existing ~/.evener/hub.toml from the demo)
 cat > ~/.evener/hub.toml <<'EOF'
@@ -112,12 +112,12 @@ DEMO_DIR=$(mktemp -d) && (cd "$DEMO_DIR" && git init -q && echo "# demo" > READM
 ./evener serve --provider openai --model gpt-5-mini-2025-08-07 --addr 127.0.0.1:0 --dir "$DEMO_DIR" &
 
 # Start the hub:
-./evener-hub --evener $PWD/evener &
+./evener hub --evener $PWD/evener &
 
 # Open: http://127.0.0.1:9180
 ```
 
-Cleanup: `pkill -f "evener-hub"; pkill -f "/evener serve"`. Daemons remove their rendezvous file on graceful shutdown. SIGKILL leaves stale files; the hub's two-strike pruning will pick them up on next refresh after a probe failure.
+Cleanup: `pkill -f "evener hub"; pkill -f "/evener serve"`. Daemons remove their rendezvous file on graceful shutdown. SIGKILL leaves stale files; the hub's two-strike pruning will pick them up on next refresh after a probe failure.
 
 ## Where things live
 
@@ -154,9 +154,9 @@ The screenshots in `/Users/jesse/Library/Caches/superpowers/browser/2026-05-07/s
 
 Not yet attempted. Suggested order when ready:
 1. Land Phase A (`evener-daemon-prereqs`) into main as a series of focused PRs (or one squashed) — the daemon prereqs are independently valuable.
-2. Rebase Phase B (`evener-hub`) onto the post-merge main.
+2. Rebase Phase B (`evener hub`) onto the post-merge main.
 3. Land Phase B as one big PR (it's all hub-package code, no cross-package ripples).
-4. Update the README to mention `evener-hub`.
+4. Update the README to mention `evener hub`.
 
 ## Things I'm uncertain about
 

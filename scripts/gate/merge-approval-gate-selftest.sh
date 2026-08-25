@@ -81,7 +81,7 @@ assert_eq "$actual_calls" "$expected_calls" "build failure stops test"
 # commands (go, npm, git) and the scripts it shells out to, so it proves
 # make-level target wiring — web-preflight before the frontend build, the
 # frontend build before runtime Go work, dist's default-platform discovery —
-# independent of what the evener-dev module-lint tests already cover for
+# independent of what the evener dev module-lint tests already cover for
 # their own targets. run-module-tests-selftest.sh used to cover
 # run-module-tests.sh's own behaviour here too; it was deleted as a banned
 # fake-toolchain selftest (issue #293), so that coverage is unpinned until

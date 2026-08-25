@@ -744,8 +744,7 @@ func TestAdapter_Complete_RejectsAudioParts(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	var ce *llm.ConfigurationError
-	if !errors.As(err, &ce) {
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); !ok {
 		t.Fatalf("expected ConfigurationError, got %T (%v)", err, err)
 	}
 }
@@ -3472,8 +3471,7 @@ func TestComplete_WrapsContextCanceled(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error")
 	}
-	var abortErr *llm.AbortError
-	if !errors.As(err, &abortErr) {
+	if _, ok := errors.AsType[*llm.AbortError](err); !ok {
 		t.Fatalf("expected AbortError, got %T: %v", err, err)
 	}
 }
@@ -5107,7 +5105,7 @@ func TestAdapter_PlanResponsesContinuation_PublicNoStorePoliciesDisallowStorage(
 		store *bool
 	}{
 		{name: "omitted"},
-		{name: "false", store: boolPtr(false)},
+		{name: "false", store: new(false)},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			plan, err := a.PlanResponsesContinuation(llm.Request{Provider: "openai", Model: "gpt-5.4", Store: tc.store})
@@ -5146,7 +5144,7 @@ func TestAdapter_PlanResponsesContinuation_StorageScopeFingerprintChangesForScop
 		{name: "account hash", a: openAIContinuationTestAdapterWithScope(defaultResponsesPath, "https://api.openai.test", llm.AuthScopeIdentity{Version: "cont-scope-v1", AuthSource: "api_key", CredentialHash: "credential_hash", AccountHash: "account_hash"}, "org_hash", "project_hash"), req: llm.Request{Provider: "openai", Model: "gpt-5.4", ConversationID: "conv_1"}},
 		{name: "workspace hash", a: openAIContinuationTestAdapterWithScope(defaultResponsesPath, "https://api.openai.test", llm.AuthScopeIdentity{Version: "cont-scope-v1", AuthSource: "api_key", CredentialHash: "credential_hash", WorkspaceHash: "workspace_hash"}, "org_hash", "project_hash"), req: llm.Request{Provider: "openai", Model: "gpt-5.4", ConversationID: "conv_1"}},
 		{name: "conversation hash", a: openAIContinuationTestAdapter(defaultResponsesPath), req: llm.Request{Provider: "openai", Model: "gpt-5.4", ConversationID: "conv_2"}},
-		{name: "storage policy", a: openAIContinuationTestAdapter(defaultResponsesPath), req: llm.Request{Provider: "openai", Model: "gpt-5.4", ConversationID: "conv_1", Store: boolPtr(true)}},
+		{name: "storage policy", a: openAIContinuationTestAdapter(defaultResponsesPath), req: llm.Request{Provider: "openai", Model: "gpt-5.4", ConversationID: "conv_1", Store: new(true)}},
 	}
 
 	for _, tc := range cases {
@@ -5438,10 +5436,7 @@ func openAIContinuationTestAdapterWithScope(path, baseURL string, authScope llm.
 	}
 }
 
-func boolPtr(v bool) *bool {
-	return &v
-}
-
+//go:fix inline
 func openAIContinuationStorageScopeFingerprintForTest(t *testing.T, a *Adapter, req llm.Request) string {
 	t.Helper()
 	plan, err := a.PlanResponsesContinuation(req)

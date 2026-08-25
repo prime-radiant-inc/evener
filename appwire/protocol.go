@@ -10,9 +10,9 @@ import (
 type MethodScope string
 
 const (
-	// ScopeBoth: handled by both evener-hub and the evener serve daemon.
+	// ScopeBoth: handled by both evener hub and the evener serve daemon.
 	ScopeBoth MethodScope = "both"
-	// ScopeHub: handled only by evener-hub (auth, launch config, provider
+	// ScopeHub: handled only by evener hub (auth, launch config, provider
 	// instances, model listing — hub-mediated concerns).
 	ScopeHub MethodScope = "hub"
 	// ScopeDaemon: handled only by the evener serve daemon engine.

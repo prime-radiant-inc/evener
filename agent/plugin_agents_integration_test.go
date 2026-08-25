@@ -23,7 +23,7 @@ func TestToolRegistry_Restrict(t *testing.T) {
 	reg := tool.NewRegistry()
 	for _, name := range []string{"read_file", "write_file", "grep", "shell", "communicate"} {
 		_ = reg.Register(tool.RegisteredTool{
-			Tool: llm.Tool{Definition: llm.ToolDefinition{Name: name, Description: name}},
+			Definition: llm.ToolDefinition{Name: name, Description: name},
 			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 				return "ok", nil
 			},
@@ -48,13 +48,13 @@ func TestToolRegistry_Restrict_KeepsCommunicate(t *testing.T) {
 	t.Parallel()
 	reg := tool.NewRegistry()
 	_ = reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "communicate", Description: "communicate"}},
+		Definition: llm.ToolDefinition{Name: "communicate", Description: "communicate"},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
 		},
 	})
 	_ = reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "shell", Description: "shell"}},
+		Definition: llm.ToolDefinition{Name: "shell", Description: "shell"},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
 		},
@@ -222,7 +222,7 @@ func TestSpawnAgent_PluginAgentType_Model(t *testing.T) {
 			}
 			if tc.name == "override" {
 				c.Register(&fakeEnumerableAdapter{
-					fakeAdapter: fakeAdapter{name: "openai", steps: steps},
+					name: "openai", steps: steps,
 					models: []llm.ModelInfo{
 						{ID: "gpt-5.2"},
 						{ID: "gpt-4.1-nano"},
@@ -276,8 +276,8 @@ func TestSpawnAgent_UnavailablePluginModelUsesExplicitFallback(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	adapter := &fakeEnumerableAdapter{
-		fakeAdapter: fakeAdapter{name: "kimi-anthropic-api"},
-		models:      []llm.ModelInfo{{ID: "k3"}},
+		name:   "kimi-anthropic-api",
+		models: []llm.ModelInfo{{ID: "k3"}},
 	}
 	c.Register(adapter)
 
@@ -360,7 +360,7 @@ func TestSpawnAgent_AvailablePluginAliasWins(t *testing.T) {
 	dir := t.TempDir()
 	c := llm.NewClient()
 	adapter := &fakeEnumerableAdapter{
-		fakeAdapter: fakeAdapter{name: "anthropic"},
+		name: "anthropic",
 		models: []llm.ModelInfo{
 			{ID: "claude-opus-4-6"},
 			{ID: "claude-sonnet-4-6"},

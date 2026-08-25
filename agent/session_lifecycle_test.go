@@ -900,9 +900,9 @@ func TestSession_GracefulShutdown_CorrectOrdering(t *testing.T) {
 
 	inner := execenv.NewLocalExecutionEnvironment(dir)
 	trackEnv := &checkpointTrackingEnv{
-		cleanupTrackingEnv: cleanupTrackingEnv{ExecutionEnvironment: inner},
-		checkpointCh:       make(chan struct{}),
-		checkpointAck:      make(chan struct{}),
+		ExecutionEnvironment: inner,
+		checkpointCh:         make(chan struct{}),
+		checkpointAck:        make(chan struct{}),
 	}
 
 	sess, err := NewSession(c, NewOpenAIProfile("test-model"), trackEnv, SessionConfig{})

@@ -10,7 +10,7 @@ optional polish.
 
 ## Summary
 
-`evener-tui` should be a first-class universal terminal client for Evener, not a thin dashboard wrapped around fragments of the old single-session TUI. The app starts at a live-session dashboard grouped by project, drills into a polished session workspace, supports spawning and resuming through the hub, integrates the main-line Evener-owned OpenAI OAuth stack as a first-class auth flow, and preserves the interaction quality users expect from Codex: clear navigation, slash commands, scrollback, fork-from-turn, model picking, task/status views, and reliable end-to-end behavior.
+`evener tui` should be a first-class universal terminal client for Evener, not a thin dashboard wrapped around fragments of the old single-session TUI. The app starts at a live-session dashboard grouped by project, drills into a polished session workspace, supports spawning and resuming through the hub, integrates the main-line Evener-owned OpenAI OAuth stack as a first-class auth flow, and preserves the interaction quality users expect from Codex: clear navigation, slash commands, scrollback, fork-from-turn, model picking, task/status views, and reliable end-to-end behavior.
 
 The implementation foundation remains Bubble Tea. The repair is not a rewrite away from Bubble Tea; it is a Bubble Tea architecture cleanup:
 
@@ -49,7 +49,7 @@ The TUI should be at least as good as Codex for daily work. That means:
 
 ## Goals
 
-- Make `evener-tui` a polished hub-backed terminal app for live, idle, ended, forked, and resumed sessions.
+- Make `evener tui` a polished hub-backed terminal app for live, idle, ended, forked, and resumed sessions.
 - Preserve and improve the best old TUI behaviors: slash commands, transcript rendering, tool expansion, scrollback, model picker, theme support, task/status views, and clear input semantics.
 - Make the dashboard live-first and project-organized.
 - Let users drill into a project and then into a session without losing their place.
@@ -191,7 +191,7 @@ Design decisions from the mockup pass:
 
 ### Startup
 
-`evener-tui` starts in the dashboard.
+`evener tui` starts in the dashboard.
 
 Startup behavior:
 
@@ -205,7 +205,7 @@ Startup behavior:
 
 The startup screen must distinguish:
 
-- Cannot find `evener-hub` binary.
+- Cannot find `evener hub` binary.
 - Hub failed to bind.
 - Hub is running but unhealthy.
 - Hub exists but is an older incompatible API version.
@@ -215,7 +215,7 @@ The startup screen must distinguish:
 CLI startup contract:
 
 - `--hub-addr`: connect to an explicit hub address.
-- `--hub-bin`: explicit local `evener-hub` binary for auto-start.
+- `--hub-bin`: explicit local `evener hub` binary for auto-start.
 - `--no-auto-start-hub`: fail clearly instead of starting a local hub.
 - `--state-dir`: resolved Evener state dir used for auth, history, preferences, hub auto-start, and hub-spawned daemons.
 - `--log-file`: write TUI diagnostics without polluting the terminal UI.
@@ -440,13 +440,13 @@ keys: type filter  enter choose  esc cancel
 
 ### OpenAI Auth And Account State
 
-OpenAI OAuth was already implemented after the `evener-hub` branch point and landed on `main`. The hub TUI work must integrate and adapt that main-line implementation, not redesign a weaker replacement.
+OpenAI OAuth was already implemented after the `evener hub` branch point and landed on `main`. The hub TUI work must integrate and adapt that main-line implementation, not redesign a weaker replacement.
 
 Branching fact:
 
-- `evener-hub` branched at `d3114c9` on 2026-05-07.
+- `evener hub` branched at `d3114c9` on 2026-05-07.
 - Core OpenAI auth landed later on `main` in `c72f4b1`, `62ade8b`, `84c92a8`, `f8a17f4`, and `48933a9` on 2026-05-08.
-- Therefore the missing auth in `evener-hub` is a stale branch-base integration gap, not a later deletion.
+- Therefore the missing auth in `evener hub` is a stale branch-base integration gap, not a later deletion.
 
 Hard requirements:
 
@@ -915,7 +915,7 @@ Implement in small commits:
 
 ## Acceptance Criteria
 
-- `evener-tui` starts to a polished live dashboard.
+- `evener tui` starts to a polished live dashboard.
 - Dashboard root shows only live sessions grouped by project.
 - Project drilldown shows project history.
 - Session view has working slash commands, generated help, scrollback, tool expansion, fork, tasks, status, model switch, compact, clear, interrupt, and dashboard return.

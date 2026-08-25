@@ -410,8 +410,8 @@ Default for `PermissionAskFallback` per surface:
 | ---                                  | ---      |
 | `evener` interactive (TTY)             | `AskFallbackInteractive` |
 | `evener` non-interactive (`-p`, stdin) | `AskFallbackDeny`        |
-| `evener-tui`                           | `AskFallbackInteractive` |
-| `evener-hub` (web)                     | `AskFallbackInteractive` |
+| `evener tui`                           | `AskFallbackInteractive` |
+| `evener hub` (web)                     | `AskFallbackInteractive` |
 | `evenereval`                           | `AskFallbackDeny`        |
 | Subagents                            | inherit from parent      |
 
@@ -563,8 +563,8 @@ Cases:
 
 **Decision.** Each entry point picks an `AskFallback` value at session construction. Defaults are listed in §9. Three concrete behaviors:
 
-- **TTY-attached `evener` and `evener-tui`**: an interactive prompt. `evener` prompts on stdin/stderr; `evener-tui` opens a dialog overlay. The `PermissionRequest` hook fires *before* the prompt so a hook can short-circuit ("auto-approve all calls in this CI run").
-- **`evener-hub`**: enqueues a permission request in the session's event stream (`EventPermissionRequest`) and *blocks the tool call* on a `RespondToPermission(sessionID, callID, decision)` API call. Until the API returns, the call hangs. A timeout (default 60s, configurable per-session) collapses to the `AskFallback` value — `AskFallbackDeny` for hub.
+- **TTY-attached `evener` and `evener tui`**: an interactive prompt. `evener` prompts on stdin/stderr; `evener tui` opens a dialog overlay. The `PermissionRequest` hook fires *before* the prompt so a hook can short-circuit ("auto-approve all calls in this CI run").
+- **`evener hub`**: enqueues a permission request in the session's event stream (`EventPermissionRequest`) and *blocks the tool call* on a `RespondToPermission(sessionID, callID, decision)` API call. Until the API returns, the call hangs. A timeout (default 60s, configurable per-session) collapses to the `AskFallback` value — `AskFallbackDeny` for hub.
 - **`evener -p`, `evenereval`**: no human. `AskFallbackDeny` is the default. Documented in `--help`.
 
 **Why this and not "always prompt on stdin"?** Hub is multi-user and async; blocking on stdin breaks it. Eval runs are batched; prompts deadlock them. Letting each surface declare its policy keeps the matcher pure.

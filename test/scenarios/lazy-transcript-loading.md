@@ -17,11 +17,11 @@ selectors this card used to drive died with the vanilla frontend
 
 ## Pre-state
 
-A freshly built `evener-hub` and a seeded large *past* session, both in an
+A freshly built `evener hub` and a seeded large *past* session, both in an
 isolated state dir (own `$HOME`/state, kernel-assigned port — see the Setup
 checklist in `docs/developing-evener/agentic-testing.md`; never touch a real hub):
 
-1. `go build -o "$run/evener-hub" ./cmd/evener-hub`
+1. `go build -o "$run/evener" ./cmd/evener`
 2. Seed `$run/state/projects/bigproj/sessions/<id>.{meta.json,transcript.jsonl}`
    with ~60 user/assistant pairs (120 appwire turns). Use a throwaway `main`
    that calls `schema.SaveSessionMeta` + `transcript.NewWriter` /

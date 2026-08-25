@@ -1,4 +1,4 @@
-package main
+package hub
 
 // Tests for hubPluginsController: marketplace + plugin lifecycle CRUD wired
 // over internal/plugins.Manager. Mirrors app_instances_test.go's shape.

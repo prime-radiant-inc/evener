@@ -23,7 +23,7 @@ load-sensitive tmux e2e flakiness, landing in a harness fix.
   not run the full suite or other packages' tests. The controller runs full
   verification (`go test ./... -count=1`, plus targeted `-race`) after both
   tasks merge.
-- **Do not touch:** `.kata.toml`, `evener-transcript-v2-upgrade`. These are
+- **Do not touch:** `.kata.toml`, `evener transcript-v2-upgrade`. These are
   pre-existing, unrelated, already either modified or untracked in the
   working tree — leave them exactly as found.
 - **Git hygiene:** never `git add -A`. Stage only the files the task
@@ -205,10 +205,10 @@ take this brief's word for it):
   is 1048576 and `kern.maxprocperuid` is 10666, both generous, so exhaustion
   is unlikely on this machine, but say so explicitly rather than assuming
   it generalizes to CI or every dev machine), and whether the segfault
-  could be in the `evener-tui` binary itself (visible via
+  could be in the `evener tui` binary itself (visible via
   `#{pane_dead_status}`, which is the **exit status of the process that ran
-  in the pane** — i.e. `evener-tui`, not tmux or the test binary) rather than
-  in the tmux server. If the crash is in `evener-tui` itself, the shared-tmux-
+  in the pane** — i.e. `evener tui`, not tmux or the test binary) rather than
+  in the tmux server. If the crash is in `evener tui` itself, the shared-tmux-
   server fix below is still worth doing as isolation hardening, but say
   explicitly whether you believe it addresses the actual crash mechanism or
   only removes a contributing-load factor.

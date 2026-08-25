@@ -29,11 +29,9 @@ func TestGenerateObject_Success(t *testing.T) {
 		"required": []string{"name", "age"},
 	}
 	res, err := GenerateObject(context.Background(), GenerateObjectOptions{
-		GenerateOptions: GenerateOptions{
-			Client: c,
-			Model:  "m",
-			Prompt: &prompt,
-		},
+		Client: c,
+		Model:  "m",
+		Prompt: &prompt,
 		Schema: schema,
 	})
 	if err != nil {
@@ -62,11 +60,9 @@ func TestGenerateObject_ParseFailure_RaisesNoObjectGeneratedError(t *testing.T) 
 
 	prompt := "extract"
 	_, err := GenerateObject(context.Background(), GenerateObjectOptions{
-		GenerateOptions: GenerateOptions{
-			Client: c,
-			Model:  "m",
-			Prompt: &prompt,
-		},
+		Client: c,
+		Model:  "m",
+		Prompt: &prompt,
 		Schema: map[string]any{"type": "object"},
 	})
 	if err == nil {
@@ -125,13 +121,11 @@ func TestStreamGenerateObject_Success(t *testing.T) {
 	defer cancel()
 
 	res, err := StreamGenerateObject(ctx, GenerateObjectOptions{
-		GenerateOptions: GenerateOptions{
-			Client:   c,
-			Model:    "m",
-			Provider: "openai",
-			Prompt:   &prompt,
-		},
-		Schema: schema,
+		Client:   c,
+		Model:    "m",
+		Provider: "openai",
+		Prompt:   &prompt,
+		Schema:   schema,
 	})
 	if err != nil {
 		t.Fatalf("StreamGenerateObject: %v", err)
@@ -203,13 +197,11 @@ func TestStreamGenerateObject_ParseFailure_ReturnsNoObjectGeneratedError(t *test
 	defer cancel()
 
 	res, err := StreamGenerateObject(ctx, GenerateObjectOptions{
-		GenerateOptions: GenerateOptions{
-			Client:   c,
-			Model:    "m",
-			Provider: "openai",
-			Prompt:   &prompt,
-		},
-		Schema: map[string]any{"type": "object"},
+		Client:   c,
+		Model:    "m",
+		Provider: "openai",
+		Prompt:   &prompt,
+		Schema:   map[string]any{"type": "object"},
 	})
 	if err != nil {
 		t.Fatalf("StreamGenerateObject: %v", err)

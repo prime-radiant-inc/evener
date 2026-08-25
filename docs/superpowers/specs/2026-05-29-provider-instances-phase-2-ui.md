@@ -8,7 +8,7 @@ Jesse 2026-05-29** (the mockups below).
 
 ## 1. Goal
 
-One screen — in **both the web hub and `evener-tui`** — that manages provider
+One screen — in **both the web hub and `evener tui`** — that manages provider
 **instances**, replacing the duplicate read-only *Providers* + read-write
 *Credentials* screens. Instances grouped by type; create / edit / remove /
 set-default; per-instance credential management (API key + OAuth device-code).

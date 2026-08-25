@@ -33,8 +33,8 @@ importing each other's Go code.
 | Binary | `cmd/` | Role | Talks to | via |
 | --- | --- | --- | --- | --- |
 | `evener` | `cmd/evener` | **engine** — runs an `agent.Session` | agent, llm | direct |
-| `evener-hub` | `cmd/evener-hub` | **supervisor** — spawns `evener` subprocesses, serves clients | evener (spawn), agent (schema) | **AppWire** + schema |
-| `evener-tui` | `cmd/evener-tui` | **client** — terminal dashboard | evener-hub | **hubapi** (HTTP) |
+| `evener hub` | `cmd/evener-hub` | **supervisor** — spawns `evener` subprocesses, serves clients | evener (spawn), agent (schema) | **AppWire** + schema |
+| `evener tui` | `cmd/evener-tui` | **client** — terminal dashboard | evener hub | **hubapi** (HTTP) |
 
 The two shared **contracts** are ordinary top-level packages in the app module:
 `appwire/` (the engine↔hub↔tui wire protocol) and `hubapi/` (the hub's HTTP API).
@@ -60,7 +60,7 @@ already enforced: the build version is **injected**, not imported (`openai.Clien
 ## Building — the go.work workspace
 
 The repo is a Go workspace (`go.work`, committed). `make build` / `make build-hub` /
-`make build-tui` / `make build-llmcall` work as before; import paths are unchanged
+`make build` / `make build-llmcall` work as before; import paths are unchanged
 (`primeradiant.com/evener/…`).
 
 The unpublished sibling modules are wired with **versioned `replace … v0.0.0 => ./dir`
@@ -380,7 +380,7 @@ projection come from the root delegate journal/controller.
   `exported` rule (scoped in `.golangci.yml`)
   fails the build if any exported package-level declaration in `llm`, `agent`,
   `agent/events`, or `auth/openai` lacks a doc comment — running alongside
-  `evener-tomlcheck` (TOML key casing) and `evener-internalcheck` (no internal-type leaks).
+  `evener tomlcheck` (TOML key casing) and `evener internalcheck` (no internal-type leaks).
   `llm`/`agent`/`auth/openai` carry runnable `Example`s.
 - ✅ Validated externally consumable: a scratch module that `require`s `agent` resolves
   only `agent` + `llm` + `auth` (plus their third-party deps) — no app code.

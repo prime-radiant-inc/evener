@@ -183,7 +183,7 @@ Expected: PASS (new tests pass; existing OAuth/env status + logout tests still p
 
 ```bash
 git add cmd/evener-hub/app_auth.go cmd/evener-hub/app_auth_test.go
-git commit -m "feat(evener-hub): openai status reflects credentials.toml file layer (PRI-1877)"
+git commit -m "feat(evener hub): openai status reflects credentials.toml file layer (PRI-1877)"
 ```
 
 ---
@@ -253,7 +253,7 @@ Expected: PASS (openai now persists; the existing anthropic ApiKeySet test still
 
 ```bash
 git add cmd/evener-hub/app_auth.go cmd/evener-hub/app_auth_test.go
-git commit -m "feat(evener-hub): allow setting an OpenAI API key via credentials (PRI-1877)"
+git commit -m "feat(evener hub): allow setting an OpenAI API key via credentials (PRI-1877)"
 ```
 
 ---
@@ -378,7 +378,7 @@ Expected: PASS (new tests pass; existing OAuth-only logout still reports removed
 
 ```bash
 git add cmd/evener-hub/app_auth.go cmd/evener-hub/app_auth_test.go
-git commit -m "feat(evener-hub): openai logout clears the effective credential layer (PRI-1877)"
+git commit -m "feat(evener hub): openai logout clears the effective credential layer (PRI-1877)"
 ```
 
 ---
@@ -498,7 +498,7 @@ interchangeable credentials for one endpoint.
 
 ```bash
 git add cmd/evener-hub/README.md
-git commit -m "docs(evener-hub): document OpenAI API-key support and cred precedence (PRI-1877)"
+git commit -m "docs(evener hub): document OpenAI API-key support and cred precedence (PRI-1877)"
 ```
 
 ---

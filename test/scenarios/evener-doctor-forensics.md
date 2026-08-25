@@ -1,6 +1,6 @@
-# evener-doctor-forensics: the read-only forensic inspector produces the *right* numbers where naive grep produces the wrong ones
+# evener doctor-forensics: the read-only forensic inspector produces the *right* numbers where naive grep produces the wrong ones
 
-**What this covers**: the `evener-doctor` binary (`cmd/evener-doctor` over the
+**What this covers**: the `evener doctor` binary (`cmd/evener-doctor` over the
 `agent/doctor` package) end-to-end against a real on-disk state tree — the data
 plane that produced the *wrong numbers* during the observer-provenance work.
 Proves the six corrections the tool exists for:
@@ -33,14 +33,14 @@ card proves it against a built binary on a real state-dir shape.
 ## Pre-state
 
 - Build the binary into this run's own directory — never a fixed
-  `/tmp/evener-doctor` that a second card running at the same time would
-  overwrite mid-run (kata `k2rx`). `make build-doctor` works too; it
-  writes `./evener-doctor` in the worktree, so substitute that path in the
+  `/tmp/evener` that a second card running at the same time would
+  overwrite mid-run (kata `k2rx`). `make build` works too; it
+  writes `./evener` in the worktree, so substitute that path in the
   steps below if you use it.
 
   ```bash
   run=$(mktemp -d -t evener-e2e-XXXXXX)
-  go build -o "$run/evener-doctor" ./cmd/evener-doctor
+  go build -o "$run/evener" ./cmd/evener
   ```
 - A scratch state dir with one session whose `jobs.jsonl` exercises coalescing,
   a dropped delivery, an `evicted` terminal, and a self-loop `Chain`. Build it
@@ -48,7 +48,7 @@ card proves it against a built binary on a real state-dir shape.
   root is itself the bucket, so sessions sit directly under `sessions/`):
 
   ```bash
-  # SID must be a REAL session id: evener-doctor validates the selector before
+  # SID must be a REAL session id: evener doctor validates the selector before
   # reading anything (identifier.ValidateSessionID -> 22-char base62 UUIDv7,
   # identifier/uuid.go:12,64-73), so a readable fake like 01SCNDOCTOR... is
   # rejected with `invalid session id` and no step below runs. This literal is
@@ -61,7 +61,7 @@ card proves it against a built binary on a real state-dir shape.
   # a dropped registration costs you the `target=`/`owner=` lines and the whole
   # target-job join in Step 6 while the delivery counts look perfectly fine.
   #
-  # The transcript header MUST carry format_version 2. evener-doctor decodes it
+  # The transcript header MUST carry format_version 2. evener doctor decodes it
   # strictly (transcript.ValidateHeader, agent/transcript/transcript.go:81-86),
   # so a header without it fails EVERY transcript subcommand with
   # `unsupported transcript format: require transcript header with
@@ -90,7 +90,7 @@ card proves it against a built binary on a real state-dir shape.
 
 1. **`locate` resolves the SUBDIR jobs path.**
    ```bash
-   "$run/evener-doctor" locate "$SID" --state-dir "$SCR" --json
+   "$run/evener" doctor locate "$SID" --state-dir "$SCR" --json
    ```
    ASSERT `jobs_path` ends with `sessions/033z4xc9zDkqiOXWEe1X4l/jobs.jsonl`
    (the subdir, NOT a flat `…AAAA.jobs.jsonl`), and `transcript_path` ends with
@@ -98,7 +98,7 @@ card proves it against a built binary on a real state-dir shape.
 
 2. **`watches` collapses coalescing — the headline correction.**
    ```bash
-   "$run/evener-doctor" watches "$SID" --state-dir "$SCR"
+   "$run/evener" doctor watches "$SID" --state-dir "$SCR"
    ```
    ASSERT for `w1`: `5 pending lines` collapse to `3 distinct` deliveries (the
    `j1` key alone is 3 pending → 1 delivered), the line contains `coalescing
@@ -117,7 +117,7 @@ card proves it against a built binary on a real state-dir shape.
    cat >> "$SESS/$SID/jobs.jsonl" <<'EOF'
   {"kind":"watch_send_dropped","seq":12,"watch_id":"w2","watch_send":{"key":{"watch_id":"w2"},"delivery_id":"dr","diagnostic_reason":"runaway","self_influence_depth":8}}
   EOF
-   "$run/evener-doctor" watches "$SID" --state-dir "$SCR" --self-loops --json
+   "$run/evener" doctor watches "$SID" --state-dir "$SCR" --self-loops --json
    ```
    ASSERT exactly one watch (`w2`) is returned with `runaway_drops == 1` and
    `max_self_influence_depth == 8`. ASSERT `w1` is NOT in the output (no
@@ -134,8 +134,8 @@ card proves it against a built binary on a real state-dir shape.
   {"kind":"entry","seq":1,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"text","text":"I could steer the worker with delegate_send, but delegate_send is the wrong tool here, so I will read the file instead."}]},"timestamp":"2026-07-31T18:00:00Z"}}
   {"kind":"entry","seq":2,"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[{"kind":"tool_call","tool_call":{"id":"tc1","name":"read_file","arguments":{"path":"README.md"}}}]},"timestamp":"2026-07-31T18:00:01Z"}}
   EOF
-   "$run/evener-doctor" transcript "$SID" --count delegate_send --state-dir "$SCR"
-   "$run/evener-doctor" transcript "$SID" --count read_file --state-dir "$SCR"
+   "$run/evener" doctor transcript "$SID" --count delegate_send --state-dir "$SCR"
+   "$run/evener" doctor transcript "$SID" --count read_file --state-dir "$SCR"
    ```
    ASSERT the first prints, verbatim, `delegate_send: 0 calls  (2 textual
    mention(s) in assistant text — not invocations)` — the structural
@@ -160,7 +160,7 @@ card proves it against a built binary on a real state-dir shape.
   {"kind":"watch_cleared","seq":18,"watch_id":"w3","watch":{"generation":"g3","end_reason":"auto_removed_terminal"}}
   {"kind":"watch_registered","seq":19,"watch_id":"w4","watch":{"generation":"g4","owner_session_id":"033z4xc9zDkqiOXWEe1X4l","visible_session_id":"033z4xc9zDkqiOXWEe1X4l","target":"job_033z4xc9zDkqiOXWEe1X4o","send_to":"caller","condition":"output_match:ready","config_hash":"h4"}}
   EOF
-   "$run/evener-doctor" jobs "$SID" --state-dir "$SCR"
+   "$run/evener" doctor jobs "$SID" --state-dir "$SCR"
    ```
    ASSERT two blocks, in the log's append order: `job
    job_033z4xc9zDkqiOXWEe1X4m  (completed)` with `exit=0  output_bytes=4096`,
@@ -174,8 +174,8 @@ card proves it against a built binary on a real state-dir shape.
 
 6. **`watches` joins each row with its target job's state.**
    ```bash
-   "$run/evener-doctor" watches "$SID" --state-dir "$SCR" --watch w3
-   "$run/evener-doctor" watches "$SID" --state-dir "$SCR" --watch w4
+   "$run/evener" doctor watches "$SID" --state-dir "$SCR" --watch w3
+   "$run/evener" doctor watches "$SID" --state-dir "$SCR" --watch w4
    ```
    ASSERT `w3` — the watch on the job the run timeout stopped — renders
    `(ended: auto_removed_terminal)`, `deliveries: 0 distinct`, and the joined
@@ -192,7 +192,7 @@ card proves it against a built binary on a real state-dir shape.
 7. **Real-data spot check (non-deterministic, optional).** Point the binary at
    the live state home and confirm it reads real provenance:
    ```bash
-   "$run/evener-doctor" watches <a-real-SID-with-watch_send-events>
+   "$run/evener" doctor watches <a-real-SID-with-watch_send-events>
    ```
    ASSERT the printed `distinct_deliveries` is ≤ `grep -c watch_send_pending` on
    the same `jobs.jsonl` (coalescing only ever collapses), and that the

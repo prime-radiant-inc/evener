@@ -1256,7 +1256,7 @@ console.log("ok");
 
 - [ ] **Step 3: Rewrite the first IIFE of `notifications.js`**
 
-Keep: `PREFS_KEY`, `PLAIN_FAVICON`, `STATE_COLORS` (keyed by level now: `{error: "#f7768e", needs_you: "#e0af68", working: "#7aa2f7"}`), `SECTION_LABELS`/`activeSection`/`syncSettingsHeader`, `setFavicon`/`buildFaviconDataURI`, `fireOsNotification` (parameterize title/id from the changed entry: `new Notification("evener · " + (entry.title || entry.threadId))`, click navigates `/s/<threadId>`), `playTone`, the `evener-hub:notifications-changed` listener, the htmx:afterSettle re-apply, the second IIFE untouched.
+Keep: `PREFS_KEY`, `PLAIN_FAVICON`, `STATE_COLORS` (keyed by level now: `{error: "#f7768e", needs_you: "#e0af68", working: "#7aa2f7"}`), `SECTION_LABELS`/`activeSection`/`syncSettingsHeader`, `setFavicon`/`buildFaviconDataURI`, `fireOsNotification` (parameterize title/id from the changed entry: `new Notification("evener · " + (entry.title || entry.threadId))`, click navigates `/s/<threadId>`), `playTone`, the `evener hub:notifications-changed` listener, the htmx:afterSettle re-apply, the second IIFE untouched.
 
 Delete: `POLL_MS`, `poll`, `startPolling`, `prevState` transition machinery, `isAlertTransition`, `detectTransitions`, `/api/search` usage.
 
@@ -1345,7 +1345,7 @@ Add (structure — write it in the file's existing style):
     if (window.EvenerAppwire && typeof window.EvenerAppwire.onConnectionRestored === "function") {
       window.EvenerAppwire.onConnectionRestored(fetchBaseline);
     }
-    document.addEventListener("evener-hub:thread-status", fetchBaseline); // own-thread instant reconcile (renderer dispatches on relay status change)
+    document.addEventListener("evener hub:thread-status", fetchBaseline); // own-thread instant reconcile (renderer dispatches on relay status change)
   }
 ```
 
@@ -1354,7 +1354,7 @@ IMPLEMENTER NOTES: (a) check `appwire.js`'s `onNotification` handler invocation 
 In `cmd/evener-hub/assets/renderer.js`, find the thread-status handler (search `showConnectionBanner` neighborhood / where `THREAD_STATUS_CHANGED` events update the status pill — the handler that processes decoded `["THREAD_STATUS_CHANGED", ...]` events) and add one line after it applies the status:
 
 ```js
-    document.dispatchEvent(new CustomEvent("evener-hub:thread-status", { detail: { status: status } }));
+    document.dispatchEvent(new CustomEvent("evener hub:thread-status", { detail: { status: status } }));
 ```
 
 In `cmd/evener-hub/assets/sidebar.js`, add to `notificationAffectsSidebar`:
@@ -1482,7 +1482,7 @@ Expected: all green. Fix anything red before proceeding — test output must be 
 
 - [ ] **Step 2: Write the e2e scenario card** (content; adapt the framing to the house format from docs/agentic-testing.md):
 
-> **Scenario: attention — needs-you end to end.** Build evener + evener-hub; start hub with a scratch HOME; spawn a session with prompt "Reply with exactly the word PONG." via /new (cheap model). Assert within 10s of the reply landing: (1) the session's sidebar row shows `data-state="awaiting"`; (2) the NeedsYou tier lists it; (3) the tab title gains "(1)" (title channel defaults on); all WITHOUT opening another tab or refreshing. Then reply "thanks — nothing else." in the open thread and assert the row leaves the NeedsYou tier and the title count clears (own-tab: immediately on the next status event; allow ≤6s for the broadcast reconcile). Interrupt variant: spawn a session with a long `sleep 60` prompt, interrupt it mid-run, assert the row shows idle (never awaiting). Goal variant (integration, not e2e): covered by TestProcessInput settle tests.
+> **Scenario: attention — needs-you end to end.** Build evener + evener hub; start hub with a scratch HOME; spawn a session with prompt "Reply with exactly the word PONG." via /new (cheap model). Assert within 10s of the reply landing: (1) the session's sidebar row shows `data-state="awaiting"`; (2) the NeedsYou tier lists it; (3) the tab title gains "(1)" (title channel defaults on); all WITHOUT opening another tab or refreshing. Then reply "thanks — nothing else." in the open thread and assert the row leaves the NeedsYou tier and the title count clears (own-tab: immediately on the next status event; allow ≤6s for the broadcast reconcile). Interrupt variant: spawn a session with a long `sleep 60` prompt, interrupt it mid-run, assert the row shows idle (never awaiting). Goal variant (integration, not e2e): covered by TestProcessInput settle tests.
 
 - [ ] **Step 3: Update the spec status header and commit**
 

@@ -5,7 +5,7 @@
 
 ## Summary
 
-A comprehensive UI/UX pass on the `evener-hub` web interface. Three intertwined goals:
+A comprehensive UI/UX pass on the `evener hub` web interface. Three intertwined goals:
 
 1. **Fully responsive** on desktop (≥768px) and phone (≤767px). Phone landscape and wide (≥1440px) get targeted treatments. Tablet portrait inherits desktop (user decision).
 2. **Polished** — every surface gets the design-language treatment: token discipline, typographic identity (Hanken Grotesk + JetBrains Mono), the *Workshop Log* aesthetic. No more density inconsistency, no hover-only affordances on touch, no missing focus rings.
@@ -42,7 +42,7 @@ The audit produced a list of behavioral contracts the visual pass must not break
 2. **JS class hooks** — `.optimistic-pending`, `.optimistic-failed`, `.drop-active`, `.collapsed`, `.active`, the project-chevron `[data-open]` attribute, and `data-state` values consumed by `notifications.js` stay defined. Some are renamed via data-attributes during migration (see §6.3) but the **meaning** survives.
 3. **Data attributes carrying state** — every `data-*` listed in the templates inventory stays valid input to CSS/JS. We add new ones (`data-active`, `data-pulse`, `data-sidebar-rail`, `data-phone-density`) without removing existing ones.
 4. **LaunchConfigControls.render()** API — the function still produces a form's body; the form just uses the `settings-table` row primitive now.
-5. **Custom events** — `sidebar:refresh`, `evener-hub:notifications-changed`, `credentials-reload`, `evener/auth/updated`, `evener/launch/updated` keep their names + payloads.
+5. **Custom events** — `sidebar:refresh`, `evener hub:notifications-changed`, `credentials-reload`, `evener/auth/updated`, `evener/launch/updated` keep their names + payloads.
 6. **Same-origin guards & CSP** — design changes don't touch the strict CSP. Fonts are loaded from `fonts.googleapis.com` + `fonts.gstatic.com`; if these aren't allowed by the current policy, the CSP allowlist gets updated.
 7. **Tokyo Night identity** — dark palette unchanged. Light mode gets stronger contrast but stays in the same family.
 
@@ -105,7 +105,7 @@ Goal: add the token scale, load fonts, update CSP. No visual changes yet — exi
 - Add `--surface-secondary` and `--accent-secondary` tokens; old `--panel-2` and `--accent-2` retain values via aliases.
 - Refresh light palette tokens (`--accent: #2e58b8`, `--state-ended: #7a7a82`, awaiting/idle/warning state color adjustments).
 
-**Verify:** existing UI renders pixel-equivalent to today. Open dev tools, confirm token-substitution didn't change anything. Run `evener-hub` locally with `make build-hub && ./evener-hub`, click through the workspace, sidebar, spawn, settings, credentials, search palette. Diff against pre-merge screenshots.
+**Verify:** existing UI renders pixel-equivalent to today. Open dev tools, confirm token-substitution didn't change anything. Run `evener hub` locally with `make build-hub && ./evener-hub`, click through the workspace, sidebar, spawn, settings, credentials, search palette. Diff against pre-merge screenshots.
 
 ### Pass 2 — Typography migration
 
@@ -309,7 +309,7 @@ This is a CSS/markup pass. Verification is primarily visual + interactive.
 - `make test` (Go) — no regressions.
 - `make lint-naming` — passes (no new violations).
 - Existing JS smoke tests (in `cmd/evener-hub/jstest/`) — pass.
-- `evener-hub` builds clean.
+- `evener hub` builds clean.
 
 ### Visual verification
 
@@ -364,7 +364,7 @@ Suggested PR titles, **in ship order** (not migration-order-section numbering):
 
 Pass 1 is the only one that must ship before any other. Passes 2–3 unlock the rest. **Pass 5 (sidebar) ships before Pass 4 (buttons + focus rings)** because Pass 4's universal `:focus-visible` selector references `.sb-row`, which doesn't exist until Pass 5. Once Pass 5 ships, Passes 4, 6, 7 can ship in any order relative to each other; 8 is last.
 
-A small `evener-hub` migration banner can be displayed during this work — e.g., a top-of-app `.banner` saying "UI refresh in progress; report issues via …" — but this is optional and the user can decide whether it's worth the noise.
+A small `evener hub` migration banner can be displayed during this work — e.g., a top-of-app `.banner` saying "UI refresh in progress; report issues via …" — but this is optional and the user can decide whether it's worth the noise.
 
 ---
 

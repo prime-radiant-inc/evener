@@ -1,4 +1,4 @@
-package main
+package hub
 
 import (
 	"os"
@@ -147,6 +147,50 @@ func TestLoadConfig_PreservesExplicitHubStateRoot(t *testing.T) {
 	}
 	if cfg.HubStateRoot != explicit {
 		t.Fatalf("HubStateRoot = %q, want %q", cfg.HubStateRoot, explicit)
+	}
+}
+
+func TestMobileBaseURLConfig(t *testing.T) {
+	tests := []struct {
+		name string
+		url  string
+		ok   bool
+	}{
+		{name: "empty is allowed", url: "", ok: true},
+		{name: "http origin", url: "http://192.168.1.20:9180", ok: true},
+		{name: "https origin with root slash", url: "https://hub.example.test/", ok: true},
+		{name: "rejects userinfo", url: "https://user@hub.example.test", ok: false},
+		{name: "rejects path", url: "https://hub.example.test/hub", ok: false},
+		{name: "rejects query", url: "https://hub.example.test?token=no", ok: false},
+		{name: "rejects fragment", url: "https://hub.example.test#section", ok: false},
+		{name: "rejects other schemes", url: "ftp://hub.example.test", ok: false},
+		{name: "rejects port above 65535", url: "http://192.168.1.20:99999", ok: false},
+		{name: "rejects port zero", url: "http://192.168.1.20:0", ok: false},
+		{name: "rejects explicit empty port", url: "http://host:", ok: false},
+		{name: "accepts omitted port", url: "http://host", ok: true},
+		{name: "accepts minimum valid port", url: "http://host:1", ok: true},
+		{name: "accepts maximum valid port", url: "http://host:65535", ok: true},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "hub.toml")
+			if err := os.WriteFile(path, []byte(`mobile_base_url = "`+tt.url+`"`), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			cfg, err := LoadConfig(path)
+			if tt.ok {
+				if err != nil {
+					t.Fatalf("LoadConfig: %v", err)
+				}
+				if cfg.MobileBaseURL != tt.url {
+					t.Fatalf("MobileBaseURL = %q, want %q", cfg.MobileBaseURL, tt.url)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatalf("LoadConfig accepted invalid mobile_base_url %q", tt.url)
+			}
+		})
 	}
 }
 

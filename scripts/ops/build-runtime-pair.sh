@@ -18,8 +18,11 @@ build_one() {
 	fi
 }
 
+# The evener binary embeds the frontend SPA (via the hub subcommand) and
+# contains the end-user subcommands. The evener-dev binary holds the
+# dev/test infrastructure subcommands (agent-shards, module-lint, fuzz-*, etc.).
 build_one evener ./cmd/evener/
-build_one evener-hub ./cmd/evener-hub/
+build_one evener-dev ./cmd/evener-dev/bin/
 
 mv "$stage/evener" "$repo_root/evener"
-mv "$stage/evener-hub" "$repo_root/evener-hub"
+mv "$stage/evener-dev" "$repo_root/evener-dev"

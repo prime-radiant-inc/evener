@@ -46,48 +46,39 @@ func TestErrorFromHTTPStatus_MappingAndRetryable(t *testing.T) {
 		err := ErrorFromHTTPStatus("p", tc.status, "msg", nil, nil)
 		switch tc.wantType.(type) {
 		case *invalidRequestError:
-			var target *invalidRequestError
-			if !errors.As(err, &target) {
+			if _, ok := errors.AsType[*invalidRequestError](err); !ok {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
 		case *authenticationError:
-			var target *authenticationError
-			if !errors.As(err, &target) {
+			if _, ok := errors.AsType[*authenticationError](err); !ok {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
 		case *accessDeniedError:
-			var target *accessDeniedError
-			if !errors.As(err, &target) {
+			if _, ok := errors.AsType[*accessDeniedError](err); !ok {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
 		case *notFoundError:
-			var target *notFoundError
-			if !errors.As(err, &target) {
+			if _, ok := errors.AsType[*notFoundError](err); !ok {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
 		case *requestTimeoutError:
-			var target *requestTimeoutError
-			if !errors.As(err, &target) {
+			if _, ok := errors.AsType[*requestTimeoutError](err); !ok {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
 		case *contextLengthError:
-			var target *contextLengthError
-			if !errors.As(err, &target) {
+			if _, ok := errors.AsType[*contextLengthError](err); !ok {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
 		case *rateLimitError:
-			var target *rateLimitError
-			if !errors.As(err, &target) {
+			if _, ok := errors.AsType[*rateLimitError](err); !ok {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
 		case *serverError:
-			var target *serverError
-			if !errors.As(err, &target) {
+			if _, ok := errors.AsType[*serverError](err); !ok {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
 		case *unknownHTTPError:
-			var target *unknownHTTPError
-			if !errors.As(err, &target) {
+			if _, ok := errors.AsType[*unknownHTTPError](err); !ok {
 				t.Fatalf("status %d: got %T", tc.status, err)
 			}
 		}
@@ -301,8 +292,7 @@ func TestRegular403WithBody_StillAccessDenied(t *testing.T) {
 	raw := map[string]any{"error": map[string]any{"type": "permission_error", "message": "insufficient permissions"}}
 	err := ErrorFromHTTPStatus("openai", 403, "insufficient permissions", raw, nil)
 
-	var target *accessDeniedError
-	if !errors.As(err, &target) {
+	if _, ok := errors.AsType[*accessDeniedError](err); !ok {
 		t.Fatalf("got %T, want *accessDeniedError", err)
 	}
 	if got := Kind(err); got != KindAccessDenied {
@@ -324,8 +314,7 @@ func TestUsageLimit403IsQuotaExceededAndNotRetryable(t *testing.T) {
 	raw := rawBody(t, kimiBillingCycle403Body)
 	err := ErrorFromHTTPStatus("kimi-anthropic", 403, "messages.create failed", raw, nil)
 
-	var target *quotaExceededError
-	if !errors.As(err, &target) {
+	if _, ok := errors.AsType[*quotaExceededError](err); !ok {
 		t.Fatalf("got %T, want *quotaExceededError", err)
 	}
 	if got := Kind(err); got != KindQuotaExceeded {

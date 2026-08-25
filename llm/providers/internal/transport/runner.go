@@ -69,10 +69,9 @@ func (r *StreamRunner) Run(ctx context.Context) {
 	}
 	var terminalErr error
 	if !*r.Finished {
-		var fatal *FatalStreamError
 		if err := ctx.Err(); err != nil {
 			terminalErr = llm.WrapContextError(r.Provider, err)
-		} else if errors.As(parseErr, &fatal) {
+		} else if fatal, ok := errors.AsType[*FatalStreamError](parseErr); ok {
 			terminalErr = fatal.Err
 		} else {
 			terminalErr = llm.NewStreamError(r.Provider, r.IncompleteMsg, parseErr)

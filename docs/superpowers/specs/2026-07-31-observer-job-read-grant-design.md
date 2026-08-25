@@ -497,7 +497,7 @@ the retained-output/windowing coverage `cf84923c6` deliberately kept.
 
 **`docs/agentic-testing.md`** needs its two audit recipes revisited:
 `## Auditing sidecar scenarios` (`:336`) greps
-`evener-doctor transcript --count job_read_output` and asserts the count is zero
+`evener doctor transcript --count job_read_output` and asserts the count is zero
 before an observer callback, treating any such call as an impatience smell;
 `## Inspecting watch sidecars` (`:867`) lists parent-side `job_read_output`
 polling as a fluency anti-pattern. Both are about *polling*, and both are still

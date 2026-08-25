@@ -1,4 +1,4 @@
-package main
+package hub
 
 // Tests for Phase 2: hubInstancesController Create/Edit/Remove/SetDefault/List.
 //

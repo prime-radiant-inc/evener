@@ -1,4 +1,4 @@
-package main
+package dev
 
 import (
 	"bytes"
@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"syscall"
@@ -100,6 +101,45 @@ func TestAgentShardsGreenRunSurveysPassesAndCleansUp(t *testing.T) {
 	}
 	if !strings.Contains(stdout2.String(), "PASS  agent:1") {
 		t.Fatalf("cached rerun did not pass:\n%s", &stdout2)
+	}
+}
+
+// TestAgentShardsRunFileHoldsRegex verifies that the -test.run regex for
+// each shard is written to a file (shardN.run) and handed via
+// EVENER_SHARD_RUN_FILE, not passed on the execve argument list. A
+// failing run retains the scratch dir, so we can inspect the files.
+func TestAgentShardsRunFileHoldsRegex(t *testing.T) {
+	cfg, stdout, _, tmp := e2eConfig(t)
+	cfg.noSurvey = true
+	t.Setenv("SHARD_FIXTURE_FAIL", "beta")
+
+	_ = runShards(cfg) // fails, retaining scratch
+
+	out := stdout.String()
+	if !strings.Contains(out, "FAIL  agent:") {
+		t.Fatalf("expected a failing shard:\n%s", out)
+	}
+	runFiles, err := filepath.Glob(filepath.Join(tmp, "agent-test-shards.*", "shard*.run"))
+	if err != nil || len(runFiles) != 2 {
+		t.Fatalf("expected 2 shard .run files, got %v: %v", runFiles, err)
+	}
+	for _, rf := range runFiles {
+		data, err := os.ReadFile(rf)
+		if err != nil {
+			t.Fatalf("reading %s: %v", rf, err)
+		}
+		pattern := strings.TrimSpace(string(data))
+		if !strings.HasPrefix(pattern, "^(") || !strings.HasSuffix(pattern, ")$") {
+			t.Fatalf("run file %s does not look like an anchored regex: %q", rf, pattern)
+		}
+		// The fixture has few tests; each pattern must match at least one.
+		re, err := regexp.Compile(pattern)
+		if err != nil {
+			t.Fatalf("run file %s regex does not compile: %v", rf, err)
+		}
+		if !re.MatchString("TestFixtureAlpha") && !re.MatchString("TestFixtureBeta") {
+			t.Fatalf("run file %s matches neither fixture test: %q", rf, pattern)
+		}
 	}
 }
 
@@ -342,11 +382,12 @@ func TestAgentShardsMissingAgentDirRefuses(t *testing.T) {
 	}
 }
 
-// buildServeDev compiles the real binary for signal-delivery scenarios.
+// buildEvenerDev compiles the real evener-dev binary (whose `dev` subcommand
+// runs agent-shards) for signal-delivery scenarios.
 func buildEvenerDev(t *testing.T) string {
 	t.Helper()
 	bin := filepath.Join(t.TempDir(), "evener-dev")
-	cmd := exec.Command("go", "build", "-o", bin, ".")
+	cmd := exec.Command("go", "build", "-o", bin, "../evener-dev/bin")
 	out, err := cmd.CombinedOutput()
 	if err != nil {
 		t.Fatalf("building evener-dev: %v\n%s", err, out)
@@ -375,7 +416,7 @@ func startHeldRun(t *testing.T, extraEnv ...string) (*exec.Cmd, int, string, str
 		t.Fatalf("linking fixture as ./agent: %v", err)
 	}
 
-	cmd := exec.Command(bin, "agent-shards")
+	cmd := exec.Command(bin, "dev", "agent-shards")
 	cmd.Dir = workRoot
 	cmd.Env = append(os.Environ(),
 		"TMPDIR="+tmp,
@@ -582,15 +623,15 @@ func TestAgentShardsSIGKILLLeftoverIsReclaimedByNextRun(t *testing.T) {
 
 func TestServeDevUsageAndUnknownSubcommand(t *testing.T) {
 	bin := buildEvenerDev(t)
-	out, err := exec.Command(bin).CombinedOutput()
+	out, err := exec.Command(bin, "dev").CombinedOutput()
 	var exit *exec.ExitError
 	if !errors.As(err, &exit) || exit.ExitCode() != 2 {
-		t.Fatalf("bare evener-dev exit = %v, want 2", err)
+		t.Fatalf("bare evener dev exit = %v, want 2", err)
 	}
-	if !strings.Contains(string(out), "usage: evener-dev") || !strings.Contains(string(out), "agent-shards") {
+	if !strings.Contains(string(out), "usage: evener dev") || !strings.Contains(string(out), "agent-shards") {
 		t.Fatalf("usage text missing:\n%s", out)
 	}
-	out, err = exec.Command(bin, "no-such-subcommand").CombinedOutput()
+	out, err = exec.Command(bin, "dev", "no-such-subcommand").CombinedOutput()
 	exit = nil
 	if !errors.As(err, &exit) || exit.ExitCode() != 2 {
 		t.Fatalf("unknown subcommand exit = %v, want 2", err)
@@ -611,7 +652,7 @@ func TestAgentShardsEnvValidation(t *testing.T) {
 		{"AGENT_SHARD_COUNT", "0"},
 		{"AGENT_SHARD_PARALLEL", "-3"},
 	} {
-		cmd := exec.Command(bin, "agent-shards")
+		cmd := exec.Command(bin, "dev", "agent-shards")
 		cmd.Dir = workRoot
 		cmd.Env = append(os.Environ(), "TMPDIR="+t.TempDir(), tc.name+"="+tc.value)
 		out, err := cmd.CombinedOutput()

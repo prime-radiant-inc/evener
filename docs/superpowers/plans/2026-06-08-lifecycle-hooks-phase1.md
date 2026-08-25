@@ -6,7 +6,7 @@
 
 **Architecture:** All work lives next to the existing hook code — `agent/plugin/hooks.go` (parser + `RegisteredHook` + event enum) and `agent/internal/hooks/hooks.go` (runner: matcher, command/prompt exec, output parser, aggregation, env). One new tiny same-package file `agent/internal/hooks/matcher.go` holds the shared matcher helper; one new same-package file `agent/internal/hooks/exitcode.go` holds the exit-code table. No new packages, no new top-level dependency. Integration call sites in `agent/` (`session_tools.go`, `session_events.go`, `session_init.go`) are touched only to pass the new official input fields where the values are already in hand; their behavior does not otherwise change.
 
-**Tech Stack:** Go (go.work multi-module; the `agent` and `llm` modules). Tests are standard `go test` table tests alongside the code: `agent/internal/hooks/*_test.go` and `agent/plugin/*_test.go`. Both test files already exist and are extended, not replaced. Gates: `make test` and `make lint` (golangci across all modules, plus `evener-namingcheck`/`evener-internalcheck`/`evener-docscheck`).
+**Tech Stack:** Go (go.work multi-module; the `agent` and `llm` modules). Tests are standard `go test` table tests alongside the code: `agent/internal/hooks/*_test.go` and `agent/plugin/*_test.go`. Both test files already exist and are extended, not replaced. Gates: `make test` and `make lint` (golangci across all modules, plus `evener-namingcheck`/`evener internalcheck`/`evener-docscheck`).
 
 **Read before starting:**
 - `docs/subagent-management/07-lifecycle-hooks-claude-compat.md` — the contract. Where this plan says "per 07 §X" the spec holds the exhaustive list.

@@ -17,7 +17,8 @@ import (
 	"primeradiant.com/evener/llm/apilog"
 )
 
-func intp(n int) *int { return &n }
+//go:fix inline
+func intp(n int) *int { return new(n) }
 
 func hasIntValue(value *int, want int) bool {
 	return value != nil && *value == want
@@ -45,17 +46,17 @@ func doctorAttempt(group string, index int, outcome apilog.AttemptOutcomeClass, 
 	}
 	if outcome == apilog.AttemptSuccess {
 		attempt.Response = &apilog.APIAttemptResponse{
-			StatusCode:    intp(200),
+			StatusCode:    new(200),
 			Body:          apilog.EncodeBody([]byte("{}")),
 			Model:         "gpt-5.2-codex",
 			FinishReason:  "stop",
-			TextLength:    intp(text),
-			ToolCallCount: intp(tools),
+			TextLength:    new(text),
+			ToolCallCount: new(tools),
 			Usage: apilog.Usage{
-				InputTokens:     intp(input),
-				OutputTokens:    intp(output),
-				TotalTokens:     intp(input + output),
-				CacheReadTokens: intp(cache),
+				InputTokens:     new(input),
+				OutputTokens:    new(output),
+				TotalTokens:     new(input + output),
+				CacheReadTokens: new(cache),
 			},
 		}
 	} else {
@@ -197,7 +198,7 @@ func TestAPILogPreservesOptionalNumericPresence(t *testing.T) {
 			bucket := stateHomeBucket(base, hash1)
 			attempt := doctorAttempt("ag_numeric_presence", 1, apilog.AttemptSuccess, 1, 0, 0, 0, 0, 0)
 			if tc.present {
-				attempt.Response.StatusCode = intp(0)
+				attempt.Response.StatusCode = new(0)
 			} else {
 				attempt.Response.StatusCode = nil
 				attempt.Response.TextLength = nil
@@ -477,7 +478,7 @@ func TestRenderAPILogKeepsStructuredFailureColumnsSeparate(t *testing.T) {
 			ProviderInstance: "openai-primary",
 			Model:            "gpt-5.2-codex",
 			Outcome:          apilog.AttemptProviderTimeout,
-			StatusCode:       intp(504),
+			StatusCode:       new(504),
 			ErrorClass:       "provider_timeout",
 			SettlementState:  SettlementUnsettled,
 		}},
@@ -502,7 +503,7 @@ func TestAPILogProjectsStructuredFailureWithoutProviderBodyMessage(t *testing.T)
 	attempt.ErrorClass = "rate_limit"
 	attempt.ErrorMessage = "provider-body-sentinel: quota detail"
 	attempt.Response = &apilog.APIAttemptResponse{
-		StatusCode: intp(429),
+		StatusCode: new(429),
 		Body:       apilog.EncodeBody([]byte("provider-body-sentinel")),
 	}
 	writeRichSession(t, bucket, sidA, nil, []apilog.APILogRecord{attempt, doctorSettlement(attempt, 1)}, schema.SessionMeta{})
@@ -967,10 +968,10 @@ func TestAPIHealthVerdict(t *testing.T) {
 		attempt := apiHealthAttempt("ag_storm", i, outcome)
 		if outcome == apilog.AttemptSuccess {
 			attempt.Response = &apilog.APIAttemptResponse{
-				StatusCode:    intp(200),
+				StatusCode:    new(200),
 				Body:          apilog.EncodeBody([]byte("{}")),
-				TextLength:    intp(1),
-				ToolCallCount: intp(0),
+				TextLength:    new(1),
+				ToolCallCount: new(0),
 			}
 			stormFinal = attempt
 		} else {
@@ -985,10 +986,10 @@ func TestAPIHealthVerdict(t *testing.T) {
 	// all (clean EOF, not a partial-tail write race).
 	tail := apiHealthAttempt("ag_tail", 1, apilog.AttemptSuccess)
 	tail.Response = &apilog.APIAttemptResponse{
-		StatusCode:    intp(200),
+		StatusCode:    new(200),
 		Body:          apilog.EncodeBody([]byte("{}")),
-		TextLength:    intp(1),
-		ToolCallCount: intp(0),
+		TextLength:    new(1),
+		ToolCallCount: new(0),
 	}
 	records = append(records, tail)
 
@@ -997,7 +998,7 @@ func TestAPIHealthVerdict(t *testing.T) {
 	forbidden.ErrorClass = "access_denied"
 	forbidden.ErrorMessage = "forbidden"
 	forbidden.Response = &apilog.APIAttemptResponse{
-		StatusCode: intp(403),
+		StatusCode: new(403),
 		Body:       apilog.EncodeBody([]byte("{}")),
 	}
 	records = append(records, forbidden, doctorSettlement(forbidden, 1))

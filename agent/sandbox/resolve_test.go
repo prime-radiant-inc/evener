@@ -12,11 +12,9 @@ import (
 
 const testHome = "/home/tester"
 
-// netPtr returns a *bool for the tri-state SandboxPolicy.Network field (nil =
-// unset default; a non-nil value = explicit choice).
-func netPtr(b bool) *bool { return &b }
-
 // netStr renders a tri-state network value for test diagnostics.
+//
+//go:fix inline
 func netStr(n *bool) string {
 	if n == nil {
 		return "default(on)"
@@ -111,7 +109,7 @@ func TestResolveBwrapServesAllModes(t *testing.T) {
 	main := mainRepo(t)
 	for _, net := range []bool{true, false} {
 		for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
-			rp := mustResolve(t, SandboxPolicy{Mode: mode, Network: netPtr(net)}, bwrapHost(), main)
+			rp := mustResolve(t, SandboxPolicy{Mode: mode, Network: new(net)}, bwrapHost(), main)
 			if rp.Backend != BackendBwrap {
 				t.Errorf("mode=%v net=%v: Backend=%v, want bwrap", mode, net, rp.Backend)
 			}
@@ -125,16 +123,16 @@ func TestResolveBwrapServesAllModes(t *testing.T) {
 
 	// Cache strategy: workspace-write overlays when the host supports it, else
 	// session-private; restricted is always session-private; read-only none.
-	if got := mustResolve(t, SandboxPolicy{Mode: ModeWorkspaceWrite, Network: netPtr(true)}, bwrapHost(), main).CacheStrategy; got != CacheOverlay {
+	if got := mustResolve(t, SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, bwrapHost(), main).CacheStrategy; got != CacheOverlay {
 		t.Errorf("workspace-write cache = %v, want overlay when host supports it", got)
 	}
-	if got := mustResolve(t, SandboxPolicy{Mode: ModeWorkspaceWrite, Network: netPtr(true)}, bwrapHostNoOverlay(), main).CacheStrategy; got != CacheSessionPrivate {
+	if got := mustResolve(t, SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, bwrapHostNoOverlay(), main).CacheStrategy; got != CacheSessionPrivate {
 		t.Errorf("workspace-write cache (no overlay host) = %v, want session-private", got)
 	}
-	if got := mustResolve(t, SandboxPolicy{Mode: ModeRestricted, Network: netPtr(true)}, bwrapHost(), main).CacheStrategy; got != CacheSessionPrivate {
+	if got := mustResolve(t, SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, bwrapHost(), main).CacheStrategy; got != CacheSessionPrivate {
 		t.Errorf("restricted cache = %v, want session-private always", got)
 	}
-	if got := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: netPtr(true)}, bwrapHost(), main).CacheStrategy; got != CacheNone {
+	if got := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, bwrapHost(), main).CacheStrategy; got != CacheNone {
 		t.Errorf("read-only cache = %v, want none", got)
 	}
 }
@@ -145,7 +143,7 @@ func TestResolveReadWriteScopesPerMode(t *testing.T) {
 	t.Parallel()
 	main := mainRepo(t)
 
-	ro := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: netPtr(true)}, bwrapHost(), main)
+	ro := mustResolve(t, SandboxPolicy{Mode: ModeReadOnly, Network: new(true)}, bwrapHost(), main)
 	if ro.FileTool.Read != ReadAnywhere || len(ro.FileTool.WriteRoots) != 0 {
 		t.Errorf("read-only file tool: read=%v writeRoots=%v, want anywhere/none", ro.FileTool.Read, ro.FileTool.WriteRoots)
 	}
@@ -153,7 +151,7 @@ func TestResolveReadWriteScopesPerMode(t *testing.T) {
 		t.Error("read-only must still provision a session tmp for scratch")
 	}
 
-	ww := mustResolve(t, SandboxPolicy{Mode: ModeWorkspaceWrite, Network: netPtr(true)}, bwrapHost(), main)
+	ww := mustResolve(t, SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, bwrapHost(), main)
 	if ww.FileTool.Read != ReadAnywhere {
 		t.Errorf("workspace-write file read = %v, want anywhere", ww.FileTool.Read)
 	}
@@ -161,7 +159,7 @@ func TestResolveReadWriteScopesPerMode(t *testing.T) {
 		t.Errorf("workspace-write file writeRoots %v must include worktree %q", ww.FileTool.WriteRoots, main)
 	}
 
-	rs := mustResolve(t, SandboxPolicy{Mode: ModeRestricted, Network: netPtr(true)}, bwrapHost(), main)
+	rs := mustResolve(t, SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, bwrapHost(), main)
 	if rs.FileTool.Read != ReadWorktreeOnly {
 		t.Errorf("restricted file read = %v, want worktree-only", rs.FileTool.Read)
 	}
@@ -188,7 +186,7 @@ func TestResolveReadWriteScopesPerMode(t *testing.T) {
 func TestResolveRestrictedLinkedReadLayerSplit(t *testing.T) {
 	t.Parallel()
 	linked := linkedWorktreeRepo(t)
-	rp := mustResolve(t, SandboxPolicy{Mode: ModeRestricted, Network: netPtr(true)}, bwrapHost(), linked)
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, bwrapHost(), linked)
 
 	layout := rp.Git
 	if len(layout.ReadGrantPaths) == 0 {
@@ -215,8 +213,8 @@ func TestResolveNonBwrapLinuxRefusesAllModes(t *testing.T) {
 
 	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
 		for _, net := range []bool{true, false} {
-			mustRefuse(t, SandboxPolicy{Mode: mode, Network: netPtr(net)}, bareLinuxHost(), linked, "")
-			mustRefuse(t, SandboxPolicy{Mode: mode, Network: netPtr(net)}, bareLinuxHost(), main, "")
+			mustRefuse(t, SandboxPolicy{Mode: mode, Network: new(net)}, bareLinuxHost(), linked, "")
+			mustRefuse(t, SandboxPolicy{Mode: mode, Network: new(net)}, bareLinuxHost(), main, "")
 		}
 	}
 }
@@ -228,7 +226,7 @@ func TestResolveNeitherAndWindowsRefuseAllSandboxed(t *testing.T) {
 	dir := clean(t.TempDir())
 	for _, host := range []HostFacts{bareLinuxHost(), windowsHost()} {
 		for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
-			mustRefuse(t, SandboxPolicy{Mode: mode, Network: netPtr(true)}, host, dir, "")
+			mustRefuse(t, SandboxPolicy{Mode: mode, Network: new(true)}, host, dir, "")
 		}
 	}
 }
@@ -240,7 +238,7 @@ func TestResolveDarwinSeatbeltServesAllModes(t *testing.T) {
 	main := mainRepo(t)
 	for _, net := range []bool{true, false} {
 		for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
-			rp := mustResolve(t, SandboxPolicy{Mode: mode, Network: netPtr(net)}, darwinSeatbeltHost(), main)
+			rp := mustResolve(t, SandboxPolicy{Mode: mode, Network: new(net)}, darwinSeatbeltHost(), main)
 			if rp.Backend != BackendSeatbelt {
 				t.Errorf("darwin mode=%v net=%v: Backend=%v, want seatbelt", mode, net, rp.Backend)
 			}
@@ -250,7 +248,7 @@ func TestResolveDarwinSeatbeltServesAllModes(t *testing.T) {
 		}
 	}
 	// darwin without sandbox-exec refuses sandboxed modes naming sandbox-exec.
-	mustRefuse(t, SandboxPolicy{Mode: ModeRestricted, Network: netPtr(true)}, darwinBareHost(), main, "sandbox-exec")
+	mustRefuse(t, SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, darwinBareHost(), main, "sandbox-exec")
 }
 
 // TestResolveAbsolutizesRelativeCwd is part of the finding-#4 fix: a relative cwd
@@ -271,7 +269,7 @@ func TestResolveAbsolutizesRelativeCwd(t *testing.T) {
 	if filepath.IsAbs(rel) {
 		t.Skipf("relative path %q is unexpectedly absolute", rel)
 	}
-	rp := mustResolve(t, SandboxPolicy{Mode: ModeRestricted, Network: netPtr(true)}, bwrapHost(), rel)
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, bwrapHost(), rel)
 	if !filepath.IsAbs(rp.Git.WorktreeRoot) {
 		t.Errorf("relative cwd produced a relative worktree root %q", rp.Git.WorktreeRoot)
 	}
@@ -288,10 +286,10 @@ func TestResolveAbsolutizesRelativeCwd(t *testing.T) {
 func TestResolveRefusesRelativeExtraRoots(t *testing.T) {
 	t.Parallel()
 	main := mainRepo(t)
-	mustRefuse(t, SandboxPolicy{Mode: ModeRestricted, Network: netPtr(true), ExtraReadRoots: []string{"rel/read/root"}}, bwrapHost(), main, "")
-	mustRefuse(t, SandboxPolicy{Mode: ModeWorkspaceWrite, Network: netPtr(true), ExtraWritableRoots: []string{"rel/write/root"}}, bwrapHost(), main, "")
+	mustRefuse(t, SandboxPolicy{Mode: ModeRestricted, Network: new(true), ExtraReadRoots: []string{"rel/read/root"}}, bwrapHost(), main, "")
+	mustRefuse(t, SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true), ExtraWritableRoots: []string{"rel/write/root"}}, bwrapHost(), main, "")
 	// An absolute extra root still resolves — the refusal is specific to relative entries.
-	mustResolve(t, SandboxPolicy{Mode: ModeRestricted, Network: netPtr(true), ExtraReadRoots: []string{"/opt/extra"}}, bwrapHost(), main)
+	mustResolve(t, SandboxPolicy{Mode: ModeRestricted, Network: new(true), ExtraReadRoots: []string{"/opt/extra"}}, bwrapHost(), main)
 }
 
 // TestResolveSkipsWhitespaceOnlyExtraRoots pins the whitespace-only extra-root
@@ -304,7 +302,7 @@ func TestResolveSkipsWhitespaceOnlyExtraRoots(t *testing.T) {
 	t.Parallel()
 	main := mainRepo(t)
 	rp := mustResolve(t, SandboxPolicy{
-		Mode: ModeRestricted, Network: netPtr(true),
+		Mode: ModeRestricted, Network: new(true),
 		ExtraReadRoots:     []string{"   "},
 		ExtraWritableRoots: []string{"\t"},
 	}, bwrapHost(), main)
@@ -331,11 +329,11 @@ func TestResolveNetworkDefaultsOnWhenUnset(t *testing.T) {
 		t.Errorf("unset network must resolve to on when sandboxed, got %v", rp.Network)
 	}
 	// Explicit off is still expressible.
-	if rp := mustResolve(t, SandboxPolicy{Mode: ModeRestricted, Network: netPtr(false)}, bwrapHost(), main); rp.Network {
+	if rp := mustResolve(t, SandboxPolicy{Mode: ModeRestricted, Network: new(false)}, bwrapHost(), main); rp.Network {
 		t.Errorf("explicit network=off must resolve to off, got %v", rp.Network)
 	}
 	// Explicit on.
-	if rp := mustResolve(t, SandboxPolicy{Mode: ModeRestricted, Network: netPtr(true)}, bwrapHost(), main); !rp.Network {
+	if rp := mustResolve(t, SandboxPolicy{Mode: ModeRestricted, Network: new(true)}, bwrapHost(), main); !rp.Network {
 		t.Errorf("explicit network=on must resolve to on, got %v", rp.Network)
 	}
 }
@@ -350,7 +348,7 @@ func TestResolveRefusesUnresolvableConfigInclude(t *testing.T) {
 	// A glob include path relative to .git → resolves under the worktree, cannot
 	// be enumerated. Resolve must fail closed with a *RefusalError.
 	appendFile(t, filepath.Join(root, ".git", "config"), "\n[include]\n\tpath = ../*.cfg\n")
-	mustRefuse(t, SandboxPolicy{Mode: ModeWorkspaceWrite, Network: netPtr(true)}, bwrapHost(), root, "")
+	mustRefuse(t, SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, bwrapHost(), root, "")
 }
 
 // TestResolveConfigIncludeOutsideWorktreeResolves: an include of a file OUTSIDE
@@ -361,7 +359,7 @@ func TestResolveConfigIncludeOutsideWorktreeResolves(t *testing.T) {
 	t.Parallel()
 	root := mainRepo(t)
 	appendFile(t, filepath.Join(root, ".git", "config"), "\n[include]\n\tpath = /etc/nonexistent-gitconfig\n")
-	rp := mustResolve(t, SandboxPolicy{Mode: ModeWorkspaceWrite, Network: netPtr(true)}, bwrapHost(), root)
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeWorkspaceWrite, Network: new(true)}, bwrapHost(), root)
 	if slices.Contains(rp.Git.ProtectedPaths, "/etc/nonexistent-gitconfig") {
 		t.Errorf("an include outside every writable root should not be added to ProtectedPaths: %v", rp.Git.ProtectedPaths)
 	}
@@ -423,7 +421,7 @@ func TestInfraReadRootsReachTheSpawnedLayerOnly(t *testing.T) {
 	infra := clean(t.TempDir())
 	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
 		t.Run(mode.String(), func(t *testing.T) {
-			pol := SandboxPolicy{Mode: mode, Network: netPtr(true), InfraReadRoots: []string{infra}}
+			pol := SandboxPolicy{Mode: mode, Network: new(true), InfraReadRoots: []string{infra}}
 			rp := mustResolve(t, pol, bwrapHost(), root)
 
 			if slices.Contains(rp.FileTool.ReadRoots, infra) {
@@ -451,8 +449,8 @@ func TestInfraReadRootsLeaveTheWriteSurfaceByteIdentical(t *testing.T) {
 	for _, layout := range []func(*testing.T) string{mainRepo, linkedWorktreeRepo} {
 		root := layout(t)
 		for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
-			base := mustResolve(t, SandboxPolicy{Mode: mode, Network: netPtr(true)}, bwrapHost(), root)
-			with := mustResolve(t, SandboxPolicy{Mode: mode, Network: netPtr(true), InfraReadRoots: []string{infra}}, bwrapHost(), root)
+			base := mustResolve(t, SandboxPolicy{Mode: mode, Network: new(true)}, bwrapHost(), root)
+			with := mustResolve(t, SandboxPolicy{Mode: mode, Network: new(true), InfraReadRoots: []string{infra}}, bwrapHost(), root)
 			if !slices.Equal(base.FileTool.WriteRoots, with.FileTool.WriteRoots) {
 				t.Errorf("%v: file-tool write roots changed: %v -> %v", mode, base.FileTool.WriteRoots, with.FileTool.WriteRoots)
 			}
@@ -479,7 +477,7 @@ func TestInfraReadRootsNeverUnmaskADenylistedPath(t *testing.T) {
 		"/proc", // the non-removable pseudo-fs floor
 		"/proc/self",
 	} {
-		pol := SandboxPolicy{Mode: ModeRestricted, Network: netPtr(true), InfraReadRoots: []string{masked}}
+		pol := SandboxPolicy{Mode: ModeRestricted, Network: new(true), InfraReadRoots: []string{masked}}
 		rp := mustResolve(t, pol, host, root)
 		if slices.Contains(rp.Spawned.ReadRoots, masked) {
 			t.Errorf("denylisted path %q was granted as a hook/MCP root: %v", masked, rp.Spawned.ReadRoots)
@@ -492,7 +490,7 @@ func TestInfraReadRootsNeverUnmaskADenylistedPath(t *testing.T) {
 // grant loss that would make hooks fail exactly as before. Refuse instead.
 func TestInfraReadRootsMustBeAbsolute(t *testing.T) {
 	root := mainRepo(t)
-	pol := SandboxPolicy{Mode: ModeRestricted, Network: netPtr(true), InfraReadRoots: []string{"relative/hooks"}}
+	pol := SandboxPolicy{Mode: ModeRestricted, Network: new(true), InfraReadRoots: []string{"relative/hooks"}}
 	ref := mustRefuse(t, pol, bwrapHost(), root, "")
 	if !strings.Contains(ref.Reason, "relative/hooks") {
 		t.Errorf("refusal must name the offending root, got: %s", ref.Reason)

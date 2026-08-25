@@ -5,7 +5,7 @@ Status: design approved; ready for implementation plan
 
 ## 1. Goal
 
-`evener-hub` launches `evener serve` subprocesses on behalf of the web UI and the
+`evener hub` launches `evener serve` subprocesses on behalf of the web UI and the
 TUI. Today the hub passes a fixed, curated set of flags
 (`--addr`, `--dir`, `--state-dir`, `--run-dir`, `--model`, `--agent`,
 `--reasoning-effort`, `--sse-ring-size`) and inherits credentials from its own

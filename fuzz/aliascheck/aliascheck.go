@@ -64,8 +64,8 @@ func Populate(v reflect.Value, depth int) {
 			v.Set(reflect.ValueOf(any(map[string]any{"nested": []any{"leaf"}})))
 		}
 	case reflect.Struct:
-		for i := range v.NumField() {
-			Populate(v.Field(i), depth-1)
+		for _, field := range v.Fields() {
+			Populate(field, depth-1)
 		}
 	}
 }

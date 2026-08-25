@@ -200,7 +200,7 @@ restricted mode's read roots.
 - Create: report at the SDD workspace (not in docs/) summarizing findings; a plan amendment only if a evener change is warranted
 
 - [ ] **Step 1:** for the wedged sessions (033zIWu0M97TPEmlte5j45,
-  0341OD339bdFXqO2JkqNyK, 0340x0n1NdMduPrOuCT1DS), use `evener-doctor`
+  0341OD339bdFXqO2JkqNyK, 0340x0n1NdMduPrOuCT1DS), use `evener doctor`
   (sessions/transcript/jobs) plus their meta to classify: sandboxed or
   not, and the resolved cache strategy at the time.
 - [ ] **Step 2:** reproduce the wedge shape if possible (concurrent go

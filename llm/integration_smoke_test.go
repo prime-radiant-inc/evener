@@ -104,7 +104,7 @@ func TestIntegration_BasicGeneration(t *testing.T) {
 				Client:   client,
 				Model:    p.model,
 				Provider: p.provider,
-				Prompt:   strPtr("Say hello in one sentence."),
+				Prompt:   new("Say hello in one sentence."),
 			})
 			if err != nil {
 				t.Fatalf("Generate: %v", err)
@@ -139,7 +139,7 @@ func TestIntegration_Streaming(t *testing.T) {
 				Client:   client,
 				Model:    p.model,
 				Provider: p.provider,
-				Prompt:   strPtr("Say hello in one sentence."),
+				Prompt:   new("Say hello in one sentence."),
 			})
 			if err != nil {
 				t.Fatalf("StreamGenerate: %v", err)
@@ -196,7 +196,7 @@ func TestIntegration_ToolCalling(t *testing.T) {
 				Client:        client,
 				Model:         p.model,
 				Provider:      p.provider,
-				Prompt:        strPtr("What time is it? Use the get_time tool."),
+				Prompt:        new("What time is it? Use the get_time tool."),
 				MaxToolRounds: &maxRounds,
 				Tools: []llm.Tool{{
 					Definition: llm.ToolDefinition{
@@ -255,7 +255,7 @@ func TestIntegration_ImageInput(t *testing.T) {
 				Client:    client,
 				Model:     p.model,
 				Provider:  p.provider,
-				MaxTokens: intPtr(100),
+				MaxTokens: new(100),
 				Messages: []llm.Message{{
 					Role: llm.RoleUser,
 					Content: []llm.ContentPart{
@@ -307,13 +307,11 @@ func TestIntegration_StructuredOutput(t *testing.T) {
 			defer cancel()
 
 			res, err := llm.GenerateObject(ctx, llm.GenerateObjectOptions{
-				GenerateOptions: llm.GenerateOptions{
-					Client:   client,
-					Model:    p.model,
-					Provider: p.provider,
-					Prompt:   strPtr("Generate a fictional person with a name and age."),
-				},
-				Schema: schema,
+				Client:   client,
+				Model:    p.model,
+				Provider: p.provider,
+				Prompt:   new("Generate a fictional person with a name and age."),
+				Schema:   schema,
 			})
 			if err != nil {
 				t.Fatalf("GenerateObject: %v", err)
@@ -352,7 +350,7 @@ func TestIntegration_ErrorHandling(t *testing.T) {
 				Client:   client,
 				Model:    "nonexistent-model-xyz-" + p.provider,
 				Provider: p.provider,
-				Prompt:   strPtr("hello"),
+				Prompt:   new("hello"),
 			})
 			if err == nil {
 				t.Fatalf("expected error for nonexistent model")
@@ -361,8 +359,7 @@ func TestIntegration_ErrorHandling(t *testing.T) {
 			if k := llm.Kind(err); k != llm.KindNotFound && k != llm.KindInvalidRequest {
 				t.Logf("error type: %T, error: %v", err, err)
 				// At minimum, it should be some kind of llm.Error.
-				var llmErr llm.Error
-				if !errors.As(err, &llmErr) {
+				if _, ok := errors.AsType[llm.Error](err); !ok {
 					t.Fatalf("expected llm.Error, got %T: %v", err, err)
 				}
 			}
@@ -392,7 +389,7 @@ func TestIntegration_ImageInputURL(t *testing.T) {
 				Client:    client,
 				Model:     p.model,
 				Provider:  p.provider,
-				MaxTokens: intPtr(200),
+				MaxTokens: new(200),
 				Messages: []llm.Message{{
 					Role: llm.RoleUser,
 					Content: []llm.ContentPart{
@@ -446,10 +443,10 @@ func TestIntegration_StreamingWithTools(t *testing.T) {
 				Client:        client,
 				Model:         p.model,
 				Provider:      p.provider,
-				Prompt:        strPtr("What is the weather in Paris?"),
+				Prompt:        new("What is the weather in Paris?"),
 				Tools:         []llm.Tool{weatherTool},
-				MaxToolRounds: intPtr(3),
-				MaxTokens:     intPtr(300),
+				MaxToolRounds: new(3),
+				MaxTokens:     new(300),
 			})
 			if err != nil {
 				t.Fatalf("StreamGenerate: %v", err)
@@ -511,7 +508,7 @@ func TestIntegration_PromptCaching_MultiTurn(t *testing.T) {
 					Model:     p.model,
 					Provider:  p.provider,
 					Messages:  history,
-					MaxTokens: intPtr(50),
+					MaxTokens: new(50),
 				})
 				if err != nil {
 					t.Fatalf("turn %d: %v", turn, err)
@@ -587,10 +584,10 @@ func TestIntegration_ParallelToolCalls(t *testing.T) {
 				Client:        client,
 				Model:         p.model,
 				Provider:      p.provider,
-				Prompt:        strPtr("What is the weather in both Paris and Tokyo? Use the get_weather tool for each city."),
+				Prompt:        new("What is the weather in both Paris and Tokyo? Use the get_weather tool for each city."),
 				Tools:         []llm.Tool{weatherTool},
 				MaxToolRounds: &maxRounds,
-				MaxTokens:     intPtr(300),
+				MaxTokens:     new(300),
 			})
 			if err != nil {
 				t.Fatalf("Generate: %v", err)
@@ -658,10 +655,10 @@ func TestIntegration_MultiStepToolLoop(t *testing.T) {
 				Client:        client,
 				Model:         p.model,
 				Provider:      p.provider,
-				Prompt:        strPtr("Use the get_next_code tool to retrieve all secret codes. Keep calling until it says 'done'. Then list all the codes you retrieved."),
+				Prompt:        new("Use the get_next_code tool to retrieve all secret codes. Keep calling until it says 'done'. Then list all the codes you retrieved."),
 				Tools:         []llm.Tool{codeTool},
-				MaxToolRounds: intPtr(5),
-				MaxTokens:     intPtr(300),
+				MaxToolRounds: new(5),
+				MaxTokens:     new(300),
 			})
 			if err != nil {
 				t.Fatalf("Generate: %v", err)
@@ -709,9 +706,9 @@ func TestIntegration_ReasoningTokens(t *testing.T) {
 				Client:          client,
 				Model:           p.model,
 				Provider:        p.provider,
-				Prompt:          strPtr("What is 137 * 251? Think step by step."),
+				Prompt:          new("What is 137 * 251? Think step by step."),
 				ReasoningEffort: &effort,
-				MaxTokens:       intPtr(1024),
+				MaxTokens:       new(1024),
 			})
 			if err != nil {
 				t.Fatalf("Generate: %v", err)
@@ -729,8 +726,8 @@ func TestIntegration_ReasoningTokens(t *testing.T) {
 	}
 }
 
-func strPtr(s string) *string { return &s }
-func intPtr(i int) *int       { return &i }
-
 // Ensure json import is used (for GenerateObject output assertions).
+//
+//go:fix inline
+//go:fix inline
 var _ = json.Marshal

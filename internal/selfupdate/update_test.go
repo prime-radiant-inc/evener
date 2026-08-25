@@ -117,7 +117,7 @@ func TestUpgradeInstallsReleaseArchive(t *testing.T) {
 	if result.Release != "snapshot" {
 		t.Fatalf("Release = %q, want snapshot", result.Release)
 	}
-	const wantRestart = "Restart evener-tui and evener-hub to use the upgraded binaries."
+	const wantRestart = "Restart evener to use the upgraded binary."
 	if result.RestartMessage != wantRestart {
 		t.Fatalf("RestartMessage = %q, want %q", result.RestartMessage, wantRestart)
 	}

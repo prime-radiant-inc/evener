@@ -1,4 +1,4 @@
-package main
+package hub
 
 import (
 	"context"
@@ -180,8 +180,8 @@ func FuzzSessionTreePass3(f *testing.F) {
 			_ = filepath.Base(dir)
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { _, _ = w.Write([]byte(`{"status":"active"}`)) }))
 			defer srv.Close()
-			_ = NewWebServer(hubcore.WebConfig{}).fetchStatus(hubcore.LiveEntry{Entry: rendezvous.Entry{Address: strings.TrimPrefix(srv.URL, "http://")}})
-			_ = NewWebServer(hubcore.WebConfig{}).fetchStatus(hubcore.LiveEntry{Entry: rendezvous.Entry{Address: "[bad"}})
+			_ = NewWebServer(hubcore.WebConfig{}).fetchStatus(hubcore.LiveEntry{Address: strings.TrimPrefix(srv.URL, "http://")})
+			_ = NewWebServer(hubcore.WebConfig{}).fetchStatus(hubcore.LiveEntry{Address: "[bad"})
 		}
 	})
 }

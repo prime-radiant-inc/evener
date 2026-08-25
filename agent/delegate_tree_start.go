@@ -93,8 +93,7 @@ func (e *delegateCommittedStartFailureError) Unwrap() error {
 }
 
 func committedStartFailureDisposition(err error) delegateCommittedStartFailureDisposition {
-	var failure *delegateCommittedStartFailureError
-	if errors.As(err, &failure) {
+	if failure, ok := errors.AsType[*delegateCommittedStartFailureError](err); ok {
 		return failure.disposition
 	}
 	return 0
@@ -910,26 +909,26 @@ func normalizeDelegateStartFailure(failure delegateFinish, fallbackReason, fallb
 
 func terminalFinishBatch(lease delegateLease, status delegatestore.OutcomeStatus, reason string, endedAt time.Time, packet delegatestore.TerminalPacket) (delegatestore.Event, delegatestore.Event) {
 	return delegatestore.Event{
-			Kind:       delegatestore.EventDelegateTerminalPrepared,
-			DelegateID: lease.delegateID,
-			TerminalPrepared: &delegatestore.TerminalPrepared{
-				Generation: lease.generation,
-				Packet:     packet,
+		Kind:       delegatestore.EventDelegateTerminalPrepared,
+		DelegateID: lease.delegateID,
+		TerminalPrepared: &delegatestore.TerminalPrepared{
+			Generation: lease.generation,
+			Packet:     packet,
+		},
+	}, delegatestore.Event{
+		Kind:       delegatestore.EventDelegateRunFinished,
+		DelegateID: lease.delegateID,
+		RunFinished: &delegatestore.RunFinished{
+			Generation: lease.generation,
+			Outcome: delegatestore.Outcome{
+				Status:  status,
+				Reason:  reason,
+				EndedAt: endedAt,
 			},
-		}, delegatestore.Event{
-			Kind:       delegatestore.EventDelegateRunFinished,
-			DelegateID: lease.delegateID,
-			RunFinished: &delegatestore.RunFinished{
-				Generation: lease.generation,
-				Outcome: delegatestore.Outcome{
-					Status:  status,
-					Reason:  reason,
-					EndedAt: endedAt,
-				},
-				Disposition: delegatestore.DispositionTerminalError,
-				DeliveryID:  delegateDeliveryID(lease.delegateID, lease.generation),
-			},
-		}
+			Disposition: delegatestore.DispositionTerminalError,
+			DeliveryID:  delegateDeliveryID(lease.delegateID, lease.generation),
+		},
+	}
 }
 
 func (c *delegateTreeController) reserveCapacityLocked(kind delegateCapacityKind) bool {

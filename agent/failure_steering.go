@@ -279,12 +279,10 @@ func decodedInBandError(err error) llm.Error {
 	if err == nil || errors.Is(err, llm.ErrSSEReadTimeout) {
 		return nil
 	}
-	var stream *llm.StreamError
-	if errors.As(err, &stream) {
+	if _, ok := errors.AsType[*llm.StreamError](err); ok {
 		return nil
 	}
-	var typed llm.Error
-	if errors.As(err, &typed) {
+	if typed, ok := errors.AsType[llm.Error](err); ok {
 		return typed
 	}
 	return nil

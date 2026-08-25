@@ -112,7 +112,7 @@ func TestAggregateActivity_CountsWorkUnitsRecursively(t *testing.T) {
 	// an entry whose Type is unset takes the legacy-turn branch, which iterates
 	// Turns and counts the delegate itself as nothing.
 	entries := []appwire.JobActivityEntry{
-		{Kind: "shell", Job: ptrActivityJob(job("job_running", "running", "", false))},
+		{Kind: "shell", Job: new(job("job_running", "running", "", false))},
 		{Kind: "delegate", Delegate: &appwire.JobActivityDelegate{
 			Type: "delegate", Outcome: "failed", Terminal: true,
 			Child: &appwire.JobActivitySession{Counts: appwire.JobActivityCounts{Active: 1, Failed: 1, Completed: 2, Complete: true}},
@@ -252,8 +252,7 @@ type activityTestError struct{ message string }
 
 func (e *activityTestError) Error() string { return e.message }
 
-func ptrActivityJob(job appwire.JobActivityJob) *appwire.JobActivityJob { return &job }
-
+//go:fix inline
 func activityRecordIDs(records []*jobstore.JobRecord) []string {
 	ids := make([]string, 0, len(records))
 	for _, rec := range records {

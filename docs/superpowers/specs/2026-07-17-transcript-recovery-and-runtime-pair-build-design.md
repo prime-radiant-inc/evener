@@ -7,7 +7,7 @@ Status: Approved for implementation planning
 
 Restore recent Evener sessions that became unreadable after the transcript v2
 cutover, make transcript read failures visible in the Hub Web UI, and prevent
-the `evener` and `evener-hub` runtime binaries from being rebuilt from different
+the `evener` and `evener hub` runtime binaries from being rebuilt from different
 revisions.
 
 The three changes address one incident but remain separate units:
@@ -39,7 +39,7 @@ returned a deterministic transcript-format error. The server-rendered empty
 snapshot therefore remains visible as `No messages yet`, while the useful
 error is swallowed by connection-recovery behavior.
 
-The running binaries were also built from different revisions. `evener-hub` was
+The running binaries were also built from different revisions. `evener hub` was
 built from revision `00803b744` on July 17, while the `evener` binary it launches
 was built from revision `5973b9eb3` on July 15. The transcript v2 cutover landed
 between those revisions. The Makefile permits this state because `make build`
@@ -53,7 +53,7 @@ and `make build-hub` rebuild only one runtime binary each.
 - Keep an untouched v1 backup of every upgraded transcript.
 - Refuse to mutate malformed, partial, already-upgraded, or concurrently
   changing transcripts.
-- Make either ordinary runtime build target rebuild both `evener` and `evener-hub`
+- Make either ordinary runtime build target rebuild both `evener` and `evener hub`
   from one checkout with the same version metadata.
 - Avoid publishing either newly compiled runtime binary when either build
   command fails.
@@ -103,8 +103,8 @@ or aggregate product-build binary lists.
 The interface is:
 
 ```text
-evener-transcript-v2-upgrade --root <projects-root> --since 120h
-evener-transcript-v2-upgrade --root <projects-root> --since 120h --apply
+evener transcript-v2-upgrade --root <projects-root> --since 120h
+evener transcript-v2-upgrade --root <projects-root> --since 120h --apply
 ```
 
 Dry-run is the default. `--root` is required so the command cannot silently
@@ -266,7 +266,7 @@ After the implementation and deterministic tests pass:
 4. run the same command with `--apply` only if dry-run has no unexplained
    errors;
 5. build the runtime pair through the shared Make target;
-6. confirm matching embedded revisions in `evener` and `evener-hub`;
+6. confirm matching embedded revisions in `evener` and `evener hub`;
 7. restart the Hub service; and
 8. verify the original session through authenticated AppWire reads and the Web
    UI transcript rendering path.

@@ -121,7 +121,7 @@ func seed100ToolsRangeD(t *testing.T) {
 	_ = stringPtrOrNil("x")
 	_ = timePtrOrNil(nil)
 	_ = timePtrOrNil(&now)
-	_ = int64Ptr(1)
+	_ = new(int64(1))
 	_ = publicJobKind(jobstore.JobShell)
 	_ = shellTranscriptRef("job_1")
 	_ = defaultJobPhase(nil)

@@ -1,5 +1,5 @@
 // Command evener-hub is the web orchestrator for evener serve daemons.
-package main
+package hub
 
 import (
 	"context"
@@ -56,7 +56,6 @@ var (
 	hubProcessArgs = func() []string { return os.Args }
 	hubHostname    = os.Hostname
 	hubRunMain     = runMain
-	hubExit        = os.Exit
 )
 
 type hubHTTPServer interface {
@@ -124,10 +123,11 @@ func defaultMainDeps() mainDeps {
 	}
 }
 
-func main() {
-	if err := hubRunMain(os.Args[1:], os.Stderr, defaultMainDeps()); err != nil && !errors.Is(err, flag.ErrHelp) {
-		hubExit(1)
+func Run(args []string, _ io.Reader, _ io.Writer, stderr io.Writer) int {
+	if err := hubRunMain(args, stderr, defaultMainDeps()); err != nil && !errors.Is(err, flag.ErrHelp) {
+		return 1
 	}
+	return 0
 }
 
 func runMain(args []string, stderr io.Writer, deps mainDeps) error {
@@ -349,6 +349,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr:             cfg.Addr,
 		AuthToken:           authToken,
+		MobileBaseURL:       cfg.MobileBaseURL,
 		HubStateRoot:        cfg.HubStateRoot,
 		LaunchConfigRoot:    cmdutil.DefaultConfigRoot(),
 		RunDir:              runDir,
@@ -483,7 +484,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 
 func parseHubOptions(args []string, stderr io.Writer) (hubOptions, error) {
 	opts := hubOptions{configPath: DefaultConfigPath()}
-	fs := flag.NewFlagSet("evener-hub", flag.ContinueOnError)
+	fs := flag.NewFlagSet("evener hub", flag.ContinueOnError)
 	fs.SetOutput(stderr)
 	fs.StringVar(&opts.configPath, "config", opts.configPath, "path to hub.toml")
 	fs.StringVar(&opts.addr, "addr", "", "override hub listen address")
@@ -602,7 +603,7 @@ func currentExecutable() string {
 // resolveEvenerBinaryPath determines which "evener" binary the hub should
 // invoke for launch-check + spawning. Resolution order is:
 //  1. explicit (--evener flag): always wins.
-//  2. sibling next to the running evener-hub binary.
+//  2. sibling next to the running evener binary (the hub runs as `evener hub`).
 //  3. lookup of "evener" on $PATH.
 //
 // When none of those succeed, "" is returned so HubSpawner falls back

@@ -95,7 +95,7 @@ The rail uses horizontal priority and truncation instead of wrapping.
 
 This is a presentation and rendering-boundary change. The existing status partial, status model, and refresh behavior remain authoritative.
 
-- `evener-hub:status-refresh` continues to be triggered through `window.htmx.trigger(document.body, ...)` at its existing lifecycle points.
+- `evener hub:status-refresh` continues to be triggered through `window.htmx.trigger(document.body, ...)` at its existing lifecycle points.
 - The active-only ten-second freshness tick remains unchanged.
 - Server-provided source, state, location, token, task, and cost data remain available to the template/Details surface even if they are no longer default-visible in the compact rail.
 - Ask-response mode continues to replace the normal composer surface and must not create a competing normal composer/status interaction.
@@ -130,7 +130,7 @@ Add or extend deterministic tests to assert:
 
 Retain and run existing deterministic coverage proving:
 
-- Status refresh uses `window.htmx.trigger(document.body, "evener-hub:status-refresh")` for relevant lifecycle signals.
+- Status refresh uses `window.htmx.trigger(document.body, "evener hub:status-refresh")` for relevant lifecycle signals.
 - The active-only freshness tick starts and stops at the correct state transitions.
 - Textarea auto-grow/reset and send failure behavior remain unchanged.
 - Send/queue capability state remains correct through active/idle transitions.

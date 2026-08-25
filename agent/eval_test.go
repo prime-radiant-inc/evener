@@ -87,8 +87,8 @@ func TestEvalCollector_AccumulatesCacheTokens(t *testing.T) {
 		Data: events.AssistantTextEndData{
 			Usage: llm.Usage{
 				InputTokens:      10,
-				CacheReadTokens:  intPtr(100),
-				CacheWriteTokens: intPtr(40),
+				CacheReadTokens:  new(100),
+				CacheWriteTokens: new(40),
 			},
 		},
 	})
@@ -97,8 +97,8 @@ func TestEvalCollector_AccumulatesCacheTokens(t *testing.T) {
 		Data: events.AssistantTextEndData{
 			Usage: llm.Usage{
 				InputTokens:      10,
-				CacheReadTokens:  intPtr(50),
-				CacheWriteTokens: intPtr(10),
+				CacheReadTokens:  new(50),
+				CacheWriteTokens: new(10),
 			},
 		},
 	})
@@ -253,4 +253,4 @@ func TestEvalCollector_ConcurrentAccess(t *testing.T) {
 	}
 }
 
-func intPtr(v int) *int { return &v }
+//go:fix inline

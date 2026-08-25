@@ -170,8 +170,8 @@ func TestDecideResponsesContinuationForRequestAllowsNoConversationID(t *testing.
 
 func TestResponsesContinuationPlanInputDoesNotExposeRawScopeFields(t *testing.T) {
 	inputType := reflect.TypeFor[ResponsesContinuationPlanInput]()
-	for i := 0; i < inputType.NumField(); i++ {
-		name := inputType.Field(i).Name
+	for field := range inputType.Fields() {
+		name := field.Name
 		for _, sensitive := range []string{"APIKey", "Bearer", "Token", "Raw"} {
 			if strings.Contains(name, sensitive) {
 				t.Fatalf("planner input field %s exposes raw/sensitive scope data", name)
@@ -221,8 +221,8 @@ func TestPlanResponsesContinuationCopiesSanitizedScopeOnly(t *testing.T) {
 
 func TestContinuationStorageScopeDoesNotExposeRawScopeFields(t *testing.T) {
 	typ := reflect.TypeFor[ContinuationStorageScope]()
-	for i := 0; i < typ.NumField(); i++ {
-		name := typ.Field(i).Name
+	for field := range typ.Fields() {
+		name := field.Name
 		for _, sensitive := range []string{"APIKey", "Bearer", "Token", "Raw"} {
 			if strings.Contains(name, sensitive) {
 				t.Fatalf("storage scope field %s exposes raw/sensitive scope data", name)

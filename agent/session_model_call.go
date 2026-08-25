@@ -117,6 +117,22 @@ func contextUsageWarning(contextWindow int, estimatedTokens int) (warn bool, app
 	return true, int(math.Round(approx)), pct
 }
 
+// effectiveReasoningEffort decides the reasoning effort for one round without
+// touching the session's configured value: the current in-progress task's
+// override wins when set (even when lower — deliberately cheap tasks are a
+// feature), except while a loop-detect escalation is active, where the
+// higher-ranked of the configured and override efforts wins so the "your
+// reasoning effort has been increased" steering never lies.
+func effectiveReasoningEffort(cfg, override string, escalated bool) string {
+	if override == "" {
+		return cfg
+	}
+	if escalated && llm.ReasoningEffortRank(cfg) > llm.ReasoningEffortRank(override) {
+		return cfg
+	}
+	return override
+}
+
 // prepareModelRequest runs the per-round input phases and assembles the llm.Request
 // for the round. It snapshots the model inputs (profile, system prompt, tool
 // definitions, reasoning effort) under s.mu — keeping the round on one consistent
@@ -137,19 +153,20 @@ func (s *Session) prepareModelRequestWithError(ctx context.Context, round int, t
 	tPhaseStart := s.sclock().Now()
 
 	effortOverride := ""
-	if s.taskStore != nil {
-		if current, ok := s.taskStore.CurrentInProgress(); ok {
-			effortOverride = strings.TrimSpace(current.ReasoningEffort)
-		}
+	// A resumed session may have a persisted task store without having loaded
+	// it in this process yet. The once-guarded accessor also avoids racing a
+	// task_list mutation that initializes the store concurrently.
+	store := s.getOrCreateTaskStore()
+	if current, ok := store.CurrentInProgress(); ok {
+		effortOverride = normalizeTaskEffort(strings.TrimSpace(current.ReasoningEffort))
 	}
 	s.mu.Lock()
 	profile = s.profile
 	sys = s.cachedSystemPrompt
 	toolDefs := s.allToolDefinitions(round)
-	if effortOverride != "" {
-		s.cfg.ReasoningEffort = effortOverride
-	}
-	reasoningEffort = strings.TrimSpace(s.cfg.ReasoningEffort)
+	// The task override applies to this round only; s.cfg.ReasoningEffort keeps
+	// the session's configured effort so it is restored when the task ends.
+	reasoningEffort = effectiveReasoningEffort(strings.TrimSpace(s.cfg.ReasoningEffort), effortOverride, s.loopEffortEscalated)
 	s.mu.Unlock()
 
 	t.SystemPrompt = time.Since(tPhaseStart)
@@ -949,8 +966,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			// remaining entry can route around it. Stopping here also preserves
 			// the verdict as the round's terminal error instead of letting a
 			// later entry's failure win.
-			var unhealthy *llm.ProviderUnhealthyError
-			if errors.As(err, &unhealthy) {
+			if _, ok := errors.AsType[*llm.ProviderUnhealthyError](err); ok {
 				break
 			}
 		}
@@ -979,8 +995,7 @@ func shouldRetryResponsesContinuationAsFullHistory(req llm.Request, err error) b
 	// RetryStream just indicted. Checked before the llm.Error match because the
 	// verdict unwraps to its last attempt error, so an anchor-missing attempt
 	// error would otherwise be read straight through the verdict.
-	var unhealthy *llm.ProviderUnhealthyError
-	if errors.As(err, &unhealthy) {
+	if _, ok := errors.AsType[*llm.ProviderUnhealthyError](err); ok {
 		return false
 	}
 	var llmErr llm.Error

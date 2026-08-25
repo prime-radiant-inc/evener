@@ -19,7 +19,7 @@ Status: **executing — M1 ✅ M2 ✅ M3 ✅; M4 next.** This doc is kept **curr
 
 **go.work mechanics (load-bearing).** `go.work use ./auth ./llm …` ALONE fails to resolve an *unpublished* sibling once a module has external deps — `go build` 404s trying to fetch it. **Fix: versioned `replace … v0.0.0 => ./dir` directives IN `go.work`** (committed, repo-local — invisible to external `go get`), with the go.mod requires at `@v0.0.0`. This keeps the published go.mods replace-free while a fresh clone builds out-of-the-box. `go.work` is committed.
 
-**Correction to §4/§7 below:** the original annotation sinking `appprojector`/`apptranscript`/`appserver` into **evener-hub** is **wrong per the import graph** — all three are imported by the *engine's* top-level `server/` package (and `appprojector` isn't imported by evener-hub at all). They travel with the engine in M4. `binresolve` → duplicate (hub+tui); `credentials` → stays top-level until `cmdutil` dissolves (M4).
+**Correction to §4/§7 below:** the original annotation sinking `appprojector`/`apptranscript`/`appserver` into **evener hub** is **wrong per the import graph** — all three are imported by the *engine's* top-level `server/` package (and `appprojector` isn't imported by evener hub at all). They travel with the engine in M4. `binresolve` → duplicate (hub+tui); `credentials` → stays top-level until `cmdutil` dissolves (M4).
 
 ## 1. Decision
 
@@ -46,12 +46,12 @@ This makes "what goes where" **compiler-enforced**: the app module physically ca
 | `agent` | Agent engine + **public persistence schema** (`SessionMeta`, `Turn`, `TranscriptHeader`, `Task`, …) | `llm` | direct |
 | `cmd/evener` | **Engine** binary — runs `agent.Session`, serves per-session AppWire/HTTP | agent, llm | direct |
 | `cmd/evener-hub` | **Supervisor** — **spawns `evener` subprocesses**, persists metadata, serves clients | evener (spawn), agent (schema only) | **AppWire protocol** + agent schema |
-| `cmd/evener-tui` | **Client** — terminal UI | evener-hub | **hubapi** (HTTP) + agent schema |
+| `cmd/evener-tui` | **Client** — terminal UI | evener hub | **hubapi** (HTTP) + agent schema |
 
-Verified: evener-hub does `exec.Command(evenerBinary, …, "--protocol", appwire.ProtocolVersion)`
+Verified: evener hub does `exec.Command(evenerBinary, …, "--protocol", appwire.ProtocolVersion)`
 (spawn.go) — it does **not** embed the engine; its `agent` usage is schema types only
 (`SessionMeta` ×89, `TranscriptHeader`, `Turn`, …), never `NewSession`/`ProcessInput`.
-evener-tui uses `hubapi.NewClient(baseURL, httpClient)` and only `agent` schema types for
+evener tui uses `hubapi.NewClient(baseURL, httpClient)` and only `agent` schema types for
 rendering. The genuinely shared things are the **contracts** (`appwire`, `hubapi`) and
 **agent's public schema**.
 
@@ -140,7 +140,7 @@ cleanup batch. The per-product `internal/` carving is itself part of this archit
 
 - **M1 — App-side `internal/` de-mix.** Move each app-only top-level `internal/` package into its
   owning binary's `cmd/<bin>/internal/` (appprojector/apptranscript/appserver/auth/credentials/
-  binresolve → evener-hub or the owning product per its importers). Keep `appwire`/`hubapi` as
+  binresolve → evener hub or the owning product per its importers). Keep `appwire`/`hubapi` as
   top-level contract packages. Cut the agent-test layering smell. Gate: build/vet/test green.
 - **M2 — `go.work` + carve `llm`.** Add `llm/go.mod` (module `…/evener/llm`) + a root `go.work`.
   `llm` is the lowest layer (no evener-internal deps), so it carves cleanly first. Gate: whole-repo

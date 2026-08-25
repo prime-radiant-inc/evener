@@ -60,10 +60,10 @@ reference card `job-watch-observer-snide-thread.md`.
 ## Doctor audit
 
 ```bash
-go run ./cmd/evener-doctor watches "$SID"
-go run ./cmd/evener-doctor tree "$SID" --observers
-go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:30
-go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --format outline --range last:30
+go run ./cmd/evener doctor watches "$SID"
+go run ./cmd/evener doctor tree "$SID" --observers
+go run ./cmd/evener doctor transcript "$SID" --format outline --range last:30
+go run ./cmd/evener doctor transcript "$OBSERVER_REF" --format outline --range last:30
 ```
 
 ## Sharp edges
@@ -79,7 +79,7 @@ go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --format outline --range l
   do not create a delivery, pending row, notification, or observer
   wake"), so a filtered-out tool call
   leaves no pending row to assert on — the negative here is an absence
-  in `evener-doctor watches`, bounded by the positive alert.
+  in `evener doctor watches`, bounded by the positive alert.
 - The alert and the record collapse into one call: the observer's
   terminal `communicate(end_turn=true)` IS the callback
   (`docs/job-control.md` "`job_watch`" "That terminal communicate is

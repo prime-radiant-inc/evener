@@ -2,16 +2,21 @@ package hubapi
 
 import "time"
 
+// MobileAPIVersion is the REST contract version implemented by the dedicated
+// mobile client. Pairing requires an exact match with HealthResponse.
+const MobileAPIVersion = 1
+
 // HealthResponse is returned by GET /api/health.
 type HealthResponse struct {
-	Version       string             `json:"version"`
-	StartedAt     time.Time          `json:"started_at"`
-	HubAddr       string             `json:"hub_addr"`
-	RunDir        string             `json:"run_dir,omitempty"`
-	StateGlob     string             `json:"state_glob,omitempty"`
-	BackendGitSha string             `json:"backend_git_sha,omitempty"`
-	FrontendHash  string             `json:"frontend_hash,omitempty"`
-	Capabilities  HealthCapabilities `json:"capabilities"`
+	Version          string             `json:"version"`
+	MobileAPIVersion int                `json:"mobile_api_version"`
+	StartedAt        time.Time          `json:"started_at"`
+	HubAddr          string             `json:"hub_addr"`
+	RunDir           string             `json:"run_dir,omitempty"`
+	StateGlob        string             `json:"state_glob,omitempty"`
+	BackendGitSha    string             `json:"backend_git_sha,omitempty"`
+	FrontendHash     string             `json:"frontend_hash,omitempty"`
+	Capabilities     HealthCapabilities `json:"capabilities"`
 }
 
 type HealthCapabilities struct {

@@ -13,21 +13,20 @@
 // The per-target coverage reporter that used to live here was deleted with
 // the coverage-floor consolidation; `make coverage-floor` owns the "how much
 // is exercised" number now.
-package main
+package fuzzcov
 
 import (
 	"bufio"
 	"errors"
 	"flag"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strings"
 )
-
-var exitProcess = os.Exit
 
 // target is one registry entry: the fuzz target's identity plus the optional
 // coverpkg override naming the package(s) it really exercises.
@@ -39,17 +38,17 @@ type target struct {
 	coverpkg string // package(s) the target covers; defaults to pkg
 }
 
-func main() {
-	code, err := runCLI(os.Args[1:], os.Stdout, os.Stderr)
+func Run(args []string, _ io.Reader, stdout, stderr io.Writer) int {
+	code, err := runCLI(args, stdout, stderr)
 	if err != nil {
-		_, _ = fmt.Fprintf(os.Stderr, "evener-fuzzcov: %v\n", err)
+		_, _ = fmt.Fprintf(stderr, "evener-fuzzcov: %v\n", err)
 		code = 2
 	}
-	exitProcess(code)
+	return code
 }
 
-func runCLI(args []string, stdout, stderr *os.File) (int, error) {
-	flags := flag.NewFlagSet("evener-fuzzcov", flag.ContinueOnError)
+func runCLI(args []string, stdout, stderr io.Writer) (int, error) {
+	flags := flag.NewFlagSet("evener fuzzcov", flag.ContinueOnError)
 	flags.SetOutput(stderr)
 	ignorePath := flags.String("ignore", "scripts/coverage/fuzzcov-ignore.txt", "gap-map ignore-list")
 	repoRoot := flags.String("repo-root", ".", "repository root")
@@ -70,7 +69,7 @@ func runCLI(args []string, stdout, stderr *os.File) (int, error) {
 	}
 
 	if *gapOnly {
-		return runGapOnlyE(*registry, *repoRoot, modules, *ignorePath)
+		return runGapOnlyE(stdout, stderr, *registry, *repoRoot, modules, *ignorePath)
 	}
 
 	return 2, errors.New("the only mode is -gap-only -registry <file>; the coverage reporter was removed")
@@ -80,7 +79,7 @@ func runCLI(args []string, stdout, stderr *os.File) (int, error) {
 // derives the fuzzed package set from the registry's declared target packages,
 // scans the parse-signature universe, subtracts the ignore-list, and exits
 // non-zero if any parse package is left un-fuzzed and un-ignored.
-func runGapOnlyE(registryPath, repoRoot string, modules []string, ignorePath string) (int, error) {
+func runGapOnlyE(stdout, stderr io.Writer, registryPath, repoRoot string, modules []string, ignorePath string) (int, error) {
 	if registryPath == "" {
 		return 2, errors.New("-gap-only requires -registry (the scripts/fuzz/run-fuzz.sh --list output)")
 	}
@@ -104,14 +103,14 @@ func runGapOnlyE(registryPath, repoRoot string, modules []string, ignorePath str
 	gaps := gapMap(universe, fuzzed, ignore)
 
 	if len(gaps) == 0 {
-		fmt.Printf("fuzz gap check: all %d decode/parse package(s) have a registered target or a reasoned ignore\n", len(universe))
+		_, _ = fmt.Fprintf(stdout, "fuzz gap check: all %d decode/parse package(s) have a registered target or a reasoned ignore\n", len(universe))
 		return 0, nil
 	}
-	_, _ = fmt.Fprintln(os.Stderr, "GAP MAP — decode/parse packages with NO registered fuzz target")
+	_, _ = fmt.Fprintln(stderr, "GAP MAP — decode/parse packages with NO registered fuzz target")
 	for _, g := range gaps {
-		_, _ = fmt.Fprintf(os.Stderr, "  %-52s (%s)\n", g[0], g[1])
+		_, _ = fmt.Fprintf(stderr, "  %-52s (%s)\n", g[0], g[1])
 	}
-	_, _ = fmt.Fprintf(os.Stderr, "evener-fuzzcov: GAP BREACH: %d decode/parse package(s) have no fuzz target and are not ignored\n", len(gaps))
+	_, _ = fmt.Fprintf(stderr, "evener-fuzzcov: GAP BREACH: %d decode/parse package(s) have no fuzz target and are not ignored\n", len(gaps))
 	return 1, nil
 }
 

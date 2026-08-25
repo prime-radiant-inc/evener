@@ -1,7 +1,7 @@
 # Agentic end-to-end testing
 
 This is a practical guide for an AI agent (or human) running an
-end-to-end scenario from `test/scenarios/` against a live `evener-hub` +
+end-to-end scenario from `test/scenarios/` against a live `evener hub` +
 `evener` daemon. The scenario files describe *what* to verify; this
 document describes *how* — patterns, recipes, and footguns collected
 from real sessions.
@@ -11,7 +11,7 @@ the file structure. This document is the runbook side.
 
 ## Setup checklist
 
-**Never Jesse's real hub, never his port `9180`.** His `evener-hub` runs
+**Never Jesse's real hub, never his port `9180`.** His `evener hub` runs
 there for real, host-wide flock'd at `~/.local/state/evener/hub.lock`, with
 his real auth token, credentials, providers, and session history under
 `~/.config/evener` and `~/.local/state/evener`. A test hub started with a bare `$HOME` and
@@ -41,9 +41,9 @@ run=$(mktemp -d -t evener-e2e-XXXXXX)
 #    make build-web comes first because the hub SERVES the SPA out of its
 #    own binary: frontend/dist is not tracked (only a one-line
 #    PLACEHOLDER) and webnext.go embeds it at compile time
-#    (`//go:embed all:frontend/dist`), so a bare `go build ./cmd/evener-hub`
+#    (`//go:embed all:frontend/dist`), so a bare `go build ./cmd/evener/`
 #    in a fresh checkout or worktree embeds nothing and every page route
-#    answers `503 evener-hub web app not built: run 'make build-web' and
+#    answers `503 evener hub web app not built: run 'make build-web' and
 #    rebuild`. /api/* still answers normally, so the first symptom is a
 #    browser step failing minutes in (kata a6k8). frontend/dist is the one
 #    artifact that lands in the worktree instead of under $run — it is an
@@ -55,9 +55,8 @@ run=$(mktemp -d -t evener-e2e-XXXXXX)
 #    built from a different package-lock.json, see the rebuild matrix
 #    under "Falsification debugging".
 make build-web
-go build -o "$run/evener-hub" ./cmd/evener-hub
 go build -o "$run/evener" ./cmd/evener
-go build -o "$run/evener-tui" ./cmd/evener-tui
+go build -o "$run/evener" ./cmd/evener
 
 # 3. Isolate. A throwaway $HOME keeps hub.lock, auth-token, and session
 #    history off Jesse's real ~/.local/state/evener, and credentials.toml/
@@ -73,7 +72,7 @@ unset XDG_STATE_HOME
 unset XDG_CONFIG_HOME
 
 # 4. Start the hub with -addr 127.0.0.1:0 — never a hardcoded or
-#    dispatch-assigned port. evener-hub binds the listener itself and
+#    dispatch-assigned port. evener hub binds the listener itself and
 #    reports the address it actually got (kata 68fm: this used to be
 #    the literal string ":0", not a dialable port — "-addr 127.0.0.1:0"
 #    was silently useless before the fix). Binding happens inside the
@@ -82,7 +81,7 @@ unset XDG_CONFIG_HOME
 #    step and no TOCTOU window — the port the hub logs is the port it is
 #    already listening on. -evener points at the daemon binary the hub
 #    spawns per session.
-"$run/evener-hub" -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &
+"$run/evener" hub -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &
 HUBPID=$!
 echo "$HUBPID" >"$run/hub.pid"   # so a later shell can kill it by pid, not by pattern
 
@@ -193,7 +192,7 @@ stored OAuth. If `evener openai status` is signed in but a GPT run fails
 with API-key quota, start the test hub with the key cleared:
 
 ```bash
-OPENAI_API_KEY= "$run/evener-hub" -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &
+OPENAI_API_KEY= "$run/evener" hub -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &
 ```
 
 This is the one deliberate exception to step 3: a scenario that needs
@@ -213,7 +212,7 @@ sharing itself):
   other override, so this hub *cannot start at all* while Jesse's real
   one already holds it — that failure looks like a hang or a generic
   bind error, not an obvious "already running" message. Check first:
-  `pgrep -f 'evener-hub.*:9180'` (matches however the real hub was
+  `pgrep -f 'evener.*hub.*:9180'` (matches however the real hub was
   launched — flag form, bind address, and all — because it keys on the
   port, not the invocation shape).
 - **Session history does not have to be shared even here.** Exporting
@@ -245,7 +244,7 @@ provider credential — and points the isolated hub's `providers.toml` at it:
 scripts/e2e/e2e-ratelimited-provider.sh --retry-after 5
 ```
 
-prints the run directory, fake429's address, and the exact `evener-tui
+prints the run directory, fake429's address, and the exact `evener tui
 --hub-addr ... --auth-token ... --no-auto-start-hub` command to attach.
 Spawn a session with `"model":"ratelimited/fake-model"` (see "Spawning a
 session via the REST shim" below) and every completion call it makes will
@@ -421,12 +420,12 @@ For observer sidecar scenarios, do not trust the final scenario marker
 alone. Audit the parent and observer transcripts:
 
 ```bash
-go run ./cmd/evener-doctor tree "$SID" --state-dir "$state" --observers
-go run ./cmd/evener-doctor transcript "$SID" --state-dir "$state" --format outline --range last:80
-go run ./cmd/evener-doctor transcript "$SID" --state-dir "$state" --count job_list
-go run ./cmd/evener-doctor transcript "$SID" --state-dir "$state" --count read_transcript
-go run ./cmd/evener-doctor transcript "$OBSERVER_SID" --state-dir "$state" --format outline --range last:80
-go run ./cmd/evener-doctor transcript "$OBSERVER_SID" --state-dir "$state" --count delegate_send
+go run ./cmd/evener doctor tree "$SID" --state-dir "$state" --observers
+go run ./cmd/evener doctor transcript "$SID" --state-dir "$state" --format outline --range last:80
+go run ./cmd/evener doctor transcript "$SID" --state-dir "$state" --count job_list
+go run ./cmd/evener doctor transcript "$SID" --state-dir "$state" --count read_transcript
+go run ./cmd/evener doctor transcript "$OBSERVER_SID" --state-dir "$state" --format outline --range last:80
+go run ./cmd/evener doctor transcript "$OBSERVER_SID" --state-dir "$state" --count delegate_send
 ```
 
 For the happy path, the parent should use the current delegate result,
@@ -734,7 +733,7 @@ the one you think it is via the `location.port` assertion above.
 The authoritative counterpart to any of this is the REST detail object
 and the on-disk transcript. When a DOM read is ambiguous, do not add
 more selectors — cross-check `/api/sessions/local:$SID` and
-`evener-doctor transcript`, which cannot be fooled by a stale tab.
+`evener doctor transcript`, which cannot be fooled by a stale tab.
 
 ## Driving the TUI with tmux
 
@@ -750,7 +749,7 @@ unique:
 TMUX_SESSION="evener-test-$(basename "$run")"
 tmux kill-session -t "$TMUX_SESSION" 2>/dev/null   # idempotent: prior run
 tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-  "$run/evener-tui --hub-addr 127.0.0.1:$PORT --debug 2>$run/tui-stderr.log"
+  "$run/evener" tui --hub-addr 127.0.0.1:$PORT --debug 2>$run/tui-stderr.log"
 sleep 2
 ```
 
@@ -838,20 +837,20 @@ TS=$(find "$HOME/.local/state/evener/projects" -name "$SID.transcript.jsonl")
 META=$(find "$HOME/.local/state/evener/projects" -name "$SID.meta.json")
 
 # Locate the canonical files for a session selector.
-go run ./cmd/evener-doctor locate "$SID"
+go run ./cmd/evener doctor locate "$SID"
 
 # Read a compact, typed turn outline instead of raw JSONL.
-go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:20
+go run ./cmd/evener doctor transcript "$SID" --format outline --range last:20
 
 # Count structural tool invocations. This does not confuse tool-name
 # mentions in prompts/API payloads with real tool calls.
-go run ./cmd/evener-doctor transcript "$SID" --count delegate_send
+go run ./cmd/evener doctor transcript "$SID" --count delegate_send
 ```
 
 Useful when a scenario's web/TUI assertion is ambiguous. The on-disk
 transcript is the daemon's authoritative record of what happened, but
 do not hand-parse transcript JSONL for comprehension; use
-`evener-doctor transcript`. Raw `jsonl` reads are for byte-level replay
+`evener doctor transcript`. Raw `jsonl` reads are for byte-level replay
 or debugging the transcript format itself.
 
 Five forensics facts that have each closed an investigation:
@@ -893,7 +892,7 @@ Five forensics facts that have each closed an investigation:
   which the openai-compat adapter decodes into a typed error, so the
   attempt's `error_message` carries the provider's own code and message
   rather than the generic `stream ended without completion`. Read them
-  with `evener-doctor apilog "$SID" --errors`, or `--health` for the
+  with `evener doctor apilog "$SID" --errors`, or `--health` for the
   per-session verdict (`errors_by_class`, `retry_storm_groups` — attempt
   groups of three or more). The raw chunk is in `response.body.data` if
   the decoded message is not enough.
@@ -906,9 +905,8 @@ the offending layer, rebuild, rerun, grep the log. The full pipeline
 has six rebuild points:
 
 1. **Daemon** — `cmd/evener/` and `agent/`. Rebuild: `go build -o "$run/evener" ./cmd/evener`. The hub re-spawns it per session, so the next spawned session picks up the new binary.
-2. **Hub** — `cmd/evener-hub/` and `server/`. Rebuild + kill the running hub by PID (not `pkill -f`, which would also kill any other concurrent agent's hub), then restart it the same way as step 4 of the setup checklist — it binds a *new* ephemeral port, so re-read `$run/hub.log` for the new `PORT`/`HUB`: `kill "$HUBPID"; go build -o "$run/evener-hub" ./cmd/evener-hub && "$run/evener-hub" -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" & HUBPID=$!`.
+2. **Hub** — `cmd/evener-hub/` and `server/`. Rebuild + kill the running hub by PID (not `pkill -f`, which would also kill any other concurrent agent's hub), then restart it the same way as step 4 of the setup checklist — it binds a *new* ephemeral port, so re-read `$run/hub.log` for the new `PORT`/`HUB`: `kill "$HUBPID"; go build -o "$run/evener" ./cmd/evener && "$run/evener" hub -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" & HUBPID=$!`.
 3. **Web UI** — `cmd/evener-hub/frontend/src/` (TypeScript/React). Two steps, and skipping the first is the classic "my change didn't take": `make build-web` compiles it into `cmd/evener-hub/frontend/dist`, which `webnext.go`'s `//go:embed all:frontend/dist` bakes into the hub binary. So rebuild the frontend, **then** rebuild and restart the hub, then hard-refresh the tab. When in doubt whether a live tab is running the fix, grep the served bundle for a symbol the fix introduced (`curl -s "$HUB/assets/…"` or view-source) — a tab picks nothing up until the hub binary was rebuilt, restarted, AND the tab reloaded. A checkout that has never run `make build-web` has a one-line `dist/PLACEHOLDER` and serves no app at all. Agent worktrees symlink `node_modules` to a shared install; `make web-preflight` accepts that install when the `package-lock.json` beside it is byte-identical to this worktree's (mtime cannot answer the question — a fresh worktree's lockfile is always newer than the shared install). When the two lockfiles differ it refuses to `npm ci` through the symlink on purpose, because that would empty the install for every other worktree: refresh the shared install where it lives, or give this worktree its own real `node_modules`.
-4. **TUI** — `cmd/evener-tui/`. Rebuild: `go build -o "$run/evener-tui" ./cmd/evener-tui`. The running TUI keeps the old binary in memory — kill the tmux session (`tmux kill-session -t "$TMUX_SESSION"`) and restart for the new code.
 5. **AppWire types** — `appwire/`. Both daemon and hub statically link these; rebuild both. The generated TypeScript mirror (`frontend/src/protocol/types.gen.ts`) is a third consumer — a wire change that only rebuilds the Go side leaves the browser decoding the old shape.
 6. **Optimistic-mutation plumbing** — the TUI's pending coordinator and the web's durable outbox (`frontend/src/stores/mutationOutbox.ts`, `panes/session/composer/queue/pendingTurnsStore.ts`); same rebuild rules as 4 and 3 respectively.
 
@@ -954,7 +952,7 @@ for name in evener-test evener-test-2; do tmux kill-session -t $name 2>/dev/null
 
 # Kill the hub you started, by the PID you captured — not by a
 # `pkill -f evener-hub-test` pattern match, which would also kill any other
-# concurrent agent's test hub (they're all named "evener-hub" now that each
+# concurrent agent's test hub (they're all named "evener hub" now that each
 # one lives under its own $run dir instead of a fixed /tmp/evener-hub-test).
 kill "$HUBPID" 2>/dev/null
 
@@ -973,27 +971,27 @@ prior sessions.
 ## Inspecting watch sidecars
 
 Watch/observer scenarios should assert against durable state, not only
-the parent's final prose. Use `evener-doctor` instead of custom JSONL
+the parent's final prose. Use `evener doctor` instead of custom JSONL
 parsers:
 
 ```bash
 # Parent watch lifecycle, coalesced delivery counts, dropped sends, and
 # self-loop verdicts.
-go run ./cmd/evener-doctor watches "$SID"
+go run ./cmd/evener doctor watches "$SID"
 
 # Parent/delegate/observer topology. Use observer transcript refs from
 # this output when you audit sidecar behavior.
-go run ./cmd/evener-doctor tree "$SID" --observers
+go run ./cmd/evener doctor tree "$SID" --observers
 
 # Parent and observer turns. The observer transcript should show whether
 # a frame caused useful work, a no-op text response, or unwanted tool churn.
-go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:30
-go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --format outline --range last:30
+go run ./cmd/evener doctor transcript "$SID" --format outline --range last:30
+go run ./cmd/evener doctor transcript "$OBSERVER_REF" --format outline --range last:30
 
 # Structural tool counts when the scenario cares about fluency.
-go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count delegate_send
-go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count communicate
-go run ./cmd/evener-doctor transcript "$OBSERVER_REF" --count job_list
+go run ./cmd/evener doctor transcript "$OBSERVER_REF" --count delegate_send
+go run ./cmd/evener doctor transcript "$OBSERVER_REF" --count communicate
+go run ./cmd/evener doctor transcript "$OBSERVER_REF" --count job_list
 ```
 
 This matters when an observer calls `communicate(end_turn=true)`: the
@@ -1064,7 +1062,7 @@ file a kata. Don't try to drive past the gate from the scenario.
   file. Daemon lines are stamped `[serve <RFC3339 UTC ms> session=<SID>]`,
   so they cross-reference directly against rendezvous `started_at` and the
   provider API logs.
-- **TUI debug stderr** (when launched with `--debug`): redirect via `tmux new-session -d -s "$TMUX_SESSION" "$run/evener-tui --hub-addr 127.0.0.1:$PORT --debug 2>$run/tui-stderr.log"`
+- **TUI debug stderr** (when launched with `--debug`): redirect via `tmux new-session -d -s "$TMUX_SESSION" "$run/evener" tui --hub-addr 127.0.0.1:$PORT --debug 2>$run/tui-stderr.log"`
 - **Browser console capture**: `~/.cache/superpowers/browser/<date>/<session>/<NNN>-<action>-console.txt`
 - **Kata CLI**: `~/go/bin/kata` (see `kata create --help`)
 - **Rate-limited provider for retry/liveness checks**: `scripts/e2e/e2e-ratelimited-provider.sh` — see "Testing against a rate-limited provider" above.

@@ -1219,13 +1219,13 @@ func TestSession_ParallelToolCalls_RunConcurrentlyWhenSupported(t *testing.T) {
 	// ReadOnly: true ensures the ordered-group algorithm batches both calls
 	// for parallel execution (non-read-only tools are serialized).
 	_ = sess.reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{
+		Definition: llm.ToolDefinition{
 			Name: "slow",
 			Parameters: map[string]any{
 				"type":       "object",
 				"properties": map[string]any{"n": map[string]any{"type": "integer"}},
 			},
-		}, ReadOnly: true},
+		}, ReadOnly: true,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			_ = env
@@ -1304,13 +1304,11 @@ func TestSession_ParallelToolCalls_NonReadOnlyToolsSerialize(t *testing.T) {
 	}
 	makeTool := func(name string, readOnly bool) tool.RegisteredTool {
 		return tool.RegisteredTool{
-			Tool: llm.Tool{
-				Definition: llm.ToolDefinition{
-					Name:       name,
-					Parameters: map[string]any{"type": "object", "properties": map[string]any{}},
-				},
-				ReadOnly: readOnly,
+			Definition: llm.ToolDefinition{
+				Name:       name,
+				Parameters: map[string]any{"type": "object", "properties": map[string]any{}},
 			},
+			ReadOnly: readOnly,
 			Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 				mu.Lock()
 				seq++
@@ -1530,7 +1528,7 @@ func TestSession_CustomRegisteredTool_AppearsInSystemPrompt(t *testing.T) {
 
 	// Register a custom tool after session creation.
 	if err := sess.reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{Name: "my_custom_tool", Description: "Does custom things"}},
+		Definition: llm.ToolDefinition{Name: "my_custom_tool", Description: "Does custom things"},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
 		},

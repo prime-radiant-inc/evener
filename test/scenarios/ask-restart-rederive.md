@@ -149,7 +149,7 @@ Chrome.
      sid=$(jq -r '.session_id // empty' "$f" 2>/dev/null)
      [ "$sid" = "$SID" ] && jq -c '{pid, session_id}' "$f"
    done
-   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:6
+   go run ./cmd/evener doctor transcript "$SID" --format outline --range last:6
    ```
 
 ## Expected

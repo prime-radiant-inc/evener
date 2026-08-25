@@ -447,12 +447,12 @@ func TestEmbeddedModelCatalog_GPT56Family(t *testing.T) {
 		// Per-million prices are scaled from per-token floats, so exact
 		// equality is not safe: upstream's 2e-07 scales to 0.19999999999999998,
 		// not 0.2. Compare all three the way cache-read already is.
-		if !floatPtrApproxEqual(mi.InputCostPerMillion, f64(p[0])) ||
-			!floatPtrApproxEqual(mi.OutputCostPerMillion, f64(p[1])) {
+		if !floatPtrApproxEqual(mi.InputCostPerMillion, new(p[0])) ||
+			!floatPtrApproxEqual(mi.OutputCostPerMillion, new(p[1])) {
 			t.Errorf("%s pricing = %v/%v, want %v/%v",
 				id, floatPtrValue(mi.InputCostPerMillion), floatPtrValue(mi.OutputCostPerMillion), p[0], p[1])
 		}
-		if !floatPtrApproxEqual(mi.CacheReadInputCostPerMillion, f64(p[2])) {
+		if !floatPtrApproxEqual(mi.CacheReadInputCostPerMillion, new(p[2])) {
 			t.Errorf("%s cache-read pricing = %v, want %v", id, mi.CacheReadInputCostPerMillion, p[2])
 		}
 	}
@@ -636,9 +636,9 @@ func TestEmbeddedCatalog_CacheTierPricing(t *testing.T) {
 		wantCacheRead   *float64
 		wantCacheCreate *float64
 	}{
-		{id: "claude-opus-4-5", wantCacheRead: f64(0.5), wantCacheCreate: f64(6.25)},
-		{id: "claude-sonnet-4-5", wantCacheRead: f64(0.3), wantCacheCreate: f64(3.75)},
-		{id: "gpt-5-codex", wantCacheRead: f64(0.125), wantCacheCreate: nil},
+		{id: "claude-opus-4-5", wantCacheRead: new(0.5), wantCacheCreate: new(6.25)},
+		{id: "claude-sonnet-4-5", wantCacheRead: new(0.3), wantCacheCreate: new(3.75)},
+		{id: "gpt-5-codex", wantCacheRead: new(0.125), wantCacheCreate: nil},
 	}
 	for _, tc := range cases {
 		t.Run(tc.id, func(t *testing.T) {
@@ -696,10 +696,10 @@ func TestLookupModelInfo_BedrockOpenAIInferenceProfile(t *testing.T) {
 	}
 }
 
-func f64(v float64) *float64 { return &v }
-
 // floatPtrValue renders a price for a failure message. Formatting the pointer
 // itself prints an address, which tells you a price is wrong but not what it is.
+//
+//go:fix inline
 func floatPtrValue(v *float64) any {
 	if v == nil {
 		return "nil"

@@ -6,7 +6,7 @@ truncated result?
 
 ## HEALTHY
 
-- Few or no tool results carry the truncation banner. `evener-doctor
+- Few or no tool results carry the truncation banner. `evener doctor
   transcript --health` reports `truncation_warnings` below the threshold.
 - Note: one truncated result is not a Finding by itself — the pattern is
   *repeated* truncation without narrowing (a smaller glob, a bounded
@@ -17,7 +17,7 @@ truncated result?
 Take the target session id from the runbook invocation — never hardcode one.
 
 ```
-evener-doctor transcript <selector> --health --json
+evener doctor transcript <selector> --health --json
 ```
 
 ## CLASSIFY
@@ -32,7 +32,7 @@ audit:
     value: 3
 ```
 
-- Read the flagged session's transcript (`evener-doctor transcript <sel>
+- Read the flagged session's transcript (`evener doctor transcript <sel>
   --format outline`) around each truncated result to see whether the session
   narrowed its request afterward, or repeated the same unscoped call. The
   2026-08-05 session study found this truncation happens **from the front**

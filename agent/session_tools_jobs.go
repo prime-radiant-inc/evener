@@ -15,7 +15,6 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/llm"
 )
 
 const (
@@ -78,7 +77,7 @@ type jobToolRegistrar interface {
 func registerJobToolsWithRegistrar(reg *tool.Registry, registrar jobToolRegistrar, s *Session, deps *toolDeps) error {
 	_ = deps
 	if err := registrar.Register(tool.RegisteredTool{
-		Tool:  llm.Tool{Definition: tool.DefJobStatus(), ReadOnly: true},
+		Definition: tool.DefJobStatus(), ReadOnly: true,
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -89,7 +88,7 @@ func registerJobToolsWithRegistrar(reg *tool.Registry, registrar jobToolRegistra
 		return err
 	}
 	if err := registrar.Register(tool.RegisteredTool{
-		Tool:  llm.Tool{Definition: tool.DefJobList(), ReadOnly: true},
+		Definition: tool.DefJobList(), ReadOnly: true,
 		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
@@ -100,8 +99,8 @@ func registerJobToolsWithRegistrar(reg *tool.Registry, registrar jobToolRegistra
 		return err
 	}
 	if err := registrar.Register(tool.RegisteredTool{
-		Tool:  llm.Tool{Definition: tool.DefJobStop()},
-		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
+		Definition: tool.DefJobStop(),
+		Limit:      schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
 			return jobStopTool(ctx, s, args, jobToolResultMaxChars(reg, "job_stop"))
@@ -110,8 +109,8 @@ func registerJobToolsWithRegistrar(reg *tool.Registry, registrar jobToolRegistra
 		return err
 	}
 	if err := registrar.Register(tool.RegisteredTool{
-		Tool:  llm.Tool{Definition: tool.DefJobWatch(availableEventKindNames())},
-		Limit: schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
+		Definition: tool.DefJobWatch(availableEventKindNames()),
+		Limit:      schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = ctx
 			_ = env
@@ -2047,10 +2046,7 @@ func timePtrOrNil(value *time.Time) *string {
 	return &formatted
 }
 
-func int64Ptr(value int64) *int64 {
-	return &value
-}
-
+//go:fix inline
 func publicJobKind(t jobstore.JobType) string {
 	_ = t
 	return jobKindShell
@@ -2113,11 +2109,11 @@ func projectJobStatus(now time.Time, rec *jobstore.JobRecord) jobStatusResult {
 		if rec.EndedAt != nil {
 			end = *rec.EndedAt
 		}
-		out.DurationMS = int64Ptr(end.Sub(rec.StartedAt).Milliseconds())
+		out.DurationMS = new(end.Sub(rec.StartedAt).Milliseconds())
 		out.Phase = ""
 	} else {
-		out.RunningForMS = int64Ptr(now.Sub(rec.StartedAt).Milliseconds())
-		out.QuietForMS = int64Ptr(now.Sub(last).Milliseconds())
+		out.RunningForMS = new(now.Sub(rec.StartedAt).Milliseconds())
+		out.QuietForMS = new(now.Sub(last).Milliseconds())
 	}
 	return out
 }

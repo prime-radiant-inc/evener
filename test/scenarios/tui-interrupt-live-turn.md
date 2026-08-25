@@ -1,4 +1,4 @@
-# tui-interrupt-live-turn: evener-tui /interrupt fires against a real mid-turn session
+# tui-interrupt-live-turn: evener tui /interrupt fires against a real mid-turn session
 
 **What this covers**: kata `9sck`. The web title-bar interrupt is
 verified by `workspace-title-bar-actions.md` (kata `gx92` + the
@@ -19,12 +19,12 @@ palette as soon as the turn starts.
 ## Pre-state
 
 - `tmux` installed (tested on tmux 3.4).
-- `evener-hub` reachable on an isolated `$HOME` and free port
+- `evener hub` reachable on an isolated `$HOME` and free port
   (never Jesse's port `9180` — see the Setup checklist in
   `docs/developing-evener/agentic-testing.md`). Token at
-  `$HOME/.evener/auth-token` (`./evener-hub` launches it; web-only auth).
-- `./evener-tui` and `./evener-hub` built and present in the repo root
-  (`go build -o evener-tui ./cmd/evener-tui && go build -o evener-hub
+  `$HOME/.evener/auth-token` (`./evener` launches it; web-only auth).
+- `./evener` and `./evener` built and present in the repo root
+  (`go build -o ./evener ./cmd/evener/ && go build -o evener hub
   ./cmd/evener-hub`).
 - OpenAI OAuth signed in (`./evener openai status` shows
   `source=oauth`). The slow-turn prompt needs the model to actually
@@ -63,10 +63,10 @@ TMUX_SESSION="evener-interrupt-$(basename "$tmpdir")"
    echo "SID=$SID state=$state"
    ```
 
-2. **Launch evener-tui in tmux**:
+2. **Launch evener tui in tmux**:
    ```bash
    tmux new-session -d -s "$TMUX_SESSION" -x 200 -y 50 \
-     "./evener-tui --hub-addr 127.0.0.1:$PORT --debug"
+     "./evener tui --hub-addr 127.0.0.1:$PORT --debug"
    sleep 1
    tmux capture-pane -t "$TMUX_SESSION" -p | head -5
    ```

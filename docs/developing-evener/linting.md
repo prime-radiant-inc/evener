@@ -27,12 +27,16 @@ to run `make fuzz` or a live eval suite by hand.
 
 `lint-evenerfuzz` is the floor for the fuzz-tagged sources: `go vet -tags
 evenerfuzz` across every `FUZZ_GO_MODULES` module type-checks each module's
-test packages under the tag, which is what catches a stranded call site.
-Running the fuzz corpora themselves is 144s across the workspace and stays in
-`make fuzz` / `make fuzz-seeds`; this compile-only pass is ~4s warm, cheap
-enough to sit in the required gate. `lint-eval` is the same idea for the
+test packages under the tag, which is what catches a stranded call site. On a
+non-Linux host it repeats that vet pass with `GOOS=linux`, because files tagged
+`linux && evenerfuzz` are otherwise invisible to a macOS or other host-OS
+checkout. Linux hosts reuse their native pass rather than paying for the same
+analysis twice. Running the fuzz corpora themselves is 144s across the
+workspace and stays in `make fuzz` / `make fuzz-seeds`; this compile-only pass
+is ~4s warm on Linux and adds only the cross-GOOS pass off Linux, cheap enough
+to sit in the required gate. `lint-eval` is the same idea for the
 `eval`-tagged live-provider suites (context-compaction quality, forced
-notes). That tag had no floor at all for a while and duly rotted — a
+notes), including the same Linux cross-check for `linux && eval`. That tag had no floor at all for a while and duly rotted — a
 `[]string` that became a `[]summarizationRoute` in June stranded the
 comparison eval's judge, and nothing said so for six weeks. Running eval
 suites is never gate-shaped at any price: they spend real money against a
@@ -104,14 +108,20 @@ exists to refuse.
 ## The golangci-lint cross-checkout cache hazard (issue #290)
 
 A content-identical checkout of this repo at a second path — a git worktree,
-in particular — poisons the shared `golangci-lint` cache (issue #290): the
+in particular — can poison a shared `golangci-lint` cache (issue #290): the
 cache keys on content, not path, so a lint run from one checkout can leave
 cache entries a second, path-sensitive checkout then reads as valid and
-silently produces wrong results. A worktree that runs `make lint` without an
-isolated cache does not just risk its own results — it can break the *main*
-checkout's `make lint` the moment the worktree is removed. Point
-`GOLANGCI_LINT_CACHE` at a private, worktree-scoped directory before running
-any lint command from a second checkout of this repo.
+silently produces wrong results. This affects both dropped `//nolint`
+suppression and phantom findings from path exclusions.
+
+Every Make-invoked golangci-lint process now gets a durable cache under
+`${XDG_CACHE_HOME:-$HOME/.cache}/evener/golangci-lint/`, keyed by the absolute
+worktree root. The cache is outside the repository, so gitleaks never scans
+it, and it is reused by later lint runs in the same worktree without being
+shared with siblings. `GOLANGCI_LINT_CACHE=/path make lint-golangci` remains an
+explicit escape hatch when a caller needs a particular cache. Reclaim only the
+current worktree's cache with `make lint-cache-clean`; this does not clean the
+user's global golangci-lint cache or sibling worktrees.
 
 ## Targets
 
@@ -120,10 +130,11 @@ any lint command from a second checkout of this repo.
 | --- | --- | --- | --- | --- | --- |
 | `make secret-scan` | Run gitleaks over the whole working tree using the committed .gitleaks.toml ruleset. | No secret matches the committed gitleaks ruleset anywhere in the working tree. | Required CI (via make lint); local pre-merge. | gitleaks. Local absence warns and returns zero; CI sets EVENER_GITLEAKS_REQUIRED=1. | A finding, or a required-tool absence under EVENER_GITLEAKS_REQUIRED=1, is nonzero. |
 | `make lint-naming` | Enforce snake_case naming across every TOML data file in the repo. | Every TOML file's keys use snake_case naming. | Required CI (via make lint); local pre-merge. | None beyond the Go toolchain; deterministic, no provider calls. | Any TOML file has a non-snake_case key. |
-| `make lint-evenerfuzz` | The compile floor for the //go:build evenerfuzz sources: go vet under the tag, plus a tagliatelle-only golangci-lint pass. See "Why two tagged lint passes exist" in docs/developing-evener/linting.md for the full rationale. | Every evenerfuzz-tagged source across FUZZ_GO_MODULES still compiles and passes its struct-tag casing floor, catching a production signature change that strands a tagged call site. | Required CI (via make lint); local pre-merge. ~4s warm across the workspace. | golangci-lint. Reads .golangci.yml's casing rules, carve-outs, and exclusions via --enable-only tagliatelle. | go vet -tags evenerfuzz fails for any module, or the tagliatelle pass reports a casing violation. |
-| `make lint-eval` | The compile floor for the //go:build eval sources: go vet under the tag, plus a tagliatelle-only golangci-lint pass. | The eval-tagged live-provider suites (context-compaction quality, forced notes) still compile. | Required CI (via make lint); local pre-merge. ~3.5s warm. | golangci-lint. Covers all of FUZZ_GO_MODULES, since eval sources could land in any module. | go vet -tags eval fails for any module, or the tagliatelle pass reports a casing violation. |
+| `make lint-evenerfuzz` | The compile floor for the //go:build evenerfuzz sources: host go vet and a host tagliatelle-only golangci-lint pass, plus GOOS=linux repeats of both on non-Linux hosts. See "Why two tagged lint passes exist" in docs/developing-evener/linting.md for the full rationale. | Every evenerfuzz-tagged source across FUZZ_GO_MODULES still compiles for the host and Linux and passes its struct-tag casing floor, catching a production signature change that strands a tagged call site. | Required CI (via make lint); local pre-merge. ~4s warm across the workspace on Linux; the extra cross-GOOS pass runs only off Linux. | golangci-lint. Reads .golangci.yml's casing rules, carve-outs, and exclusions via --enable-only tagliatelle. | host or GOOS=linux go vet -tags evenerfuzz fails for any module, or either host or GOOS=linux tagliatelle reports a casing violation. |
+| `make lint-eval` | The compile floor for the //go:build eval sources: host go vet and a host tagliatelle-only golangci-lint pass, plus GOOS=linux repeats of both on non-Linux hosts. | The eval-tagged live-provider suites (context-compaction quality, forced notes) still compile for the host and Linux. | Required CI (via make lint); local pre-merge. ~3.5s warm on Linux; the extra cross-GOOS pass runs only off Linux. | golangci-lint. Covers all of FUZZ_GO_MODULES, since eval sources could land in any module. | host or GOOS=linux go vet -tags eval fails for any module, or either host or GOOS=linux tagliatelle reports a casing violation. |
 | `make lint-internal` | Fail if any exported symbol in the agent/llm/providercfg libraries names a evener-internal type. | The agent/llm/providercfg libraries stay externally importable — no exported symbol leaks an internal type name. | Required CI (via make lint); local pre-merge. | None beyond the Go toolchain. | cmd/evener-internalcheck finds an exported symbol naming an internal type. |
 | `make lint-golangci` | golangci-lint across every workspace module, plus the second appwire-specific camelCase pass over server/appwire_*.go. See "The server/appwire_*.go camelCase regime" in docs/developing-evener/linting.md. | golangci-lint's full ruleset (struct-tag casing, formatting, exported-doc comments, and the rest) passes across every FUZZ_GO_MODULES workspace module, and the appwire camelCase regime holds for server/appwire_*.go. | Required CI (via make lint); local pre-merge. | golangci-lint. Runs against FUZZ_GO_MODULES, not GO_MODULES, so the fuzz module's ordinary Go is covered too. | Either golangci-lint run fails for any module. |
+| `make lint-cache-clean` | Remove the current worktree's golangci-lint cache without touching sibling worktrees or the user's global golangci-lint cache. | The current worktree's isolated cache can be reclaimed on demand. | Local cleanup after a tool upgrade or cache diagnosis. | golangci-lint. | golangci-lint cannot clean the configured worktree cache. |
 | `make lint-gofmt` | Keep every tracked Go source formatter-clean, including the tagged evenerfuzz/eval files golangci-lint's own gofmt pass never compiles. | `gofmt -l` reports nothing for any tracked .go file, tagged or not. | Required CI (via make lint); local pre-merge. | None beyond the Go toolchain. | Any tracked .go file is not gofmt-clean. |
 | `make lint-generated` | Fail if any committed generated output is stale: the two AppWire outputs and the six docs/developing-evener/ target tables. | docs/appwire-protocol.md, the generated TypeScript protocol types, and the marked target-table regions in docs/developing-evener/'s six family docs all match what `make generate` produces right now. | Required CI (via make lint); local pre-merge. | None beyond the Go toolchain. | `make generate` exits nonzero, an expected output is no longer tracked, or regenerated output differs from what is committed. |
 | `make lint-fuzz-registry` | Wrap `make fuzz-registry-check` so a fuzz target that lands without its registry row fails the required gate instead of sitting undetected. | Every native/Rapid fuzz target in the manifest (scripts/fuzz/fuzz-targets.txt) matches AST-discovered workspace declarations. | Required CI (via make lint); local pre-merge. Well under a second. | None beyond the Go toolchain; static AST analysis only. | A discovered fuzz target has no registry row, or a registry row has no discovered target. |

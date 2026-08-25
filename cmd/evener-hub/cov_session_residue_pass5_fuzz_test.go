@@ -1,4 +1,4 @@
-package main
+package hub
 
 import (
 	"context"
@@ -196,7 +196,7 @@ func FuzzSessionResiduePass5(f *testing.F) {
 			for _, payload := range []string{"{", `{"status":"active","turns":2}`} {
 				srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { _, _ = w.Write([]byte(payload)) }))
 				addr := strings.TrimPrefix(srv.URL, "http://")
-				_ = NewWebServer(hubcore.WebConfig{}).fetchStatus(hubcore.LiveEntry{Entry: rendezvous.Entry{Address: addr}})
+				_ = NewWebServer(hubcore.WebConfig{}).fetchStatus(hubcore.LiveEntry{Address: addr})
 				srv.Close()
 			}
 		}

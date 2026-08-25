@@ -366,7 +366,7 @@ This is the part most worth internalizing: **the hub orchestrates, separate
 
 ```
                         ┌──────────────────────────────────────────────┐
-                        │  evener-hub process                            │
+                        │  evener hub process                            │
                         │  (cmd/evener-hub)                              │
                         │                                              │
    credentials.toml ───▶│  credentials.Store (main.go:103)            │
@@ -536,7 +536,7 @@ only the registered instances.
 Both screens are duplicative by intent (both render the `authList` response);
 Providers is the at-a-glance view, Credentials is the editor. Both still enumerate
 the fixed provider **type** set (not config instances); **Phase 2** replaces them
-with one instance-aware CRUD screen — in the web hub **and** `evener-tui`.
+with one instance-aware CRUD screen — in the web hub **and** `evener tui`.
 
 ### Model strings and display
 

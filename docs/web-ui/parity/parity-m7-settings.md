@@ -168,7 +168,7 @@ none — localStorage key `evener-hub.transcript.systemStatus` (JSON).
 - [ ] Static server-rendered label spans are hardcoded `"OFF"` for all four, matching the
       JS-computed default (no flash-of-wrong-state) — `templates/partials/settings/transcript.html:10,19,29,39`
 - [ ] On change: persists `{...prev, [key]: checked}`, updates the ON/OFF label, dispatches
-      `document` `CustomEvent("evener-hub:transcript-system-status-changed", {detail:{key,value}})`,
+      `document` `CustomEvent("evener hub:transcript-system-status-changed", {detail:{key,value}})`,
       shows a "Settings saved" success toast — `assets/settings-transcript.js:14-25`
 - [ ] `applyTranscriptState()` resyncs all 4 checkboxes + labels on `DOMContentLoaded` and every
       `htmx:afterSwap` — `assets/settings-transcript.js:31-37,52-53`
@@ -233,7 +233,7 @@ Appwire: none — localStorage key `evener-hub.notifications` (JSON); OS toggle 
       commits unconditionally — turning the setting off never revokes/rechecks the browser
       permission — `assets/settings-notifications.js:51,60`
 - [ ] Every non-OS-gated commit + the loudScope radio change both dispatch `document`
-      `CustomEvent("evener-hub:notifications-changed", {detail:{key,value}})` and toast "Settings
+      `CustomEvent("evener hub:notifications-changed", {detail:{key,value}})` and toast "Settings
       saved" — `assets/settings-notifications.js:27-36,64-75`
 - [ ] "Loud for" radio (`loudScope`): `"asks"` (Questions & errors, default) vs `"all"` (Everything
       needing me); governs which state-transitions get OS notification + sound — title/favicon

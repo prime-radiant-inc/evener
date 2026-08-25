@@ -9,21 +9,20 @@ import (
 	"primeradiant.com/evener/llm/providercfg"
 )
 
-func testBool(v bool) *bool { return &v }
-
+//go:fix inline
 func lunarouteModels() map[string]providercfg.ModelConfig {
 	return map[string]providercfg.ModelConfig{
 		"glm-5.2-nvfp4": {
 			ContextWindow:   1_048_576,
 			MaxOutputTokens: 131_072,
-			Reasoning:       testBool(true),
+			Reasoning:       new(true),
 			ThinkingLevels: map[string]string{
 				"minimal": "high", "low": "high", "medium": "high", "high": "high", "xhigh": "max",
 			},
 		},
 		"tiny-chat": {
 			ContextWindow: 32_000,
-			Reasoning:     testBool(false),
+			Reasoning:     new(false),
 		},
 	}
 }
@@ -237,6 +236,8 @@ func TestWithModel_CarriesInstanceModels(t *testing.T) {
 
 // The task_list tool's effort enum must reflect the configured levels, not the
 // provider default — a stale enum teaches the model levels the clamp rejects.
+// The "inherit" sentinel always rides along so strict-mode providers (which
+// force-require the property) let the model decline to override.
 func TestNewOpenAICompatProfile_TaskListEnumMatchesConfiguredLevels(t *testing.T) {
 	p := newOpenAICompatProfile("openai-compatible", "glm-5.2-nvfp4", 0, lunarouteModels())
 	def := findToolDef(p, "task_list")
@@ -244,7 +245,7 @@ func TestNewOpenAICompatProfile_TaskListEnumMatchesConfiguredLevels(t *testing.T
 		t.Fatal("profile has no task_list tool")
 	}
 	enum := effortEnumFromTaskList(t, *def)
-	want := []string{"minimal", "low", "medium", "high", "xhigh"}
+	want := []string{"minimal", "low", "medium", "high", "xhigh", "inherit"}
 	if !reflect.DeepEqual(enum, want) {
 		t.Errorf("task_list effort enum = %v, want %v", enum, want)
 	}

@@ -12,8 +12,7 @@ import (
 // type-switch on the concrete type. It is the single predicate the session layer
 // uses to recognize a sandbox denial in a tool result.
 func AsDenied(err error) (*DeniedError, bool) {
-	var d *DeniedError
-	if errors.As(err, &d) {
+	if d, ok := errors.AsType[*DeniedError](err); ok {
 		return d, true
 	}
 	return nil, false

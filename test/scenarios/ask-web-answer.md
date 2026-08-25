@@ -34,7 +34,7 @@ gesture.
   ```bash
   run=$(mktemp -d -t evener-e2e-ask-web-XXXXXX)
   go build -o "$run/evener"     ./cmd/evener
-  go build -o "$run/evener-hub" ./cmd/evener-hub
+  go build -o "$run/evener" ./cmd/evener
   ```
 - Export credentials from the MAIN checkout (not this worktree):
   ```bash
@@ -55,7 +55,7 @@ gesture.
   roster and each daemon's `/status` agree (the isolated `$HOME` above still gives each its
   own default):
   ```bash
-  "$run/evener-hub" -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &
+  "$run/evener" hub -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &
   HUBPID=$!
   echo "$HUBPID" >"$run/hub.pid"
   for i in $(seq 1 50); do
@@ -180,7 +180,7 @@ gesture.
    ```
 8. **(browser-free)** Confirm the round trip on disk:
    ```bash
-   go run ./cmd/evener-doctor transcript "$SID" --format outline --range last:6
+   go run ./cmd/evener doctor transcript "$SID" --format outline --range last:6
    ```
 
 ## Expected

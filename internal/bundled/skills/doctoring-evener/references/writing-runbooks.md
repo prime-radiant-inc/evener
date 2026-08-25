@@ -10,12 +10,12 @@ HEALTHY/INSPECT/CLASSIFY), each a heading:
 
 ## The three sections
 
-1. **HEALTHY** — what steady state looks like, in terms of `evener-doctor` output.
+1. **HEALTHY** — what steady state looks like, in terms of `evener doctor` output.
    Be precise about the *signal* (e.g. "no watch has a `runaway` drop"), and call
    out any look-alike that is **not** the signal (e.g. a bounded self-influenced
    delivery — normal, not a runaway). A reader must be able to tell PASS from FAIL
    without guessing.
-2. **INSPECT** — the exact `evener-doctor <cmd>` invocations to run. **Pull live
+2. **INSPECT** — the exact `evener doctor <cmd>` invocations to run. **Pull live
    state first; never hardcode a session id, a watch id, or a threshold** — take
    them from the target selector the runbook is invoked with. Prefer `--json` so
    CLASSIFY keys on fields, not on parsing prose.
@@ -35,9 +35,9 @@ HEALTHY/INSPECT/CLASSIFY), each a heading:
 - [ ] **Zero-on-healthy.** A runbook that fires on every healthy session is
       miscalibrated, not thorough. If the HEALTHY case would emit, fix the
       predicate.
-- [ ] **Confirm through the tools.** Every INSPECT step is a `evener-doctor`
+- [ ] **Confirm through the tools.** Every INSPECT step is a `evener doctor`
       invocation, never an ad-hoc grep/jq over raw JSONL.
-- [ ] **Keep cold reads pure.** Inspect delegates with `evener-doctor jobs` /
+- [ ] **Keep cold reads pure.** Inspect delegates with `evener doctor jobs` /
       `tree`; never open or repair `jobs.jsonl` or `delegates.jsonl`, construct a
       Session, or call a provider as part of diagnosis.
 - [ ] **Treat legacy delegate state exactly.** Only the tool-reported
@@ -54,13 +54,13 @@ HEALTHY/INSPECT/CLASSIFY), each a heading:
 **Question:** <the one diagnostic question this run answers>
 
 ## HEALTHY
-- <the precise PASS signal, in evener-doctor terms>
+- <the precise PASS signal, in evener doctor terms>
 - Note: <any look-alike that is NOT the signal>
 
 ## INSPECT
 Take the target session id from the runbook invocation — never hardcode one.
 \`\`\`
-evener-doctor <cmd> <selector> [--flag] --json
+evener doctor <cmd> <selector> [--flag] --json
 \`\`\`
 
 ## CLASSIFY
@@ -73,15 +73,15 @@ A run that finds nothing is the expected, correct outcome.
 ## Worked sketch
 
 The seed `observer-self-loop.md` is the canonical example: HEALTHY = no watch has
-a `runaway` drop (bounded self-influence is normal); INSPECT = `evener-doctor
+a `runaway` drop (bounded self-influence is normal); INSPECT = `evener doctor
 watches <selector> --self-loops --json`; CLASSIFY = each watch with
 `runaway_drops > 0` → one `watch_runaway` Finding, empty output → PASS. Read it
 before authoring a new one.
 
-## The `audit:` block — mechanical checks `evener-doctor audit` drives
+## The `audit:` block — mechanical checks `evener doctor audit` drives
 
 CLASSIFY's INSPECT/prose form is written for an LLM operator's judgment.
-`evener-doctor audit --runbook NAME (--sessions <sel,...> | --since DUR)`
+`evener doctor audit --runbook NAME (--sessions <sel,...> | --since DUR)`
 is the **batch** driver: it runs a runbook's threshold checks over a whole
 session set mechanically, dedups the results into Findings by signature
 (one Finding, every affected session listed in its evidence), and prints a
@@ -135,7 +135,7 @@ A session "trips" a check when every one of its conditions holds. Every
 session that trips the same check in one run collapses into **one** Finding
 — that check's `title`/`category`/`signature` — with every tripped session
 listed in `evidence.sessionRefs`. `evidence.doctorCommand` is the
-`evener-doctor audit --runbook <name> --sessions <ref,...>` invocation that
+`evener doctor audit --runbook <name> --sessions <ref,...>` invocation that
 reproduces it, scoped to exactly the affected sessions.
 
 ### Metric namespace
@@ -160,8 +160,8 @@ needs it):
 | `user_corrections` | `HealthResult.UserCorrections` (a proxy metric — see health.go's own caveat) |
 | `tool_calls.<tool>` | `HealthResult.ToolCalls[<tool>]` |
 | `tool_errors.<tool>.<class>` | `HealthResult.ToolErrors[<tool>][<class>]` |
-| `apilog.calls` / `.empties` / `.errors` / `.avg_latency_ms` | the session's `APILogTotals` (`evener-doctor apilog --summary`'s fields) |
-| `apilog.recorded_empty` / `.retry_storm_groups` / `.unsettled_groups` | the session's `APIHealthResult` (`evener-doctor apilog --health`'s fields) — `retry_storm_groups` counts attempt groups with 3+ recorded attempts, `unsettled_groups` counts groups with no settlement record |
+| `apilog.calls` / `.empties` / `.errors` / `.avg_latency_ms` | the session's `APILogTotals` (`evener doctor apilog --summary`'s fields) |
+| `apilog.recorded_empty` / `.retry_storm_groups` / `.unsettled_groups` | the session's `APIHealthResult` (`evener doctor apilog --health`'s fields) — `retry_storm_groups` counts attempt groups with 3+ recorded attempts, `unsettled_groups` counts groups with no settlement record |
 | `apilog.errors_by_class.<class>` | `APIHealthResult.ErrorsByClass[<class>]` — `<class>` is one of `quota`, `permanent`, `retryable` (see `agent/doctor/apilog.go`'s `classifyAPIErrorClass` for the recorded-field mapping). **a `quota` of 0 means "no quota-classified provider rejections", not "no quota errors"**: the transport layer types a quota-exhausted 429 as `error_class="quota_exceeded"`, distinct from an ordinary rate-limit 429, but only for an attempt the provider rejected outright — quota surfacing mid-stream on a 200, or under an unmapped status such as 402, records as `unknown` and lands in `retryable`. Logs written before that classification existed recorded both 429 conditions identically, so a 0 there means "cannot tell" (`APIHealthResult.ErrorsByClassQuotaCaveat` carries this same warning in the tool's own output) |
 
 An unknown namespace, or a malformed path (e.g. `jobs` with no reason), is a

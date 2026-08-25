@@ -36,7 +36,7 @@ combobox, as a real gesture.
 
 ## Pre-state
 
-- `evener-hub` running on an isolated `$HOME` and a kernel-assigned port
+- `evener hub` running on an isolated `$HOME` and a kernel-assigned port
   (never `9180`, Jesse's real one — see the Setup checklist in
   `docs/developing-evener/agentic-testing.md`). Token at `$HOME/.evener/auth-token`.
 - A frontend built with `make build-web` **before** the hub binary. A
@@ -161,7 +161,7 @@ combobox, as a real gesture.
      [ "$state" = "idle" ] && break
      sleep 2
    done
-   go run ./cmd/evener-doctor transcript "$SID" --state-dir "$state_dir" \
+   go run ./cmd/evener doctor transcript "$SID" --state-dir "$state_dir" \
      --format outline --range last:30
    TFILE=$(find "$HOME/.local/state/evener/projects" -name "$SID.transcript.jsonl")
    jq -c 'select(.turn.kind=="USER_INPUT")
@@ -176,7 +176,7 @@ combobox, as a real gesture.
    (`llm/types.go:137-143`), `TurnUserInput = "USER_INPUT"`
    (`agent/schema/turn.go:16`), `ContentImage = "image"`
    (`llm/types.go:35`). This is a byte-level structural read, which is
-   what raw JSONL is for; use the `evener-doctor` outline above for
+   what raw JSONL is for; use the `evener doctor` outline above for
    comprehension.
 
 ## Expected

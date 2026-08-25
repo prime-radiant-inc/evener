@@ -1,4 +1,4 @@
-package main
+package fuzzharvest
 
 import (
 	"crypto/sha256"
@@ -37,20 +37,20 @@ const (
 	statusDryRun                      // would have written, but --dry-run
 )
 
-// EmitBytes writes a single-[]byte-arg seed (FuzzParseSSE, FuzzMessageDecode,
+// emitBytes writes a single-[]byte-arg seed (FuzzParseSSE, FuzzMessageDecode,
 // the provider SSE targets, the jobstore-Event decode target).
-func (e *Emitter) EmitBytes(dir string, data []byte) (emitStatus, error) {
+func (e *Emitter) emitBytes(dir string, data []byte) (emitStatus, error) {
 	return e.write(dir, encodeBytesSeed(data), len(data))
 }
 
-// EmitIntBytes writes a two-arg (int, []byte) seed (FuzzToolArgsValidate,
+// emitIntBytes writes a two-arg (int, []byte) seed (FuzzToolArgsValidate,
 // FuzzMethodParams).
-func (e *Emitter) EmitIntBytes(dir string, n int, data []byte) (emitStatus, error) {
+func (e *Emitter) emitIntBytes(dir string, n int, data []byte) (emitStatus, error) {
 	return e.write(dir, encodeIntBytesSeed(n, data), len(data))
 }
 
-// EmitUint8String writes a (uint8, string) seed for FuzzWebHandler(routeIdx, suffix).
-func (e *Emitter) EmitUint8String(dir string, n uint8, s string) (emitStatus, error) {
+// emitUint8String writes a (uint8, string) seed for FuzzWebHandler(routeIdx, suffix).
+func (e *Emitter) emitUint8String(dir string, n uint8, s string) (emitStatus, error) {
 	return e.write(dir, encodeUint8StringSeed(n, s), len(s))
 }
 

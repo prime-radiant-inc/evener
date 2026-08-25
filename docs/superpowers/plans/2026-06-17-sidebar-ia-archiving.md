@@ -292,7 +292,7 @@ func classifySession(decision *bool, lastActivity, now time.Time) string {
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `go test ./cmd/evener-hub/internal/hubcore/ -run TestClassifySession -v`
-Expected: PASS. Also run `go build ./cmd/evener-hub/...` — expected clean (new functions may be unused until Task 3; if `make lint` flags unused, proceed straight to Task 3 in the same review cycle, but the build must pass).
+Expected: PASS. Also run `go build ./cmd/evener/...` — expected clean (new functions may be unused until Task 3; if `make lint` flags unused, proceed straight to Task 3 in the same review cycle, but the build must pass).
 
 - [ ] **Step 5: Commit**
 

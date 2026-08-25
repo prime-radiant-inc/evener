@@ -1,4 +1,4 @@
-package main
+package hub
 
 import (
 	"context"
@@ -205,7 +205,7 @@ func FuzzExactAppRPC(f *testing.F) {
 			if local, ok := runRegistry.Source("local"); ok {
 				_, _ = local.ListThreads(context.Background(), appwire.ThreadListParams{})
 			}
-			roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{ThreadID: "x", PID: 1}, SessionID: "x"})
+			roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{ThreadID: "x", PID: 1, SessionID: "x"})
 			rosterRegistry := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
 			if local, ok := rosterRegistry.Source("local"); ok {
 				_, _ = local.ListThreads(context.Background(), appwire.ThreadListParams{})

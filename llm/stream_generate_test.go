@@ -58,8 +58,7 @@ func TestStreamGenerate_RejectsPromptAndMessagesTogether(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected error")
 	}
-	var ce *ConfigurationError
-	if !errors.As(err, &ce) {
+	if _, ok := errors.AsType[*ConfigurationError](err); !ok {
 		t.Fatalf("expected ConfigurationError, got %T (%v)", err, err)
 	}
 }
@@ -538,8 +537,7 @@ func TestStreamGenerate_DoesNotRetryAfterPartialDataDelivered(t *testing.T) {
 	if rerr == nil {
 		t.Fatalf("expected Response() error")
 	}
-	var se *StreamError
-	if !errors.As(rerr, &se) {
+	if _, ok := errors.AsType[*StreamError](rerr); !ok {
 		t.Fatalf("expected StreamError, got %T (%v)", rerr, rerr)
 	}
 }
@@ -830,8 +828,7 @@ func TestStreamGenerate_TruncationAfterPartialOutput_NoRetry(t *testing.T) {
 	if rerr == nil {
 		t.Fatalf("expected Response() error")
 	}
-	var se *StreamError
-	if !errors.As(rerr, &se) {
+	if _, ok := errors.AsType[*StreamError](rerr); !ok {
 		t.Fatalf("expected StreamError, got %T (%v)", rerr, rerr)
 	}
 }
@@ -879,8 +876,7 @@ func TestStreamGenerate_Cancellation_EmitsAbortError(t *testing.T) {
 			cancel()
 		}
 		if ev.Type == StreamEventError {
-			var ae *AbortError
-			if errors.As(ev.Err, &ae) {
+			if _, ok := errors.AsType[*AbortError](ev.Err); ok {
 				seenAbort = true
 			}
 		}
@@ -896,8 +892,7 @@ func TestStreamGenerate_Cancellation_EmitsAbortError(t *testing.T) {
 	if rerr == nil {
 		t.Fatalf("expected Response() error")
 	}
-	var ae *AbortError
-	if !errors.As(rerr, &ae) {
+	if _, ok := errors.AsType[*AbortError](rerr); !ok {
 		t.Fatalf("expected AbortError, got %T (%v)", rerr, rerr)
 	}
 }

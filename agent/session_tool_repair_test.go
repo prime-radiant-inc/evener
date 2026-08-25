@@ -14,7 +14,7 @@ import (
 // regTool builds a RegisteredTool with a no-op executor so registration succeeds.
 func regTool(def llm.ToolDefinition) tool.RegisteredTool {
 	return tool.RegisteredTool{
-		Tool: llm.Tool{Definition: def},
+		Definition: def,
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			return "ok", nil
 		},
@@ -132,6 +132,22 @@ func TestPrepareToolCall_LengthStopWithValidArgs(t *testing.T) {
 		et, []string{"edit_file"}, "edit_file", llm.FinishReasonLength)
 	if res.PrevalErr != "" {
 		t.Fatalf("valid args must execute: %q", res.PrevalErr)
+	}
+}
+
+func TestPrepareToolCall_TaskListInheritEffortIsValid(t *testing.T) {
+	reg := tool.NewRegistry()
+	if err := reg.Register(regTool(tool.DefTaskList([]string{"low", "medium", "high"}))); err != nil {
+		t.Fatalf("register task_list: %v", err)
+	}
+	call := llm.ToolCallData{ID: "inherit", Name: "task_list",
+		Arguments: json.RawMessage(`{"action":"append","tasks":[{"type":"implement","description":"step","prompt":"do it","reasoning_effort":"inherit"}]}`)}
+	res := prepareToolCall(call, reg.Get("task_list"), []string{"task_list"}, "task_list", "")
+	if res.PrevalErr != "" {
+		t.Fatalf("inherit effort rejected: %s", res.PrevalErr)
+	}
+	if len(res.Changes) != 0 {
+		t.Fatalf("inherit effort unexpectedly repaired: %+v", res.Changes)
 	}
 }
 

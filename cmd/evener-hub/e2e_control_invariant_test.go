@@ -1,4 +1,4 @@
-package main
+package hub
 
 import (
 	"context"
@@ -514,10 +514,13 @@ func TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary(t *testing.T) {
 	awaitThread(ctx, t, client, ref, "queue depth 1", func(thread appwire.Thread) bool {
 		return thread.Evener.Queue.Depth == 1
 	})
+	samplerClient := stack.dialRPC(ctx, t)
 
 	// Sample thread/read continuously from before the boundary until after turn
 	// 2 has announced itself, so the window is inside the sample stream rather
-	// than either side of it.
+	// than either side of it. The sampler has its own websocket because canceling
+	// a coder/websocket write closes its connection; stopping this cancellable
+	// work must not close the control client's connection before Stop below.
 	type sample struct {
 		status    string
 		turnID    string
@@ -538,7 +541,7 @@ func TestE2E_ControlInvariantDuringPreTurnWorkAtATurnBoundary(t *testing.T) {
 	go func() {
 		defer close(sampling)
 		for sampleCtx.Err() == nil {
-			read, err := clientRequest[appwire.ThreadReadResponse](sampleCtx, client, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref})
+			read, err := clientRequest[appwire.ThreadReadResponse](sampleCtx, samplerClient, appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: ref})
 			if err != nil {
 				// Back off: a dead daemon would otherwise spin a core here for
 				// as long as the test's deadline allows.

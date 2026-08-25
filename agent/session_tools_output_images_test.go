@@ -61,11 +61,11 @@ func newImageToolSession(t *testing.T, toolName, stateDir string, exec func() (a
 	}()
 
 	if err := sess.reg.Register(tool.RegisteredTool{
-		Tool: llm.Tool{Definition: llm.ToolDefinition{
+		Definition: llm.ToolDefinition{
 			Name:        toolName,
 			Description: "fixture",
 			Parameters:  map[string]any{"type": "object"},
-		}},
+		},
 		Exec: func(context.Context, execenv.ExecutionEnvironment, map[string]any) (any, error) {
 			return exec()
 		},

@@ -28,7 +28,7 @@ prove green repeatedly with a narrow `-run` scope.
   do not run the full suite or other packages' tests. The controller runs
   full-suite verification after merging every task.
 - **Do not touch:** `docs/superpowers/specs/**`, `.kata.toml`,
-  `evener-transcript-v2-upgrade`. These are pre-existing, unrelated, already
+  `evener transcript-v2-upgrade`. These are pre-existing, unrelated, already
   either modified or untracked in the working tree — leave them exactly as
   found.
 - **Git hygiene:** never `git add -A`. Stage only the files the task

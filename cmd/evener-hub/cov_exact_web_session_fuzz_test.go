@@ -1,4 +1,4 @@
-package main
+package hub
 
 import (
 	"context"
@@ -100,7 +100,7 @@ func FuzzCovExactWebSession(f *testing.F) {
 			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
 			Evener: appwire.EvenerThread{Ref: "remote:live", Capabilities: caps},
 		}
-		roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 11, Address: "unused"}, SessionID: "live", Status: "active"})
+		roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{PID: 11, Address: "unused", SessionID: "live", Status: "active"})
 		src := &exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: thread}, err: errors.New("scripted action failure")}
 		web := NewWebServer(hubcore.WebConfig{Roster: roster})
 		web.sources.Add(src)
@@ -123,7 +123,7 @@ func FuzzCovExactWebSession(f *testing.F) {
 		noRosterSend := NewWebServer(hubcore.WebConfig{})
 		call(func(w http.ResponseWriter, r *http.Request) { noRosterSend.handleSend(w, r, "missing") }, http.MethodPost, "/s/missing/send", `{"text":"hi"}`)
 
-		rosterHit := hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 41, Address: "127.0.0.1:1"}, SessionID: "hit"}
+		rosterHit := hubcore.LiveEntry{PID: 41, Address: "127.0.0.1:1", SessionID: "hit"}
 		webRosterFind = func(*hubcore.Roster, string) (hubcore.LiveEntry, bool) { return rosterHit, true }
 		firstHit := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries()})
 		call(func(w http.ResponseWriter, r *http.Request) { firstHit.handleSend(w, r, "hit") }, http.MethodPost, "/s/hit/send", `{"text":"hi"}`)
@@ -231,9 +231,9 @@ func FuzzCovExactWebSession(f *testing.F) {
 		call(func(w http.ResponseWriter, r *http.Request) { localWeb.handleSend(w, r, localID) }, http.MethodPost, "/s/"+localID+"/send", `{"text":"resume"}`)
 		_, _, _ = localWeb.forkSession(localID, forkRequest{Turn: 3, EditedMessage: "edited", Label: "branch"})
 
-		rosterOnly := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 33, Address: "127.0.0.1:1"}, SessionID: "roster-only"})})
+		rosterOnly := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{PID: 33, Address: "127.0.0.1:1", SessionID: "roster-only"})})
 		call(func(w http.ResponseWriter, r *http.Request) { rosterOnly.handleSend(w, r, "roster-only") }, http.MethodPost, "/s/roster-only/send", `{"text":"hi"}`)
-		deniedLocal := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{PID: 34, Address: "127.0.0.1:1"}, SessionID: "denied"})})
+		deniedLocal := NewWebServer(hubcore.WebConfig{Roster: hubcore.NewRosterWithEntries(hubcore.LiveEntry{PID: 34, Address: "127.0.0.1:1", SessionID: "denied"})})
 		deniedLocal.sources.Add(&exactWebSessionSource{scriptedAppSource: &scriptedAppSource{id: "local", thread: appwire.Thread{ID: "denied", SessionID: "denied", Source: "local", Evener: appwire.EvenerThread{Ref: "local:denied"}}}})
 		call(func(w http.ResponseWriter, r *http.Request) { deniedLocal.handleSend(w, r, "denied") }, http.MethodPost, "/s/denied/send", `{"text":"hi"}`)
 		remoteRetry := NewWebServer(hubcore.WebConfig{})

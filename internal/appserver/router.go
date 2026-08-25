@@ -62,8 +62,7 @@ func (r *Router) Dispatch(ctx context.Context, req appwire.Request) (any, error)
 }
 
 func WireError(err error) appwire.WireError {
-	var wire appwire.WireError
-	if errors.As(err, &wire) {
+	if wire, ok := errors.AsType[appwire.WireError](err); ok {
 		return wire
 	}
 	return appwire.InternalError(fmt.Sprint(err))

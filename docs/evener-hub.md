@@ -1,8 +1,8 @@
 # Evener Hub
 
-`evener-hub` is Evener's orchestrator. It serves the web UI — Evener's
+`evener hub` is Evener's orchestrator. It serves the web UI — Evener's
 default interactive surface — where you start sessions, watch the agent work,
-and steer it across many concurrent sessions; the `evener-tui` terminal
+and steer it across many concurrent sessions; the `evener tui` terminal
 dashboard talks to the same API. The hub launches and supervises
 `evener serve` daemons, indexes saved sessions for search, and connects to or
 launches Codex app-server sources.
@@ -48,8 +48,8 @@ From the repo root:
 make install
 ```
 
-This builds `evener`, `evener-hub`, `evener-tui`, `evener-doctor`, and
-`evener-migrate`, installs the binaries under `~/.local/share/evener/bin`, and
+This builds `evener`, `evener hub`, `evener tui`, `evener doctor`, and
+`evener migrate`, installs the binaries under `~/.local/share/evener/bin`, and
 symlinks them into `~/.local/bin`. The hub, TUI, and doctor workflows resolve
 sibling binaries through the symlink targets, so the installed commands find
 each other without extra flags. `make install-home` is an alias for the same
@@ -240,7 +240,7 @@ mkdir -p "$(dirname "$log_file")"
 chmod 700 "$(dirname "$log_file")"
 touch "$log_file"
 chmod 600 "$log_file"
-evener-hub --config "$hub_config" 2>&1 | tee -a "$log_file"
+evener hub --config "$hub_config" 2>&1 | tee -a "$log_file"
 ```
 
 The hub listens on `127.0.0.1:9180` unless `addr` in `hub.toml` says
@@ -258,7 +258,7 @@ set -a; source "${XDG_CONFIG_HOME:-$HOME/.config}/evener/hub.env"; set +a
 ```
 
 This Bash recipe uses `pipefail` so a hub failure is not hidden by `tee`.
-Production deployments should preferably execute `evener-hub --config
+Production deployments should preferably execute `evener hub --config
 "$hub_config"` directly under a supervisor and let it capture stdout/stderr.
 The hub logs config errors, past-index rebuild errors, roster watch errors,
 child-process launch diagnostics, and the auth URL there.
@@ -283,7 +283,7 @@ cookie; after that, plain `http://127.0.0.1:9180` works in that browser.
 TUI:
 
 ```bash
-evener-tui \
+evener tui \
   --hub-addr http://127.0.0.1:9180 \
   --no-auto-start-hub
 ```
@@ -303,7 +303,7 @@ curl -fsS http://127.0.0.1:9180/api/health | jq .
 Other API routes need the auth token. Check the spawn-scoped Evener model
 list. Use the same `hub_config` and `hub_state_root` values as in the start
 recipe above; the defaults below are the XDG defaults. For a custom
-`evener-hub --config /path/to/hub.toml`, set `hub_config` to that path and set
+`evener hub --config /path/to/hub.toml`, set `hub_config` to that path and set
 `hub_state_root` to the exact `hub_state_root` value in that file.
 
 ```bash
@@ -321,7 +321,7 @@ Manual verification:
 2. Pick a working directory and spawn an Evener session.
 3. Confirm the transcript streams live before refresh.
 4. Refresh and confirm the transcript replays from saved state.
-5. Open `evener-tui --hub-addr http://127.0.0.1:9180 --no-auto-start-hub` and
+5. Open `evener tui --hub-addr http://127.0.0.1:9180 --no-auto-start-hub` and
    confirm the same session appears with source label `evener`.
 6. If Codex is configured, switch the harness to `codex-local`, spawn a Codex
    session, and confirm Evener-only actions are hidden or report structured

@@ -16,7 +16,7 @@ The workspace bottom area matches the mockup:
 
 [＋] [⚠ full access] [openai · gpt-5 ▾]            [steer] [send ⌘↵]
 ─────────────────────────────────────────────────────────────────
-~/git/evener/.worktrees/evener-hub · evener-hub@7c8450c    context [▓░░] 68k/200k · $0.84
+~/git/evener/.worktrees/evener-hub · evener hub@7c8450c    context [▓░░] 68k/200k · $0.84
 ```
 
 Users can attach images by clicking `＋`, dragging onto the textarea, or pasting from the clipboard. Selected files render as small chips above the textarea with an `×` to remove. On send, attachments go through the daemon and end up in the user message as `llm.ContentImage` parts.

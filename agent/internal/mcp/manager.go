@@ -380,7 +380,7 @@ func (m *Manager) RegisterTools(reg *tool.Registry) []ServerOutcome {
 			origName := c.origNames[td.Name]
 
 			if err := reg.Register(tool.RegisteredTool{
-				Tool: llm.Tool{Definition: td},
+				Definition: td,
 				Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 					call := func(sess *mcpsdk.ClientSession) (*mcpsdk.CallToolResult, error) {
 						return sess.CallTool(ctx, &mcpsdk.CallToolParams{

@@ -340,7 +340,7 @@ All from `search.js:326-517` unless noted:
 - [ ] Only entries that just transitioned INTO `needs_you`/`error` FROM something else fire at all — a level that was already alarming before the broadcast stays silent (`notifications.js:264-267`)
 - [ ] Within a qualifying transition, `loudScope` narrows further: `"asks"` (default) fires ONLY for an `askPending` transition or an `error`; `"all"` fires for every qualifying transition (`notifications.js:268-269`)
 - [ ] `os` and `sound` prefs are checked independently of each other even after the transition/loudScope gate passes — either, both, or neither can fire per event (`notifications.js:270-271`)
-- [ ] `renderer.js` dispatches a `evener-hub:thread-status` DOM event on a live `THREAD_STATUS_CHANGED` frame for the currently-open thread; this module listens and re-fetches the baseline immediately, ahead of the next hub-side attention tick (`notifications.js:291-294`, out-of-scope caller)
+- [ ] `renderer.js` dispatches a `evener hub:thread-status` DOM event on a live `THREAD_STATUS_CHANGED` frame for the currently-open thread; this module listens and re-fetches the baseline immediately, ahead of the next hub-side attention tick (`notifications.js:291-294`, out-of-scope caller)
 
 ### 3.7 Single-tab election
 
@@ -350,11 +350,11 @@ All from `search.js:326-517` unless noted:
 
 ### 3.8 Settings coupling (`settings-notifications.js` ↔ `notifications.js`)
 
-- [ ] Any `input[type=checkbox][data-notif]` change updates `localStorage["evener-hub.notifications"][key]`, syncs the visible ON/OFF `.state` label, dispatches `evener-hub:notifications-changed` with `{key, value}` in `detail`, and toasts "Settings saved" (`settings-notifications.js:18-36, 60-61`)
+- [ ] Any `input[type=checkbox][data-notif]` change updates `localStorage["evener-hub.notifications"][key]`, syncs the visible ON/OFF `.state` label, dispatches `evener hub:notifications-changed` with `{key, value}` in `detail`, and toasts "Settings saved" (`settings-notifications.js:18-36, 60-61`)
 - [ ] Turning the `os` checkbox ON while `Notification.permission === "default"` DEFERS the commit: it calls `Notification.requestPermission()` first, commits only on `"granted"`, and on any other outcome reverts the checkbox to unchecked, writes `os:false`, re-syncs the label, and toasts a "Browser denied notification permission" WARNING (no success toast on that path) (`settings-notifications.js:42-58`)
-- [ ] Any `input[type=radio][data-notif-radio]` change (currently only `loudScope`) writes the value, dispatches the same `evener-hub:notifications-changed` event, and toasts "Settings saved" (`settings-notifications.js:64-75`)
+- [ ] Any `input[type=radio][data-notif-radio]` change (currently only `loudScope`) writes the value, dispatches the same `evener hub:notifications-changed` event, and toasts "Settings saved" (`settings-notifications.js:64-75`)
 - [ ] `applyNotifState` re-checks every notif checkbox and the `loudScope` radio group from storage whenever a settings pane loads (`DOMContentLoaded`) or is htmx-swapped in (`htmx:afterSwap`) (`settings-notifications.js:78-92, 107-108`)
-- [ ] `notifications.js`'s OWN `evener-hub:notifications-changed` listener (`onPrefsChanged`) is a SECOND, independent safety net: if `os` is on but permission is still `"default"`, it ALSO requests permission and reverts checkbox+prefs+label on denial — explicitly documented as defensive/redundant, covering only the case where something else dispatches the event without going through `settings-notifications.js`'s own gate (`notifications.js:297-328`, code comment at 297-303)
+- [ ] `notifications.js`'s OWN `evener hub:notifications-changed` listener (`onPrefsChanged`) is a SECOND, independent safety net: if `os` is on but permission is still `"default"`, it ALSO requests permission and reverts checkbox+prefs+label on denial — explicitly documented as defensive/redundant, covering only the case where something else dispatches the event without going through `settings-notifications.js`'s own gate (`notifications.js:297-328`, code comment at 297-303)
 - [ ] `onPrefsChanged` always re-applies title/favicon immediately using the CURRENT (unchanged) summary, regardless of which specific pref just changed (`notifications.js:326-327`)
 - [ ] Title/favicon are ALSO re-applied after every `htmx:afterSettle` on `document.body` (any workspace/settings navigation), which additionally resyncs the settings header's visible section label and the settings-nav active-link highlighting — this whole handler is gated on an `initialized` flag so it can't fire before `init()` has run once (`notifications.js:332-357, 338`)
 

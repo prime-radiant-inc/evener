@@ -35,12 +35,10 @@ func ExampleGenerateObject() {
 	client.Register(jsonAdapter{})
 
 	res, err := llm.GenerateObject(context.Background(), llm.GenerateObjectOptions{
-		GenerateOptions: llm.GenerateOptions{
-			Client:   client,
-			Provider: "json",
-			Model:    "json-1",
-			Messages: []llm.Message{llm.User("Describe a city as JSON.")},
-		},
+		Client:   client,
+		Provider: "json",
+		Model:    "json-1",
+		Messages: []llm.Message{llm.User("Describe a city as JSON.")},
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
@@ -79,8 +77,7 @@ func ExampleKind() {
 func ExampleError() {
 	err := llm.NewAbortError("user cancelled", context.Canceled)
 
-	var e llm.Error
-	if errors.As(err, &e) {
+	if e, ok := errors.AsType[llm.Error](err); ok {
 		fmt.Println("retryable:", e.Retryable())
 	}
 	fmt.Println("is canceled:", errors.Is(err, context.Canceled))

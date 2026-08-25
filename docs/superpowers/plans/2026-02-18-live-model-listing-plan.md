@@ -1374,7 +1374,7 @@ Expected: All packages PASS.
 
 **Step 2: Build binaries**
 
-Run: `cd /Users/jesse/prime-radiant/evener && go build ./cmd/evener/ && go build ./cmd/evener-tui/`
+Run: `cd /Users/jesse/prime-radiant/evener && go build ./cmd/evener/ && go build ./cmd/evener/`
 Expected: Both build successfully.
 
 **Step 3: Commit any remaining changes**

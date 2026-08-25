@@ -9,7 +9,6 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/identifier"
-	"primeradiant.com/evener/rendezvous"
 )
 
 func TestBuildTree_PreservesRecursiveSubagentParentage(t *testing.T) {
@@ -20,9 +19,9 @@ func TestBuildTree_PreservesRecursiveSubagentParentage(t *testing.T) {
 		{ID: "grandchild", ParentSessionID: "child", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
 	live := []LiveEntry{
-		{Entry: rendezvous.Entry{PID: 1}, SessionID: "parent", Status: appwire.ThreadStatusIdle, RunningSubagentIDs: []string{"child"}},
-		{Entry: rendezvous.Entry{PID: 2}, SessionID: "child", Status: appwire.ThreadStatusActive},
-		{Entry: rendezvous.Entry{PID: 3}, SessionID: "child", Status: appwire.ThreadStatusActive, RunningSubagentIDs: []string{"grandchild"}},
+		{PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle, RunningSubagentIDs: []string{"child"}},
+		{PID: 2, SessionID: "child", Status: appwire.ThreadStatusActive},
+		{PID: 3, SessionID: "child", Status: appwire.ThreadStatusActive, RunningSubagentIDs: []string{"grandchild"}},
 	}
 
 	tree := BuildTreeAt(metas, live, nil, now)
@@ -53,7 +52,7 @@ func TestBuildTree_ProjectsRunningInProcessSubagent(t *testing.T) {
 		{ID: "parent", UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 		{ID: "child", ParentSessionID: "parent", IsSubagent: true, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/projects/evener"}},
 	}
-	parent := LiveEntry{Entry: rendezvous.Entry{PID: 1}, SessionID: "parent", Status: appwire.ThreadStatusIdle, RunningSubagentIDs: []string{"child"}}
+	parent := LiveEntry{PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle, RunningSubagentIDs: []string{"child"}}
 	tree := BuildTreeAt(metas, []LiveEntry{parent}, nil, now)
 	child := tree.Projects[0].Current[0].Children[0]
 	if child.State != "active" {
@@ -73,7 +72,7 @@ func TestBuildTree_AttachesCrossEffectiveDirectorySubagentToParentProject(t *tes
 		{ID: "nested-isolated-child", ParentSessionID: "isolated-child", IsSubagent: true, UpdatedAt: now,
 			EnvInfo: schema.EnvironmentInfo{WorkingDir: "/worktrees/nested-isolated-child"}},
 	}
-	tree := BuildTreeAt(metas, []LiveEntry{{Entry: rendezvous.Entry{PID: 1}, SessionID: "parent", Status: appwire.ThreadStatusIdle}}, nil, now)
+	tree := BuildTreeAt(metas, []LiveEntry{{PID: 1, SessionID: "parent", Status: appwire.ThreadStatusIdle}}, nil, now)
 	if len(tree.Projects) != 1 || len(tree.Projects[0].Current) != 1 {
 		t.Fatalf("projects = %#v, want one parent project with one current session", tree.Projects)
 	}

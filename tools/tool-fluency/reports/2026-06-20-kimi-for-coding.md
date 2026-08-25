@@ -46,7 +46,7 @@ Evidence:
 - Full run session: `01KVK05XEKEXR7MFAGYSY6W7MP`
 - State dir: `/tmp/evener-fluency-kimi-all-1/job_watch.observer_callback/rep-01/state`
 - Calls: `delegate:1`, `job_watch:1`, `read_file:1`
-- `evener-doctor watches` showed one matching delivery, delivered, with no self-loop.
+- `evener doctor watches` showed one matching delivery, delivered, with no self-loop.
 - The watch-delivered delegate resume was cancelled with `stopped_by_parent`
   during CLI teardown.
 - Kimi also rewrote the delegated observer task to say

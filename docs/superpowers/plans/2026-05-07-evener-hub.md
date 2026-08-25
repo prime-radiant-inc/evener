@@ -2,7 +2,7 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Build the `evener-hub` sibling binary — a multi-session web orchestrator over the existing `evener serve` REST+SSE API, served from `127.0.0.1:9180` with browser-only access via the hub.
+**Goal:** Build the `evener hub` sibling binary — a multi-session web orchestrator over the existing `evener serve` REST+SSE API, served from `127.0.0.1:9180` with browser-only access via the hub.
 
 **Architecture:** Sibling binary at `cmd/evener-hub/`. Hub proxies all browser ↔ daemon traffic (REST via `httputil.ReverseProxy`, SSE via flushing passthrough with `Last-Event-ID` forwarding). Roster discovers daemons via `~/.evener/run/<pid>.json` (filesystem rendezvous from Phase A) plus fsnotify; liveness verified via TCP probe + `/status` `session_id` match. Browser uses htmx for navigation and a small client-side `renderer.js` for SSE event coalescing.
 
@@ -92,7 +92,7 @@ Expected: build error (package doesn't exist).
 Create `cmd/evener-hub/main.go`:
 
 ```go
-// Command evener-hub is the web orchestrator for evener serve daemons.
+// Command evener hub is the web orchestrator for evener serve daemons.
 // It provides a browser-facing UI to discover, drive, and manage many
 // concurrent evener serve sessions on the local host.
 package main
@@ -109,7 +109,7 @@ const Version = "0.1.0"
 func main() {
 	addr := flag.String("addr", "127.0.0.1:9180", "hub listen address")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: evener-hub [flags]\n\nMulti-session web orchestrator for evener serve daemons.\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: evener hub [flags]\n\nMulti-session web orchestrator for evener serve daemons.\n\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -120,7 +120,7 @@ func main() {
 		fmt.Fprintln(w, "ok")
 	})
 
-	fmt.Fprintf(os.Stderr, "[hub] evener-hub %s listening on %s\n", Version, *addr)
+	fmt.Fprintf(os.Stderr, "[hub] evener hub %s listening on %s\n", Version, *addr)
 	if err := http.ListenAndServe(*addr, mux); err != nil {
 		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
 		os.Exit(1)
@@ -140,7 +140,7 @@ Open `Makefile`. Find an existing build target like `build-tui` (around the `bui
 
 ```make
 build-hub:
-	go build -o evener-hub ./cmd/evener-hub
+	go build -o ./evener ./cmd/evener/
 ```
 
 Add `build-hub` to `.PHONY` if the file uses `.PHONY`, and to any `all` target if there is one.
@@ -149,16 +149,16 @@ Add `build-hub` to `.PHONY` if the file uses `.PHONY`, and to any `all` target i
 
 ```
 make build-hub
-./evener-hub --help 2>&1 | head -3
+./evener hub --help 2>&1 | head -3
 ```
 
-Expected: usage banner with `Usage: evener-hub [flags]`.
+Expected: usage banner with `Usage: evener hub [flags]`.
 
 - [ ] **Step 7: Commit**
 
 ```bash
 git add cmd/evener-hub/main.go cmd/evener-hub/main_test.go Makefile
-git commit -m "feat(evener-hub): scaffold binary with /healthz"
+git commit -m "feat(evener hub): scaffold binary with /healthz"
 ```
 
 ---
@@ -371,7 +371,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/config.go cmd/evener-hub/config_test.go go.mod go.sum
-git commit -m "feat(evener-hub): hub.toml config loader with defaults"
+git commit -m "feat(evener hub): hub.toml config loader with defaults"
 ```
 
 ---
@@ -471,7 +471,7 @@ func AcquireLock(path string) (func(), error) {
 	}
 	if err := syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
 		f.Close()
-		return nil, fmt.Errorf("flock: %w (another evener-hub may already be running)", err)
+		return nil, fmt.Errorf("flock: %w (another evener hub may already be running)", err)
 	}
 	return func() {
 		_ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN)
@@ -490,7 +490,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/flock.go cmd/evener-hub/flock_test.go
-git commit -m "feat(evener-hub): exclusive flock at ~/.evener/hub.lock"
+git commit -m "feat(evener hub): exclusive flock at ~/.evener/hub.lock"
 ```
 
 ---
@@ -645,7 +645,7 @@ Expected: PASS for all five tests.
 
 ```bash
 git add cmd/evener-hub/security.go cmd/evener-hub/security_test.go
-git commit -m "feat(evener-hub): same-origin/Host guard middleware"
+git commit -m "feat(evener hub): same-origin/Host guard middleware"
 ```
 
 ---
@@ -889,7 +889,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/roster.go cmd/evener-hub/roster_test.go
-git commit -m "feat(evener-hub): roster with rendezvous scan and liveness pruning"
+git commit -m "feat(evener hub): roster with rendezvous scan and liveness pruning"
 ```
 
 ---
@@ -1024,7 +1024,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/prober.go cmd/evener-hub/prober_test.go
-git commit -m "feat(evener-hub): StatusProber for daemon liveness via /status"
+git commit -m "feat(evener hub): StatusProber for daemon liveness via /status"
 ```
 
 ---
@@ -1171,7 +1171,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/roster.go cmd/evener-hub/roster_test.go go.mod go.sum
-git commit -m "feat(evener-hub): roster Watch with fsnotify and periodic refresh"
+git commit -m "feat(evener hub): roster Watch with fsnotify and periodic refresh"
 ```
 
 ---
@@ -1350,7 +1350,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/proxy.go cmd/evener-hub/proxy_test.go
-git commit -m "feat(evener-hub): REST reverse-proxy keyed on session_id"
+git commit -m "feat(evener hub): REST reverse-proxy keyed on session_id"
 ```
 
 ---
@@ -1560,7 +1560,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/proxy.go cmd/evener-hub/proxy_test.go
-git commit -m "feat(evener-hub): SSE passthrough with Last-Event-ID forwarding"
+git commit -m "feat(evener hub): SSE passthrough with Last-Event-ID forwarding"
 ```
 
 ---
@@ -1725,7 +1725,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/spawn.go cmd/evener-hub/spawn_test.go
-git commit -m "feat(evener-hub): spawn template lookup and serve-args builder"
+git commit -m "feat(evener hub): spawn template lookup and serve-args builder"
 ```
 
 ---
@@ -1880,7 +1880,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/spawn.go cmd/evener-hub/spawn_test.go
-git commit -m "feat(evener-hub): SpawnDaemon and WaitForRendezvous"
+git commit -m "feat(evener hub): SpawnDaemon and WaitForRendezvous"
 ```
 
 ---
@@ -2190,7 +2190,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/past.go cmd/evener-hub/past_test.go
-git commit -m "feat(evener-hub): past-session index with glob, search, pagination"
+git commit -m "feat(evener hub): past-session index with glob, search, pagination"
 ```
 
 ---
@@ -2446,7 +2446,7 @@ Create `cmd/evener-hub/templates/partials/live_roster.html`:
 - [ ] **Step 7: Verify build**
 
 ```
-go build ./cmd/evener-hub
+go build ./cmd/evener/
 ```
 
 Expected: clean (templates aren't yet wired to routes; the embed compile is enough).
@@ -2455,7 +2455,7 @@ Expected: clean (templates aren't yet wired to routes; the embed compile is enou
 
 ```bash
 git add cmd/evener-hub/embed.go cmd/evener-hub/templates/ cmd/evener-hub/assets/
-git commit -m "feat(evener-hub): embed.FS with htmx, marked, base+landing templates"
+git commit -m "feat(evener hub): embed.FS with htmx, marked, base+landing templates"
 ```
 
 ---
@@ -2749,7 +2749,7 @@ Expected: PASS for all four tests.
 
 ```bash
 git add cmd/evener-hub/web.go cmd/evener-hub/web_test.go
-git commit -m "feat(evener-hub): web server with landing + live roster + past search"
+git commit -m "feat(evener hub): web server with landing + live roster + past search"
 ```
 
 ---
@@ -2938,7 +2938,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/web.go cmd/evener-hub/web_test.go cmd/evener-hub/templates/live.html cmd/evener-hub/proxy.go
-git commit -m "feat(evener-hub): drive page template and handler"
+git commit -m "feat(evener hub): drive page template and handler"
 ```
 
 ---
@@ -2984,7 +2984,7 @@ Create `cmd/evener-hub/assets/renderer.js`:
 // EvenerRenderer: client-side SSE coalescing for the hub drive page.
 // Subscribes to /live/<sessionId>/events, parses event frames, and
 // updates the transcript pane with coalesced messages, tool calls,
-// and status. Mirrors evener-tui's coalescing model.
+// and status. Mirrors evener tui's coalescing model.
 
 (function () {
   "use strict";
@@ -3223,7 +3223,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/assets/renderer.js cmd/evener-hub/web_test.go
-git commit -m "feat(evener-hub): renderer.js for SSE coalescing and drive UI"
+git commit -m "feat(evener hub): renderer.js for SSE coalescing and drive UI"
 ```
 
 ---
@@ -3337,7 +3337,7 @@ Add `"encoding/json"` to imports.
 - [ ] **Step 4: Verify build**
 
 ```
-go build ./cmd/evener-hub
+go build ./cmd/evener/
 go test ./cmd/evener-hub/
 ```
 
@@ -3347,7 +3347,7 @@ Expected: clean.
 
 ```bash
 git add cmd/evener-hub/web.go cmd/evener-hub/templates/
-git commit -m "feat(evener-hub): /status-bar partial render for drive page"
+git commit -m "feat(evener hub): /status-bar partial render for drive page"
 ```
 
 ---
@@ -3578,7 +3578,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/web.go cmd/evener-hub/web_test.go cmd/evener-hub/spawn.go cmd/evener-hub/templates/live_new.html
-git commit -m "feat(evener-hub): spawn form, HubSpawner adapter, /live/new routes"
+git commit -m "feat(evener hub): spawn form, HubSpawner adapter, /live/new routes"
 ```
 
 ---
@@ -3929,7 +3929,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/web.go cmd/evener-hub/web_test.go cmd/evener-hub/templates/
-git commit -m "feat(evener-hub): past search, view, and replay; per-page template sets"
+git commit -m "feat(evener hub): past search, view, and replay; per-page template sets"
 ```
 
 ---
@@ -4072,7 +4072,7 @@ Expected: PASS.
 
 ```bash
 git add cmd/evener-hub/web.go cmd/evener-hub/web_test.go cmd/evener-hub/spawn.go
-git commit -m "feat(evener-hub): past-session resume via Spawner.Resume"
+git commit -m "feat(evener hub): past-session resume via Spawner.Resume"
 ```
 
 ---
@@ -4087,7 +4087,7 @@ git commit -m "feat(evener-hub): past-session resume via Spawner.Resume"
 Replace the body of `cmd/evener-hub/main.go`:
 
 ```go
-// Command evener-hub is the web orchestrator for evener serve daemons.
+// Command evener hub is the web orchestrator for evener serve daemons.
 package main
 
 import (
@@ -4110,7 +4110,7 @@ func main() {
 	addr := flag.String("addr", "", "override hub listen address")
 	evenerBinary := flag.String("evener", "", "path to evener binary (default: 'evener' on PATH)")
 	flag.Usage = func() {
-		fmt.Fprintf(os.Stderr, "Usage: evener-hub [flags]\n\nMulti-session web orchestrator for evener serve daemons.\n\n")
+		fmt.Fprintf(os.Stderr, "Usage: evener hub [flags]\n\nMulti-session web orchestrator for evener serve daemons.\n\n")
 		flag.PrintDefaults()
 	}
 	flag.Parse()
@@ -4203,7 +4203,7 @@ func main() {
 		_ = srv.Shutdown(shutdownCtx)
 	}()
 
-	fmt.Fprintf(os.Stderr, "[hub] evener-hub %s listening on %s (run_dir=%s)\n", Version, cfg.Addr, runDir)
+	fmt.Fprintf(os.Stderr, "[hub] evener hub %s listening on %s (run_dir=%s)\n", Version, cfg.Addr, runDir)
 	if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 		fmt.Fprintf(os.Stderr, "[hub] %v\n", err)
 		os.Exit(1)
@@ -4216,7 +4216,7 @@ Add `"time"` to imports. Replace the magic `500 * 1_000_000` with `500 * time.Mi
 - [ ] **Step 2: Build**
 
 ```
-go build ./cmd/evener-hub
+go build ./cmd/evener/
 ```
 
 Expected: clean.
@@ -4232,7 +4232,7 @@ Expected: PASS.
 - [ ] **Step 4: Manual smoke**
 
 ```
-./evener-hub --addr 127.0.0.1:9180 &
+./evener hub --addr 127.0.0.1:9180 &
 HUB=$!
 sleep 1
 curl -s http://127.0.0.1:9180/healthz
@@ -4248,7 +4248,7 @@ If `/healthz` returns 404, that's because the new main no longer registers it. T
 
 ```bash
 git add cmd/evener-hub/main.go
-git commit -m "feat(evener-hub): wire roster, past index, spawner, and web in main"
+git commit -m "feat(evener hub): wire roster, past index, spawner, and web in main"
 ```
 
 ---
@@ -4311,7 +4311,7 @@ func TestE2E_HubAndDaemon(t *testing.T) {
 		}
 	}
 	evenerBin := filepath.Join(tmpHome, "evener")
-	hubBin := filepath.Join(tmpHome, "evener-hub")
+	hubBin := filepath.Join(tmpHome, "evener hub")
 
 	// Launch a evener serve daemon.
 	dCmd := exec.Command(evenerBin, "serve",
@@ -4393,7 +4393,7 @@ go test ./cmd/evener-hub/ -run TestE2E -v -timeout 120s
 
 ```bash
 git add cmd/evener-hub/e2e_test.go
-git commit -m "feat(evener-hub): end-to-end integration test (skip-by-default)"
+git commit -m "feat(evener hub): end-to-end integration test (skip-by-default)"
 ```
 
 ---
@@ -4416,13 +4416,13 @@ go build ./...
 make build-hub
 ```
 
-Expected: clean; `./evener-hub` binary exists.
+Expected: clean; `./evener` binary exists.
 
 - [ ] **Step 3: Manual smoke (optional, requires API key)**
 
 ```
 HOME=$(mktemp -d) ./evener serve --provider openai --model gpt-5-mini-2025-08-07 --addr 127.0.0.1:0 &
-HOME=$(mktemp -d) ./evener-hub --addr 127.0.0.1:9180 &
+HOME=$(mktemp -d) ./evener hub --addr 127.0.0.1:9180 &
 # Open http://127.0.0.1:9180 in a browser.
 ```
 

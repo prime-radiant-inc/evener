@@ -6,7 +6,7 @@ after it had already declared itself done (`end_turn=true`)?
 ## HEALTHY
 
 - Few or no notification-kind steering turns arrive after the session's
-  final `end_turn=true` result-tool call. `evener-doctor transcript --health`
+  final `end_turn=true` result-tool call. `evener doctor transcript --health`
   reports `stale_notifications` below the threshold.
 - Note: a notification delivered BEFORE the session's final `end_turn` is
   normal — the session is still working and can act on it. Only post-done
@@ -17,7 +17,7 @@ after it had already declared itself done (`end_turn=true`)?
 Take the target session id from the runbook invocation — never hardcode one.
 
 ```
-evener-doctor transcript <selector> --health --json
+evener doctor transcript <selector> --health --json
 ```
 
 ## CLASSIFY
@@ -33,12 +33,12 @@ audit:
 ```
 
 - Read the flagged session's transcript around each stale notification
-  (`evener-doctor transcript <sel> --format outline`) to see how late it
+  (`evener doctor transcript <sel> --format outline`) to see how late it
   arrived relative to the final `end_turn` call, and whether it forced a
   wasted acknowledgment turn — the 2026-08-05 session study found completion
   events arriving up to 54 minutes after the final answer, ~14 sessions
   affected. If the notification's source watch itself looks suspect, widen
-  the sweep with `evener-doctor tree <sel> --observers` and pair this with the
+  the sweep with `evener doctor tree <sel> --observers` and pair this with the
   `observer-self-loop` runbook.
 - A single stale notification is not a Finding — the machinery notifying a
   session that has just finished is expected under normal timing; the

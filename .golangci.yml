@@ -42,6 +42,9 @@ linters:
     - unconvert
     - usestdlibvars
   settings:
+    govet:
+      disable:
+        - inline
     revive:
       rules:
         - name: blank-imports

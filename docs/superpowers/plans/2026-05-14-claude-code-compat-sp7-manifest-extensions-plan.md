@@ -2794,8 +2794,8 @@ Expected: FAIL — undefined.
 Append to `agent/plugin_userconfig.go`:
 
 ```go
-// UserConfigPrompter is the surface-specific UX. CLI, evener-tui, and
-// evener-hub each ship their own implementation.
+// UserConfigPrompter is the surface-specific UX. CLI, evener tui, and
+// evener hub each ship their own implementation.
 type UserConfigPrompter interface {
 	// Prompt is called once per option in declaration order. The raw
 	// user-entered string is returned. Empty string means "user accepted

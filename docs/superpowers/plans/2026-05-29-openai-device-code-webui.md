@@ -485,7 +485,7 @@ Expected: PASS — new device tests pass; existing auth tests still pass.
 
 ```bash
 git add cmd/evener-hub/app_auth.go cmd/evener-hub/app_auth_test.go
-git commit -m "feat(evener-hub): DeviceStart/DevicePoll controller methods (PRI-1878)"
+git commit -m "feat(evener hub): DeviceStart/DevicePoll controller methods (PRI-1878)"
 ```
 
 ---
@@ -519,7 +519,7 @@ Expected: BUILD OK; package tests PASS (the new methods are wired; existing RPC 
 
 ```bash
 git add cmd/evener-hub/app_rpc.go
-git commit -m "feat(evener-hub): wire device-code auth RPCs (PRI-1878)"
+git commit -m "feat(evener hub): wire device-code auth RPCs (PRI-1878)"
 ```
 
 ---
@@ -554,7 +554,7 @@ Expected: `OK`.
 
 ```bash
 git add cmd/evener-hub/assets/launchconfig.js
-git commit -m "feat(evener-hub): launchconfig authDeviceStart/authDevicePoll wrappers (PRI-1878)"
+git commit -m "feat(evener hub): launchconfig authDeviceStart/authDevicePoll wrappers (PRI-1878)"
 ```
 
 ---
@@ -767,7 +767,7 @@ Expected: `JS_OK` then `BUILD_OK`.
 
 ```bash
 git add cmd/evener-hub/templates/partials/credentials.html cmd/evener-hub/jstest/test-credentials-device.js
-git commit -m "feat(evener-hub): device-code sign-in UI on the credentials page (PRI-1878)"
+git commit -m "feat(evener hub): device-code sign-in UI on the credentials page (PRI-1878)"
 ```
 
 ---

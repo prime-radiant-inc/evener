@@ -1,4 +1,4 @@
-package main
+package hub
 
 // What a provider authenticates with is a registry fact: envvars/providers.go
 // carries one row per provider with its auth modes, and the hub hands them to

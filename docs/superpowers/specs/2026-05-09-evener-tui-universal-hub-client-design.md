@@ -8,15 +8,15 @@ UX note: `docs/superpowers/specs/2026-05-09-evener-tui-dashboard-ux-design.md` i
 
 ## Summary
 
-`evener-tui` becomes the terminal client for the same multi-session system that powers `evener-hub`. It stops being a single-session app that embeds or connects directly to one daemon. On startup it connects to a local hub, starts one if none is running, then presents a live dashboard grouped by project, with project drill-down for history. Users can drill into any session, read the full transcript, follow live activity, send input where supported, and use the same spawn, resume, fork, and control flows as the web hub.
+`evener tui` becomes the terminal client for the same multi-session system that powers `evener hub`. It stops being a single-session app that embeds or connects directly to one daemon. On startup it connects to a local hub, starts one if none is running, then presents a live dashboard grouped by project, with project drill-down for history. Users can drill into any session, read the full transcript, follow live activity, send input where supported, and use the same spawn, resume, fork, and control flows as the web hub.
 
-This is intentionally a breaking design. There is no compatibility mode for the old embedded/direct single-session `evener-tui`. The hub is the control plane; the TUI is a hub client.
+This is intentionally a breaking design. There is no compatibility mode for the old embedded/direct single-session `evener tui`. The hub is the control plane; the TUI is a hub client.
 
 Two read-only critique passes were incorporated into this draft: one focused on hub/API architecture and one focused on TUI implementation and terminal UX. The main changes from those critiques are explicit custom-address auto-start behavior, durable transcript-follow event identity, resume-by-record instead of resume-by-ID, daemon-reported capabilities, clear returning a new ref, URL-safe refs, a narrower package extraction, and stronger SSE/parser/keyboard requirements.
 
 ## Goals
 
-- Make `evener-tui` a universal terminal dashboard for all Evener sessions on the local host.
+- Make `evener tui` a universal terminal dashboard for all Evener sessions on the local host.
 - Use the same hub system as the web UI for discovery, spawn, resume, fork, REST proxying, and SSE proxying.
 - Start a local hub automatically when no local hub is running.
 - Let users browse live sessions, past sessions, projects, forks, and subagents from one TUI.
@@ -26,16 +26,16 @@ Two read-only critique passes were incorporated into this draft: one focused on 
 
 ## Non-goals
 
-- No backward-compatible embedded server mode in `evener-tui`.
-- No direct daemon mode in `evener-tui`.
-- No second local discovery implementation in `evener-tui`; it must not read rendezvous files or project state directly for normal operation.
+- No backward-compatible embedded server mode in `evener tui`.
+- No direct daemon mode in `evener tui`.
+- No second local discovery implementation in `evener tui`; it must not read rendezvous files or project state directly for normal operation.
 - No remote host implementation in the first implementation pass.
 - No terminal UI for editing system prompts, provider config, plugin code, or MCP definitions.
 - No full-text transcript search in v1. Metadata search and in-open-session search are enough.
 
 ## Current Implementation Context
 
-`evener-hub` already owns the right local control-plane primitives:
+`evener hub` already owns the right local control-plane primitives:
 
 - A live roster watches `~/.evener/run/<pid>.json`, probes each daemon's `/status`, and maps `session_id` to daemon address.
 - A past index reads saved session metadata across project state directories.
@@ -43,7 +43,7 @@ Two read-only critique passes were incorporated into this draft: one focused on 
 - REST and SSE proxies hide daemon addresses behind the hub origin.
 - The web UI has session workspace routes, send, fork, replay, search, and spawn flows.
 
-`evener-tui` currently owns single-session concerns:
+`evener tui` currently owns single-session concerns:
 
 - Startup either connects to one `--addr` daemon or starts an embedded in-process server.
 - One Bubble Tea model stores one active session, one message list, one input, one SSE stream, and one direct daemon address.
@@ -70,30 +70,30 @@ The new design keeps the useful TUI rendering and event-reduction logic, but cha
 
 ### Startup
 
-Running `evener-tui` opens the dashboard. Startup flow:
+Running `evener tui` opens the dashboard. Startup flow:
 
 1. Resolve hub address from `--hub-addr`, `EVENER_HUB_ADDR`, hub config, or default `127.0.0.1:9180`.
 2. Normalize the address into a base URL and, when local, a bind address. Accepted inputs are `host:port`, `http://host:port`, and `http://host:port/`.
 3. Probe `GET /api/health`.
 4. If the probe succeeds, connect.
-5. If the probe fails and the normalized address is local, start `evener-hub` as a detached background process on the same resolved bind address.
+5. If the probe fails and the normalized address is local, start `evener hub` as a detached background process on the same resolved bind address.
 6. Wait for health with a bounded timeout.
 7. If startup fails, show a terminal error screen with the attempted command and hub log path.
 
-Local address means `localhost`, `127.0.0.0/8`, or `::1` with an `http` scheme. `evener-tui` must not auto-start a hub for a non-loopback host. Remote hub startup belongs to the remote host's service manager, not the TUI.
+Local address means `localhost`, `127.0.0.0/8`, or `::1` with an `http` scheme. `evener tui` must not auto-start a hub for a non-loopback host. Remote hub startup belongs to the remote host's service manager, not the TUI.
 
 The hub process should survive TUI exit. Starting it as a child tied to the TUI would make the "universal client" unstable because other TUI instances and the web UI would lose their control plane when one TUI exits.
 
 Hub binary resolution:
 
 - Prefer `--hub-bin` when provided.
-- Else use a `evener-hub` binary next to the running `evener-tui` executable.
-- Else fall back to `evener-hub` on `PATH`.
+- Else use a `evener hub` binary next to the running `evener tui` executable.
+- Else fall back to `evener hub` on `PATH`.
 
 Hub startup command:
 
 ```sh
-evener-hub --addr <resolved-local-bind-addr>
+evener hub --addr <resolved-local-bind-addr>
 ```
 
 TUI redirects detached hub stdout/stderr to `~/.evener/logs/hub-<timestamp>.log`. If another process wins the startup race, the hub lock causes the loser to exit; TUI retries health and proceeds if the winning hub is healthy.
@@ -162,7 +162,7 @@ Spawn is a TUI form backed by hub's spawner:
 - Fields: working directory, model, agent, reasoning effort.
 - Advanced fields: max rounds, system prompt append, MCP config, plugin dirs, skills dirs, context strategy.
 
-The first pass should implement only fields already supported by hub spawn. Additional old `evener-tui` flags should not be preserved just because they existed before; they need deliberate spawn API support.
+The first pass should implement only fields already supported by hub spawn. Additional old `evener tui` flags should not be preserved just because they existed before; they need deliberate spawn API support.
 
 ### Resume
 
@@ -198,7 +198,7 @@ The TUI should not implement transcript mutation. Fork creation is a hub/agent o
             JSON + SSE over HTTP
                     |
                     v
-        evener-hub 127.0.0.1:9180
+        evener hub 127.0.0.1:9180
      roster + past index + spawn + proxy
                     |
         REST/SSE to live daemons
@@ -346,7 +346,7 @@ Response:
   "live": true,
   "project": "evener",
   "working_dir": "/Users/jesse/Documents/GitHub/prime-radiant-inc/evener",
-  "branch": "evener-hub",
+  "branch": "evener hub",
   "model": "gpt-5.2",
   "profile": "openai/gpt-5.2",
   "turn_count": 8,
@@ -717,10 +717,10 @@ The implementation must add daemon run-dir support before exposing `run_dir` in 
 
 ## CLI Contract
 
-Breaking v1 `evener-tui` contract:
+Breaking v1 `evener tui` contract:
 
 ```sh
-evener-tui
+evener tui
 ```
 
 Starts or connects to local hub, then opens the dashboard.
@@ -729,13 +729,13 @@ Supported flags:
 
 ```text
 --hub-addr string       hub address or URL, default 127.0.0.1:9180
---hub-bin string        evener-hub binary to auto-start for local hubs
+--hub-bin string        evener hub subcommand to auto-start for local hubs
 --no-auto-start-hub     fail instead of starting a missing local hub
 --log-file string       TUI log path
 --debug                 show debug panel and verbose client errors
 ```
 
-Removed from `evener-tui`:
+Removed from `evener tui`:
 
 - `--addr`
 - `--resume`
@@ -794,7 +794,7 @@ Unit tests:
 - SSE parser handling for multiline data, optional spaces, final unterminated events, non-200 responses, replay EOF, and `Last-Event-ID`.
 - Event reducer behavior for actual hub replay events and live daemon events: user input, assistant deltas, assistant end-with-text, tool calls, `communicate`, task-list, subagents, warnings, and replay completion.
 - Dashboard row selection, duplicate live/project rows, expanded projects, focus mode, `tab`, `ctrl+c`, scroll preservation, unread events, and read-only input.
-- Guard that normal `evener-tui` code paths no longer call local state/discovery helpers such as `agent.RuntimeDir`, `agent.ListSessions`, `agent.ReadTranscript`, or rendezvous listing.
+- Guard that normal `evener tui` code paths no longer call local state/discovery helpers such as `agent.RuntimeDir`, `agent.ListSessions`, `agent.ReadTranscript`, or rendezvous listing.
 
 Integration tests:
 
@@ -808,8 +808,8 @@ Integration tests:
 
 Manual verification:
 
-- Build `evener-hub` and `evener-tui`.
-- Kill all hubs, run `evener-tui`, verify it starts a detached hub and opens dashboard.
+- Build `evener hub` and `evener tui`.
+- Kill all hubs, run `evener tui`, verify it starts a detached hub and opens dashboard.
 - Start two live sessions, verify both appear in Live and Projects.
 - Open a long session after more than the daemon ring-buffer size worth of events, verify full transcript is shown.
 - Open an ended session, send input, verify hub resumes it with the same session ID.
@@ -846,7 +846,7 @@ Manual verification:
 
 ### Phase 3: TUI Shell and Dashboard
 
-- Replace old `evener-tui` startup with hub probe and auto-start.
+- Replace old `evener tui` startup with hub probe and auto-start.
 - Add typed hub client.
 - Replace the SSE parser.
 - Build dashboard model and tree rendering.
@@ -920,13 +920,13 @@ Problems:
 ## Open Questions
 
 - Should dashboard tree refresh use polling only in v1, or should hub expose a tree-events stream?
-- Which old `evener-tui` spawn flags deserve first-class hub spawn fields? The default should be to omit them until someone needs them.
+- Which old `evener tui` spawn flags deserve first-class hub spawn fields? The default should be to omit them until someone needs them.
 
 ## Acceptance Criteria
 
-- `evener-tui` with no running hub starts a detached local hub and opens a dashboard.
-- `evener-tui --hub-addr 127.0.0.1:<custom>` starts the hub on that custom local address, and remote hub addresses are never auto-started.
-- `evener-tui` has no embedded server path and no direct daemon `--addr` mode.
+- `evener tui` with no running hub starts a detached local hub and opens a dashboard.
+- `evener tui --hub-addr 127.0.0.1:<custom>` starts the hub on that custom local address, and remote hub addresses are never auto-started.
+- `evener tui` has no embedded server path and no direct daemon `--addr` mode.
 - Dashboard lists live and past sessions from hub.
 - Drill-in shows full persisted transcript and follows live events for active sessions.
 - Drill-in handles actual replay events and live daemon events without losing user or assistant messages.

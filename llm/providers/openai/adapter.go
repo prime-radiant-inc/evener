@@ -921,8 +921,7 @@ func (a *Adapter) ClassifyResponsesError(req llm.Request, err error) llm.Respons
 	if err == nil {
 		return llm.ResponsesErrorPermanentOther
 	}
-	var llmErr llm.Error
-	if errors.As(err, &llmErr) {
+	if llmErr, ok := errors.AsType[llm.Error](err); ok {
 		if llmErr.Retryable() {
 			return llm.ResponsesErrorTransient
 		}

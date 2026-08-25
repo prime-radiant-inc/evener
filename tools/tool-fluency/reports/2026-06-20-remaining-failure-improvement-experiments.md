@@ -44,7 +44,7 @@ is evidence for the same tool fluency problem, not a usable self-diagnosis.
 - Use the CLI harness for ordinary one-shot tools.
 - Avoid negative "do not" prompting in variants; phrase the desired behavior
   positively.
-- Inspect results with `evener-fluency` output, `result.json`, and `evener-doctor`
+- Inspect results with `evener-fluency` output, `result.json`, and `evener doctor`
   where needed. No custom Python or jq parsing.
 
 ## Experiment Matrix

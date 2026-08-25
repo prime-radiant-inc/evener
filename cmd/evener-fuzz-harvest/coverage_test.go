@@ -1,4 +1,4 @@
-package main
+package fuzzharvest
 
 import (
 	"bytes"
@@ -41,12 +41,7 @@ func scenarioHarvestRunFailuresAndMain(t *testing.T) {
 	if run([]string{"--surface", "toolargs", "--state-dir", t.TempDir()}, &out, &errOut) != 1 {
 		t.Fatal("core names")
 	}
-	oldExit, oldArgs := osExit, os.Args
-	t.Cleanup(func() { osExit, os.Args = oldExit, oldArgs })
-	os.Args = []string{"harvest", "--surface", "sse", "--state-dir", t.TempDir(), "--dry-run"}
-	got := -1
-	osExit = func(c int) { got = c }
-	main()
+	got := Run([]string{"--surface", "sse", "--state-dir", t.TempDir(), "--dry-run"}, nil, &out, &errOut)
 	if got != 0 {
 		t.Fatalf("exit=%d", got)
 	}
@@ -188,7 +183,7 @@ func scenarioEmitterWriteFileFailure(t *testing.T) {
 	if err := os.Mkdir(p, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := e.EmitBytes(d, []byte("x")); err == nil {
+	if _, err := e.emitBytes(d, []byte("x")); err == nil {
 		t.Fatal("write file")
 	}
 }

@@ -23,7 +23,7 @@ func FuzzGenerateEdges(f *testing.F) {
 		savedClient, savedErr, savedInit := defaultClient, errDefaultClient, defaultClientInit
 		defaultClient, errDefaultClient, defaultClientInit = nil, errors.New("default unavailable"), true
 		defaultClientMu.Unlock()
-		if _, err := prepareGeneration(GenerateOptions{Model: "m", Prompt: ptrString("p")}); err == nil {
+		if _, err := prepareGeneration(GenerateOptions{Model: "m", Prompt: new("p")}); err == nil {
 			t.Fatal("expected default client error")
 		}
 		defaultClientMu.Lock()
@@ -37,7 +37,7 @@ func FuzzGenerateEdges(f *testing.F) {
 		if gs, err := prepareGeneration(GenerateOptions{Client: client, Model: "m", Messages: []Message{User("u")}, System: &system, MaxToolRounds: &neg}); err != nil || gs.maxToolRounds != 0 {
 			t.Fatalf("negative rounds: %+v %v", gs, err)
 		}
-		if _, err := Generate(ctx, GenerateOptions{Client: client, Model: "", Prompt: ptrString("p")}); err == nil {
+		if _, err := Generate(ctx, GenerateOptions{Client: client, Model: "", Prompt: new("p")}); err == nil {
 			t.Fatal("expected validation error")
 		}
 
@@ -122,17 +122,17 @@ func FuzzGenerateEdges(f *testing.F) {
 		loopClient := NewClient()
 		loopClient.Register(&scriptedFuzzAdapter{script: []scriptStep{{calls: []ToolCallData{call}, finish: FinishReasonToolCalls}}})
 		rounds := 2
-		if _, err := Generate(ctx, GenerateOptions{Client: loopClient, Model: "m", Provider: "stub", Prompt: ptrString("p"), Tools: []Tool{active, passive}, MaxToolRounds: &rounds}); err != nil {
+		if _, err := Generate(ctx, GenerateOptions{Client: loopClient, Model: "m", Provider: "stub", Prompt: new("p"), Tools: []Tool{active, passive}, MaxToolRounds: &rounds}); err != nil {
 			t.Fatal(err)
 		}
 
 		call = ToolCallData{ID: "a", Name: "active", Arguments: json.RawMessage(`{}`)}
 		loopClient = NewClient()
 		loopClient.Register(&scriptedFuzzAdapter{script: []scriptStep{{calls: []ToolCallData{call}, finish: FinishReasonToolCalls}}})
-		if _, err := Generate(ctx, GenerateOptions{Client: loopClient, Model: "m", Provider: "stub", Prompt: ptrString("p"), Tools: []Tool{active}, MaxToolRounds: &rounds, StopWhen: func([]StepResult) bool { return true }}); err != nil {
+		if _, err := Generate(ctx, GenerateOptions{Client: loopClient, Model: "m", Provider: "stub", Prompt: new("p"), Tools: []Tool{active}, MaxToolRounds: &rounds, StopWhen: func([]StepResult) bool { return true }}); err != nil {
 			t.Fatal(err)
 		}
 	})
 }
 
-func ptrString(s string) *string { return &s }
+//go:fix inline

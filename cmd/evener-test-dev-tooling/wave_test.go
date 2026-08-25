@@ -1,11 +1,13 @@
 //go:build linux || darwin
 
-package main
+package devtoolingtest
 
 import (
 	"bytes"
 	"fmt"
 	"os"
+	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -13,6 +15,81 @@ import (
 	"testing"
 	"time"
 )
+
+// TestMain also serves a tiny real-process signal fixture. The fixture is
+// launched by the shell scripts below, so it lives in the same process-group
+// path as a production suite while using Go's signal delivery contract rather
+// than a shell trap's command-boundary semantics. The latter was the lost
+// event: a shell can receive TERM while it is between the readiness echo and
+// its blocking read, or while it is waiting for a foreground child, and exit
+// before running the trap.
+func TestMain(m *testing.M) {
+	if ready := os.Getenv("EVENER_WAVE_FIXTURE_READY"); ready != "" {
+		runSignalFixture(
+			os.Getenv("EVENER_WAVE_FIXTURE_MODE"),
+			ready,
+			os.Getenv("EVENER_WAVE_FIXTURE_EVENT"),
+			os.Getenv("EVENER_WAVE_FIXTURE_PARENT_READY"),
+		)
+		return
+	}
+	os.Exit(m.Run())
+}
+
+func runSignalFixture(mode, ready, event, parentReady string) {
+	signals := make(chan os.Signal, 1)
+	signal.Notify(signals, syscall.SIGTERM, syscall.SIGINT)
+	if mode == "parent" {
+		child := exec.Command(os.Args[0], "-test.run", "^$") //nolint:noctx,gosec // test fixture runs this package's own binary
+		child.Env = fixtureEnv("child", ready, event, "")
+		if err := child.Start(); err != nil {
+			os.Exit(2)
+		}
+		writeFixtureLine(parentReady, "ready")
+		<-signals
+		_ = child.Wait()
+		signal.Stop(signals)
+		os.Exit(143)
+	}
+	writeFixtureLine(ready, "ready")
+	<-signals
+	if event != "" {
+		writeFixtureLine(event, "termed")
+	}
+	signal.Stop(signals)
+	os.Exit(143)
+}
+
+func fixtureEnv(mode, ready, event, parentReady string) []string {
+	env := environWithout(
+		"EVENER_WAVE_FIXTURE_MODE",
+		"EVENER_WAVE_FIXTURE_READY",
+		"EVENER_WAVE_FIXTURE_EVENT",
+		"EVENER_WAVE_FIXTURE_PARENT_READY",
+	)
+	env = append(env, "EVENER_WAVE_FIXTURE_MODE="+mode, "EVENER_WAVE_FIXTURE_READY="+ready)
+	if event != "" {
+		env = append(env, "EVENER_WAVE_FIXTURE_EVENT="+event)
+	}
+	if parentReady != "" {
+		env = append(env, "EVENER_WAVE_FIXTURE_PARENT_READY="+parentReady)
+	}
+	return env
+}
+
+func writeFixtureLine(path, line string) {
+	f, err := os.OpenFile(path, os.O_WRONLY, 0)
+	if err != nil {
+		os.Exit(2)
+	}
+	if _, err := fmt.Fprintln(f, line); err != nil {
+		_ = f.Close()
+		os.Exit(2)
+	}
+	if err := f.Close(); err != nil {
+		os.Exit(2)
+	}
+}
 
 func writeSuite(t *testing.T, dir, name, body string) {
 	t.Helper()
@@ -23,6 +100,33 @@ func writeSuite(t *testing.T, dir, name, body string) {
 	if err := os.WriteFile(path, []byte("#!/bin/sh\n"+body), 0o755); err != nil {
 		t.Fatal(err)
 	}
+}
+
+// writeSignalFixtureSuite creates a suite that delegates its readiness and
+// TERM event to a child of this test binary. The child registers signal.Notify
+// before writing readiness, making the readiness FIFO an actual handler-ready
+// event rather than a marker emitted before the awaitable operation begins.
+func writeSignalFixtureSuite(t *testing.T, dir, name, ready, event, parentReady string) {
+	t.Helper()
+	testBinaryPath, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	testBinary := strconv.Quote(testBinaryPath)
+	mode := "direct"
+	if parentReady != "" {
+		mode = "parent"
+	}
+	command := "EVENER_WAVE_FIXTURE_MODE=" + mode + " "
+	command += "EVENER_WAVE_FIXTURE_READY=" + strconv.Quote(ready) + " "
+	if event != "" {
+		command += "EVENER_WAVE_FIXTURE_EVENT=" + strconv.Quote(event) + " "
+	}
+	if parentReady != "" {
+		command += "EVENER_WAVE_FIXTURE_PARENT_READY=" + strconv.Quote(parentReady) + " "
+	}
+	command += "exec " + testBinary + " -test.run '^$'"
+	writeSuite(t, dir, name, command)
 }
 
 func TestAllSuitesPassPrintsPassAndExitsZero(t *testing.T) {
@@ -153,11 +257,11 @@ func mkFixtureFifos(t *testing.T, names ...string) string {
 // on purpose, so a loaded machine never trips it before the real signal lands.
 const fifoReadTripwire = 60 * time.Second
 
-// postExitGraceMin is the minimum grace for descendants that outlived the wave.
+// postExitGrace is the minimum grace for descendants that outlived the wave.
 // An orphan already past its TERM trap writes within milliseconds, so this
 // only elapses when no writer exists at all. It is also the whole grace for a
 // caller with no deadline to scale against.
-const postExitGraceMin = 5 * time.Second
+const postExitGrace = 5 * time.Second
 
 // postExitGraceMax caps how far the deadline can stretch the grace. Without a
 // ceiling, one absent writer spends nearly the entire remaining test budget
@@ -176,14 +280,14 @@ const deadlineReportReserve = 15 * time.Second
 // graceFor is how long readFifoLineOrExit keeps waiting after the wave has
 // exited: the time left until the test's own deadline, less the reserve that
 // keeps the report ahead of the runner's panic, clamped between
-// postExitGraceMin and postExitGraceMax. A zero deadline means the caller has
+// postExitGrace and postExitGraceMax. A zero deadline means the caller has
 // none (`go test` without -timeout), which is the floor case, as is a deadline
 // already inside the reserve.
 func graceFor(deadline, now time.Time) time.Duration {
 	if deadline.IsZero() {
-		return postExitGraceMin
+		return postExitGrace
 	}
-	return min(max(deadline.Sub(now)-deadlineReportReserve, postExitGraceMin), postExitGraceMax)
+	return min(max(deadline.Sub(now)-deadlineReportReserve, postExitGrace), postExitGraceMax)
 }
 
 // waveRun is a running wave whose exit any number of waiters can observe.
@@ -273,6 +377,16 @@ func readFifoLine(t *testing.T, path string, run *waveRun) string {
 	return line
 }
 
+// waveKillGrace gives the real child handler the time this test can spare.
+// It shares the test-deadline arithmetic with post-exit FIFO diagnostics, so
+// an absent handler still trips before the testing package's own panic while a
+// loaded runner does not get the old one-second cleanup race.
+func waveKillGrace(t *testing.T) time.Duration {
+	t.Helper()
+	deadline, _ := t.Deadline()
+	return graceFor(deadline, time.Now())
+}
+
 // startWave runs runWave in a goroutine and returns the running wave.
 func startWave(cfg waveConfig) *waveRun {
 	run := &waveRun{done: make(chan struct{})}
@@ -284,20 +398,24 @@ func startWave(cfg waveConfig) *waveRun {
 }
 
 func TestInterruptTermsProcessGroupAndExits143(t *testing.T) {
-	fx := mkFixtureFifos(t, "ready", "events", "hold")
+	fx := mkFixtureFifos(t, "ready", "events")
 	dir := t.TempDir()
-	writeSuite(t, dir, "holder",
-		"trap 'echo suite-termed >"+fx+"/events; exit 143' TERM\n"+
-			"echo ready >"+fx+"/ready\n"+
-			"read _ <"+fx+"/hold\n")
+	writeSignalFixtureSuite(t, dir, "holder", filepath.Join(fx, "ready"), filepath.Join(fx, "events"), "")
 	signals := make(chan os.Signal, 1)
 	var out bytes.Buffer
-	run := startWave(waveConfig{ScriptsDir: dir, Suites: []string{"holder"}, KillGrace: time.Minute, Out: &out, Signals: signals})
+	run := startWave(waveConfig{ScriptsDir: dir, Suites: []string{"holder"}, KillGrace: waveKillGrace(t), Out: &out, Signals: signals})
+	t.Cleanup(func() {
+		select {
+		case signals <- syscall.SIGTERM:
+		default:
+		}
+		<-run.done
+	})
 	if got := readFifoLine(t, filepath.Join(fx, "ready"), run); got != "ready" {
 		t.Fatalf("readiness handshake got %q", got)
 	}
 	signals <- syscall.SIGTERM
-	if got := readFifoLine(t, filepath.Join(fx, "events"), run); got != "suite-termed" {
+	if got := readFifoLine(t, filepath.Join(fx, "events"), run); got != "termed" {
 		t.Fatalf("suite never saw TERM, got %q", got)
 	}
 	if code := run.wait(); code != 143 {
@@ -306,21 +424,25 @@ func TestInterruptTermsProcessGroupAndExits143(t *testing.T) {
 }
 
 func TestForkedDescendantIsReaped(t *testing.T) {
-	fx := mkFixtureFifos(t, "ready", "ready2", "events", "hold", "hold2")
+	fx := mkFixtureFifos(t, "ready", "ready2", "events")
 	dir := t.TempDir()
-	writeSuite(t, dir, "forker",
-		"( trap 'echo grandchild-termed >"+fx+"/events; exit 0' TERM\n"+
-			"  echo up >"+fx+"/ready2\n"+
-			"  read _ <"+fx+"/hold2 ) &\n"+
-			"echo ready >"+fx+"/ready\n"+
-			"read _ <"+fx+"/hold\n")
+	writeSignalFixtureSuite(t, dir, "forker", filepath.Join(fx, "ready2"), filepath.Join(fx, "events"), filepath.Join(fx, "ready"))
+	// The Go fixture parent remains in the wave so the child's event proves
+	// group delivery, while both readiness lines are handler-installed events.
 	signals := make(chan os.Signal, 1)
 	var out bytes.Buffer
-	run := startWave(waveConfig{ScriptsDir: dir, Suites: []string{"forker"}, KillGrace: time.Minute, Out: &out, Signals: signals})
+	run := startWave(waveConfig{ScriptsDir: dir, Suites: []string{"forker"}, KillGrace: waveKillGrace(t), Out: &out, Signals: signals})
+	t.Cleanup(func() {
+		select {
+		case signals <- syscall.SIGTERM:
+		default:
+		}
+		<-run.done
+	})
 	readFifoLine(t, filepath.Join(fx, "ready"), run)
 	readFifoLine(t, filepath.Join(fx, "ready2"), run)
 	signals <- syscall.SIGTERM
-	if got := readFifoLine(t, filepath.Join(fx, "events"), run); got != "grandchild-termed" {
+	if got := readFifoLine(t, filepath.Join(fx, "events"), run); got != "termed" {
 		t.Fatalf("forked descendant never saw TERM, got %q", got)
 	}
 	if code := run.wait(); code != 143 {
@@ -520,10 +642,10 @@ func TestGraceFor(t *testing.T) {
 		deadline time.Time
 		want     time.Duration
 	}{
-		{"no deadline is the floor", time.Time{}, postExitGraceMin},
-		{"a deadline inside the reserve is the floor", now.Add(deadlineReportReserve / 2), postExitGraceMin},
-		{"an expired deadline is the floor", now.Add(-time.Minute), postExitGraceMin},
-		{"less than the floor past the reserve is still the floor", now.Add(deadlineReportReserve + time.Second), postExitGraceMin},
+		{"no deadline is the floor", time.Time{}, postExitGrace},
+		{"a deadline inside the reserve is the floor", now.Add(deadlineReportReserve / 2), postExitGrace},
+		{"an expired deadline is the floor", now.Add(-time.Minute), postExitGrace},
+		{"less than the floor past the reserve is still the floor", now.Add(deadlineReportReserve + time.Second), postExitGrace},
 		{"the remainder past the reserve becomes the grace", now.Add(deadlineReportReserve + 30*time.Second), 30 * time.Second},
 		{"a distant deadline is capped", now.Add(deadlineReportReserve + 9*time.Minute), postExitGraceMax},
 	} {
@@ -549,7 +671,7 @@ func TestReadFifoLineGraceFollowsTheTestDeadline(t *testing.T) {
 	dead := &waveRun{done: make(chan struct{}), code: 9}
 	close(dead.done) // the wave is already over; nobody will ever open for write
 
-	grace := postExitGraceMin + 2*time.Second
+	grace := postExitGrace + 2*time.Second
 	start := time.Now()
 	_, err := readFifoLineOrExit(filepath.Join(fx, "never-written"), dead, time.Minute,
 		start.Add(deadlineReportReserve+grace))
@@ -558,9 +680,9 @@ func TestReadFifoLineGraceFollowsTheTestDeadline(t *testing.T) {
 	if err == nil {
 		t.Fatalf("expected an error when the wave exited without writing")
 	}
-	if elapsed < postExitGraceMin+time.Second {
+	if elapsed < postExitGrace+time.Second {
 		t.Errorf("waited %v: the deadline's %v of grace was ignored and the floor (%v) was used instead: %v",
-			elapsed, grace, postExitGraceMin, err)
+			elapsed, grace, postExitGrace, err)
 	}
 	if elapsed > grace+10*time.Second {
 		t.Errorf("waited %v, well past the %v of grace the deadline allows: %v", elapsed, grace, err)

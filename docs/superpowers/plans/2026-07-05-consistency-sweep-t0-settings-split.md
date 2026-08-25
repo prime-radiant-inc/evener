@@ -464,14 +464,14 @@ Moves the `data-notif` branch of the `change` listener (including the async OS-p
     const window = makeWindow();
     window.eval(SRC);
     const changedEvents = [];
-    window.document.addEventListener("evener-hub:notifications-changed", (e) => changedEvents.push(e.detail));
+    window.document.addEventListener("evener hub:notifications-changed", (e) => changedEvents.push(e.detail));
 
     const title = window.document.querySelector('[data-notif="title"]');
     title.checked = true;
     change(title);
     assert(JSON.parse(window.localStorage.getItem("evener-hub.notifications")).title === true, "title toggle persists to localStorage");
     assert(title.parentElement.querySelector(".state").textContent === "ON", "title toggle updates the ON/OFF label");
-    assert(changedEvents.some(d => d.key === "title" && d.value === true), "title toggle dispatches evener-hub:notifications-changed");
+    assert(changedEvents.some(d => d.key === "title" && d.value === true), "title toggle dispatches evener hub:notifications-changed");
     assert(window.EvenerToast.messages.some(m => m.kind === "success"), "committed toggle shows a success toast");
 
     // --- OS toggle: browser grants permission ---
@@ -543,7 +543,7 @@ Moves the `data-notif` branch of the `change` listener (including the async OS-p
           cur[key] = desired;
           writeNotifPrefs(cur);
           syncToggleState(target);
-          document.dispatchEvent(new CustomEvent("evener-hub:notifications-changed", {
+          document.dispatchEvent(new CustomEvent("evener hub:notifications-changed", {
             detail: { key, value: desired },
           }));
           if (window.EvenerToast) window.EvenerToast.show("Settings saved", "success");
@@ -644,7 +644,7 @@ Moves the `data-transcript-status` branch and its `applySettingsState` slice —
         cur[key] = target.checked;
         writeTranscriptStatusPrefs(cur);
         syncToggleState(target);
-        document.dispatchEvent(new CustomEvent("evener-hub:transcript-system-status-changed", {
+        document.dispatchEvent(new CustomEvent("evener hub:transcript-system-status-changed", {
           detail: { key, value: target.checked },
         }));
         if (window.EvenerToast) window.EvenerToast.show("Settings saved", "success");

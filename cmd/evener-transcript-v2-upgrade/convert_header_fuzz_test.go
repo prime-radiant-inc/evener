@@ -1,4 +1,4 @@
-package main
+package transcriptv2upgrade
 
 // FuzzConvertHeader covers the v1→v2 transcript header decode surface
 // (json.Unmarshal of attacker/corruption-controlled transcript lines in

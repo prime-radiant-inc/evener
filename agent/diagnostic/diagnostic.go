@@ -66,8 +66,7 @@ func FromError(err error) Info {
 	if err == nil {
 		return evenerFailure()
 	}
-	var cfg *llm.ConfigurationError
-	if errors.As(err, &cfg) {
+	if _, ok := errors.AsType[*llm.ConfigurationError](err); ok {
 		return evenerConfiguration()
 	}
 	// The typed check comes first: an exhausted allowance is recognized from the

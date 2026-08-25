@@ -128,8 +128,7 @@ func TestRun_EpilogueWrapsContextErrorOnCancel(t *testing.T) {
 		t.Fatalf("ctx-cancel epilogue: got %T (%v), want %T (%v)", errEv.Err, errEv.Err, want, want)
 	}
 	// It must NOT be a StreamError carrying IncompleteMsg.
-	var streamErr *llm.StreamError
-	if errors.As(errEv.Err, &streamErr) {
+	if _, ok := errors.AsType[*llm.StreamError](errEv.Err); ok {
 		t.Fatalf("ctx-cancel epilogue wrongly produced StreamError: %v", errEv.Err)
 	}
 	// The provider name must be threaded from r.Provider into WrapContextError.

@@ -1059,7 +1059,7 @@ Expected: PASS
 
 ```bash
 git add cmd/evener-hub/app_jobs.go cmd/evener-hub/app_jobs_test.go cmd/evener-hub/app_rpc.go
-git commit -m "evener-hub: evener/jobs/list and evener/jobs/output handlers with past fallback"
+git commit -m "evener hub: evener/jobs/list and evener/jobs/output handlers with past fallback"
 ```
 
 ---

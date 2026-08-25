@@ -20,7 +20,7 @@ exactly as a real sign-in would.
 # Isolated everything, per docs/developing-evener/agentic-testing.md's Setup checklist.
 run=$(mktemp -d -t evener-e2e-oauth-wins-XXXXXX)
 go build -o "$run/evener" ./cmd/evener
-go build -o "$run/evener-hub" ./cmd/evener-hub
+go build -o "$run/evener" ./cmd/evener
 
 export HOME="$run/home"
 mkdir -p "$HOME"
@@ -52,7 +52,7 @@ chmod 600 "$HOME/.local/state/evener/auth/openai.json"
 # scratch providers.toml (cmdutil.MaterializeProvidersConfig seeds from the
 # environment when the file is absent).
 OPENAI_API_KEY="sk-scenario-not-a-real-key" \
-  "$run/evener-hub" -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &
+  "$run/evener" hub -addr 127.0.0.1:0 -evener "$run/evener" 2>"$run/hub.log" &
 HUBPID=$!
 for i in $(seq 1 50); do
   PORT=$(grep -oE 'listening on 127\.0\.0\.1:[0-9]+' "$run/hub.log" 2>/dev/null | grep -oE '[0-9]+$') || true
@@ -111,8 +111,8 @@ rm -rf "$run"
   scenario would send both the fixture write and the lookup somewhere the
   scratch `$HOME` doesn't reach.
 - Step 3 needs the frontend built into the binary. `frontend/dist` is not
-  tracked, so a `go build ./cmd/evener-hub` in a fresh checkout embeds
-  nothing and every page route answers `503 evener-hub web app not built:
+  tracked, so a `go build ./cmd/evener/` in a fresh checkout embeds
+  nothing and every page route answers `503 evener hub web app not built:
   run 'make build-web' and rebuild`. Run `make build-web` once before the
   `go build` above (steps 1 and 2 need only the `evener` binary and are
   unaffected).

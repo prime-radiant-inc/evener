@@ -1,4 +1,4 @@
-package main
+package fuzzharvest
 
 import (
 	"encoding/json"
@@ -48,7 +48,7 @@ func harvestToolArgs(r *runner, san *Sanitizer, paths []string, coreNames []stri
 				if !ok {
 					continue
 				}
-				status, err := r.emit.EmitIntBytes(r.dir(dirToolArgsValidate), idx, out)
+				status, err := r.emit.emitIntBytes(r.dir(dirToolArgsValidate), idx, out)
 				if err != nil {
 					r.logf("emit error toolargs: %v", err)
 					continue

@@ -38,7 +38,7 @@ regression guard rather than a known-bug note.
 
 ## Pre-state
 
-- A freshly built `evener-hub` + daemon on an isolated `$HOME` and a kernel-
+- A freshly built `evener hub` + daemon on an isolated `$HOME` and a kernel-
   assigned port — the Setup checklist in `docs/developing-evener/agentic-testing.md`. Never a
   real hub. Build the frontend (`make build-web`) before the hub.
 - Browser authenticated to the test hub, on its own Chrome profile (see the

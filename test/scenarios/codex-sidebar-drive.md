@@ -4,7 +4,7 @@
 
 ## Pre-state
 
-- Fresh `evener-hub` build under test, started in an isolated state dir.
+- Fresh `evener hub` build under test, started in an isolated state dir.
 - Browser authenticated to the test hub.
 - A controlled local Codex-compatible AppWire source is running, exposes one thread in the sidebar, and advertises at least one enabled action in that thread's workspace.
 
@@ -13,7 +13,7 @@
 1. Open the Codex sidebar row and confirm the browser route is source-qualified for that thread. Note the exact `source:thread-id` identity shown by the row or URL.
 2. In the opened Codex workspace, locate the visible control the UI advertises as available for that thread (the enabled action/button/menu item). Use the label the page shows, not a DOM selector.
 3. Activate that control once.
-4. Read the authoritative logs from the controlled source process and the evener-hub request/route logs for the resulting call.
+4. Read the authoritative logs from the controlled source process and the evener hub request/route logs for the resulting call.
 
 ## Expected
 

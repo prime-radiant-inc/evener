@@ -462,7 +462,7 @@ Below the textarea. Mode-dependent set rendered via `KbdHint`:
 New persistent line below the kbd footer:
 
 ```
-● connected · hub.test · openai 12 · ctx 14k/200k · $0.04           evener-tui 0.1.0
+● connected · hub.test · openai 12 · ctx 14k/200k · $0.04           evener tui 0.1.0
 ```
 
 - `●` health dot in `StateIdle` (connected) or `StateAwaiting` (disconnected).
@@ -628,4 +628,4 @@ Each wave: builds + tests green, golden snapshots updated in the same commit, no
 - Tool-call rows scan: verb anchored left, duration right-floated, dot-leader fades.
 - Overlays trap focus; `esc` and `⌘O` are the only escapes.
 - Theme registry holds at least `dark` + `light`; adding a third is a struct literal.
-- User can run `evener-tui` in light mode and read every surface without squinting.
+- User can run `evener tui` in light mode and read every surface without squinting.

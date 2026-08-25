@@ -1,4 +1,4 @@
-package main
+package hub
 
 // Launch and the credentials pane must describe one instance's credential the
 // same way, and the arbiter is the endpoint the adapter will actually contact.

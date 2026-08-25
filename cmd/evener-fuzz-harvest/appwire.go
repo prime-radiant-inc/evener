@@ -1,4 +1,4 @@
-package main
+package fuzzharvest
 
 import (
 	"encoding/json"
@@ -50,7 +50,7 @@ func harvestAppwire(r *runner, san *Sanitizer, paths []string) {
 			if !ok {
 				return
 			}
-			status, err := r.emit.EmitIntBytes(r.dir(dirMethodParams), idx, out)
+			status, err := r.emit.emitIntBytes(r.dir(dirMethodParams), idx, out)
 			if err != nil {
 				r.logf("emit error appwire params: %v", err)
 				return

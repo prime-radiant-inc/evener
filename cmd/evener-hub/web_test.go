@@ -1,4 +1,4 @@
-package main
+package hub
 
 import (
 	"bytes"
@@ -1743,7 +1743,7 @@ func webWithPersistedInProcessSubagent(t *testing.T, childID string, runningSuba
 		ParentSessionID: "02wMz5TxvEMoJEDTDGOTil",
 	}})
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
-		Entry:              rendezvous.Entry{PID: 41},
+		PID:                41,
 		SessionID:          "02wMz5TxvEMoJEDTDGOTil",
 		Status:             appwire.ThreadStatusIdle,
 		RunningSubagentIDs: append([]string(nil), runningSubagentIDs...),
@@ -1776,7 +1776,7 @@ func TestWorkspaceDataProjectsIdleInProcessSubagentIdle(t *testing.T) {
 		ParentSessionID: "02wMz5TxvEMoJEDTDGOTil",
 	}})
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
-		Entry:                 rendezvous.Entry{PID: 41},
+		PID:                   41,
 		SessionID:             "02wMz5TxvEMoJEDTDGOTil",
 		Status:                appwire.ThreadStatusIdle,
 		RunningSubagentIDs:    []string{childID},
@@ -2446,22 +2446,22 @@ func TestWeb_ApiSearch_OrdersLiveResultsByStartedAtAndID(t *testing.T) {
 	)
 	r := hubcore.NewRosterWithEntries(
 		hubcore.LiveEntry{
-			Entry:     rendezvous.Entry{PID: 2, StartedAt: base.Add(-time.Hour), WorkingDir: "/projects/evener"},
+			PID: 2, StartedAt: base.Add(-time.Hour), WorkingDir: "/projects/evener",
 			SessionID: olderID,
 			Status:    appwire.ThreadStatusIdle,
 		},
 		hubcore.LiveEntry{
-			Entry:     rendezvous.Entry{PID: 1, StartedAt: base, WorkingDir: "/projects/evener"},
+			PID: 1, StartedAt: base, WorkingDir: "/projects/evener",
 			SessionID: newestID,
 			Status:    appwire.ThreadStatusIdle,
 		},
 		hubcore.LiveEntry{
-			Entry:     rendezvous.Entry{PID: 4, StartedAt: base.Add(-2 * time.Hour), WorkingDir: "/projects/evener"},
+			PID: 4, StartedAt: base.Add(-2 * time.Hour), WorkingDir: "/projects/evener",
 			SessionID: tieBID,
 			Status:    appwire.ThreadStatusIdle,
 		},
 		hubcore.LiveEntry{
-			Entry:     rendezvous.Entry{PID: 3, StartedAt: base.Add(-2 * time.Hour), WorkingDir: "/projects/evener"},
+			PID: 3, StartedAt: base.Add(-2 * time.Hour), WorkingDir: "/projects/evener",
 			SessionID: tieAID,
 			Status:    appwire.ThreadStatusIdle,
 		},
@@ -3565,6 +3565,9 @@ func TestWeb_APIHealth(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
 	}
+	if !strings.Contains(rec.Body.String(), `"mobile_api_version":1`) {
+		t.Fatalf("health JSON missing mobile API version: %s", rec.Body.String())
+	}
 	var got hubapi.HealthResponse
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
 		t.Fatalf("decode: %v", err)
@@ -4291,7 +4294,7 @@ func observerWorkspaceFixture(t *testing.T, observedBy []string, liveSessionIDs 
 	entries := make([]hubcore.LiveEntry, 0, len(liveSessionIDs))
 	for i, id := range liveSessionIDs {
 		entries = append(entries, hubcore.LiveEntry{
-			Entry: rendezvous.Entry{PID: i + 1}, SessionID: id, Status: appwire.ThreadStatusActive,
+			PID: i + 1, SessionID: id, Status: appwire.ThreadStatusActive,
 		})
 	}
 	return NewWebServer(hubcore.WebConfig{

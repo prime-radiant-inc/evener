@@ -1273,12 +1273,21 @@ func (e *LocalExecutionEnvironment) ListDirectory(path string, depth int) ([]Dir
 // plus new .gitignore awareness; pass includeIgnored(true) to restore them.
 //
 // The walk is bounded by ctx: cancelling it aborts an in-flight glob and
-// returns ctx's error. Directory symlinks are never traversed, so a `**`
-// pattern over a tree that links back into itself still terminates.
+// returns ctx's error. It is also bounded by cycle detection — it will not
+// list a directory that is the same file as one of its own ancestors — so a
+// `**` pattern over a tree that links back into itself still terminates while
+// a directory symlink that points elsewhere is followed and matched normally.
+// (The sandboxed walk is stricter: it never follows a symlink at all, which is
+// a policy boundary rather than a termination measure.)
 func (e *LocalExecutionEnvironment) Glob(ctx context.Context, pattern string, basePath string, includeIgnored ...bool) ([]string, error) {
 	matches, _, err := e.GlobWithExclusions(ctx, pattern, basePath, len(includeIgnored) > 0 && includeIgnored[0])
 	return matches, err
 }
+
+// globBaseFS opens the filesystem the off-sandbox glob walks, rooted at the
+// resolved base directory; a variable so tests can drive the exported entry
+// point over a filesystem they control.
+var globBaseFS = os.DirFS
 
 // GlobWithExclusions implements GlobExcluder: same matching as Glob, but also
 // reports how many candidate matches the default dotfile/gitignore exclusion
@@ -1304,7 +1313,7 @@ func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, patt
 		// traversal (no out-of-root match) and drops masked matches.
 		return sfs.glob(ctx, "glob", base, pattern, includeIgnored)
 	}
-	fsys := cancelFS{ctx: ctx, fsys: os.DirFS(base)}
+	fsys := cancelFS{ctx: ctx, fsys: globBaseFS(base)}
 	var ignores *ignoreSet
 	if !includeIgnored {
 		// No masking concept off the sandboxed path: no-op skip.
@@ -1319,9 +1328,15 @@ func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, patt
 			return nil, 0, err
 		}
 		for _, m := range matches {
-			if !includeIgnored && (isDotPath(m) || ignores.matches(m, globMatchIsDir(fsys, m))) {
-				excluded++
-				continue
+			if !includeIgnored {
+				drop, err := globMatchExcluded(ctx, fsys, ignores, m)
+				if err != nil {
+					return nil, 0, err
+				}
+				if drop {
+					excluded++
+					continue
+				}
 			}
 			path := filepath.Join(base, m)
 			if _, ok := seen[path]; ok {
@@ -1331,7 +1346,9 @@ func (e *LocalExecutionEnvironment) GlobWithExclusions(ctx context.Context, patt
 			abs = append(abs, path)
 		}
 	}
-	sortPathsByMtimeDesc(abs)
+	if err := sortPathsByMtimeDesc(ctx, abs); err != nil {
+		return nil, 0, err
+	}
 	return abs, excluded, nil
 }
 
@@ -1757,9 +1774,10 @@ func (e *LocalExecutionEnvironment) StreamCommand(ctx context.Context, command, 
 	}
 
 	return &StreamHandle{
-		Pid:    pid,
-		Wait:   wait,
-		Signal: signal,
+		Pid:        pid,
+		Wait:       wait,
+		Signal:     signal,
+		SignalName: func() string { return cmdSignalName(cmd) },
 	}, nil
 }
 

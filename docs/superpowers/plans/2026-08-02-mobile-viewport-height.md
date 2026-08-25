@@ -235,7 +235,7 @@ git commit -m "fix(webui): fit mobile shell to visible viewport"
 Inspect running processes and repository documentation or scripts:
 
 ```bash
-pgrep -af 'evener-hub|cmd/evener-hub'
+pgrep -af 'evener hub|cmd/evener-hub'
 rg -n "restart.*hub|evener-hub.*restart|launchctl|systemctl" README.md docs Makefile scripts cmd -g '!**/node_modules/**'
 ```
 

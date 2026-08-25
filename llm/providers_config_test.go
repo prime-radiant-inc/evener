@@ -175,8 +175,8 @@ func TestNewFromProviders_RoutingReachesCorrectAdapter(t *testing.T) {
 	// invoked, not just that resp.Provider was stamped correctly by the client.
 	// A mutation that wires the wrong factory under each key produces a call-count
 	// mismatch: the wrong adapter's count stays zero while the expected one is 1.
-	workAdapter := &callCountAdapter{fakeAdapter: fakeAdapter{name: "work"}}
-	kimiAdapter := &callCountAdapter{fakeAdapter: fakeAdapter{name: "kimi-corp"}}
+	workAdapter := &callCountAdapter{name: "work"}
+	kimiAdapter := &callCountAdapter{name: "kimi-corp"}
 
 	// Layer tracking adapters on top of the blanket fakes installed above.
 	// setupFakeInstanceFactories already registered the cleanup; no extra t.Cleanup needed.

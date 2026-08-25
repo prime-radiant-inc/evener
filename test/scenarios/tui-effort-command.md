@@ -1,4 +1,4 @@
-# tui-effort-command: evener-tui `/effort` shows only the current model's levels, and both surfaces display current model + effort on a cold attach
+# tui-effort-command: evener tui `/effort` shows only the current model's levels, and both surfaces display current model + effort on a cold attach
 
 **What this covers**: spec Acceptance criterion 6 — TUI `/effort` and the
 web effort control both show only the current model's levels, and both
@@ -19,7 +19,7 @@ handle, and the effort control is no longer read-only — see Sharp edges.
 
 ## Pre-state
 
-- Hub + evener-tui + a web client, all able to attach to the same session
+- Hub + evener tui + a web client, all able to attach to the same session
   (isolated `$HOME`, kernel-assigned port — see the Setup checklist in
   `docs/developing-evener/agentic-testing.md`).
 - A session on a reasoning-capable model with a known ladder (e.g.

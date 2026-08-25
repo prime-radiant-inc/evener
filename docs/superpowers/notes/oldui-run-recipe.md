@@ -69,7 +69,7 @@ cat "$HOME/hub.log"
 the LITERAL `-addr` you passed, not the actual bound port:
 
 ```
-[hub] evener-hub 0.1.0 listening on 127.0.0.1:0 (run_dir=...)
+[hub] evener hub 0.1.0 listening on 127.0.0.1:0 (run_dir=...)
 [hub] auth URL (visit once per browser): http://127.0.0.1:0/auth?token=<TOKEN>
 ```
 

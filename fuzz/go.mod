@@ -5,7 +5,7 @@
 // that boundary is violated. That structural guarantee IS the portability test.
 module primeradiant.com/evener/fuzz
 
-go 1.25.0
+go 1.27.0
 
 require (
 	github.com/spf13/afero v1.15.0

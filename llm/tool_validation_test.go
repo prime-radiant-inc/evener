@@ -35,8 +35,7 @@ func TestRequestValidate_ToolsValidated(t *testing.T) {
 	if err := req.Validate(); err == nil {
 		t.Fatalf("expected error for invalid tool name")
 	} else {
-		var ce *ConfigurationError
-		if !errors.As(err, &ce) {
+		if _, ok := errors.AsType[*ConfigurationError](err); !ok {
 			t.Fatalf("expected ConfigurationError, got %T (%v)", err, err)
 		}
 	}

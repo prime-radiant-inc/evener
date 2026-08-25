@@ -22,8 +22,6 @@ type toolCall struct {
 	exitCode *int64
 }
 
-func shellExit(code int64) *int64 { return &code }
-
 // writeToolCallTranscript writes one ASSISTANT entry announcing the calls
 // followed by one TOOL_RESULTS entry carrying their results, per element of
 // `rounds`. That is the real on-disk shape: a tool result's name is resolvable
@@ -104,11 +102,11 @@ func requireFailedToolCalls(t testing.TB, cache *TurnCache, path string, fromEnt
 // loaded. Ordinal 0 means "no divergence cut", i.e. the entire transcript.
 func TestFailedToolCallsCountsEveryFailureInTheTranscript(t *testing.T) {
 	path := writeToolCallTranscript(t, [][]toolCall{
-		{{tool: "shell", exitCode: shellExit(0)}},
+		{{tool: "shell", exitCode: new(int64(0))}},
 		{{tool: "read_file", isError: true}},
-		{{tool: "shell", exitCode: shellExit(0)}, {tool: "shell", exitCode: shellExit(1)}},
+		{{tool: "shell", exitCode: new(int64(0))}, {tool: "shell", exitCode: new(int64(1))}},
 		{{tool: "grep"}},
-		{{tool: "shell", exitCode: shellExit(127)}},
+		{{tool: "shell", exitCode: new(int64(127))}},
 	})
 
 	if got := requireFailedToolCalls(t, NewTurnCache(), path, 0); got != 3 {
@@ -121,7 +119,7 @@ func TestFailedToolCallsCountsEveryFailureInTheTranscript(t *testing.T) {
 // succeeds — it is the CLIENT's job to render a zero as nothing.
 func TestFailedToolCallsReportsZeroForACleanSession(t *testing.T) {
 	path := writeToolCallTranscript(t, [][]toolCall{
-		{{tool: "shell", exitCode: shellExit(0)}},
+		{{tool: "shell", exitCode: new(int64(0))}},
 		{{tool: "read_file"}},
 	})
 
@@ -135,7 +133,7 @@ func TestFailedToolCallsReportsZeroForACleanSession(t *testing.T) {
 // Counting only is_error would have reported 1 for the real session measured in
 // kata hw2n, which shows 6 glyphs.
 func TestFailedToolCallsCountsANonzeroShellExitEvenThoughTheToolResultIsClean(t *testing.T) {
-	path := writeToolCallTranscript(t, [][]toolCall{{{tool: "shell", exitCode: shellExit(254)}}})
+	path := writeToolCallTranscript(t, [][]toolCall{{{tool: "shell", exitCode: new(int64(254))}}})
 
 	if got := requireFailedToolCalls(t, NewTurnCache(), path, 0); got != 1 {
 		t.Fatalf("failed tool calls = %d, want 1", got)
@@ -147,7 +145,7 @@ func TestFailedToolCallsCountsANonzeroShellExitEvenThoughTheToolResultIsClean(t 
 // tools/shellTool.tsx), so counting it elsewhere would mark rows the reader
 // sees no glyph on.
 func TestFailedToolCallsIgnoresAnExitCodeOnANonShellTool(t *testing.T) {
-	path := writeToolCallTranscript(t, [][]toolCall{{{tool: "read_file", exitCode: shellExit(1)}}})
+	path := writeToolCallTranscript(t, [][]toolCall{{{tool: "read_file", exitCode: new(int64(1))}}})
 
 	if got := requireFailedToolCalls(t, NewTurnCache(), path, 0); got != 0 {
 		t.Fatalf("failed tool calls = %d, want 0", got)
@@ -170,9 +168,9 @@ func TestFailedToolCallsIgnoresAShellCallWithNoExitCodeRecorded(t *testing.T) {
 // the providers that rename the tool.
 func TestFailedToolCallsReadsTheExitCodeOfEveryShellAlias(t *testing.T) {
 	path := writeToolCallTranscript(t, [][]toolCall{{
-		{tool: "shell", exitCode: shellExit(1)},
-		{tool: "exec_command", exitCode: shellExit(2)},
-		{tool: "run_shell_command", exitCode: shellExit(3)},
+		{tool: "shell", exitCode: new(int64(1))},
+		{tool: "exec_command", exitCode: new(int64(2))},
+		{tool: "run_shell_command", exitCode: new(int64(3))},
 	}})
 
 	if got := requireFailedToolCalls(t, NewTurnCache(), path, 0); got != 3 {
@@ -196,7 +194,7 @@ func TestFailedToolCallsIgnoresACommunicateResult(t *testing.T) {
 // would be counted.
 func TestFailedToolCallsResolvesAnUnnamedResultFromTheCallThatAnnouncedIt(t *testing.T) {
 	path := writeToolCallTranscript(t, [][]toolCall{{
-		{tool: "shell", exitCode: shellExit(1)},
+		{tool: "shell", exitCode: new(int64(1))},
 		{tool: "communicate", isError: true},
 	}})
 	stripResultNames(t, path)
@@ -212,9 +210,9 @@ func TestFailedToolCallsResolvesAnUnnamedResultFromTheCallThatAnnouncedIt(t *tes
 // tokens (kata 5tdg: a naive whole-file sum doubled a fork's reported spend).
 func TestFailedToolCallsSkipsTheInheritedForkPrefix(t *testing.T) {
 	path := writeToolCallTranscript(t, [][]toolCall{
-		{{tool: "shell", exitCode: shellExit(1)}}, // entries 1-2: the parent's
-		{{tool: "shell", exitCode: shellExit(1)}}, // entries 3-4: the parent's
-		{{tool: "shell", exitCode: shellExit(2)}}, // entries 5-6: the child's own
+		{{tool: "shell", exitCode: new(int64(1))}}, // entries 1-2: the parent's
+		{{tool: "shell", exitCode: new(int64(1))}}, // entries 3-4: the parent's
+		{{tool: "shell", exitCode: new(int64(2))}}, // entries 5-6: the child's own
 	})
 
 	if got := requireFailedToolCalls(t, NewTurnCache(), path, 5); got != 1 {
@@ -225,7 +223,7 @@ func TestFailedToolCallsSkipsTheInheritedForkPrefix(t *testing.T) {
 // An unopened aside fork has an empty own span. Zero is the true count for it —
 // it has run nothing, so it has failed nothing.
 func TestFailedToolCallsReportsZeroForAnEmptyOwnSpan(t *testing.T) {
-	path := writeToolCallTranscript(t, [][]toolCall{{{tool: "shell", exitCode: shellExit(1)}}})
+	path := writeToolCallTranscript(t, [][]toolCall{{{tool: "shell", exitCode: new(int64(1))}}})
 
 	if got := requireFailedToolCalls(t, NewTurnCache(), path, 99); got != 0 {
 		t.Fatalf("failed tool calls beyond the transcript = %d, want 0", got)
@@ -262,7 +260,7 @@ func TestFailedToolCallsReportsMissingTranscript(t *testing.T) {
 // must not pay for it twice — the same file-identity gate UsageTotalFromFile
 // memoizes on.
 func TestFailedToolCallsMemoizesByFileIdentity(t *testing.T) {
-	path := writeToolCallTranscript(t, [][]toolCall{{{tool: "shell", exitCode: shellExit(1)}}})
+	path := writeToolCallTranscript(t, [][]toolCall{{{tool: "shell", exitCode: new(int64(1))}}})
 	cache := NewTurnCache()
 
 	scans := countFailureScans(t, func() {
@@ -278,15 +276,15 @@ func TestFailedToolCallsMemoizesByFileIdentity(t *testing.T) {
 // A live session's transcript grows. The memo is keyed on file identity, so a
 // grown file must be rescanned rather than answered from a stale count.
 func TestFailedToolCallsRescansAfterTheTranscriptGrows(t *testing.T) {
-	path := writeToolCallTranscript(t, [][]toolCall{{{tool: "shell", exitCode: shellExit(1)}}})
+	path := writeToolCallTranscript(t, [][]toolCall{{{tool: "shell", exitCode: new(int64(1))}}})
 	cache := NewTurnCache()
 	if got := requireFailedToolCalls(t, cache, path, 0); got != 1 {
 		t.Fatalf("failed tool calls = %d, want 1", got)
 	}
 
 	grown := writeToolCallTranscript(t, [][]toolCall{
-		{{tool: "shell", exitCode: shellExit(1)}},
-		{{tool: "shell", exitCode: shellExit(1)}},
+		{{tool: "shell", exitCode: new(int64(1))}},
+		{{tool: "shell", exitCode: new(int64(1))}},
 	})
 	data, err := os.ReadFile(grown)
 	if err != nil {
@@ -305,8 +303,8 @@ func TestFailedToolCallsRescansAfterTheTranscriptGrows(t *testing.T) {
 // key has to carry the ordinal or the second read returns the first's count.
 func TestFailedToolCallsMemoDistinguishesDivergenceOrdinals(t *testing.T) {
 	path := writeToolCallTranscript(t, [][]toolCall{
-		{{tool: "shell", exitCode: shellExit(1)}},
-		{{tool: "shell", exitCode: shellExit(1)}},
+		{{tool: "shell", exitCode: new(int64(1))}},
+		{{tool: "shell", exitCode: new(int64(1))}},
 	})
 	cache := NewTurnCache()
 

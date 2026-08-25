@@ -33,7 +33,7 @@ biggest change from the card's old text:
 
 ## Pre-state
 
-- A freshly built `evener-hub` on an isolated `$HOME` and a kernel-assigned port
+- A freshly built `evener hub` on an isolated `$HOME` and a kernel-assigned port
   — the Setup checklist in `docs/developing-evener/agentic-testing.md`. Never a real hub.
 - The frontend must be built (`make build-web`) *before* the hub for step 5+,
   or the SPA is a one-line placeholder (rebuild matrix item 3 in the runbook).
