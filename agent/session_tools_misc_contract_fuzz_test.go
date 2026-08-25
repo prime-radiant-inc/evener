@@ -320,7 +320,10 @@ func stmRunRoundContracts(t *testing.T, program []byte) {
 	s.mu.Lock()
 	s.state = SessionProcessing
 	s.mu.Unlock()
-	done, reply := s.deliverIfCommunicated(ctx, false)
+	done, reply, err := s.deliverIfCommunicated(ctx, false)
+	if err != nil {
+		t.Fatalf("deliver communicate: %v", err)
+	}
 	if !done || reply == "" || s.State() != SessionIdle {
 		t.Fatalf("communicate boundary = done=%v reply=%q state=%q", done, reply, s.State())
 	}

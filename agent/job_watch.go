@@ -195,6 +195,10 @@ type watchConfig struct {
 	// Counted jm-side under jm.mu; survives the observation/drain split with the
 	// cfg pointer; a replacement cfg from newWatchConfig starts fresh at 0.
 	deliveries int
+	// conditionFires counts actual condition matches, distinct from deliveries:
+	// progress ticks and teardown notices consume delivery budget but do not
+	// satisfy the condition the model asked this watch to observe.
+	conditionFires int
 	// createdAt is the install time of this live watch config, stamped from
 	// jm.now() in newWatchConfig and surfaced by job_list (spec §4 F2). A
 	// replacement config is a new watch, so it gets a fresh timestamp. Configs
@@ -2176,6 +2180,7 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 		if !dec.matched {
 			continue
 		}
+		cfg.conditionFires++
 		if dec.send {
 			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, dec.watchedIdentity, fmt.Sprintf("event: %s", kind), ev).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, ev.Provenance)))
 		} else {
@@ -2519,6 +2524,7 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 		}
 		matches := cfg.outputMatcher.FeedAtWithProvenance(chunk, endOffset, root.Provenance)
 		for _, match := range matches {
+			cfg.conditionFires++
 			matchRoot := root
 			matchRoot.Provenance = provenance.Clone(match.Provenance)
 			if cfg.send != nil {
@@ -2616,6 +2622,7 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 	if cfg.send != nil {
 		root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, jobID)}
 		jm.mu.Lock()
+		cfg.conditionFires++
 		delivery := jm.watchSendSnapshot(cfg, jobID, reason, root)
 		jm.mu.Unlock()
 		jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
@@ -2623,6 +2630,7 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 	}
 	var overBudget []*watchConfig
 	jm.mu.Lock()
+	cfg.conditionFires++
 	if jm.recordWatchDeliveryLocked(cfg) {
 		overBudget = append(overBudget, cfg)
 	}
@@ -4604,18 +4612,24 @@ func (jm *jobManager) kick() {
 	}
 }
 
-// hasLiveWatchOnTarget reports whether any ARMED watch targets jobID. The
-// undisposed-background-job announcement reads it directly rather than
-// inferring "watched" from watch frames in the notification queue: on a long
-// progress interval the queue is empty between frames, and inferring from it
-// would re-announce — and eventually kill — a job the model explicitly said it
-// was waiting on. A cleared watch (model-cleared, or the delivery-budget
-// auto-clear) leaves this map, so the job counts as undisposed again.
-func (jm *jobManager) hasLiveWatchOnTarget(jobID string) bool {
+// hasLiveUnfiredWatchOnTarget reports whether any ARMED watch that has not yet
+// matched its condition targets jobID. Progress ticks and teardown notices are
+// deliberately not condition fires: they say the watcher is alive, not that
+// the model's requested condition occurred. The undisposed-background-job
+// announcement reads this directly rather than inferring "watched" from watch
+// frames in the notification queue: on a long progress interval the queue is
+// empty between frames, and inferring from it would re-announce — and eventually
+// kill — a job the model explicitly said it was waiting on. A cleared watch
+// (model-cleared, or the delivery-budget auto-clear) leaves this map, so the job
+// counts as undisposed again. A budget-crossing watch is retained as a
+// temporary excuse while its asynchronous teardown persists the clear and
+// queues the final notification; otherwise the drain can announce in that
+// handoff window before it receives the notification that explains the clear.
+func (jm *jobManager) hasLiveUnfiredWatchOnTarget(jobID string) bool {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
-	for key := range jm.watches {
-		if key.Target == jobID {
+	for key, cfg := range jm.watches {
+		if key.Target == jobID && (cfg.conditionFires == 0 || cfg.deliveries >= watchDeliveryBudget) {
 			return true
 		}
 	}
