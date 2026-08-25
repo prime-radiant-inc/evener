@@ -1088,6 +1088,10 @@ func TestDelegateResourceRuntime_GenericStopUsesCanonicalFinish(t *testing.T) {
 	pluginDir := writeStableOnceBlockingStopPlugin(t, marker)
 	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
 		descriptor.Config.PluginDirs = []string{pluginDir}
+		// The Stop hook intentionally writes a marker outside private scratch.
+		// Declare that mutating fixture scope instead of weakening the read-only
+		// role floor for a hook side effect.
+		descriptor.ToolNameCeiling = append(descriptor.ToolNameCeiling, "write_file")
 	})
 	fixture.adapter.steps = []func(llm.Request) llm.Response{
 		func(llm.Request) llm.Response { return finalResponse("before generic Stop continuation") },

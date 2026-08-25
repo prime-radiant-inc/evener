@@ -3,6 +3,7 @@
 package execenv
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -627,11 +628,11 @@ func pfsAssertGrep(t *testing.T, env *LocalExecutionEnvironment, fixture pfsFixt
 		filter = "*.txt"
 	}
 	maxResults := int(b%4) + 1
-	out, err := env.Grep("PFS_", ".", filter, b&2 != 0, maxResults, outputMode)
+	out, err := env.Grep(context.Background(), "PFS_", ".", filter, b&2 != 0, maxResults, outputMode)
 	if err != nil {
 		t.Fatalf("grep(%q, %q): %v", outputMode, filter, err)
 	}
-	again, err := env.Grep("PFS_", ".", filter, b&2 != 0, maxResults, outputMode)
+	again, err := env.Grep(context.Background(), "PFS_", ".", filter, b&2 != 0, maxResults, outputMode)
 	if err != nil {
 		t.Fatalf("repeat grep(%q, %q): %v", outputMode, filter, err)
 	}
