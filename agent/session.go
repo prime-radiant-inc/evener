@@ -372,6 +372,13 @@ type Session struct {
 	// resurrect a run the model already declared over (issue #329). Guarded by
 	// mu.
 	terminalCommunicateAccepted bool
+	// terminalNotificationCut is captured at the same acceptance boundary. It
+	// identifies exactly which durable terminal generations and in-memory queue
+	// entries existed before the terminal communicate, so a completion that
+	// lands before DrainJobTree enters cannot be mistaken for a leftover.
+	// Guarded by mu; queue sequence assignment is guarded separately by
+	// pendingJobNotifsMu.
+	terminalNotificationCut terminalNotificationCut
 
 	// askPending is the per-turn pending set of questions posted by ask_user
 	// calls this turn (spec §5.1): its length lets a round-boundary check tell
@@ -445,6 +452,10 @@ type Session struct {
 	// mutex.
 	pendingJobNotifsMu sync.Mutex
 	pendingJobNotifs   []jobNotification
+	// nextJobNotifSeq gives every queue entry a process-lifetime identity. The
+	// terminal acceptance cut snapshots this watermark while jm.mu prevents a
+	// finalizer from crossing its durable-pending/running-map boundary.
+	nextJobNotifSeq uint64
 	// notifyWakeHolds counts in-flight holdJobNotificationWake holds, and
 	// notifyWakeDeferred records that a wake was suppressed while held. Guarded
 	// by pendingJobNotifsMu.
@@ -704,11 +715,13 @@ const (
 func (s *Session) enqueueJobNotification(n jobNotification) {
 	s.pendingJobNotifsMu.Lock()
 	defer s.pendingJobNotifsMu.Unlock()
+	s.assignJobNotificationSeqLocked(&n)
 	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
 }
 
 func (s *Session) enqueueJobNotificationAndNotify(n jobNotification) {
 	s.pendingJobNotifsMu.Lock()
+	s.assignJobNotificationSeqLocked(&n)
 	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
 	held := s.notifyWakeHolds > 0
 	if held {
@@ -768,9 +781,20 @@ func (s *Session) requeueJobNotifications(notifs []jobNotification) {
 		return
 	}
 	s.pendingJobNotifsMu.Lock()
+	for i := range notifs {
+		s.assignJobNotificationSeqLocked(&notifs[i])
+	}
 	s.pendingJobNotifs = append(notifs, s.pendingJobNotifs...)
 	s.scheduleJobNotificationRetryLocked()
 	s.pendingJobNotifsMu.Unlock()
+}
+
+func (s *Session) assignJobNotificationSeqLocked(n *jobNotification) {
+	if n == nil || n.queueSeq != 0 {
+		return
+	}
+	s.nextJobNotifSeq++
+	n.queueSeq = s.nextJobNotifSeq
 }
 
 func (s *Session) drainJobNotifications() []jobNotification {

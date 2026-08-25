@@ -745,8 +745,8 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 	// leftovers already pending at this point have no future model turn to be
 	// delivered to, so they are discarded up front (issue #329). Anything live
 	// work produces from here on is fresh and still drains as always.
-	if s.hasAcceptedTerminalCommunicate() {
-		if err := s.discardTerminalDrainLeftovers(); err != nil {
+	if cut, accepted := s.acceptedTerminalNotificationCut(); accepted {
+		if err := s.discardTerminalDrainLeftovers(cut); err != nil {
 			return "", err
 		}
 	}

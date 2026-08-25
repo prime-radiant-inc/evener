@@ -261,6 +261,16 @@ type SessionConfig struct {
 // deterministic. Never set by app callers; never persisted (json:"-" on the
 // parent field).
 type testConfig struct {
+	// beforeTerminalCommunicateAccept observes the exact production boundary
+	// after Stop hooks accept communicate and before its terminal notification
+	// cut is captured. Tests use it only to place deterministic finalize/cut
+	// ordering barriers. Nil in production.
+	beforeTerminalCommunicateAccept func()
+	// terminalCutAfterManagerLock observes captureTerminalNotificationCut after
+	// it owns jm.mu and before it reads durable/running/queue state. It permits a
+	// concurrent finalizer to prove which side of the cut owns the notification.
+	// Nil in production.
+	terminalCutAfterManagerLock func()
 	// sessionInitFault injects deterministic failures at external initialization
 	// boundaries. Nil preserves the production implementation.
 	sessionInitFault func(point string) error

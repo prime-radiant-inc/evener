@@ -9,6 +9,141 @@ import (
 	"primeradiant.com/evener/agent/internal/jobstore"
 )
 
+// terminalNotificationIdentity names one durable terminal-notification
+// generation. Job IDs alone are not sufficient: a stale pre-cut disposition
+// must never consume a later notification generation carrying the same ID.
+type terminalNotificationIdentity struct {
+	jobID       string
+	terminalGen string
+}
+
+// terminalNotificationCut is the exact acceptance-time boundary between
+// leftovers and future work. durable contains owned, non-running NotifyPending
+// generations observed under jm.mu. queueSeq is the last in-memory queue
+// sequence observed while the same jm.mu hold prevented finalization from
+// crossing its pending-record/running-map handoff.
+type terminalNotificationCut struct {
+	durable  map[terminalNotificationIdentity]struct{}
+	queueSeq uint64
+}
+
+func terminalIdentity(jobID, terminalGen string) terminalNotificationIdentity {
+	return terminalNotificationIdentity{jobID: jobID, terminalGen: terminalGen}
+}
+
+// captureTerminalNotificationCut takes and durably records the terminal
+// temporal cut. The durable load, running-map classification, consumed-event
+// batch, and queue watermark are one atomic ordering boundary with job
+// finalization: armFinalizedJob cannot delete a live run while jm.mu is held,
+// and it cannot enqueue the terminal owner notification until after that
+// delete. Thus a finalizer is wholly on one side of this cut:
+//
+//   - still running: excluded, and its later enqueue is fresh;
+//   - no longer running with NotifyPending durable: included by generation,
+//     even if its matching queue enqueue has not executed yet.
+func (s *Session) captureTerminalNotificationCut() (terminalNotificationCut, error) {
+	cut := terminalNotificationCut{durable: make(map[terminalNotificationIdentity]struct{})}
+	if s == nil || s.jobManager == nil {
+		return cut, nil
+	}
+	jm := s.jobManager
+	jm.mu.Lock()
+	if hook := s.cfg.testOnly.terminalCutAfterManagerLock; hook != nil {
+		hook()
+	}
+	recs, err := jm.store.Load()
+	if err != nil {
+		jm.mu.Unlock()
+		return terminalNotificationCut{}, err
+	}
+	for _, rec := range recs {
+		if !isOwnedDrainJob(rec, jm.sessionID) || rec.NotifyState != jobstore.NotifyPending || rec.TerminalGen == "" {
+			continue
+		}
+		if _, live := jm.running[rec.JobID]; live {
+			continue
+		}
+		cut.durable[terminalIdentity(rec.JobID, rec.TerminalGen)] = struct{}{}
+	}
+	s.pendingJobNotifsMu.Lock()
+	cut.queueSeq = s.nextJobNotifSeq
+	s.pendingJobNotifsMu.Unlock()
+
+	ids := make([]terminalNotificationIdentity, 0, len(cut.durable))
+	for id := range cut.durable {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool {
+		if ids[i].jobID == ids[j].jobID {
+			return ids[i].terminalGen < ids[j].terminalGen
+		}
+		return ids[i].jobID < ids[j].jobID
+	})
+	consumedEvents := make([]jobstore.Event, 0, len(ids))
+	for _, id := range ids {
+		consumedEvents = append(consumedEvents, jobstore.Event{
+			Kind:        jobstore.EventJobNotificationConsumed,
+			TS:          jm.now(),
+			JobID:       id.jobID,
+			TerminalGen: id.terminalGen,
+		})
+	}
+	if err := jm.appendJobEvents(consumedEvents); err != nil {
+		jm.mu.Unlock()
+		return terminalNotificationCut{}, err
+	}
+	jm.mu.Unlock()
+	// The owner disposition is already durable and therefore survives a crash
+	// before DrainJobTree. Forwarding the parent's drive-signal copy retains the
+	// existing consume semantics; a forwarding failure remains observable but
+	// cannot roll back the committed owner cut.
+	for _, consumed := range consumedEvents {
+		if err := jm.forwardSnapshot(consumed); err != nil {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("terminal notification cut forward failed: %v", err)})
+		}
+	}
+	return cut, nil
+}
+
+func (s *Session) acceptTerminalCommunicate() error {
+	s.mu.Lock()
+	alreadyAccepted := s.terminalCommunicateAccepted
+	s.mu.Unlock()
+	if alreadyAccepted {
+		return nil
+	}
+	cut, err := s.captureTerminalNotificationCut()
+	if err != nil {
+		return err
+	}
+	s.mu.Lock()
+	if !s.terminalCommunicateAccepted {
+		s.terminalNotificationCut = cut
+		s.terminalCommunicateAccepted = true
+	}
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *Session) acceptedTerminalNotificationCut() (terminalNotificationCut, bool) {
+	if s == nil {
+		return terminalNotificationCut{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if !s.terminalCommunicateAccepted {
+		return terminalNotificationCut{}, false
+	}
+	cut := terminalNotificationCut{
+		durable:  make(map[terminalNotificationIdentity]struct{}, len(s.terminalNotificationCut.durable)),
+		queueSeq: s.terminalNotificationCut.queueSeq,
+	}
+	for id := range s.terminalNotificationCut.durable {
+		cut.durable[id] = struct{}{}
+	}
+	return cut, true
+}
+
 // hasAcceptedTerminalCommunicate reports whether the model has explicitly
 // ended the turn that ends the process: a communicate with end_turn=true was
 // accepted while TurnEndsProcess. From that point on there is no future model
@@ -16,59 +151,37 @@ import (
 // from work that was still LIVE at that moment, which the drain keeps
 // settling exactly as before.
 func (s *Session) hasAcceptedTerminalCommunicate() bool {
-	if s == nil {
-		return false
-	}
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	return s.terminalCommunicateAccepted
+	_, accepted := s.acceptedTerminalNotificationCut()
+	return accepted
 }
 
 // discardTerminalDrainLeftovers disposes of this session's undelivered
-// notification leftovers once the model has ended the process-ending turn:
-// the in-memory queue is dropped, and every owned durable NotifyPending record
-// with no live run is settled as CONSUMED — the ledger state for "the owner no
-// longer needs a notification turn for this", which is exactly the terminal
-// disposition. Jobs still in the running map are skipped: they are live work,
-// their finalization owns their notification, and anything they produce after
-// this point is a fresh completion the drain still delivers (PRI-2441).
-//
-// The one-shot drain calls this once, at entry, so the cut is temporal: what
-// was already pending when the terminal communicate ended the run is
-// discarded; what live work produces afterwards is delivered as always.
-func (s *Session) discardTerminalDrainLeftovers() error {
+// notification leftovers captured when the model ended the process-ending
+// turn. It never takes a new snapshot: only queue sequences and exact durable
+// generations present in cut are eligible. A completion that lands between
+// acceptance and drain entry is therefore preserved for its provider turn.
+func (s *Session) discardTerminalDrainLeftovers(cut terminalNotificationCut) error {
 	if s == nil || s.jobManager == nil {
 		return nil
 	}
 	jm := s.jobManager
-	dropped := s.drainJobNotifications()
-	// Same lock discipline as rematerializeDurablePendings: the durable load
-	// and the running-map snapshot under ONE jm.mu hold, so a finalizing job is
-	// either still visibly running (skip: its finalization owns the
-	// notification) or its NotifyPending append is already visible.
+	dropped := s.discardTerminalQueueCut(cut)
 	jm.mu.Lock()
 	recs, err := jm.store.Load()
+	jm.mu.Unlock()
 	if err != nil {
-		jm.mu.Unlock()
 		return err
 	}
-	liveRunning := make(map[string]struct{}, len(jm.running))
-	for id := range jm.running {
-		liveRunning[id] = struct{}{}
-	}
-	jm.mu.Unlock()
 	var consumed []string
-	for _, rec := range recs {
-		if !isOwnedDrainJob(rec, jm.sessionID) {
+	for id := range cut.durable {
+		rec := recs[id.jobID]
+		if rec == nil || rec.TerminalGen != id.terminalGen || !isOwnedDrainJob(rec, jm.sessionID) {
 			continue
 		}
 		if rec.NotifyState != jobstore.NotifyPending || rec.TerminalGen == "" {
 			continue
 		}
-		if _, live := liveRunning[rec.JobID]; live {
-			continue
-		}
-		consumeTerminalJobNotification(s, jm, rec)
+		markTerminalJobNotificationConsumed(s, jm, rec, false)
 		consumed = append(consumed, rec.JobID)
 	}
 	sort.Strings(consumed)
@@ -82,6 +195,24 @@ func (s *Session) discardTerminalDrainLeftovers() error {
 			joinOrNone(droppedIDs), joinOrNone(consumed))})
 	}
 	return nil
+}
+
+func (s *Session) discardTerminalQueueCut(cut terminalNotificationCut) []jobNotification {
+	s.pendingJobNotifsMu.Lock()
+	defer s.pendingJobNotifsMu.Unlock()
+	dropped := make([]jobNotification, 0)
+	kept := s.pendingJobNotifs[:0]
+	for _, n := range s.pendingJobNotifs {
+		_, durableLeftover := cut.durable[terminalIdentity(n.JobID, n.TerminalGen)]
+		preCutSequence := n.queueSeq != 0 && n.queueSeq <= cut.queueSeq
+		if preCutSequence || (!n.isWatch() && durableLeftover) {
+			dropped = append(dropped, n)
+			continue
+		}
+		kept = append(kept, n)
+	}
+	s.pendingJobNotifs = kept
+	return dropped
 }
 
 // subtreeHasLiveTerminalDrainWork reports whether anything in this session's

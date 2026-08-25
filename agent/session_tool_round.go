@@ -469,13 +469,13 @@ func (s *Session) drainPostToolWatchSends(ctx context.Context) (watchSendDrainRe
 // returns done=false when nothing was delivered and no ask was posted, or a
 // Stop hook blocked a communicate-only completion, meaning the turn should
 // continue to the next round.
-func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool) (done bool, text string) {
+func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool) (done bool, text string, err error) {
 	s.mu.Lock()
 	delivered := s.comm.called
 	text = s.comm.reply
 	s.mu.Unlock()
 	if !delivered && !askedThisRound {
-		return false, ""
+		return false, "", nil
 	}
 	boundaryState := SessionIdle
 	if askedThisRound {
@@ -494,17 +494,21 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 		}
 		if stopResult.Blocked {
 			// Don't finish — keep looping.
-			return false, ""
+			return false, "", nil
 		}
 	}
 	if delivered && s.cfg.TurnEndsProcess {
-		// The model has explicitly ended the turn that ends the process. Latch
-		// it before the boundary transition so the one-shot drain — which runs
-		// as soon as ProcessInput returns — can never miss it (issue #329).
-		s.mu.Lock()
-		s.terminalCommunicateAccepted = true
-		s.mu.Unlock()
+		// The model has explicitly ended the turn that ends the process. Capture
+		// the exact notification cut before the boundary transition so the
+		// one-shot drain cannot mistake a completion landing before its own entry
+		// for a pre-terminal leftover (issue #329).
+		if hook := s.cfg.testOnly.beforeTerminalCommunicateAccept; hook != nil {
+			hook()
+		}
+		if err := s.acceptTerminalCommunicate(); err != nil {
+			return false, "", fmt.Errorf("capture terminal notification cut: %w", err)
+		}
 	}
 	s.finishProcessingAtBoundary(ctx, boundaryState)
-	return true, text
+	return true, text, nil
 }

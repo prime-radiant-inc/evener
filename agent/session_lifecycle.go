@@ -1451,7 +1451,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// §5.1) — either ends the turn; deliverIfCommunicated decides the
 		// boundary state and composes them.
 		askedThisRound := s.askPendingCount() > askBefore
-		if done, text := s.deliverIfCommunicated(ctx, askedThisRound); done {
+		done, text, deliverErr := s.deliverIfCommunicated(ctx, askedThisRound)
+		if deliverErr != nil {
+			return "", progressed, deliverErr
+		}
+		if done {
 			return text, progressed, nil
 		}
 		if yieldToObserverCallback || sessionLifecycleFault(ctx, "yield_observer") != nil {
