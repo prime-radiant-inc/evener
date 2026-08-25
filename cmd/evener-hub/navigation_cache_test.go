@@ -71,6 +71,65 @@ func TestNavigationCacheConcurrentMissBuildsOnce(t *testing.T) {
 	}
 }
 
+func TestNavigationCacheAtomicOwnerRegistration(t *testing.T) {
+	cache := newNavigationRepresentationCache(256, 64<<20)
+	key := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "ordered", Generation: "generation-a", Revision: 1}
+	var calls atomic.Int32
+	ownerHookEntered := make(chan struct{})
+	allowRegistration := make(chan struct{})
+	buildRelease := make(chan struct{})
+	var ownerHook atomic.Bool
+	var waiterHooks atomic.Int32
+	cache.beforeSingleflight = func(owner bool) {
+		if owner && ownerHook.CompareAndSwap(false, true) {
+			close(ownerHookEntered)
+			<-allowRegistration
+			return
+		}
+		if !owner {
+			if waiterHooks.Add(1) == 19 {
+				close(buildRelease)
+			}
+		}
+	}
+	build := func(context.Context) (navigationRepresentation, error) {
+		calls.Add(1)
+		<-buildRelease
+		return representationFixture("ordered", 1), nil
+	}
+
+	const callers = 20
+	results := make(chan error, callers)
+	go func() {
+		_, err := cache.Get(context.Background(), key, build)
+		results <- err
+	}()
+	<-ownerHookEntered
+	for range callers - 1 {
+		go func() {
+			_, err := cache.Get(context.Background(), key, build)
+			results <- err
+		}()
+	}
+	close(allowRegistration)
+	for range callers {
+		if err := <-results; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("build calls=%d, want 1", got)
+	}
+	if got := waiterHooks.Load(); got != callers-1 {
+		t.Fatalf("waiter registrations=%d, want %d", got, callers-1)
+	}
+	fixture := representationFixture("ordered", 1)
+	stats := cache.Stats()
+	if stats.Misses != 1 || stats.Coalesced != callers-1 || stats.Hits != 0 || stats.Entries != 1 || stats.Bytes != fixture.SizeEstimate {
+		t.Fatalf("stats=%+v, want one miss, %d waiters, no hits, one entry", stats, callers-1)
+	}
+}
+
 func TestNavigationCacheKeyCanonicalIdentity(t *testing.T) {
 	base := navigationResourceKey{Kind: navigationResourceLive, Offset: 3, Generation: "generation-a", Revision: 7}
 	if got, want := base.canonical().Limit, uint32(maxNavigationSectionRows); got != want {
@@ -165,9 +224,9 @@ func TestNavigationCacheLRUEntryAndByteBounds(t *testing.T) {
 			return representation, nil
 		}
 	}
-	keyA := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "a"}
-	keyB := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "b"}
-	keyC := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "c"}
+	keyA := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "a", Generation: "generation-a", Revision: 1}
+	keyB := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "b", Generation: "generation-a", Revision: 1}
+	keyC := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "c", Generation: "generation-a", Revision: 1}
 	if _, err := cache.Get(context.Background(), keyA, build("a", 40)); err != nil {
 		t.Fatal(err)
 	}
@@ -195,8 +254,8 @@ func TestNavigationCacheLRUEntryAndByteBounds(t *testing.T) {
 		key  navigationResourceKey
 		name string
 	}{
-		{navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "x"}, "x"},
-		{navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "y"}, "y"},
+		{navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "x", Generation: "generation-a", Revision: 1}, "x"},
+		{navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "y", Generation: "generation-a", Revision: 1}, "y"},
 	} {
 		if _, err := byteCache.Get(context.Background(), item.key, build(item.name, 40)); err != nil {
 			t.Fatal(err)
@@ -209,7 +268,7 @@ func TestNavigationCacheLRUEntryAndByteBounds(t *testing.T) {
 
 func TestNavigationCacheBuildFailureAndCancellation(t *testing.T) {
 	cache := newNavigationRepresentationCache(256, 64<<20)
-	key := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "failure"}
+	key := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "failure", Generation: "generation-a", Revision: 1}
 	var calls atomic.Int32
 	build := func(context.Context) (navigationRepresentation, error) {
 		if calls.Add(1) == 1 {
@@ -227,7 +286,7 @@ func TestNavigationCacheBuildFailureAndCancellation(t *testing.T) {
 		t.Fatalf("failure/retry state calls=%d stats=%+v", calls.Load(), cache.Stats())
 	}
 
-	ownerKey := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "cancel"}
+	ownerKey := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "cancel", Generation: "generation-a", Revision: 1}
 	ownerRelease := make(chan struct{})
 	ownerStarted := make(chan struct{})
 	owner := func(context.Context) (navigationRepresentation, error) {
@@ -249,6 +308,73 @@ func TestNavigationCacheBuildFailureAndCancellation(t *testing.T) {
 	close(ownerRelease)
 	if err := <-ownerDone; err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestNavigationCacheRejectsVersionMismatchesAndRetries(t *testing.T) {
+	cache := newNavigationRepresentationCache(256, 64<<20)
+	key := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "versioned", Generation: "generation-a", Revision: 7}
+	var calls atomic.Int32
+	build := func(context.Context) (navigationRepresentation, error) {
+		if calls.Add(1) == 1 {
+			wrong := representationFixture("wrong-generation", 7)
+			wrong.Generation = "generation-b"
+			return wrong, nil
+		}
+		return representationFixture("correct", 7), nil
+	}
+	if _, err := cache.Get(context.Background(), key, build); err == nil {
+		t.Fatal("generation mismatch returned nil error")
+	}
+	if _, err := cache.Get(context.Background(), key, build); err != nil {
+		t.Fatal(err)
+	}
+	if got := cache.Stats(); got.Entries != 1 || got.Misses != 2 {
+		t.Fatalf("generation retry stats=%+v", got)
+	}
+
+	revisionKey := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "revisioned", Generation: "generation-a", Revision: 8}
+	if _, err := cache.Get(context.Background(), revisionKey, func(context.Context) (navigationRepresentation, error) {
+		return representationFixture("wrong-revision", 9), nil
+	}); err == nil {
+		t.Fatal("revision mismatch returned nil error")
+	}
+	if _, err := cache.Get(context.Background(), revisionKey, func(context.Context) (navigationRepresentation, error) {
+		return representationFixture("correct-revision", 8), nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if got := cache.Stats(); got.Entries != 2 {
+		t.Fatalf("mismatched revision was published: stats=%+v", got)
+	}
+}
+
+func TestNavigationCacheRejectsUnsafeGenerations(t *testing.T) {
+	unsafe := []string{"generation with space", "generation\"quote", "generation\\slash", "generation\r\nheader"}
+	for _, generation := range unsafe {
+		cache := newNavigationRepresentationCache(256, 64<<20)
+		calls := atomic.Int32{}
+		key := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "unsafe", Generation: generation, Revision: 1}
+		if _, err := cache.Get(context.Background(), key, func(context.Context) (navigationRepresentation, error) {
+			calls.Add(1)
+			return representationFixture("unsafe", 1), nil
+		}); err == nil {
+			t.Fatalf("generation %q was accepted", generation)
+		}
+		if calls.Load() != 0 || cache.Stats().Misses != 0 {
+			t.Fatalf("unsafe key generation reached builder: generation=%q stats=%+v", generation, cache.Stats())
+		}
+	}
+
+	cache := newNavigationRepresentationCache(256, 64<<20)
+	key := navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "unsafe-result", Generation: "generation-a", Revision: 1}
+	if _, err := cache.Get(context.Background(), key, func(context.Context) (navigationRepresentation, error) {
+		return navigationRepresentation{Generation: "generation\r\n", Revision: 1, SizeEstimate: 1}, nil
+	}); err == nil {
+		t.Fatal("unsafe result generation was accepted")
+	}
+	if got := cache.Stats(); got.Entries != 0 {
+		t.Fatalf("unsafe result generation was published: stats=%+v", got)
 	}
 }
 

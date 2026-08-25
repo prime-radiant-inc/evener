@@ -57,6 +57,10 @@ type navigationRepresentationCache struct {
 
 	flights map[string]*navigationCacheFlight
 	group   singleflight.Group
+
+	// beforeSingleflight is a deterministic test seam. It runs while mu is
+	// held, immediately before the corresponding DoChan registration.
+	beforeSingleflight func(owner bool)
 }
 
 func newNavigationRepresentationCache(maxEntries int, maxBytes int64) *navigationRepresentationCache {
@@ -92,8 +96,12 @@ func (c *navigationRepresentationCache) Get(
 	}
 
 	key = key.canonical()
+	if !validNavigationETagGeneration(key.Generation) {
+		return navigationRepresentation{}, errors.New("navigation cache: invalid generation")
+	}
 	flightKey := key.String()
 
+	var result <-chan singleflight.Result
 	c.mu.Lock()
 	if element, ok := c.entries[key]; ok {
 		c.order.MoveToFront(element)
@@ -102,18 +110,30 @@ func (c *navigationRepresentationCache) Get(
 		c.mu.Unlock()
 		return representation, nil
 	}
+	owner := false
 	if _, ok := c.flights[flightKey]; ok {
 		c.coalesced++
 	} else {
 		c.flights[flightKey] = &navigationCacheFlight{}
 		c.misses++
+		owner = true
 	}
-	c.mu.Unlock()
-
-	result := c.group.DoChan(flightKey, func() (any, error) {
+	if c.beforeSingleflight != nil {
+		c.beforeSingleflight(owner)
+	}
+	// Register while mu is held. The builder may block trying to publish until
+	// this lock is released, but no caller can become a logical waiter without
+	// also being registered with the same singleflight call.
+	result = c.group.DoChan(flightKey, func() (any, error) {
 		representation, err := build(ctx)
 		if err == nil {
-			if representation.SizeEstimate < 0 {
+			if !validNavigationETagGeneration(representation.Generation) {
+				err = errors.New("navigation cache: invalid result generation")
+			} else if representation.Generation != key.Generation {
+				err = errors.New("navigation cache: result generation mismatch")
+			} else if representation.Revision != key.Revision {
+				err = errors.New("navigation cache: result revision mismatch")
+			} else if representation.SizeEstimate < 0 {
 				err = errors.New("navigation cache: negative size estimate")
 			} else {
 				// The ETag is owned by the cache boundary, ensuring every
@@ -128,6 +148,7 @@ func (c *navigationRepresentationCache) Get(
 		}
 		return representation, nil
 	})
+	c.mu.Unlock()
 
 	select {
 	case <-ctx.Done():
@@ -147,6 +168,12 @@ func (c *navigationRepresentationCache) publish(key navigationResourceKey, repre
 
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	if existing, ok := c.entries[key]; ok {
+		old := existing.Value.(navigationCacheEntry)
+		c.bytes -= old.representation.SizeEstimate
+		c.order.Remove(existing)
+		delete(c.entries, key)
+	}
 
 	// A representation is only inserted when its size can fit after removing
 	// older entries. This subtraction form is overflow-safe even at MaxInt64.
@@ -239,6 +266,19 @@ func canonicalNavigationLimit(limit, maximum uint32) uint32 {
 		return maximum
 	}
 	return limit
+}
+
+func validNavigationETagGeneration(generation string) bool {
+	if generation == "" {
+		return false
+	}
+	for _, character := range []byte(generation) {
+		if character >= 'a' && character <= 'z' || character >= 'A' && character <= 'Z' || character >= '0' && character <= '9' || character == '-' || character == '_' {
+			continue
+		}
+		return false
+	}
+	return true
 }
 
 // String is a collision-safe canonical encoding. JSON supplies explicit field
