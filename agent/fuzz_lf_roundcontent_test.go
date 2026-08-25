@@ -77,19 +77,21 @@ func FuzzLfClassifyRoundContent(f *testing.F) {
 }
 
 func FuzzLfRouteNoToolCalls(f *testing.F) {
-	f.Add(uint8(0), false) // EntryUserInput, empty => runNoToolCalls
-	f.Add(uint8(3), true)  // EntryDelegateAttention, non-empty => runNoToolCalls
-	f.Add(uint8(2), true)  // EntryNotification, non-empty => finishIdle
-	f.Add(uint8(2), false) // EntryNotification, empty => runNoToolCalls
-	f.Add(uint8(1), true)  // EntryContinuation, non-empty => runNoToolCalls
+	f.Add(uint8(0), false, false) // EntryUserInput, empty => runNoToolCalls
+	f.Add(uint8(3), true, false)  // EntryDelegateAttention, non-empty => runNoToolCalls
+	f.Add(uint8(2), true, false)  // EntryNotification, non-empty => finishIdle
+	f.Add(uint8(2), false, false) // EntryNotification, empty => runNoToolCalls
+	f.Add(uint8(2), false, true)  // EntryNotification, empty, post-terminal => finishIdle (issue #329)
+	f.Add(uint8(0), false, true)  // EntryUserInput, empty, post-terminal => runNoToolCalls
+	f.Add(uint8(1), true, false)  // EntryContinuation, non-empty => runNoToolCalls
 
-	f.Fuzz(func(t *testing.T, kindSel uint8, noContent bool) {
+	f.Fuzz(func(t *testing.T, kindSel uint8, noContent bool, afterTerminal bool) {
 		kind := lf_entryKinds[int(kindSel)%len(lf_entryKinds)]
 
-		route := routeNoToolCalls(kind, noContent)
+		route := routeNoToolCalls(kind, noContent, afterTerminal)
 
 		// Determinism.
-		if route2 := routeNoToolCalls(kind, noContent); route != route2 {
+		if route2 := routeNoToolCalls(kind, noContent, afterTerminal); route != route2 {
 			t.Fatalf("nondeterministic route: %v vs %v", route, route2)
 		}
 		// Total function: exactly one of the two valid routes.
@@ -98,14 +100,17 @@ func FuzzLfRouteNoToolCalls(f *testing.F) {
 		default:
 			t.Fatalf("invalid route %v", route)
 		}
-		// finishIdle is chosen ONLY for a non-empty notification turn; every other
-		// combination routes through the retry budget.
-		wantFinish := kind == EntryNotification && !noContent
+		// finishIdle is chosen ONLY for a notification turn that is non-empty —
+		// or, after a terminal communicate, empty too (issue #329: silence
+		// means "nothing to add to a finished run"). Every other combination
+		// routes through the retry budget.
+		wantFinish := kind == EntryNotification && (!noContent || afterTerminal)
 		if (route == finishIdle) != wantFinish {
-			t.Fatalf("route=%v wantFinish=%v (kind=%v noContent=%v)", route, wantFinish, kind, noContent)
+			t.Fatalf("route=%v wantFinish=%v (kind=%v noContent=%v afterTerminal=%v)", route, wantFinish, kind, noContent, afterTerminal)
 		}
-		// An empty round never finishes idle (it must reach the empty-retry path).
-		if noContent && route != runNoToolCalls {
+		// Outside a finished run, an empty round never finishes idle (it must
+		// reach the empty-retry path).
+		if noContent && !afterTerminal && route != runNoToolCalls {
 			t.Fatalf("empty round routed to %v, want runNoToolCalls", route)
 		}
 	})

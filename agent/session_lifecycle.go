@@ -508,12 +508,16 @@ const (
 	runNoToolCalls
 )
 
-// routeNoToolCalls decides the no-tool-calls route for a round from the input kind
-// and whether the round had no content. It is pure and total over EntryKind: only
-// a non-empty notification turn finishes idle; everything else (including any
-// empty round) routes through the retry budget.
-func routeNoToolCalls(kind EntryKind, noContent bool) noCallsRoute {
-	if kind == EntryNotification && !noContent {
+// routeNoToolCalls decides the no-tool-calls route for a round from the input
+// kind, whether the round had no content, and whether a terminal communicate
+// (end_turn under TurnEndsProcess) has already been accepted. It is pure and
+// total over EntryKind: a non-empty notification turn finishes idle, and once
+// the model has explicitly ended the process-ending turn an EMPTY notification
+// turn does too — the retry budget's "please continue" steering must not
+// resurrect a run the model already declared over (issue #329,
+// sanitize-git-repo). Everything else routes through the retry budget.
+func routeNoToolCalls(kind EntryKind, noContent bool, afterTerminalCommunicate bool) noCallsRoute {
+	if kind == EntryNotification && (!noContent || afterTerminalCommunicate) {
 		return finishIdle
 	}
 	return runNoToolCalls
@@ -522,7 +526,7 @@ func routeNoToolCalls(kind EntryKind, noContent bool) noCallsRoute {
 // drainInputs is the snapshot the drain loop feeds selectDrainNextAction after a
 // completed (non-error) turn: the kind of the turn that just ran, whether a goal
 // continuation is already deferred, the popped follow-up text and queued message
-// (its text plus image count), whether any job notifications are pending, and
+// (its text plus image count), whether any notification work is pending, and
 // whether the turn just rested SessionAwaiting (spec §5.3's drain-ladder gate).
 type drainInputs struct {
 	RanKind              EntryKind
@@ -546,7 +550,7 @@ const (
 	// notification pending, the resulting turn is the deferred continuation (if the
 	// fold arms one) or idle.
 	armGoalGate
-	// runNotification runs a pending job-notification turn next.
+	// runNotification runs a pending notification turn next.
 	runNotification
 	// runDeferredContInline runs an already-deferred goal continuation inline.
 	runDeferredContInline
@@ -845,7 +849,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// goal-gate fold are side effects kept here; selectDrainNextAction is the pure
 		// priority decision over their results. popQueueHead is reached only when no
 		// follow-up is pending (it consumes a queued message), matching the original
-		// short-circuit; peekNotifications is likewise consulted only at its ladder
+		// short-circuit; notification work is likewise consulted only at its ladder
 		// rung and only for a non-notification, non-awaiting turn.
 		//
 		// awaiting reflects the boundary state the turn that just ran left behind
@@ -892,7 +896,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			strings.TrimSpace(queued.Text) == "" && len(queued.Images) == 0
 		notificationsPending := false
 		if noFollowUpOrQueued && !awaiting && ranKind != EntryNotification {
-			notificationsPending = s.peekNotifications() > 0
+			notificationsPending = s.peekNotifications() > 0 || s.hasPendingRootDelegateAttention()
 		}
 		action, skipGoalGate := selectDrainNextAction(drainInputs{
 			RanKind:              ranKind,
@@ -950,13 +954,13 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 				haveDeferredCont = true
 			}
 		}
-		// Notification interleave (priority 3): a pending job notification runs
+		// Notification interleave (priority 3): pending notification work runs
 		// AFTER the fold above but BEFORE the deferred continuation, so it is
 		// transparent to goal accounting (the just-finished continuation already
-		// folded). The queue is consumed inside acceptNotificationInput when the
-		// EntryNotification turn runs (an empty queue there is a no-op, but the peek
-		// guards against it). After a notification turn this rung is skipped (selector
-		// gate) because job notifications may have been requeued.
+		// folded). Job notifications and root delegate attention are consumed inside
+		// acceptNotificationInput when the EntryNotification turn runs. After a
+		// notification turn this rung is skipped (selector gate) because notification
+		// work may have been requeued.
 		if action == runNotification {
 			next = ""
 			nextImages = nil
@@ -1121,12 +1125,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// serve loop republishes that from WireState.
 			s.finishNotificationNoop()
 			// Ask for another wake. Nothing else will: the EntryNotification
-			// that got us here is consumed, the drain loop's tail gate counts
-			// job notifications alone (peekNotifications reads pendingJobNotifs
-			// and nothing else), and for delegate attention the wake flag we
-			// deliberately did NOT consume is itself what suppresses a new one
-			// -- armRootDelegateAttention notifies only when the flag is clear,
-			// and the retry scheduler returns early while it is set.
+			// that got us here is consumed, and the drain loop deliberately does
+			// not run another notification immediately after an EntryNotification
+			// turn. For delegate attention, the wake flag we deliberately did NOT
+			// consume is itself what suppresses a new one --
+			// armRootDelegateAttention notifies only when the flag is clear, and
+			// the retry scheduler returns early while it is set.
 			//
 			// The wake is guaranteed rather than best-effort, but it is PACED
 			// rather than immediate (kata ajg5). An immediate notify() pushes
@@ -1363,8 +1367,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// toward a no-op communicate — the text is already in the transcript, and a
 			// system-initiated turn carries no user awaiting a reply. A truly empty
 			// (no-content) response is a model glitch and still routes through the
-			// empty-retry path below.
-			if routeNoToolCalls(kind, noContent) == finishIdle {
+			// empty-retry path below — EXCEPT after a terminal communicate, where
+			// silence means "nothing to add to a finished run" and retrying would
+			// resurrect it (issue #329).
+			if routeNoToolCalls(kind, noContent, s.hasAcceptedTerminalCommunicate()) == finishIdle {
 				s.finishProcessingAtBoundary(ctx, SessionIdle)
 				return "", progressed, nil
 			}
@@ -1445,7 +1451,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// §5.1) — either ends the turn; deliverIfCommunicated decides the
 		// boundary state and composes them.
 		askedThisRound := s.askPendingCount() > askBefore
-		if done, text := s.deliverIfCommunicated(ctx, askedThisRound); done {
+		done, text, deliverErr := s.deliverIfCommunicated(ctx, askedThisRound)
+		if deliverErr != nil {
+			return "", progressed, deliverErr
+		}
+		if done {
 			return text, progressed, nil
 		}
 		if yieldToObserverCallback || sessionLifecycleFault(ctx, "yield_observer") != nil {

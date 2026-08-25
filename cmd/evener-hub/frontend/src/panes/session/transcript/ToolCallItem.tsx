@@ -4,7 +4,7 @@
 // (toolRenderers.ts) by ItemModel.toolName, which pairs a raw-output default
 // descriptor (toolRenderers.ts's DEFAULT_DESCRIPTOR) with the real per-tool
 // descriptors registered under tools/.
-import { memo, useLayoutEffect, useState } from "react";
+import { memo, useId, useLayoutEffect, useState } from "react";
 import type { ItemModel } from "../../../protocol/model";
 import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
 import type { EvenerDelegateInfo } from "../../../protocol/types.gen";
@@ -251,6 +251,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
     supersededBySuccess(item, sessionRef !== undefined ? s.threads.get(sessionRef) : undefined),
   );
   const disclosureKey = itemScopeKey(sessionRef, item.id);
+  const bodyId = useId();
   const expanded = isDisclosureOpen(disclosureKey, autoDefault && !superseded);
 
   // A descriptor may suppress its whole row (task_list `action:"view"` and
@@ -261,8 +262,8 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   if (descriptor.suppress?.(item)) return null;
 
   // A failed row is never a bare summary line even with no body/images: the
-  // reader must be able to open it and read the error, so it is always a
-  // <details>.
+  // reader must be able to open it and read the error, so it is always an
+  // expandable disclosure.
   if (!Body && !hasOutputImages && !failed) {
     return (
       <div className={CLASS.call} data-testid="tool-call-item" data-tool-name={item.toolName ?? ""}>
@@ -285,7 +286,15 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   }
 
   return (
-    <details
+    // A <div>, not a native <details>: ToolRow's expandable branch is a real
+    // button with aria-expanded, and the body below is a sibling div rendered
+    // conditionally on `expanded`. The native <details>/<summary> pair was
+    // replaced to stop Chrome's a11y console flagging the interactive elements
+    // (linkified summary, "Open beside" / "Open transcript" buttons) that
+    // previously rode inline inside the disclosure trigger. Open/closed state
+    // is fully controlled from disclosureStore, so a plain div wrapper is all
+    // the structure that remains.
+    <div
       className={CLASS.call}
       data-testid="tool-call-item"
       data-tool-name={item.toolName ?? ""}
@@ -295,7 +304,6 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
       // recedes (success is glyph-less).
       data-failed={failed ? "true" : undefined}
       data-attention={failed ? "error" : undefined}
-      open={expanded}
     >
       <ToolRow
         // A descriptor whose summary duplicates what its expanded body shows
@@ -318,13 +326,14 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
         trailing={trailingControls}
         trailingAfter={trailingAfter}
         title={detail}
+        bodyId={bodyId}
       />
       {/* The expanded content is one wrapper, so the open transition (A6) and
           the row-to-body spacing live in one rule rather than per-descriptor.
           Rendered only when open: an unmounted body can animate in on the next
           open, and a collapsed row costs nothing to render. */}
       {expanded && (
-        <div className={CLASS.body} data-testid="tool-call-body">
+        <div id={bodyId} className={CLASS.body} data-testid="tool-call-body">
           {/* descriptor.detail() (currently only shell's exit code) rides the
               collapsed row's hover title ONLY (see `title={detail}` above) - it
               is not echoed here as a second copy. A title alone is mouse-only,
@@ -340,7 +349,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
           <ImageGallery images={item.outputImages} size={descriptor.outputImageSize} />
         </div>
       )}
-    </details>
+    </div>
   );
 }, ignoringTurn);
 

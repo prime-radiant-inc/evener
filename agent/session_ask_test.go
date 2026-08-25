@@ -810,6 +810,97 @@ func TestAskUser_EntryGateRefusesNotificationWake(t *testing.T) {
 	}
 }
 
+func TestAskUser_ReplyDrainsRootDelegateAttentionRefusedAtEntryGate(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	ask := askUserCall("ask1", askUserArgsValid())
+	f := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(ask) },
+			func(req llm.Request) llm.Response { return finalResponse("thanks, going with Postgres") },
+			func(req llm.Request) llm.Response { return finalResponse("delegate completion ack") },
+		},
+	}
+	sess := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1, NoProjectPrompts: true}),
+		withAdapter(f),
+	)
+	wakes := make(chan struct{}, 2)
+	sess.SetNotifyFunc(func() { wakes <- struct{}{} })
+
+	// TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, "which db should we use?", nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+
+	const (
+		firstAttentionID = "delegate:dlg_during_ask/delivery/1"
+		firstContent     = `<delegate-notification delegate_id="dlg_during_ask">review complete</delegate-notification>`
+	)
+	if appended, err := sess.appendDelegateNotificationDurably(firstAttentionID, firstContent); err != nil || !appended {
+		t.Fatalf("append root attention = appended:%t err:%v", appended, err)
+	}
+	if err := sess.armDelegateAttention(firstAttentionID); err != nil {
+		t.Fatalf("arm root attention: %v", err)
+	}
+	select {
+	case <-wakes:
+	default:
+		t.Fatal("root attention emitted no initial wake")
+	}
+
+	if _, err := sess.ProcessInputKind(ctx, "", nil, EntryNotification); err != nil {
+		t.Fatalf("ProcessInputKind(EntryNotification) while awaiting: %v", err)
+	}
+	if got := len(f.Requests()); got != 1 {
+		t.Fatalf("requests after refused wake = %d, want 1", got)
+	}
+	if !sess.hasPendingRootDelegateAttention() {
+		t.Fatal("refused wake discarded pending root delegate attention")
+	}
+
+	if _, err := sess.ProcessInput(ctx, "let's go with Postgres", nil); err != nil {
+		t.Fatalf("reply ProcessInput: %v", err)
+	}
+	requests := f.Requests()
+	if got := len(requests); got != 3 {
+		t.Fatalf("requests after reply = %d, want 3 (reply turn + root attention turn)", got)
+	}
+	if !requestContainsText(requests[2], firstContent) {
+		t.Error("root attention turn did not deliver the delegate notification to the model")
+	}
+	fold, err := readDelegateAttentionFold(transcriptPath(stateDir, sess.ID()), sess.ID())
+	if err != nil {
+		t.Fatalf("read root attention fold: %v", err)
+	}
+	if got := fold.resolutions[firstAttentionID]; got != delegateAttentionConsumed {
+		t.Errorf("root attention disposition = %q, want %q", got, delegateAttentionConsumed)
+	}
+	if sess.hasPendingRootDelegateAttention() {
+		t.Error("root delegate attention remains pending after the reply drain")
+	}
+
+	const (
+		secondAttentionID = "delegate:dlg_after_reply/delivery/1"
+		secondContent     = `<delegate-notification delegate_id="dlg_after_reply">second review complete</delegate-notification>`
+	)
+	if appended, err := sess.appendDelegateNotificationDurably(secondAttentionID, secondContent); err != nil || !appended {
+		t.Fatalf("append later root attention = appended:%t err:%v", appended, err)
+	}
+	if err := sess.armDelegateAttention(secondAttentionID); err != nil {
+		t.Fatalf("arm later root attention: %v", err)
+	}
+	select {
+	case <-wakes:
+	default:
+		t.Error("later root attention emitted no fresh wake")
+	}
+}
+
 // TestAskUser_EntryGateRefusesContinuationWake covers spec §5.3's entry gate for
 // EntryContinuation: refused before any state transition, state unchanged
 // throughout, no model request made. (The goal engine's own arm-vs-kick

@@ -87,6 +87,8 @@ type stableDelegateCreateResult struct {
 	ChildSessionID string                      `json:"child_session_id"`
 	Type           string                      `json:"type"`
 	Status         string                      `json:"status"`
+	AgentType      string                      `json:"agent_type,omitempty"`
+	Tools          []string                    `json:"tools,omitempty"`
 	Reason         string                      `json:"reason,omitempty"`
 	Resumable      *bool                       `json:"resumable,omitempty"`
 	TranscriptRef  string                      `json:"transcript_ref"`
@@ -100,7 +102,7 @@ type stableDelegateCreateResult struct {
 func registerStableDelegateTool(reg *tool.Registry, s *Session) error {
 	reg.Remove("delegate")
 	if err := reg.Register(tool.RegisteredTool{
-		Definition: tool.DefDelegate(s.delegateAgentTypeNames()),
+		Definition: s.delegateToolDefinition(),
 		Limit:      schema.ToolOutputLimit{MaxChars: jobToolResultDefaultMaxChar, Strategy: schema.TruncTail},
 		Exec: func(ctx context.Context, env execenv.ExecutionEnvironment, args map[string]any) (any, error) {
 			_ = env
@@ -135,6 +137,9 @@ func stableDelegateSendTool(ctx context.Context, s *Session, args map[string]any
 		wait = int(clampJobBlockTimeout(wait).Milliseconds())
 	}
 	if target == runtimeMessageAliasCaller {
+		if wait > 0 {
+			return nil, errors.New("invalid_request: max_wait_ms is not supported for the caller route; no message was delivered")
+		}
 		if s == nil || s.delegateController == nil {
 			return nil, errors.New("delegate controller is unavailable")
 		}
@@ -186,6 +191,8 @@ func stableDelegateCreateTool(ctx context.Context, s *Session, args map[string]a
 		ChildSessionID: result.ChildSessionID,
 		Type:           result.Type,
 		Status:         string(result.Status),
+		AgentType:      result.AgentType,
+		Tools:          append([]string(nil), result.Tools...),
 		Reason:         result.Reason,
 		Resumable:      result.Resumable,
 		TranscriptRef:  result.TranscriptRef,
@@ -369,14 +376,7 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 
 	// Use the caller's stated purpose as the vision prompt. The calling LLM
 	// knows what it needs — we just ask the vision model to answer that question.
-	purpose := strings.TrimSpace(r.ImagePurpose)
-	if purpose == "" {
-		purpose = "Describe what you see in this image in thorough detail."
-	}
-
-	var prompt strings.Builder
-	prompt.WriteString(purpose)
-	prompt.WriteString("\n\nBe thorough — the reader cannot see the image and will rely entirely on your description.")
+	prompt := visionPromptForPurpose(r.ImagePurpose)
 
 	mt := r.ImageMediaType
 	if mt == "" {
@@ -418,7 +418,7 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 			{
 				Role: llm.RoleUser,
 				Content: []llm.ContentPart{
-					{Kind: llm.ContentText, Text: prompt.String()},
+					{Kind: llm.ContentText, Text: prompt},
 					mediaPart,
 				},
 			},
@@ -455,6 +455,51 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 		elapsed:     elapsed,
 		usage:       resp.Usage,
 	}
+}
+
+// visionPromptForPurpose preserves the ordinary description prompt while
+// strengthening requests that explicitly ask for rendered text to be copied.
+// The extra wording is a best-effort model instruction, not an OCR guarantee;
+// the read_file tool contract carries that limitation to the calling agent.
+func visionPromptForPurpose(purpose string) string {
+	purpose = strings.TrimSpace(purpose)
+	if purpose == "" {
+		purpose = "Describe what you see in this image in thorough detail."
+	}
+	if requestsLiteralTranscription(purpose) {
+		return purpose + "\n\nFor this exact-transcription request, preserve every visible character exactly as rendered, including case, punctuation, spacing, repeated characters, and symbols. Do not correct, normalize, interpret, or replace uncertain characters with plausible words. If a glyph is unclear, mark it as uncertain instead of guessing.\n\n" + tool.FormatVisionExactnessContract(tool.VisionRequestedModeExactTranscription)
+	}
+	return purpose + "\n\nBe thorough — the reader cannot see the image and will rely entirely on your description."
+}
+
+func visionRequestedModeForPurpose(purpose string) string {
+	if requestsLiteralTranscription(purpose) {
+		return tool.VisionRequestedModeExactTranscription
+	}
+	return tool.VisionRequestedModeDescription
+}
+
+func requestsLiteralTranscription(purpose string) bool {
+	lower := strings.ToLower(purpose)
+	for _, marker := range []string{
+		"transcrib",
+		"verbatim",
+		"character-for-character",
+		"glyph-by-glyph",
+	} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	if !strings.Contains(lower, "exact") {
+		return false
+	}
+	for _, subject := range []string{"text", "string", "character", "glyph", "symbol", "letter", "code"} {
+		if strings.Contains(lower, subject) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Session) canonicalToolName(name string) string {
@@ -1110,6 +1155,10 @@ func (s *Session) defaultToolSummaryForAgent(agent plugin.Agent) string {
 	if allowance <= 0 {
 		canonical = removeRootOnlySubagentTools(canonical)
 	}
+	// ask_user is never callable by a subagent, including an all-tools role;
+	// keep the advertised capability set aligned with the unconditional grant
+	// guard rather than the parent's interactive-root registry.
+	canonical = removeStrings(canonical, protectedGrantTools())
 	return formatToolNamesForPrompt(s.providerVisibleToolNames(canonical))
 }
 
@@ -1136,6 +1185,33 @@ func (s *Session) availableAgentEntries() []agentEntry {
 		})
 	}
 	return entries
+}
+
+func (s *Session) delegateCapabilityRoster() string {
+	entries := s.availableAgentEntries()
+	if len(entries) == 0 {
+		return ""
+	}
+	capabilities := make([]string, 0, len(entries))
+	for _, entry := range entries {
+		capabilities = append(capabilities, fmt.Sprintf("%s: %s", entry.Name, entry.DefaultTools))
+	}
+	return strings.Join(capabilities, "; ")
+}
+
+func (s *Session) delegateToolDefinition() llm.ToolDefinition {
+	definition := tool.DefDelegate(s.delegateAgentTypeNames())
+	roster := s.delegateCapabilityRoster()
+	if roster == "" {
+		return definition
+	}
+	definition.Description += " Role capabilities are listed in the agent_type schema and available-agents prompt."
+	if properties, ok := definition.Parameters["properties"].(map[string]any); ok {
+		if agentType, ok := properties["agent_type"].(map[string]any); ok {
+			agentType["description"] = "Role for the delegate. Choose from the enum; effective capabilities by role: " + roster + "."
+		}
+	}
+	return definition
 }
 
 func (s *Session) delegateAgentTypeNames() []string {
@@ -1202,7 +1278,7 @@ func (s *Session) rebuildToolDefsCache() {
 	for _, td := range s.profile.ToolDefinitions() {
 		if registered[td.Name] {
 			if td.Name == "delegate" {
-				td = tool.DefDelegate(s.delegateAgentTypeNames())
+				td = s.delegateToolDefinition()
 				// When this session can only grant allowance 0 (own allowance 1),
 				// delegation_allowance has a single legal value — a no-op knob. Hide it
 				// so the model is not offered a parameter it cannot meaningfully set.
