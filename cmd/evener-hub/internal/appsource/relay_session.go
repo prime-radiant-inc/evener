@@ -597,7 +597,7 @@ func (s *relaySession) finishHandoff(epoch, generation uint64) bool {
 	startRecovery := false
 	if s.connection != nil && s.connection.epoch == epoch && s.connection.disconnected {
 		s.connection = nil
-		s.epoch++
+		s.advanceEpochLocked()
 		startRecovery = len(s.listeners) > 0 && !s.recovering
 		if startRecovery {
 			s.recovering = true
