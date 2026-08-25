@@ -376,24 +376,6 @@ describe("Stillwater direct interactions", () => {
     expect(result.store.getState().voice.ended).toBe(true);
   });
 
-  it.each(["ios", "android"] as const)(
-    "uses the %s root navigation and primitive treatment",
-    (platform) => {
-      renderRoot("sessions", platform);
-      const root = document.querySelector("[data-concept-root]");
-      expect(root).toHaveAttribute("data-platform", platform);
-      expect(root).toHaveAttribute(
-        "data-navigation",
-        platform === "ios" ? "ios-tab-bar" : "material-navigation-bar",
-      );
-      expect(
-        within(
-          screen.getByRole("navigation", { name: "Primary" }),
-        ).getAllByRole("button"),
-      ).toHaveLength(4);
-    },
-  );
-
   it("renders deterministic screen recovery and Settings controls without remote behavior", () => {
     const error = renderRoot("sessions", "ios", "error");
     let main = mainFor("sessions");

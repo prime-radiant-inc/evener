@@ -2,6 +2,11 @@ import { selectSearchProjection } from "../../core/selectors";
 import type { PrototypeAction, PrototypeState } from "../../core/state";
 import { Icon } from "../shared/Icon";
 import { ScreenState } from "../shared/ScreenState";
+import {
+  BlockingRouteState,
+  isBlockingRouteState,
+  OfflineNotice,
+} from "./RouteState";
 
 export interface SearchViewProps {
   state: PrototypeState;
@@ -10,32 +15,25 @@ export interface SearchViewProps {
 
 export function SearchView({ state, dispatch }: SearchViewProps) {
   const projection = selectSearchProjection(state);
-  const screenState = state.projection.screenState;
 
-  if (screenState === "loading") {
+  if (isBlockingRouteState(state)) {
     return (
-      <ScreenState state={{ kind: "loading", title: "Preparing search" }} />
-    );
-  }
-  if (screenState === "error") {
-    return (
-      <ScreenState
-        state={{
-          kind: "error",
-          title: "Search is unavailable",
-          detail: "Reset the scenario or retry from Sessions.",
-        }}
+      <BlockingRouteState
+        state={state}
+        routeLabel="Search"
+        dispatch={dispatch}
       />
     );
   }
 
   return (
     <div className="sw-search sw-route-enter">
-      {screenState === "offline" ? (
-        <p className="sw-banner" data-offline-prototype="true" role="status">
-          Search is limited to the locally stored fixture while offline.
-        </p>
-      ) : null}
+      <OfflineNotice
+        state={state}
+        routeLabel="Search"
+        mutationDetail="Search and opening saved results stay local."
+        dispatch={dispatch}
+      />
       <label className="sw-search-field">
         <Icon name="search" decorative />
         <span className="sw-visually-hidden">Search</span>

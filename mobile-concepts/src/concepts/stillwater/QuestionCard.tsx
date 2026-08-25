@@ -13,6 +13,7 @@ export function QuestionCard({ question, state, dispatch }: QuestionCardProps) {
   const answer = state.answers[question.id];
   const selectedOptionIds = answer?.selectedOptionIds ?? [];
   const submitted = answer?.submitted ?? false;
+  const offline = state.projection.screenState === "offline";
   const answerValid = selectQuestionSubmitValidity(
     state,
     question.id,
@@ -48,6 +49,7 @@ export function QuestionCard({ question, state, dispatch }: QuestionCardProps) {
       data-question-id={question.id}
       onSubmit={(event) => {
         event.preventDefault();
+        if (offline) return;
         dispatch({
           type: "resolveQuestion",
           questionId: question.id,
@@ -55,6 +57,11 @@ export function QuestionCard({ question, state, dispatch }: QuestionCardProps) {
         });
       }}
     >
+      {offline ? (
+        <p className="sw-offline-guard" data-offline-guard="question">
+          This saved question is read-only and cannot be resolved offline.
+        </p>
+      ) : null}
       <fieldset>
         <legend>
           <span className="sw-eyebrow">
@@ -70,6 +77,7 @@ export function QuestionCard({ question, state, dispatch }: QuestionCardProps) {
                 name={`question-${question.id}`}
                 aria-label={option.label}
                 checked={selectedOptionIds.includes(option.id)}
+                disabled={offline}
                 onChange={(event) =>
                   dispatch({
                     type: "setQuestionOption",
@@ -95,6 +103,7 @@ export function QuestionCard({ question, state, dispatch }: QuestionCardProps) {
           <textarea
             aria-label="Note"
             value={answer?.note ?? ""}
+            disabled={offline}
             onChange={(event) =>
               dispatch({
                 type: "setQuestionNote",
@@ -110,7 +119,7 @@ export function QuestionCard({ question, state, dispatch }: QuestionCardProps) {
         <button
           className="sw-primary-action"
           type="submit"
-          disabled={!answerValid}
+          disabled={!answerValid || offline}
         >
           Submit answer
         </button>
@@ -118,6 +127,7 @@ export function QuestionCard({ question, state, dispatch }: QuestionCardProps) {
           <button
             type="button"
             data-question-resolution="fallback"
+            disabled={offline}
             onClick={() =>
               dispatch({
                 type: "resolveQuestion",
@@ -133,6 +143,7 @@ export function QuestionCard({ question, state, dispatch }: QuestionCardProps) {
           <button
             type="button"
             data-question-resolution="decide"
+            disabled={offline}
             onClick={() =>
               dispatch({
                 type: "resolveQuestion",
@@ -148,6 +159,7 @@ export function QuestionCard({ question, state, dispatch }: QuestionCardProps) {
           <button
             type="button"
             data-question-resolution="skip"
+            disabled={offline}
             onClick={() =>
               dispatch({
                 type: "resolveQuestion",
