@@ -1,7 +1,11 @@
 package task
 
 import (
+	"bytes"
+	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -40,6 +44,84 @@ func TestAppend_AssignsIDsStatusTypeAndStamps(t *testing.T) {
 	}
 	if added[0].CreatedAt == nil || added[0].UpdatedAt == nil {
 		t.Error("CreatedAt/UpdatedAt not stamped")
+	}
+}
+
+func TestLoad_NormalizesPersistedTaskEffortsWithoutChangingTaskState(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "tasks", "s.json")
+	legacy := []Task{
+		{ID: 7, Description: "invalid", Prompt: "recover", Status: TaskInProgress, DependsOn: []int{3}, ReasoningEffort: " ultra "},
+		{ID: 3, Description: "valid", Prompt: "keep", Status: TaskDone, ReasoningEffort: " HIGH "},
+		{ID: 9, Description: "empty", Prompt: "inherit", Status: TaskOpen},
+	}
+	data, err := json.Marshal(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	store := NewTaskStore(dir, "s")
+	if err := store.Load(); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	got := store.View()
+	if len(got) != len(legacy) {
+		t.Fatalf("loaded %d tasks, want %d", len(got), len(legacy))
+	}
+	if got[0].ID != 7 || got[0].Status != TaskInProgress || got[0].ReasoningEffort != "" || len(got[0].DependsOn) != 1 || got[0].DependsOn[0] != 3 {
+		t.Fatalf("invalid task was not migrated without losing identity/state: %+v", got[0])
+	}
+	if got[1].ID != 3 || got[1].Status != TaskDone || got[1].ReasoningEffort != "high" {
+		t.Fatalf("valid task = %+v, want canonical high override", got[1])
+	}
+	if got[2].ReasoningEffort != "" {
+		t.Fatalf("empty effort = %q, want inherit representation", got[2].ReasoningEffort)
+	}
+
+	// The migrated store remains usable, and a subsequent atomic save must not
+	// reintroduce the stale value.
+	if _, err := store.Append([]TaskInput{{Description: "after restore", Prompt: "continue"}}); err != nil {
+		t.Fatalf("Append after migration: %v", err)
+	}
+	persisted, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(persisted, data) || len(persisted) == 0 {
+		t.Fatalf("save did not rewrite migrated task state: %s", persisted)
+	}
+	var saved []Task
+	if err := json.Unmarshal(persisted, &saved); err != nil {
+		t.Fatal(err)
+	}
+	if saved[0].ReasoningEffort != "" || saved[1].ReasoningEffort != "high" {
+		t.Fatalf("saved migrated efforts = [%q, %q], want [empty, high]", saved[0].ReasoningEffort, saved[1].ReasoningEffort)
+	}
+}
+
+func TestLoad_MalformedJSONDoesNotPartiallyReplaceStore(t *testing.T) {
+	dir := t.TempDir()
+	store := NewTaskStore(dir, "s")
+	added, err := store.Append([]TaskInput{{Description: "existing", Prompt: "keep"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(dir, "tasks", "s.json")
+	if err := os.WriteFile(path, []byte(`[{"id":99,"description":"partial"`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Load(); err == nil {
+		t.Fatal("Load malformed JSON succeeded")
+	}
+	got := store.View()
+	if len(got) != 1 || got[0].ID != added[0].ID || got[0].Description != "existing" {
+		t.Fatalf("malformed Load partially replaced store: %+v", got)
 	}
 }
 
