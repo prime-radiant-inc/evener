@@ -3,7 +3,7 @@
 import { describe, expect, test } from "vitest";
 import type { ModelDescriptor } from "../../protocol/types.gen";
 import type { ModelCatalog } from "./index";
-import { mergeScopedCatalog } from "./scopedCatalog";
+import { mergeCatalogEntry, mergeCatalogSnapshot, mergeScopedCatalog } from "./scopedCatalog";
 
 const SCOPED: ModelDescriptor[] = [
   { provider: "anthropic", model: "claude-sonnet-4-5" },
@@ -83,5 +83,126 @@ describe("mergeScopedCatalog", () => {
       null,
     );
     expect(merged.models).toEqual([{ provider: "openai", model: "gpt-5", displayName: "" }]);
+  });
+
+  test("does not let a label-only response downgrade richer capabilities", () => {
+    const rich = {
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "GPT-5",
+      supportsReasoning: true,
+      reasoningEffortLevels: ["minimal", "high", "max"],
+    };
+    const fallback = { provider: "openai", model: "gpt-5", displayName: "" };
+
+    expect(mergeCatalogEntry(rich, fallback)).toEqual(rich);
+    expect(mergeCatalogSnapshot({ models: [rich], recent: [] }, { models: [fallback], recent: [] }).models).toEqual([
+      rich,
+    ]);
+  });
+
+  test("applies a richer later response without changing its model identity", () => {
+    const existing = { provider: "openai", model: "gpt-5", displayName: "GPT-5" };
+    const richer = {
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "GPT-5 reasoning",
+      supportsReasoning: true,
+      reasoningEffortLevels: ["low", "high"],
+    };
+
+    expect(mergeCatalogEntry(existing, richer)).toEqual(richer);
+  });
+
+  test("does not merge entries with different providers", () => {
+    const existing = {
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "GPT-5",
+      supportsReasoning: true,
+    };
+    const incoming = {
+      provider: "anthropic",
+      model: "gpt-5",
+      displayName: "Claude",
+      supportsVision: true,
+    };
+
+    expect(mergeCatalogEntry(existing, incoming)).toEqual(incoming);
+  });
+
+  test("does not merge entries with different models", () => {
+    const existing = {
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "GPT-5",
+      supportsReasoning: true,
+    };
+    const incoming = {
+      provider: "openai",
+      model: "gpt-5-mini",
+      displayName: "GPT-5 mini",
+      supportsVision: true,
+    };
+
+    expect(mergeCatalogEntry(existing, incoming)).toEqual(incoming);
+  });
+
+  test("applies explicit false and zero updates instead of treating them as missing", () => {
+    const existing = {
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "GPT-5",
+      contextWindow: 128000,
+      supportsTools: true,
+      supportsVision: true,
+      maxOutputTokens: 16384,
+      supportsWebSearch: true,
+      supportsReasoning: true,
+      inputCostPerMillion: 3,
+      outputCostPerMillion: 15,
+      reasoningEffortLevels: ["low", "high"],
+    };
+    const incoming = {
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "GPT-5",
+      contextWindow: 0,
+      supportsTools: false,
+      supportsVision: false,
+      maxOutputTokens: 0,
+      supportsWebSearch: false,
+      supportsReasoning: false,
+      inputCostPerMillion: 0,
+      outputCostPerMillion: 0,
+      reasoningEffortLevels: [],
+    };
+
+    expect(mergeCatalogEntry(existing, incoming)).toEqual(incoming);
+  });
+
+  test("applies an explicit non-reasoning update instead of retaining stale levels", () => {
+    const existing = {
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "GPT-5",
+      supportsReasoning: true,
+      reasoningEffortLevels: ["low", "high"],
+    };
+
+    expect(
+      mergeCatalogEntry(existing, {
+        provider: "openai",
+        model: "gpt-5",
+        displayName: "GPT-5",
+        supportsReasoning: false,
+      }),
+    ).toEqual({
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "GPT-5",
+      supportsReasoning: false,
+      reasoningEffortLevels: [],
+    });
   });
 });
