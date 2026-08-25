@@ -3,8 +3,10 @@ package agent
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"testing"
 
@@ -55,7 +57,7 @@ func TestProjectToolSchemaUsesRealCapableToolShape(t *testing.T) {
 			t.Fatalf("tool %q projection arms = %#v", td.name, projection)
 		}
 		for _, arm := range []map[string]any{projection.absent, projection.present} {
-			for i := 0; i < 300; i++ {
+			for i := range 300 {
 				value := schemagen.Value(schemagen.NewByteSource([]byte{byte(i), byte(i >> 8), 0xa5}), arm, schemagen.Valid)
 				if err := td.schema.Validate(value); err != nil {
 					t.Fatalf("tool %q byte value %d rejected: %v; value=%#v", td.name, i, err, value)
@@ -153,7 +155,7 @@ func runRapidProjectionValues(t *testing.T, schema map[string]any, original, pro
 	t.Helper()
 	gen := schemagen.Generator(schema, schemagen.Valid)
 	rapid.Check(t, func(rt *rapid.T) {
-		for i := 0; i < 4; i++ {
+		for range 4 {
 			value := gen.Draw(rt, "rapid_projection")
 			if err := projected.Validate(value); err != nil {
 				rt.Fatalf("projected value rejected: %v; value=%#v", err, value)
@@ -167,7 +169,7 @@ func runRapidProjectionValues(t *testing.T, schema map[string]any, original, pro
 
 func runByteProjectionValues(t *testing.T, schema map[string]any, original, projected *jsonschema.Schema) {
 	t.Helper()
-	for i := 0; i < 300; i++ {
+	for i := range 300 {
 		value := schemagen.Value(schemagen.NewByteSource([]byte{byte(i), byte(i >> 8), byte(i >> 16), 0x51}), schema, schemagen.Valid)
 		if err := projected.Validate(value); err != nil {
 			t.Fatalf("byte projected value %d rejected: %v; value=%#v", i, err, value)
@@ -190,7 +192,7 @@ type schemaProjection struct {
 func projectToolSchema(root map[string]any) (schemaProjection, error) {
 	var out schemaProjection
 	if root == nil || root["type"] != "object" || root["additionalProperties"] != false {
-		return out, fmt.Errorf("projection requires a closed object root")
+		return out, errors.New("projection requires a closed object root")
 	}
 	for key := range root {
 		switch key {
@@ -201,11 +203,11 @@ func projectToolSchema(root map[string]any) (schemaProjection, error) {
 	}
 	props, ok := projectionSchemaMap(root["properties"])
 	if !ok {
-		return out, fmt.Errorf("projection properties must be an object")
+		return out, errors.New("projection properties must be an object")
 	}
 	branches, ok := projectionBranches(root["oneOf"])
 	if !ok || len(branches) != 2 {
-		return out, fmt.Errorf("projection requires exactly two object branches")
+		return out, errors.New("projection requires exactly two object branches")
 	}
 	for name, prop := range props {
 		if err := rejectProjectionCombinator(prop); err != nil {
@@ -218,7 +220,7 @@ func projectToolSchema(root map[string]any) (schemaProjection, error) {
 	for i, branch := range branches {
 		if projectionSingletonNot(branch) {
 			if notIndex >= 0 {
-				return out, fmt.Errorf("projection has multiple not branches")
+				return out, errors.New("projection has multiple not branches")
 			}
 			notIndex = i
 			n := branch["not"].(map[string]any)
@@ -226,15 +228,15 @@ func projectToolSchema(root map[string]any) (schemaProjection, error) {
 			continue
 		}
 		if reqIndex >= 0 {
-			return out, fmt.Errorf("projection has multiple required branches")
+			return out, errors.New("projection has multiple required branches")
 		}
 		reqIndex = i
 	}
 	if notIndex < 0 || reqIndex < 0 || trigger == "" {
-		return out, fmt.Errorf("projection requires one singleton not branch")
+		return out, errors.New("projection requires one singleton not branch")
 	}
 	if _, ok := props[trigger]; !ok {
-		return out, fmt.Errorf("projection trigger is not a root property")
+		return out, errors.New("projection trigger is not a root property")
 	}
 
 	requiredBranch := branches[reqIndex]
@@ -245,7 +247,7 @@ func projectToolSchema(root map[string]any) (schemaProjection, error) {
 	}
 	branchRequired := uniqueProjectionStrings(projectionStrings(requiredBranch["required"]))
 	if len(branchRequired) < 2 || !containsProjectionString(branchRequired, trigger) {
-		return out, fmt.Errorf("projection required branch must require trigger and dependent keys")
+		return out, errors.New("projection required branch must require trigger and dependent keys")
 	}
 	for _, name := range branchRequired {
 		if _, ok := props[name]; !ok {
@@ -290,7 +292,7 @@ func projectToolSchema(root map[string]any) (schemaProjection, error) {
 		out.present = present
 	}
 	if out.absent == nil && out.present == nil {
-		return schemaProjection{}, fmt.Errorf("projection has zero satisfiable arms")
+		return schemaProjection{}, errors.New("projection has zero satisfiable arms")
 	}
 	return out, nil
 }
@@ -330,7 +332,7 @@ func projectionEnumRefinements(raw any, parent map[string]any) (map[string][]any
 	}
 	branch, ok := projectionSchemaMap(raw)
 	if !ok {
-		return nil, fmt.Errorf("required-branch properties must be an object")
+		return nil, errors.New("required-branch properties must be an object")
 	}
 	out := make(map[string][]any, len(branch))
 	for name, rawProp := range branch {
@@ -496,12 +498,7 @@ func withoutProjectionString(values []string, remove string) []string {
 }
 
 func containsProjectionString(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
+	return slices.Contains(values, want)
 }
 
 func cloneProjectionSchema(v map[string]any) map[string]any {
