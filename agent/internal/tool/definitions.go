@@ -9,7 +9,7 @@ import (
 func DefReadFile() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name:        "read_file",
-		Description: "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading an image or PDF, describe what you hope to learn — the system will provide a detailed description alongside the file.",
+		Description: "Read a file from the filesystem. Returns line-numbered content for text files. For image files (PNG, JPEG, GIF, WebP, BMP), returns the image for visual inspection. For PDF files, returns the document for content analysis. When reading an image or PDF, describe what you hope to learn — the system will provide a detailed description alongside the file. IMPORTANT: image/PDF descriptions are model-generated and are not byte-exact OCR. A model may omit, misread, or silently normalize rendered text even when asked to transcribe it. Do not use this output for exact-match or byte-exact transcription; use a real OCR tool or inspect the source instead.\n\n" + FormatVisionExactnessContract(VisionRequestedModePurposeDependent),
 		Parameters: map[string]any{
 			"type":                 "object",
 			"additionalProperties": false,
@@ -17,7 +17,7 @@ func DefReadFile() llm.ToolDefinition {
 				"file_path": map[string]any{"type": "string"},
 				"offset":    map[string]any{"type": "integer", "description": "For large files read in slices: 1-based start line (default 1)."},
 				"limit":     map[string]any{"type": "integer", "description": "For large files read in slices: line count to return, default 2000."},
-				"purpose":   map[string]any{"type": "string", "description": "For image/PDF files: describe what factual data you need extracted. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate."},
+				"purpose":   map[string]any{"type": "string", "description": "For image/PDF files: describe what factual data you need extracted. Vision is an OCR + description service, not an analyst. It will extract and describe what you ask for; interpretation and classification are your job. Concrete asks work best: transcribe, list, extract, locate. For a best-effort glyph-by-glyph request, say \"transcribe the rendered text exactly\"; this still cannot guarantee byte-exact output."},
 			},
 			"required": []string{"file_path"},
 		},
