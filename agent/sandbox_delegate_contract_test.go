@@ -345,25 +345,38 @@ func TestDelegateSchemaOmitsUnsupportedSandboxControls(t *testing.T) {
 
 func TestDelegateSchemaHonorsParentConfinementAndNetwork(t *testing.T) {
 	tests := []struct {
-		name          string
-		parentMode    sandbox.Mode
-		parentNetwork bool
-		wantModes     []string
-		wantNetworks  []bool
+		name               string
+		parentMode         sandbox.Mode
+		parentNetwork      bool
+		parentWriteBlocked bool
+		wantModes          []string
+		wantNetworks       []bool
 	}{
 		{name: "off parent", parentMode: sandbox.ModeOff, parentNetwork: true, wantModes: []string{"off", "read-only", "workspace-write", "restricted"}},
 		{name: "read-only parent", parentMode: sandbox.ModeReadOnly, parentNetwork: true, wantModes: []string{"read-only"}},
 		{name: "workspace-write parent", parentMode: sandbox.ModeWorkspaceWrite, parentNetwork: true, wantModes: []string{"read-only", "workspace-write", "restricted"}},
 		{name: "restricted parent", parentMode: sandbox.ModeRestricted, parentNetwork: true, wantModes: []string{"restricted"}},
+		{name: "write-blocked read-only parent", parentMode: sandbox.ModeReadOnly, parentNetwork: true, parentWriteBlocked: true, wantModes: []string{"read-only"}},
+		{name: "write-blocked restricted parent", parentMode: sandbox.ModeRestricted, parentNetwork: true, parentWriteBlocked: true},
+		{name: "write-blocked workspace-write parent", parentMode: sandbox.ModeWorkspaceWrite, parentNetwork: true, parentWriteBlocked: true, wantModes: []string{"read-only"}},
 		{name: "network-off parent", parentMode: sandbox.ModeWorkspaceWrite, parentNetwork: false, wantModes: []string{"read-only", "workspace-write", "restricted"}, wantNetworks: []bool{false}},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			lane, home := sbxLane(t)
 			s := sbxDelegateSession(t, sbxBwrapFacts(home))
-			setParentSandboxForContract(t, s, sbxBwrapFacts(home), lane, tc.parentMode, tc.parentNetwork)
+			setParentSandboxForContractWithWriteBlocked(t, s, sbxBwrapFacts(home), lane, tc.parentMode, tc.parentNetwork, tc.parentWriteBlocked)
 			params := delegateDefinitionParameters(t, s)
 			props := delegateDefinitionProperties(t, s)
+			if len(tc.wantModes) == 0 {
+				if _, ok := props["sandbox"]; ok {
+					t.Fatalf("sandbox property exposed for parent with no accepted explicit modes: %#v", props["sandbox"])
+				}
+				compiled := compileDelegateParameters(t, params)
+				requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox": "restricted"}, false)
+				requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox_net": false}, true)
+				return
+			}
 			sandboxSchema := props["sandbox"].(map[string]any)
 			if got := sandboxSchema["enum"]; !reflect.DeepEqual(got, tc.wantModes) {
 				t.Fatalf("sandbox enum = %#v, want %#v", got, tc.wantModes)
@@ -398,7 +411,77 @@ func TestDelegateSchemaHonorsParentConfinementAndNetwork(t *testing.T) {
 	}
 }
 
+func TestExecTool_WriteBlockedParentSchemaAndRuntimeContract(t *testing.T) {
+	lane, home := sbxLane(t)
+	facts := sbxBwrapFacts(home)
+	s := sbxDelegateSession(t, facts)
+	setParentSandboxForContractWithWriteBlocked(t, s, facts, lane, sandbox.ModeRestricted, true, true)
+	if err := registerStableDelegateTool(s.reg, s); err != nil {
+		t.Fatalf("refresh delegate tool schema: %v", err)
+	}
+
+	params := delegateDefinitionParameters(t, s)
+	props := delegateDefinitionProperties(t, s)
+	if _, ok := props["sandbox"]; ok {
+		t.Fatal("write-blocked restricted parent schema advertises an unusable sandbox mode control")
+	}
+	if _, ok := props["sandbox_net"]; !ok {
+		t.Fatal("write-blocked restricted parent schema removed the valid sandbox_net control")
+	}
+	var wiredProps map[string]any
+	for _, def := range s.profileWireToolDefs() {
+		if def.Name != "delegate" {
+			continue
+		}
+		wiredProps, _ = def.Parameters["properties"].(map[string]any)
+		break
+	}
+	if wiredProps == nil {
+		t.Fatal("provider wire definitions omitted delegate")
+	}
+	if _, ok := wiredProps["sandbox"]; ok {
+		t.Fatal("provider wire schema advertises an unusable sandbox mode control")
+	}
+	if _, ok := wiredProps["sandbox_net"]; !ok {
+		t.Fatal("provider wire schema removed the valid sandbox_net control")
+	}
+	compiled := compileDelegateParameters(t, params)
+	requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox": "restricted"}, false)
+	requireDelegateSchemaValidation(t, compiled, map[string]any{"task": "do work", "sandbox_net": false}, true)
+
+	restricted := execDelegateForContract(t, s, map[string]any{"task": "do work", "sandbox": "restricted"})
+	requireDelegateSandboxExecError(t, restricted, []string{"sandbox"})
+	requireNoDelegatePreRepairState(t, s)
+
+	netOnly := execDelegateForContract(t, s, map[string]any{"task": "do work", "sandbox_net": false})
+	if netOnly.IsError {
+		t.Fatalf("write-blocked parent net-only tightening failed: %#v", netOnly)
+	}
+	var created stableDelegateCreateResult
+	if err := json.Unmarshal([]byte(netOnly.FullOutput), &created); err != nil {
+		t.Fatalf("decode net-only delegate result: %v", err)
+	}
+	if created.ChildSessionID == "" {
+		t.Fatal("net-only delegate result omitted child session id")
+	}
+	child := s.getSub(created.ChildSessionID)
+	if child == nil {
+		t.Fatalf("net-only delegate %q is not resident", created.ChildSessionID)
+	}
+	local, ok := child.sess.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok || local.Sandbox == nil || !local.Sandbox.Enforced() {
+		t.Fatalf("net-only child sandbox = %#v, want enforced local sandbox", child.sess.currentEnv())
+	}
+	if local.Sandbox.Mode != sandbox.ModeRestricted || !local.Sandbox.WriteBlocked || local.Sandbox.Network {
+		t.Fatalf("net-only child sandbox = mode:%s writeBlocked:%t network:%t, want restricted/write-blocked/network-off", local.Sandbox.Mode, local.Sandbox.WriteBlocked, local.Sandbox.Network)
+	}
+}
+
 func setParentSandboxForContract(t *testing.T, s *Session, facts sandbox.HostFacts, cwd string, mode sandbox.Mode, network bool) {
+	setParentSandboxForContractWithWriteBlocked(t, s, facts, cwd, mode, network, false)
+}
+
+func setParentSandboxForContractWithWriteBlocked(t *testing.T, s *Session, facts sandbox.HostFacts, cwd string, mode sandbox.Mode, network, writeBlocked bool) {
 	t.Helper()
 	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: mode, Network: &network}, facts, cwd)
 	if err != nil {
@@ -406,6 +489,7 @@ func setParentSandboxForContract(t *testing.T, s *Session, facts sandbox.HostFac
 	}
 	env := execenv.NewLocalExecutionEnvironment(cwd)
 	env.Sandbox = &rp
+	env.Sandbox.WriteBlocked = writeBlocked
 	s.mu.Lock()
 	s.env = env
 	s.mu.Unlock()

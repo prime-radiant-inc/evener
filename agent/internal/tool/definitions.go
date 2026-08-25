@@ -194,6 +194,12 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 	}
 	if len(sandboxSchema.Modes) > 0 {
 		props["sandbox"].(map[string]any)["enum"] = append([]string(nil), sandboxSchema.Modes...)
+	} else {
+		// An available backend may still have no explicit mode that satisfies the
+		// parent's effective floor (for example, restricted plus WriteBlocked).
+		// Omit only the unusable mode control; sandbox_net remains available for
+		// the valid net-only tightening/inheritance path.
+		delete(props, "sandbox")
 	}
 	if len(sandboxSchema.NetworkValues) > 0 {
 		props["sandbox_net"].(map[string]any)["enum"] = append([]bool(nil), sandboxSchema.NetworkValues...)
@@ -216,7 +222,9 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 		}
 	}
 	if sandboxSchema.SandboxDescription != "" {
-		props["sandbox"].(map[string]any)["description"] = strings.TrimSpace(props["sandbox"].(map[string]any)["description"].(string) + " " + sandboxSchema.SandboxDescription)
+		if sandbox, ok := props["sandbox"].(map[string]any); ok {
+			sandbox["description"] = strings.TrimSpace(sandbox["description"].(string) + " " + sandboxSchema.SandboxDescription)
+		}
 	}
 	if sandboxSchema.SandboxNetDescription != "" {
 		props["sandbox_net"].(map[string]any)["description"] = strings.TrimSpace(props["sandbox_net"].(map[string]any)["description"].(string) + " " + sandboxSchema.SandboxNetDescription)
