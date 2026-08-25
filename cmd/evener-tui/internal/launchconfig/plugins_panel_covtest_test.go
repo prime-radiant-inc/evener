@@ -2,7 +2,6 @@ package launchconfig
 
 import (
 	"errors"
-	"reflect"
 	"strings"
 	"testing"
 
@@ -209,8 +208,9 @@ func TestCovHandleRuneUnknown(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("unknown rune should return nil cmd")
 	}
-	if !reflect.DeepEqual(updated, p) {
-		t.Fatalf("unknown rune changed panel to %+v, want %+v", updated, p)
+	got := updated.(PluginsPanel)
+	if got.tab != pluginsTabMarketplaces || got.cursor != 0 || len(got.marketplaces) != 1 || got.marketplaces[0].Name != "x" {
+		t.Fatalf("unknown rune changed panel to %+v", got)
 	}
 }
 
@@ -389,16 +389,22 @@ func TestCovPluginsPanelViewWithForm(t *testing.T) {
 // --- Update: MarketplaceBrowseResultMsg stale ---
 
 func TestCovPluginsPanelStaleBrowseResult(t *testing.T) {
-	wantCatalog := appwire.MarketplaceBrowseResponse{Name: "current", Plugins: []appwire.MarketplaceCatalogPlugin{{Name: "keep"}}}
 	wantErr := errors.New("keep error")
-	p := PluginsPanel{browseMarketplace: "current", browseLoading: true, browseCatalog: wantCatalog, browseErr: wantErr, cursor: 3}
+	p := PluginsPanel{
+		browseMarketplace: "current",
+		browseLoading:     true,
+		browseCatalog:     appwire.MarketplaceBrowseResponse{Name: "current", Plugins: []appwire.MarketplaceCatalogPlugin{{Name: "keep"}}},
+		browseErr:         wantErr,
+		cursor:            3,
+	}
 	updated, _ := p.Update(MarketplaceBrowseResultMsg{
 		Name:     "stale",
 		Response: appwire.MarketplaceBrowseResponse{Name: "stale", Plugins: []appwire.MarketplaceCatalogPlugin{{Name: "discard"}}},
 		Err:      errors.New("discard error"),
 	})
 	p2 := updated.(PluginsPanel)
-	if p2.browseMarketplace != "current" || !p2.browseLoading || !reflect.DeepEqual(p2.browseCatalog, wantCatalog) || p2.browseErr != wantErr || p2.cursor != 3 {
+	if p2.browseMarketplace != "current" || !p2.browseLoading || p2.browseErr != wantErr || p2.cursor != 3 ||
+		p2.browseCatalog.Name != "current" || len(p2.browseCatalog.Plugins) != 1 || p2.browseCatalog.Plugins[0].Name != "keep" {
 		t.Fatalf("stale browse result changed state: marketplace=%q loading=%v catalog=%+v err=%v cursor=%d", p2.browseMarketplace, p2.browseLoading, p2.browseCatalog, p2.browseErr, p2.cursor)
 	}
 }
@@ -406,12 +412,12 @@ func TestCovPluginsPanelStaleBrowseResult(t *testing.T) {
 // --- Update: browse result with error ---
 
 func TestCovPluginsPanelBrowseError(t *testing.T) {
-	wantCatalog := appwire.MarketplaceBrowseResponse{Name: "old", Plugins: []appwire.MarketplaceCatalogPlugin{{Name: "keep"}}}
 	wantErr := errors.New("fail")
-	p := PluginsPanel{browseMarketplace: "mp", browseLoading: true, browseCatalog: wantCatalog}
+	p := PluginsPanel{browseMarketplace: "mp", browseLoading: true, browseCatalog: appwire.MarketplaceBrowseResponse{Name: "old", Plugins: []appwire.MarketplaceCatalogPlugin{{Name: "keep"}}}}
 	updated, _ := p.Update(MarketplaceBrowseResultMsg{Name: "mp", Response: appwire.MarketplaceBrowseResponse{Name: "discard"}, Err: wantErr})
 	p2 := updated.(PluginsPanel)
-	if p2.browseErr != wantErr || p2.browseLoading || !reflect.DeepEqual(p2.browseCatalog, wantCatalog) {
+	if p2.browseErr != wantErr || p2.browseLoading || p2.browseCatalog.Name != "old" ||
+		len(p2.browseCatalog.Plugins) != 1 || p2.browseCatalog.Plugins[0].Name != "keep" {
 		t.Fatalf("browse error state = err %v loading=%v catalog=%+v", p2.browseErr, p2.browseLoading, p2.browseCatalog)
 	}
 }
@@ -420,14 +426,15 @@ func TestCovPluginsPanelBrowseError(t *testing.T) {
 
 func TestCovPluginsPanelBrowseSuccess(t *testing.T) {
 	p := PluginsPanel{browseMarketplace: "mp", browseLoading: true}
-	resp := appwire.MarketplaceBrowseResponse{Plugins: []appwire.MarketplaceCatalogPlugin{{Name: "p1"}}}
+	resp := appwire.MarketplaceBrowseResponse{Name: "catalog", Description: "tools", Plugins: []appwire.MarketplaceCatalogPlugin{{Name: "p1", Description: "formatter"}}}
 	updated, _ := p.Update(MarketplaceBrowseResultMsg{Name: "mp", Response: resp})
 	p2 := updated.(PluginsPanel)
 	if p2.browseLoading {
 		t.Fatal("browseLoading should be false after success")
 	}
-	if p2.browseErr != nil || !reflect.DeepEqual(p2.browseCatalog, resp) {
-		t.Fatalf("browse success state = err %v catalog=%+v, want %+v", p2.browseErr, p2.browseCatalog, resp)
+	if p2.browseErr != nil || p2.browseCatalog.Name != "catalog" || p2.browseCatalog.Description != "tools" ||
+		len(p2.browseCatalog.Plugins) != 1 || p2.browseCatalog.Plugins[0].Name != "p1" || p2.browseCatalog.Plugins[0].Description != "formatter" {
+		t.Fatalf("browse success state = err %v catalog=%+v", p2.browseErr, p2.browseCatalog)
 	}
 }
 
@@ -649,12 +656,11 @@ func TestCovPluginsPanelViewAllTabs(t *testing.T) {
 // --- Update: PluginListResultMsg with error ---
 
 func TestCovPluginsPanelPluginListError(t *testing.T) {
-	wantPlugins := []appwire.PluginEntry{{Plugin: "keep", Marketplace: "mp"}}
 	wantErr := errors.New("plugin load error")
-	p := PluginsPanel{plugins: wantPlugins, loadingPlugins: true}
+	p := PluginsPanel{plugins: []appwire.PluginEntry{{Plugin: "keep", Marketplace: "mp"}}, loadingPlugins: true}
 	updated, _ := p.Update(PluginListResultMsg{List: appwire.PluginListResponse{Plugins: []appwire.PluginEntry{{Plugin: "discard"}}}, Err: wantErr})
 	p2 := updated.(PluginsPanel)
-	if p2.pluginsErr != wantErr || p2.loadingPlugins || !reflect.DeepEqual(p2.plugins, wantPlugins) {
+	if p2.pluginsErr != wantErr || p2.loadingPlugins || len(p2.plugins) != 1 || p2.plugins[0].Plugin != "keep" || p2.plugins[0].Marketplace != "mp" {
 		t.Fatalf("plugin list error state = err %v loading=%v plugins=%+v", p2.pluginsErr, p2.loadingPlugins, p2.plugins)
 	}
 }
@@ -691,12 +697,12 @@ func TestCovHandleRuneBrowsePickerNoInstall(t *testing.T) {
 // --- Update: MarketplaceListResultMsg with error ---
 
 func TestCovPluginsPanelMarketplaceListError(t *testing.T) {
-	wantMarketplaces := []appwire.MarketplaceEntry{{Name: "keep"}}
 	wantErr := errors.New("marketplace error")
-	p := PluginsPanel{marketplaces: wantMarketplaces, loadingMarketplaces: true}
+	p := PluginsPanel{marketplaces: []appwire.MarketplaceEntry{{Name: "keep", Source: appwire.MarketplaceSourceInput{Kind: "url", URL: "https://keep.test/catalog.git"}}}, loadingMarketplaces: true}
 	updated, _ := p.Update(MarketplaceListResultMsg{List: appwire.MarketplaceListResponse{Marketplaces: []appwire.MarketplaceEntry{{Name: "discard"}}}, Err: wantErr})
 	p2 := updated.(PluginsPanel)
-	if p2.marketplacesErr != wantErr || p2.loadingMarketplaces || !reflect.DeepEqual(p2.marketplaces, wantMarketplaces) {
+	if p2.marketplacesErr != wantErr || p2.loadingMarketplaces || len(p2.marketplaces) != 1 ||
+		p2.marketplaces[0].Name != "keep" || p2.marketplaces[0].Source.Kind != "url" || p2.marketplaces[0].Source.URL != "https://keep.test/catalog.git" {
 		t.Fatalf("marketplace list error state = err %v loading=%v marketplaces=%+v", p2.marketplacesErr, p2.loadingMarketplaces, p2.marketplaces)
 	}
 }

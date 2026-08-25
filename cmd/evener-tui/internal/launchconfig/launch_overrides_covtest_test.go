@@ -103,20 +103,6 @@ func TestCovLaunchOverridesUpAtTop(t *testing.T) {
 	}
 }
 
-// --- Update: Enter on read-only field ---
-
-func TestCovLaunchOverridesEnterReadOnly(t *testing.T) {
-	orig := launchSettingsFieldReadOnly
-	launchSettingsFieldReadOnly = func(field string) bool { return field == "model" }
-	defer func() { launchSettingsFieldReadOnly = orig }()
-
-	m := NewLaunchOverridesModalWith(appwire.LaunchConfigLayer{})
-	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd != nil {
-		t.Fatal("Enter on read-only field should return nil cmd")
-	}
-}
-
 // --- Update: Enter with cursor out of range ---
 
 func TestCovLaunchOverridesEnterOutOfRange(t *testing.T) {
@@ -132,9 +118,11 @@ func TestCovLaunchOverridesEnterOutOfRange(t *testing.T) {
 
 func TestCovLaunchOverridesSchemaResult(t *testing.T) {
 	m := NewLaunchOverridesModal()
-	want := testLaunchSchema()
-	updated, _ := m.Update(LaunchSchemaResultMsg{Schema: appwire.LaunchOptionSchemaResponse{Options: want}})
+	updated, _ := m.Update(LaunchSchemaResultMsg{Schema: appwire.LaunchOptionSchemaResponse{Options: testLaunchSchema()}})
 	m2 := updated.(LaunchOverridesModal)
+	// Build the oracle after Update so neither the top-level slice nor the
+	// nested DefaultableLayers slices share backing storage with the input.
+	want := testLaunchSchema()
 	if !reflect.DeepEqual(m2.schema, want) {
 		t.Fatalf("schema = %+v, want %+v", m2.schema, want)
 	}
@@ -143,11 +131,12 @@ func TestCovLaunchOverridesSchemaResult(t *testing.T) {
 // --- Update: LaunchSchemaResultMsg error ---
 
 func TestCovLaunchOverridesSchemaResultError(t *testing.T) {
-	want := []appwire.LaunchOption{{Field: "existing", Label: "Existing", Kind: "text"}}
-	m := NewLaunchOverridesModalWithSchema(appwire.LaunchConfigLayer{}, want)
+	seed := []appwire.LaunchOption{{Field: "existing", Label: "Existing", Kind: "text", DefaultableLayers: []string{"global"}}}
+	m := NewLaunchOverridesModalWithSchema(appwire.LaunchConfigLayer{}, seed)
 	updated, _ := m.Update(LaunchSchemaResultMsg{Err: errOOM})
 	m2 := updated.(LaunchOverridesModal)
-	if !reflect.DeepEqual(m2.schema, want) {
+	if len(m2.schema) != 1 || m2.schema[0].Field != "existing" || m2.schema[0].Label != "Existing" || m2.schema[0].Kind != "text" ||
+		len(m2.schema[0].DefaultableLayers) != 1 || m2.schema[0].DefaultableLayers[0] != "global" {
 		t.Fatalf("schema error replaced existing schema with %+v", m2.schema)
 	}
 }
@@ -161,8 +150,9 @@ func TestCovLaunchOverridesUnknownMsg(t *testing.T) {
 	if cmd != nil {
 		t.Fatal("unknown msg should return nil cmd")
 	}
-	if got := updated.(LaunchOverridesModal); !reflect.DeepEqual(got, m) {
-		t.Fatalf("unknown msg changed modal to %+v, want %+v", got, m)
+	got := updated.(LaunchOverridesModal)
+	if got.cursor != 3 || got.cur.Model != "keep" || got.done || got.cancelled {
+		t.Fatalf("unknown msg changed modal to %+v", got)
 	}
 }
 

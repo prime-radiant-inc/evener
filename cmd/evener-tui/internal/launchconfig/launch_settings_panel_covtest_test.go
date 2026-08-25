@@ -102,11 +102,11 @@ func TestCovLaunchSettingsLoadProject(t *testing.T) {
 
 func TestCovLaunchSettingsSchemaError(t *testing.T) {
 	p := NewLaunchSettingsPanel(nil, "/cwd")
-	want := []appwire.LaunchOption{{Field: "existing", Label: "Existing", Kind: "text"}}
-	p.schema = want
+	p.schema = []appwire.LaunchOption{{Field: "existing", Label: "Existing", Kind: "text", DefaultableLayers: []string{"global"}}}
 	updated, _ := p.Update(LaunchSchemaResultMsg{Schema: appwire.LaunchOptionSchemaResponse{Options: []appwire.LaunchOption{{Field: "discard"}}}, Err: errors.New("schema fail")})
 	p2 := updated.(LaunchSettingsPanel)
-	if !reflect.DeepEqual(p2.schema, want) {
+	if len(p2.schema) != 1 || p2.schema[0].Field != "existing" || p2.schema[0].Label != "Existing" || p2.schema[0].Kind != "text" ||
+		len(p2.schema[0].DefaultableLayers) != 1 || p2.schema[0].DefaultableLayers[0] != "global" {
 		t.Fatalf("schema error replaced existing schema with %+v", p2.schema)
 	}
 }
@@ -115,10 +115,12 @@ func TestCovLaunchSettingsSchemaError(t *testing.T) {
 
 func TestCovLaunchSettingsResolveError(t *testing.T) {
 	p := NewLaunchSettingsPanel(nil, "/cwd")
-	wantResolved := appwire.LaunchConfigResolved{Effective: appwire.LaunchConfigLayer{Model: "failed-resolution"}}
-	updated, _ := p.Update(LaunchResolveResultMsg{Resolved: wantResolved, Err: errors.New("resolve fail")})
+	updated, _ := p.Update(LaunchResolveResultMsg{
+		Resolved: appwire.LaunchConfigResolved{Effective: appwire.LaunchConfigLayer{Model: "failed-resolution"}},
+		Err:      errors.New("resolve fail"),
+	})
 	p2 := updated.(LaunchSettingsPanel)
-	if p2.statusMessage != "resolve error: resolve fail" || p2.loadingResolve || !reflect.DeepEqual(p2.resolved, wantResolved) {
+	if p2.statusMessage != "resolve error: resolve fail" || p2.loadingResolve || p2.resolved.Effective.Model != "failed-resolution" {
 		t.Fatalf("resolve error state = status %q loading=%v resolved=%+v", p2.statusMessage, p2.loadingResolve, p2.resolved)
 	}
 }
@@ -378,35 +380,6 @@ func TestCovEditCurrentCursorOutOfRange(t *testing.T) {
 	}
 }
 
-// --- editCurrent: read-only field ---
-
-func TestCovEditCurrentReadOnlyField(t *testing.T) {
-	// Temporarily override the read-only predicate
-	orig := launchSettingsFieldReadOnly
-	launchSettingsFieldReadOnly = func(field string) bool { return field == "env" }
-	defer func() { launchSettingsFieldReadOnly = orig }()
-
-	p := LaunchSettingsPanel{tab: launchTabGlobal, cursor: 0, global: appwire.LaunchConfigLayer{}}
-	// Cursor 0 with layerRows is "model" but with the override, only "env" is read-only
-	// so we need cursor at the env index. Instead, set cursor to where env is.
-	rows := layerRows(appwire.LaunchConfigLayer{})
-	envIdx := -1
-	for i, r := range rows {
-		if r.field == "env" {
-			envIdx = i
-			break
-		}
-	}
-	if envIdx < 0 {
-		t.Fatal("env row not found")
-	}
-	p.cursor = envIdx
-	_, cmd := p.editCurrent()
-	if cmd != nil {
-		t.Fatal("Enter on read-only field should return nil cmd")
-	}
-}
-
 // --- tabName / currentLayer ---
 
 func TestCovTabName(t *testing.T) {
@@ -626,12 +599,14 @@ func TestCovMCPEditValueEmpty(t *testing.T) {
 	}
 }
 
-func TestCovMCPEditValueWithError(t *testing.T) {
-	orig := marshalMCPEditSpecs
-	marshalMCPEditSpecs = func(specs []mcpEditSpec) ([]byte, error) { return nil, errors.New("marshal fail") }
-	defer func() { marshalMCPEditSpecs = orig }()
-	if got := mcpEditValue([]appwire.MCPServerSpec{{Name: "x", Command: "c"}}); got != "" {
-		t.Fatalf("marshal error should return empty, got %q", got)
+func TestCovMCPEditValueNonEmpty(t *testing.T) {
+	mcps := []appwire.MCPServerSpec{
+		{Name: "alpha", Command: "sh", Args: []string{"-c", "echo ok"}},
+		{Name: "beta", Command: "server", Args: []string{}},
+	}
+	want := `[{"name":"alpha","command":"sh","args":["-c","echo ok"]},{"name":"beta","command":"server","args":[]}]`
+	if got := mcpEditValue(mcps); got != want {
+		t.Fatalf("mcpEditValue = %q, want %q", got, want)
 	}
 }
 

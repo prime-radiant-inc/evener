@@ -7,6 +7,51 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
+// --- Empty deltas preserve all observable reducer state ---
+
+func TestCovApplyReasoningSummaryDeltaEmpty(t *testing.T) {
+	seed := []ChatMessage{{Kind: MsgReasoning, Text: "keep thinking", TurnID: "turn_1", TurnIndex: 1, ItemID: "live", Done: false}}
+	r := NewTranscriptReducer(seed, nil, map[string]int{"live": 0})
+	r.ApplyReasoningSummaryDelta("turn_1", "new-item", "")
+
+	msgs := r.Messages()
+	if len(msgs) != 1 || msgs[0].Kind != MsgReasoning || msgs[0].Text != "keep thinking" || msgs[0].Done || msgs[0].ItemID != "live" {
+		t.Fatalf("empty reasoning delta changed messages: %+v", msgs)
+	}
+	active := r.ActiveMessages()
+	idx, live := active["live"]
+	if len(active) != 1 || !live || idx != 0 {
+		t.Fatalf("empty reasoning delta changed active messages: %+v", active)
+	}
+	if _, exists := active["new-item"]; exists {
+		t.Fatalf("empty reasoning delta activated new item: %+v", active)
+	}
+}
+
+func TestCovApplyToolOutputDeltaEmpty(t *testing.T) {
+	seed := []ChatMessage{{
+		Kind:   MsgTool,
+		ItemID: "active-tool",
+		Tool:   &ToolCallInfo{Name: "shell", Output: "keep output", Done: false},
+	}}
+	r := NewTranscriptReducer(seed, map[string]int{"active-tool": 0}, nil)
+	r.ApplyToolOutputDelta("unknown-tool", "")
+
+	msgs := r.Messages()
+	if len(msgs) != 1 || msgs[0].Kind != MsgTool || msgs[0].ItemID != "active-tool" || msgs[0].Tool == nil ||
+		msgs[0].Tool.Name != "shell" || msgs[0].Tool.Output != "keep output" || msgs[0].Tool.Done {
+		t.Fatalf("empty tool delta changed messages: %+v", msgs)
+	}
+	active := r.ActiveTools()
+	idx, activeTool := active["active-tool"]
+	if len(active) != 1 || !activeTool || idx != 0 {
+		t.Fatalf("empty tool delta changed active tools: %+v", active)
+	}
+	if _, exists := active["unknown-tool"]; exists {
+		t.Fatalf("empty tool delta activated unknown item: %+v", active)
+	}
+}
+
 // --- ApplyReasoningSummaryDelta: active reasoning with empty itemID ---
 
 func TestCovActiveReasoningIndexEmptyItemID(t *testing.T) {
