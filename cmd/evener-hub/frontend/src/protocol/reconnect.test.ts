@@ -74,6 +74,29 @@ afterEach(() => {
 });
 
 describe("AppwireClient heartbeat", () => {
+  test("defers heartbeat while an ordinary request is pending, then resumes", async () => {
+    const { factory, sockets } = dialer();
+    const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
+    await connectReady(sockets, client);
+    const socket = socketAt(sockets, 0);
+
+    const pending = client.request("thread/list", { limit: 1 });
+    const request = sentFrames(socket).find((frame) => frame.method === "thread/list");
+    if (typeof request?.id !== "number") throw new Error("missing thread/list request id");
+
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS + HEARTBEAT_TIMEOUT_MS - 1);
+
+    expect(client.state).toBe("ready");
+    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(0);
+
+    socket.receive({ id: request.id, result: { data: [], nextCursor: "" } });
+    await pending;
+    await vi.advanceTimersByTimeAsync(HEARTBEAT_INTERVAL_MS);
+
+    expect(sentFrames(socket).filter((frame) => frame.method === "ping")).toHaveLength(1);
+    client.close();
+  });
+
   test("sends a ping every 20s while ready, and again 20s later", async () => {
     const { factory, sockets } = dialer();
     const client = new AppwireClient({ url: "ws://x/rpc", socketFactory: factory });
