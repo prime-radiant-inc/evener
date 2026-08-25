@@ -106,14 +106,16 @@ type navigationBuildInputs struct {
 }
 
 type navigationProjection struct {
-	inputs      navigationBuildInputs
-	manifest    hubapi.NavigationManifest
-	live        []hubcore.TreeNode
-	needsYou    []hubcore.TreeNode
-	pinSections []navigationPinSection
-	projects    map[string]hubcore.TreeProject
-	catalogs    map[navigationResourceKind][]hubcore.TreeProject
-	locations   map[string]hubapi.NavigationSessionLocation
+	inputs        navigationBuildInputs
+	manifest      hubapi.NavigationManifest
+	live          []hubcore.TreeNode
+	needsYou      []hubcore.TreeNode
+	pinCandidates []hubcore.TreeNode
+	pinSections   []navigationPinSection
+	pinSectionIDs map[string]bool
+	projects      map[string]hubcore.TreeProject
+	catalogs      map[navigationResourceKind][]hubcore.TreeProject
+	locations     map[string]hubapi.NavigationSessionLocation
 }
 
 type navigationPinSection struct {
@@ -129,16 +131,16 @@ func buildNavigationProjection(inputs navigationBuildInputs) (navigationProjecti
 	if err := validateNavigationInputs(inputs); err != nil {
 		return navigationProjection{}, err
 	}
-	p := navigationProjection{
-		inputs:    cloneNavigationInputs(inputs),
-		live:      append([]hubcore.TreeNode(nil), inputs.Tree.Live...),
-		needsYou:  append([]hubcore.TreeNode(nil), inputs.Tree.NeedsYou...),
-		projects:  make(map[string]hubcore.TreeProject),
-		catalogs:  make(map[navigationResourceKind][]hubcore.TreeProject),
-		locations: make(map[string]hubapi.NavigationSessionLocation),
+	p := navigationProjection{inputs: cloneNavigationInputs(inputs), pinSectionIDs: make(map[string]bool), projects: make(map[string]hubcore.TreeProject), catalogs: make(map[navigationResourceKind][]hubcore.TreeProject), locations: make(map[string]hubapi.NavigationSessionLocation)}
+	p.inputs.Tree = cloneNavigationTree(inputs.Tree)
+	p.live = p.inputs.Tree.Live
+	p.needsYou = p.inputs.Tree.NeedsYou
+	p.pinCandidates = navigationPinCandidates(inputs.Tree)
+	for _, section := range p.inputs.PinSections {
+		p.pinSectionIDs[section.ID] = true
 	}
 
-	buckets := navigationProjectBuckets(inputs.Tree)
+	buckets := navigationProjectBuckets(p.inputs.Tree)
 	p.catalogs[navigationResourceProjects] = append([]hubcore.TreeProject(nil), buckets.active...)
 	p.catalogs[navigationResourceArchivedProjects] = append([]hubcore.TreeProject(nil), buckets.archived...)
 	p.catalogs[navigationResourceTestRuns] = append([]hubcore.TreeProject(nil), buckets.testRuns...)
@@ -147,10 +149,10 @@ func buildNavigationProjection(inputs navigationBuildInputs) (navigationProjecti
 	}
 	p.pinSections = p.buildPinSections()
 	p.manifest = hubapi.NavigationManifest{
-		GenerationID:     inputs.GenerationID,
-		Revision:         inputs.Revision,
-		Sources:          navigationSources(inputs.Sources),
-		AttentionSummary: inputs.AttentionSummary,
+		GenerationID:     p.inputs.GenerationID,
+		Revision:         p.inputs.Revision,
+		Sources:          navigationSources(p.inputs.Sources),
+		AttentionSummary: p.inputs.AttentionSummary,
 		Sections: hubapi.NavigationSections{
 			Live:        hubapi.NavigationResourceDescriptor{Count: len(p.live)},
 			NeedsYou:    hubapi.NavigationResourceDescriptor{Count: len(p.needsYou)},
@@ -178,11 +180,9 @@ func cloneNavigationInputs(in navigationBuildInputs) navigationBuildInputs {
 	out.ProjectFavorite = cloneNavigationBoolMap(in.ProjectFavorite)
 	out.PinSectionBySession = cloneNavigationStringMap(in.PinSectionBySession)
 	out.PinSections = append([]hubcore.PinSection(nil), in.PinSections...)
-	if in.PinAssignments != nil {
-		out.PinAssignments = make(map[string]hubcore.SessionPin, len(in.PinAssignments))
-		for id, assignment := range in.PinAssignments {
-			out.PinAssignments[id] = assignment
-		}
+	out.PinAssignments = make(map[string]hubcore.SessionPin, len(in.PinAssignments))
+	for id, assignment := range in.PinAssignments {
+		out.PinAssignments[id] = assignment
 	}
 	return out
 }
@@ -198,14 +198,82 @@ func cloneNavigationBoolMap(in map[string]bool) map[string]bool {
 	return out
 }
 func cloneNavigationStringMap(in map[string]string) map[string]string {
-	if in == nil {
-		return nil
-	}
 	out := make(map[string]string, len(in))
 	for key, value := range in {
 		out[key] = value
 	}
 	return out
+}
+
+func cloneNavigationTree(tree hubcore.Tree) hubcore.Tree {
+	return hubcore.Tree{
+		Live:             cloneNavigationNodes(tree.Live),
+		NeedsYou:         cloneNavigationNodes(tree.NeedsYou),
+		Projects:         cloneNavigationProjects(tree.Projects),
+		ArchivedProjects: cloneNavigationProjects(tree.ArchivedProjects),
+	}
+}
+
+func cloneNavigationProjects(projects []hubcore.TreeProject) []hubcore.TreeProject {
+	out := make([]hubcore.TreeProject, len(projects))
+	for index, project := range projects {
+		clone := project
+		// TierRows is authoritative and may contain rows private to hubcore's
+		// capped presentation fields. Retain cloned complete rows in exported
+		// fields so no retained slice aliases the source snapshot.
+		clone.Current, _ = project.TierRows("current")
+		clone.Recent, _ = project.TierRows("recent")
+		clone.Archived, _ = project.TierRows("archived")
+		clone.Current = cloneNavigationNodes(clone.Current)
+		clone.Recent = cloneNavigationNodes(clone.Recent)
+		clone.Archived = cloneNavigationNodes(clone.Archived)
+		out[index] = clone
+	}
+	return out
+}
+
+func cloneNavigationNodes(nodes []hubcore.TreeNode) []hubcore.TreeNode {
+	out := make([]hubcore.TreeNode, len(nodes))
+	for index, node := range nodes {
+		out[index] = node
+		out[index].Children = cloneNavigationNodes(node.Children)
+	}
+	return out
+}
+
+func navigationPinCandidates(tree hubcore.Tree) []hubcore.TreeNode {
+	// Tree.PinCandidates reads hubcore's retained uncapped slices. Snapshot
+	// fixtures and deserialized trees may only have exported tier fields, so use
+	// TierRows and retain the same session/cluster eligibility here.
+	seen := make(map[string]bool)
+	out := make([]hubcore.TreeNode, 0)
+	appendNode := func(node hubcore.TreeNode) {
+		if node.ID == "" || node.Kind != "session" || seen[node.ID] {
+			return
+		}
+		seen[node.ID] = true
+		out = append(out, node)
+	}
+	appendRows := func(rows []hubcore.TreeNode) {
+		for _, node := range rows {
+			switch node.Kind {
+			case "session":
+				appendNode(node)
+			case "cluster":
+				for _, child := range node.Children {
+					appendNode(child)
+				}
+			}
+		}
+	}
+	appendRows(tree.PinCandidates())
+	for _, project := range append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...) {
+		for _, tier := range []string{"current", "recent", "archived"} {
+			rows, _ := project.TierRows(tier)
+			appendRows(rows)
+		}
+	}
+	return cloneNavigationNodes(out)
 }
 
 func validateNavigationInputs(inputs navigationBuildInputs) error {
@@ -217,6 +285,9 @@ func validateNavigationInputs(inputs navigationBuildInputs) error {
 	}
 	for _, source := range inputs.Sources {
 		if err := validateNavigationIdentity("source ID", source.ID, false); err != nil {
+			return err
+		}
+		if err := validateNavigationIdentity("source kind", source.Kind, false); err != nil {
 			return err
 		}
 		if err := validateNavigationString("source label", source.Label, maxNavigationLabelRunes); err != nil {
@@ -238,7 +309,7 @@ func validateNavigationInputs(inputs navigationBuildInputs) error {
 		if err := validateNavigationString("project name", project.Name, maxNavigationLabelRunes); err != nil {
 			return err
 		}
-		if err := validateNavigationIdentity("working directory", project.WorkingDir, true); err != nil {
+		if err := validateNavigationString("working directory", project.WorkingDir, maxNavigationWorkingDirBytes); err != nil {
 			return err
 		}
 		for _, tier := range []string{"current", "recent", "archived"} {
@@ -261,7 +332,6 @@ func navigationSources(sources []hubapi.Source) hubapi.NavigationArray[hubapi.So
 	out := make(hubapi.NavigationArray[hubapi.Source], 0, len(sources))
 	for _, source := range sources {
 		source.Label = truncateNavigationRunes(source.Label, maxNavigationLabelRunes)
-		source.Kind = truncateNavigationRunes(source.Kind, maxNavigationLabelRunes)
 		out = append(out, source)
 	}
 	return out
@@ -295,12 +365,11 @@ func validateNavigationIdentity(kind, value string, allowEmpty bool) error {
 	if value == "" {
 		return fmt.Errorf("navigation %s is empty", kind)
 	}
-	limit := maxNavigationIdentityBytes
-	if kind == "working directory" {
-		limit = maxNavigationWorkingDirBytes
+	if !utf8.ValidString(value) {
+		return fmt.Errorf("navigation %s is not valid UTF-8", kind)
 	}
-	if len(value) > limit {
-		return fmt.Errorf("navigation %s exceeds %d bytes", kind, limit)
+	if len(value) > maxNavigationIdentityBytes {
+		return fmt.Errorf("navigation %s exceeds %d bytes", kind, maxNavigationIdentityBytes)
 	}
 	return nil
 }
@@ -329,7 +398,11 @@ func navigationRef(id string) (hubapi.Ref, error) {
 	return ref, nil
 }
 
-func (p navigationProjection) Manifest() hubapi.NavigationManifest { return p.manifest }
+func (p navigationProjection) Manifest() hubapi.NavigationManifest {
+	manifest := p.manifest
+	manifest.Sources = append(hubapi.NavigationArray[hubapi.Source](nil), p.manifest.Sources...)
+	return manifest
+}
 
 func (p navigationProjection) LivePage(offset uint32, limit int) hubapi.NavigationSectionResource {
 	return p.sectionPage(p.live, offset, limit)
@@ -351,7 +424,9 @@ func (p navigationProjection) sectionPage(rows []hubcore.TreeNode, offset uint32
 	projector := navigationProjector{projection: p}
 	sessions := projector.projectNodes(page, maxNavigationSectionRows)
 	remaining := sourceRemaining + len(page) - len(sessions)
-	return hubapi.NavigationSectionResource{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Sessions: sessions, Remaining: remaining, Truncated: projector.truncated}
+	resource := hubapi.NavigationSectionResource{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Sessions: sessions, Remaining: remaining, Truncated: projector.truncated}
+	fitNavigationSection(&resource)
+	return resource
 }
 
 func (p navigationProjection) PinCatalogPage(offset uint32, limit int) hubapi.NavigationPinSectionCatalog {
@@ -360,9 +435,11 @@ func (p navigationProjection) PinCatalogPage(offset uint32, limit int) hubapi.Na
 	rows := make(hubapi.NavigationArray[hubapi.NavigationPinSectionDescriptor], 0, end-start)
 	for _, section := range p.pinSections[start:end] {
 		candidate := hubapi.NavigationPinSectionDescriptor{ID: section.id, Name: truncateNavigationRunes(section.name, maxNavigationLabelRunes), Count: len(section.rows)}
-		if !navigationAppendWithin(&rows, candidate, maxNavigationCatalogBytes-4*1024) {
+		response := hubapi.NavigationPinSectionCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, PinSections: append(append(hubapi.NavigationArray[hubapi.NavigationPinSectionDescriptor](nil), rows...), candidate), Remaining: len(p.pinSections) - start - len(rows) - 1}
+		if !navigationJSONFits(response, maxNavigationCatalogBytes) {
 			break
 		}
+		rows = append(rows, candidate)
 	}
 	return hubapi.NavigationPinSectionCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, PinSections: rows, Remaining: len(p.pinSections) - start - len(rows)}
 }
@@ -377,9 +454,11 @@ func (p navigationProjection) CatalogPage(kind navigationResourceKind, offset ui
 	rows := make(hubapi.NavigationArray[hubapi.NavigationProjectSummary], 0, end-start)
 	for _, project := range projects[start:end] {
 		candidate := p.projectSummary(project)
-		if !navigationAppendWithin(&rows, candidate, maxNavigationCatalogBytes-4*1024) {
+		response := hubapi.NavigationProjectCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Projects: append(append(hubapi.NavigationArray[hubapi.NavigationProjectSummary](nil), rows...), candidate), Remaining: len(projects) - start - len(rows) - 1}
+		if !navigationJSONFits(response, maxNavigationCatalogBytes) {
 			break
 		}
+		rows = append(rows, candidate)
 	}
 	remaining := len(projects) - start - len(rows)
 	return hubapi.NavigationProjectCatalog{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Projects: rows, Remaining: remaining}, nil
@@ -394,7 +473,9 @@ func (p navigationProjection) Project(key string) (hubapi.NavigationProjectResou
 	current, currentRemaining := projector.projectTier(project, "current", 0, maxNavigationSectionRows)
 	recent, recentRemaining := projector.projectTier(project, "recent", 0, maxNavigationSectionRows)
 	archived, archivedRemaining := projector.projectTier(project, "archived", 0, maxNavigationSectionRows)
-	return hubapi.NavigationProjectResource{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Key: key, Current: hubapi.NavigationTier{Sessions: current, Remaining: currentRemaining}, Recent: hubapi.NavigationTier{Sessions: recent, Remaining: recentRemaining}, Archived: hubapi.NavigationTier{Sessions: archived, Remaining: archivedRemaining}, Truncated: projector.truncated}, true
+	resource := hubapi.NavigationProjectResource{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Key: key, Current: hubapi.NavigationTier{Sessions: current, Remaining: currentRemaining}, Recent: hubapi.NavigationTier{Sessions: recent, Remaining: recentRemaining}, Archived: hubapi.NavigationTier{Sessions: archived, Remaining: archivedRemaining}, Truncated: projector.truncated}
+	fitNavigationProject(&resource)
+	return resource, true
 }
 
 func (p navigationProjection) ProjectPage(key, tier string, offset uint32, limit int) (hubapi.NavigationProjectPage, error) {
@@ -407,12 +488,109 @@ func (p navigationProjection) ProjectPage(key, tier string, offset uint32, limit
 	}
 	projector := navigationProjector{projection: p}
 	sessions, remaining := projector.projectTier(project, tier, offset, limit)
-	return hubapi.NavigationProjectPage{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Key: key, Tier: tier, Offset: offset, Sessions: sessions, Remaining: remaining, Truncated: projector.truncated}, nil
+	resource := hubapi.NavigationProjectPage{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Key: key, Tier: tier, Offset: offset, Sessions: sessions, Remaining: remaining, Truncated: projector.truncated}
+	fitNavigationProjectPage(&resource)
+	return resource, nil
+}
+
+// The fitters marshal the complete candidate envelope, not a row or array
+// estimate. They always remove the deterministic rightmost branch first and
+// turn that removal into explicit resource/parent overflow metadata.
+func fitNavigationSection(resource *hubapi.NavigationSectionResource) {
+	for !navigationJSONFits(*resource, maxNavigationResponseBytes) {
+		resource.Truncated = true
+		if trimNavigationSummaryChildren(resource.Sessions) {
+			continue
+		}
+		if len(resource.Sessions) == 0 {
+			return
+		}
+		resource.Sessions = resource.Sessions[:len(resource.Sessions)-1]
+		resource.Remaining++
+	}
+}
+
+func fitNavigationProjectPage(resource *hubapi.NavigationProjectPage) {
+	for !navigationJSONFits(*resource, maxNavigationResponseBytes) {
+		resource.Truncated = true
+		if trimNavigationSummaryChildren(resource.Sessions) {
+			continue
+		}
+		if len(resource.Sessions) == 0 {
+			return
+		}
+		resource.Sessions = resource.Sessions[:len(resource.Sessions)-1]
+		resource.Remaining++
+	}
+}
+
+func fitNavigationProject(resource *hubapi.NavigationProjectResource) {
+	for !navigationJSONFits(*resource, maxNavigationResponseBytes) {
+		resource.Truncated = true
+		if trimNavigationTier(&resource.Archived) || trimNavigationTier(&resource.Recent) || trimNavigationTier(&resource.Current) {
+			continue
+		}
+		return
+	}
+}
+
+func trimNavigationTier(tier *hubapi.NavigationTier) bool {
+	if trimNavigationSummaryChildren(tier.Sessions) {
+		return true
+	}
+	if len(tier.Sessions) == 0 {
+		return false
+	}
+	tier.Sessions = tier.Sessions[:len(tier.Sessions)-1]
+	tier.Remaining++
+	return true
+}
+
+func trimNavigationSummaryChildren(rows hubapi.NavigationArray[hubapi.NavigationSessionSummary]) bool {
+	for index := len(rows) - 1; index >= 0; index-- {
+		if trimNavigationSummary(&rows[index]) {
+			return true
+		}
+	}
+	return false
+}
+
+func trimNavigationSummary(summary *hubapi.NavigationSessionSummary) bool {
+	for index := len(summary.Children) - 1; index >= 0; index-- {
+		if trimNavigationSummary(&summary.Children[index]) {
+			return true
+		}
+		removed := navigationSummaryWeight(summary.Children[index])
+		summary.Children = summary.Children[:index]
+		summary.OmittedDescendants += removed
+		return true
+	}
+	return false
+}
+
+func navigationSummaryWeight(summary hubapi.NavigationSessionSummary) int {
+	weight := 1 + summary.OmittedDescendants
+	for _, child := range summary.Children {
+		weight += navigationSummaryWeight(child)
+	}
+	return weight
+}
+
+func navigationJSONFits(value any, maxBytes int) bool {
+	encoded, err := json.Marshal(value)
+	return err == nil && len(encoded) <= maxBytes
 }
 
 func (p navigationProjection) Location(ref string) (hubapi.NavigationSessionLocation, bool) {
 	location, ok := p.locations[ref]
-	return location, ok
+	if !ok {
+		return hubapi.NavigationSessionLocation{}, false
+	}
+	if location.Session != nil {
+		summary := cloneNavigationSummary(*location.Session)
+		location.Session = &summary
+	}
+	return location, true
 }
 
 func (p navigationProjection) Resource(key navigationResourceKey) (any, navigationFingerprint, error) {
@@ -463,15 +641,8 @@ func (p navigationProjection) Resource(key navigationResourceKey) (any, navigati
 	if err != nil {
 		return nil, navigationFingerprint{}, fmt.Errorf("encode navigation resource: %w", err)
 	}
-	maxBytes := maxNavigationResponseBytes
-	switch key.Kind {
-	case navigationResourceManifest:
-		maxBytes = maxNavigationManifestBytes
-	case navigationResourcePinCatalog, navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns:
-		maxBytes = maxNavigationCatalogBytes
-	}
-	if len(encoded) > maxBytes {
-		return nil, navigationFingerprint{}, fmt.Errorf("navigation resource exceeds %d bytes", maxBytes)
+	if key.Kind == navigationResourceManifest && len(encoded) > maxNavigationManifestBytes {
+		return nil, navigationFingerprint{}, fmt.Errorf("navigation manifest exceeds %d bytes", maxNavigationManifestBytes)
 	}
 	return resource, sha256.Sum256(encoded), nil
 }
@@ -491,7 +662,7 @@ func (p navigationProjection) buildPinSections() []navigationPinSection {
 			assignment[sessionID] = pin.SectionID
 		}
 	}
-	for _, node := range p.inputs.Tree.PinCandidates() {
+	for _, node := range p.pinCandidates {
 		ref, err := navigationRef(node.ID)
 		if err != nil {
 			continue
@@ -512,6 +683,20 @@ func (p navigationProjection) buildPinSections() []navigationPinSection {
 		if len(section.rows) != 0 {
 			out = append(out, section)
 		}
+	}
+	for index := range out {
+		sort.SliceStable(out[index].rows, func(left, right int) bool {
+			leftNode, rightNode := out[index].rows[left], out[index].rows[right]
+			if !leftNode.UpdatedAt.Equal(rightNode.UpdatedAt) {
+				return leftNode.UpdatedAt.After(rightNode.UpdatedAt)
+			}
+			leftRef, _ := navigationRef(leftNode.ID)
+			rightRef, _ := navigationRef(rightNode.ID)
+			if leftRef.String() != rightRef.String() {
+				return leftRef.String() < rightRef.String()
+			}
+			return leftNode.ID < rightNode.ID
+		})
 	}
 	sort.SliceStable(out, func(i, j int) bool {
 		left, right := strings.ToLower(out[i].name), strings.ToLower(out[j].name)
@@ -607,16 +792,7 @@ func (p *navigationProjector) projectNode(node hubcore.TreeNode, depth int) (hub
 		return hubapi.NavigationSessionSummary{}, false
 	}
 	summary := p.projectShallow(node)
-	encoded, err := json.Marshal(summary)
-	// Keep room for resource metadata and JSON separators. The per-node sum is
-	// deliberately conservative (parents and children are both counted), so a
-	// successful traversal is safely below the actual resource byte ceiling.
-	if err != nil || p.bytes+len(encoded) > maxNavigationResponseBytes-4*1024 {
-		p.truncated = true
-		return hubapi.NavigationSessionSummary{}, false
-	}
 	p.nodes++
-	p.bytes += len(encoded)
 	if depth == maxNavigationDepth {
 		if omitted := countTreeNodes(node.Children); omitted != 0 {
 			summary.OmittedDescendants = omitted
@@ -647,7 +823,8 @@ func (p navigationProjector) projectShallow(node hubcore.TreeNode) hubapi.Naviga
 	if !updated.IsZero() {
 		updatedAt = &updated
 	}
-	return hubapi.NavigationSessionSummary{Ref: ref.String(), HostID: ref.HostID, SessionID: ref.SessionID, Title: truncateNavigationRunes(node.Title, maxNavigationTitleRunes), Project: truncateNavigationRunes(node.Project, maxNavigationLabelRunes), State: node.State, Kind: node.Kind, Branch: truncateNavigationRunes(node.Branch, maxNavigationLabelRunes), ClusterCount: node.ClusterCount, Favorite: p.projection.sessionFavorite(node.ID, ref.String()), Rename: p.projection.renameable(node.ID, ref.String()), Live: p.projection.isLive(node.ID, ref.String()), AskPending: node.AskPending, Dormant: node.Dormant, UpdatedAt: updatedAt, MoreSubagents: node.MoreSubagents, Children: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{}}
+	pinned := p.projection.pinSectionFor(node.ID, ref.String()) != ""
+	return hubapi.NavigationSessionSummary{Ref: ref.String(), HostID: ref.HostID, SessionID: ref.SessionID, Title: truncateNavigationRunes(node.Title, maxNavigationTitleRunes), Project: truncateNavigationRunes(node.Project, maxNavigationLabelRunes), State: node.State, Kind: node.Kind, Branch: truncateNavigationRunes(node.Branch, maxNavigationLabelRunes), ClusterCount: node.ClusterCount, Favorite: !pinned && p.projection.sessionFavorite(node.ID, ref.String()), Rename: p.projection.renameable(node.ID, ref.String()), Live: p.projection.isLive(node.ID, ref.String()) && hubcore.NormalizeState(node.State) != "ended", AskPending: node.AskPending, Dormant: node.Dormant, UpdatedAt: updatedAt, MoreSubagents: node.MoreSubagents, Children: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{}}
 }
 
 func (p navigationProjection) isLive(id, ref string) bool {
@@ -661,15 +838,39 @@ func (p navigationProjection) sessionFavorite(id, ref string) bool {
 }
 func (p navigationProjection) pinSectionFor(id, ref string) string {
 	if value := p.inputs.PinSectionBySession[id]; value != "" {
-		return value
+		if p.pinSectionIDs[value] {
+			return value
+		}
 	}
 	if value := p.inputs.PinSectionBySession[ref]; value != "" {
-		return value
+		if p.pinSectionIDs[value] {
+			return value
+		}
 	}
 	if assignment, ok := p.inputs.PinAssignments[id]; ok {
-		return assignment.SectionID
+		if p.pinSectionIDs[assignment.SectionID] {
+			return assignment.SectionID
+		}
+	}
+	if assignment, ok := p.inputs.PinAssignments[ref]; ok {
+		if p.pinSectionIDs[assignment.SectionID] {
+			return assignment.SectionID
+		}
 	}
 	return ""
+}
+
+func cloneNavigationSummary(summary hubapi.NavigationSessionSummary) hubapi.NavigationSessionSummary {
+	clone := summary
+	if summary.UpdatedAt != nil {
+		updated := *summary.UpdatedAt
+		clone.UpdatedAt = &updated
+	}
+	clone.Children = make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], len(summary.Children))
+	for index, child := range summary.Children {
+		clone.Children[index] = cloneNavigationSummary(child)
+	}
+	return clone
 }
 
 func navigationPage[T any](rows []T, offset uint32, limit, maximum int) ([]T, int) {
