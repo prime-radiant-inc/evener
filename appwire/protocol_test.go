@@ -213,6 +213,48 @@ func TestNavigationInvalidationTargetUnmarshalRejectsInvalidVariants(t *testing.
 	}
 }
 
+func TestTranscriptDisplayCatalog(t *testing.T) {
+	methods := map[string]MethodSpec{}
+	for _, method := range Methods {
+		methods[method.Name] = method
+	}
+	for _, name := range []string{
+		MethodEvenerSettingsTranscriptDisplayGet,
+		MethodEvenerSettingsTranscriptDisplayPatch,
+	} {
+		method, ok := methods[name]
+		if !ok {
+			t.Fatalf("method catalog missing %s", name)
+		}
+		if method.Scope != ScopeHub {
+			t.Errorf("method %s scope = %q, want %q", name, method.Scope, ScopeHub)
+		}
+	}
+	var changed *NotificationSpec
+	for i := range Notifications {
+		if Notifications[i].Name == NotifyEvenerSettingsTranscriptDisplayChanged {
+			changed = &Notifications[i]
+			break
+		}
+	}
+	if changed == nil {
+		t.Fatalf("notification catalog missing %s", NotifyEvenerSettingsTranscriptDisplayChanged)
+	}
+	if reflect.TypeOf(changed.Payload) != reflect.TypeOf(TranscriptDisplayChangedParams{}) {
+		t.Fatalf("changed payload type = %T, want %T", changed.Payload, TranscriptDisplayChangedParams{})
+	}
+}
+
+func TestFeatureSetTranscriptDisplayJSONField(t *testing.T) {
+	encoded, err := json.Marshal(FeatureSet{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(encoded, []byte(`"transcriptDisplaySettings":false`)) {
+		t.Fatalf("feature JSON missing transcript display field: %s", encoded)
+	}
+}
+
 func TestJobsListReplacementTreeWireShape(t *testing.T) {
 	payload := JobActivityTree{
 		Revision: 7,
@@ -332,12 +374,13 @@ func TestMutationExpectedQueueRevisionRequiresUnsignedInteger(t *testing.T) {
 
 func TestThreadNotificationsRequireAuthoritativeRoutingIdentity(t *testing.T) {
 	global := map[string]bool{
-		NotifyEvenerAuthUpdated:           true,
-		NotifyEvenerLaunchUpdated:         true,
-		NotifyEvenerAttentionChanged:      true,
-		NotifyEvenerMarketplaceUpdated:    true,
-		NotifyEvenerPluginUpdated:         true,
-		NotifyEvenerNavigationInvalidated: true,
+		NotifyEvenerAuthUpdated:                      true,
+		NotifyEvenerLaunchUpdated:                    true,
+		NotifyEvenerAttentionChanged:                 true,
+		NotifyEvenerMarketplaceUpdated:               true,
+		NotifyEvenerPluginUpdated:                    true,
+		NotifyEvenerNavigationInvalidated:            true,
+		NotifyEvenerSettingsTranscriptDisplayChanged: true,
 	}
 	for _, notification := range Notifications {
 		if global[notification.Name] {

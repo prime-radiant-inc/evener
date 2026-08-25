@@ -405,6 +405,7 @@ export interface FeatureSet {
   modelList: boolean;
   directoryComplete: boolean;
   auth: boolean;
+  transcriptDisplaySettings: boolean;
 }
 
 export interface GitHeadParams {
@@ -1636,6 +1637,62 @@ export interface ToolOutputDeltaParams {
   delta: string;
 }
 
+export interface TranscriptDisplayAdvanced {
+  roundTimings: boolean;
+  tokenCounts: boolean;
+  estimatedCost: boolean;
+  systemEvents: boolean;
+  promptEvents: boolean;
+  hookExits: string;
+}
+
+export interface TranscriptDisplayChangedParams {
+  layout: string;
+  revision: number;
+  config: TranscriptDisplayConfig;
+}
+
+export interface TranscriptDisplayConfig {
+  version: number;
+  content: TranscriptDisplayContent;
+  advanced: TranscriptDisplayAdvanced;
+}
+
+export interface TranscriptDisplayContent {
+  kind: string;
+  level?: string;
+  custom?: TranscriptDisplayCustomContent;
+}
+
+export interface TranscriptDisplayCustomContent {
+  toolIntent: boolean;
+  toolCalls: boolean;
+  reasoning: boolean;
+  expandByDefault: boolean;
+}
+
+export interface TranscriptDisplayDefault {
+  revision: number;
+  config: TranscriptDisplayConfig;
+}
+
+export interface TranscriptDisplayDefaults {
+  desktop: TranscriptDisplayDefault;
+  mobile: TranscriptDisplayDefault;
+}
+
+export interface TranscriptDisplayDefaultsPatchParams {
+  layout: string;
+  expectedRevision: number;
+  config: TranscriptDisplayConfig;
+}
+
+export interface TranscriptDisplayPatchResponse {
+  layout: string;
+  revision: number;
+  config: TranscriptDisplayConfig;
+}
+
 export interface Turn {
   id: string;
   items?: ThreadItem[];
@@ -1854,6 +1911,8 @@ export const METHOD_NAMES = [
   "evener/plugin/setAutoUpgrade",
   "evener/command/list",
   "evener/settings/overview",
+  "evener/settings/transcriptDisplay/get",
+  "evener/settings/transcriptDisplay/patch",
   "evener/sandbox/escalation/resolve",
 ] as const;
 
@@ -1893,6 +1952,7 @@ export const NOTIFICATION_NAMES = [
   "evener/task/updated",
   "evener/sandbox/escalation/requested",
   "evener/sandbox/escalation/resolved",
+  "evener/settings/transcriptDisplay/changed",
 ] as const;
 
 export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
@@ -2018,6 +2078,8 @@ export interface MethodTypes {
   "evener/plugin/setAutoUpgrade": { params: PluginSetAutoUpgradeParams; result: PluginListResponse };
   "evener/command/list": { params: EmptyParams; result: CommandListResponse };
   "evener/settings/overview": { params: EmptyParams; result: SettingsOverviewResponse };
+  "evener/settings/transcriptDisplay/get": { params: EmptyParams; result: TranscriptDisplayDefaults };
+  "evener/settings/transcriptDisplay/patch": { params: TranscriptDisplayDefaultsPatchParams; result: TranscriptDisplayPatchResponse };
   "evener/sandbox/escalation/resolve": { params: SandboxEscalationResolveParams; result: EmptyResponse };
 }
 
@@ -2055,6 +2117,7 @@ export interface NotificationTypes {
   "evener/task/updated": TaskUpdatedParams;
   "evener/sandbox/escalation/requested": SandboxEscalationRequested;
   "evener/sandbox/escalation/resolved": SandboxEscalationResolved;
+  "evener/settings/transcriptDisplay/changed": TranscriptDisplayChangedParams;
 }
 
 export type AnyNotification = { [K in NotificationName]: { method: K; params: NotificationTypes[K] } }[NotificationName];

@@ -333,18 +333,19 @@ type ServerInfo struct {
 }
 
 type FeatureSet struct {
-	ThreadList        bool `json:"threadList"`
-	ThreadTurnsList   bool `json:"threadTurnsList"`
-	TurnStart         bool `json:"turnStart"`
-	TurnSteer         bool `json:"turnSteer"`
-	ThreadClear       bool `json:"threadClear"`
-	ThreadShutdown    bool `json:"threadShutdown"`
-	ForkFromTurn      bool `json:"forkFromTurn"`
-	Tasks             bool `json:"tasks"`
-	TranscriptList    bool `json:"transcriptList"`
-	ModelList         bool `json:"modelList"`
-	DirectoryComplete bool `json:"directoryComplete"`
-	Auth              bool `json:"auth"`
+	ThreadList                bool `json:"threadList"`
+	ThreadTurnsList           bool `json:"threadTurnsList"`
+	TurnStart                 bool `json:"turnStart"`
+	TurnSteer                 bool `json:"turnSteer"`
+	ThreadClear               bool `json:"threadClear"`
+	ThreadShutdown            bool `json:"threadShutdown"`
+	ForkFromTurn              bool `json:"forkFromTurn"`
+	Tasks                     bool `json:"tasks"`
+	TranscriptList            bool `json:"transcriptList"`
+	ModelList                 bool `json:"modelList"`
+	DirectoryComplete         bool `json:"directoryComplete"`
+	Auth                      bool `json:"auth"`
+	TranscriptDisplaySettings bool `json:"transcriptDisplaySettings"`
 }
 
 type Thread struct {
