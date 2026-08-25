@@ -643,7 +643,7 @@ Collapsed projects issue no project request. Expanding one project loads that re
 
 On `evener/navigation/invalidated`, the client raises targets only for named resources. It does not use a time-based debounce. Resource targets naturally coalesce.
 
-A successful mutation returns:
+A successful hub-owned REST navigation mutation returns:
 
 ```text
 navigation {
@@ -652,7 +652,7 @@ navigation {
 }
 ```
 
-The client feeds this metadata to the revalidator. When the matching AppWire event arrives, the resource target is already satisfied or in flight, so it causes no duplicate request.
+The client feeds this metadata to the revalidator. When the matching AppWire event arrives, the resource target is already satisfied or in flight, so it causes no duplicate request. AppWire-routed daemon actions do not synthesize hub navigation metadata in daemon result types; they converge through the single hub invalidation event and never issue an eager navigation refresh.
 
 `evener/attention/changed` updates the dedicated alert, title, and badge state directly from its existing payload. It does not fetch navigation. The navigation invalidation independently updates Needs You membership or project rollups when those resources change.
 
