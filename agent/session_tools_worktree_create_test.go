@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 	"sync"
@@ -172,12 +173,9 @@ func TestMain(m *testing.M) {
 	// flag.Set so the command-line value (absent here) does not clobber
 	// the file contents after m.Run calls flag.Parse internally.
 	flag.Parse()
-	if runFile := os.Getenv("EVENER_SHARD_RUN_FILE"); runFile != "" {
-		if data, err := os.ReadFile(runFile); err == nil {
-			if pattern := strings.TrimSpace(string(data)); pattern != "" {
-				flag.Set("test.run", pattern)
-			}
-		}
+	if err := configureShardRunFile(); err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "agent TestMain: %v\n", err)
+		os.Exit(2)
 	}
 
 	// The worktree tests reach git through `sh -c "git …"`, so PATH order decides
@@ -219,6 +217,28 @@ func TestMain(m *testing.M) {
 		_ = os.RemoveAll(intgMCPServerDir)
 	}
 	os.Exit(code)
+}
+
+func configureShardRunFile() error {
+	runFile, supplied := os.LookupEnv("EVENER_SHARD_RUN_FILE")
+	if !supplied {
+		return nil
+	}
+	data, err := os.ReadFile(runFile)
+	if err != nil {
+		return fmt.Errorf("EVENER_SHARD_RUN_FILE %q: read failed: %w", runFile, err)
+	}
+	pattern := strings.TrimSpace(string(data))
+	if pattern == "" {
+		return fmt.Errorf("EVENER_SHARD_RUN_FILE %q: run regex is empty", runFile)
+	}
+	if _, err := regexp.Compile(pattern); err != nil {
+		return fmt.Errorf("EVENER_SHARD_RUN_FILE %q: invalid run regex: %w", runFile, err)
+	}
+	if err := flag.Set("test.run", pattern); err != nil {
+		return fmt.Errorf("EVENER_SHARD_RUN_FILE %q: setting test.run failed: %w", runFile, err)
+	}
+	return nil
 }
 
 func packageFixtureTempDir(t *testing.T, pattern string) string {
