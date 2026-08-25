@@ -14,6 +14,8 @@ import type {
   HarnessListResponse,
   InputItem,
   MethodTypes,
+  ModelListParams,
+  ModelListResponse,
   ProjectsRecentResponse,
   Thread,
   ThreadStartResponse,
@@ -34,6 +36,7 @@ export interface NewSessionService {
   start(params: NewSessionParams): Promise<{ thread: Thread; turn: Turn }>;
   recentProjects(): Promise<string[]>;
   harnesses(): Promise<HarnessDescriptor[]>;
+  models(params?: ModelListParams): Promise<ModelListResponse>;
 }
 
 export function createNewSessionService(
@@ -80,6 +83,10 @@ export function createNewSessionService(
         {},
       );
       return response.data ?? [];
+    },
+
+    async models(params = {}) {
+      return client.request("model/list", params);
     },
   };
 }
