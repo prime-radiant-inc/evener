@@ -1918,8 +1918,9 @@ func commandUnenforcedFieldWarnings(p plugin.Instance) []events.WarningData {
 	return out
 }
 
-// initMCP discovers and connects to MCP servers if configured.
-// Uses a 30-second timeout since NewSession doesn't take a context.
+// initMCP discovers and connects to MCP servers if configured. Production uses
+// a 30-second timeout since NewSession doesn't take a context; hermetic stdio
+// tests can instead bind initialization to their lifecycle context.
 func (s *Session) initMCP() error {
 	configs, cfgWarnings, err := mcpconfig.Discover(s.currentEnv(), s.cfg.MCPConfigFiles, s.cfg.MCPInline)
 	if err != nil {
@@ -1938,13 +1939,21 @@ func (s *Session) initMCP() error {
 		return nil
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	defer cancel()
+	ctx := s.cfg.testOnly.mcpConnectContext
+	managerOpts := []mcp.Option{mcp.WithSandboxWrapper(s.sandboxWrapper())}
+	if ctx == nil {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+	}
+	if timeout := s.cfg.testOnly.mcpConnectTimeout; timeout != nil {
+		managerOpts = append(managerOpts, mcp.WithConnectTimeoutForTesting(*timeout))
+	}
 
 	// A server that fails to connect or register is not fatal: fold its outcome
 	// into a pending warning and keep going. A session with zero healthy MCP
 	// servers still constructs successfully.
-	mgr, connectOutcomes := mcp.NewManager(ctx, configs, nil, mcp.WithSandboxWrapper(s.sandboxWrapper()))
+	mgr, connectOutcomes := mcp.NewManager(ctx, configs, nil, managerOpts...)
 	mgr.OnReconnect = func(name string) {
 		s.emitDiagnosticWarning(reconnectRecoveryWarning(name))
 	}
