@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -73,13 +74,13 @@ func newWorktreeMaintenanceProbe() *worktreeMaintenanceProbe {
 	}
 }
 
-func (p *worktreeMaintenanceProbe) run(real worktreeGitRunner) worktreeGitRunner {
+func (p *worktreeMaintenanceProbe) run(underlyingRunner worktreeGitRunner) worktreeGitRunner {
 	return func(dir string, args ...string) (string, error) {
-		out, err := real(dir, args...)
+		out, err := underlyingRunner(dir, args...)
 		if err != nil {
 			return out, err
 		}
-		if worktreeSlicesContain(args, "commit") && !worktreeSlicesContain(args, "maintenance.auto=false") {
+		if slices.Contains(args, "commit") && !slices.Contains(args, "maintenance.auto=false") {
 			go func() {
 				lock := filepath.Join(dir, ".git", "objects", "maintenance.lock")
 				p.mutatorErr = os.WriteFile(lock, []byte("maintenance\n"), 0o644)
@@ -96,15 +97,6 @@ func (p *worktreeMaintenanceProbe) run(real worktreeGitRunner) worktreeGitRunner
 		}
 		return out, nil
 	}
-}
-
-func worktreeSlicesContain(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
 
 func (p *worktreeMaintenanceProbe) published() {

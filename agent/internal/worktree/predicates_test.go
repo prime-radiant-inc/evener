@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -84,13 +85,13 @@ func newPredicateMaintenanceProbe() *predicateMaintenanceProbe {
 	}
 }
 
-func (p *predicateMaintenanceProbe) run(real predicateGitRunner) predicateGitRunner {
+func (p *predicateMaintenanceProbe) run(underlyingRunner predicateGitRunner) predicateGitRunner {
 	return func(dir string, args ...string) (string, error) {
-		out, err := real(dir, args...)
+		out, err := underlyingRunner(dir, args...)
 		if err != nil {
 			return out, err
 		}
-		if slicesContain(args, "commit") && !slicesContain(args, "maintenance.auto=false") {
+		if slices.Contains(args, "commit") && !slices.Contains(args, "maintenance.auto=false") {
 			go func() {
 				lock := filepath.Join(dir, ".git", "objects", "maintenance.lock")
 				p.mutatorErr = os.WriteFile(lock, []byte("maintenance\n"), 0o644)
@@ -120,15 +121,6 @@ func (p *predicateMaintenanceProbe) published() {
 		close(p.release)
 	default:
 	}
-}
-
-func slicesContain(values []string, want string) bool {
-	for _, value := range values {
-		if value == want {
-			return true
-		}
-	}
-	return false
 }
 
 func TestMain(m *testing.M) {
