@@ -17,6 +17,8 @@ import {
   clearViewportOverride,
   connectPage,
   evaluate,
+  createStartupDeadline,
+  devtoolsHttpURL,
   navigateTo,
   waitForFonts,
   waitForHttp,
@@ -30,8 +32,8 @@ const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 // over - the exact condition the bug needed.
 const VIEWPORT = { width: 1400, height: 900 };
 
-async function measure(cdpPort, vitePort) {
-  const page = await connectPage(cdpPort);
+async function measure(cdpEndpoint, vitePort) {
+  const page = await connectPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, VIEWPORT);
@@ -94,7 +96,8 @@ async function main() {
   } catch (error) {
     throw new Error(describeBrowserStartupFailure({ error, subsystem: "launch" }));
   }
-  const { vitePort, cdpPort, cleanup } = guard;
+  const { vitePort, cleanup } = guard;
+  let cdpEndpoint;
 
   try {
     try {
@@ -104,11 +107,14 @@ async function main() {
         describeBrowserStartupFailure({ error, subsystem: "vite", viteStderr: guard.getViteError() }),
       );
     }
+    const startupDeadline = createStartupDeadline();
     try {
+      cdpEndpoint = await guard.waitForChrome({ signal: startupDeadline.signal });
       await waitForHttp(
-        `http://127.0.0.1:${cdpPort}/json/version`,
+        devtoolsHttpURL(cdpEndpoint, "/json/version"),
         "chrome devtools endpoint",
         guard.getChromeLaunchError,
+        { signal: startupDeadline.signal, failure: guard.getChromeFailure() },
       );
     } catch (error) {
       throw new Error(
@@ -121,8 +127,10 @@ async function main() {
           viteStderr: guard.getViteError(),
         }),
       );
+    } finally {
+      startupDeadline.clear();
     }
-    const result = await measure(cdpPort, vitePort);
+    const result = await measure(cdpEndpoint, vitePort);
     const failures = assertResult(result);
     if (failures.length === 0) {
       console.log(

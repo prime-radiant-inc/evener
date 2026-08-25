@@ -208,6 +208,12 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		// store stays open until worktree disposal has recorded its evidence.
 		if err := s.closeOwnedDelegateRuntimeTree(budgetCtx); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate tree close incomplete: %v", err)})
+			// A hopeless stop has already consumed its dedicated half of the
+			// cascade budget. Do not spend the remaining half joining the same
+			// wedged child again through its generic Session.Close path.
+			if errors.Is(err, context.DeadlineExceeded) {
+				cancelBudget()
+			}
 		}
 
 		// Step 4: reacquire the pair and drain the subagent map. Marking closing
