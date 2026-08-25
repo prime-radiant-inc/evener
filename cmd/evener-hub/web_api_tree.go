@@ -30,6 +30,7 @@ var (
 	hubIsSessionLive             = (*WebServer).isLive
 	hubTreeWorkspaceData         = (*WebServer).workspaceData
 	hubTreeAttentionRank         = hubapi.AttentionRank
+	hubNavigationNow             = func() time.Time { return time.Now().UTC() }
 )
 
 type navigationSnapshot struct {
@@ -123,7 +124,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		writeAPIJSON(w, http.StatusOK, struct {
 			GeneratedAt      time.Time               `json:"generated_at"`
 			AttentionSummary hubapi.AttentionSummary `json:"attentionSummary"` //nolint:tagliatelle // camelCase: see hubapi.AttentionSummary's doc
-		}{time.Now().UTC(), hubAttentionSummaryFromCore(attentionSummary)})
+		}{hubNavigationNow(), hubAttentionSummaryFromCore(attentionSummary)})
 		return
 	}
 	tree, attentionSummary, live, authority := s.memoTreeWithAuthority(r.Context())
@@ -149,7 +150,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	sessionFavs := revalidation.Presentation
 	projectFavs := projectFavoritePresentation(sessionFavs)
 	resp := hubapi.TreeResponse{
-		GeneratedAt:      time.Now().UTC(),
+		GeneratedAt:      hubNavigationNow(),
 		Sources:          s.apiTreeSources(),
 		AttentionSummary: hubAttentionSummaryFromCore(attentionSummary),
 	}
