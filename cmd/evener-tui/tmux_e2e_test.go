@@ -1709,6 +1709,14 @@ type tuiE2EHub struct {
 	// cleanupTrace is test-only instrumentation for the lifecycle regression;
 	// it stays nil for every normal E2E fixture.
 	cleanupTrace chan<- int
+	rpcMu        sync.Mutex
+	rpcWG        sync.WaitGroup
+	rpcClosing   bool
+	rpcStarts    atomic.Int32
+	rpcExits     atomic.Int32
+	// rpcExitGate is test-only instrumentation that keeps one handler in its
+	// deferred exit path until the close event-driven rescue releases it.
+	rpcExitGate <-chan struct{}
 	// ready is closed by the HTTP handler, not by httptest.NewServer's
 	// listener setup.  The latter only proves that a port was allocated; it
 	// does not prove that the server goroutine has reached the handler under a
@@ -1867,6 +1875,10 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 			http.NotFound(w, r)
 			return
 		}
+		if !h.beginRPCHandler() {
+			return
+		}
+		defer h.endRPCHandler()
 		app.ServeWebSocket(w, r)
 	}))
 	// Complete one real request through the installed handler before handing
@@ -1957,9 +1969,41 @@ func (h *tuiE2EHub) Close() {
 		if h.cleanupTrace != nil {
 			h.cleanupTrace <- 2
 		}
+		h.rpcMu.Lock()
+		h.rpcClosing = true
+		h.rpcMu.Unlock()
+		// Server.Close does not join hijacked WebSocket handlers. The explicit
+		// wait is safe because beginRPCHandler closes the admission gate before
+		// waiting, so no Add can race with Wait.
 		h.server.Close()
+		h.rpcWG.Wait()
+		if h.cleanupTrace != nil {
+			h.cleanupTrace <- 4
+		}
 		close(h.closed)
 	})
+}
+
+func (h *tuiE2EHub) beginRPCHandler() bool {
+	h.rpcMu.Lock()
+	defer h.rpcMu.Unlock()
+	if h.rpcClosing {
+		return false
+	}
+	h.rpcWG.Add(1)
+	h.rpcStarts.Add(1)
+	return true
+}
+
+func (h *tuiE2EHub) endRPCHandler() {
+	if h.rpcExitGate != nil {
+		<-h.rpcExitGate
+	}
+	if h.cleanupTrace != nil {
+		h.cleanupTrace <- 3
+	}
+	h.rpcExits.Add(1)
+	h.rpcWG.Done()
 }
 
 // registerTUIE2EHubCleanup deliberately uses t.Cleanup rather than defer.
@@ -1973,35 +2017,112 @@ func registerTUIE2EHubCleanup(t *testing.T, hub *tuiE2EHub) {
 }
 
 // TestTUITmuxE2EHubCleanupJoinsClientBeforeServer exercises the real WebSocket
-// handler lifetime that makes httptest.Server.Close a joining operation. The
-// client cleanup is registered after the hub cleanup, matching the tmux
-// starter's later t.Cleanup registration. If this is changed back to defer,
-// the helper returns and runs hub.Close while the client is still connected;
-// the test then blocks in the real server join instead of leaving an orphan.
+// handler lifetime separately from httptest.Server.Close: hijacked connections
+// are not part of that server's close wait, so the fixture owns an explicit
+// handler join. The event-driven rescue closes the client if a mutation starts
+// hub cleanup first, turning the wrong order into a structural order failure
+// instead of a test hang.
 func TestTUITmuxE2EHubCleanupJoinsClientBeforeServer(t *testing.T) {
 	var hub *tuiE2EHub
-	trace := make(chan int, 2)
+	trace := make(chan int, 4)
+	observed := make(chan int, 4)
+	rescueDone := make(chan struct{})
+	release := make(chan struct{})
+	var releaseOnce sync.Once
 	t.Run("setup-lifecycle", func(t *testing.T) {
 		hub = newTUIE2EHub(t)
-		hub.cleanupTrace = trace
+		hub.rpcExitGate = release
 		transport, err := appwire.DialWebSocket(context.Background(), "ws"+strings.TrimPrefix(hub.URL(), "http")+"/rpc", hub.server.Client())
 		if err != nil {
 			t.Fatalf("dial test hub: %v", err)
 		}
+		hub.cleanupTrace = trace
+		go func() {
+			seen := [5]bool{}
+			for !seen[1] || !seen[2] || !seen[3] || !seen[4] {
+				event := <-trace
+				observed <- event
+				seen[event] = true
+				if event == 2 {
+					_ = transport.Close()
+					releaseOnce.Do(func() { close(release) })
+				}
+			}
+			close(rescueDone)
+		}()
 		registerTUIE2EHubCleanup(t, hub)
 		t.Cleanup(func() {
-			_ = transport.Close()
 			trace <- 1
+			_ = transport.Close()
 		})
 	})
-	if first, second := <-trace, <-trace; first != 1 || second != 2 {
-		t.Fatalf("cleanup order=%d,%d, want client then hub", first, second)
+	order := [4]int{<-observed, <-observed, <-observed, <-observed}
+	if order != [4]int{1, 2, 3, 4} {
+		t.Fatalf("cleanup/handler order=%v, want client, hub-start, handler-exit, hub-complete", order)
 	}
+	<-rescueDone
 	select {
 	case <-hub.closed:
 	default:
-		t.Fatal("hub cleanup did not join after client cleanup")
+		t.Fatal("hub cleanup completed without the joined closed event")
 	}
+}
+
+func TestTUITmuxE2EHubHandlerLifetimeEdges(t *testing.T) {
+	t.Run("zero-handlers-and-repeated-close", func(t *testing.T) {
+		hub := newTUIE2EHub(t)
+		registerTUIE2EHubCleanup(t, hub)
+		hub.Close()
+		hub.Close()
+		if got := hub.rpcStarts.Load(); got != 0 {
+			t.Fatalf("RPC starts=%d, want 0", got)
+		}
+		if got := hub.rpcExits.Load(); got != 0 {
+			t.Fatalf("RPC exits=%d, want 0", got)
+		}
+	})
+
+	t.Run("accept-error-returns-handler", func(t *testing.T) {
+		hub := newTUIE2EHub(t)
+		registerTUIE2EHubCleanup(t, hub)
+		resp, err := hub.server.Client().Get(hub.URL() + "/rpc")
+		if err != nil {
+			t.Fatalf("GET /rpc: %v", err)
+		}
+		_ = resp.Body.Close()
+		hub.Close()
+		hub.Close()
+		if got := hub.rpcStarts.Load(); got != 1 {
+			t.Fatalf("RPC starts=%d, want 1", got)
+		}
+		if got := hub.rpcExits.Load(); got != 1 {
+			t.Fatalf("RPC exits=%d, want 1", got)
+		}
+	})
+
+	t.Run("multiple-handlers", func(t *testing.T) {
+		hub := newTUIE2EHub(t)
+		first, err := appwire.DialWebSocket(context.Background(), "ws"+strings.TrimPrefix(hub.URL(), "http")+"/rpc", hub.server.Client())
+		if err != nil {
+			t.Fatalf("dial first handler: %v", err)
+		}
+		second, err := appwire.DialWebSocket(context.Background(), "ws"+strings.TrimPrefix(hub.URL(), "http")+"/rpc", hub.server.Client())
+		if err != nil {
+			_ = first.Close()
+			t.Fatalf("dial second handler: %v", err)
+		}
+		registerTUIE2EHubCleanup(t, hub)
+		_ = first.Close()
+		_ = second.Close()
+		hub.Close()
+		hub.Close()
+		if got := hub.rpcStarts.Load(); got != 2 {
+			t.Fatalf("RPC starts=%d, want 2", got)
+		}
+		if got := hub.rpcExits.Load(); got != 2 {
+			t.Fatalf("RPC exits=%d, want 2", got)
+		}
+	})
 }
 
 // notify wakes a waiter after a handler has observed a request or changed
