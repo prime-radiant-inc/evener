@@ -80,7 +80,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -174,7 +174,7 @@ func TestTUITmuxE2E_BurstTypedKeysApplyIndividually(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -192,7 +192,7 @@ func TestTUITmuxE2E_AppShellPreservesLayoutAcrossWidths(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -228,7 +228,7 @@ func TestTUITmuxE2E_DashboardNarrowWideStates(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetSessionTitle("01LIVE", "live dashboard task with a title long enough to truncate cleanly")
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 
 	wide := startTUITmuxSized(t, bin, hub, 140, 40)
 	defer wide.Close()
@@ -267,7 +267,7 @@ func TestTUITmuxE2E_DashboardFooterAnchorsToBottom(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmuxSized(t, bin, hub, 124, 18)
 	defer app.Close()
 
@@ -296,7 +296,7 @@ func TestTUITmuxE2E_DashboardRecentOnlyState(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.EndDashboardSessions()
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -322,7 +322,7 @@ func TestTUITmuxE2E_ProjectHistoryReadOnlyAndResume(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -357,7 +357,7 @@ func TestTUITmuxE2E_CodexSpawnUsesHarnessModelPicker(t *testing.T) {
 		{ID: "evener", Label: "evener", Kind: "evener"},
 		{ID: "codex-local", Label: "codex-local", Kind: "codex"},
 	})
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -392,7 +392,7 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	// The /help output (all session slash commands + the browse keybindings)
 	// is taller than the default 40-row pane's transcript viewport, which pins
 	// to the bottom and scrolls the "Available commands:" header off the top.
@@ -536,7 +536,7 @@ func TestTUITmuxE2E_BrowseAndFork(t *testing.T) {
 	// scrolling to keep it visible) so a user message can be reached and forked.
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -585,7 +585,7 @@ func TestTUITmuxE2E_FailedForkPreservesDraft(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetFailFork(true)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -626,7 +626,7 @@ func TestTUITmuxE2E_CapabilityGates(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetSessionCapabilities("01LIVE", appwire.ThreadCapabilities{})
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -697,7 +697,7 @@ func TestTUITmuxE2E_SessionCommandPalettePreservesDraft(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -722,7 +722,7 @@ func TestTUITmuxE2E_SessionLeadingSlashOpensPalette(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -738,7 +738,7 @@ func TestTUITmuxE2E_CtrlCRequiresDoublePressFromSession(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -760,7 +760,7 @@ func TestTUITmuxE2E_CtrlCRestoreMessageSurvivesAltScreenExit(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmuxAltScreen(t, bin, hub, 120, 28)
 	defer app.Close()
 
@@ -786,7 +786,7 @@ func TestTUITmuxE2E_ModelPickerShowsAuthRequiredModels(t *testing.T) {
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
 	hub.SetAuthRequiredModels(true)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -818,7 +818,7 @@ func TestTUITmuxE2E_SessionHeaderStatusAndComposerStates(t *testing.T) {
 	hub := newTUIE2EHub(t)
 	hub.SetSessionState("01LIVE", appwire.ThreadStatusActive)
 	hub.SetSessionContextPressure("01LIVE", 0.66)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -892,7 +892,7 @@ func TestTUITmuxE2E_HubStreamingAssistantDeltaBeforeRefresh(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -918,7 +918,7 @@ func TestTUITmuxE2E_HubStreamingToolGroupBeforeRefresh(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -944,7 +944,7 @@ func TestTUITmuxE2E_APIErrorsRenderInPlace(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmux(t, bin, hub)
 	defer app.Close()
 
@@ -988,7 +988,7 @@ func TestTUITmuxE2E_CaptureStableDuringStream(t *testing.T) {
 	e2ecap.RequireProcessInspect(t)
 	bin := buildTUIBinary(t)
 	hub := newTUIE2EHub(t)
-	defer hub.Close()
+	registerTUIE2EHubCleanup(t, hub)
 	app := startTUITmuxSized(t, bin, hub, 200, 50)
 	defer app.Close()
 
@@ -1705,6 +1705,10 @@ type tuiE2EHub struct {
 	server    *httptest.Server
 	app       *appserver.Server
 	closeOnce sync.Once
+	closed    chan struct{}
+	// cleanupTrace is test-only instrumentation for the lifecycle regression;
+	// it stays nil for every normal E2E fixture.
+	cleanupTrace chan<- int
 	// ready is closed by the HTTP handler, not by httptest.NewServer's
 	// listener setup.  The latter only proves that a port was allocated; it
 	// does not prove that the server goroutine has reached the handler under a
@@ -1767,6 +1771,7 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 		harnesses: []appwire.HarnessDescriptor{{ID: "evener", Label: "evener", Kind: "evener"}},
 		ready:     make(chan struct{}),
 		changed:   make(chan struct{}, 1),
+		closed:    make(chan struct{}),
 	}
 	h.addSession(&tuiE2ESession{
 		ID:           "01LIVE",
@@ -1948,7 +1953,55 @@ func (h *tuiE2EHub) URL() string {
 }
 
 func (h *tuiE2EHub) Close() {
-	h.closeOnce.Do(func() { h.server.Close() })
+	h.closeOnce.Do(func() {
+		if h.cleanupTrace != nil {
+			h.cleanupTrace <- 2
+		}
+		h.server.Close()
+		close(h.closed)
+	})
+}
+
+// registerTUIE2EHubCleanup deliberately uses t.Cleanup rather than defer.
+// The tmux starter registers its cleanup after this function returns, so the
+// testing package's LIFO cleanup order terminates the tmux client before this
+// joining httptest server is closed. That ordering also applies when a later
+// setup assertion calls Fatalf.
+func registerTUIE2EHubCleanup(t *testing.T, hub *tuiE2EHub) {
+	t.Helper()
+	t.Cleanup(hub.Close)
+}
+
+// TestTUITmuxE2EHubCleanupJoinsClientBeforeServer exercises the real WebSocket
+// handler lifetime that makes httptest.Server.Close a joining operation. The
+// client cleanup is registered after the hub cleanup, matching the tmux
+// starter's later t.Cleanup registration. If this is changed back to defer,
+// the helper returns and runs hub.Close while the client is still connected;
+// the test then blocks in the real server join instead of leaving an orphan.
+func TestTUITmuxE2EHubCleanupJoinsClientBeforeServer(t *testing.T) {
+	var hub *tuiE2EHub
+	trace := make(chan int, 2)
+	t.Run("setup-lifecycle", func(t *testing.T) {
+		hub = newTUIE2EHub(t)
+		hub.cleanupTrace = trace
+		transport, err := appwire.DialWebSocket(context.Background(), "ws"+strings.TrimPrefix(hub.URL(), "http")+"/rpc", hub.server.Client())
+		if err != nil {
+			t.Fatalf("dial test hub: %v", err)
+		}
+		registerTUIE2EHubCleanup(t, hub)
+		t.Cleanup(func() {
+			_ = transport.Close()
+			trace <- 1
+		})
+	})
+	if first, second := <-trace, <-trace; first != 1 || second != 2 {
+		t.Fatalf("cleanup order=%d,%d, want client then hub", first, second)
+	}
+	select {
+	case <-hub.closed:
+	default:
+		t.Fatal("hub cleanup did not join after client cleanup")
+	}
 }
 
 // notify wakes a waiter after a handler has observed a request or changed
