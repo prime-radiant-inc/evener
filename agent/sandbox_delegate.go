@@ -76,10 +76,161 @@ func (s *Session) prepareSubagentEnvironment(workingDir string, requested *sandb
 // (nil/non-enforced policy, or a non-local env) is off with unrestricted network,
 // so a delegate under an off parent may request any box.
 func (s *Session) parentSandboxModeNet() (sandbox.Mode, bool) {
+	mode, network, _ := s.parentSandboxFloor()
+	return mode, network
+}
+
+// parentSandboxFloor returns every enforced parent axis that a child must not
+// relax. WriteBlocked is separate from Mode because a restricted read-only role
+// keeps ModeRestricted's narrow reads while removing its ordinary workspace
+// writes.
+func (s *Session) parentSandboxFloor() (sandbox.Mode, bool, bool) {
 	if le, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok && le.Sandbox != nil && le.Sandbox.Enforced() {
-		return le.Sandbox.Mode, le.Sandbox.Network
+		return le.Sandbox.Mode, le.Sandbox.Network, le.Sandbox.WriteBlocked
 	}
-	return sandbox.ModeOff, true
+	return sandbox.ModeOff, true, false
+}
+
+// readOnlyDelegateSandbox returns the enforced box for a structured read-only
+// delegate scope. A restricted parent already has a narrower read surface than
+// ModeReadOnly, so the two modes are incomparable; in that case the child keeps
+// ModeRestricted and removes every persistent write root instead of widening its
+// reads. The ordinary off/workspace-write/read-only parent cases can safely
+// tighten to ModeReadOnly.
+func (s *Session) readOnlyDelegateSandbox() (*sandbox.SandboxPolicy, error) {
+	parentMode, parentNetwork := s.parentSandboxModeNet()
+	if parentMode == sandbox.ModeRestricted {
+		return &sandbox.SandboxPolicy{
+			Mode:         sandbox.ModeRestricted,
+			WriteBlocked: true,
+			Network:      &parentNetwork,
+		}, nil
+	}
+	return resolveDelegateSandboxRequest(sandbox.ModeReadOnly.String(), nil, parentMode, parentNetwork)
+}
+
+// resolveReadOnlyDelegateSandboxRequest applies the structured read-only role's
+// write-confinement floor to the caller's explicit per-delegate request. A
+// mode that grants persistent writes is not silently tightened: explicit
+// sandbox requests are part of the caller-visible contract, so an incompatible
+// request is refused. A net-only request is compatible because it changes only
+// the network axis; apply it to the role floor rather than the parent's
+// potentially write-capable mode.
+func (s *Session) resolveReadOnlyDelegateSandboxRequest(sandboxMode string, sandboxNet *bool) (*sandbox.SandboxPolicy, error) {
+	parentMode, parentNetwork := s.parentSandboxModeNet()
+	floor, err := s.readOnlyDelegateSandbox()
+	if err != nil {
+		return nil, err
+	}
+	if strings.TrimSpace(sandboxMode) == "" {
+		if sandboxNet == nil {
+			return floor, nil
+		}
+		requested, err := buildDelegateSandboxPolicy(floor.Mode.String(), sandboxNet, parentMode, parentNetwork)
+		if err != nil {
+			return nil, err
+		}
+		requested.WriteBlocked = floor.WriteBlocked
+		return requested, nil
+	}
+	requested, err := resolveDelegateSandboxRequest(sandboxMode, sandboxNet, parentMode, parentNetwork)
+	if err != nil {
+		return nil, err
+	}
+	if !delegateSandboxBlocksPersistentWrites(requested) {
+		return nil, fmt.Errorf("invalid_request: sandbox %q permits persistent workspace writes, but this delegate's structured tool scope requires a write-blocked sandbox; use sandbox=%q or omit the sandbox arguments", strings.TrimSpace(sandboxMode), sandbox.ModeReadOnly)
+	}
+	return requested, nil
+}
+
+func delegateSandboxBlocksPersistentWrites(policy *sandbox.SandboxPolicy) bool {
+	if policy == nil || policy.Mode == sandbox.ModeOff {
+		return false
+	}
+	return policy.Mode == sandbox.ModeReadOnly || policy.WriteBlocked
+}
+
+// applyParentWriteBlockedFloor prevents an explicitly sandboxed child from
+// dropping a parent's delegate-only WriteBlocked axis. A net-only request does
+// not ask to change filesystem policy, so it inherits the write block; an
+// explicit write-capable mode is contradictory and fails before admission.
+func (s *Session) applyParentWriteBlockedFloor(sandboxMode string, policy *sandbox.SandboxPolicy) (*sandbox.SandboxPolicy, error) {
+	_, _, parentWriteBlocked := s.parentSandboxFloor()
+	if !parentWriteBlocked {
+		return policy, nil
+	}
+	if strings.TrimSpace(sandboxMode) == "" {
+		if policy == nil {
+			return nil, errors.New("invalid_request: sandbox_net could not preserve the parent's write-blocked sandbox")
+		}
+		policy.WriteBlocked = true
+		return policy, nil
+	}
+	if !delegateSandboxBlocksPersistentWrites(policy) {
+		return nil, fmt.Errorf("invalid_request: sandbox %q permits persistent workspace writes that the parent sandbox forbids", strings.TrimSpace(sandboxMode))
+	}
+	return policy, nil
+}
+
+// restoreDelegateSandboxFloor validates and, for a legacy descriptor with no
+// sandbox snapshot, derives every mandatory parent/role floor before any cold
+// runtime is constructed. The descriptor's structured tool ceiling is
+// authoritative; role prose is deliberately irrelevant. Persisted write-capable
+// policies fail closed instead of being silently rewritten.
+func (s *Session) restoreDelegateSandboxFloor(descriptor *delegatestore.Descriptor) (*sandbox.SandboxPolicy, error) {
+	if descriptor == nil {
+		return nil, errors.New("invalid_request: committed delegate descriptor is unavailable")
+	}
+	policy := sandboxPolicyFromStableSnapshot(descriptor.Sandbox)
+	if descriptor.Sandbox != nil && policy == nil {
+		return nil, fmt.Errorf("invalid_request: committed delegate sandbox mode %q is invalid", descriptor.Sandbox.Mode)
+	}
+	readOnlyScope := subagentToolScopeIsReadOnly(false, descriptor.ToolNameCeiling)
+	parentMode, parentNetwork, parentWriteBlocked := s.parentSandboxFloor()
+	if policy == nil && readOnlyScope {
+		var err error
+		policy, err = s.readOnlyDelegateSandbox()
+		if err != nil {
+			return nil, fmt.Errorf("read-only delegate sandbox: %w", err)
+		}
+	}
+	if policy == nil && parentWriteBlocked {
+		local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
+		if !ok || local.Sandbox == nil || !local.Sandbox.Enforced() {
+			return nil, errors.New("invalid_request: current parent write-blocked sandbox is unavailable during delegate restore")
+		}
+		inherited := local.Sandbox.Inputs()
+		policy = &inherited
+	}
+	if policy != nil && descriptor.Sandbox == nil {
+		descriptor.Sandbox = stableDelegateSandboxSnapshot(policy)
+		descriptor.Config.Sandbox = descriptor.Sandbox.Mode
+		descriptor.Config.SandboxNet = nil
+		if descriptor.Sandbox.Network != nil {
+			network := *descriptor.Sandbox.Network
+			descriptor.Config.SandboxNet = &network
+		}
+	}
+	if readOnlyScope && !delegateSandboxBlocksPersistentWrites(policy) {
+		return nil, fmt.Errorf("invalid_request: committed sandbox %q permits persistent workspace writes for a delegate whose structured tool scope requires a write-blocked sandbox", policy.Mode)
+	}
+	if parentWriteBlocked && !delegateSandboxBlocksPersistentWrites(policy) {
+		return nil, fmt.Errorf("invalid_request: committed sandbox %q permits persistent workspace writes that the current parent sandbox forbids", policy.Mode)
+	}
+	if policy == nil {
+		return nil, nil
+	}
+	if !policy.Mode.AtLeastAsConfining(parentMode) {
+		return nil, fmt.Errorf("invalid_request: committed sandbox %q is not at least as confining as the current parent sandbox %q", policy.Mode, parentMode)
+	}
+	network := true
+	if policy.Network != nil {
+		network = *policy.Network
+	}
+	if network && !parentNetwork {
+		return nil, errors.New("invalid_request: committed delegate sandbox grants network access that the current parent sandbox forbids")
+	}
+	return policy, nil
 }
 
 // resolveDelegateSandboxRequest turns a delegate's (sandbox, sandbox_net) request
@@ -239,6 +390,7 @@ func sandboxSnapshotFromInputs(in sandbox.SandboxPolicy) *delegatestore.SandboxS
 	}
 	snap := &delegatestore.SandboxSnapshot{
 		Mode:               in.Mode.String(),
+		WriteBlocked:       in.WriteBlocked,
 		DenylistAdd:        append([]string(nil), in.DenylistAdd...),
 		DenylistRemove:     append([]string(nil), in.DenylistRemove...),
 		ExtraWritableRoots: append([]string(nil), in.ExtraWritableRoots...),
@@ -262,6 +414,7 @@ func cloneSandboxSnapshot(in *delegatestore.SandboxSnapshot) *delegatestore.Sand
 	}
 	out := &delegatestore.SandboxSnapshot{
 		Mode:               in.Mode,
+		WriteBlocked:       in.WriteBlocked,
 		DenylistAdd:        append([]string(nil), in.DenylistAdd...),
 		DenylistRemove:     append([]string(nil), in.DenylistRemove...),
 		ExtraWritableRoots: append([]string(nil), in.ExtraWritableRoots...),
@@ -290,6 +443,7 @@ func sandboxPolicyFromSnapshot(snap *delegatestore.SandboxSnapshot) (sandbox.San
 	}
 	pol := sandbox.SandboxPolicy{
 		Mode:               mode,
+		WriteBlocked:       snap.WriteBlocked,
 		DenylistAdd:        append([]string(nil), snap.DenylistAdd...),
 		DenylistRemove:     append([]string(nil), snap.DenylistRemove...),
 		ExtraWritableRoots: append([]string(nil), snap.ExtraWritableRoots...),
