@@ -350,14 +350,19 @@ NavigationSessionLocation {
   top_level_ref: string
   project_key?: string
   top_level: bool
+  tier?: "current" | "recent" | "archived" | "live" | "needs_you" | "pinned"
+  pin_section_id?: string
+  session?: NavigationSessionSummary
 }
 ```
 
 `NavigationService` builds the location index with the immutable core tree. The
 endpoint carries generation and revision metadata but is read on
-demand and is not a long-lived client resource. A missing session returns 404.
-This endpoint avoids both a complete session-to-project map in the manifest and
-the existing session-detail path's full live-thread read.
+demand and is not a long-lived client resource. When the ref has a navigation
+row, `session` carries its current bounded summary so pane titles and session
+menus do not depend on an expanded project. A missing session returns 404. This
+endpoint avoids both a complete session-to-project map in the manifest and the
+existing session-detail path's full live-thread read.
 
 ## Revision Model
 
