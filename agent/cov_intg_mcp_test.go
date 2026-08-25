@@ -75,13 +75,7 @@ func TestIntg_InitMCP_InlineServer(t *testing.T) {
 	bin := intg_buildMCPServer(t)
 
 	client := llm.NewClient()
-	cfg := SessionConfig{
-		MCPInline: []string{"intgsvc:" + bin},
-		testOnly: testConfig{
-			mcpConnectContext: t.Context(),
-			mcpConnectTimeout: new(time.Duration),
-		},
-	}
+	cfg := SessionConfig{MCPInline: []string{"intgsvc:" + bin}}
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -126,13 +120,7 @@ func TestIntg_InitMCP_PluginProvidedServerMerges(t *testing.T) {
 	}
 
 	client := llm.NewClient()
-	cfg := SessionConfig{
-		PluginDirs: []string{dir},
-		testOnly: testConfig{
-			mcpConnectContext: t.Context(),
-			mcpConnectTimeout: new(time.Duration),
-		},
-	}
+	cfg := SessionConfig{PluginDirs: []string{dir}}
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -195,13 +183,7 @@ func TestIntg_InitMCP_RegisterToolsError(t *testing.T) {
 	// dropped, but NewSession now survives instead of reporting the error.
 	longName := strings.Repeat("a", 60)
 	client := llm.NewClient()
-	cfg := SessionConfig{
-		MCPInline: []string{longName + ":" + bin},
-		testOnly: testConfig{
-			mcpConnectContext: t.Context(),
-			mcpConnectTimeout: new(time.Duration),
-		},
-	}
+	cfg := SessionConfig{MCPInline: []string{longName + ":" + bin}}
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err != nil {
 		t.Fatalf("NewSession must survive an MCP tool name exceeding the length limit, got: %v", err)
@@ -235,13 +217,7 @@ func TestIntg_InitMCP_ConnectError(t *testing.T) {
 		t.Skipf("`true` not found: %v", err)
 	}
 	client := llm.NewClient()
-	cfg := SessionConfig{
-		MCPInline: []string{"deadsvc:" + truePath},
-		testOnly: testConfig{
-			mcpConnectContext: t.Context(),
-			mcpConnectTimeout: new(time.Duration),
-		},
-	}
+	cfg := SessionConfig{MCPInline: []string{"deadsvc:" + truePath}}
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err != nil {
 		t.Fatalf("NewSession must survive a dead MCP server, got: %v", err)
@@ -343,10 +319,6 @@ func TestIntg_NewSession_LateErrorClosesMCPManager(t *testing.T) {
 	cfg := SessionConfig{
 		MCPInline:       []string{"intgsvc:" + bin + " " + marker},
 		ContextStrategy: "bogus-nonexistent-strategy",
-		testOnly: testConfig{
-			mcpConnectContext: t.Context(),
-			mcpConnectTimeout: new(time.Duration),
-		},
 	}
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err == nil {
@@ -382,13 +354,7 @@ func TestIntg_RestoreSession_LateErrorClosesMCPManager(t *testing.T) {
 	sess, err := RestoreSessionFromMetaWithConfig(
 		w3init_restoreClient(), NewOpenAIProfile("gpt-5.2"),
 		execenv.NewLocalExecutionEnvironment(t.TempDir()), meta,
-		RestoreSessionConfig{
-			StateDir: stateDir,
-			testOnly: testConfig{
-				mcpConnectContext: t.Context(),
-				mcpConnectTimeout: new(time.Duration),
-			},
-		},
+		RestoreSessionConfig{StateDir: stateDir},
 	)
 	if err == nil {
 		sess.Close()
