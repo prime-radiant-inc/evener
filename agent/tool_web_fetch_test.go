@@ -396,6 +396,13 @@ func TestWebFetchTool_InvalidURL(t *testing.T) {
 }
 
 func TestWebFetchTool_HTTP404RetriesWithAlternateUserAgent(t *testing.T) {
+	const (
+		firstBodySentinel = "WF404BODY7A19C2"
+		pageSentinel      = "WF404PAGE6E31B8"
+		modelSentinel     = "WF404MODEL4D20F5"
+		questionSentinel  = "WF404QUESTION9C57A1"
+	)
+	recoveredHTML := fmt.Sprintf(`<html><body><h1>%s</h1></body></html>`, pageSentinel)
 	var requestCount int
 	var userAgents []string
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -403,11 +410,11 @@ func TestWebFetchTool_HTTP404RetriesWithAlternateUserAgent(t *testing.T) {
 		userAgents = append(userAgents, r.Header.Get("User-Agent"))
 		if requestCount == 1 {
 			w.WriteHeader(http.StatusNotFound)
-			_, _ = fmt.Fprint(w, "doc-site wall")
+			_, _ = fmt.Fprint(w, firstBodySentinel)
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = fmt.Fprint(w, `<html><body><h1>Recovered page</h1></body></html>`)
+		_, _ = fmt.Fprint(w, recoveredHTML)
 	}))
 	defer srv.Close()
 
@@ -418,7 +425,7 @@ func TestWebFetchTool_HTTP404RetriesWithAlternateUserAgent(t *testing.T) {
 		name: "openai",
 		steps: []func(req llm.Request) llm.Response{
 			func(req llm.Request) llm.Response {
-				return llm.Response{Message: llm.Assistant("recovered answer")}
+				return llm.Response{Message: llm.Assistant(modelSentinel)}
 			},
 		},
 	}
@@ -434,13 +441,13 @@ func TestWebFetchTool_HTTP404RetriesWithAlternateUserAgent(t *testing.T) {
 	res := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
 		ID:        "wf1",
 		Name:      "web_fetch",
-		Arguments: json.RawMessage(fmt.Sprintf(`{"url": %q, "question": "test"}`, srv.URL)),
+		Arguments: json.RawMessage(fmt.Sprintf(`{"url": %q, "question": %q}`, srv.URL, questionSentinel)),
 	})
 	if res.IsError {
 		t.Fatalf("web_fetch returned error after alternate-UA recovery: %s", res.Output)
 	}
-	if !strings.Contains(res.Output, "recovered answer") {
-		t.Fatalf("output missing recovered answer: %s", res.Output)
+	if got := len(fa.Requests()); got != 1 {
+		t.Fatalf("model request count = %d, want 1 after successful retry", got)
 	}
 	if requestCount != 2 {
 		t.Fatalf("HTTP request count = %d, want one retry after 404", requestCount)
@@ -462,8 +469,8 @@ func TestWebFetchTool_HTTP404RetriesWithAlternateUserAgent(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read recovered raw cache: %v", err)
 	}
-	if !strings.Contains(string(raw), "Recovered page") {
-		t.Fatalf("raw cache did not contain alternate-UA response: %q", raw)
+	if got := string(raw); got != recoveredHTML {
+		t.Fatalf("raw cache identity mismatch: got %q, want opaque fixture %q", got, recoveredHTML)
 	}
 }
 
@@ -500,12 +507,19 @@ func (t *webFetchTrackingTransport) RoundTrip(req *http.Request) (*http.Response
 }
 
 func TestWebFetch_Retries403WithAlternateUserAgentAndClosesBodies(t *testing.T) {
+	const (
+		firstBodySentinel = "WF403BODY3D80A6"
+		pageSentinel      = "WF403PAGE8B14E7"
+		modelSentinel     = "WF403MODEL2C96F1"
+		questionSentinel  = "WF403QUESTION5A73D9"
+	)
+	recoveredHTML := fmt.Sprintf(`<html><body><h1>%s</h1></body></html>`, pageSentinel)
 	var requestCount int
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		requestCount++
 		if requestCount == 1 {
 			w.WriteHeader(http.StatusForbidden)
-			_, _ = fmt.Fprint(w, "doc-site wall")
+			_, _ = fmt.Fprint(w, firstBodySentinel)
 			return
 		}
 		if got := r.Header.Get("User-Agent"); !strings.HasPrefix(got, "Mozilla/5.0") {
@@ -513,7 +527,7 @@ func TestWebFetch_Retries403WithAlternateUserAgentAndClosesBodies(t *testing.T) 
 			return
 		}
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = fmt.Fprint(w, `<html><body><h1>Recovered 403 page</h1></body></html>`)
+		_, _ = fmt.Fprint(w, recoveredHTML)
 	}))
 	defer srv.Close()
 
@@ -521,7 +535,7 @@ func TestWebFetch_Retries403WithAlternateUserAgentAndClosesBodies(t *testing.T) 
 	adapter := &agenttest.ModelTrackingAdapter{
 		Provider: "openai",
 		Respond: func(req llm.Request) (llm.Response, error) {
-			return llm.Response{Message: llm.Assistant("recovered 403 answer")}, nil
+			return llm.Response{Message: llm.Assistant(modelSentinel)}, nil
 		},
 	}
 	client := llm.NewClient()
@@ -534,13 +548,19 @@ func TestWebFetch_Retries403WithAlternateUserAgentAndClosesBodies(t *testing.T) 
 	t.Cleanup(sess.Close)
 	sess.httpClient = &http.Client{Transport: transport}
 
-	got, err := sess.webFetch(context.Background(), srv.URL, "What recovered?")
+	got, err := sess.webFetch(context.Background(), srv.URL, questionSentinel)
 	if err != nil {
 		t.Fatalf("webFetch: %v", err)
 	}
 	result, ok := got.(map[string]any)
-	if !ok || result["answer"] != "recovered 403 answer" {
-		t.Fatalf("webFetch result = %#v, want recovered answer", got)
+	if !ok {
+		t.Fatalf("webFetch result = %T, want map[string]any", got)
+	}
+	if answer, ok := result["answer"].(string); !ok || answer == "" {
+		t.Fatalf("answer field = %#v, want non-empty string", result["answer"])
+	}
+	if got, want := adapter.Models(), []string{"gpt-4.1-nano"}; !slices.Equal(got, want) {
+		t.Fatalf("models addressed = %v, want successful cheap-model route %v", got, want)
 	}
 	if requestCount != 2 || len(transport.requests) != 2 {
 		t.Fatalf("HTTP requests = %d, transport requests = %d, want exactly one retry", requestCount, len(transport.requests))
@@ -569,14 +589,14 @@ func TestWebFetch_DocWallRetryIsBoundedAndOtherStatusIsNotRetried(t *testing.T) 
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 				requestCount++
 				w.WriteHeader(tc.status)
-				_, _ = fmt.Fprint(w, "failure body")
+				_, _ = fmt.Fprint(w, "WFSTATUSBODY1E64B9")
 			}))
 			t.Cleanup(srv.Close)
 
 			adapter := &agenttest.ModelTrackingAdapter{
 				Provider: "openai",
 				Respond: func(req llm.Request) (llm.Response, error) {
-					return finalResponse("unexpected model call"), nil
+					return finalResponse("WFUNEXPECTEDMODEL7F02C5"), nil
 				},
 			}
 			client := llm.NewClient()
@@ -588,7 +608,7 @@ func TestWebFetch_DocWallRetryIsBoundedAndOtherStatusIsNotRetried(t *testing.T) 
 			}
 			t.Cleanup(sess.Close)
 
-			if _, err := sess.webFetch(context.Background(), srv.URL, "question"); err == nil {
+			if _, err := sess.webFetch(context.Background(), srv.URL, "WFSTATUSQUESTION4A93D8"); err == nil {
 				t.Fatalf("webFetch succeeded for HTTP %d", tc.status)
 			} else if !strings.Contains(err.Error(), fmt.Sprintf("HTTP %d", tc.status)) {
 				t.Fatalf("webFetch error = %v, want HTTP %d", err, tc.status)
@@ -605,10 +625,16 @@ func TestWebFetch_DocWallRetryIsBoundedAndOtherStatusIsNotRetried(t *testing.T) 
 }
 
 func TestWebFetch_RawFallbackWhenBothModelsRefuse(t *testing.T) {
-	const wantRawLimit = 20_000
+	const (
+		wantRawLimit     = 20_000
+		sourceSentinel   = "WFRAWSOURCE6C18A4"
+		fillerSentinel   = "WFRAWFILL9D32E7"
+		questionSentinel = "WFRAWQUESTION5B70C1"
+	)
 	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		_, _ = fmt.Fprintf(w, "<html><body><h1>Untrusted source</h1><p>%s</p></body></html>", strings.Repeat("converted-content ", wantRawLimit))
+		_, _ = fmt.Fprintf(w, "<html><body><h1>%s</h1><p>%s</p></body></html>",
+			sourceSentinel, strings.Repeat(fillerSentinel+" ", wantRawLimit))
 	}))
 	t.Cleanup(page.Close)
 
@@ -626,7 +652,7 @@ func TestWebFetch_RawFallbackWhenBothModelsRefuse(t *testing.T) {
 	}
 	t.Cleanup(sess.Close)
 
-	got, err := sess.webFetch(context.Background(), page.URL, "What is this source?")
+	got, err := sess.webFetch(context.Background(), page.URL, questionSentinel)
 	if err != nil {
 		t.Fatalf("webFetch: %v", err)
 	}
@@ -656,8 +682,8 @@ func TestWebFetch_RawFallbackWhenBothModelsRefuse(t *testing.T) {
 	if got := len([]rune(content)); got != wantRawLimit {
 		t.Fatalf("raw content length = %d, want deterministic limit %d", got, wantRawLimit)
 	}
-	if strings.Contains(content, "<h1>") || !strings.Contains(content, "Untrusted source") {
-		t.Fatalf("raw fallback did not preserve converted source content: %q", content[:min(len(content), 80)])
+	if strings.Contains(content, "<h1>") || !strings.Contains(content, sourceSentinel) {
+		t.Fatalf("raw fallback did not preserve opaque converted-content identity: %q", content[:min(len(content), 80)])
 	}
 	if result["content_truncated"] != true {
 		t.Fatalf("content_truncated = %#v, want true", result["content_truncated"])
@@ -673,7 +699,7 @@ func TestWebFetch_RawFallbackWhenBothModelsRefuse(t *testing.T) {
 func TestWebFetch_NonRefusalModelErrorRemainsError(t *testing.T) {
 	page := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/plain")
-		_, _ = fmt.Fprint(w, "content")
+		_, _ = fmt.Fprint(w, "WFNONREFUSALPAGE8E41D2")
 	}))
 	t.Cleanup(page.Close)
 
@@ -691,7 +717,7 @@ func TestWebFetch_NonRefusalModelErrorRemainsError(t *testing.T) {
 	}
 	t.Cleanup(sess.Close)
 
-	if _, err := sess.webFetch(context.Background(), page.URL, "question"); err == nil {
+	if _, err := sess.webFetch(context.Background(), page.URL, "WFNONREFUSALQUESTION3C67A9"); err == nil {
 		t.Fatal("webFetch succeeded, want non-refusal model error")
 	}
 	if got, want := adapter.Models(), []string{"gpt-4.1-nano"}; !slices.Equal(got, want) {
