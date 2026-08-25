@@ -2,6 +2,7 @@ package hub
 
 import (
 	"bytes"
+	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
@@ -16,6 +17,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
+	"primeradiant.com/evener/identifier"
 )
 
 //go:embed testdata/navigation_legacy_baseline.json
@@ -51,6 +53,9 @@ func TestLegacyNavigationBaselineFixture(t *testing.T) {
 	var want navigationBaseline
 	if err := json.Unmarshal(navigationLegacyBaseline, &want); err != nil {
 		t.Fatalf("decode navigation baseline: %v", err)
+	}
+	if want.AllocsBytes <= 0 {
+		t.Fatalf("allocation baseline=%d, want a positive B/op budget", want.AllocsBytes)
 	}
 	if got := int64(len(body)); got != want.ResponseBytes {
 		t.Fatalf("response bytes=%d, want %d", got, want.ResponseBytes)
@@ -109,11 +114,63 @@ func newNavigationBenchmarkFixture(tb testing.TB) *WebServer {
 	}
 	past := hubcore.NewPastIndex("")
 	past.SeedForTest(metas)
+	projectIndexes := make(map[string]int, legacyNavigationProjects)
+	for projectIndex := range legacyNavigationProjects {
+		projectIndexes[filepath.Join(projectsRoot, fmt.Sprintf("project-%02d-0000000000", projectIndex))] = projectIndex
+	}
+	previousInputs := hubNavigationInputs
+	hubNavigationInputs = func(server *WebServer, ctx context.Context) navigationSnapshot {
+		snapshot := previousInputs(server, ctx)
+		fixedMetas := make([]schema.SessionMeta, len(snapshot.metas))
+		copy(fixedMetas, snapshot.metas)
+		for i := range fixedMetas {
+			if projectIndex, ok := projectIndexes[fixedMetas[i].EnvInfo.WorkingDir]; ok {
+				fixedMetas[i].EnvInfo.WorkingDir = fmt.Sprintf("/evener-navigation-project-%02d", projectIndex)
+			}
+		}
+		fixedProjects := make(map[string]identifier.Project, len(snapshot.projects))
+		for path, project := range snapshot.projects {
+			projectIndex, ok := projectIndexes[path]
+			if !ok {
+				continue
+			}
+			fixedPath := fmt.Sprintf("/evener-navigation-project-%02d", projectIndex)
+			project.CanonicalPath = fixedPath
+			fixedProjects[fixedPath] = project
+		}
+		fixedIdentities := make(map[string][]identifier.Project, len(snapshot.projectIdentities))
+		for path, projects := range snapshot.projectIdentities {
+			projectIndex, ok := projectIndexes[path]
+			if !ok {
+				continue
+			}
+			fixedPath := fmt.Sprintf("/evener-navigation-project-%02d", projectIndex)
+			fixed := make([]identifier.Project, len(projects))
+			copy(fixed, projects)
+			for i := range fixed {
+				fixed[i].CanonicalPath = fixedPath
+			}
+			fixedIdentities[fixedPath] = fixed
+		}
+		fixedConflicts := make(map[string]bool, len(snapshot.projectConflicts))
+		for path, conflict := range snapshot.projectConflicts {
+			if projectIndex, ok := projectIndexes[path]; ok {
+				fixedConflicts[fmt.Sprintf("/evener-navigation-project-%02d", projectIndex)] = conflict
+			}
+		}
+		snapshot.metas = fixedMetas
+		snapshot.projects = fixedProjects
+		snapshot.projectIdentities = fixedIdentities
+		snapshot.projectConflicts = fixedConflicts
+		return snapshot
+	}
+	tb.Cleanup(func() { hubNavigationInputs = previousInputs })
 	previousNow := hubNavigationNow
 	hubNavigationNow = func() time.Time { return now }
 	tb.Cleanup(func() { hubNavigationNow = previousNow })
+	stateRoot := tb.TempDir()
 	return NewWebServer(hubcore.WebConfig{
-		HubStateRoot: filepath.Join(root, "hub"),
+		HubStateRoot: filepath.Join(stateRoot, "hub"),
 		Past:         past,
 	})
 }
