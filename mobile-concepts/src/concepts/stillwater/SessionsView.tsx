@@ -1,7 +1,11 @@
 import { selectGroupedSessions } from "../../core/selectors";
 import type { PrototypeAction, PrototypeState } from "../../core/state";
-import { ScreenState } from "../shared/ScreenState";
 import { StatusLabel } from "../shared/StatusLabel";
+import {
+  BlockingRouteState,
+  isBlockingRouteState,
+  OfflineNotice,
+} from "./RouteState";
 
 export interface SessionsViewProps {
   state: PrototypeState;
@@ -9,63 +13,26 @@ export interface SessionsViewProps {
 }
 
 export function SessionsView({ state, dispatch }: SessionsViewProps) {
-  const { screenState } = state.projection;
   const groups = selectGroupedSessions(state);
-  const retry = () => dispatch({ type: "refreshSessions" });
 
-  if (screenState === "loading") {
+  if (isBlockingRouteState(state)) {
     return (
-      <ScreenState
-        state={{
-          kind: "loading",
-          title: "Loading sessions",
-          detail: "Reading the deterministic local fixture.",
-        }}
-      />
-    );
-  }
-  if (screenState === "empty") {
-    return (
-      <ScreenState
-        state={{
-          kind: "empty",
-          title: "No sessions yet",
-          detail: "Start a session when you have work to continue.",
-        }}
-      />
-    );
-  }
-  if (screenState === "error") {
-    return (
-      <ScreenState
-        state={{
-          kind: "error",
-          title: "Sessions could not be shown",
-          detail:
-            "The prototype fixture is recoverable. Try the explicit refresh.",
-        }}
-        retryAction={retry}
+      <BlockingRouteState
+        state={state}
+        routeLabel="Sessions"
+        dispatch={dispatch}
       />
     );
   }
 
   return (
     <div className="sw-sessions sw-route-enter">
-      {screenState === "offline" ? (
-        <section
-          className="sw-banner"
-          data-offline-prototype="true"
-          role="status"
-        >
-          <strong>Offline prototype</strong>
-          <span>
-            Showing the last deterministic fixture. New work is unavailable.
-          </span>
-          <button type="button" onClick={retry}>
-            Retry
-          </button>
-        </section>
-      ) : null}
+      <OfflineNotice
+        state={state}
+        routeLabel="Sessions"
+        mutationDetail="Opening saved sessions is available; refresh is explicit."
+        dispatch={dispatch}
+      />
 
       <div className="sw-filter-row">
         <label>

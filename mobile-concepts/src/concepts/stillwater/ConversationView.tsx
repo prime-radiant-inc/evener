@@ -1,3 +1,4 @@
+import { useEffect, useRef } from "react";
 import type { TranscriptItem } from "../../core/model";
 import type { PrototypeAction, PrototypeState } from "../../core/state";
 import { Disclosure } from "../shared/Disclosure";
@@ -5,6 +6,11 @@ import { Icon } from "../shared/Icon";
 import { ScreenState } from "../shared/ScreenState";
 import { StatusLabel } from "../shared/StatusLabel";
 import { QuestionCard } from "./QuestionCard";
+import {
+  BlockingRouteState,
+  isBlockingRouteState,
+  OfflineNotice,
+} from "./RouteState";
 
 export interface ConversationViewProps {
   state: PrototypeState;
@@ -92,9 +98,44 @@ export function ConversationView({
   sessionId,
   dispatch,
 }: ConversationViewProps) {
+  const transcriptRef = useRef<HTMLElement>(null);
   const session = state.projection.fixture.sessions.find(
     ({ id }) => id === sessionId,
   );
+  const focusedItemId = state.focusedItemId;
+
+  useEffect(() => {
+    if (!focusedItemId) return;
+    const target = Array.from(
+      transcriptRef.current?.querySelectorAll<HTMLElement>(
+        "[data-transcript-item-id]",
+      ) ?? [],
+    ).find((element) => element.dataset.transcriptItemId === focusedItemId);
+    if (!target) return;
+    target.focus({ preventScroll: true });
+    const scroller = target.closest<HTMLElement>(".sw-scroll");
+    if (!scroller || typeof scroller.scrollTo !== "function") return;
+    const targetBounds = target.getBoundingClientRect();
+    const scrollerBounds = scroller.getBoundingClientRect();
+    const centeredOffset =
+      targetBounds.top -
+      scrollerBounds.top -
+      (scroller.clientHeight - targetBounds.height) / 2;
+    scroller.scrollTo({
+      top: Math.max(0, scroller.scrollTop + centeredOffset),
+      behavior: state.reducedMotion ? "auto" : "smooth",
+    });
+  }, [focusedItemId, state.reducedMotion]);
+
+  if (isBlockingRouteState(state)) {
+    return (
+      <BlockingRouteState
+        state={state}
+        routeLabel="Conversation"
+        dispatch={dispatch}
+      />
+    );
+  }
   if (!session || state.selectedSessionId !== sessionId) {
     return (
       <ScreenState
@@ -111,9 +152,16 @@ export function ConversationView({
     (item) => item.sessionId === sessionId,
   );
   const running = state.syntheticTurn === "starting";
+  const offline = state.projection.screenState === "offline";
 
   return (
     <div className="sw-conversation sw-route-enter">
+      <OfflineNotice
+        state={state}
+        routeLabel="Conversation"
+        mutationDetail="You can read saved evidence, but cannot send or resolve questions offline."
+        dispatch={dispatch}
+      />
       <section className="sw-session-summary" aria-label="Session summary">
         <div>
           <p className="sw-eyebrow">{session.project}</p>
@@ -141,7 +189,11 @@ export function ConversationView({
         </button>
       </fieldset>
 
-      <section className="sw-transcript" aria-label="Transcript">
+      <section
+        className="sw-transcript"
+        aria-label="Transcript"
+        ref={transcriptRef}
+      >
         {transcript.length === 0 ? (
           <div className="sw-inline-state">
             <h2>No transcript yet</h2>
@@ -153,6 +205,7 @@ export function ConversationView({
               className={`sw-transcript-item sw-transcript-item--${item.kind}`}
               data-transcript-item-id={item.id}
               data-focused={state.focusedItemId === item.id ? "true" : "false"}
+              tabIndex={state.focusedItemId === item.id ? -1 : undefined}
               key={item.id}
             >
               <TranscriptContent
@@ -204,7 +257,7 @@ export function ConversationView({
             <button
               type="button"
               aria-pressed={state.composerMode === mode}
-              disabled={running}
+              disabled={running || offline}
               key={mode}
               onClick={() => dispatch({ type: "setComposerMode", mode })}
             >
@@ -218,7 +271,7 @@ export function ConversationView({
             aria-label="Message"
             placeholder="Message or steer…"
             value={state.draft}
-            disabled={running}
+            disabled={running || offline}
             onChange={(event) =>
               dispatch({ type: "setDraft", value: event.currentTarget.value })
             }
@@ -228,7 +281,7 @@ export function ConversationView({
           className="sw-primary-action sw-composer__submit"
           type="button"
           aria-label="Submit message"
-          disabled={state.draft.trim().length === 0 || running}
+          disabled={state.draft.trim().length === 0 || running || offline}
           onClick={() => dispatch({ type: "submitComposer" })}
         >
           <Icon name="send" decorative />
