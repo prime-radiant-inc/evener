@@ -1,15 +1,14 @@
 import type { WorkNode } from "../../core/model";
 import type { PlatformPrimitives } from "../../core/platform";
 import type { PrototypeAction, PrototypeState } from "../../core/state";
-import { Disclosure } from "../shared/Disclosure";
 import { formatUsage } from "../shared/format";
 import { ScreenState } from "../shared/ScreenState";
-import { StatusLabel } from "../shared/StatusLabel";
 import {
   BlockingRouteState,
   isBlockingRouteState,
   OfflineNotice,
 } from "./RouteState";
+import { StatusDisclosure } from "./StatusDisclosure";
 
 export interface WorkViewProps {
   state: PrototypeState;
@@ -108,15 +107,9 @@ function WorkTree({
             <p className="co-work-node__context">
               Level {item.depth + 1} · Parent: {item.parentTitle ?? "Session"}
             </p>
-            <Disclosure
-              summary={
-                <span className="co-disclosure-summary">
-                  <span>{item.node.title}</span>
-                  <span data-state-label aria-hidden="true">
-                    <StatusLabel state={item.node.state} />
-                  </span>
-                </span>
-              }
+            <StatusDisclosure
+              label={item.node.title}
+              status={item.node.state}
               expanded={state.expandedWorkIds.has(item.node.id)}
               onToggle={() =>
                 dispatch({ type: "toggleWork", nodeId: item.node.id })
@@ -139,7 +132,7 @@ function WorkTree({
                 </dl>
                 <p>{item.node.output}</p>
               </div>
-            </Disclosure>
+            </StatusDisclosure>
           </article>
           <WorkTree items={item.children} state={state} dispatch={dispatch} />
         </li>

@@ -236,6 +236,54 @@ describe("Constellation review fixes", () => {
     },
   );
 
+  it("exposes current Work state as the disclosure description when collapsed and expanded", () => {
+    renderRoute("work");
+    const runningNode = canonicalFixture.work.find(
+      ({ state }) => state === "running",
+    );
+    if (!runningNode) throw new Error("Review test needs current Work");
+    const article = document.querySelector(
+      `[data-work-node-id="${runningNode.id}"]`,
+    );
+    if (!(article instanceof HTMLElement)) throw new Error("Missing Work node");
+    const control = within(article).getByRole("button", {
+      name: runningNode.title,
+      description: "Running",
+    });
+    expect(control).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(control);
+    expect(
+      within(article).getByRole("region", {
+        name: runningNode.title,
+        description: "Running",
+      }),
+    ).toBeVisible();
+  });
+
+  it("exposes tool state as the disclosure description when collapsed and expanded", () => {
+    renderRoute("conversation");
+    const tool = canonicalFixture.transcript.find(
+      (item) => item.kind === "tool" && item.status === "completed",
+    );
+    if (tool?.kind !== "tool") throw new Error("Review test needs a tool");
+    const item = document.querySelector(
+      `[data-transcript-item-id="${tool.id}"]`,
+    );
+    if (!(item instanceof HTMLElement)) throw new Error("Missing tool item");
+    const control = within(item).getByRole("button", {
+      name: tool.label,
+      description: "Completed",
+    });
+    expect(control).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(control);
+    expect(
+      within(item).getByRole("region", {
+        name: tool.label,
+        description: "Completed",
+      }),
+    ).toBeVisible();
+  });
+
   it.each(blockingCases)(
     "uses controller recovery for %s in the %s scenario",
     async (route, scenario) => {
