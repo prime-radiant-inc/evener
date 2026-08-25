@@ -36,10 +36,42 @@
   display: none;
 }
 
-/* Only the expandable variant is a div[role="button"] trigger; make that
- * one, and only that one, read as clickable. */
-[role="button"].row {
+/* The visual header is a non-interactive layout wrapper. The real disclosure
+ * button is kept separate from the summary line so links and action buttons
+ * can remain siblings rather than becoming nested controls. */
+.trigger {
+  flex: none;
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: baseline;
+  column-gap: var(--space-2);
+  row-gap: 0;
+  min-width: 0;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  text-align: left;
+  appearance: none;
   cursor: pointer;
+}
+
+.row[data-purpose="true"] .trigger {
+  flex: 1 1 100%;
+}
+
+.summaryLine {
+  display: flex;
+  flex: 1 1 0;
+  align-items: baseline;
+  min-width: 0;
+}
+
+.row[data-purpose="true"] .summaryLine {
+  flex: 1 1 100%;
 }
 
 /* An ink wash, NOT var(--surface-2): measured in the running app, the light
@@ -47,12 +79,12 @@
  * itself, so a surface-token hover was completely invisible there. A tint of
  * the ink reads against whatever surface the row happens to sit on, in both
  * themes. Same idiom as widgets/chip's own remove-button hover. */
-[role="button"].row:hover {
+.trigger:hover {
   background: color-mix(in oklab, var(--ink-mid) 8%, transparent);
   border-radius: var(--radius-control);
 }
 
-[role="button"].row:focus-visible {
+.trigger:focus-visible {
   outline: var(--focus-ring);
   outline-offset: 2px;
   border-radius: var(--radius-control);

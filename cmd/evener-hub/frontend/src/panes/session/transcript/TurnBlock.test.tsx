@@ -134,7 +134,7 @@ test("dispatches a commandExecution item to ToolCallItem", () => {
   // output is proof of dispatch only once the row is opened. The dispatch itself
   // is what this test is about; the row above is already evidence of it, and the
   // output confirms the descriptor's body ran rather than an empty shell.
-  fireEvent.click(screen.getByTestId("tool-row"));
+  fireEvent.click(screen.getByTestId("tool-row-trigger"));
   expect(screen.getByText("tool output")).toBeTruthy();
 });
 
@@ -173,7 +173,7 @@ test("groups a settled non-final tool run behind its highest-consequence summary
   expect(cluster.textContent).toContain("Wrote src/cache.go");
   expect(screen.queryAllByTestId("tool-call-item")).toHaveLength(0);
 
-  fireEvent.click(cluster.querySelector('[data-testid="tool-row"]')!);
+  fireEvent.click(cluster.querySelector('[data-testid="tool-row-trigger"]')!);
   expect(screen.getByTestId("tool-call-cluster-body")).toBeTruthy();
   expect(screen.getAllByTestId("tool-call-item")).toHaveLength(3);
 });
@@ -215,7 +215,7 @@ test("a cluster closes when the same virtualized turn and item ids switch sessio
 
   const { rerender } = render(<TurnBlock turn={sharedTurn(sessionAItems)} sessionRef="session_a" />);
   const cluster = screen.getByTestId("tool-call-cluster");
-  fireEvent.click(cluster.querySelector('[data-testid="tool-row"]')!);
+  fireEvent.click(cluster.querySelector('[data-testid="tool-row-trigger"]')!);
   expect(screen.getByTestId("tool-call-cluster-body")).toBeTruthy();
   expect(screen.getAllByTestId("tool-call-item")).toHaveLength(3);
 

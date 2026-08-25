@@ -1,0 +1,32 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Disclosure accessibility guard</title>
+<main>
+  <div id="header">
+    <button id="trigger" type="button" aria-expanded="false" aria-controls="disclosure-body">
+      <span>Run command</span>
+      <span aria-hidden="true">▸</span>
+    </button>
+    <span>Fetched </span><a id="summary-link" href="https://example.com/">https://example.com/</a>
+    <button id="action" type="button">Open beside</button>
+    <div id="disclosure-body" hidden>Command output</div>
+  </div>
+  <div id="rail-row" role="treeitem" tabindex="0">
+    <span id="rail-chevron" aria-hidden="true">▸</span>Rail row
+  </div>
+</main>
+<script>
+  const state = { toggles: 0, linkActivations: 0, actionActivations: 0, railActivations: 0 };
+  const trigger = document.querySelector("#trigger");
+  const body = document.querySelector("#disclosure-body");
+  trigger.addEventListener("click", () => {
+    state.toggles += 1;
+    const expanded = state.toggles % 2 === 1;
+    trigger.setAttribute("aria-expanded", String(expanded));
+    body.hidden = !expanded;
+  });
+  document.querySelector("#summary-link").addEventListener("click", (event) => { event.preventDefault(); state.linkActivations += 1; });
+  document.querySelector("#action").addEventListener("click", () => { state.actionActivations += 1; });
+  document.querySelector("#rail-chevron").addEventListener("click", () => { state.railActivations += 1; });
+  window.disclosureGuardState = state;
+</script>

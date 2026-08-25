@@ -61,27 +61,27 @@ test("settled purpose-bearing commandExecution rows stack purpose over the demot
   // single line (tried in tiered density, reverted on review).
   expect(screen.getByTestId("tool-row-purpose").textContent).toBe("Running the foo tests");
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran npm test -- src/foo");
-  expect(screen.getByTestId("tool-row").textContent).not.toContain(" — ");
+  expect(screen.getByTestId("tool-row-purpose").textContent).not.toContain(" — ");
 });
 
 // The expanded content mounts only while the row is open (the same shape
 // widgets/disclosure uses), so a body assertion has to open the row first.
 function expandRow(): void {
-  fireEvent.click(screen.getByTestId("tool-row"));
+  fireEvent.click(screen.getByTestId("tool-row-trigger"));
 }
 
-// The disclosure trigger is a div[role="button"][aria-expanded] (see
-// ToolRow.tsx), not a native <details>/<summary> - the open/closed state is
+// The disclosure trigger is a real button[aria-expanded] (see ToolRow.tsx),
+// not a native <details>/<summary> - the open/closed state is
 // read off aria-expanded on the tool-row, and toggled by clicking it. These
 // helpers keep the per-test assertions to the same one-liner shape the old
 // `details.open` / `details.querySelector("summary")` idioms had.
 function rowIsOpen(root: HTMLElement = screen.getByTestId("tool-call-item")): boolean {
-  const trigger = root.querySelector('[data-testid="tool-row"]');
+  const trigger = root.querySelector('[data-testid="tool-row-trigger"]');
   return trigger?.getAttribute("aria-expanded") === "true";
 }
 
 function toggleRow(root: HTMLElement = screen.getByTestId("tool-call-item")): void {
-  fireEvent.click(root.querySelector('[data-testid="tool-row"]')!);
+  fireEvent.click(root.querySelector('[data-testid="tool-row-trigger"]')!);
 }
 test("falls back to the default descriptor (raw output body) for an unregistered tool name", () => {
   const args = JSON.stringify({ kind: "mcp", id: 7 });
@@ -246,6 +246,19 @@ test("a row with a body starts collapsed", () => {
   render(<ToolCallItem item={item({ toolName: "tci_collapsed" })} turn={turn} live={false} />);
   const details = screen.getByTestId("tool-call-item");
   expect(rowIsOpen(details)).toBe(false);
+});
+
+test("the disclosure trigger controls the mounted body by its stable ID", () => {
+  registerToolRenderer({ match: "tci_controls_body", summary: () => "s", body: () => <div>body</div> });
+  render(<ToolCallItem item={item({ toolName: "tci_controls_body" })} turn={turn} live={false} />);
+  const trigger = screen.getByTestId("tool-row-trigger");
+  expect(trigger.getAttribute("aria-controls")).toBeTruthy();
+  expect(document.getElementById(trigger.getAttribute("aria-controls")!)).toBe(null);
+
+  fireEvent.click(trigger);
+  const body = screen.getByTestId("tool-call-body");
+  expect(body.id).toBe(trigger.getAttribute("aria-controls"));
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
 });
 
 test("clicking the summary manually expands a collapsed row", () => {
@@ -688,7 +701,7 @@ test("a reader who manually reopened a superseded row keeps it open (explicit to
   const details = screen.getByTestId("tool-call-item");
   expect(rowIsOpen(details)).toBe(false);
 
-  fireEvent.click(screen.getByTestId("tool-row"));
+  fireEvent.click(screen.getByTestId("tool-row-trigger"));
   expect(rowIsOpen(details)).toBe(true);
 });
 
@@ -1056,9 +1069,9 @@ test("delegate tool rows use a single top-level disclosure trigger owned by Tool
       live={false}
     />,
   );
-  // The disclosure trigger is a div[role="button"][aria-expanded] (ToolRow),
+  // The disclosure trigger is a real button[aria-expanded] (ToolRow),
   // not a native <details>/<summary> - exactly one per tool call.
-  const triggers = container.querySelectorAll('[data-testid="tool-row"][role="button"][aria-expanded]');
+  const triggers = container.querySelectorAll('[data-testid="tool-row-trigger"][aria-expanded]');
   expect(triggers).toHaveLength(1);
 });
 

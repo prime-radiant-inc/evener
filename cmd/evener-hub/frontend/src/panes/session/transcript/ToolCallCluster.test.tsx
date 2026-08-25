@@ -89,18 +89,20 @@ test("kata 79cs: a cluster led by a web_fetch call links that URL in its own col
     "3 steps · Fetched https://example.com/page · 4096 bytes",
   );
   expect(screen.queryByTestId("tool-call-cluster-body")).toBeNull();
+  const trigger = screen.getByTestId("tool-row-trigger");
+  expect(trigger.getAttribute("aria-controls")).toBeTruthy();
+  fireEvent.click(trigger);
+  expect(screen.getByTestId("tool-call-cluster-body").id).toBe(trigger.getAttribute("aria-controls"));
 });
 
-// The header IS the disclosure trigger (ToolRow's expandable branch, a
-// div[role="button"]) whose own onClick toggles. Without the anchor stopping
-// propagation, that same bubbled event would unfold the run as well as
-// navigate - a link that looks clickable and does neither correctly.
+// The header's link and disclosure trigger are siblings, so activating the
+// link cannot unfold the run.
 test("kata 79cs: clicking the header's link opens the URL - it must not unfold the cluster", () => {
   render(<ToolCallCluster items={READ_ONLY_RUN_LED_BY_FETCH("https://example.com/page")} turn={turn} />);
   fireEvent.click(screen.getByRole("link"));
   expect(screen.queryByTestId("tool-call-cluster-body")).toBeNull();
   // The rest of the header still unfolds the run, unaffected.
-  fireEvent.click(screen.getByTestId("tool-row"));
+  fireEvent.click(screen.getByTestId("tool-row-trigger"));
   expect(screen.getByTestId("tool-call-cluster-body")).toBeTruthy();
   expect(screen.getAllByTestId("tool-call-item")).toHaveLength(3);
 });

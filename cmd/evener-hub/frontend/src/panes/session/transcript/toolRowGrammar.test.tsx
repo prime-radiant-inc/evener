@@ -6,6 +6,7 @@ import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
@@ -169,19 +170,97 @@ test("the clamp mechanics: head ellipsis-clamps, tail never shrinks, and the cla
   expect(demoted![1]).not.toContain("nowrap");
 });
 
-test("a purpose-less row is a single line: summary text with the chevron inline at its end", () => {
+test("a purpose-less row is a single line: summary text followed by its disclosure button", () => {
   render(<ToolRow summary="npm test" failed={false} expandable expanded={false} onToggle={() => {}} />);
   const row = screen.getByTestId("tool-row");
   expect(row.textContent).toBe("npm test");
-  expect(screen.getByTestId("tool-row-summary").lastElementChild).toBe(screen.getByTestId("tool-row-chevron"));
+  expect(row.lastElementChild).toBe(screen.getByTestId("tool-row-trigger"));
+  expect(screen.getByTestId("tool-row-trigger").lastElementChild).toBe(screen.getByTestId("tool-row-chevron"));
 });
 
-test("an expandable row renders as a div[role=button] so it is keyboard-operable", () => {
+test("an expandable row renders as a real button with no interactive descendants", () => {
   render(<ToolRow summary="Ran ls" failed={false} expandable expanded={false} onToggle={() => {}} />);
   const row = screen.getByTestId("tool-row");
+  const trigger = screen.getByTestId("tool-row-trigger") as HTMLButtonElement;
   expect(row.tagName).toBe("DIV");
-  expect(row.getAttribute("role")).toBe("button");
-  expect(row.tabIndex).toBe(0);
+  expect(trigger.tagName).toBe("BUTTON");
+  expect(trigger.type).toBe("button");
+  expect(trigger.tabIndex).toBe(0);
+  expect(trigger.querySelectorAll("a, button, input, select, textarea, [tabindex]:not([tabindex='-1'])")).toHaveLength(
+    0,
+  );
+});
+
+test("native Enter and Space activation toggle disclosure exactly once", async () => {
+  const user = userEvent.setup();
+  const onToggle = vi.fn();
+  render(<ToolRow summary="Ran ls" failed={false} expandable expanded={false} onToggle={onToggle} />);
+  const trigger = screen.getByTestId("tool-row-trigger");
+
+  trigger.focus();
+  await user.keyboard("{Enter}");
+  expect(onToggle).toHaveBeenCalledTimes(1);
+  await user.keyboard(" ");
+  expect(onToggle).toHaveBeenCalledTimes(2);
+});
+
+test("keyboard activation of sibling link and action does not toggle disclosure", async () => {
+  const user = userEvent.setup();
+  const onToggle = vi.fn();
+  const onAction = vi.fn();
+  const linkActivated = vi.fn();
+  render(
+    <ToolRow
+      summary="Fetched https://example.com/page"
+      summaryLink="https://example.com/page"
+      failed={false}
+      expandable
+      expanded
+      onToggle={onToggle}
+      trailing={
+        <button type="button" onClick={onAction}>
+          Open beside
+        </button>
+      }
+    />,
+  );
+  const link = screen.getByRole("link");
+  link.addEventListener("click", linkActivated);
+  link.focus();
+  await user.keyboard("{Enter}");
+  const action = screen.getByRole("button", { name: "Open beside" });
+  action.focus();
+  await user.keyboard("{Enter}");
+  await user.keyboard(" ");
+
+  expect(linkActivated).toHaveBeenCalledTimes(1);
+  expect(onAction).toHaveBeenCalledTimes(2);
+  expect(onToggle).not.toHaveBeenCalled();
+});
+
+test("pointer activation toggles the trigger once while sibling actions stay independent", async () => {
+  const user = userEvent.setup();
+  const onToggle = vi.fn();
+  const onAction = vi.fn();
+  render(
+    <ToolRow
+      summary="Fetched https://example.com/page"
+      summaryLink="https://example.com/page"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={onToggle}
+      trailing={
+        <button type="button" onClick={onAction}>
+          Open transcript
+        </button>
+      }
+    />,
+  );
+  await user.click(screen.getByTestId("tool-row-trigger"));
+  await user.click(screen.getByRole("button", { name: "Open transcript" }));
+  expect(onToggle).toHaveBeenCalledTimes(1);
+  expect(onAction).toHaveBeenCalledTimes(1);
 });
 
 test("trailing affordances render after the summary text", () => {
@@ -298,7 +377,7 @@ test("the chevron rides inline at the end of the purpose text when a purpose exi
 test("the chevron rides inline at the end of the summary when there is no purpose", () => {
   registerToolRenderer({ match: "trg_chev_trail", summary: () => "Ran ls", body: () => <div>more</div> });
   render(<ToolCallItem item={item({ toolName: "trg_chev_trail" })} turn={turn} live={false} />);
-  expect(screen.getByTestId("tool-row-summary").lastElementChild).toBe(screen.getByTestId("tool-row-chevron"));
+  expect(screen.getByTestId("tool-row-trigger").lastElementChild).toBe(screen.getByTestId("tool-row-chevron"));
 });
 
 test("the failure glyph has a real accessible name, not a bare character", () => {
@@ -473,16 +552,16 @@ test("a descriptor's monoSummary flag puts its summary in fixed-width - shell's 
 test("an expandable row exposes aria-expanded reflecting its state", () => {
   registerToolRenderer({ match: "trg_aria", summary: () => "s", body: () => <div>b</div> });
   render(<ToolCallItem item={item({ toolName: "trg_aria" })} turn={turn} live={false} />);
-  const row = screen.getByTestId("tool-row");
-  expect(row.getAttribute("aria-expanded")).toBe("false");
-  fireEvent.click(row);
-  expect(screen.getByTestId("tool-row").getAttribute("aria-expanded")).toBe("true");
+  const trigger = screen.getByTestId("tool-row-trigger");
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  fireEvent.click(trigger);
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
 });
 
 test("a non-expandable row carries no aria-expanded (there is nothing to expand)", () => {
   registerToolRenderer({ match: "trg_no_aria", summary: () => "s" });
   render(<ToolCallItem item={item({ toolName: "trg_no_aria" })} turn={turn} live={false} />);
-  expect(screen.getByTestId("tool-row").getAttribute("aria-expanded")).toBe(null);
+  expect(screen.getByTestId("tool-row").querySelector("button")).toBe(null);
 });
 
 test("an expandable row shows a disclosure chevron; a non-expandable row shows none", () => {
@@ -501,22 +580,22 @@ test("the chevron reports its open state for the stylesheet's rotation, and is h
   const chevron = screen.getByTestId("tool-row-chevron");
   expect(chevron.getAttribute("aria-hidden")).toBe("true");
   expect(chevron.getAttribute("data-open")).toBe("false");
-  fireEvent.click(screen.getByTestId("tool-row"));
+  fireEvent.click(screen.getByTestId("tool-row-trigger"));
   expect(screen.getByTestId("tool-row-chevron").getAttribute("data-open")).toBe("true");
 });
 
 test("an expandable row reads as clickable - a pointer cursor and a hover state", () => {
   const css = rowCss();
-  expect(css).toMatch(/\[role="button"\]\.row\s*\{[^}]*cursor:\s*pointer/);
-  expect(css).toMatch(/\[role="button"\]\.row:hover\s*\{[^}]*background:/);
-  expect(css).toMatch(/\[role="button"\]\.row:focus-visible\s*\{[^}]*outline:/);
+  expect(css).toMatch(/\.trigger\s*\{[^}]*cursor:\s*pointer/);
+  expect(css).toMatch(/\.trigger:hover\s*\{[^}]*background:/);
+  expect(css).toMatch(/\.trigger:focus-visible\s*\{[^}]*outline:/);
 });
 
 // Measured in the running app: the light theme resolves --surface-1 AND
 // --surface-2 to the same #FFFFFF as the pane, so a surface-token hover was
 // literally invisible there. The hover must be an ink wash instead.
 test("the row hover is an ink wash, not a surface token that can match the pane", () => {
-  const hover = /\[role="button"\]\.row:hover\s*\{([^}]*)\}/.exec(rowCss());
+  const hover = /\.trigger:hover\s*\{([^}]*)\}/.exec(rowCss());
   expect(hover).not.toBeNull();
   expect(hover![1]).toMatch(/var\(--ink-/);
   expect(hover![1]).not.toMatch(/var\(--surface-/);
@@ -938,12 +1017,9 @@ test("a summaryLink that recurs in the summary links the first occurrence only, 
   expect(screen.getByTestId("tool-row-summary").textContent).toBe(summary);
 });
 
-// The collapsed row IS the disclosure trigger (ToolRow's expandable branch,
-// a div[role="button"]), and its own onClick toggles on every click that
-// reaches it. Without stopping propagation on the link's own click, the SAME
-// bubbled event would both navigate the anchor and toggle the row - a link
-// that looks clickable but does neither correctly.
-test("clicking the linkified URL opens it, not toggles the row - the click must not bubble to the trigger's own handler", () => {
+// The summary link and the disclosure trigger are siblings, so the link's
+// pointer activation cannot reach the trigger at all.
+test("clicking the linkified URL does not toggle the sibling disclosure trigger", () => {
   const onToggle = vi.fn();
   render(
     <ToolRow
@@ -958,7 +1034,7 @@ test("clicking the linkified URL opens it, not toggles the row - the click must 
   fireEvent.click(screen.getByRole("link"));
   expect(onToggle).not.toHaveBeenCalled();
   // Clicking anywhere else on the row still toggles, unaffected.
-  fireEvent.click(screen.getByTestId("tool-row"));
+  fireEvent.click(screen.getByTestId("tool-row-trigger"));
   expect(onToggle).toHaveBeenCalledTimes(1);
 });
 
@@ -970,28 +1046,18 @@ test("clicking the linkified URL opens it, not toggles the row - the click must 
 // label of its own.
 test("an expanded summary-less, purpose-less row's disclosure trigger still has a nonempty accessible name", () => {
   render(<ToolRow summary="" failed={false} expandable expanded onToggle={() => {}} />);
-  const row = screen.getByTestId("tool-row");
-  expect(row.tagName).toBe("DIV");
-  expect(row.getAttribute("role")).toBe("button");
-  expect((row.getAttribute("aria-label") ?? "").trim()).not.toBe("");
+  const trigger = screen.getByTestId("tool-row-trigger");
+  expect(trigger.tagName).toBe("BUTTON");
+  expect((trigger.getAttribute("aria-label") ?? "").trim()).not.toBe("");
 });
 
-// aria-label on an element REPLACES its computed accessible name entirely -
-// it does not merge with descendant content. FailureGlyph and StatusDot each
-// carry their own accessible name (role="img", aria-label="Failed" / the
-// state label) that would normally contribute to the summary's computed
-// name; stamping a fixed "Tool call" label over them would erase that
-// signal. The fallback must therefore only apply when the row would
-// otherwise carry no accessible name at all, leaving the glyph's own name to
-// stand when failure or status is present.
-test("a failed summary-less, purpose-less row's disclosure does not stamp over the failure glyph's accessible name", () => {
+test("a failed summary-less row keeps its failure name on the sibling trigger", () => {
   render(<ToolRow summary="" failed expandable expanded onToggle={() => {}} />);
-  const row = screen.getByTestId("tool-row");
-  expect(row.getAttribute("aria-label")).toBe(null);
+  expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-label")).toBe("Failed");
   expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
 });
 
-test("a status-bearing summary-less, purpose-less row's disclosure does not stamp over the status's accessible name", () => {
+test("a status-bearing summary-less row keeps the status name outside the trigger", () => {
   render(
     <ToolRow
       summary=""
@@ -1006,18 +1072,11 @@ test("a status-bearing summary-less, purpose-less row's disclosure does not stam
       onToggle={() => {}}
     />,
   );
-  const row = screen.getByTestId("tool-row");
-  expect(row.getAttribute("aria-label")).toBe(null);
+  expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-label")).toBe("Tool call");
   expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
 });
 
-// Failure and status are independent suppressors that one row can carry AT
-// ONCE (ToolCallItem passes `status` for every delegate call and `failed`
-// when that call failed). Each is proven alone above; neither alone
-// distinguishes the conjunction the gate actually is from a rule that fires
-// on whichever flag it happens to see first. With both present the row must
-// still stamp no aria-label, so BOTH descendant names survive.
-test("a failed AND status-bearing summary-less, purpose-less row keeps both descendant accessible names", () => {
+test("a failed and status-bearing row keeps both names outside the trigger", () => {
   render(
     <ToolRow
       summary=""
@@ -1032,8 +1091,7 @@ test("a failed AND status-bearing summary-less, purpose-less row keeps both desc
       onToggle={() => {}}
     />,
   );
-  const row = screen.getByTestId("tool-row");
-  expect(row.getAttribute("aria-label")).toBe(null);
+  expect(screen.getByTestId("tool-row-trigger").getAttribute("aria-label")).toBe("Failed");
   expect(screen.getByRole("img", { name: "Failed" })).toBeTruthy();
   expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
 });
@@ -1046,14 +1104,12 @@ test("a failed AND status-bearing summary-less, purpose-less row keeps both desc
 // one). The gate must reject nameless status values, not just absent ones.
 test("a null status does not suppress the fallback label - the disclosure is never left unnamed", () => {
   render(<ToolRow summary="" failed={false} status={null} expandable expanded onToggle={() => {}} />);
-  const row = screen.getByTestId("tool-row");
-  expect((row.getAttribute("aria-label") ?? "").trim()).not.toBe("");
+  expect((screen.getByTestId("tool-row-trigger").getAttribute("aria-label") ?? "").trim()).not.toBe("");
 });
 
 test("a false status does not suppress the fallback label - the disclosure is never left unnamed", () => {
   render(<ToolRow summary="" failed={false} status={false} expandable expanded onToggle={() => {}} />);
-  const row = screen.getByTestId("tool-row");
-  expect((row.getAttribute("aria-label") ?? "").trim()).not.toBe("");
+  expect((screen.getByTestId("tool-row-trigger").getAttribute("aria-label") ?? "").trim()).not.toBe("");
 });
 
 // The mechanism-level ToolRow tests above prove the row CAN linkify a

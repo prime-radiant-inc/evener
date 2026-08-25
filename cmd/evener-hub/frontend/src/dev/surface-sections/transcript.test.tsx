@@ -22,11 +22,11 @@ function rowFor(toolName: string): HTMLElement {
   return row;
 }
 
-// ToolCallItem's disclosure trigger is a div[role="button"][aria-expanded]
+// ToolCallItem's disclosure trigger is a real button[aria-expanded]
 // (ToolRow.tsx), not a native <details>; the open state lives on aria-expanded
 // of the tool-row child, not on a .open property of the wrapper.
 function isOpen(item: HTMLElement): boolean {
-  return item.querySelector('[data-testid="tool-row"]')?.getAttribute("aria-expanded") === "true";
+  return item.querySelector('[data-testid="tool-row-trigger"]')?.getAttribute("aria-expanded") === "true";
 }
 
 test("a completed shell row starts collapsed", () => {

@@ -61,6 +61,8 @@ import styles from "./toolcallitem.module.css";
 
 const CLASS = {
   row: requireClass(styles.row, "toolcallitem.module.css", "row"),
+  trigger: requireClass(styles.trigger, "toolcallitem.module.css", "trigger"),
+  summaryLine: requireClass(styles.summaryLine, "toolcallitem.module.css", "summaryLine"),
   purpose: requireClass(styles.purpose, "toolcallitem.module.css", "purpose"),
   summary: requireClass(styles.summary, "toolcallitem.module.css", "summary"),
   mono: requireClass(styles.mono, "toolcallitem.module.css", "mono"),
@@ -124,6 +126,8 @@ export interface ToolRowProps {
   /** Hover text for details that are real but must not be the headline — the
    * shell exit code, per A2. */
   title?: string;
+  /** Stable ID of the conditionally rendered body controlled by this trigger. */
+  bodyId?: string;
 }
 
 /** The one rule for reading a tool call's stated purpose (ItemModel.description):
@@ -190,7 +194,7 @@ function linkifySummary(text: string, href: string | undefined): ReactNode {
   return (
     <>
       {text.slice(0, start)}
-      <a href={href} target="_blank" rel="noopener noreferrer" onClick={(e) => e.stopPropagation()}>
+      <a href={href} target="_blank" rel="noopener noreferrer">
         {href}
       </a>
       {text.slice(start + href.length)}
@@ -212,6 +216,7 @@ export function ToolRow({
   trailingAfter,
   title,
   status,
+  bodyId,
 }: ToolRowProps) {
   const statedPurpose = statedPurposeOf({ description: purpose });
   const hasPurpose = statedPurpose !== undefined;
@@ -254,6 +259,12 @@ export function ToolRow({
       data-testid="tool-row-chevron"
     >
       <Chevron />
+    </span>
+  ) : null;
+  const failureNode = failed ? <FailureGlyph /> : null;
+  const statusNode = hasStatus ? (
+    <span className={CLASS.status} data-testid="tool-row-status">
+      {status}
     </span>
   ) : null;
   // The kind icon sits in the RAIL beside the rationale line (Jesse's review
@@ -333,12 +344,8 @@ export function ToolRow({
           left edge down a long list of sibling rows, whereas a tool row sits
           inside flowing prose, where a blank reserved column reads as a stray
           indent. Different context, different answer. */}
-      {failed && <FailureGlyph />}
-      {hasStatus && (
-        <span className={CLASS.status} data-testid="tool-row-status">
-          {status}
-        </span>
-      )}
+      {failureNode}
+      {statusNode}
       {hasPurpose && (
         <span className={CLASS.purpose} data-testid="tool-row-purpose">
           {statedPurpose}
@@ -389,66 +396,88 @@ export function ToolRow({
     );
   }
 
+  const summaryContent = (
+    <>
+      {hasSummary && (
+        <span
+          className={`${CLASS.summary}${monoSummary ? ` ${CLASS.mono}` : ""}${
+            hasPurpose ? ` ${CLASS.demoted}${expanded ? "" : ` ${CLASS.clamped}`}` : ""
+          }`}
+          data-testid="tool-row-summary"
+          title={hasPurpose ? summary : undefined}
+        >
+          {hasPurpose && !expanded ? (
+            clampedSummary
+          ) : anchorSplit !== undefined ? (
+            <>
+              {linkifySummary(anchorSplit[0], summaryLink)}
+              <span className={CLASS.summaryTrailing} data-testid="tool-row-trailing">
+                {trailing}
+              </span>
+              {linkifySummary(anchorSplit[1], summaryLink)}
+            </>
+          ) : (
+            linkifySummary(summary, summaryLink)
+          )}
+          {hasPurpose && trailing && anchorSplit === undefined ? (
+            <span className={CLASS.summaryTrailing}>{trailing}</span>
+          ) : null}
+        </span>
+      )}
+      {(!hasPurpose || !hasSummary) && anchorSplit === undefined ? trailing : null}
+    </>
+  );
+  const triggerLabel = !hasPurpose
+    ? [
+        failed ? "Failed" : undefined,
+        hasSummary ? summary : undefined,
+        !hasSummary && !failed ? "Tool call" : undefined,
+      ]
+        .filter((part): part is string => part !== undefined)
+        .join(" ")
+    : undefined;
+
   return (
-    // A <div role="button"> disclosure trigger, NOT a native <summary>. A
-    // <summary> maps to role=button, and the row's inline affordances (a
-    // linkified summaryLink <a>, "Open beside" / "Open transcript" <button>s)
-    // are INTERACTIVE descendants of the trigger - exactly what Chrome's
-    // a11y console flags as "Interactive element inside of a <summary>
-    // element." A plain div with role="button" keeps the same keyboard
-    // contract (Enter/Space toggle, below) and the same aria-expanded
-    // announcement, without the <summary>-specific nesting violation. The
-    // inline grammar (affordances ride the tool-call line, inside the
-    // trigger) is preserved: they stopPropagation on their own clicks so
-    // the trigger's onClick never fires from inside them.
-    //
-    // aria-expanded is supported on role=button (unlike on <summary>, whose
-    // implicit mapping Biome's role table does not carry - the old
-    // useAriaPropsSupportedByRole ignore was a workaround for that). The
-    // attribute can never disagree with the state: ToolCallItem drives this
-    // render from the same `expanded` value.
-    // biome-ignore lint/a11y/useSemanticElements: a real <button> cannot hold the row's inline interactive children (links, "Open beside" buttons) - that is the exact "Interactive element inside a <button>" violation this div replaces; see the comment above
-    <div
-      role="button"
-      tabIndex={0}
-      className={CLASS.row}
-      data-testid="tool-row"
-      data-purpose={hasPurpose ? "true" : undefined}
-      title={title}
-      aria-expanded={expanded}
-      // A descriptor can suppress BOTH the purpose (none stated) and the
-      // summary (summaryHiddenWhenExpanded, open) at once, leaving nothing but
-      // the aria-hidden chevron inside this trigger - an unnamed disclosure.
-      // aria-label REPLACES the computed accessible name entirely, including
-      // any descendant name (FailureGlyph's "Failed", a status glyph's state
-      // label), so the fallback applies ONLY when the row would otherwise
-      // have no accessible name at all - not merely no purpose/summary, and
-      // not merely no FAILED/hasStatus flag (a nameless status value like
-      // null or false must not suppress it either, see hasStatus above).
-      // When failed or hasStatus is true, their own accessible name stands
-      // instead. The fallback is a stable label, not a restoration of the
-      // hidden summary text (that suppression, ToolCallItem.tsx:259, is
-      // deliberate).
-      aria-label={!hasPurpose && !hasSummary && !failed && !hasStatus ? "Tool call" : undefined}
-      onClick={() => {
-        // The keyboard path (onKeyDown below) calls onToggle directly and
-        // does not synthesize a click, so there is no double-toggle. There
-        // is no native <details> whose open attribute this click could flip
-        // (the old <summary> needed preventDefault for exactly that); a bare
-        // onToggle is all this handler does.
-        onToggle?.();
-      }}
-      onKeyDown={(e) => {
-        // Enter/Space toggle, matching the <summary> keyboard contract this
-        // replaces (a native summary synthesizes a click on both). Space
-        // preventDefault stops the page scrolling; Enter does not scroll.
-        if (e.key === "Enter" || e.key === " ") {
-          e.preventDefault();
-          onToggle?.();
-        }
-      }}
-    >
-      {content}
+    <div className={CLASS.row} data-testid="tool-row" data-purpose={hasPurpose ? "true" : undefined} title={title}>
+      {hasPurpose ? (
+        <button
+          type="button"
+          className={CLASS.trigger}
+          data-testid="tool-row-trigger"
+          aria-expanded={expanded}
+          aria-controls={bodyId}
+          onClick={() => onToggle?.()}
+        >
+          {iconNode}
+          {failureNode}
+          {statusNode}
+          <span className={CLASS.purpose} data-testid="tool-row-purpose">
+            {statedPurpose}
+            {chevron}
+          </span>
+        </button>
+      ) : (
+        <>
+          {iconNode}
+          {failureNode}
+          {statusNode}
+        </>
+      )}
+      {!hasPurpose && <div className={CLASS.summaryLine}>{summaryContent}</div>}
+      {!hasPurpose && (
+        <button
+          type="button"
+          className={CLASS.trigger}
+          data-testid="tool-row-trigger"
+          aria-expanded={expanded}
+          aria-controls={bodyId}
+          aria-label={triggerLabel}
+          onClick={() => onToggle?.()}
+        >
+          {chevron}
+        </button>
+      )}
+      {hasPurpose && <div className={CLASS.summaryLine}>{summaryContent}</div>}
     </div>
   );
 }
