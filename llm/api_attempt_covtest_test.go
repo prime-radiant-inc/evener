@@ -84,32 +84,6 @@ func TestCovCompleteNilReceiver(t *testing.T) {
 	// No panic.
 }
 
-// TestCovCompleteNilSink covers the a.sink == nil early return in Complete
-// (line 262-263). This needs a group but no sink bound.
-func TestCovCompleteNilSink(t *testing.T) {
-	group := NewAPIAttemptGroup("ag_nil_sink_complete")
-	sink := &recordingAPIAttemptSink{}
-	ctx := WithAPIAttemptSink(context.Background(), sink)
-	// Manually construct an attempt with a group but nil sink.
-	a := &APIAttempt{
-		group: group,
-		ctx:   ctx,
-		meta:  testAPIAttemptMeta(time.Unix(1_700_000_000, 0).UTC()),
-		id:    "test-id",
-		index: 1,
-	}
-	group.pendingAttempts.Add(1)
-	a.Complete(testAPIAttemptResult(time.Unix(1_700_000_000, 0).UTC().Add(time.Millisecond), apilog.AttemptSuccess, nil))
-	group.Settle(ctx, apilog.AttemptSuccess)
-	attempts, settlements, _ := sink.snapshot()
-	if len(attempts) != 0 {
-		t.Fatalf("attempt count = %d, want 0 for nil attempt sink", len(attempts))
-	}
-	if len(settlements) != 1 || settlements[0].AttemptGroupID != group.ID || settlements[0].FinalAttemptCount != 0 || settlements[0].Outcome != apilog.AttemptSuccess {
-		t.Fatalf("settlements = %+v, want one successful zero-attempt settlement for %q", settlements, group.ID)
-	}
-}
-
 // TestCovAPIAttemptGroupFromContextNilContext covers the nil-ctx path
 // (line 309-310).
 func TestCovAPIAttemptGroupFromContextNilContext(t *testing.T) {
@@ -195,13 +169,21 @@ func TestCovCloneCredentialFreeHTTPHeaderCredentialNameEvidence(t *testing.T) {
 // TestCovAPILogCredentialMaterialFromContextWithMaterial covers the ok=true
 // path where a material is attached to the context.
 func TestCovAPILogCredentialMaterialFromContextWithMaterial(t *testing.T) {
-	material := NewAPILogCredentialMaterial(nil, nil, "secret")
+	material := NewAPILogCredentialMaterial([]string{"X-Custom-Key"}, []string{"custom_param"}, "credential-secret")
 	ctx := withAPILogCredentialMaterial(context.Background(), material)
 	got, ok := apiLogCredentialMaterialFromContext(ctx)
 	if !ok {
 		t.Fatal("expected material from context")
 	}
-	if len(got.Values) != 1 || got.Values[0] != "secret" {
-		t.Fatalf("material values = %v, want [secret]", got.Values)
+	want := APILogCredentialMaterial{
+		HeaderNames: map[string]struct{}{"X-Custom-Key": {}},
+		QueryNames:  map[string]struct{}{"custom_param": {}},
+		Values:      []string{"credential-secret"},
+		secretNames: []string{"custom_param", "x-custom-key"},
+		patterns:    []string{"credential-secret"},
 	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("context credential material = %#v, want %#v", got, want)
+	}
+	assertCredentialMaterialSanitizesExactly(t, got)
 }

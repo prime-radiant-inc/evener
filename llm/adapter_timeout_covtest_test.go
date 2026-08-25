@@ -2,9 +2,14 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"net"
+	"net/http"
 	"net/url"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	apilog "primeradiant.com/evener/llm/apilog"
 )
@@ -31,6 +36,93 @@ func TestCovAPITimeoutSourceForTransportNetOpError(t *testing.T) {
 		t.Fatalf("APITimeoutSourceForTransport(net.OpError→DeadlineExceeded) = %q, want %q", got, APITimeoutTransport)
 	}
 }
+
+func TestCovResponseHeaderTimeoutTransportNonTimeoutErrorAfterWrite(t *testing.T) {
+	sentinel := errors.New("scripted post-write read failure")
+	response, err, conn := roundTripWithScriptedReadError(t, sentinel)
+	if response != nil {
+		t.Fatalf("RoundTrip response = %#v, want nil", response)
+	}
+	if err != sentinel {
+		t.Fatalf("RoundTrip error = %T %v, want sentinel identity", err, err)
+	}
+	if !conn.wrote.Load() {
+		t.Fatal("scripted connection observed no successful request write")
+	}
+}
+
+func TestCovResponseHeaderTimeoutTransportTimeoutAfterWrite(t *testing.T) {
+	sentinel := &scriptedPostWriteTimeoutError{}
+	response, err, conn := roundTripWithScriptedReadError(t, sentinel)
+	if response != nil {
+		t.Fatalf("RoundTrip response = %#v, want nil", response)
+	}
+	var timeoutErr *responseHeaderTimeoutError
+	if !errors.As(err, &timeoutErr) {
+		t.Fatalf("RoundTrip error = %T %v, want *responseHeaderTimeoutError", err, err)
+	}
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("RoundTrip error = %v, want scripted timeout in error chain", err)
+	}
+	if !conn.wrote.Load() {
+		t.Fatal("scripted connection observed no successful request write")
+	}
+}
+
+func roundTripWithScriptedReadError(t *testing.T, readErr error) (*http.Response, error, *scriptedPostWriteConn) {
+	t.Helper()
+	conn := newScriptedPostWriteConn(readErr)
+	base := http.DefaultTransport.(*http.Transport).Clone()
+	base.Proxy = nil
+	base.DisableKeepAlives = true
+	base.DialContext = func(context.Context, string, string) (net.Conn, error) {
+		return conn, nil
+	}
+	transport := &responseHeaderTimeoutTransport{base: base}
+	request, err := http.NewRequest(http.MethodGet, "http://provider.test/v1/models", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	response, err := transport.RoundTrip(request)
+	return response, err, conn
+}
+
+type scriptedPostWriteConn struct {
+	readErr error
+	wrote   atomic.Bool
+	written chan struct{}
+	once    sync.Once
+}
+
+func newScriptedPostWriteConn(readErr error) *scriptedPostWriteConn {
+	return &scriptedPostWriteConn{readErr: readErr, written: make(chan struct{})}
+}
+
+func (c *scriptedPostWriteConn) Read([]byte) (int, error) {
+	<-c.written
+	return 0, c.readErr
+}
+
+func (c *scriptedPostWriteConn) Write(p []byte) (int, error) {
+	c.wrote.Store(true)
+	c.once.Do(func() { close(c.written) })
+	return len(p), nil
+}
+
+func (*scriptedPostWriteConn) Close() error                     { return nil }
+func (*scriptedPostWriteConn) LocalAddr() net.Addr              { return scriptedPostWriteAddr("local") }
+func (*scriptedPostWriteConn) RemoteAddr() net.Addr             { return scriptedPostWriteAddr("remote") }
+func (*scriptedPostWriteConn) SetDeadline(time.Time) error      { return nil }
+func (*scriptedPostWriteConn) SetReadDeadline(time.Time) error  { return nil }
+func (*scriptedPostWriteConn) SetWriteDeadline(time.Time) error { return nil }
+func (e *scriptedPostWriteTimeoutError) Error() string          { return "scripted post-write timeout" }
+func (e *scriptedPostWriteTimeoutError) Timeout() bool          { return true }
+func (e *scriptedPostWriteTimeoutError) Temporary() bool        { return false }
+func (a scriptedPostWriteAddr) Network() string                 { return "scripted" }
+func (a scriptedPostWriteAddr) String() string                  { return string(a) }
+
+type scriptedPostWriteTimeoutError struct{}
+type scriptedPostWriteAddr string
 
 // TestCovClassifyAPIAttemptOutcomeCallerCancel covers the caller-cancel
 // path, ensuring the outcome classification is correct.
