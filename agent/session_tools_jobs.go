@@ -1667,6 +1667,53 @@ func sessionRunningJobIDs(s *Session) []string {
 	return ids
 }
 
+// sessionRunningWorkIDs combines managed jobs with detached processes owned by
+// this session. Detached processes deliberately stay out of the job manager and
+// drain accounting, but an end_turn warning must still name one while its own
+// completion receipt is open.
+func sessionRunningWorkIDs(s *Session) []string {
+	ids := sessionRunningJobIDs(s)
+	return append(ids, s.runningDetachedProcessIDs()...)
+}
+
+func (s *Session) recordDetachedProcess(process execenv.DetachedProcess) {
+	if s == nil || process.PID <= 0 || process.Done == nil {
+		// Without a completion receipt we cannot distinguish a live process from a
+		// stale PID safely, so do not manufacture an end-turn warning.
+		return
+	}
+	s.mu.Lock()
+	s.detachedProcesses = append(s.detachedProcesses, sessionDetachedProcess{
+		pid:  process.PID,
+		done: process.Done,
+	})
+	s.mu.Unlock()
+}
+
+// runningDetachedProcessIDs returns only processes whose launcher's completion
+// receipt is still open. The receipt belongs to this exact launch, so a later
+// process reusing the same PID can never be mistaken for a live owned process.
+func (s *Session) runningDetachedProcessIDs() []string {
+	if s == nil {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	alive := s.detachedProcesses[:0]
+	ids := make([]string, 0, len(s.detachedProcesses))
+	for _, process := range s.detachedProcesses {
+		select {
+		case <-process.done:
+			continue
+		default:
+			alive = append(alive, process)
+			ids = append(ids, fmt.Sprintf("detached process (pid %d)", process.pid))
+		}
+	}
+	s.detachedProcesses = alive
+	return ids
+}
+
 func jobListFilterFromArgs(args map[string]any) (listFilter, error) {
 	limit := defaultJobListLimit
 	if n, ok := shellIntArg(args, "limit"); ok {
