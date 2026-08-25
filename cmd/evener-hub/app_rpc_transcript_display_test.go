@@ -110,15 +110,19 @@ func TestHubRPCTranscriptDisplayPatchFailuresDoNotNotify(t *testing.T) {
 	}
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{TranscriptDisplayStore: store})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
+	clientA := dialHubRPC(t, hub)
+	defer clientA.Close()
+	clientB := dialHubRPC(t, hub)
+	defer clientB.Close()
+	for _, client := range []*appwire.Client{clientA, clientB} {
+		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatal(err)
+		}
 	}
 
 	defaults := appwire.TranscriptDisplayShippedDefaults()
 	var noOp appwire.TranscriptDisplayDefaultsPatchResponse
-	if err := client.Request(context.Background(), appwire.MethodEvenerSettingsTranscriptDisplayPatch,
+	if err := clientA.Request(context.Background(), appwire.MethodEvenerSettingsTranscriptDisplayPatch,
 		appwire.TranscriptDisplayDefaultsPatchParams{
 			Layout:           appwire.TranscriptViewportDesktop,
 			ExpectedRevision: 0,
@@ -129,26 +133,32 @@ func TestHubRPCTranscriptDisplayPatchFailuresDoNotNotify(t *testing.T) {
 	if noOp.Revision != 0 {
 		t.Fatalf("no-op revision = %d, want 0", noOp.Revision)
 	}
-	assertNoTranscriptDisplayNotification(t, client)
+	assertNoTranscriptDisplayNotification(t, clientA)
+	assertNoTranscriptDisplayNotification(t, clientB)
 
+	invalidConfig := defaults.Desktop.Config
+	invalidConfig.Version = 99
 	invalidRaw, err := json.Marshal(map[string]any{
 		"layout":           appwire.TranscriptViewportDesktop,
 		"expectedRevision": 0,
-		"config":           defaults.Desktop.Config,
-		"configExtra":      true,
+		"config":           invalidConfig,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	var invalidResult appwire.TranscriptDisplayDefaultsPatchResponse
-	err = client.Request(context.Background(), appwire.MethodEvenerSettingsTranscriptDisplayPatch, json.RawMessage(invalidRaw), &invalidResult)
+	err = clientA.Request(context.Background(), appwire.MethodEvenerSettingsTranscriptDisplayPatch, json.RawMessage(invalidRaw), &invalidResult)
 	assertTranscriptDisplayWireCode(t, err, appwire.CodeInvalidParams)
-	assertNoTranscriptDisplayNotification(t, client)
+	if !containsTranscriptDisplayError(err, "unsupported transcript display config version") {
+		t.Fatalf("semantic validation error = %v, want unsupported-version diagnostic", err)
+	}
+	assertNoTranscriptDisplayNotification(t, clientA)
+	assertNoTranscriptDisplayNotification(t, clientB)
 
 	changed := defaults.Desktop.Config
 	changed.Content.Level = appwire.TranscriptLevelActivity
 	var first appwire.TranscriptDisplayDefaultsPatchResponse
-	if err := client.Request(context.Background(), appwire.MethodEvenerSettingsTranscriptDisplayPatch,
+	if err := clientA.Request(context.Background(), appwire.MethodEvenerSettingsTranscriptDisplayPatch,
 		appwire.TranscriptDisplayDefaultsPatchParams{
 			Layout:           appwire.TranscriptViewportDesktop,
 			ExpectedRevision: 0,
@@ -156,10 +166,11 @@ func TestHubRPCTranscriptDisplayPatchFailuresDoNotNotify(t *testing.T) {
 		}, &first); err != nil {
 		t.Fatalf("first PATCH: %v", err)
 	}
-	_ = receiveTranscriptDisplayChanged(t, client)
+	_ = receiveTranscriptDisplayChanged(t, clientA)
+	_ = receiveTranscriptDisplayChanged(t, clientB)
 
 	var staleResult appwire.TranscriptDisplayDefaultsPatchResponse
-	err = client.Request(context.Background(), appwire.MethodEvenerSettingsTranscriptDisplayPatch,
+	err = clientA.Request(context.Background(), appwire.MethodEvenerSettingsTranscriptDisplayPatch,
 		appwire.TranscriptDisplayDefaultsPatchParams{
 			Layout:           appwire.TranscriptViewportDesktop,
 			ExpectedRevision: 0,
@@ -180,7 +191,8 @@ func TestHubRPCTranscriptDisplayPatchFailuresDoNotNotify(t *testing.T) {
 	if conflictData.EvenerErrorInfo != appwire.ErrorConflict || conflictData.Layout != appwire.TranscriptViewportDesktop || conflictData.Current.Revision != 1 || conflictData.Current.Config != changed {
 		t.Fatalf("conflict data = %#v, want current desktop revision 1", conflictData)
 	}
-	assertNoTranscriptDisplayNotification(t, client)
+	assertNoTranscriptDisplayNotification(t, clientA)
+	assertNoTranscriptDisplayNotification(t, clientB)
 
 	if err := os.RemoveAll(filepath.Join(root, "transcript-display")); err != nil {
 		t.Fatal(err)
@@ -191,14 +203,15 @@ func TestHubRPCTranscriptDisplayPatchFailuresDoNotNotify(t *testing.T) {
 	failedConfig := changed
 	failedConfig.Content.Level = appwire.TranscriptLevelFull
 	var failedResult appwire.TranscriptDisplayDefaultsPatchResponse
-	err = client.Request(context.Background(), appwire.MethodEvenerSettingsTranscriptDisplayPatch,
+	err = clientA.Request(context.Background(), appwire.MethodEvenerSettingsTranscriptDisplayPatch,
 		appwire.TranscriptDisplayDefaultsPatchParams{
 			Layout:           appwire.TranscriptViewportDesktop,
 			ExpectedRevision: 1,
 			Config:           failedConfig,
 		}, &failedResult)
 	assertTranscriptDisplayWireCode(t, err, appwire.CodeInternalError)
-	assertNoTranscriptDisplayNotification(t, client)
+	assertNoTranscriptDisplayNotification(t, clientA)
+	assertNoTranscriptDisplayNotification(t, clientB)
 }
 
 func TestHubRPCTranscriptDisplayPatchPersistsAcrossRestart(t *testing.T) {
@@ -260,13 +273,17 @@ func TestHubRPCTranscriptDisplayMalformedStateUsesFallbackAndRemainsReadOnly(t *
 	if web.cfg.TranscriptDisplayStore == nil || web.transcriptDisplayStoreErr == nil {
 		t.Fatalf("malformed startup store=%p loadErr=%v, want non-nil fallback and diagnostic", web.cfg.TranscriptDisplayStore, web.transcriptDisplayStoreErr)
 	}
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatal(err)
+	clientA := dialHubRPC(t, hub)
+	defer clientA.Close()
+	clientB := dialHubRPC(t, hub)
+	defer clientB.Close()
+	for _, client := range []*appwire.Client{clientA, clientB} {
+		if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+			t.Fatal(err)
+		}
 	}
 	var got appwire.TranscriptDisplayDefaults
-	if err := client.Request(context.Background(), appwire.MethodEvenerSettingsTranscriptDisplayGet, appwire.EmptyParams{}, &got); err != nil {
+	if err := clientA.Request(context.Background(), appwire.MethodEvenerSettingsTranscriptDisplayGet, appwire.EmptyParams{}, &got); err != nil {
 		t.Fatalf("GET malformed state: %v", err)
 	}
 	if want := appwire.TranscriptDisplayShippedDefaults(); !equalTranscriptDisplayDefaults(got, want) {
@@ -275,12 +292,14 @@ func TestHubRPCTranscriptDisplayMalformedStateUsesFallbackAndRemainsReadOnly(t *
 	config := got.Desktop.Config
 	config.Content.Level = appwire.TranscriptLevelActivity
 	var result appwire.TranscriptDisplayDefaultsPatchResponse
-	err := client.Request(context.Background(), appwire.MethodEvenerSettingsTranscriptDisplayPatch,
+	err := clientA.Request(context.Background(), appwire.MethodEvenerSettingsTranscriptDisplayPatch,
 		appwire.TranscriptDisplayDefaultsPatchParams{Layout: appwire.TranscriptViewportDesktop, Config: config}, &result)
 	assertTranscriptDisplayWireCode(t, err, appwire.CodeInternalError)
 	if !containsTranscriptDisplayError(err, "decode transcript display state") {
 		t.Fatalf("malformed-state PATCH error = %v, want load diagnostic", err)
 	}
+	assertNoTranscriptDisplayNotification(t, clientA)
+	assertNoTranscriptDisplayNotification(t, clientB)
 	unchanged, err := os.ReadFile(statePath)
 	if err != nil {
 		t.Fatal(err)
