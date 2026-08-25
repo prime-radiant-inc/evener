@@ -314,6 +314,103 @@ test("browser-global references remain forbidden when assigned aliases", () => {
   }
 });
 
+test("browser-global container aliases preserve every network and capability surface", () => {
+  const cases = [
+    ["const browser = window; browser.fetch('/x')", "network-api"],
+    [
+      "const browser = globalThis.window; browser.fetch('/x')",
+      "network-api",
+    ],
+    [
+      "const browser = globalThis; const Request = browser.XMLHttpRequest; new Request()",
+      "network-api",
+    ],
+    ["const browser = self; new browser.WebSocket('/x')", "network-api"],
+    ["const browser = window; new browser.EventSource('/x')", "network-api"],
+    ["const nav = navigator; nav.sendBeacon('/x')", "network-api"],
+    [
+      "const nav = navigator; nav.mediaDevices.getUserMedia({ audio: true })",
+      "media-capture",
+    ],
+    [
+      "const browser = globalThis; new browser.SpeechRecognition()",
+      "speech-recognition",
+    ],
+    [
+      "const browser = window; new browser.webkitSpeechRecognition()",
+      "speech-recognition",
+    ],
+    [
+      "const browser = self; browser.speechSynthesis.speak(message)",
+      "speech-synthesis",
+    ],
+    [
+      "const browser = globalThis; new browser.SpeechSynthesisUtterance('x')",
+      "speech-synthesis",
+    ],
+    ["const browser = window; new browser.AudioContext()", "audio-context"],
+    [
+      "const browser = self; new browser.webkitAudioContext()",
+      "audio-context",
+    ],
+    ["const browser = window; browser.showOpenFilePicker()", "file-access"],
+    [
+      "const { self: browser } = globalThis; browser.showOpenFilePicker()",
+      "file-access",
+    ],
+    [
+      "const browser = globalThis; browser.showSaveFilePicker()",
+      "file-access",
+    ],
+    [
+      "const browser = self; browser.showDirectoryPicker()",
+      "file-access",
+    ],
+    [
+      "const browser = globalThis; const { navigator: nav } = browser; nav.geolocation.getCurrentPosition(done)",
+      "geolocation",
+    ],
+    ["const browser = self; new browser.Notification('x')", "notification-push"],
+    [
+      "const browser = window; browser.PushManager.prototype.subscribe",
+      "notification-push",
+    ],
+    [
+      "const nav = navigator; const { serviceWorker: worker } = nav; worker.ready",
+      "notification-push",
+    ],
+    ["const nav = navigator; nav.vibrate(20)", "haptics"],
+  ];
+  for (const [source, expected] of cases) {
+    assert.ok(
+      codes(scanText("src/container-alias.ts", source)).includes(expected),
+      source,
+    );
+  }
+});
+
+test("local shadows remain clean through container and member aliases", () => {
+  const clean = `
+    function local(window, globalThis, self, navigator) {
+      const browser = window;
+      const root = globalThis;
+      const localSelf = self;
+      const nav = navigator;
+      const { fetch: request, AudioContext: Audio } = browser;
+      request('/x');
+      new Audio();
+      root.showOpenFilePicker();
+      new localSelf.Notification('x');
+      nav.sendBeacon('/x');
+      nav.mediaDevices.getUserMedia({ audio: true });
+      nav.geolocation.getCurrentPosition(done);
+      nav.serviceWorker.ready;
+      nav.vibrate(20);
+    }
+  `;
+  assert.deepEqual(scanText("src/local-container-alias.ts", clean), []);
+});
+
 test("asset scanners reject remote HTML, CSS, and SVG references", () => {
   const cases = [
     ['<script src="https://cdn.invalid/a.js"></script>', "index.html"],

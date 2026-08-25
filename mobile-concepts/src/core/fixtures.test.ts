@@ -39,7 +39,7 @@ describe("canonicalFixture", () => {
   it("has the exact deterministic foundation inventory", () => {
     expect(canonicalFixture.version).toBe(1);
     expect(canonicalFixture.sessions).toHaveLength(5);
-    expect(canonicalFixture.transcript).toHaveLength(7);
+    expect(canonicalFixture.transcript).toHaveLength(9);
     expect(canonicalFixture.questions).toHaveLength(2);
     expect(canonicalFixture.work).toHaveLength(7);
     expect(canonicalFixture.search).toHaveLength(5);
@@ -67,9 +67,39 @@ describe("canonicalFixture", () => {
     }
     const sessions = new Set(fixture.sessions.map(({ id }) => id));
     const transcript = new Set(fixture.transcript.map(({ id }) => id));
+    const questions = new Set(fixture.questions.map(({ id }) => id));
     const work = new Set(fixture.work.map(({ id }) => id));
-    for (const item of fixture.transcript)
+    for (const item of fixture.transcript) {
       expect(sessions.has(item.sessionId)).toBe(true);
+      if (item.kind === "question") {
+        expect(questions.has(item.questionId)).toBe(true);
+      }
+    }
+    const questionReferences = fixture.transcript.filter(
+      (item) => item.kind === "question",
+    );
+    expect(
+      questionReferences.map(({ sessionId, questionId }) => ({
+        sessionId,
+        questionId,
+      })),
+    ).toEqual([
+      {
+        sessionId: "session-mobile-release",
+        questionId: "question-release-focus",
+      },
+      {
+        sessionId: "session-mobile-release",
+        questionId: "question-release-checks",
+      },
+    ]);
+    for (const question of fixture.questions) {
+      expect(
+        questionReferences.filter(
+          ({ questionId }) => questionId === question.id,
+        ),
+      ).toHaveLength(1);
+    }
     for (const node of fixture.work) {
       expect(sessions.has(node.sessionId)).toBe(true);
       if (node.parentId !== null) expect(work.has(node.parentId)).toBe(true);
@@ -101,6 +131,8 @@ describe("canonicalFixture", () => {
       canonicalFixture.sessions.filter(({ state }) => state === "running"),
     ).toHaveLength(2);
     expect(canonicalFixture.transcript.map(({ kind }) => kind)).toEqual([
+      "question",
+      "question",
       "user",
       "assistant",
       "tool",

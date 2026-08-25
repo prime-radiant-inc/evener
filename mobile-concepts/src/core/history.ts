@@ -139,7 +139,11 @@ export function createNavigationController(
       pendingRoutePops += 1;
       return;
     }
-    if (action.type === "navigateRoot" || action.type === "reset") {
+    if (
+      action.type === "navigateRoot" ||
+      action.type === "setScenario" ||
+      action.type === "reset"
+    ) {
       reconcileRoot();
       return;
     }

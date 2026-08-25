@@ -1,4 +1,10 @@
-import type { Appearance, ConceptId, ScenarioId, TextScale } from "./model";
+import type {
+  Appearance,
+  ConceptId,
+  DiagnosticSink,
+  ScenarioId,
+  TextScale,
+} from "./model";
 import type { PrototypeState } from "./state";
 
 export const preferenceStorageKey = "evener-concepts.preferences.v1";
@@ -67,33 +73,45 @@ function isExactRecord(
   );
 }
 
-export function decodePreferences(raw: string | null): PersistedPreferencesV1 {
+export function decodePreferences(
+  raw: string | null,
+  diagnostics: DiagnosticSink,
+): PersistedPreferencesV1 {
   if (raw === null) return defaults();
+  let value: unknown;
   try {
-    const value: unknown = JSON.parse(raw);
-    if (!isExactRecord(value)) return defaults();
-    if (
-      value.version !== 1 ||
-      (value.concept !== null &&
-        !concepts.includes(value.concept as ConceptId)) ||
-      !appearances.includes(value.appearance as Appearance) ||
-      !textScales.includes(value.textScale as TextScale) ||
-      typeof value.reducedMotion !== "boolean" ||
-      !scenarios.includes(value.scenario as ScenarioId)
-    ) {
-      return defaults();
-    }
-    return {
-      version: 1,
-      concept: value.concept as ConceptId | null,
-      appearance: value.appearance as Appearance,
-      textScale: value.textScale as TextScale,
-      reducedMotion: value.reducedMotion,
-      scenario: value.scenario as ScenarioId,
-    };
+    value = JSON.parse(raw);
   } catch {
+    diagnostics.report({ code: "preference-invalid", path: "$" });
     return defaults();
   }
+  if (!isExactRecord(value)) {
+    diagnostics.report({ code: "preference-invalid", path: "$" });
+    return defaults();
+  }
+  if (value.version !== 1) {
+    diagnostics.report({ code: "preference-version", path: "$.version" });
+    return defaults();
+  }
+  if (
+    (value.concept !== null &&
+      !concepts.includes(value.concept as ConceptId)) ||
+    !appearances.includes(value.appearance as Appearance) ||
+    !textScales.includes(value.textScale as TextScale) ||
+    typeof value.reducedMotion !== "boolean" ||
+    !scenarios.includes(value.scenario as ScenarioId)
+  ) {
+    diagnostics.report({ code: "preference-invalid", path: "$" });
+    return defaults();
+  }
+  return {
+    version: 1,
+    concept: value.concept as ConceptId | null,
+    appearance: value.appearance as Appearance,
+    textScale: value.textScale as TextScale,
+    reducedMotion: value.reducedMotion,
+    scenario: value.scenario as ScenarioId,
+  };
 }
 
 export function encodePreferences(state: PrototypeState): string {
