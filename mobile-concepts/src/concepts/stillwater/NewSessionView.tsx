@@ -1,4 +1,7 @@
-import { selectNewSessionValidity } from "../../core/selectors";
+import {
+  selectCanMutate,
+  selectNewSessionValidity,
+} from "../../core/selectors";
 import type { PrototypeAction, PrototypeState } from "../../core/state";
 import {
   BlockingRouteState,
@@ -15,7 +18,7 @@ export function NewSessionView({ state, dispatch }: NewSessionViewProps) {
   const fixture = state.projection.fixture;
   const valid = selectNewSessionValidity(state);
   const starting = state.newSession.outcome === "starting";
-  const offline = state.projection.screenState === "offline";
+  const canMutate = selectCanMutate(state);
   const firstHub = fixture.hubs[0];
 
   if (isBlockingRouteState(state)) {
@@ -75,7 +78,6 @@ export function NewSessionView({ state, dispatch }: NewSessionViewProps) {
         className="sw-launch-form"
         onSubmit={(event) => {
           event.preventDefault();
-          if (offline) return;
           dispatch({ type: "submitNewSession" });
         }}
       >
@@ -179,7 +181,7 @@ export function NewSessionView({ state, dispatch }: NewSessionViewProps) {
         <button
           className="sw-primary-action"
           type="submit"
-          disabled={!valid || starting || offline}
+          disabled={!valid || starting || !canMutate}
         >
           {starting ? "Starting…" : "Start session"}
         </button>

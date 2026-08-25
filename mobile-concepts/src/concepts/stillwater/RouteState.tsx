@@ -61,7 +61,9 @@ export function BlockingRouteState({
           detail:
             "The local prototype state is recoverable with an explicit retry.",
         }}
-        retryAction={() => dispatch({ type: "refreshSessions" })}
+        retryAction={() =>
+          dispatch({ type: "setScenario", scenario: "baseline" })
+        }
       />
     );
   }
@@ -95,8 +97,7 @@ export function OfflineNotice({
       </div>
       <button
         type="button"
-        disabled={state.refreshState === "refreshing"}
-        onClick={() => dispatch({ type: "refreshSessions" })}
+        onClick={() => dispatch({ type: "setScenario", scenario: "baseline" })}
       >
         Retry
       </button>

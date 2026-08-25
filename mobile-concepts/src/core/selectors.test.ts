@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import type { PersistedPreferencesV1 } from "./persistence";
 import { createInitialState, reducePrototype } from "./reducer";
 import {
+  selectCanMutate,
   selectCurrentVoiceLevel,
   selectCurrentVoiceStep,
   selectGroupedSessions,
@@ -32,6 +33,17 @@ function dispatchAll(
 }
 
 describe("shared prototype selectors", () => {
+  it("exposes shared domain mutation availability only for ready projections", () => {
+    expect(selectCanMutate(initial())).toBe(true);
+    for (const scenario of ["loading", "empty", "offline", "error"] as const) {
+      const state = reducePrototype(initial(), {
+        type: "setScenario",
+        scenario,
+      });
+      expect(selectCanMutate(state), scenario).toBe(false);
+    }
+  });
+
   it("groups and filters sessions by title and project without empty groups", () => {
     expect(
       selectGroupedSessions(initial()).map(({ id, label, sessions }) => ({

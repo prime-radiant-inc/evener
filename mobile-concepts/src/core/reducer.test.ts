@@ -308,6 +308,122 @@ describe("prototype reducer", () => {
     expect(complete.projection.fixture).toBe(fixture);
   });
 
+  it.each(["offline", "error"] as const)(
+    "rejects direct %s domain mutations while leaving escape actions available",
+    (scenario) => {
+      const projected = reducePrototype(initial(), {
+        type: "setScenario",
+        scenario,
+      });
+      const validQuestionAnswer = {
+        selectedOptionIds: ["option-navigation"],
+        note: "",
+        resolution: null,
+        submitted: false,
+      } as const;
+      const voiceRoute = {
+        kind: "voice" as const,
+        sessionId: "session-native-client",
+      };
+      const cases: readonly {
+        label: string;
+        state: typeof projected;
+        action: Parameters<typeof reducePrototype>[1];
+      }[] = [
+        {
+          label: "composer submit",
+          state: { ...projected, draft: "Do not send" },
+          action: { type: "submitComposer" },
+        },
+        {
+          label: "composer completion",
+          state: {
+            ...projected,
+            composerMode: "running",
+            syntheticTurn: "starting",
+          },
+          action: { type: "completeSyntheticTurn" },
+        },
+        {
+          label: "question resolution",
+          state: {
+            ...projected,
+            answers: { "question-release-focus": validQuestionAnswer },
+          },
+          action: {
+            type: "resolveQuestion",
+            questionId: "question-release-focus",
+            resolution: "answer",
+          },
+        },
+        {
+          label: "New Session submit",
+          state: {
+            ...projected,
+            newSession: {
+              ...projected.newSession,
+              project: "/workspace/aurora",
+              prompt: "Do not start",
+            },
+          },
+          action: { type: "submitNewSession" },
+        },
+        {
+          label: "New Session completion",
+          state: {
+            ...projected,
+            newSession: {
+              ...projected.newSession,
+              project: "/workspace/aurora",
+              prompt: "Do not complete",
+              outcome: "starting",
+            },
+          },
+          action: { type: "completeNewSession", result: "success" },
+        },
+        {
+          label: "voice advance",
+          state: { ...projected, route: voiceRoute },
+          action: { type: "advanceVoice" },
+        },
+        {
+          label: "voice direct progression",
+          state: { ...projected, route: voiceRoute },
+          action: { type: "setVoiceState", state: "speaking" },
+        },
+        {
+          label: "voice mute",
+          state: { ...projected, route: voiceRoute },
+          action: { type: "toggleVoiceMute" },
+        },
+        {
+          label: "voice stop",
+          state: { ...projected, route: voiceRoute },
+          action: { type: "stopVoice" },
+        },
+      ];
+
+      for (const testCase of cases) {
+        expect(
+          reducePrototype(testCase.state, testCase.action),
+          testCase.label,
+        ).toBe(testCase.state);
+      }
+
+      const escaped = reducePrototype(
+        {
+          ...projected,
+          route: voiceRoute,
+          history: [{ kind: "root", tab: "sessions" }],
+          selectedSessionId: voiceRoute.sessionId,
+        },
+        { type: "endVoice" },
+      );
+      expect(escaped.route).toEqual({ kind: "root", tab: "sessions" });
+      expect(escaped.voice.ended).toBe(true);
+    },
+  );
+
   it("retains search result kind/context and routes a match with focus", () => {
     const state = reducePrototype(initial(), {
       type: "setGlobalQuery",

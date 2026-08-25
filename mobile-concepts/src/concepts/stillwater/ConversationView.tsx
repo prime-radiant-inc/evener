@@ -1,5 +1,6 @@
 import { useEffect, useRef } from "react";
 import type { TranscriptItem } from "../../core/model";
+import { selectCanMutate } from "../../core/selectors";
 import type { PrototypeAction, PrototypeState } from "../../core/state";
 import { Disclosure } from "../shared/Disclosure";
 import { Icon } from "../shared/Icon";
@@ -121,9 +122,12 @@ export function ConversationView({
       targetBounds.top -
       scrollerBounds.top -
       (scroller.clientHeight - targetBounds.height) / 2;
+    const effectiveReducedMotion =
+      state.reducedMotion ||
+      document.documentElement.dataset.reducedMotion === "true";
     scroller.scrollTo({
       top: Math.max(0, scroller.scrollTop + centeredOffset),
-      behavior: state.reducedMotion ? "auto" : "smooth",
+      behavior: effectiveReducedMotion ? "auto" : "smooth",
     });
   }, [focusedItemId, state.reducedMotion]);
 
@@ -152,7 +156,7 @@ export function ConversationView({
     (item) => item.sessionId === sessionId,
   );
   const running = state.syntheticTurn === "starting";
-  const offline = state.projection.screenState === "offline";
+  const canMutate = selectCanMutate(state);
 
   return (
     <div className="sw-conversation sw-route-enter">
@@ -257,7 +261,7 @@ export function ConversationView({
             <button
               type="button"
               aria-pressed={state.composerMode === mode}
-              disabled={running || offline}
+              disabled={running || !canMutate}
               key={mode}
               onClick={() => dispatch({ type: "setComposerMode", mode })}
             >
@@ -271,7 +275,7 @@ export function ConversationView({
             aria-label="Message"
             placeholder="Message or steer…"
             value={state.draft}
-            disabled={running || offline}
+            disabled={running || !canMutate}
             onChange={(event) =>
               dispatch({ type: "setDraft", value: event.currentTarget.value })
             }
@@ -281,7 +285,7 @@ export function ConversationView({
           className="sw-primary-action sw-composer__submit"
           type="button"
           aria-label="Submit message"
-          disabled={state.draft.trim().length === 0 || running || offline}
+          disabled={state.draft.trim().length === 0 || running || !canMutate}
           onClick={() => dispatch({ type: "submitComposer" })}
         >
           <Icon name="send" decorative />
