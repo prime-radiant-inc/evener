@@ -116,6 +116,7 @@ type AccessScope struct {
 // *ResolvedPolicy (or Mode == ModeOff) is exactly today's behavior.
 type ResolvedPolicy struct {
 	Mode          Mode
+	WriteBlocked  bool          // true = only the separately provisioned session scratch is writable
 	Network       bool          // true = egress allowed (--sandbox-net on)
 	Backend       Backend       // enforcing backend chosen for this host
 	CacheStrategy CacheStrategy // how cache roots are served (never persistent-writable)
@@ -306,6 +307,7 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 
 	rp := ResolvedPolicy{
 		Mode:          policy.Mode,
+		WriteBlocked:  policy.WriteBlocked,
 		Network:       netOn,
 		Backend:       backend,
 		CacheStrategy: cacheStrategyFor(policy.Mode, backend, host),
@@ -498,6 +500,10 @@ func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree 
 		writeSpawn := dedupeRoots(slices.Concat(writeFile, layout.WritablePaths))
 		fileTool = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readFile, WriteRoots: writeFile}
 		spawned = AccessScope{Read: ReadWorktreeOnly, ReadRoots: readSpawn, WriteRoots: writeSpawn}
+	}
+	if policy.WriteBlocked {
+		fileTool.WriteRoots = nil
+		spawned.WriteRoots = nil
 	}
 	return fileTool, spawned
 }

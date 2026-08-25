@@ -486,10 +486,15 @@ type CompactionTurnData struct {
 	Text string `json:"text"`
 }
 
+// WarningCodeDelegateAbandonedByDrain identifies a drain abandonment warning.
+const WarningCodeDelegateAbandonedByDrain = "delegate_abandoned_by_drain"
+
 // WarningData is the payload for an EventWarning event.
 type WarningData struct {
 	Message           string `json:"message"`
 	Source            string `json:"source,omitempty"`
+	Code              string `json:"code,omitempty"`
+	DelegateID        string `json:"delegate_id,omitempty"`
 	Title             string `json:"title,omitempty"`
 	Hint              string `json:"hint,omitempty"`
 	ApproxTokens      int    `json:"approx_tokens,omitempty"`

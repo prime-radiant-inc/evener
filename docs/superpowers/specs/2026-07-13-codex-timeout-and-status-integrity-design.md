@@ -4,6 +4,11 @@
 **Status:** Approved
 **Revised:** 2026-07-14 — retain retries after bounded response-header timeouts
 
+**Current transport revision (2026-08-24, issue #328):** The response-header
+watchdog remains per HTTP attempt, and `AdapterTimeout.Request` now continues
+through that attempt's streaming body lifetime. This does not add a whole retry
+group deadline; each retry still receives its own request ceiling.
+
 ## Problem
 
 Evener must bound the wait for streaming response headers so one completely stuck

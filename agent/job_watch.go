@@ -195,6 +195,10 @@ type watchConfig struct {
 	// Counted jm-side under jm.mu; survives the observation/drain split with the
 	// cfg pointer; a replacement cfg from newWatchConfig starts fresh at 0.
 	deliveries int
+	// conditionFires counts actual condition matches, distinct from deliveries:
+	// progress ticks and teardown notices consume delivery budget but do not
+	// satisfy the condition the model asked this watch to observe.
+	conditionFires int
 	// createdAt is the install time of this live watch config, stamped from
 	// jm.now() in newWatchConfig and surfaced by job_list (spec §4 F2). A
 	// replacement config is a new watch, so it gets a fresh timestamp. Configs
@@ -2176,6 +2180,7 @@ func (jm *jobManager) onSessionEvent(ev events.SessionEvent) {
 		if !dec.matched {
 			continue
 		}
+		cfg.conditionFires++
 		if dec.send {
 			deliveries = append(deliveries, jm.watchSendSnapshot(cfg, dec.watchedIdentity, fmt.Sprintf("event: %s", kind), ev).withSelfInfluence(jm.classifySelfInfluenceLocked(cfg, ev.Provenance)))
 		} else {
@@ -2519,6 +2524,7 @@ func (jm *jobManager) feedJobOutputWithProvenance(jobID string, chunk []byte, en
 		}
 		matches := cfg.outputMatcher.FeedAtWithProvenance(chunk, endOffset, root.Provenance)
 		for _, match := range matches {
+			cfg.conditionFires++
 			matchRoot := root
 			matchRoot.Provenance = provenance.Clone(match.Provenance)
 			if cfg.send != nil {
@@ -2616,6 +2622,7 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 	if cfg.send != nil {
 		root := events.SessionEvent{SessionID: jm.sessionID, Provenance: jobProvenanceForWatch(jm, jobID)}
 		jm.mu.Lock()
+		cfg.conditionFires++
 		delivery := jm.watchSendSnapshot(cfg, jobID, reason, root)
 		jm.mu.Unlock()
 		jm.recordWatchSendsAndKick([]watchSendDelivery{delivery})
@@ -2623,6 +2630,7 @@ func (jm *jobManager) fireAttachScan(cfg *watchConfig, jobID string, data []byte
 	}
 	var overBudget []*watchConfig
 	jm.mu.Lock()
+	cfg.conditionFires++
 	if jm.recordWatchDeliveryLocked(cfg) {
 		overBudget = append(overBudget, cfg)
 	}
@@ -4287,7 +4295,12 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 		live[child.id] = true
 		// Stop-gating (spec §3): a deliberately stopped child is never resurrected
 		// by a drive for attention that predates the stop. New work clears the gate.
-		if s.childStopGated(child.id) || s.childFatalRunGated(child.id) {
+		// A child the one-shot drain has given up on is skipped for the same
+		// reason and, additionally, for consistency: the drain declares it not
+		// live work, so driving it here would have the drain kicking a child it
+		// has already told the operator it abandoned — and abandoning a queued
+		// notification the drive loop was mid-way through delivering.
+		if s.childStopGated(child.id) || s.childFatalRunGated(child.id) || s.childDrainAbandoned(child.id) || s.childDrainGracePending(child.id) {
 			continue
 		}
 		if child.peekNotifications() > 0 || child.jobManager.hasPendingWatchSends() {
@@ -4304,13 +4317,14 @@ func (s *Session) driveChildrenWithUndeliveredAttention() {
 
 // driveChildIfNotStopGated is the wake-edge drive: it skips a stop-gated child so
 // a deliberately stopped child is not resurrected by its own pre-stop notify
-// (spec §3 stop-gating). On a successful handoff it settles the parent's
-// forwarded drive signal for that child.
+// (spec §3 stop-gating), and a child the one-shot drain has abandoned for the
+// same reason driveChildrenWithUndeliveredAttention does. On a successful
+// handoff it settles the parent's forwarded drive signal for that child.
 func (s *Session) driveChildIfNotStopGated(sub *subagent) {
 	if sub == nil || sub.sess == nil {
 		return
 	}
-	if s.childStopGated(sub.sess.id) || s.childFatalRunGated(sub.sess.id) {
+	if s.childStopGated(sub.sess.id) || s.childFatalRunGated(sub.sess.id) || s.childDrainAbandoned(sub.sess.id) || s.childDrainGracePending(sub.sess.id) {
 		return
 	}
 	if s.driveStableDelegateAttention(sub) {
@@ -4425,7 +4439,15 @@ func (s *Session) directStableDelegateForChildSession(childSessionID string) (de
 // generation clears the gate.
 func (s *Session) childStopGated(childSessionID string) bool {
 	row, ok := s.directStableDelegateForChildSession(childSessionID)
-	if !ok || row.currentRunOpen || row.lastOutcome == nil {
+	return ok && delegateRowStopGated(row)
+}
+
+// delegateRowStopGated is childStopGated's verdict on a row the caller already
+// holds. The drain's abandonment pass takes one snapshot per session per pass
+// and asks several questions of each row, so it must not re-snapshot the whole
+// controller to ask this one.
+func delegateRowStopGated(row delegateSnapshot) bool {
+	if row.currentRunOpen || row.lastOutcome == nil {
 		return false
 	}
 	return row.lastOutcome.Status == delegatestore.OutcomeStopped && row.lastOutcome.Reason == "stopped_by_parent"
@@ -4590,18 +4612,24 @@ func (jm *jobManager) kick() {
 	}
 }
 
-// hasLiveWatchOnTarget reports whether any ARMED watch targets jobID. The
-// undisposed-background-job announcement reads it directly rather than
-// inferring "watched" from watch frames in the notification queue: on a long
-// progress interval the queue is empty between frames, and inferring from it
-// would re-announce — and eventually kill — a job the model explicitly said it
-// was waiting on. A cleared watch (model-cleared, or the delivery-budget
-// auto-clear) leaves this map, so the job counts as undisposed again.
-func (jm *jobManager) hasLiveWatchOnTarget(jobID string) bool {
+// hasLiveUnfiredWatchOnTarget reports whether any ARMED watch that has not yet
+// matched its condition targets jobID. Progress ticks and teardown notices are
+// deliberately not condition fires: they say the watcher is alive, not that
+// the model's requested condition occurred. The undisposed-background-job
+// announcement reads this directly rather than inferring "watched" from watch
+// frames in the notification queue: on a long progress interval the queue is
+// empty between frames, and inferring from it would re-announce — and eventually
+// kill — a job the model explicitly said it was waiting on. A cleared watch
+// (model-cleared, or the delivery-budget auto-clear) leaves this map, so the job
+// counts as undisposed again. A budget-crossing watch is retained as a
+// temporary excuse while its asynchronous teardown persists the clear and
+// queues the final notification; otherwise the drain can announce in that
+// handoff window before it receives the notification that explains the clear.
+func (jm *jobManager) hasLiveUnfiredWatchOnTarget(jobID string) bool {
 	jm.mu.Lock()
 	defer jm.mu.Unlock()
-	for key := range jm.watches {
-		if key.Target == jobID {
+	for key, cfg := range jm.watches {
+		if key.Target == jobID && (cfg.conditionFires == 0 || cfg.deliveries >= watchDeliveryBudget) {
 			return true
 		}
 	}

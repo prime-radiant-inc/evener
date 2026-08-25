@@ -196,7 +196,7 @@ func TestStreamGenerate_ResponseHeaderTimeoutRetryStopsOnCancellation(t *testing
 	}
 }
 
-func TestAdapter_Stream_RequestTimeoutStopsAtResponseHeaders(t *testing.T) {
+func TestAdapter_Stream_RequestTimeoutCoversBodyLifetime(t *testing.T) {
 	const requestTimeout = 250 * time.Millisecond
 	releaseBody := make(chan struct{})
 	var releaseOnce sync.Once
@@ -240,25 +240,27 @@ func TestAdapter_Stream_RequestTimeoutStopsAtResponseHeaders(t *testing.T) {
 	}
 	defer stream.Close() //nolint:errcheck
 
-	afterRequestTimeout := time.NewTimer(2 * requestTimeout)
-	defer afterRequestTimeout.Stop()
-	select {
-	case <-afterRequestTimeout.C:
-		release()
-	case <-ctx.Done():
-		t.Fatalf("waiting past Request timeout: %v", ctx.Err())
-	}
-
-	gotFinish := false
-	for event := range stream.Events() {
-		if event.Type == llm.StreamEventError {
-			t.Fatalf("stream error after response headers: %v", event.Err)
+	var streamErr error
+	deadline := time.NewTimer(2 * time.Second)
+	defer deadline.Stop()
+	events := stream.Events()
+	for streamErr == nil {
+		select {
+		case event, ok := <-events:
+			if !ok {
+				t.Fatal("stream closed without a wall timeout error")
+			}
+			if event.Type == llm.StreamEventError {
+				streamErr = event.Err
+			}
+		case <-deadline.C:
+			t.Fatal("stream did not stop after Request timeout")
 		}
-		if event.Type == llm.StreamEventFinish {
-			gotFinish = true
-		}
 	}
-	if !gotFinish {
-		t.Fatal("stream completed without a finish event")
+	if !errors.Is(streamErr, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want context deadline exceeded", streamErr)
+	}
+	if llm.Kind(streamErr) != llm.KindTimeout {
+		t.Fatalf("Kind(error) = %v, want %v", llm.Kind(streamErr), llm.KindTimeout)
 	}
 }

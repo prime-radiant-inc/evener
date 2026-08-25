@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
@@ -80,6 +81,35 @@ type retryTracker struct {
 // in-flight event emitters to finish, and closes the events channel.
 func (s *Session) Close() {
 	s.close(context.Background(), true)
+}
+
+// joinWithinCloseBudget waits for wg, giving up when the close cascade's shared
+// budget expires and saying so. The joins it replaces exist for DELIVERY
+// ORDERING — an in-flight tool's end event, a detached emitter's event, reaching
+// the stream before it closes — which is a nicety, not a safety property:
+// sendEvent takes eventsMu and re-checks eventsClosed, so a straggler that
+// emits after this gives up is dropped, never a send on a closed channel.
+//
+// Weighed against that: a goroutine parked in an operation nothing can cancel
+// (an uncancellable tool call in a delegate the drain has already abandoned)
+// holds the WaitGroup forever, and an unbounded join converts a bounded drain
+// into an unbounded process. Losing an event that was never going to arrive is
+// the cheaper failure.
+//
+// The waiter goroutine is not leaked in any lasting sense: it holds nothing and
+// exits the moment the WaitGroup does drain.
+func (s *Session) joinWithinCloseBudget(ctx context.Context, wg *sync.WaitGroup, what string) {
+	joined := make(chan struct{})
+	go func() {
+		defer close(joined)
+		wg.Wait()
+	}()
+	select {
+	case <-joined:
+	case <-ctx.Done():
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+			"close budget expired joining %s; their remaining events are dropped", what)})
+	}
 }
 
 func (s *Session) releaseAPILogRoute() {
@@ -178,6 +208,12 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		// store stays open until worktree disposal has recorded its evidence.
 		if err := s.closeOwnedDelegateRuntimeTree(budgetCtx); err != nil {
 			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("delegate tree close incomplete: %v", err)})
+			// A hopeless stop has already consumed its dedicated half of the
+			// cascade budget. Do not spend the remaining half joining the same
+			// wedged child again through its generic Session.Close path.
+			if errors.Is(err, context.DeadlineExceeded) {
+				cancelBudget()
+			}
 		}
 
 		// Step 4: reacquire the pair and drain the subagent map. Marking closing
@@ -312,11 +348,16 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		s.mu.Lock()
 		s.state = SessionClosed
 		s.mu.Unlock()
-		s.toolEventsWG.Wait()
+		s.joinWithinCloseBudget(budgetCtx, &s.toolEventsWG, "in-flight tool events")
 		// Join detached event emitters (subagent runs, session namer) so their
 		// events are delivered before the channel closes. They are already
-		// cancelled above (child Close + cancelFunc), so this returns promptly.
-		s.sendersWG.Wait()
+		// cancelled above (child Close + cancelFunc), so this normally returns
+		// promptly — but "cancelled" is not the same as "returns", which is the
+		// whole of #317: a delegate parked inside an uncancellable tool call holds
+		// both of these WaitGroups forever, and an unbudgeted join here made the
+		// drain's give-up worthless because run.go prints its answer only after
+		// Close(). Both joins are therefore bounded by the shared close budget.
+		s.joinWithinCloseBudget(budgetCtx, &s.sendersWG, "detached event emitters")
 		s.releaseAPILogRoute()
 		// Close under eventsMu so a caller-owned emit() (Enqueue/DrainAsSteer or
 		// the ProcessInput loop — goroutines the session cannot join) can never
@@ -467,12 +508,16 @@ const (
 	runNoToolCalls
 )
 
-// routeNoToolCalls decides the no-tool-calls route for a round from the input kind
-// and whether the round had no content. It is pure and total over EntryKind: only
-// a non-empty notification turn finishes idle; everything else (including any
-// empty round) routes through the retry budget.
-func routeNoToolCalls(kind EntryKind, noContent bool) noCallsRoute {
-	if kind == EntryNotification && !noContent {
+// routeNoToolCalls decides the no-tool-calls route for a round from the input
+// kind, whether the round had no content, and whether a terminal communicate
+// (end_turn under TurnEndsProcess) has already been accepted. It is pure and
+// total over EntryKind: a non-empty notification turn finishes idle, and once
+// the model has explicitly ended the process-ending turn an EMPTY notification
+// turn does too — the retry budget's "please continue" steering must not
+// resurrect a run the model already declared over (issue #329,
+// sanitize-git-repo). Everything else routes through the retry budget.
+func routeNoToolCalls(kind EntryKind, noContent bool, afterTerminalCommunicate bool) noCallsRoute {
+	if kind == EntryNotification && (!noContent || afterTerminalCommunicate) {
 		return finishIdle
 	}
 	return runNoToolCalls
@@ -1322,8 +1367,10 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// toward a no-op communicate — the text is already in the transcript, and a
 			// system-initiated turn carries no user awaiting a reply. A truly empty
 			// (no-content) response is a model glitch and still routes through the
-			// empty-retry path below.
-			if routeNoToolCalls(kind, noContent) == finishIdle {
+			// empty-retry path below — EXCEPT after a terminal communicate, where
+			// silence means "nothing to add to a finished run" and retrying would
+			// resurrect it (issue #329).
+			if routeNoToolCalls(kind, noContent, s.hasAcceptedTerminalCommunicate()) == finishIdle {
 				s.finishProcessingAtBoundary(ctx, SessionIdle)
 				return "", progressed, nil
 			}
@@ -1404,7 +1451,11 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 		// §5.1) — either ends the turn; deliverIfCommunicated decides the
 		// boundary state and composes them.
 		askedThisRound := s.askPendingCount() > askBefore
-		if done, text := s.deliverIfCommunicated(ctx, askedThisRound); done {
+		done, text, deliverErr := s.deliverIfCommunicated(ctx, askedThisRound)
+		if deliverErr != nil {
+			return "", progressed, deliverErr
+		}
+		if done {
 			return text, progressed, nil
 		}
 		if yieldToObserverCallback || sessionLifecycleFault(ctx, "yield_observer") != nil {

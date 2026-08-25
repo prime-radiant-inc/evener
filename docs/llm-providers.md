@@ -66,6 +66,24 @@ ProviderAdapter.Complete/Stream         llm/providers/<x>/adapter.go
 vendor HTTP API
 ```
 
+## Request wall-clock ceiling
+
+Each request carries an `llm.AdapterTimeout`. `AdapterTimeout.Request` is the
+wall-clock ceiling for **one HTTP attempt**, not for the surrounding logical
+provider call. It starts before the adapter sends the request and applies to the
+whole non-streaming response or to the complete streaming lifetime, including
+response headers and body consumption. `StreamRead` remains the shorter idle
+between-SSE-lines guard, and the standard transport's response-header timer is
+an additional phase guard.
+
+The retry loops own the logical call separately: a retry gets a fresh request
+context and therefore a fresh `Request` ceiling. This keeps per-attempt
+liveness independent from any rate-limit wall budget (including the rate-limit
+retry policy when that policy is enabled). A caller cancellation is never
+reclassified as an adapter timeout; the earliest caller deadline still wins.
+The library default is two minutes, while the agent's ordinary model request
+explicitly uses ten minutes for long-running models.
+
 Models are addressed `provider/model`. `ParseModelRef` splits on the **first**
 `/`, so the model half may contain slashes (`openrouter/anthropic/claude-…`,
 `ollama/llama3:8b`) — see meta-providers below.
