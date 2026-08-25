@@ -1976,9 +1976,13 @@ func (e *LocalExecutionEnvironment) DetachCommand(ctx context.Context, command, 
 	}
 	pid := cmd.PID()
 	_ = nullDevice.Close()
-	go func() { _ = cmd.Wait() }()
+	done := make(chan struct{})
+	go func() {
+		_ = cmd.Wait()
+		close(done)
+	}()
 
-	return DetachedProcess{PID: pid}, nil
+	return DetachedProcess{PID: pid, Done: done}, nil
 }
 
 func lookPathInEnv(name string, env []string) (string, bool) {

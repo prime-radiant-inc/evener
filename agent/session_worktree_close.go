@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -186,6 +187,27 @@ func ensureCloseBudget(ctx context.Context) (context.Context, context.CancelFunc
 		closeBudgetMintHook()
 	}
 	return context.WithTimeout(ctx, LaneClosePassBudget)
+}
+
+// closeStopJoinContext reserves half of the shared close budget for the
+// bounded joins and teardown that follow the delegate stop. A stop driver can
+// be parked forever behind an uncancellable tool call; letting that driver
+// consume the entire cascade deadline makes the later bounded joins nominal
+// only and turns an abandoned subtree into a full-budget shutdown. If this is
+// a descendant close, halve the remaining inherited budget instead so a nested
+// stop cannot consume the time its parent has left.
+func closeStopJoinContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	budget := LaneClosePassBudget / 2
+	if deadline, ok := ctx.Deadline(); ok {
+		remaining := time.Until(deadline)
+		if remaining < budget {
+			budget = remaining / 2
+		}
+	}
+	return context.WithTimeout(ctx, budget)
 }
 
 // touchUnlockLaneTail runs the budget-exempt tail for a lane the close pass could

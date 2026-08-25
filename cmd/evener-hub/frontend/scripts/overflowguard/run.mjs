@@ -38,7 +38,7 @@
 // launch (~10s).
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { connectPage, evaluate, navigateTo, waitForFonts, waitForHttp } from "../browserGuardCdp.mjs";
+import { connectPage, createStartupDeadline, devtoolsHttpURL, evaluate, navigateTo, waitForFonts, waitForHttp } from "../browserGuardCdp.mjs";
 import { describeBrowserStartupFailure, startBrowserGuard } from "../browserGuardProcess.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -49,8 +49,8 @@ const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 // would have missed the original bug entirely.
 const DEFAULT_WIDTHS = [390, 700, 1024, 1400];
 
-async function measureAt(cdpPort, url) {
-  const page = await connectPage(cdpPort);
+async function measureAt(cdpEndpoint, url) {
+  const page = await connectPage(cdpEndpoint);
   const { send } = page;
   try {
     await navigateTo(page, url);
@@ -108,8 +108,8 @@ async function measureAt(cdpPort, url) {
 // menu directly: open Tasks, wait for the dock split to squeeze the main
 // composer's inline session chrome below 640px, then re-open the menu and
 // confirm "Tasks ✓".
-async function verifyPanelCollapse(cdpPort, url) {
-  const page = await connectPage(cdpPort);
+async function verifyPanelCollapse(cdpEndpoint, url) {
+  const page = await connectPage(cdpEndpoint);
   const { send } = page;
   try {
     await navigateTo(page, url);
@@ -191,7 +191,8 @@ async function main() {
     // commonest environment failure there is and it reached here unframed.
     throw new Error(describeBrowserStartupFailure({ error, subsystem: "launch" }));
   }
-  const { vitePort, cdpPort, cleanup } = guard;
+  const { vitePort, cleanup } = guard;
+  let cdpEndpoint;
 
   let failed = 0;
   try {
@@ -206,11 +207,14 @@ async function main() {
         describeBrowserStartupFailure({ error: err, subsystem: "vite", viteStderr: guard.getViteError() }),
       );
     }
+    const startupDeadline = createStartupDeadline();
     try {
+      cdpEndpoint = await guard.waitForChrome({ signal: startupDeadline.signal });
       await waitForHttp(
-        `http://127.0.0.1:${cdpPort}/json/version`,
+        devtoolsHttpURL(cdpEndpoint, "/json/version"),
         "chrome devtools endpoint",
         guard.getChromeLaunchError,
+        { signal: startupDeadline.signal, failure: guard.getChromeFailure() },
       );
     } catch (err) {
       throw new Error(
@@ -223,10 +227,12 @@ async function main() {
           viteStderr: guard.getViteError(),
         }),
       );
+    } finally {
+      startupDeadline.clear();
     }
 
     const panelCollapse = await verifyPanelCollapse(
-      cdpPort,
+      cdpEndpoint,
       `http://127.0.0.1:${vitePort}/overflowharness.html?w=1024&panels=1`,
     );
     if (
@@ -244,7 +250,7 @@ async function main() {
     }
 
     for (const width of sweep) {
-      const result = await measureAt(cdpPort, `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`);
+      const result = await measureAt(cdpEndpoint, `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`);
       let widthFailed = false;
       if (
         result.exceptionSafety.found !== 2 ||

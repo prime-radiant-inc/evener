@@ -8,7 +8,7 @@
 // and it has no dependency on provider credentials or the shared dev server.
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { applyViewport, clearViewportOverride, connectPage, evaluate, navigateTo, waitForFonts, waitForHttp } from "../browserGuardCdp.mjs";
+import { applyViewport, clearViewportOverride, connectPage, createStartupDeadline, devtoolsHttpURL, evaluate, navigateTo, waitForFonts, waitForHttp } from "../browserGuardCdp.mjs";
 import { describeBrowserStartupFailure, startBrowserGuard } from "../browserGuardProcess.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -37,8 +37,8 @@ function describeBox(box) {
   return `${box.left.toFixed(1)},${box.top.toFixed(1)} ${box.width.toFixed(1)}x${box.height.toFixed(1)}`;
 }
 
-async function measureAt(cdpPort, vitePort, width) {
-  const page = await connectPage(cdpPort);
+async function measureAt(cdpEndpoint, vitePort, width) {
+  const page = await connectPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width, height: 900 });
@@ -244,7 +244,8 @@ async function main() {
     // commonest environment failure there is and it reached here unframed.
     throw new Error(describeBrowserStartupFailure({ error, subsystem: "launch" }));
   }
-  const { vitePort, cdpPort, cleanup } = guard;
+  const { vitePort, cleanup } = guard;
+  let cdpEndpoint;
 
   let failed = 0;
   try {
@@ -255,11 +256,14 @@ async function main() {
         describeBrowserStartupFailure({ error: error, subsystem: "vite", viteStderr: guard.getViteError() }),
       );
     }
+    const startupDeadline = createStartupDeadline();
     try {
+      cdpEndpoint = await guard.waitForChrome({ signal: startupDeadline.signal });
       await waitForHttp(
-        `http://127.0.0.1:${cdpPort}/json/version`,
+        devtoolsHttpURL(cdpEndpoint, "/json/version"),
         "chrome devtools endpoint",
         guard.getChromeLaunchError,
+        { signal: startupDeadline.signal, failure: guard.getChromeFailure() },
       );
     } catch (error) {
       throw new Error(
@@ -272,9 +276,11 @@ async function main() {
           viteStderr: guard.getViteError(),
         }),
       );
+    } finally {
+      startupDeadline.clear();
     }
     for (const width of WIDTHS) {
-      const result = await measureAt(cdpPort, vitePort, width);
+      const result = await measureAt(cdpEndpoint, vitePort, width);
       const failures = assertResult(result, width);
       if (failures.length === 0) {
         console.log(

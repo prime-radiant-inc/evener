@@ -599,7 +599,7 @@ describe("sections", () => {
     fireEvent.click(submit);
     await user.keyboard("{Enter}");
 
-    await vi.waitFor(() => expect(input.hasAttribute("disabled")).toBe(true));
+    expect(input.hasAttribute("disabled")).toBe(true);
     expect(submit.hasAttribute("disabled")).toBe(true);
     expect(screen.getByRole("button", { name: "Cancel" }).hasAttribute("disabled")).toBe(true);
     expect(mutationCalls.filter((call) => call.method === "PATCH")).toHaveLength(1);
@@ -629,12 +629,23 @@ describe("sections", () => {
     const heldRefresh = new Promise<Response>((resolve) => {
       releaseRefresh = resolve;
     });
+    let markRefreshStarted!: () => void;
+    const refreshStarted = new Promise<void>((resolve) => {
+      markRefreshStarted = resolve;
+    });
+    let markRefreshResponseConsumed!: () => void;
+    const refreshResponseConsumed = new Promise<void>((resolve) => {
+      markRefreshResponseConsumed = resolve;
+    });
     const prior = fetchMock.getMockImplementation();
     fetchMock.mockImplementation(async (url: string, init?: RequestInit) => {
       if ((init?.method ?? "GET") === "PATCH" && url === "/api/pin-sections/client") {
         const body = JSON.parse(init?.body as string) as unknown;
         mutationCalls.push({ method: "PATCH", path: url, body });
         return heldPatch;
+      }
+      if ((init?.method ?? "GET") === "GET" && url === "/api/tree" && pendingTreeRefresh) {
+        markRefreshStarted();
       }
       return prior?.(url, init) as Promise<Response>;
     });
@@ -653,7 +664,7 @@ describe("sections", () => {
     fireEvent.click(submit);
     fireEvent.click(submit);
 
-    await vi.waitFor(() => expect(input.hasAttribute("disabled")).toBe(true));
+    expect(input.hasAttribute("disabled")).toBe(true);
     expect(mutationCalls.filter((call) => call.method === "PATCH")).toHaveLength(1);
     expect(treeGetCallCount()).toBe(1);
     expect(screen.getByRole("dialog", { name: "Rename pin section" })).toBe(dialog);
@@ -667,7 +678,8 @@ describe("sections", () => {
       }),
     );
 
-    await vi.waitFor(() => expect(treeGetCallCount()).toBe(2));
+    await refreshStarted;
+    expect(treeGetCallCount()).toBe(2);
     expect(mutationCalls.filter((call) => call.method === "PATCH")).toHaveLength(1);
     expect(input.hasAttribute("disabled")).toBe(true);
     expect(submit.hasAttribute("disabled")).toBe(true);
@@ -675,9 +687,18 @@ describe("sections", () => {
     expect(screen.getByRole("dialog", { name: "Rename pin section" })).toBe(dialog);
     expect(within(screen.getByRole("region", { name: "Notifications" })).queryAllByText(/rename/i)).toHaveLength(0);
 
-    releaseRefresh(jsonResponse(NAMED_PIN_TREE));
+    releaseRefresh({
+      ...jsonResponse(NAMED_PIN_TREE),
+      json: async () => {
+        markRefreshResponseConsumed();
+        return NAMED_PIN_TREE;
+      },
+    });
 
-    await vi.waitFor(() => expect(screen.queryByRole("dialog", { name: "Rename pin section" })).toBeNull());
+    await act(async () => {
+      await refreshResponseConsumed;
+    });
+    expect(screen.queryByRole("dialog", { name: "Rename pin section" })).toBeNull();
     expect(mutationCalls.filter((call) => call.method === "PATCH")).toHaveLength(1);
     expect(treeGetCallCount()).toBe(2);
     expect(within(screen.getByRole("region", { name: "Notifications" })).queryAllByText(/rename/i)).toHaveLength(0);

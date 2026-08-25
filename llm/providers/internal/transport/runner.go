@@ -89,6 +89,9 @@ func (r *StreamRunner) Run(ctx context.Context) {
 		attemptDecodeErr = nil
 	}
 	timeoutSource := llm.APITimeoutSourceForSSE(parseErr)
+	if timeoutSource == llm.APITimeoutNone {
+		timeoutSource = r.Attempt.TimeoutSource()
+	}
 	outcome := apilog.AttemptOutcomeClass("")
 	if !*r.Finished && ctx.Err() == context.Canceled {
 		outcome = apilog.AttemptCallerCancel
