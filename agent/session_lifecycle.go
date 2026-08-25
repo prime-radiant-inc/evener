@@ -526,7 +526,7 @@ func routeNoToolCalls(kind EntryKind, noContent bool, afterTerminalCommunicate b
 // drainInputs is the snapshot the drain loop feeds selectDrainNextAction after a
 // completed (non-error) turn: the kind of the turn that just ran, whether a goal
 // continuation is already deferred, the popped follow-up text and queued message
-// (its text plus image count), whether any job notifications are pending, and
+// (its text plus image count), whether any notification work is pending, and
 // whether the turn just rested SessionAwaiting (spec §5.3's drain-ladder gate).
 type drainInputs struct {
 	RanKind              EntryKind
@@ -550,7 +550,7 @@ const (
 	// notification pending, the resulting turn is the deferred continuation (if the
 	// fold arms one) or idle.
 	armGoalGate
-	// runNotification runs a pending job-notification turn next.
+	// runNotification runs a pending notification turn next.
 	runNotification
 	// runDeferredContInline runs an already-deferred goal continuation inline.
 	runDeferredContInline
@@ -849,7 +849,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 		// goal-gate fold are side effects kept here; selectDrainNextAction is the pure
 		// priority decision over their results. popQueueHead is reached only when no
 		// follow-up is pending (it consumes a queued message), matching the original
-		// short-circuit; peekNotifications is likewise consulted only at its ladder
+		// short-circuit; notification work is likewise consulted only at its ladder
 		// rung and only for a non-notification, non-awaiting turn.
 		//
 		// awaiting reflects the boundary state the turn that just ran left behind
@@ -896,7 +896,7 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 			strings.TrimSpace(queued.Text) == "" && len(queued.Images) == 0
 		notificationsPending := false
 		if noFollowUpOrQueued && !awaiting && ranKind != EntryNotification {
-			notificationsPending = s.peekNotifications() > 0
+			notificationsPending = s.peekNotifications() > 0 || s.hasPendingRootDelegateAttention()
 		}
 		action, skipGoalGate := selectDrainNextAction(drainInputs{
 			RanKind:              ranKind,
@@ -954,13 +954,13 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 				haveDeferredCont = true
 			}
 		}
-		// Notification interleave (priority 3): a pending job notification runs
+		// Notification interleave (priority 3): pending notification work runs
 		// AFTER the fold above but BEFORE the deferred continuation, so it is
 		// transparent to goal accounting (the just-finished continuation already
-		// folded). The queue is consumed inside acceptNotificationInput when the
-		// EntryNotification turn runs (an empty queue there is a no-op, but the peek
-		// guards against it). After a notification turn this rung is skipped (selector
-		// gate) because job notifications may have been requeued.
+		// folded). Job notifications and root delegate attention are consumed inside
+		// acceptNotificationInput when the EntryNotification turn runs. After a
+		// notification turn this rung is skipped (selector gate) because notification
+		// work may have been requeued.
 		if action == runNotification {
 			next = ""
 			nextImages = nil
@@ -1125,12 +1125,12 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 			// serve loop republishes that from WireState.
 			s.finishNotificationNoop()
 			// Ask for another wake. Nothing else will: the EntryNotification
-			// that got us here is consumed, the drain loop's tail gate counts
-			// job notifications alone (peekNotifications reads pendingJobNotifs
-			// and nothing else), and for delegate attention the wake flag we
-			// deliberately did NOT consume is itself what suppresses a new one
-			// -- armRootDelegateAttention notifies only when the flag is clear,
-			// and the retry scheduler returns early while it is set.
+			// that got us here is consumed, and the drain loop deliberately does
+			// not run another notification immediately after an EntryNotification
+			// turn. For delegate attention, the wake flag we deliberately did NOT
+			// consume is itself what suppresses a new one --
+			// armRootDelegateAttention notifies only when the flag is clear, and
+			// the retry scheduler returns early while it is set.
 			//
 			// The wake is guaranteed rather than best-effort, but it is PACED
 			// rather than immediate (kata ajg5). An immediate notify() pushes

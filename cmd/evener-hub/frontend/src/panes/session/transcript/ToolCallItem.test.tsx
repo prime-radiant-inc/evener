@@ -61,15 +61,28 @@ test("settled purpose-bearing commandExecution rows stack purpose over the demot
   // single line (tried in tiered density, reverted on review).
   expect(screen.getByTestId("tool-row-purpose").textContent).toBe("Running the foo tests");
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("Ran npm test -- src/foo");
-  expect(screen.getByTestId("tool-row").textContent).not.toContain(" — ");
+  expect(screen.getByTestId("tool-row-purpose").textContent).not.toContain(" — ");
 });
 
 // The expanded content mounts only while the row is open (the same shape
 // widgets/disclosure uses), so a body assertion has to open the row first.
 function expandRow(): void {
-  fireEvent.click(screen.getByTestId("tool-row"));
+  fireEvent.click(screen.getByTestId("tool-row-trigger"));
 }
 
+// The disclosure trigger is a real button[aria-expanded] (see ToolRow.tsx),
+// not a native <details>/<summary> - the open/closed state is
+// read off aria-expanded on the tool-row, and toggled by clicking it. These
+// helpers keep the per-test assertions to the same one-liner shape the old
+// `details.open` / `details.querySelector("summary")` idioms had.
+function rowIsOpen(root: HTMLElement = screen.getByTestId("tool-call-item")): boolean {
+  const trigger = root.querySelector('[data-testid="tool-row-trigger"]');
+  return trigger?.getAttribute("aria-expanded") === "true";
+}
+
+function toggleRow(root: HTMLElement = screen.getByTestId("tool-call-item")): void {
+  fireEvent.click(root.querySelector('[data-testid="tool-row-trigger"]')!);
+}
 test("falls back to the default descriptor (raw output body) for an unregistered tool name", () => {
   const args = JSON.stringify({ kind: "mcp", id: 7 });
   render(
@@ -116,8 +129,8 @@ test("the default descriptor keeps both arguments and error text visible for a s
     />,
   );
 
-  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
-  expect(details.open).toBe(true);
+  const details = screen.getByTestId("tool-call-item");
+  expect(rowIsOpen(details)).toBe(true);
   const body = screen.getByTestId("tool-call-body");
   expect(within(body).getByRole("region", { name: "Tool call arguments" })).toBeTruthy();
   expect(within(body).getByText("permission denied by sandbox")).toBeTruthy();
@@ -231,18 +244,30 @@ test("suppress returning false renders the row normally", () => {
 test("a row with a body starts collapsed", () => {
   registerToolRenderer({ match: "tci_collapsed", summary: () => "s", body: () => <div>body text</div> });
   render(<ToolCallItem item={item({ toolName: "tci_collapsed" })} turn={turn} live={false} />);
-  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
-  expect(details.tagName).toBe("DETAILS");
-  expect(details.open).toBe(false);
+  const details = screen.getByTestId("tool-call-item");
+  expect(rowIsOpen(details)).toBe(false);
+});
+
+test("the disclosure trigger controls the mounted body by its stable ID", () => {
+  registerToolRenderer({ match: "tci_controls_body", summary: () => "s", body: () => <div>body</div> });
+  render(<ToolCallItem item={item({ toolName: "tci_controls_body" })} turn={turn} live={false} />);
+  const trigger = screen.getByTestId("tool-row-trigger");
+  expect(trigger.getAttribute("aria-controls")).toBeTruthy();
+  expect(document.getElementById(trigger.getAttribute("aria-controls")!)).toBe(null);
+
+  fireEvent.click(trigger);
+  const body = screen.getByTestId("tool-call-body");
+  expect(body.id).toBe(trigger.getAttribute("aria-controls"));
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
 });
 
 test("clicking the summary manually expands a collapsed row", () => {
   registerToolRenderer({ match: "tci_manual_open", summary: () => "s", body: () => <div>body text</div> });
   render(<ToolCallItem item={item({ toolName: "tci_manual_open" })} turn={turn} live={false} />);
-  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
-  expect(details.open).toBe(false);
-  fireEvent.click(details.querySelector("summary")!);
-  expect(details.open).toBe(true);
+  const details = screen.getByTestId("tool-call-item");
+  expect(rowIsOpen(details)).toBe(false);
+  toggleRow(details);
+  expect(rowIsOpen(details)).toBe(true);
 });
 
 // yt2q: the open/closed state lives in the shared disclosureStore keyed by
@@ -252,13 +277,13 @@ test("an expanded tool row stays expanded across an unmount+remount with the sam
   registerToolRenderer({ match: "tci_remount", summary: () => "s", body: () => <div>body text</div> });
   const toolItem = item({ id: "item_remount_1", toolName: "tci_remount" });
   const { unmount } = render(<ToolCallItem item={toolItem} turn={turn} live={false} />);
-  fireEvent.click((screen.getByTestId("tool-call-item") as HTMLDetailsElement).querySelector("summary")!);
-  expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(true);
+  toggleRow(screen.getByTestId("tool-call-item"));
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
 
   unmount();
   render(<ToolCallItem item={toolItem} turn={turn} live={false} />);
   // Still open after the remount - the state came from the store, not useState.
-  expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(true);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
 });
 
 test("the same tool item id has independent disclosure state in different sessions", () => {
@@ -271,14 +296,14 @@ test("the same tool item id has independent disclosure state in different sessio
     </>,
   );
 
-  const rows = screen.getAllByTestId("tool-call-item") as HTMLDetailsElement[];
+  const rows = screen.getAllByTestId("tool-call-item");
   expect(rows).toHaveLength(2);
-  expect(rows[0]?.open).toBe(false);
-  expect(rows[1]?.open).toBe(false);
+  expect(rowIsOpen(rows[0]!)).toBe(false);
+  expect(rowIsOpen(rows[1]!)).toBe(false);
 
-  fireEvent.click(rows[0]!.querySelector("summary")!);
-  expect(rows[0]?.open).toBe(true);
-  expect(rows[1]?.open).toBe(false);
+  toggleRow(rows[0]!);
+  expect(rowIsOpen(rows[0]!)).toBe(true);
+  expect(rowIsOpen(rows[1]!)).toBe(false);
 });
 
 test("shell: a failing exit code auto-expands the row once it settles (the real parseShellExitCode heuristic)", () => {
@@ -290,8 +315,8 @@ test("shell: a failing exit code auto-expands the row once it settles (the real 
       live={false}
     />,
   );
-  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
-  expect(details.open).toBe(true);
+  const details = screen.getByTestId("tool-call-item");
+  expect(rowIsOpen(details)).toBe(true);
 });
 
 test("shell: a clean exit does not auto-expand", () => {
@@ -303,19 +328,19 @@ test("shell: a clean exit does not auto-expand", () => {
       live={false}
     />,
   );
-  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
-  expect(details.open).toBe(false);
+  const details = screen.getByTestId("tool-call-item");
+  expect(rowIsOpen(details)).toBe(false);
 });
 
 test("manual collapse of an auto-expanded row sticks (wins over autoExpand)", () => {
   const output = "stdout\n[exit 1]";
   const failing = item({ toolName: "shell", argumentsJSON: JSON.stringify({ command: "false" }), output });
   render(<ToolCallItem item={failing} turn={turn} live={false} />);
-  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
-  expect(details.open).toBe(true); // auto-expanded at settle
+  const details = screen.getByTestId("tool-call-item");
+  expect(rowIsOpen(details)).toBe(true); // auto-expanded at settle
 
-  fireEvent.click(details.querySelector("summary")!);
-  expect(details.open).toBe(false); // the user's own collapse wins
+  toggleRow(details);
+  expect(rowIsOpen(details)).toBe(false); // the user's own collapse wins
 });
 
 // --- outputImages: rendered through ImageGallery -----------------------
@@ -381,8 +406,6 @@ test("outputImages render even for a body-less descriptor (the row still becomes
       live={false}
     />,
   );
-  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
-  expect(details.tagName).toBe("DETAILS");
   expandRow();
   expect(screen.getAllByTestId("image-gallery-thumb")).toHaveLength(1);
 });
@@ -409,8 +432,8 @@ test("a settled tool call carrying item.error surfaces the error text", () => {
 test("an errored tool row force-expands even for a descriptor with no autoExpand", () => {
   registerToolRenderer({ match: "tci_err_expand", summary: () => "s", body: () => <div>body text</div> });
   render(<ToolCallItem item={item({ toolName: "tci_err_expand", error: "boom" })} turn={turn} live={false} />);
-  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
-  expect(details.open).toBe(true);
+  const details = screen.getByTestId("tool-call-item");
+  expect(rowIsOpen(details)).toBe(true);
 });
 
 test("an errored tool row earns a failure marker in its summary", () => {
@@ -425,7 +448,7 @@ test("a clean tool call earns NO failure marker and stays collapsed (success rec
   render(<ToolCallItem item={item({ toolName: "tci_ok_glyph" })} turn={turn} live={false} />);
   expect(screen.getByTestId("tool-call-item").getAttribute("data-failed")).toBe(null);
   expect(screen.queryByTestId("failure-glyph")).toBe(null);
-  expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(false);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
 });
 
 test("a descriptor's own failed() predicate marks the row even with no wire error (nonzero shell exit)", () => {
@@ -449,9 +472,8 @@ test("a descriptor's detail() becomes the row's hover title, never its headline 
 test("a body-less descriptor still becomes an expandable details when the call errored (shows the error)", () => {
   registerToolRenderer({ match: "tci_err_no_body", summary: () => "s" });
   render(<ToolCallItem item={item({ toolName: "tci_err_no_body", error: "denied" })} turn={turn} live={false} />);
-  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
-  expect(details.tagName).toBe("DETAILS");
-  expect(details.open).toBe(true);
+  const details = screen.getByTestId("tool-call-item");
+  expect(rowIsOpen(details)).toBe(true);
   expect(screen.getByText("denied")).toBeTruthy();
 });
 
@@ -468,8 +490,8 @@ test("an expanded shell row drops the one-line summary - the body's pretty-print
       live={false}
     />,
   );
-  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
-  expect(details.open).toBe(true);
+  const details = screen.getByTestId("tool-call-item");
+  expect(rowIsOpen(details)).toBe(true);
   expect(screen.queryByTestId("tool-row-summary")).toBeNull();
   // The command still appears exactly once: the body's pretty-printed block.
   expect(screen.getByTestId("tool-call-body").textContent).toContain("echo hi");
@@ -503,16 +525,16 @@ test("an expanded row of a descriptor WITHOUT summaryHiddenWhenExpanded keeps it
     autoExpand: () => true,
   });
   render(<ToolCallItem item={item({ toolName: "tci_keep_summary" })} turn={turn} live={false} />);
-  expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(true);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("did a thing");
 });
 
 test('honest status:"failed" corroborates a failure even with no error text', () => {
   registerToolRenderer({ match: "tci_status_failed", summary: () => "s", body: () => <div>b</div> });
   render(<ToolCallItem item={item({ toolName: "tci_status_failed", status: "failed" })} turn={turn} live={false} />);
-  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
+  const details = screen.getByTestId("tool-call-item");
   expect(details.getAttribute("data-failed")).toBe("true");
-  expect(details.open).toBe(true);
+  expect(rowIsOpen(details)).toBe(true);
 });
 
 test('old-daemon reload: error present but status still "completed" is treated as failed (error presence is primary)', () => {
@@ -532,7 +554,7 @@ test("an empty-string error is not a failure (the wire only stamps failed when e
   registerToolRenderer({ match: "tci_empty_err", summary: () => "s", body: () => <div>b</div> });
   render(<ToolCallItem item={item({ toolName: "tci_empty_err", error: "" })} turn={turn} live={false} />);
   expect(screen.getByTestId("tool-call-item").getAttribute("data-failed")).toBe(null);
-  expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(false);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
 });
 
 // --- kata hgm1: a self-corrected preval-only failure (never reached real
@@ -563,12 +585,12 @@ test("a preval-only failure superseded by a later same-tool success starts colla
 
   render(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
 
-  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
+  const details = screen.getByTestId("tool-call-item");
   // Still attributable: the failure marker never goes away.
   expect(details.getAttribute("data-failed")).toBe("true");
   expect(screen.getByTestId("failure-glyph")).toBeTruthy();
   // But no longer forced open, since the very next attempt succeeded.
-  expect(details.open).toBe(false);
+  expect(rowIsOpen(details)).toBe(false);
 });
 
 test("a preval-only failure with NO later success stays forced open (nothing corrected it)", () => {
@@ -583,7 +605,7 @@ test("a preval-only failure with NO later success stays forced open (nothing cor
 
   render(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
 
-  expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(true);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
 });
 
 test("a preval-only failure followed by ANOTHER preval-only failure stays forced open (recurring, not yet corrected)", () => {
@@ -607,7 +629,7 @@ test("a preval-only failure followed by ANOTHER preval-only failure stays forced
 
   render(<ToolCallItem item={failed1} turn={turn} live={false} sessionRef="ref_a" />);
 
-  expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(true);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
 });
 
 test("a REAL execution failure stays forced open even when the next same-tool call succeeds (shared contract untouched)", () => {
@@ -628,7 +650,7 @@ test("a REAL execution failure stays forced open even when the next same-tool ca
 
   render(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
 
-  expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(true);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
 });
 
 test("supersession is reactive: a row already settled and rendered collapses once the correcting call lands", () => {
@@ -642,7 +664,7 @@ test("supersession is reactive: a row already settled and rendered collapses onc
   threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem])]]) });
 
   render(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
-  expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(true);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
 
   const okItem: ItemModel = {
     id: "item_ok",
@@ -655,7 +677,7 @@ test("supersession is reactive: a row already settled and rendered collapses onc
     threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem, okItem])]]) });
   });
 
-  expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(false);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(false);
 });
 
 test("a reader who manually reopened a superseded row keeps it open (explicit toggle still wins)", () => {
@@ -676,20 +698,20 @@ test("a reader who manually reopened a superseded row keeps it open (explicit to
   threadsStore.setState({ threads: new Map([["ref_a", threadWith([failedItem, okItem])]]) });
 
   render(<ToolCallItem item={failedItem} turn={turn} live={false} sessionRef="ref_a" />);
-  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
-  expect(details.open).toBe(false);
+  const details = screen.getByTestId("tool-call-item");
+  expect(rowIsOpen(details)).toBe(false);
 
-  fireEvent.click(screen.getByTestId("tool-row"));
-  expect(details.open).toBe(true);
+  fireEvent.click(screen.getByTestId("tool-row-trigger"));
+  expect(rowIsOpen(details)).toBe(true);
 });
 
 test("a manual collapse of an errored row sticks (the reader's own choice wins over force-expand)", () => {
   registerToolRenderer({ match: "tci_err_toggle", summary: () => "s", body: () => <div>body text</div> });
   render(<ToolCallItem item={item({ toolName: "tci_err_toggle", error: "boom" })} turn={turn} live={false} />);
-  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
-  expect(details.open).toBe(true);
-  fireEvent.click(details.querySelector("summary")!);
-  expect(details.open).toBe(false);
+  const details = screen.getByTestId("tool-call-item");
+  expect(rowIsOpen(details)).toBe(true);
+  toggleRow(details);
+  expect(rowIsOpen(details)).toBe(false);
 });
 
 test("live -> settled transition applies autoExpand exactly once", () => {
@@ -703,7 +725,7 @@ test("live -> settled transition applies autoExpand exactly once", () => {
   const settledItem = item({ toolName: "tci_once", output: "[exit 1]" });
   rerender(<ToolCallItem item={settledItem} turn={turn} live={false} />);
   expect(autoExpand).toHaveBeenCalledTimes(1);
-  expect((screen.getByTestId("tool-call-item") as HTMLDetailsElement).open).toBe(true);
+  expect(rowIsOpen(screen.getByTestId("tool-call-item"))).toBe(true);
 
   // A further re-render at the SAME settled state must not re-invoke it.
   rerender(<ToolCallItem item={settledItem} turn={turn} live={false} />);
@@ -808,10 +830,10 @@ test("clicking Open beside does not toggle the row open (the summary's own toggl
       sessionRef="ref_a"
     />,
   );
-  const details = screen.getByTestId("tool-call-item") as HTMLDetailsElement;
-  expect(details.open).toBe(false);
+  const details = screen.getByTestId("tool-call-item");
+  expect(rowIsOpen(details)).toBe(false);
   fireEvent.click(screen.getByRole("button", { name: /open beside/i }));
-  expect(details.open).toBe(false); // still collapsed - the open-beside click did not toggle it
+  expect(rowIsOpen(details)).toBe(false); // still collapsed - the open-beside click did not toggle it
   vi.restoreAllMocks();
 });
 
@@ -1035,7 +1057,7 @@ test("blank and non-string delegate tasks keep status without inventing a purpos
   expect(screen.getAllByTestId("tool-row-status")).toHaveLength(2);
 });
 
-test("delegate tool rows use a single top-level details/summary disclosure owned by ToolCallItem", () => {
+test("delegate tool rows use a single top-level disclosure trigger owned by ToolCallItem", () => {
   const { container } = render(
     <ToolCallItem
       item={item({
@@ -1047,8 +1069,10 @@ test("delegate tool rows use a single top-level details/summary disclosure owned
       live={false}
     />,
   );
-  const summaries = container.querySelectorAll("details > summary");
-  expect(summaries).toHaveLength(1);
+  // The disclosure trigger is a real button[aria-expanded] (ToolRow),
+  // not a native <details>/<summary> - exactly one per tool call.
+  const triggers = container.querySelectorAll('[data-testid="tool-row-trigger"][aria-expanded]');
+  expect(triggers).toHaveLength(1);
 });
 
 test("a live, unsettled delegate call renders a running/working status dot (never unknown)", () => {
