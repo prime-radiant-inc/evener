@@ -143,6 +143,36 @@ describe("createNavigationController", () => {
     controller.dispose();
   });
 
+  it("keeps reducer and real browser history aligned for a same-scenario identity dispatch", async () => {
+    const store = createStore();
+    const controller = createNavigationController(store, window);
+    openDeepStack(controller);
+    const before = store.getState();
+    const browserLength = window.history.length;
+    expect(before.scenario).toBe("baseline");
+    expect(before.history).toHaveLength(3);
+    expect(window.history.state).toMatchObject({ depth: 4 });
+
+    await expectNoPopState(() =>
+      controller.dispatch({ type: "setScenario", scenario: "baseline" }),
+    );
+
+    expect(store.getState()).toBe(before);
+    expect(store.getState().history).toHaveLength(3);
+    expect(window.history.length).toBe(browserLength);
+    expect(window.history.state).toMatchObject({ depth: 4 });
+
+    for (const expected of ["voice", "work", "conversation", "root"] as const) {
+      const popped = nextPopState();
+      controller.dispatch({ type: "goBack" });
+      await popped;
+      expect(store.getState().overlay).toBeNull();
+      expect(store.getState().route.kind).toBe(expected);
+    }
+    expect(window.history.state).toMatchObject({ depth: 0 });
+    controller.dispose();
+  });
+
   it("initializes one owned depth-zero entry", () => {
     const replace = vi.spyOn(window.history, "replaceState");
     const controller = createNavigationController(createStore(), window);

@@ -122,6 +122,9 @@ export function createNavigationController(
 
   const reduce = (action: PrototypeAction) => {
     const before = store.getState();
+    if (action.type === "setScenario" && action.scenario === before.scenario) {
+      return;
+    }
     if (isDuplicateDestination(before, action)) return;
     if (action.type === "reset") before.resetPrototype();
     else before.dispatch(action);
