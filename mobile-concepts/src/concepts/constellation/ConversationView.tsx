@@ -2,7 +2,6 @@ import { useEffect, useRef } from "react";
 import type { TranscriptItem } from "../../core/model";
 import { selectCanMutate } from "../../core/selectors";
 import type { PrototypeAction, PrototypeState } from "../../core/state";
-import { Disclosure } from "../shared/Disclosure";
 import { Icon } from "../shared/Icon";
 import { ScreenState } from "../shared/ScreenState";
 import { StatusLabel } from "../shared/StatusLabel";
@@ -12,6 +11,7 @@ import {
   isBlockingRouteState,
   OfflineNotice,
 } from "./RouteState";
+import { StatusDisclosure } from "./StatusDisclosure";
 
 export interface ConversationViewProps {
   state: PrototypeState;
@@ -36,15 +36,9 @@ function TranscriptContent({
     case "tool":
       return (
         <div className="co-tool-disclosure">
-          <Disclosure
-            summary={
-              <span className="co-disclosure-summary">
-                <span>{item.label}</span>
-                <span data-state-label aria-hidden="true">
-                  <StatusLabel state={item.status} />
-                </span>
-              </span>
-            }
+          <StatusDisclosure
+            label={item.label}
+            status={item.status}
             expanded={state.expandedToolIds.has(item.id)}
             onToggle={() => dispatch({ type: "toggleTool", itemId: item.id })}
           >
@@ -62,7 +56,7 @@ function TranscriptContent({
                 </div>
               </dl>
             </div>
-          </Disclosure>
+          </StatusDisclosure>
         </div>
       );
     case "question": {
