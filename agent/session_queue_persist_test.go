@@ -116,6 +116,28 @@ func TestQueuePersist_EnqueueMixedItems_SurvivesRestart(t *testing.T) {
 	}
 }
 
+func TestQueuePersist_TaskCompletionMachinePayloadSurvivesRestartToLLM(t *testing.T) {
+	dir := t.TempDir()
+	sess := newQueuePersistTestSession(t, dir)
+	id := sess.ID()
+	blockingDelegateIDs := []string{"dlg_opaque_waiter_7Qx"}
+	sess.SteerTaskCompletion(
+		taskReminderAllDoneWhileDelegatesRun("communicate", blockingDelegateIDs),
+		blockingDelegateIDs,
+	)
+	sess.Close()
+
+	restored := restoreQueuePersistTestSession(t, dir, id)
+	defer restored.Close()
+	payload := singleTaskCompletionLLMPayload(t, restored)
+	if payload.CompletionState != "waiting_for_blocking_delegates" {
+		t.Fatalf("restored completion state = %q, want waiting_for_blocking_delegates", payload.CompletionState)
+	}
+	if !reflect.DeepEqual(payload.BlockingDelegateIDs, blockingDelegateIDs) {
+		t.Fatalf("restored blocking delegate IDs = %v, want %v", payload.BlockingDelegateIDs, blockingDelegateIDs)
+	}
+}
+
 func TestQueuePersist_DaemonAndClientSteeringUseDistinctAuthorities(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
