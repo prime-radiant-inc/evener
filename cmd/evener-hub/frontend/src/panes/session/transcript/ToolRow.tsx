@@ -166,10 +166,9 @@ function middleSplit(text: string): [head: string, tail: string] {
  * present in it (a descriptor bug, never a mismatched or fabricated href -
  * kata xw3t's own "never a dead anchor" carryover from tcp9). stopPropagation
  * on the anchor's own click keeps it from also toggling the enclosing
- * <summary>'s disclosure: that element's onClick (below) unconditionally
- * preventDefaults every click that reaches it, which - since this is the
- * SAME bubbled event - would otherwise cancel the link's native navigation
- * too, not just skip the toggle.
+ * disclosure trigger: that element's onClick (below) fires onToggle for
+ * every click that reaches it, which - since this is the SAME bubbled
+ * event - would otherwise toggle the row as well as navigate the link.
  *
  * Located by search (indexOf), NOT by the positional-prefix rule
  * `trailingAfter` uses, and deliberately so. That rule exists because a
@@ -391,18 +390,27 @@ export function ToolRow({
   }
 
   return (
-    // <summary> is natively keyboard-operable (implicit role="button";
-    // Enter/Space synthesize the same click this handler already takes), which
-    // is why A3's keyboard requirement needs no extra key handling here.
+    // A <div role="button"> disclosure trigger, NOT a native <summary>. A
+    // <summary> maps to role=button, and the row's inline affordances (a
+    // linkified summaryLink <a>, "Open beside" / "Open transcript" <button>s)
+    // are INTERACTIVE descendants of the trigger - exactly what Chrome's
+    // a11y console flags as "Interactive element inside of a <summary>
+    // element." A plain div with role="button" keeps the same keyboard
+    // contract (Enter/Space toggle, below) and the same aria-expanded
+    // announcement, without the <summary>-specific nesting violation. The
+    // inline grammar (affordances ride the tool-call line, inside the
+    // trigger) is preserved: they stopPropagation on their own clicks so
+    // the trigger's onClick never fires from inside them.
     //
-    // aria-expanded: HTML-AAM maps a details element's first <summary> to
-    // role=button, and aria-expanded IS supported on button - Biome's own role
-    // table simply doesn't carry summary's implicit mapping. The attribute can
-    // never disagree with the native details state either: ToolCallItem drives
-    // <details open> from the same `expanded` value passed here.
-    // biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable, see above
-    // biome-ignore lint/a11y/useAriaPropsSupportedByRole: summary's implicit role is button, which supports aria-expanded, see above
-    <summary
+    // aria-expanded is supported on role=button (unlike on <summary>, whose
+    // implicit mapping Biome's role table does not carry - the old
+    // useAriaPropsSupportedByRole ignore was a workaround for that). The
+    // attribute can never disagree with the state: ToolCallItem drives this
+    // render from the same `expanded` value.
+    // biome-ignore lint/a11y/useSemanticElements: a real <button> cannot hold the row's inline interactive children (links, "Open beside" buttons) - that is the exact "Interactive element inside a <button>" violation this div replaces; see the comment above
+    <div
+      role="button"
+      tabIndex={0}
       className={CLASS.row}
       data-testid="tool-row"
       data-purpose={hasPurpose ? "true" : undefined}
@@ -410,7 +418,7 @@ export function ToolRow({
       aria-expanded={expanded}
       // A descriptor can suppress BOTH the purpose (none stated) and the
       // summary (summaryHiddenWhenExpanded, open) at once, leaving nothing but
-      // the aria-hidden chevron inside this <summary> - an unnamed disclosure.
+      // the aria-hidden chevron inside this trigger - an unnamed disclosure.
       // aria-label REPLACES the computed accessible name entirely, including
       // any descendant name (FailureGlyph's "Failed", a status glyph's state
       // label), so the fallback applies ONLY when the row would otherwise
@@ -422,15 +430,25 @@ export function ToolRow({
       // hidden summary text (that suppression, ToolCallItem.tsx:259, is
       // deliberate).
       aria-label={!hasPurpose && !hasSummary && !failed && !hasStatus ? "Tool call" : undefined}
-      onClick={(e) => {
-        // Fully controlled: preventDefault stops the browser flipping
-        // <details open> itself, so the caller's store stays the single source
-        // of truth (the same posture as widgets/disclosure).
-        e.preventDefault();
+      onClick={() => {
+        // The keyboard path (onKeyDown below) calls onToggle directly and
+        // does not synthesize a click, so there is no double-toggle. There
+        // is no native <details> whose open attribute this click could flip
+        // (the old <summary> needed preventDefault for exactly that); a bare
+        // onToggle is all this handler does.
         onToggle?.();
+      }}
+      onKeyDown={(e) => {
+        // Enter/Space toggle, matching the <summary> keyboard contract this
+        // replaces (a native summary synthesizes a click on both). Space
+        // preventDefault stops the page scrolling; Enter does not scroll.
+        if (e.key === "Enter" || e.key === " ") {
+          e.preventDefault();
+          onToggle?.();
+        }
       }}
     >
       {content}
-    </summary>
+    </div>
   );
 }

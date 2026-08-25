@@ -285,7 +285,16 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   }
 
   return (
-    <details
+    // A <div>, not a native <details>: ToolRow's expandable trigger is a
+    // div[role="button"][aria-expanded] (see ToolRow.tsx), and the body below
+    // is a sibling div rendered conditionally on `expanded`. The native
+    // <details>/<summary> pair was replaced to stop Chrome's a11y console
+    // flagging the interactive elements (linkified summary, "Open beside" /
+    // "Open transcript" buttons) that ride inline inside the trigger as
+    // "Interactive element inside of a <summary> element." Open/closed state
+    // is fully controlled from disclosureStore (no native open attribute to
+    // fight), so a plain div wrapper is all the structure that remains.
+    <div
       className={CLASS.call}
       data-testid="tool-call-item"
       data-tool-name={item.toolName ?? ""}
@@ -295,7 +304,6 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
       // recedes (success is glyph-less).
       data-failed={failed ? "true" : undefined}
       data-attention={failed ? "error" : undefined}
-      open={expanded}
     >
       <ToolRow
         // A descriptor whose summary duplicates what its expanded body shows
@@ -340,7 +348,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
           <ImageGallery images={item.outputImages} size={descriptor.outputImageSize} />
         </div>
       )}
-    </details>
+    </div>
   );
 }, ignoringTurn);
 

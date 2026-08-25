@@ -176,9 +176,12 @@ test("a purpose-less row is a single line: summary text with the chevron inline 
   expect(screen.getByTestId("tool-row-summary").lastElementChild).toBe(screen.getByTestId("tool-row-chevron"));
 });
 
-test("an expandable row renders as a <summary> so it is natively keyboard-operable", () => {
+test("an expandable row renders as a div[role=button] so it is keyboard-operable", () => {
   render(<ToolRow summary="Ran ls" failed={false} expandable expanded={false} onToggle={() => {}} />);
-  expect(screen.getByTestId("tool-row").tagName).toBe("SUMMARY");
+  const row = screen.getByTestId("tool-row");
+  expect(row.tagName).toBe("DIV");
+  expect(row.getAttribute("role")).toBe("button");
+  expect(row.tabIndex).toBe(0);
 });
 
 test("trailing affordances render after the summary text", () => {
@@ -504,16 +507,16 @@ test("the chevron reports its open state for the stylesheet's rotation, and is h
 
 test("an expandable row reads as clickable - a pointer cursor and a hover state", () => {
   const css = rowCss();
-  expect(css).toMatch(/summary\.row\s*\{[^}]*cursor:\s*pointer/);
-  expect(css).toMatch(/summary\.row:hover\s*\{[^}]*background:/);
-  expect(css).toMatch(/summary\.row:focus-visible\s*\{[^}]*outline:/);
+  expect(css).toMatch(/\[role="button"\]\.row\s*\{[^}]*cursor:\s*pointer/);
+  expect(css).toMatch(/\[role="button"\]\.row:hover\s*\{[^}]*background:/);
+  expect(css).toMatch(/\[role="button"\]\.row:focus-visible\s*\{[^}]*outline:/);
 });
 
 // Measured in the running app: the light theme resolves --surface-1 AND
 // --surface-2 to the same #FFFFFF as the pane, so a surface-token hover was
 // literally invisible there. The hover must be an ink wash instead.
 test("the row hover is an ink wash, not a surface token that can match the pane", () => {
-  const hover = /summary\.row:hover\s*\{([^}]*)\}/.exec(rowCss());
+  const hover = /\[role="button"\]\.row:hover\s*\{([^}]*)\}/.exec(rowCss());
   expect(hover).not.toBeNull();
   expect(hover![1]).toMatch(/var\(--ink-/);
   expect(hover![1]).not.toMatch(/var\(--surface-/);
@@ -935,12 +938,12 @@ test("a summaryLink that recurs in the summary links the first occurrence only, 
   expect(screen.getByTestId("tool-row-summary").textContent).toBe(summary);
 });
 
-// The collapsed row IS a native <summary> (ToolRow's expandable branch), and
-// its own onClick unconditionally preventDefaults + toggles on every click
-// that reaches it. Without stopping propagation on the link's own click, the
-// SAME bubbled event would both cancel the anchor's native navigation and
-// toggle the row - a link that looks clickable but does neither correctly.
-test("clicking the linkified URL opens it, not toggles the row - the click must not bubble to the summary's own handler", () => {
+// The collapsed row IS the disclosure trigger (ToolRow's expandable branch,
+// a div[role="button"]), and its own onClick toggles on every click that
+// reaches it. Without stopping propagation on the link's own click, the SAME
+// bubbled event would both navigate the anchor and toggle the row - a link
+// that looks clickable but does neither correctly.
+test("clicking the linkified URL opens it, not toggles the row - the click must not bubble to the trigger's own handler", () => {
   const onToggle = vi.fn();
   render(
     <ToolRow
@@ -961,14 +964,15 @@ test("clicking the linkified URL opens it, not toggles the row - the click must 
 
 // #93: an expanded row whose descriptor hides the summary while open (shell's
 // summaryHiddenWhenExpanded) and carries no purpose either renders NOTHING but
-// the aria-hidden chevron inside the native <summary> - the disclosure has no
-// accessible name at all. The fix must not resurrect the hidden summary text
+// the aria-hidden chevron inside the disclosure trigger - the disclosure has
+// no accessible name at all. The fix must not resurrect the hidden summary text
 // (that suppression is deliberate, ToolCallItem.tsx:259); it needs a stable
 // label of its own.
-test("an expanded summary-less, purpose-less row's native disclosure still has a nonempty accessible name", () => {
+test("an expanded summary-less, purpose-less row's disclosure trigger still has a nonempty accessible name", () => {
   render(<ToolRow summary="" failed={false} expandable expanded onToggle={() => {}} />);
   const row = screen.getByTestId("tool-row");
-  expect(row.tagName).toBe("SUMMARY");
+  expect(row.tagName).toBe("DIV");
+  expect(row.getAttribute("role")).toBe("button");
   expect((row.getAttribute("aria-label") ?? "").trim()).not.toBe("");
 });
 

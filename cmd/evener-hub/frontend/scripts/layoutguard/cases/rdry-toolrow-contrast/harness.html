@@ -20,12 +20,15 @@
      when a call has a stated purpose): purpose leads, verb/target/meta
      demotes onto its own line below it - the "Wrote fizzbuzz.py" line kata
      rdry measured, against the REAL class names from
-     panes/session/transcript/toolcallitem.module.css. -->
-<summary class="row" data-testid="tool-row">
+     panes/session/transcript/toolcallitem.module.css. The expandable trigger
+     is a div[role="button"] (ToolRow.tsx), not a native <summary>; the
+     class names and DOM structure the contrast measurement depends on are
+     unchanged. -->
+<div role="button" class="row" data-testid="tool-row">
   <span class="purpose" data-testid="tool-row-purpose">Write fizzbuzz.py to disk</span>
   <span class="summary demoted" data-testid="tool-row-summary" id="demoted-line">Wrote fizzbuzz.py</span>
   <span class="chevron" aria-hidden="true">&#9656;</span>
-</summary>
+</div>
 <script>
 window.measure = () => {
   const root = document.documentElement;

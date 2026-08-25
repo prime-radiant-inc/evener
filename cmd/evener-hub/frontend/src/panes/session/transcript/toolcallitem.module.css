@@ -28,7 +28,7 @@
    * gap between a description and its call reads clearly tighter than the
    * 2x8px .call padding between separate calls. */
   row-gap: 0;
-  list-style: none; /* the <summary> variant: no native disclosure triangle */
+  list-style: none; /* no native disclosure triangle (was the <summary> marker) */
   cursor: default;
 }
 
@@ -36,9 +36,9 @@
   display: none;
 }
 
-/* Only the expandable variant is a <summary>; make that one, and only that
- * one, read as clickable. */
-summary.row {
+/* Only the expandable variant is a div[role="button"] trigger; make that
+ * one, and only that one, read as clickable. */
+[role="button"].row {
   cursor: pointer;
 }
 
@@ -47,12 +47,12 @@ summary.row {
  * itself, so a surface-token hover was completely invisible there. A tint of
  * the ink reads against whatever surface the row happens to sit on, in both
  * themes. Same idiom as widgets/chip's own remove-button hover. */
-summary.row:hover {
+[role="button"].row:hover {
   background: color-mix(in oklab, var(--ink-mid) 8%, transparent);
   border-radius: var(--radius-control);
 }
 
-summary.row:focus-visible {
+[role="button"].row:focus-visible {
   outline: var(--focus-ring);
   outline-offset: 2px;
   border-radius: var(--radius-control);

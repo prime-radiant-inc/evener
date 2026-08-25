@@ -22,19 +22,24 @@ function rowFor(toolName: string): HTMLElement {
   return row;
 }
 
+// ToolCallItem's disclosure trigger is a div[role="button"][aria-expanded]
+// (ToolRow.tsx), not a native <details>; the open state lives on aria-expanded
+// of the tool-row child, not on a .open property of the wrapper.
+function isOpen(item: HTMLElement): boolean {
+  return item.querySelector('[data-testid="tool-row"]')?.getAttribute("aria-expanded") === "true";
+}
+
 test("a completed shell row starts collapsed", () => {
   render(<TranscriptSurfaceSection />);
   const rows = screen.getAllByTestId("tool-call-item").filter((el) => el.dataset.toolName === "shell");
-  const collapsed = rows.find((el) => (el as HTMLDetailsElement).open === false);
+  const collapsed = rows.find((el) => !isOpen(el));
   expect(collapsed).toBeTruthy();
 });
 
 test("one shell row is forced open to demonstrate the expanded state", () => {
   render(<TranscriptSurfaceSection />);
   const rows = screen.getAllByTestId("tool-call-item").filter((el) => el.dataset.toolName === "shell");
-  const expandedNonFailed = rows.find(
-    (el) => (el as HTMLDetailsElement).open === true && el.dataset.failed === undefined,
-  );
+  const expandedNonFailed = rows.find((el) => isOpen(el) && el.dataset.failed === undefined);
   expect(expandedNonFailed).toBeTruthy();
 });
 
@@ -43,13 +48,13 @@ test("a failed shell row auto-expands and carries data-failed", () => {
   const rows = screen.getAllByTestId("tool-call-item").filter((el) => el.dataset.toolName === "shell");
   const failed = rows.find((el) => el.dataset.failed === "true");
   expect(failed).toBeTruthy();
-  expect((failed as HTMLDetailsElement).open).toBe(true);
+  expect(isOpen(failed!)).toBe(true);
 });
 
 test("an edit_file row renders a diff body", () => {
   render(<TranscriptSurfaceSection />);
   const row = rowFor("edit_file");
-  expect((row as HTMLDetailsElement).open).toBe(true);
+  expect(isOpen(row)).toBe(true);
   expect(row.querySelector('[data-testid="tool-call-body"]')).toBeTruthy();
 });
 

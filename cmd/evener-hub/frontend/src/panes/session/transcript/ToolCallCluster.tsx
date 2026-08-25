@@ -46,8 +46,10 @@ function clusterHeader(
 
 // A cluster has its own local disclosure because it is a derived presentation
 // of a current adjacent run, not a durable per-item disclosure. The existing
-// dynamic VirtualList measures the row after this native details body changes
-// height; no viewport or scroll state belongs in this component.
+// dynamic VirtualList measures the row after this body changes height; no
+// viewport or scroll state belongs in this component. The wrapper is a plain
+// div (not a native <details>): ToolRow renders the div[role="button"] trigger
+// with aria-expanded, and the body below is a sibling rendered on `open`.
 export function ToolCallCluster({ items, turn, sessionRef }: ToolCallClusterProps) {
   const [open, setOpen] = useState(false);
   // Same by-ref selector ToolCallItem.tsx's own summaryCwd/openBesideCwd use
@@ -57,7 +59,7 @@ export function ToolCallCluster({ items, turn, sessionRef }: ToolCallClusterProp
   const cwd = useThreadsStore((s) => (sessionRef !== undefined ? s.threads.get(sessionRef)?.cwd : undefined));
   const header = clusterHeader(items, cwd);
   return (
-    <details className={CLASS.cluster} data-testid="tool-call-cluster" open={open}>
+    <div className={CLASS.cluster} data-testid="tool-call-cluster">
       <ToolRow
         summary={header.summary}
         summaryLink={header.summaryLink}
@@ -79,6 +81,6 @@ export function ToolCallCluster({ items, turn, sessionRef }: ToolCallClusterProp
           ))}
         </div>
       )}
-    </details>
+    </div>
   );
 }

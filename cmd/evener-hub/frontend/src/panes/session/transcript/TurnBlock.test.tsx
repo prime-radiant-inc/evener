@@ -165,16 +165,15 @@ test("groups a settled non-final tool run behind its highest-consequence summary
   ];
   render(<TurnBlock turn={turn(items)} />);
 
-  const cluster = screen.getByTestId("tool-call-cluster") as HTMLDetailsElement;
-  expect(cluster.open).toBe(false);
+  const cluster = screen.getByTestId("tool-call-cluster");
+  expect(screen.queryByTestId("tool-call-cluster-body")).toBeNull();
   expect(screen.getAllByTestId("tool-call-cluster")).toHaveLength(1);
   expect(screen.getAllByTestId("tool-row")).toHaveLength(1);
   expect(cluster.textContent).toContain("3 steps");
   expect(cluster.textContent).toContain("Wrote src/cache.go");
   expect(screen.queryAllByTestId("tool-call-item")).toHaveLength(0);
 
-  fireEvent.click(cluster.querySelector("summary")!);
-  expect(cluster.open).toBe(true);
+  fireEvent.click(cluster.querySelector('[data-testid="tool-row"]')!);
   expect(screen.getByTestId("tool-call-cluster-body")).toBeTruthy();
   expect(screen.getAllByTestId("tool-call-item")).toHaveLength(3);
 });
@@ -215,16 +214,13 @@ test("a cluster closes when the same virtualized turn and item ids switch sessio
   const sharedTurn = (items: ItemModel[]) => turn(items, { id: "shared-turn" });
 
   const { rerender } = render(<TurnBlock turn={sharedTurn(sessionAItems)} sessionRef="session_a" />);
-  const cluster = screen.getByTestId("tool-call-cluster") as HTMLDetailsElement;
-  fireEvent.click(cluster.querySelector("summary")!);
-  expect(cluster.open).toBe(true);
+  const cluster = screen.getByTestId("tool-call-cluster");
+  fireEvent.click(cluster.querySelector('[data-testid="tool-row"]')!);
   expect(screen.getByTestId("tool-call-cluster-body")).toBeTruthy();
   expect(screen.getAllByTestId("tool-call-item")).toHaveLength(3);
 
   rerender(<TurnBlock turn={sharedTurn(sessionBItems)} sessionRef="session_b" />);
 
-  const switchedCluster = screen.getByTestId("tool-call-cluster") as HTMLDetailsElement;
-  expect(switchedCluster.open).toBe(false);
   expect(screen.queryByTestId("tool-call-cluster-body")).toBeNull();
   expect(screen.queryAllByTestId("tool-call-item")).toHaveLength(0);
 });
