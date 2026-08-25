@@ -74,6 +74,57 @@ func TestDelegateResourceRuntime_RunningSendDoesNotStartSuccessor(t *testing.T) 
 	}
 }
 
+func TestDelegateResourceRuntime_PositiveWaitCannotSteerAfterIdleToRunningTransition(t *testing.T) {
+	c, _ := newDelegateControllerTestHarness(t, 1, 1)
+	delegateID := "dlg_target"
+	seedDelegateControllerIdle(t, c, delegateID, "")
+	root := &Session{delegateController: c, delegateRootSessionID: "root-session"}
+	var liveRuntime *Session
+	var interleavingLease delegateLease
+	root.cfg.testOnly.delegateSendBeforePositiveWaitAdmission = func() {
+		reservation, reserveErr := root.delegateController.ReserveStart(rootDelegateActor("root-session"), delegateID)
+		if reserveErr != nil {
+			t.Fatalf("interleaving ReserveStart: %v", reserveErr)
+		}
+		started, commitErr := root.delegateController.CommitStart(reservation)
+		if commitErr != nil {
+			t.Fatalf("interleaving CommitStart: %v", commitErr)
+		}
+		interleavingLease = started.lease
+		liveRuntime = attachDelegateSteerRuntime(t, root.delegateController, delegateID, afero.NewMemMapFs())
+		if started.lease.generation != 1 {
+			t.Fatalf("interleaving generation = %d, want 1", started.lease.generation)
+		}
+	}
+
+	outcome := (delegateRuntime{owner: root}).send(context.Background(), delegateID, "must not steer", 1000)
+	if outcome.result.Err == nil || !errors.Is(outcome.result.Err, errDelegateTargetBusy) {
+		t.Fatalf("positive-wait interleaving outcome = %#v, want busy refusal", outcome.result)
+	}
+	if outcome.result.Action == "steered" {
+		t.Fatal("positive wait durably steered through the idle-to-running transition")
+	}
+	c = root.delegateController
+	c.mu.Lock()
+	aggregate := c.durable[delegateID]
+	live := c.live[delegateID]
+	pendingSteers := 0
+	if live != nil {
+		pendingSteers = len(live.pendingSteers)
+	}
+	steeringClaims := len(c.steeringClaims)
+	c.mu.Unlock()
+	if aggregate == nil || aggregate.Phase != delegatestore.PhaseRunning || steeringClaims != 0 || pendingSteers != 0 {
+		t.Fatalf("interleaving state = aggregate:%#v steeringClaims:%d pendingSteers:%d", aggregate, steeringClaims, pendingSteers)
+	}
+	if liveRuntime == nil {
+		t.Fatal("interleaving did not install live runtime")
+	}
+	if _, err := c.FinishGeneration(interleavingLease, delegateFinish{}); err != nil {
+		t.Fatalf("finish interleaving generation: %v", err)
+	}
+}
+
 func TestDelegateResourceRuntime_IdleSendReservesOneSuccessor(t *testing.T) {
 	root, fixture, entered, release := newBlockingColdDelegateRuntime(t)
 	outcome := (delegateRuntime{owner: root}).send(context.Background(), fixture.delegateID, "continue once", 0)

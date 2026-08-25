@@ -693,6 +693,7 @@ func projectStableDelegateListItem(now time.Time, visible stableDelegateVisibleR
 		Depth:                visible.depth,
 		Task:                 snapshot.descriptor.Task,
 		AgentType:            snapshot.descriptor.AgentType,
+		Tools:                append([]string(nil), snapshot.descriptor.ToolNameCeiling...),
 		Model:                snapshot.descriptor.ResolvedModel,
 		ReasoningEffort:      snapshot.descriptor.Config.ReasoningEffort,
 		ParentDelegateID:     stringPtrOrNil(snapshot.parentID),
@@ -1018,6 +1019,7 @@ type stableDelegateStatusResult struct {
 	Task               string                 `json:"task"`
 	Description        string                 `json:"description,omitempty"`
 	AgentType          string                 `json:"agent_type"`
+	Tools              []string               `json:"tools,omitempty"`
 	Model              string                 `json:"model,omitempty"`
 	ReasoningEffort    string                 `json:"reasoning_effort,omitempty"`
 	Resumable          bool                   `json:"resumable"`
@@ -1041,6 +1043,7 @@ func projectStableDelegateStatus(now time.Time, snapshot delegateSnapshot) stabl
 		Task:               descriptor.Task,
 		Description:        descriptor.Description,
 		AgentType:          descriptor.AgentType,
+		Tools:              append([]string(nil), descriptor.ToolNameCeiling...),
 		Model:              descriptor.ResolvedModel,
 		ReasoningEffort:    descriptor.Config.ReasoningEffort,
 		Resumable:          snapshot.resumable,
@@ -1125,21 +1128,22 @@ type recentWatchEntry struct {
 }
 
 type jobListEntry struct {
-	ID               string  `json:"id"`
-	JobID            string  `json:"job_id,omitempty"`
-	Kind             string  `json:"kind"`
-	Type             string  `json:"type"`
-	Status           string  `json:"status"`
-	Phase            string  `json:"phase,omitempty"`
-	Reason           *string `json:"reason,omitempty"`
-	Description      string  `json:"description"`
-	Task             string  `json:"task,omitempty"`
-	AgentType        string  `json:"agent_type,omitempty"`
-	Model            string  `json:"model,omitempty"`
-	ReasoningEffort  string  `json:"reasoning_effort,omitempty"`
-	ParentJobID      *string `json:"parent_job_id,omitempty"`
-	ParentDelegateID *string `json:"parent_delegate_id,omitempty"`
-	OwnerSessionID   string  `json:"owner_session_id"`
+	ID               string   `json:"id"`
+	JobID            string   `json:"job_id,omitempty"`
+	Kind             string   `json:"kind"`
+	Type             string   `json:"type"`
+	Status           string   `json:"status"`
+	Phase            string   `json:"phase,omitempty"`
+	Reason           *string  `json:"reason,omitempty"`
+	Description      string   `json:"description"`
+	Task             string   `json:"task,omitempty"`
+	AgentType        string   `json:"agent_type,omitempty"`
+	Tools            []string `json:"tools,omitempty"`
+	Model            string   `json:"model,omitempty"`
+	ReasoningEffort  string   `json:"reasoning_effort,omitempty"`
+	ParentJobID      *string  `json:"parent_job_id,omitempty"`
+	ParentDelegateID *string  `json:"parent_delegate_id,omitempty"`
+	OwnerSessionID   string   `json:"owner_session_id"`
 	// VisibleToSessionID is internal visibility routing — in a plain list it always
 	// equals the owner, so it is kept for tooling but omitted from the model wire.
 	VisibleToSessionID string `json:"-"`
@@ -1294,6 +1298,7 @@ type delegateSendResult struct {
 	Task                   string                  `json:"task,omitempty"`
 	Description            string                  `json:"description,omitempty"`
 	AgentType              string                  `json:"agent_type,omitempty"`
+	Tools                  []string                `json:"tools,omitempty"`
 	RequestedModel         string                  `json:"requested_model,omitempty"`
 	ResolvedProfileID      string                  `json:"resolved_profile_id,omitempty"`
 	ResolvedModel          string                  `json:"resolved_model,omitempty"`
@@ -1407,6 +1412,7 @@ func marshalDelegateSendResult(res sendMessageResult, maxChars int) (any, error)
 		Task:                res.Task,
 		Description:         res.Description,
 		AgentType:           res.AgentType,
+		Tools:               append([]string(nil), res.Tools...),
 		RequestedModel:      res.RequestedModel,
 		ResolvedProfileID:   res.ResolvedProfileID,
 		ResolvedModel:       res.ResolvedModel,
