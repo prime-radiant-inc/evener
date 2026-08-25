@@ -117,8 +117,15 @@ func TestCovDispatchOverlayKey_UnknownName(t *testing.T) {
 	if cmd != nil {
 		t.Fatalf("unknown overlay returned command %T, want nil", cmd)
 	}
-	if got := updated.(hubModel); !reflect.DeepEqual(got, m) {
-		t.Fatalf("unknown overlay changed model:\n got: %#v\nwant: %#v", got, m)
+	want := hubModel{
+		mode:     hubModeSession,
+		width:    91,
+		height:   42,
+		selected: 3,
+		notices:  []noticePanel{{Title: "keep me"}},
+	}
+	if got := updated.(hubModel); !reflect.DeepEqual(got, want) {
+		t.Fatalf("unknown overlay changed model:\n got: %#v\nwant: %#v", got, want)
 	}
 }
 

@@ -85,12 +85,18 @@ func TestCovComposerPanelView_QueuePreviewShown(t *testing.T) {
 		Width:        80,
 		ChipContext:  composerContext{Harness: "evener"},
 	}
-	got := p.View()
-	if !strings.Contains(got, "queued") {
-		t.Fatalf("view should contain queue preview header:\n%s", got)
+	got := ansiPattern.ReplaceAllString(p.View(), "")
+	wantQueue := "queued (2)\n  1. first queued message\n  2. second queued message\n"
+	if !strings.Contains(got, wantQueue) {
+		t.Fatalf("panel queue block missing exact ordered entries %q:\n%s", wantQueue, got)
 	}
-	if !strings.Contains(got, "first queued message") {
-		t.Fatalf("view should contain first queued message:\n%s", got)
+	for _, prefix := range []string{"  1. ", "  2. "} {
+		if count := strings.Count(got, prefix); count != 1 {
+			t.Fatalf("queue entry prefix %q count=%d, want 1:\n%s", prefix, count, got)
+		}
+	}
+	if strings.Contains(got, "  3. ") {
+		t.Fatalf("two-entry fixture rendered an unexpected third queue row:\n%s", got)
 	}
 }
 

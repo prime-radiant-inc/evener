@@ -5,47 +5,48 @@ import (
 	"testing"
 )
 
-// Every named sample must prove its own semantic fixture reached the real
-// widget. Recognition plus a non-empty view lets every branch return the same
-// arbitrary rendering; the per-sample marker and pairwise comparison do not.
+// Every named sample has an independent required/forbidden signature. The
+// pairwise comparison is only a supplemental guard: branch swaps must fail the
+// signature before inequality is considered.
 func TestCovSampleRenderFromRealWidget_SemanticFixtures(t *testing.T) {
 	withTestColorProfile(t)
 	tests := []struct {
-		name   string
-		width  int
-		marker string
+		name      string
+		width     int
+		required  []string
+		forbidden []string
 	}{
-		{"dashboard-narrow", 60, "EVENER LIVE"},
-		{"dashboard-normal", 80, "EVENER LIVE"},
-		{"dashboard-wide", 200, "EVENER LIVE"},
-		{"session-idle", 80, "draft stays visible"},
-		{"session-streaming", 80, "What agent harness is running"},
-		{"session-busy-steer", 80, "Please also check old TUI command parity"},
-		{"session-busy-readonly", 80, "draft kept"},
-		{"session-browse", 80, "What agent harness is running"},
-		{"session-fork", 80, "edited prompt"},
-		{"ask-card-pending", 80, "Which datastore for the ingest path?"},
-		{"ask-chip-waiting", 80, "question waiting"},
-		{"ask-overlay-single", 80, "Ready to deploy the migration?"},
-		{"ask-overlay-multi-review", 80, "review answers"},
-		{"spawn-evener", 80, "Implement the next TUI task"},
-		{"spawn-codex", 80, "codex-local"},
-		{"spawn-auth-required", 80, "OpenAI login required"},
-		{"model-picker", 80, "openai/gpt-5.5"},
-		{"theme-picker", 80, "Select theme"},
-		{"auth-overlay", 80, "Signed in with Evener-owned OAuth state."},
-		{"agents-picker", 80, "worker - restore auth commands"},
-		{"help-overlay", 80, "/help"},
-		{"diagnostics", 80, "Start failed: model provider is not reported"},
-		{"appshell-normal", 80, "Live now"},
-		{"appshell-loading", 80, "Loading hub dashboard..."},
-		{"appshell-error", 80, "Could not reach the configured Hub."},
-		{"topbar-session", 80, "Restore hub TUI widgets"},
-		{"actionbar-normal", 80, "enter open"},
-		{"actionbar-wrapped", 40, "ctrl+o dashboard"},
-		{"picker-empty", 80, "No matching"},
-		{"picker-disabled", 80, "source does not advertise clear"},
-		{"picker-error", 80, "provider listing failed"},
+		{"dashboard-narrow", 60, []string{"EVENER LIVE", "\nq quit"}, []string{"details", "dashboard  q quit"}},
+		{"dashboard-normal", 80, []string{"EVENER LIVE", "dashboard  q quit"}, []string{"\nq quit", "details"}},
+		{"dashboard-wide", 200, []string{"EVENER LIVE", "details", "Action:   enter launches"}, []string{"\nq quit"}},
+		{"session-idle", 80, []string{"draft stays visible", "enter send"}, []string{"all task steps completed", "FORK DRAFT"}},
+		{"session-streaming", 80, []string{"\n┃ > What agent harness", "all task steps completed"}, []string{"esc/i/q: compose", "▶ ┃ >"}},
+		{"session-busy-steer", 80, []string{"Please also check old TUI command parity", "ctrl+s steer"}, []string{"read-only:", "draft kept"}},
+		{"session-busy-readonly", 80, []string{"draft kept", "read-only:"}, []string{"ctrl+s steer", "Please also check"}},
+		{"session-browse", 80, []string{"▶ ┃ > What agent harness", "esc/i/q: compose"}, []string{"\n┃ > What agent harness", "draft stays visible"}},
+		{"session-fork", 80, []string{"edited prompt", "FORK DRAFT"}, []string{"draft stays visible", "ctrl+s steer"}},
+		{"ask-card-pending", 80, []string{"Which datastore for the ingest path?", "● IDLE"}, []string{"● YOUR MOVE", "Ready to deploy"}},
+		{"ask-chip-waiting", 80, []string{"question waiting", "● YOUR MOVE"}, []string{"● IDLE", "review answers"}},
+		{"ask-overlay-single", 80, []string{"Ready to deploy the migration?", "Yes, deploy"}, []string{"review answers", "skipped (no answer)"}},
+		{"ask-overlay-multi-review", 80, []string{"review answers", "2. [Naming] → skipped (no answer)"}, []string{"Ready to deploy", "Yes, deploy"}},
+		{"spawn-evener", 80, []string{"Implement the next TUI task", "openai/gpt-5.5"}, []string{"codex-local", "OpenAI login required"}},
+		{"spawn-codex", 80, []string{"codex-local", "gpt-5.3-codex"}, []string{"Implement the next TUI task", "OpenAI login required"}},
+		{"spawn-auth-required", 80, []string{"OpenAI login required", "openai/gpt-4.1"}, []string{"gpt-5.3-codex", "Implement the next TUI task"}},
+		{"model-picker", 80, []string{"Select model", "openai/gpt-5.5"}, []string{"Select theme", "worker - restore"}},
+		{"theme-picker", 80, []string{"Select theme", "system"}, []string{"openai/gpt-5.5", "worker - restore"}},
+		{"auth-overlay", 80, []string{"Signed in with Evener-owned OAuth state.", "source: evener"}, []string{"provider listing failed", "Start failed"}},
+		{"agents-picker", 80, []string{"worker - restore auth commands", "explorer - inspect old TUI"}, []string{"Select model", "Select theme"}},
+		{"help-overlay", 80, []string{"Available commands:", "/help"}, []string{"worker - restore", "provider listing failed"}},
+		{"diagnostics", 80, []string{"Start failed: model provider is not reported", "Clear is not available for Codex"}, []string{"provider listing failed", "Signed in with"}},
+		{"appshell-normal", 80, []string{"Live now", "codex smoke"}, []string{"Loading hub dashboard", "Could not reach"}},
+		{"appshell-loading", 80, []string{"Loading hub dashboard...", "ctrl+o dashboard"}, []string{"Live now", "Could not reach"}},
+		{"appshell-error", 80, []string{"Could not reach the configured Hub.", "r retry"}, []string{"Live now", "Loading hub dashboard"}},
+		{"topbar-session", 80, []string{"evener / session / Restore hub TUI widgets"}, []string{"enter open", "EVENER LIVE"}},
+		{"actionbar-normal", 80, []string{"enter open  p project  n new  ctrl+o dashboard  q quit"}, []string{"n new\nctrl+o"}},
+		{"actionbar-wrapped", 40, []string{"enter open  p project  n new\nctrl+o dashboard  q quit"}, []string{"n new  ctrl+o"}},
+		{"picker-empty", 80, []string{"No matching items", "Filter: missing"}, []string{"source does not advertise clear", "provider listing failed"}},
+		{"picker-disabled", 80, []string{"/clear", "source does not advertise clear"}, []string{"No matching items", "provider listing failed"}},
+		{"picker-error", 80, []string{"provider listing failed", "Retry /model after signing in."}, []string{"source does not advertise clear", "No matching items"}},
 	}
 
 	views := make(map[string]string, len(tests))
@@ -59,8 +60,15 @@ func TestCovSampleRenderFromRealWidget_SemanticFixtures(t *testing.T) {
 				t.Fatalf("sample metadata = {Name:%q Width:%d Theme:%q}, want {%q %d dark}", rendered.Name, rendered.Width, rendered.Theme, tt.name, tt.width)
 			}
 			plain := ansiPattern.ReplaceAllString(rendered.View, "")
-			if !strings.Contains(plain, tt.marker) {
-				t.Fatalf("sample %q missing fixture marker %q:\n%s", tt.name, tt.marker, plain)
+			for _, required := range tt.required {
+				if !strings.Contains(plain, required) {
+					t.Errorf("sample %q missing required signature %q:\n%s", tt.name, required, plain)
+				}
+			}
+			for _, forbidden := range tt.forbidden {
+				if strings.Contains(plain, forbidden) {
+					t.Errorf("sample %q contains forbidden signature %q:\n%s", tt.name, forbidden, plain)
+				}
 			}
 			views[tt.name] = plain
 		})

@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"errors"
-	"flag"
 	"io"
 	"testing"
 
@@ -27,50 +26,43 @@ func (p *scriptedCovProgram) Run() (tea.Model, error) {
 }
 func (p *scriptedCovProgram) Send(tea.Msg) {}
 
-// ---- Run: flag.ErrHelp returns 0 --------------------------------------------
+// ---- Run: real parser help returns 0 -----------------------------------------
 
 func TestCovRun_HelpFlagReturns0(t *testing.T) {
-	oldParse := parseStartupOptions
-	parseStartupOptions = func(args []string, getenv func(string) string) (hubstart.TUIStartupOptions, error) {
-		return hubstart.TUIStartupOptions{}, flag.ErrHelp
-	}
-	t.Cleanup(func() { parseStartupOptions = oldParse })
+	oldGetenv := processGetenv
+	processGetenv = func(string) string { return "" }
+	t.Cleanup(func() { processGetenv = oldGetenv })
 	if code := Run([]string{"-h"}, nil, io.Discard, io.Discard); code != 0 {
 		t.Fatalf("Run with -h = %d, want 0", code)
 	}
 }
 
-// ---- Run: parse error returns 2 --------------------------------------------
+// ---- Run: real parser error returns 2 ----------------------------------------
 
 func TestCovRun_ParseErrorReturns2(t *testing.T) {
-	oldParse := parseStartupOptions
-	parseStartupOptions = func(args []string, getenv func(string) string) (hubstart.TUIStartupOptions, error) {
-		return hubstart.TUIStartupOptions{}, errors.New("bad flag")
-	}
-	t.Cleanup(func() { parseStartupOptions = oldParse })
+	oldGetenv := processGetenv
+	processGetenv = func(string) string { return "" }
+	t.Cleanup(func() { processGetenv = oldGetenv })
 	var stderr bytes.Buffer
 	if code := Run([]string{"--bad"}, nil, io.Discard, &stderr); code != 2 {
 		t.Fatalf("Run with bad flag = %d, want 2", code)
 	}
-	if !bytes.Contains(stderr.Bytes(), []byte("bad flag")) {
-		t.Fatalf("stderr should contain error: %q", stderr.String())
+	if got, want := stderr.String(), "evener-tui: flag provided but not defined: -bad\n"; got != want {
+		t.Fatalf("parse error stderr = %q, want %q", got, want)
 	}
 }
 
 // ---- run(): ensureUserConfigDirs error returns 1 ----------------------------
 
 func TestCovRun_EnsureDirsErrorReturns1(t *testing.T) {
-	oldArgs, oldErr, oldParse, oldDirs := processArgs, standardError, parseStartupOptions, ensureUserConfigDirs
-	processArgs = func() []string { return []string{"evener-tui"} }
+	oldArgs, oldErr, oldGetenv, oldDirs := processArgs, standardError, processGetenv, ensureUserConfigDirs
+	processArgs = func() []string { return []string{"evener-tui", "--state-dir=x"} }
 	var stderr bytes.Buffer
 	standardError = &stderr
-	parseStartupOptions = func([]string, func(string) string) (hubstart.TUIStartupOptions, error) {
-		return hubstart.TUIStartupOptions{StateDir: "x"}, nil
-	}
+	processGetenv = func(string) string { return "" }
 	ensureUserConfigDirs = func() error { return errors.New("dirs error") }
 	t.Cleanup(func() {
-		processArgs, standardError = oldArgs, oldErr
-		parseStartupOptions, ensureUserConfigDirs = oldParse, oldDirs
+		processArgs, standardError, processGetenv, ensureUserConfigDirs = oldArgs, oldErr, oldGetenv, oldDirs
 	})
 	if code := run(); code != 1 {
 		t.Fatalf("run with dirs error = %d, want 1", code)
@@ -83,21 +75,18 @@ func TestCovRun_EnsureDirsErrorReturns1(t *testing.T) {
 // ---- run(): hub connect error returns 1 -------------------------------------
 
 func TestCovRun_HubErrorReturns1(t *testing.T) {
-	oldArgs, oldErr, oldParse, oldDirs, oldWarm, oldStart := processArgs, standardError, parseStartupOptions, ensureUserConfigDirs, warmModelCatalog, startHubClient
-	processArgs = func() []string { return []string{"evener-tui"} }
+	oldArgs, oldErr, oldGetenv, oldDirs, oldWarm, oldStart := processArgs, standardError, processGetenv, ensureUserConfigDirs, warmModelCatalog, startHubClient
+	processArgs = func() []string { return []string{"evener-tui", "--state-dir=x"} }
 	var stderr bytes.Buffer
 	standardError = &stderr
-	parseStartupOptions = func([]string, func(string) string) (hubstart.TUIStartupOptions, error) {
-		return hubstart.TUIStartupOptions{StateDir: "x"}, nil
-	}
+	processGetenv = func(string) string { return "" }
 	ensureUserConfigDirs = func() error { return nil }
 	warmModelCatalog = func() {}
 	startHubClient = func(context.Context, hubstart.HubStartConfig) (hubstart.HubRuntime, error) {
 		return hubstart.HubRuntime{}, errors.New("hub unreachable")
 	}
 	t.Cleanup(func() {
-		processArgs, standardError = oldArgs, oldErr
-		parseStartupOptions, ensureUserConfigDirs = oldParse, oldDirs
+		processArgs, standardError, processGetenv, ensureUserConfigDirs = oldArgs, oldErr, oldGetenv, oldDirs
 		warmModelCatalog, startHubClient = oldWarm, oldStart
 	})
 	if code := run(); code != 1 {
@@ -108,14 +97,12 @@ func TestCovRun_HubErrorReturns1(t *testing.T) {
 // ---- run(): program.Run error returns 1 -------------------------------------
 
 func TestCovRun_ProgramErrorReturns1(t *testing.T) {
-	oldArgs, oldErr, oldParse, oldDirs, oldWarm, oldStart := processArgs, standardError, parseStartupOptions, ensureUserConfigDirs, warmModelCatalog, startHubClient
+	oldArgs, oldErr, oldGetenv, oldDirs, oldWarm, oldStart := processArgs, standardError, processGetenv, ensureUserConfigDirs, warmModelCatalog, startHubClient
 	oldProbe, oldInit, oldApply, oldReset, oldProgram := probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram
-	processArgs = func() []string { return []string{"evener-tui"} }
+	processArgs = func() []string { return []string{"evener-tui", "--state-dir=x"} }
 	var stderr bytes.Buffer
 	standardError = &stderr
-	parseStartupOptions = func([]string, func(string) string) (hubstart.TUIStartupOptions, error) {
-		return hubstart.TUIStartupOptions{StateDir: "x"}, nil
-	}
+	processGetenv = func(string) string { return "" }
 	ensureUserConfigDirs = func() error { return nil }
 	warmModelCatalog = func() {}
 	startHubClient = func(context.Context, hubstart.HubStartConfig) (hubstart.HubRuntime, error) {
@@ -129,8 +116,7 @@ func TestCovRun_ProgramErrorReturns1(t *testing.T) {
 		return &scriptedCovProgram{model: model, err: errors.New("program crash")}
 	}
 	t.Cleanup(func() {
-		processArgs, standardError = oldArgs, oldErr
-		parseStartupOptions, ensureUserConfigDirs = oldParse, oldDirs
+		processArgs, standardError, processGetenv, ensureUserConfigDirs = oldArgs, oldErr, oldGetenv, oldDirs
 		warmModelCatalog, startHubClient = oldWarm, oldStart
 		probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram = oldProbe, oldInit, oldApply, oldReset, oldProgram
 	})
@@ -145,15 +131,13 @@ func TestCovRun_ProgramErrorReturns1(t *testing.T) {
 // ---- run(): success returns 0 and prints post-quit message -------------------
 
 func TestCovRun_SuccessReturns0(t *testing.T) {
-	oldArgs, oldOut, oldErr, oldParse, oldDirs, oldWarm, oldStart := processArgs, standardOutput, standardError, parseStartupOptions, ensureUserConfigDirs, warmModelCatalog, startHubClient
+	oldArgs, oldOut, oldErr, oldGetenv, oldDirs, oldWarm, oldStart := processArgs, standardOutput, standardError, processGetenv, ensureUserConfigDirs, warmModelCatalog, startHubClient
 	oldProbe, oldInit, oldApply, oldReset, oldProgram := probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram
-	processArgs = func() []string { return []string{"evener-tui"} }
+	processArgs = func() []string { return []string{"evener-tui", "--state-dir=x"} }
 	var stdout, stderr bytes.Buffer
 	standardOutput = &stdout
 	standardError = &stderr
-	parseStartupOptions = func([]string, func(string) string) (hubstart.TUIStartupOptions, error) {
-		return hubstart.TUIStartupOptions{StateDir: "x"}, nil
-	}
+	processGetenv = func(string) string { return "" }
 	ensureUserConfigDirs = func() error { return nil }
 	warmModelCatalog = func() {}
 	startHubClient = func(context.Context, hubstart.HubStartConfig) (hubstart.HubRuntime, error) {
@@ -169,8 +153,8 @@ func TestCovRun_SuccessReturns0(t *testing.T) {
 		return &scriptedCovProgram{model: m, err: nil}
 	}
 	t.Cleanup(func() {
-		processArgs, standardOutput, standardError = oldArgs, oldOut, oldErr
-		parseStartupOptions, ensureUserConfigDirs, warmModelCatalog, startHubClient = oldParse, oldDirs, oldWarm, oldStart
+		processArgs, standardOutput, standardError, processGetenv = oldArgs, oldOut, oldErr, oldGetenv
+		ensureUserConfigDirs, warmModelCatalog, startHubClient = oldDirs, oldWarm, oldStart
 		probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram = oldProbe, oldInit, oldApply, oldReset, oldProgram
 	})
 	if code := run(); code != 0 {
@@ -187,14 +171,12 @@ func TestCovRun_SuccessReturns0(t *testing.T) {
 // ---- run(): debug mode skips alt screen -------------------------------------
 
 func TestCovRun_DebugModeNoAltScreen(t *testing.T) {
-	oldArgs, oldErr, oldParse, oldDirs, oldWarm, oldStart := processArgs, standardError, parseStartupOptions, ensureUserConfigDirs, warmModelCatalog, startHubClient
+	oldArgs, oldErr, oldGetenv, oldDirs, oldWarm, oldStart := processArgs, standardError, processGetenv, ensureUserConfigDirs, warmModelCatalog, startHubClient
 	oldProbe, oldInit, oldApply, oldReset, oldProgram := probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram
-	processArgs = func() []string { return []string{"evener-tui"} }
+	processArgs = func() []string { return []string{"evener-tui", "--state-dir=x", "--debug"} }
 	var stderr bytes.Buffer
 	standardError = &stderr
-	parseStartupOptions = func([]string, func(string) string) (hubstart.TUIStartupOptions, error) {
-		return hubstart.TUIStartupOptions{StateDir: "x", Debug: true}, nil
-	}
+	processGetenv = func(string) string { return "" }
 	ensureUserConfigDirs = func() error { return nil }
 	warmModelCatalog = func() {}
 	startHubClient = func(context.Context, hubstart.HubStartConfig) (hubstart.HubRuntime, error) {
@@ -211,8 +193,8 @@ func TestCovRun_DebugModeNoAltScreen(t *testing.T) {
 		return &scriptedCovProgram{model: model, runCalls: &programRunCalls}
 	}
 	t.Cleanup(func() {
-		processArgs, standardError = oldArgs, oldErr
-		parseStartupOptions, ensureUserConfigDirs, warmModelCatalog, startHubClient = oldParse, oldDirs, oldWarm, oldStart
+		processArgs, standardError, processGetenv = oldArgs, oldErr, oldGetenv
+		ensureUserConfigDirs, warmModelCatalog, startHubClient = oldDirs, oldWarm, oldStart
 		probeTerminalDefaults, initThemeFromStateDir, applyTerminalBg, resetTerminalBg, newTUIProgram = oldProbe, oldInit, oldApply, oldReset, oldProgram
 	})
 	if code := run(); code != 0 {

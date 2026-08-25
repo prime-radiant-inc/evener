@@ -322,8 +322,8 @@ func TestCovAddActionUnavailableNotice_AutoReasonWhenEmpty(t *testing.T) {
 	if len(m.notices) != 1 {
 		t.Fatalf("notice not added: %d", len(m.notices))
 	}
-	if !strings.Contains(m.notices[0].Reason, "send") {
-		t.Fatalf("auto reason = %q, want contains 'send'", m.notices[0].Reason)
+	if got, want := m.notices[0].Reason, "source does not advertise send"; got != want {
+		t.Fatalf("auto reason = %q, want %q", got, want)
 	}
 }
 
@@ -362,9 +362,8 @@ func TestCovSourceLabelForNotice_FallsBackToRef(t *testing.T) {
 	m := newSessionHubModel(nil)
 	m.detail.SourceLabel = ""
 	m.detail.Ref = "local:01ABC"
-	got := m.sourceLabelForNotice()
-	if got == "" {
-		t.Fatalf("sourceLabel should fall back to ref text: %q", got)
+	if got, want := m.sourceLabelForNotice(), "evener"; got != want {
+		t.Fatalf("sourceLabel fallback = %q, want %q", got, want)
 	}
 }
 

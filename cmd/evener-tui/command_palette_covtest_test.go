@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"slices"
 	"strings"
 	"testing"
 
@@ -157,39 +158,31 @@ func TestCovSelectedEntry_Found(t *testing.T) {
 
 func TestCovCommandPaletteEntriesForRows_SessionMode(t *testing.T) {
 	entries := commandPaletteEntriesForRows(hubModeSession, hubSessionCapabilities{Send: true}, nil)
-	commands := commandPaletteCommandSet(entries)
-	for _, want := range []string{"help", "dashboard", "details"} {
-		if !commands[want] {
-			t.Fatalf("session palette missing /%s: %v", want, commands)
-		}
+	got := commandPaletteCommandNames(entries)
+	want := []string{
+		"upgrade", "help", "dashboard", "project", "auth", "login", "logout",
+		"tasks", "agents", "goal", "status", "details", "interrupt", "compact",
+		"clear", "fork", "aside", "shutdown", "model", "effort", "theme", "quit",
 	}
-	for _, wrongScope := range []string{"new", "refresh"} {
-		if commands[wrongScope] {
-			t.Fatalf("session palette contains dashboard-only /%s: %v", wrongScope, commands)
-		}
+	if !slices.Equal(got, want) {
+		t.Fatalf("session command order = %q, want %q", got, want)
 	}
 }
 
 func TestCovCommandPaletteEntriesForRows_DashboardMode(t *testing.T) {
 	entries := commandPaletteEntriesForRows(hubModeDashboard, hubSessionCapabilities{}, nil)
-	commands := commandPaletteCommandSet(entries)
-	for _, want := range []string{"new", "refresh", "quit"} {
-		if !commands[want] {
-			t.Fatalf("dashboard palette missing /%s: %v", want, commands)
-		}
-	}
-	for _, wrongScope := range []string{"help", "details", "interrupt"} {
-		if commands[wrongScope] {
-			t.Fatalf("dashboard palette contains session-only /%s: %v", wrongScope, commands)
-		}
+	got := commandPaletteCommandNames(entries)
+	want := []string{"new", "refresh", "upgrade", "clear", "credentials", "settings", "plugins", "quit"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("dashboard command order = %q, want %q", got, want)
 	}
 }
 
-func commandPaletteCommandSet(entries []commandPaletteEntry) map[string]bool {
-	commands := make(map[string]bool)
+func commandPaletteCommandNames(entries []commandPaletteEntry) []string {
+	commands := make([]string, 0, len(entries))
 	for _, entry := range entries {
 		if entry.Kind == commandPaletteCommand {
-			commands[entry.Command] = true
+			commands = append(commands, entry.Command)
 		}
 	}
 	return commands

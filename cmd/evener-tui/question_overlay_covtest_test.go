@@ -193,12 +193,13 @@ func TestCovUpdateQuestionKey_DotWithMultipleRunesDoesNotOpen(t *testing.T) {
 func TestCovUpdateQuestionKey_UnhandledKeyDropped(t *testing.T) {
 	o := *newQuestionOverlay("ref", []askQuestion{twoOptionQuestion("Q1", false, "")}, 80)
 	o.questions[0].Note = "preserve"
-	before := o
 	updated, cmd := o.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if cmd != nil {
 		t.Fatalf("unhandled question key returned command %T, want nil", cmd)
 	}
-	if !reflect.DeepEqual(updated, before) {
+	want := *newQuestionOverlay("ref", []askQuestion{twoOptionQuestion("Q1", false, "")}, 80)
+	want.questions[0].Note = "preserve"
+	if !reflect.DeepEqual(updated, want) {
 		t.Fatalf("unhandled question key changed overlay state")
 	}
 }
@@ -240,12 +241,17 @@ func TestCovUpdateReviewKey_UnhandledKeyDropped(t *testing.T) {
 	questions := []askQuestion{twoOptionQuestion("Q1", false, "")}
 	o := *newQuestionOverlay("ref", questions, 80)
 	o.idx = len(o.questions) // at review
-	before := o
+	o.questions[0].Note = "preserve"
+	o.questions[0].Resolution = &askResolution{Kind: askResolutionOption, Labels: []string{"A"}}
 	updated, cmd := o.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
 	if cmd != nil {
 		t.Fatalf("unhandled review key returned command %T, want nil", cmd)
 	}
-	if !reflect.DeepEqual(updated, before) {
+	want := *newQuestionOverlay("ref", []askQuestion{twoOptionQuestion("Q1", false, "")}, 80)
+	want.idx = len(want.questions)
+	want.questions[0].Note = "preserve"
+	want.questions[0].Resolution = &askResolution{Kind: askResolutionOption, Labels: []string{"A"}}
+	if !reflect.DeepEqual(updated, want) {
 		t.Fatalf("unhandled review key changed overlay state")
 	}
 }
@@ -255,11 +261,15 @@ func TestCovUpdateReviewKey_UnhandledKeyDropped(t *testing.T) {
 func TestCovUpdate_NonKeyMsgDropped(t *testing.T) {
 	o := *newQuestionOverlay("ref", []askQuestion{twoOptionQuestion("Q1", false, "")}, 80)
 	o.questions[0].Note = "preserve"
+	o.questions[0].Options[0].Detail = "mutable option detail"
 	updated, cmd := o.Update(tea.WindowSizeMsg{Width: 100, Height: 50})
 	if cmd != nil {
 		t.Fatalf("non-key message returned command %T, want nil", cmd)
 	}
-	if !reflect.DeepEqual(updated, o) {
+	want := *newQuestionOverlay("ref", []askQuestion{twoOptionQuestion("Q1", false, "")}, 80)
+	want.questions[0].Note = "preserve"
+	want.questions[0].Options[0].Detail = "mutable option detail"
+	if !reflect.DeepEqual(updated, want) {
 		t.Fatalf("non-key message changed overlay state, including fixed width %d", o.width)
 	}
 }

@@ -56,8 +56,8 @@ func TestCovRenderComposerChipStrip_NarrowWidth(t *testing.T) {
 	}
 	got := renderComposerChipStrip(ctx)
 	plain := ansiPattern.ReplaceAllString(got, "")
-	if !strings.Contains(plain, "harness") || !strings.Contains(plain, "…") {
-		t.Fatalf("narrow chip strip should preserve leading context and show truncation:\n%s", plain)
+	if want := " harness evener · model open… "; plain != want {
+		t.Fatalf("narrow chip strip = %q, want %q", plain, want)
 	}
 	if width := lipgloss.Width(got); width != ctx.Width {
 		t.Fatalf("narrow chip strip width = %d, want %d", width, ctx.Width)
@@ -175,8 +175,8 @@ func TestCovFitRightContent_VerySmallRoomTruncates(t *testing.T) {
 	if width := lipgloss.Width(got); width != 3 {
 		t.Fatalf("very-small right content width = %d, want 3: %q", width, ansiPattern.ReplaceAllString(got, ""))
 	}
-	if plain := ansiPattern.ReplaceAllString(got, ""); !strings.HasSuffix(plain, "…") {
-		t.Fatalf("very-small right content should signal truncation: %q", plain)
+	if plain, want := ansiPattern.ReplaceAllString(got, ""), "● …"; plain != want {
+		t.Fatalf("very-small right content = %q, want %q", plain, want)
 	}
 }
 
@@ -231,8 +231,8 @@ func TestCovRenderChipStatus_HealthTruncatedByBudget(t *testing.T) {
 	if width := lipgloss.Width(got); width != 3 {
 		t.Fatalf("truncated health width = %d, want 3", width)
 	}
-	if plain := ansiPattern.ReplaceAllString(got, ""); !strings.HasSuffix(plain, "…") {
-		t.Fatalf("truncated health should end in ellipsis: %q", plain)
+	if plain, want := ansiPattern.ReplaceAllString(got, ""), "● …"; plain != want {
+		t.Fatalf("truncated health = %q, want %q", plain, want)
 	}
 }
 
@@ -242,8 +242,8 @@ func TestCovRenderChipStatus_RetryTruncatedByBudget(t *testing.T) {
 	ctx := composerContext{Connected: true, Retry: "rate limited — attempt 2/3 — retrying in 30s"}
 	got := renderChipStatus(ctx, th, 40)
 	plain := ansiPattern.ReplaceAllString(got, "")
-	if !strings.Contains(plain, "connected") || !strings.Contains(plain, "rate limited") || !strings.HasSuffix(plain, "…") {
-		t.Fatalf("truncated retry lost priority or truncation signal: %q", plain)
+	if want := "● connected · rate limited — attempt 2/…"; plain != want {
+		t.Fatalf("truncated retry = %q, want %q", plain, want)
 	}
 	if width := lipgloss.Width(got); width != 40 {
 		t.Fatalf("truncated retry width = %d, want 40", width)
@@ -274,47 +274,50 @@ func TestCovRenderChipStatus_HubAddrFitsInBudget(t *testing.T) {
 // ---- composerFooterHints: all modes ------------------------------------------
 
 func TestCovComposerFooterHints_QueueWithSteer(t *testing.T) {
-	got := composerFooterHints("queue", 80, true)
-	if !strings.Contains(got, "queue") || !strings.Contains(got, "steer") {
-		t.Fatalf("queue+steer footer should contain both:\n%s", got)
+	got := ansiPattern.ReplaceAllString(composerFooterHints("queue", 80, true), "")
+	want := "enter queue  ctrl+s steer  esc browse  ⌘P palette  ⌘O dashboard"
+	if got != want {
+		t.Fatalf("queue+steer footer = %q, want %q", got, want)
 	}
 }
 
 func TestCovComposerFooterHints_QueueWithoutSteer(t *testing.T) {
-	got := composerFooterHints("queue", 80, false)
-	if !strings.Contains(got, "queue") {
-		t.Fatalf("queue footer should contain queue:\n%s", got)
-	}
-	if strings.Contains(got, "steer") {
-		t.Fatalf("queue footer without steer should not contain steer:\n%s", got)
+	got := ansiPattern.ReplaceAllString(composerFooterHints("queue", 80, false), "")
+	want := "enter queue  esc browse  ⌘P palette  ⌘O dashboard"
+	if got != want {
+		t.Fatalf("queue footer = %q, want exact no-steer set %q", got, want)
 	}
 }
 
 func TestCovComposerFooterHints_Fork(t *testing.T) {
-	got := composerFooterHints("fork", 80, false)
-	if !strings.Contains(got, "fork") {
-		t.Fatalf("fork footer should contain fork:\n%s", got)
+	got := ansiPattern.ReplaceAllString(composerFooterHints("fork", 80, false), "")
+	want := "enter fork  esc cancel  ⌘O dashboard"
+	if got != want {
+		t.Fatalf("fork footer = %q, want %q", got, want)
 	}
 }
 
 func TestCovComposerFooterHints_ScrollBrowse(t *testing.T) {
-	got := composerFooterHints("scroll-browse", 80, false)
-	if !strings.Contains(got, "select") || !strings.Contains(got, "fork") {
-		t.Fatalf("scroll-browse footer should contain select and fork:\n%s", got)
+	got := ansiPattern.ReplaceAllString(composerFooterHints("scroll-browse", 80, false), "")
+	want := "↑↓ select  enter expand  f fork  c copy  esc compose  ⌘O dashboard"
+	if got != want {
+		t.Fatalf("scroll-browse footer = %q, want %q", got, want)
 	}
 }
 
 func TestCovComposerFooterHints_Compose(t *testing.T) {
-	got := composerFooterHints("compose", 80, false)
-	if !strings.Contains(got, "send") {
-		t.Fatalf("compose footer should contain send:\n%s", got)
+	got := ansiPattern.ReplaceAllString(composerFooterHints("compose", 80, false), "")
+	want := "enter send  shift+enter newline  ⌘P palette  esc browse  /help "
+	if got != want {
+		t.Fatalf("compose footer = %q, want %q", got, want)
 	}
 }
 
 func TestCovComposerFooterHints_DefaultMode(t *testing.T) {
-	got := composerFooterHints("unknown-mode", 80, false)
-	if !strings.Contains(got, "send") {
-		t.Fatalf("unknown mode should default to compose:\n%s", got)
+	got := ansiPattern.ReplaceAllString(composerFooterHints("unknown-mode", 80, false), "")
+	want := "enter send  shift+enter newline  ⌘P palette  esc browse  /help "
+	if got != want {
+		t.Fatalf("unknown-mode footer = %q, want compose fallback %q", got, want)
 	}
 }
 
