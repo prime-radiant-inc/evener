@@ -330,6 +330,191 @@ func TestTranscriptDisplayStoreStrictSnapshotDecoding(t *testing.T) {
 	}
 }
 
+func TestTranscriptDisplayStoreStrictSnapshotRequiredFields(t *testing.T) {
+	cases := []struct {
+		name   string
+		mutate func(map[string]json.RawMessage)
+	}{
+		{name: "missing desktop revision", mutate: func(desktop map[string]json.RawMessage) {
+			delete(desktop, "revision")
+		}},
+		{name: "missing mobile revision", mutate: func(desktop map[string]json.RawMessage) {
+			_ = desktop
+		}},
+		{name: "missing custom toolIntent", mutate: func(desktop map[string]json.RawMessage) {
+			deleteSnapshotCustomField(t, desktop, "toolIntent")
+		}},
+		{name: "missing custom toolCalls", mutate: func(desktop map[string]json.RawMessage) {
+			deleteSnapshotCustomField(t, desktop, "toolCalls")
+		}},
+		{name: "missing custom reasoning", mutate: func(desktop map[string]json.RawMessage) {
+			deleteSnapshotCustomField(t, desktop, "reasoning")
+		}},
+		{name: "missing custom expandByDefault", mutate: func(desktop map[string]json.RawMessage) {
+			deleteSnapshotCustomField(t, desktop, "expandByDefault")
+		}},
+		{name: "custom with explicit empty level", mutate: func(desktop map[string]json.RawMessage) {
+			setSnapshotContentField(t, desktop, "level", json.RawMessage(`""`))
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := t.TempDir()
+			data := requiredSnapshotVariant(t, tc.name, tc.mutate)
+			if err := writeTranscriptDisplayStateFile(afero.NewOsFs(), root, data); err != nil {
+				t.Fatal(err)
+			}
+			before, err := afero.ReadFile(afero.NewOsFs(), transcriptDisplayStatePath(root))
+			if err != nil {
+				t.Fatal(err)
+			}
+			store, loadErr := NewTranscriptDisplayStore(root)
+			if store == nil || loadErr == nil {
+				t.Fatalf("store=%#v loadErr=%v, want fallback and diagnostic", store, loadErr)
+			}
+			if got := store.Snapshot(); !reflect.DeepEqual(got, appwire.TranscriptDisplayShippedDefaults()) {
+				t.Fatalf("fallback=%#v", got)
+			}
+			config := wantTranscriptDisplayConfig(appwire.TranscriptViewportDesktop, appwire.TranscriptLevelActivity)
+			if _, err := store.Patch(appwire.TranscriptDisplayDefaultsPatchParams{Layout: appwire.TranscriptViewportDesktop, Config: config}); err == nil {
+				t.Fatal("patch against malformed snapshot unexpectedly succeeded")
+			}
+			after, err := afero.ReadFile(afero.NewOsFs(), transcriptDisplayStatePath(root))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(after) != string(before) {
+				t.Fatalf("malformed evidence changed: before=%q after=%q", before, after)
+			}
+		})
+	}
+}
+
+func requiredSnapshotVariant(t *testing.T, name string, mutate func(map[string]json.RawMessage)) []byte {
+	t.Helper()
+	defaults := appwire.TranscriptDisplayShippedDefaults()
+	custom := defaults.Desktop.Config
+	custom.Content = appwire.TranscriptDisplayContent{
+		Kind: appwire.TranscriptContentKindCustom,
+		Custom: &appwire.TranscriptDisplayCustomContent{
+			ToolIntent:      true,
+			ToolCalls:       true,
+			Reasoning:       true,
+			ExpandByDefault: true,
+		},
+	}
+	state := transcriptDisplaySnapshot{
+		Version: transcriptDisplaySnapshotVersion,
+		Desktop: appwire.TranscriptDisplayDefault{Config: custom},
+		Mobile:  defaults.Mobile,
+	}
+	data, err := json.Marshal(state)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var top map[string]json.RawMessage
+	if err := json.Unmarshal(data, &top); err != nil {
+		t.Fatal(err)
+	}
+	var desktop map[string]json.RawMessage
+	if err := json.Unmarshal(top["desktop"], &desktop); err != nil {
+		t.Fatal(err)
+	}
+	if name == "missing mobile revision" {
+		var mobile map[string]json.RawMessage
+		if err := json.Unmarshal(top["mobile"], &mobile); err != nil {
+			t.Fatal(err)
+		}
+		delete(mobile, "revision")
+		top["mobile"], err = json.Marshal(mobile)
+		if err != nil {
+			t.Fatal(err)
+		}
+	} else {
+		mutate(desktop)
+	}
+	top["desktop"], err = json.Marshal(desktop)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err = json.Marshal(top)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return data
+}
+
+func deleteSnapshotCustomField(t *testing.T, desktop map[string]json.RawMessage, field string) {
+	t.Helper()
+	custom := snapshotCustomFields(t, desktop)
+	delete(custom, field)
+	setSnapshotCustomFields(t, desktop, custom)
+}
+
+func setSnapshotContentField(t *testing.T, desktop map[string]json.RawMessage, field string, value json.RawMessage) {
+	t.Helper()
+	var config map[string]json.RawMessage
+	if err := json.Unmarshal(desktop["config"], &config); err != nil {
+		t.Fatal(err)
+	}
+	var content map[string]json.RawMessage
+	if err := json.Unmarshal(config["content"], &content); err != nil {
+		t.Fatal(err)
+	}
+	content[field] = value
+	var err error
+	config["content"], err = json.Marshal(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desktop["config"], err = json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
+func snapshotCustomFields(t *testing.T, desktop map[string]json.RawMessage) map[string]json.RawMessage {
+	t.Helper()
+	var config map[string]json.RawMessage
+	if err := json.Unmarshal(desktop["config"], &config); err != nil {
+		t.Fatal(err)
+	}
+	var content map[string]json.RawMessage
+	if err := json.Unmarshal(config["content"], &content); err != nil {
+		t.Fatal(err)
+	}
+	var custom map[string]json.RawMessage
+	if err := json.Unmarshal(content["custom"], &custom); err != nil {
+		t.Fatal(err)
+	}
+	return custom
+}
+
+func setSnapshotCustomFields(t *testing.T, desktop map[string]json.RawMessage, custom map[string]json.RawMessage) {
+	t.Helper()
+	var config map[string]json.RawMessage
+	if err := json.Unmarshal(desktop["config"], &config); err != nil {
+		t.Fatal(err)
+	}
+	var content map[string]json.RawMessage
+	if err := json.Unmarshal(config["content"], &content); err != nil {
+		t.Fatal(err)
+	}
+	var err error
+	content["custom"], err = json.Marshal(custom)
+	if err != nil {
+		t.Fatal(err)
+	}
+	config["content"], err = json.Marshal(content)
+	if err != nil {
+		t.Fatal(err)
+	}
+	desktop["config"], err = json.Marshal(config)
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func writeTranscriptDisplayStateFile(fs afero.Fs, root string, data []byte) error {
 	path := transcriptDisplayStatePath(root)
 	if err := fs.MkdirAll(filepath.Dir(path), 0o700); err != nil {

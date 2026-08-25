@@ -11,6 +11,19 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
+type transcriptDisplayReadFaultFs struct {
+	afero.Fs
+	path string
+	err  error
+}
+
+func (f *transcriptDisplayReadFaultFs) Open(name string) (afero.File, error) {
+	if filepath.Clean(name) == filepath.Clean(f.path) {
+		return nil, f.err
+	}
+	return f.Fs.Open(name)
+}
+
 func TestTranscriptDisplayStorePreRenameFailurePreservesOldState(t *testing.T) {
 	fs := afero.NewMemMapFs()
 	root := "/hub-state"
@@ -119,5 +132,39 @@ func TestTranscriptDisplayStoreWriteCleansTempAfterPreRenameFailure(t *testing.T
 	}
 	if len(entries) != 0 {
 		t.Fatalf("pre-rename temp residue=%v", entries)
+	}
+}
+
+func TestTranscriptDisplayStoreReadFailureFallsBackAndBlocksPatches(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	root := "/hub-state"
+	evidence := []byte("durable evidence that must not be overwritten")
+	if err := writeTranscriptDisplayStateFile(fs, root, evidence); err != nil {
+		t.Fatal(err)
+	}
+	wantFailure := errors.New("state read failed")
+	faultFS := &transcriptDisplayReadFaultFs{
+		Fs:   fs,
+		path: transcriptDisplayStatePath(root),
+		err:  wantFailure,
+	}
+	store, loadErr := newTranscriptDisplayStoreFS(faultFS, root, transcriptDisplayStoreFaults{})
+	if store == nil || !errors.Is(loadErr, wantFailure) {
+		t.Fatalf("store=%#v loadErr=%v, want fallback and %v", store, loadErr, wantFailure)
+	}
+	if got := store.Snapshot(); !reflect.DeepEqual(got, appwire.TranscriptDisplayShippedDefaults()) {
+		t.Fatalf("read-fault fallback=%#v", got)
+	}
+	config := appwire.TranscriptDisplayShippedDefaults().Desktop.Config
+	config.Content.Level = appwire.TranscriptLevelActivity
+	if _, err := store.Patch(appwire.TranscriptDisplayDefaultsPatchParams{Layout: appwire.TranscriptViewportDesktop, Config: config}); !errors.Is(err, wantFailure) {
+		t.Fatalf("read-fault patch error=%v, want %v", err, wantFailure)
+	}
+	after, err := afero.ReadFile(fs, transcriptDisplayStatePath(root))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(after) != string(evidence) {
+		t.Fatalf("read-fault evidence changed: before=%q after=%q", evidence, after)
 	}
 }
