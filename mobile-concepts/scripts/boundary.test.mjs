@@ -78,6 +78,32 @@ test("syntax-aware source scanning ignores comments and inert strings but catche
   );
 });
 
+test("dynamic imports fail closed and classify Tauri targets", () => {
+  const cases = [
+    [
+      'const target = condition ? "../../../mobile/x" : "https://remote.invalid/x"; import(target)',
+      "dynamic-import",
+    ],
+    ['import("@tauri-apps/api/core")', "native-invoke"],
+    ['import("@tauri-apps/plugin-shell")', "production-plugin"],
+  ];
+  for (const [source, expected] of cases) {
+    assert.ok(
+      codes(scanText("src/dynamic.ts", source)).includes(expected),
+      source,
+    );
+  }
+  assert.ok(
+    codes(
+      scanText(
+        "src/dynamic.ts",
+        'import("data:text/javascript,export default 1")',
+      ),
+    ).includes("dynamic-import"),
+  );
+  assert.deepEqual(scanText("src/dynamic.ts", 'import("./safe-local.js")'), []);
+});
+
 test("network rule table catches every named API", () => {
   assert.ok(NETWORK_API_PATTERNS.length >= 5);
   for (const source of [
@@ -155,6 +181,34 @@ test("scanner rejects every forbidden browser capability", () => {
   }
 });
 
+test("browser-global references remain forbidden when assigned aliases", () => {
+  const cases = [
+    ["const synth = speechSynthesis; synth.speak(message)", "speech-synthesis"],
+    ["const Notify = Notification; new Notify('x')", "notification-push"],
+    [
+      "const worker = navigator.serviceWorker; worker.ready",
+      "notification-push",
+    ],
+    ["const Push = PushManager; Push.prototype.subscribe", "notification-push"],
+    ["const buzz = navigator.vibrate; buzz(20)", "haptics"],
+    ["const { vibrate: buzz } = navigator; buzz(20)", "haptics"],
+    [
+      "const { serviceWorker: worker } = navigator; worker.ready",
+      "notification-push",
+    ],
+    [
+      "const { speechSynthesis: synth } = window; synth.speak(message)",
+      "speech-synthesis",
+    ],
+  ];
+  for (const [source, expected] of cases) {
+    assert.ok(
+      codes(scanText("src/alias.ts", source)).includes(expected),
+      source,
+    );
+  }
+});
+
 test("asset scanners reject remote HTML, CSS, and SVG references", () => {
   const cases = [
     ['<script src="https://cdn.invalid/a.js"></script>', "index.html"],
@@ -182,6 +236,38 @@ test("asset scanners reject remote HTML, CSS, and SVG references", () => {
   ];
   for (const [source, file] of cases) {
     assert.ok(codes(scanText(file, source)).includes("remote-asset"), source);
+  }
+});
+
+test("HTML XML and SVG parsing fails closed and scans processing instructions", () => {
+  assert.ok(
+    codes(
+      scanText("public/bad.html", '<img src="local.png" src="duplicate.png">'),
+    ).includes("malformed-asset"),
+  );
+  const processingInstruction = scanText(
+    "public/icon.svg",
+    '<?xml version="1.0"?><?xml-stylesheet href="https://cdn.invalid/x.css"?><svg xmlns="http://www.w3.org/2000/svg"/>',
+  );
+  assert.ok(
+    processingInstruction.some(
+      (item) =>
+        item.code === "remote-asset" &&
+        item.detail.includes("processing instruction"),
+    ),
+  );
+  assert.deepEqual(
+    scanText(
+      "public/local.svg",
+      '<svg xmlns="http://www.w3.org/2000/svg"><use href="local.svg#x"/></svg>',
+    ),
+    [],
+  );
+  for (const [file, source] of [
+    ["public/bad.svg", "<svg><g></svg>"],
+    ["public/bad.xml", "<root><child></root>"],
+  ]) {
+    assert.ok(codes(scanText(file, source)).includes("malformed-asset"), file);
   }
 });
 
@@ -284,6 +370,29 @@ test("source walker skips tests but scans application assets and native files", 
       (item, index) => index === 0 || violations[index - 1].file <= item.file,
     ),
   );
+});
+
+test("Rust scanner tracks imported Tauri aliases and every handler occurrence", async (t) => {
+  const root = await fixture({
+    "src-tauri/src/lib.rs": `
+      use tauri::{command as mobile_command, generate_handler as handlers};
+      use tauri as runtime;
+      #[mobile_command]
+      fn first() {}
+      #[runtime::command]
+      fn second() {}
+      fn wire() {
+        let _ = handlers![first];
+        let _ = handlers![second];
+        let _ = runtime::generate_handler![third];
+      }
+    `,
+  });
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const handlers = scanSource(root).filter(
+    (item) => item.code === "invoke-handler",
+  );
+  assert.equal(handlers.length, 5);
 });
 
 test("config validator requires the concept identity and offline CSP", () => {
@@ -434,6 +543,20 @@ test("Rust manifest validator allows only tauri and tauri-build", () => {
       "malformed-manifest",
     ),
   );
+});
+
+test("Rust dependency declarations reject renamed remote escaping and override sources", () => {
+  const cases = [
+    '[dependencies]\ntauri = { package = "reqwest", version = "1" }\n',
+    '[dependencies]\ntauri = { git = "https://example.invalid/tauri", version = "2" }\n',
+    '[dependencies]\ntauri = { path = "../../mobile/src-tauri" }\n',
+    "[dependencies]\ntauri = { workspace = true }\n",
+    '[patch.crates-io]\ntauri = { git = "https://example.invalid/fork" }\n',
+    '[replace]\n"tauri:2.0.0" = { path = "../../mobile/src-tauri" }\n',
+  ];
+  for (const manifest of cases) {
+    assert.notDeepEqual(validateRustManifest(manifest), [], manifest);
+  }
 });
 
 test("CLI exits cleanly for a valid package and emits sorted failures for invalid packages", async (t) => {
