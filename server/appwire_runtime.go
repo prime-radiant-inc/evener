@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"io/fs"
 	"maps"
 	"os"
@@ -699,8 +700,11 @@ func transcriptHeader(path string, maxLineBytes int) transcript.Header {
 		return transcript.Header{}
 	}
 	defer file.Close() //nolint:errcheck // read-only file; close error is not actionable
+	return transcriptHeaderFromReader(file, maxLineBytes)
+}
 
-	reader := bufio.NewReaderSize(file, 64*1024)
+func transcriptHeaderFromReader(source io.Reader, maxLineBytes int) transcript.Header {
+	reader := bufio.NewReaderSize(source, transcriptHeaderReadBufferBytes)
 	for {
 		lineBytes, complete, _, err := transcript.ReadLine(reader, maxLineBytes)
 		if err != nil || !complete {

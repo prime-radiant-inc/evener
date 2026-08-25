@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -735,17 +736,34 @@ func TestTranscriptHeaderReadsOnlyLeadingHeader(t *testing.T) {
 		}
 		return path
 	}
-	small := writeNoAPICallTranscript(1)
 	large := writeNoAPICallTranscript(2000)
 	if got := transcriptHeader(large, appTranscriptMaxLineBytes).SessionID; got != "th_1" {
 		t.Fatalf("header session = %q, want th_1", got)
 	}
 
-	smallAllocs := testing.AllocsPerRun(3, func() { _ = transcriptHeader(small, appTranscriptMaxLineBytes) })
-	largeAllocs := testing.AllocsPerRun(3, func() { _ = transcriptHeader(large, appTranscriptMaxLineBytes) })
-	if largeAllocs > smallAllocs+10 {
-		t.Fatalf("large no-api_call identity validation inspected historical entries: allocations large=%.0f small=%.0f", largeAllocs, smallAllocs)
+	file, err := os.Open(large)
+	if err != nil {
+		t.Fatal(err)
 	}
+	defer file.Close() //nolint:errcheck // read-only fixture
+	counted := &countingHeaderReader{Reader: file}
+	if got := transcriptHeaderFromReader(counted, appTranscriptMaxLineBytes); got.SessionID != "th_1" {
+		t.Fatalf("counted header session = %q, want th_1", got.SessionID)
+	}
+	if counted.bytes > transcriptHeaderReadBufferBytes {
+		t.Fatalf("header validation read %d bytes from a %d-byte-bound reader", counted.bytes, transcriptHeaderReadBufferBytes)
+	}
+}
+
+type countingHeaderReader struct {
+	io.Reader
+	bytes int64
+}
+
+func (r *countingHeaderReader) Read(p []byte) (int, error) {
+	n, err := r.Reader.Read(p)
+	r.bytes += int64(n)
+	return n, err
 }
 
 // TestPreparedAppIdentityRejectsAnotherSessionsTranscript pins that preparation
