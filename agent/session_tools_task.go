@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	taskpkg "primeradiant.com/evener/agent/task"
+	"primeradiant.com/evener/llm"
 )
 
 // normalizeTaskEffort maps the "inherit" sentinel to "" (no override: the task
@@ -21,7 +22,15 @@ func normalizeTaskEffort(effort string) string {
 	if strings.EqualFold(strings.TrimSpace(effort), "inherit") {
 		return ""
 	}
-	return effort
+	return llm.NormalizeReasoningEffort(effort)
+}
+
+func validateTaskEffort(effort string) (string, error) {
+	normalized := normalizeTaskEffort(effort)
+	if err := llm.ValidateReasoningEffort(normalized); err != nil {
+		return "", err
+	}
+	return normalized, nil
 }
 
 // formatTaskList renders the task list as plain text, like a to-do list: one task
@@ -135,7 +144,11 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					}
 					reasoningEffort := ""
 					if re, ok := m["reasoning_effort"].(string); ok {
-						reasoningEffort = normalizeTaskEffort(re)
+						var err error
+						reasoningEffort, err = validateTaskEffort(re)
+						if err != nil {
+							return nil, err
+						}
 					}
 					items = append(items, taskpkg.TaskInput{
 						Type:            taskType,
@@ -194,7 +207,11 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 						u.DependsOn = &depIDs
 					}
 					if re, ok := m["reasoning_effort"].(string); ok {
-						u.ReasoningEffort = normalizeTaskEffort(re)
+						var err error
+						u.ReasoningEffort, err = validateTaskEffort(re)
+						if err != nil {
+							return nil, err
+						}
 					}
 					updates = append(updates, u)
 				}
