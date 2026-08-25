@@ -261,6 +261,10 @@ type SessionConfig struct {
 // deterministic. Never set by app callers; never persisted (json:"-" on the
 // parent field).
 type testConfig struct {
+	// visionSideChannelTimeout overrides the production vision timeout only for
+	// deterministic package tests. Zero preserves the production timeout.
+	visionSideChannelTimeout time.Duration
+
 	// sessionInitFault injects deterministic failures at external initialization
 	// boundaries. Nil preserves the production implementation.
 	sessionInitFault func(point string) error
