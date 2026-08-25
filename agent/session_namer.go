@@ -62,6 +62,11 @@ func nameSession(ctx context.Context, client *llm.Client, profile *provider.Prof
 	}
 	maxTokens := 80
 	temp := 0.0
+	// Naming is best-effort decoration with its own short deadline. It opts out
+	// of the turn retry wall budget so a naming storm does not add load while a
+	// real turn waits on the same provider bucket.
+	namerPolicy := llm.DefaultRetryPolicy()
+	namerPolicy.RateLimitWallBudget = 0
 	res, err := llm.GenerateObject(callCtx, llm.GenerateObjectOptions{
 		Client:      client,
 		Provider:    profile.CheapProvider(),
@@ -71,6 +76,7 @@ func nameSession(ctx context.Context, client *llm.Client, profile *provider.Prof
 		Temperature: &temp,
 		MaxTokens:   &maxTokens,
 		Sleep:       sleep,
+		RetryPolicy: &namerPolicy,
 		Schema:      sessionNameSchema(),
 	})
 	if err != nil {

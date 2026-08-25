@@ -848,6 +848,43 @@ func TestAdapter_Complete_HTTPErrorMapping_IncludesRetryAfter(t *testing.T) {
 	}
 }
 
+// Keep Retry-After intact on the streaming Responses path too: this is the
+// path used by agent turns and the wall-budgeted retry loop must see the same
+// provider instruction as Complete.
+func TestAdapter_Stream_HTTPErrorMapping_IncludesRetryAfter(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/v1/responses" {
+			t.Errorf("unexpected path %q", r.URL.Path)
+			w.WriteHeader(http.StatusNotFound)
+			return
+		}
+		w.Header().Set("Content-Type", "application/json")
+		w.Header().Set("Retry-After", "45")
+		w.WriteHeader(http.StatusTooManyRequests)
+		_, _ = w.Write([]byte(`{"error":{"message":"Too many tokens"}}`))
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := a.Stream(ctx, llm.Request{Model: "gpt-5.2", Messages: []llm.Message{llm.User("hi")}})
+	if err == nil {
+		t.Fatal("expected error")
+	}
+	if llm.Kind(err) != llm.KindRateLimit {
+		t.Fatalf("Kind = %s, want rate_limit", llm.Kind(err))
+	}
+	var le llm.Error
+	if !errors.As(err, &le) {
+		t.Fatalf("error is not an llm.Error: %T", err)
+	}
+	if le.RetryAfter() == nil || *le.RetryAfter() != 45*time.Second {
+		t.Fatalf("retry_after = %v, want 45s", le.RetryAfter())
+	}
+}
+
 func TestAdapter_Complete_HTTPErrorMapping_AuthenticationError(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

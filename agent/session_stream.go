@@ -62,7 +62,8 @@ const modelRetryFailFastAfter = 4
 // emitModelRetry builds the RetryPolicy.OnRetry hook that reports each retry of
 // req on the session event bus. Attempt counts retries (the first retry is 1);
 // MaxAttempts is the full budget including the initial try, so a consumer can
-// render "attempt 9 of 11" without knowing the policy.
+// render "attempt 9 of 11" without knowing the policy. A wall-budgeted rate
+// limit has no attempt denominator, so both denominator fields are zero.
 //
 // group is the retry group the in-flight callModel invocation is building —
 // not yet appended to the round recorder's Groups slice, so reading it here
@@ -84,13 +85,17 @@ func (s *Session) emitModelRetry(policy llm.RetryPolicy, req llm.Request, group 
 	groupStart := time.Now()
 	return func(err error, attempt int, delay time.Duration) {
 		s.noteParentJobActivity(jobPhaseModelRetrying)
-		attemptCap := max(policy.MaxRetries, 0) + 1
+		maxAttempts := max(policy.MaxRetries, 0) + 1
+		attemptCap := maxAttempts
 		if group != nil && group.hasConsumePhaseFailure() {
 			attemptCap = modelRetryFailFastAfter
 		}
+		if policy.WallBudgetedRateLimit(err) {
+			maxAttempts, attemptCap = 0, 0
+		}
 		data := events.ModelRetryData{
 			Attempt:        attempt,
-			MaxAttempts:    max(policy.MaxRetries, 0) + 1,
+			MaxAttempts:    maxAttempts,
 			DelayMS:        delay.Milliseconds(),
 			ErrorClass:     llm.Kind(err).String(),
 			Model:          req.Model,

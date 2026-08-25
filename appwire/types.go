@@ -1716,7 +1716,9 @@ type AgentMessageResetParams struct {
 // AttemptCap is the honest denominator to render instead of MaxAttempts once
 // it differs: the full policy budget until the current retry group has a
 // consume-phase failure, then the early-stop bound that will actually govern
-// it. GroupElapsedMS is wall-clock time since the retry group's first
+// it. Both are zero when a rate limit is being retried against a wall-clock
+// budget instead of an attempt count, so clients should render the bare attempt
+// number. GroupElapsedMS is wall-clock time since the retry group's first
 // attempt (one model call), so a client can render how long the call has
 // been running.
 type ThreadModelRetryParams struct {
