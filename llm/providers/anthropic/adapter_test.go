@@ -21,8 +21,10 @@ import (
 func TestAdapter_Complete_MapsToMessagesAPI_AndSetsBetaHeaders(t *testing.T) {
 	var gotBody map[string]any
 	gotBeta := ""
+	requestStarted := make(chan struct{})
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/messages" {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -44,24 +46,41 @@ func TestAdapter_Complete_MapsToMessagesAPI_AndSetsBetaHeaders(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	resp, err := a.Complete(ctx, llm.Request{
-		Model: "claude-test",
-		Messages: []llm.Message{
-			llm.System("sys"),
-			llm.Developer("dev"),
-			llm.User("u1"),
-			llm.Assistant("a1"),
-			llm.ToolResultNamed("call1", "shell", "ok", false),
-		},
-		ProviderOptions: map[string]any{
-			"anthropic": map[string]any{
-				"beta_headers": "prompt-caching-2024-07-31",
+	// t.Context is the outer test timeout/tripwire. The handler entry channel
+	// is the synchronization boundary, so this test does not use a
+	// load-sensitive request deadline.
+	result := make(chan struct {
+		resp llm.Response
+		err  error
+	}, 1)
+	go func() {
+		resp, err := a.Complete(t.Context(), llm.Request{
+			Model: "claude-test",
+			Messages: []llm.Message{
+				llm.System("sys"),
+				llm.Developer("dev"),
+				llm.User("u1"),
+				llm.Assistant("a1"),
+				llm.ToolResultNamed("call1", "shell", "ok", false),
 			},
-		},
-	})
+			ProviderOptions: map[string]any{
+				"anthropic": map[string]any{
+					"beta_headers": "prompt-caching-2024-07-31",
+				},
+			},
+		})
+		result <- struct {
+			resp llm.Response
+			err  error
+		}{resp: resp, err: err}
+	}()
+	select {
+	case <-requestStarted:
+	case <-t.Context().Done():
+		t.Fatalf("test context canceled before handler received request: %v", t.Context().Err())
+	}
+	out := <-result
+	resp, err := out.resp, out.err
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
@@ -211,8 +230,7 @@ func TestAdapter_Complete_HTTPErrorMapping_AuthenticationError(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	_, err := a.Complete(ctx, llm.Request{Model: "claude-test", Messages: []llm.Message{llm.User("hi")}})
 	if err == nil {
@@ -252,8 +270,7 @@ func TestAdapter_CountInputTokens_UsesMessagesCountTokensAPI(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	got, err := a.CountInputTokens(ctx, llm.Request{
 		Model: "claude-test",
@@ -305,8 +322,7 @@ func TestAdapter_CountInputTokens_HTTPErrorMapping(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	_, err := a.CountInputTokens(ctx, llm.Request{Model: "claude-test", Messages: []llm.Message{llm.User("hi")}})
 	if err == nil {
@@ -349,8 +365,7 @@ func TestAdapter_Stream_YieldsTextDeltasAndFinish(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	stream, err := a.Stream(ctx, llm.Request{Model: "claude-test", Messages: []llm.Message{llm.User("hi")}})
 	if err != nil {
@@ -438,8 +453,7 @@ func TestAdapter_Stream_TranslatesToolUseAndThinkingBlocks(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	stream, err := a.Stream(ctx, llm.Request{Model: "claude-test", Messages: []llm.Message{llm.User("hi")}})
 	if err != nil {
@@ -555,8 +569,7 @@ func TestAdapter_Stream_FinishReason_ToolCallTruncatedByMaxTokens(t *testing.T) 
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	stream, err := a.Stream(ctx, llm.Request{Model: "claude-test", Messages: []llm.Message{llm.User("hi")}})
 	if err != nil {
@@ -627,8 +640,7 @@ func TestAdapter_Stream_EmitsReasoningDeltas_SectionBreakBetweenBlocks(t *testin
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	effort := "high"
 	stream, err := a.Stream(ctx, llm.Request{Model: "claude-test", ReasoningEffort: &effort, Messages: []llm.Message{llm.User("hi")}})
@@ -683,8 +695,7 @@ func TestAdapter_Complete_ImageInput_URL_Data_AndFilePath(t *testing.T) {
 	_ = os.WriteFile(imgPath, []byte{0x89, 0x50, 0x4e, 0x47}, 0o644)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	msg := llm.Message{
 		Role: llm.RoleUser,
@@ -773,8 +784,7 @@ func TestAdapter_ThinkingBlocks_RoundTripIncludingRedacted(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	resp1, err := a.Complete(ctx, llm.Request{Model: "claude-test", Messages: []llm.Message{llm.User("hi")}})
 	if err != nil {
@@ -850,8 +860,7 @@ func TestAdapter_Complete_ResponseFormat_JSONSchema_InjectedIntoSystem(t *testin
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	schema := map[string]any{
 		"type": "object",
@@ -908,8 +917,7 @@ func TestAdapter_ProviderOptions_PassThrough(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	_, err := a.Complete(ctx, llm.Request{
 		Model:    "claude-test",
@@ -948,8 +956,7 @@ func TestAdapter_Complete_ToolChoice_MappedPerSpec(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	toolDef := llm.ToolDefinition{Name: "t1", Parameters: map[string]any{"type": "object", "properties": map[string]any{}}}
 
@@ -1051,8 +1058,7 @@ func TestAdapter_Complete_ToolParameters_DefaultToEmptyObjectSchema(t *testing.T
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	_, err := a.Complete(ctx, llm.Request{
 		Model:    "claude-test",
@@ -1093,8 +1099,7 @@ func TestAdapter_Complete_ToolParameters_DropsTopLevelCombinators(t *testing.T) 
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	_, err := a.Complete(ctx, llm.Request{
 		Model:    "claude-test",
@@ -1141,8 +1146,7 @@ func TestAdapter_Complete_ToolParameters_DropsTopLevelCombinators(t *testing.T) 
 
 func TestAdapter_Complete_RejectsAudioAndDocumentParts(t *testing.T) {
 	a := &Adapter{APIKey: "k", BaseURL: "http://example.com"}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	msgAudio := llm.Message{Role: llm.RoleUser, Content: []llm.ContentPart{{Kind: llm.ContentAudio, Audio: &llm.AudioData{URL: "https://example.com/a.wav"}}}}
 	_, err := a.Complete(ctx, llm.Request{Model: "claude-test", Messages: []llm.Message{msgAudio}})
@@ -1186,8 +1190,7 @@ func TestAdapter_PromptCaching_AutomaticCaching(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	_, err := a.Complete(ctx, llm.Request{
 		Model: "claude-test",
@@ -1321,8 +1324,7 @@ func TestAdapter_UsageCacheTokens_Mapped(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	resp, err := a.Complete(ctx, llm.Request{Model: "claude-test", Messages: []llm.Message{llm.User("hi")}})
 	if err != nil {
@@ -1356,8 +1358,7 @@ func TestAdapter_Complete_DefaultMaxTokens_FallsBackTo32000(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	_, err := a.Complete(ctx, llm.Request{
 		Model:    "claude-test",
@@ -1406,8 +1407,7 @@ func TestAdapter_Complete_FinishReason_Normalized(t *testing.T) {
 			t.Cleanup(srv.Close)
 
 			a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-			ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-			defer cancel()
+			ctx := t.Context()
 
 			resp, err := a.Complete(ctx, llm.Request{Model: "claude-test", Messages: []llm.Message{llm.User("hi")}})
 			if err != nil {
@@ -1437,8 +1437,7 @@ func TestAdapter_Complete_FinishReason_ToolUse_Normalized(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	resp, err := a.Complete(ctx, llm.Request{Model: "claude-test", Messages: []llm.Message{llm.User("hi")}})
 	if err != nil {
@@ -1474,8 +1473,7 @@ func TestAdapter_Complete_FinishReason_ToolCallTruncatedByMaxTokens(t *testing.T
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	resp, err := a.Complete(ctx, llm.Request{Model: "claude-test", Messages: []llm.Message{llm.User("hi")}})
 	if err != nil {
@@ -1506,8 +1504,7 @@ func TestAdapter_Complete_ParallelToolCalls_ParsedCorrectly(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	resp, err := a.Complete(ctx, llm.Request{Model: "claude-test", Messages: []llm.Message{llm.User("hi")}})
 	if err != nil {
@@ -1563,8 +1560,7 @@ func TestAdapter_Complete_WebSearch_AddsServerTool(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	_, err := a.Complete(ctx, llm.Request{
 		Model:    "claude-test",
@@ -1637,8 +1633,7 @@ func TestAdapter_Complete_WebSearch_ParsesServerToolUseAndResult(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	resp, err := a.Complete(ctx, llm.Request{
 		Model:     "claude-test",
@@ -2352,8 +2347,7 @@ func TestStream_IncludesWebSearchTool(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	stream, err := a.Stream(ctx, llm.Request{
 		Model:    "claude-3-5-sonnet-20241022",
@@ -2466,8 +2460,7 @@ func TestAdapterTimeout_Stream_AcceptsAdapterTimeout(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "test", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	stream, err := a.Stream(ctx, llm.Request{
 		Model:    "claude-test",
@@ -2732,8 +2725,7 @@ func TestAdapter_Complete_WebSearchOnly_IncludesWebSearchTool(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "test-key", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	_, err := a.Complete(ctx, llm.Request{
 		Model:     "test",
@@ -3514,8 +3506,7 @@ func TestAdapter_Complete_ToolResultWithImageData(t *testing.T) {
 	toolResultMsg.Content[0].ToolResult.ImageMediaType = "image/png"
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	_, err := a.Complete(ctx, llm.Request{
 		Model: "claude-test",
@@ -3612,8 +3603,7 @@ func TestAdapter_Complete_ToolResultWithImageData_DefaultMediaType(t *testing.T)
 	// ImageMediaType left empty — should default to "image/png".
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	_, err := a.Complete(ctx, llm.Request{
 		Model: "claude-test",
@@ -3669,8 +3659,7 @@ func TestAdapter_Complete_WebSearchWithTools_NoDuplicateNames(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	// Simulate a tool list that includes a function-type web_search alongside
 	// other function tools, plus WebSearch=true which triggers the adapter to

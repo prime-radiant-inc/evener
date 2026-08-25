@@ -20,8 +20,10 @@ import (
 
 func TestAdapter_Complete_MapsToChatCompletionsAPI(t *testing.T) {
 	var gotBody map[string]any
+	requestStarted := make(chan struct{})
 
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(requestStarted)
 		if r.Method != http.MethodPost || r.URL.Path != "/chat/completions" {
 			w.WriteHeader(http.StatusNotFound)
 			return
@@ -45,18 +47,35 @@ func TestAdapter_Complete_MapsToChatCompletionsAPI(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
-
-	resp, err := a.Complete(ctx, llm.Request{
-		Model: "gpt-4o",
-		Messages: []llm.Message{
-			llm.System("you are helpful"),
-			llm.User("hi"),
-			llm.Assistant("hey"),
-			llm.User("what?"),
-		},
-	})
+	// t.Context is the outer test timeout/tripwire. The handler entry channel
+	// is the synchronization boundary, so this test does not use a
+	// load-sensitive request deadline.
+	result := make(chan struct {
+		resp llm.Response
+		err  error
+	}, 1)
+	go func() {
+		resp, err := a.Complete(t.Context(), llm.Request{
+			Model: "gpt-4o",
+			Messages: []llm.Message{
+				llm.System("you are helpful"),
+				llm.User("hi"),
+				llm.Assistant("hey"),
+				llm.User("what?"),
+			},
+		})
+		result <- struct {
+			resp llm.Response
+			err  error
+		}{resp: resp, err: err}
+	}()
+	select {
+	case <-requestStarted:
+	case <-t.Context().Done():
+		t.Fatalf("test context canceled before handler received request: %v", t.Context().Err())
+	}
+	out := <-result
+	resp, err := out.resp, out.err
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
 	}
@@ -430,8 +449,7 @@ func TestAdapter_Complete_ToolCalling(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	resp, err := a.Complete(ctx, llm.Request{
 		Model:    "gpt-4o",
@@ -501,8 +519,7 @@ func TestAdapter_Complete_ToolResults(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	resp, err := a.Complete(ctx, llm.Request{
 		Model: "gpt-4o",
@@ -618,8 +635,7 @@ func TestAdapter_Complete_HTTPError_MapsToErrorType(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	_, err := a.Complete(ctx, llm.Request{
 		Model:    "gpt-4o",
@@ -659,8 +675,7 @@ func TestAdapter_Stream_YieldsTextDeltasAndFinish(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	st, err := a.Stream(ctx, llm.Request{
 		Model:    "gpt-4o",
@@ -736,8 +751,7 @@ func TestAdapter_Stream_MidStreamReadFailure_SurfacesCause(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	st, err := a.Stream(ctx, llm.Request{Model: "gpt-4o", Messages: []llm.Message{llm.User("hi")}})
 	if err != nil {
@@ -780,8 +794,7 @@ func TestAdapter_Stream_ToolCalls(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	st, err := a.Stream(ctx, llm.Request{
 		Model:    "gpt-4o",
@@ -1027,8 +1040,7 @@ func TestAdapterTimeout_Stream_AcceptsAdapterTimeout(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "test", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	stream, err := a.Stream(ctx, llm.Request{
 		Model:    "test",
@@ -1981,8 +1993,7 @@ func TestStream_ReasoningContent_EmitsReasoningEvents(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	st, err := a.Stream(ctx, llm.Request{
 		Model:    "kimi-k2.5",
@@ -2065,8 +2076,7 @@ func TestStream_ReasoningThenToolCalls_ReasoningEndBeforeToolStart(t *testing.T)
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	st, err := a.Stream(ctx, llm.Request{
 		Model:    "kimi-k2.5",
@@ -2461,8 +2471,7 @@ func TestQuirks_FinishReasonMap_Streaming(t *testing.T) {
 			FinishReasonMap: map[string]string{"sensitive": "content_filter"},
 		},
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	st, err := a.Stream(ctx, llm.Request{
 		Model:    "glm-5",
@@ -2511,8 +2520,7 @@ func TestStream_ReasoningTokens_NilWhenProviderOmits(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	st, err := a.Stream(ctx, llm.Request{
 		Model:    "m",
@@ -2718,8 +2726,7 @@ func TestStream_ReasoningDetails_EmitsReasoningEvents(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
-	defer cancel()
+	ctx := t.Context()
 
 	st, err := a.Stream(ctx, llm.Request{
 		Model:    "minimax/minimax-m2.7",
