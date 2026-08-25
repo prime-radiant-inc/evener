@@ -5,6 +5,7 @@
   "type": "module",
   "scripts": {
     "check": "biome ci src && tsc --noEmit --incremental false",
+    "pretest": "node scripts/boundary.mjs",
     "test": "node --test scripts/*.test.mjs && vitest run --maxWorkers=4",
     "boundary": "node scripts/boundary.mjs",
     "build": "tsc --noEmit --incremental false && vite build",
