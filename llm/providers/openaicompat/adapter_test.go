@@ -47,9 +47,9 @@ func TestAdapter_Complete_MapsToChatCompletionsAPI(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	// t.Context is the outer test timeout/tripwire. The handler entry channel
-	// is the synchronization boundary, so this test does not use a
-	// load-sensitive request deadline.
+	// Handler entry is the synchronization boundary. t.Context provides
+	// lifecycle cancellation only; the runner's -timeout remains the independent
+	// process tripwire.
 	result := make(chan struct {
 		resp llm.Response
 		err  error
@@ -69,12 +69,23 @@ func TestAdapter_Complete_MapsToChatCompletionsAPI(t *testing.T) {
 			err  error
 		}{resp: resp, err: err}
 	}()
+	var out struct {
+		resp llm.Response
+		err  error
+	}
 	select {
 	case <-requestStarted:
+		out = <-result
+	case out = <-result:
+		select {
+		case <-requestStarted:
+			// Handler entry was already observable; completion raced this select.
+		default:
+			t.Fatalf("Complete returned before handler received request: response=%#v error=%v", out.resp, out.err)
+		}
 	case <-t.Context().Done():
 		t.Fatalf("test context canceled before handler received request: %v", t.Context().Err())
 	}
-	out := <-result
 	resp, err := out.resp, out.err
 	if err != nil {
 		t.Fatalf("Complete: %v", err)

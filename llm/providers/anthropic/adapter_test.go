@@ -18,6 +18,22 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+type controlledStreamDeadlineContext struct {
+	context.Context
+	done <-chan struct{}
+}
+
+func (c controlledStreamDeadlineContext) Done() <-chan struct{} { return c.done }
+
+func (c controlledStreamDeadlineContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
 func TestAdapter_Complete_MapsToMessagesAPI_AndSetsBetaHeaders(t *testing.T) {
 	var gotBody map[string]any
 	gotBeta := ""
@@ -46,9 +62,9 @@ func TestAdapter_Complete_MapsToMessagesAPI_AndSetsBetaHeaders(t *testing.T) {
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	// t.Context is the outer test timeout/tripwire. The handler entry channel
-	// is the synchronization boundary, so this test does not use a
-	// load-sensitive request deadline.
+	// Handler entry is the synchronization boundary. t.Context provides
+	// lifecycle cancellation only; the runner's -timeout remains the independent
+	// process tripwire.
 	result := make(chan struct {
 		resp llm.Response
 		err  error
@@ -74,12 +90,23 @@ func TestAdapter_Complete_MapsToMessagesAPI_AndSetsBetaHeaders(t *testing.T) {
 			err  error
 		}{resp: resp, err: err}
 	}()
+	var out struct {
+		resp llm.Response
+		err  error
+	}
 	select {
 	case <-requestStarted:
+		out = <-result
+	case out = <-result:
+		select {
+		case <-requestStarted:
+			// Handler entry was already observable; completion raced this select.
+		default:
+			t.Fatalf("Complete returned before handler received request: response=%#v error=%v", out.resp, out.err)
+		}
 	case <-t.Context().Done():
 		t.Fatalf("test context canceled before handler received request: %v", t.Context().Err())
 	}
-	out := <-result
 	resp, err := out.resp, out.err
 	if err != nil {
 		t.Fatalf("Complete: %v", err)
@@ -1267,6 +1294,7 @@ func TestAdapter_PromptCaching_AutomaticCaching(t *testing.T) {
 }
 
 func TestAdapter_Stream_ContextDeadline_EmitsRequestTimeoutError(t *testing.T) {
+	headersFlushed := make(chan error, 1)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.Method != http.MethodPost || r.URL.Path != "/v1/messages" {
 			w.WriteHeader(http.StatusNotFound)
@@ -1274,22 +1302,30 @@ func TestAdapter_Stream_ContextDeadline_EmitsRequestTimeoutError(t *testing.T) {
 		}
 		w.Header().Set("Content-Type", "text/event-stream")
 		w.WriteHeader(http.StatusOK)
-		if f, ok := w.(http.Flusher); ok {
-			f.Flush()
+		f, ok := w.(http.Flusher)
+		if !ok {
+			headersFlushed <- errors.New("response writer does not support flushing")
+			return
 		}
+		f.Flush()
+		headersFlushed <- nil
 		<-r.Context().Done()
 	}))
 	t.Cleanup(srv.Close)
 
 	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
+	deadline := make(chan struct{})
+	ctx := controlledStreamDeadlineContext{Context: context.Background(), done: deadline}
 
 	st, err := a.Stream(ctx, llm.Request{Model: "claude-test", Messages: []llm.Message{llm.User("hi")}})
 	if err != nil {
 		t.Fatalf("Stream: %v", err)
 	}
 	defer st.Close() //nolint:errcheck
+	if err := <-headersFlushed; err != nil {
+		t.Fatal(err)
+	}
+	close(deadline)
 
 	var sawErr error
 	for ev := range st.Events() {
