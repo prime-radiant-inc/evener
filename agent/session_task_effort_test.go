@@ -188,6 +188,107 @@ func TestSession_TaskEffortOverride_AppliesPerRoundOnly(t *testing.T) {
 	}
 }
 
+func TestSession_RestoreTaskEffortMigration_ReachesProviderSafely(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name           string
+		legacyEffort   string
+		wantEffort     string
+		wantTaskEffort string
+	}{
+		{name: "invalid inherits session", legacyEffort: "ultra", wantEffort: "max", wantTaskEffort: ""},
+		{name: "valid override wins", legacyEffort: " HIGH ", wantEffort: "high", wantTaskEffort: "high"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			stateDir := t.TempDir()
+			profile := provider.NewOpenAIProfile("gpt-5.2").WithLiveModelInfo(llm.ModelInfo{
+				// Include the stale level to prove restore sanitization does not
+				// trust provider metadata to validate the task override.
+				ReasoningEffortLevels: []string{"minimal", "low", "medium", "high", "xhigh", "max", "ultra"},
+			})
+
+			seedClient := llm.NewClient()
+			seedClient.Register(&fakeAdapter{name: "openai"})
+			seed, err := NewSession(seedClient, profile, execenv.NewLocalExecutionEnvironment(stateDir), SessionConfig{
+				StateDir:        stateDir,
+				ReasoningEffort: "max",
+			})
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			store := seed.getOrCreateTaskStore()
+			if _, err := store.Append([]taskpkg.TaskInput{{
+				Type:        taskpkg.TaskTypeImplement,
+				Description: "persisted task",
+				Prompt:      "resume this task",
+			}}); err != nil {
+				seed.Close()
+				t.Fatalf("Append: %v", err)
+			}
+			if err := store.Update([]taskpkg.TaskUpdate{{ID: 1, Status: taskpkg.TaskInProgress}}); err != nil {
+				seed.Close()
+				t.Fatalf("Update: %v", err)
+			}
+			meta := seed.Meta()
+			seed.Close()
+
+			// Install a legacy file over the real saved task JSON, preserving the
+			// task's identity and in-progress state while changing only effort.
+			taskPath := filepath.Join(stateDir, "tasks", meta.ID+".json")
+			legacyJSON, err := os.ReadFile(taskPath)
+			if err != nil {
+				t.Fatalf("read saved task JSON: %v", err)
+			}
+			var legacyTasks []taskpkg.Task
+			if err := json.Unmarshal(legacyJSON, &legacyTasks); err != nil {
+				t.Fatalf("unmarshal saved task JSON: %v", err)
+			}
+			legacyTasks[0].ReasoningEffort = tc.legacyEffort
+			legacyJSON, err = json.Marshal(legacyTasks)
+			if err != nil {
+				t.Fatalf("marshal legacy task JSON: %v", err)
+			}
+			if err := os.WriteFile(taskPath, legacyJSON, 0o644); err != nil {
+				t.Fatalf("install legacy task JSON: %v", err)
+			}
+
+			adapter := &fakeAdapter{name: "openai", steps: []func(llm.Request) llm.Response{
+				func(llm.Request) llm.Response { return finalResponse("resumed") },
+			}}
+			client := llm.NewClient()
+			client.Register(adapter)
+			restored, err := RestoreSessionFromMeta(client, profile, execenv.NewLocalExecutionEnvironment(stateDir), meta, stateDir)
+			if err != nil {
+				t.Fatalf("RestoreSessionFromMeta: %v", err)
+			}
+			defer restored.Close()
+
+			ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter; only fires on a genuine restore hang.
+			defer cancel()
+			if _, err := restored.ProcessInput(ctx, "continue the persisted task", nil); err != nil {
+				t.Fatalf("ProcessInput after restore: %v", err)
+			}
+			reqs := adapter.Requests()
+			if len(reqs) != 1 {
+				t.Fatalf("provider requests = %d, want one; efforts=%v", len(reqs), requestEfforts(t, reqs))
+			}
+			if got := requestEfforts(t, reqs)[0]; got != tc.wantEffort {
+				t.Fatalf("provider effort = %q, want %q", got, tc.wantEffort)
+			}
+			for _, req := range reqs {
+				if req.ReasoningEffort != nil && *req.ReasoningEffort == "ultra" {
+					t.Fatal("invalid persisted effort reached provider request")
+				}
+			}
+			tasks := restored.getOrCreateTaskStore().View()
+			if len(tasks) != 1 || tasks[0].ID != 1 || tasks[0].Status != taskpkg.TaskInProgress || tasks[0].ReasoningEffort != tc.wantTaskEffort {
+				t.Fatalf("restored task = %+v, want preserved identity/status and effort %q", tasks, tc.wantTaskEffort)
+			}
+		})
+	}
+}
+
 // An invalid task effort must reject the entire task update before it can
 // activate the task. Otherwise the next model request carries the invalid
 // override and a provider that rejects it can leave autonomous wakeups retrying
