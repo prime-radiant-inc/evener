@@ -563,6 +563,7 @@ func TestDelegateResourceSupervision_FatalNudgeRunStopsOwnedShell(t *testing.T) 
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
+			sandboxProber:       bwrapCapableProber(fixture.workspace),
 			subagentAfterFinalStatePublish: func(*subagent) {
 				close(finalStatePublished)
 			},
@@ -913,6 +914,7 @@ func TestDelegateResourceSupervision_OrdinaryMissingTerminalCleanupPrecedesPacke
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
+			sandboxProber:       bwrapCapableProber(fixture.workspace),
 			subagentAfterFinalStatePublish: func(*subagent) {
 				close(finalStatePublished)
 			},

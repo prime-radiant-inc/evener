@@ -48,6 +48,20 @@ func newReadOnlyRoleFloorSession(t *testing.T, lane string, facts sandbox.HostFa
 		Tools:       []string{"read_file", "shell"},
 		PluginName:  "test",
 	}
+	s.pluginAgents["test:filtered-mutator"] = plugin.Agent{
+		Name:        "filtered-mutator",
+		Description: "declares a root-only mutation tool unavailable to this leaf",
+		Model:       "inherit",
+		Tools:       []string{"read_file", "shell", "manage_worktree"},
+		PluginName:  "test",
+	}
+	s.pluginAgents["test:effective-mutator"] = plugin.Agent{
+		Name:        "effective-mutator",
+		Description: "retains a registered workspace mutation tool",
+		Model:       "inherit",
+		Tools:       []string{"read_file", "write_file", "shell"},
+		PluginName:  "test",
+	}
 	return s, childAdapter
 }
 
@@ -138,6 +152,110 @@ func TestCreateDelegate_ReadOnlyRoleSandboxRequestFloor(t *testing.T) {
 			}
 			assertReadOnlyDelegateBackend(t, child.sess, sandbox.ModeReadOnly, false)
 		})
+	}
+}
+
+func TestCreateDelegate_FilteredMutationToolUsesEffectiveCeilingFloor(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		mode    string
+		allowed bool
+	}{
+		{name: "explicit off", mode: "off"},
+		{name: "explicit workspace-write", mode: "workspace-write"},
+		{name: "explicit restricted", mode: "restricted"},
+		{name: "explicit read-only", mode: "read-only", allowed: true},
+		{name: "omitted", allowed: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			lane, home := sbxLane(t)
+			s, childAdapter := newReadOnlyRoleFloorSession(t, lane, sbxBwrapFacts(home))
+			before := len(s.delegateController.Snapshot().rows)
+			result := s.createDelegate(context.Background(), delegateArgs{
+				Task:                "inspect without workspace mutation",
+				AgentType:           "test:filtered-mutator",
+				DelegationAllowance: 0,
+				Sandbox:             tc.mode,
+			})
+			if !tc.allowed {
+				if result.Err == nil || !strings.Contains(result.Err.Error(), "invalid_request:") {
+					t.Fatalf("unsafe effective-ceiling request error = %v, want structured invalid_request", result.Err)
+				}
+				if result.DelegateID != "" || result.ChildSessionID != "" {
+					t.Fatalf("unsafe effective-ceiling request minted identity: delegate=%q child=%q", result.DelegateID, result.ChildSessionID)
+				}
+				if after := len(s.delegateController.Snapshot().rows); after != before {
+					t.Fatalf("unsafe effective-ceiling request changed durable admissions: before=%d after=%d", before, after)
+				}
+				if got := len(childAdapter.Requests()); got != 0 {
+					t.Fatalf("unsafe effective-ceiling request reached provider %d times", got)
+				}
+				return
+			}
+			if result.Err != nil {
+				t.Fatalf("compatible effective-ceiling request: %v", result.Err)
+			}
+			if result.DelegateID == "" || result.ChildSessionID == "" {
+				t.Fatalf("compatible effective-ceiling request omitted identity: %+v", result)
+			}
+			if after := len(s.delegateController.Snapshot().rows); after != before+1 {
+				t.Fatalf("compatible effective-ceiling durable admissions: before=%d after=%d", before, after)
+			}
+			descriptor := delegateAggregateSnapshot(t, s.delegateController, result.DelegateID).Descriptor
+			if hasString(descriptor.ToolNameCeiling, "manage_worktree") || hasString(descriptor.ToolNameCeiling, "write_file") || hasString(descriptor.ToolNameCeiling, "edit_file") || hasString(descriptor.ToolNameCeiling, "apply_patch") {
+				t.Fatalf("committed effective ceiling retained workspace mutation: %v", descriptor.ToolNameCeiling)
+			}
+			if !hasString(descriptor.ToolNameCeiling, "read_file") || !hasString(descriptor.ToolNameCeiling, "shell") {
+				t.Fatalf("committed effective ceiling lost declared inspection tools: %v", descriptor.ToolNameCeiling)
+			}
+			if descriptor.Sandbox == nil || descriptor.Sandbox.Mode != sandbox.ModeReadOnly.String() || descriptor.Sandbox.WriteBlocked {
+				t.Fatalf("committed effective-ceiling sandbox = %+v, want read-only", descriptor.Sandbox)
+			}
+			child := s.getSub(result.ChildSessionID)
+			if child == nil {
+				t.Fatalf("compatible delegate %q is not resident", result.ChildSessionID)
+			}
+			assertReadOnlyDelegateBackend(t, child.sess, sandbox.ModeReadOnly, false)
+			for name := range child.sess.reg.RegisteredNames() {
+				if !hasString(descriptor.ToolNameCeiling, name) {
+					t.Fatalf("runtime tool %q exceeds committed effective ceiling %v", name, descriptor.ToolNameCeiling)
+				}
+			}
+		})
+	}
+}
+
+func TestCreateDelegate_EffectiveMutationToolPreservesWorkspaceWrite(t *testing.T) {
+	lane, home := sbxLane(t)
+	s, _ := newReadOnlyRoleFloorSession(t, lane, sbxBwrapFacts(home))
+	result := s.createDelegate(context.Background(), delegateArgs{
+		Task:      "modify the workspace",
+		AgentType: "test:effective-mutator",
+		Sandbox:   sandbox.ModeWorkspaceWrite.String(),
+	})
+	if result.Err != nil {
+		t.Fatalf("effective mutating role request: %v", result.Err)
+	}
+	descriptor := delegateAggregateSnapshot(t, s.delegateController, result.DelegateID).Descriptor
+	if !hasString(descriptor.ToolNameCeiling, "write_file") {
+		t.Fatalf("committed effective ceiling = %v, want write_file", descriptor.ToolNameCeiling)
+	}
+	if descriptor.Sandbox == nil || descriptor.Sandbox.Mode != sandbox.ModeWorkspaceWrite.String() || descriptor.Sandbox.WriteBlocked {
+		t.Fatalf("committed mutating sandbox = %+v, want workspace-write", descriptor.Sandbox)
+	}
+	child := s.getSub(result.ChildSessionID)
+	if child == nil {
+		t.Fatalf("mutating delegate %q is not resident", result.ChildSessionID)
+	}
+	local, ok := child.sess.currentEnv().(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatalf("mutating runtime environment = %T, want local", child.sess.currentEnv())
+	}
+	if local.Sandbox == nil || local.Sandbox.WriteBlocked || local.Sandbox.Mode != sandbox.ModeWorkspaceWrite {
+		t.Fatalf("mutating runtime boundary = %+v, want workspace-write", local.Sandbox)
+	}
+	if !rootGrantsAny(local.Sandbox.FileTool.WriteRoots, lane) || !rootGrantsAny(local.Sandbox.Spawned.WriteRoots, lane) {
+		t.Fatalf("mutating runtime omitted workspace write boundary: file=%v spawned=%v", local.Sandbox.FileTool.WriteRoots, local.Sandbox.Spawned.WriteRoots)
 	}
 }
 

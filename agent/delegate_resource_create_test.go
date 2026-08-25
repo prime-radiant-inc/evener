@@ -1285,7 +1285,8 @@ func prepareCommittedUnadoptedDelegate(t *testing.T, root *Session, task string)
 	if err != nil {
 		t.Fatalf("selectSubagentModel: %v", err)
 	}
-	descriptor, project, err := runtime.describe(ctx, args, task, "", nil, selection)
+	toolNameCeiling := root.stableDelegateEffectiveToolNameCeiling(selection, args, "")
+	descriptor, project, err := runtime.describe(ctx, args, task, "", nil, selection, toolNameCeiling)
 	if err != nil {
 		t.Fatalf("describe delegate: %v", err)
 	}

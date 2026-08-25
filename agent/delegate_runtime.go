@@ -1134,8 +1134,8 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	if selection.warning != nil {
 		s.emitDiagnosticWarning(*selection.warning)
 	}
-	allTools, allowedTools, _ := baseSubagentToolPolicy(selection.agent, args.DelegationAllowance > 0)
-	readOnlyScope := subagentToolScopeIsReadOnly(allTools, allowedTools)
+	toolNameCeiling := s.stableDelegateEffectiveToolNameCeiling(selection, args, isolationName)
+	readOnlyScope := subagentToolScopeIsReadOnly(false, toolNameCeiling)
 	var requestedSandbox *sandbox.SandboxPolicy
 	explicitSandbox := strings.TrimSpace(args.Sandbox) != "" || args.SandboxNet != nil
 	if readOnlyScope {
@@ -1154,7 +1154,7 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 			return delegateStartFailed(err)
 		}
 	}
-	descriptor, worktreeProject, err := runtime.describe(ctx, args, task, isolationName, requestedSandbox, selection)
+	descriptor, worktreeProject, err := runtime.describe(ctx, args, task, isolationName, requestedSandbox, selection, toolNameCeiling)
 	if err != nil {
 		return delegateStartFailed(err)
 	}
@@ -1247,7 +1247,12 @@ func (s *Session) delegateActor(ctx context.Context) (delegateActor, error) {
 	return rootDelegateActor(s.delegateRootSessionID), nil
 }
 
-func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, task, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection) (delegatestore.Descriptor, identifier.Project, error) {
+func (s *Session) stableDelegateEffectiveToolNameCeiling(selection subagentModelSelection, args delegateArgs, isolationName string) []string {
+	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(selection.agent, args.DelegationAllowance > 0)
+	return stableDelegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.DelegationAllowance > 0, args.WatchParent, isolationName)
+}
+
+func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, task, isolationName string, requestedSandbox *sandbox.SandboxPolicy, selection subagentModelSelection, toolNameCeiling []string) (delegatestore.Descriptor, identifier.Project, error) {
 	s := runtime.owner
 	s.mu.Lock()
 	childConfig := s.cfg.toSnapshot().Clone()
@@ -1262,11 +1267,6 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 	if reasoningEffort == "" {
 		reasoningEffort = strings.TrimSpace(childConfig.ReasoningEffort)
 	}
-	allTools, allowedTools, deniedTools := baseSubagentToolPolicy(selection.agent, args.DelegationAllowance > 0)
-	if !allTools {
-		allowedTools = ensureRecoveryReader(allowedTools, s.reg)
-	}
-	toolNameCeiling := stableDelegateToolNameCeiling(s.reg, s.resultToolName(), allTools, allowedTools, deniedTools, args.DelegationAllowance > 0, args.WatchParent, isolationName)
 	var frozenSkillNames, frozenSkillBodies []string
 	if selection.agent != nil {
 		for _, name := range selection.agent.Skills {
@@ -1321,7 +1321,7 @@ func (runtime delegateRuntime) describe(ctx context.Context, args delegateArgs, 
 		ResolvedProfileID:             selection.profile.ID(),
 		ResolvedModel:                 selection.profile.Model(),
 		FrozenRolePrompt:              rolePrompt,
-		ToolNameCeiling:               toolNameCeiling,
+		ToolNameCeiling:               append([]string(nil), toolNameCeiling...),
 		FrozenSkillNames:              frozenSkillNames,
 		FrozenSkillBodies:             frozenSkillBodies,
 		LocalEnvPolicy:                localEnvPolicyName(s.currentEnv()),
