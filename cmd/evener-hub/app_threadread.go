@@ -138,12 +138,17 @@ func mergePastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 			params.Ref = appwire.Ref{SourceID: "local", ThreadID: live.SessionID}.String()
 		}
 	}
-	past, ok, err := pastThreadForRead(cfg, params)
-	if err != nil {
-		return appwire.Thread{}, err
-	}
+	entry, ok := pastEntryForRead(cfg, params)
 	if !ok {
 		return live, nil
+	}
+	// A live window is authoritative. Read saved turns only as the compatibility
+	// fallback for a live source that returned none; the metadata merged below
+	// does not use pastThreadForRead's full-transcript usage or failure scans.
+	includePastTurns := params.IncludeTurns && len(live.Turns) == 0
+	past, err := pastEntryThread(cfg, entry, includePastTurns)
+	if err != nil {
+		return appwire.Thread{}, err
 	}
 	if live.ID == "" {
 		live.ID = past.ID

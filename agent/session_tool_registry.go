@@ -31,9 +31,10 @@ type toolDeps struct {
 	emit func(kind events.EventKind, data events.EventData)
 
 	// steering queue access for the communicate handler.
-	steer           func(msg, kind string)
-	drainSteering   func() []steeringMessage
-	prependSteering func(entries []steeringMessage)
+	steer               func(msg, kind string)
+	steerTaskCompletion func(msg string, blockingDelegateIDs []string)
+	drainSteering       func() []steeringMessage
+	prependSteering     func(entries []steeringMessage)
 
 	// abort returns a non-nil error when the session is closing (= Session.abortIfClosing).
 	abort func(ctx context.Context) error
@@ -57,6 +58,10 @@ type toolDeps struct {
 	// taskGuard exposes task-store access and the task reminder bookkeeping,
 	// all guarded by the session's own mutex.
 	taskGuard taskGuard
+
+	// blockingDelegateIDs reports this session's live inline-waited delegates.
+	// Background delegates and terminal delegates are intentionally excluded.
+	blockingDelegateIDs func() []string
 
 	// goalGuard exposes goal-store access. The goal store has its own mutex.
 	goalGuard goalGuard
@@ -125,6 +130,20 @@ type toolDeps struct {
 	openArtifact func(ref string) (artifactReadSeekCloser, error)
 }
 
+// sendTaskCompletionSteering keeps direct toolDeps constructions compatible
+// with the pre-metadata contract: their generic steer callback still delivers
+// the model-visible machine payload and tasks-done kind. Normal sessions take
+// the typed callback branch and retain the parallel event metadata as well.
+func (d *toolDeps) sendTaskCompletionSteering(msg string, blockingDelegateIDs []string) {
+	if d.steerTaskCompletion != nil {
+		d.steerTaskCompletion(msg, blockingDelegateIDs)
+		return
+	}
+	if d.steer != nil {
+		d.steer(msg, events.SteeringKindTasksDone)
+	}
+}
+
 type artifactReadSeekCloser interface {
 	io.ReaderAt
 	io.Seeker
@@ -179,13 +198,14 @@ type webDeps struct {
 // unchanged. Built once in registerCoreTools.
 func newToolDeps(s *Session) *toolDeps {
 	return &toolDeps{
-		registerTool:    s.cfg.testOnly.registerTool,
-		emit:            s.emit,
-		steer:           s.SteerKind,
-		drainSteering:   s.drainSteeringForCommunicate,
-		prependSteering: s.prependSteering,
-		abort:           s.abortIfClosing,
-		resultToolName:  s.resultToolName,
+		registerTool:        s.cfg.testOnly.registerTool,
+		emit:                s.emit,
+		steer:               s.SteerKind,
+		steerTaskCompletion: s.SteerTaskCompletion,
+		drainSteering:       s.drainSteeringForCommunicate,
+		prependSteering:     s.prependSteering,
+		abort:               s.abortIfClosing,
+		resultToolName:      s.resultToolName,
 		cmdTimeouts: func() (int, int) {
 			return s.cfg.DefaultCommandTimeoutMS, s.cfg.MaxCommandTimeoutMS
 		},
@@ -201,6 +221,12 @@ func newToolDeps(s *Session) *toolDeps {
 				s.taskToolLastRound = s.totalRounds
 				s.mu.Unlock()
 			},
+		},
+		blockingDelegateIDs: func() []string {
+			if s.delegateController == nil {
+				return nil
+			}
+			return s.delegateController.blockingDelegateIDs(s.delegateRootSessionID, s.owningDelegateID)
 		},
 		goalGuard: goalGuard{
 			getOrCreateGoalStore: s.getOrCreateGoalStore,
@@ -253,7 +279,7 @@ func newToolDeps(s *Session) *toolDeps {
 			s.comm.structured = raw
 			s.mu.Unlock()
 		},
-		runningJobIDs:   func() []string { return sessionRunningJobIDs(s) },
+		runningJobIDs:   func() []string { return sessionRunningWorkIDs(s) },
 		turnEndsProcess: s.cfg.TurnEndsProcess,
 		skill: func(name string) (skill.SkillMeta, bool) {
 			meta, ok := s.skills[name]

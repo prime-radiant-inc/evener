@@ -35,7 +35,7 @@ func (e *snapshotCountingEnv) FileExists(string) bool { return false }
 func (e *snapshotCountingEnv) Glob(context.Context, string, string, ...bool) ([]string, error) {
 	return nil, nil
 }
-func (e *snapshotCountingEnv) Grep(string, string, string, bool, int, string, ...int) (string, error) {
+func (e *snapshotCountingEnv) Grep(_ context.Context, _ string, _ string, _ string, _ bool, _ int, _ string, _ ...int) (string, error) {
 	return "", nil
 }
 func (e *snapshotCountingEnv) ListDirectory(string, int) ([]execenv.DirEntry, error) {

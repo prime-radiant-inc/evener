@@ -486,6 +486,7 @@ func newDelegateResourceBootstrapSession(t *testing.T) (*Session, *llm.Client, *
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
+			sandboxProber:       bwrapCapableProber(workspace),
 		},
 	})
 	if err != nil {
@@ -511,6 +512,7 @@ func closedDelegateResourceBootstrapFixture(t *testing.T) (schema.SessionMeta, *
 		testOnly: testConfig{
 			skipGitSnapshot:     true,
 			minimalSystemPrompt: true,
+			sandboxProber:       bwrapCapableProber(workspace),
 		},
 	})
 	if err != nil {
@@ -526,7 +528,7 @@ func closedDelegateResourceBootstrapFixture(t *testing.T) (schema.SessionMeta, *
 }
 
 func restoreDelegateResourceBootstrapSession(client *llm.Client, profile *provider.Profile, workspace string, meta schema.SessionMeta, stateDir string) (*Session, error) {
-	return restoreDelegateResourceBootstrapSessionWithTestConfig(client, profile, workspace, meta, stateDir, testConfig{})
+	return restoreDelegateResourceBootstrapSessionWithTestConfig(client, profile, workspace, meta, stateDir, testConfig{sandboxProber: bwrapCapableProber(workspace)})
 }
 
 func restoreDelegateResourceBootstrapSessionWithTestConfig(client *llm.Client, profile *provider.Profile, workspace string, meta schema.SessionMeta, stateDir string, testOnly testConfig) (*Session, error) {

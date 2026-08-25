@@ -31,7 +31,12 @@ func TestSubagentRegistryHasCompactContext(t *testing.T) {
 		s := newSession(t, withConfig(SessionConfig{
 			MaxSubagentDepth: 3,
 			NoProjectPrompts: true,
-			testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+			testOnly: testConfig{
+				skipGitSnapshot:     true,
+				minimalSystemPrompt: true,
+				noSyncJobStore:      true,
+				sandboxProber:       bwrapCapableProber(t.TempDir()),
+			},
 		}))
 		s.delegationAllowance = 1
 		prepared, err := s.prepareSubagentRun(context.Background(), "task", "", "", 0, agentType, "", nil, nil)

@@ -31,6 +31,9 @@ type DirEntry struct {
 // DetachedProcess identifies a command disowned by its execution environment.
 type DetachedProcess struct {
 	PID int `json:"pid"`
+	// Done closes when this exact process exits. It is intentionally not part of
+	// the tool result: callers use it for lifecycle ownership, not wire output.
+	Done <-chan struct{} `json:"-"`
 }
 
 // DetachedExecutor is an optional capability for immediately disowned commands.
@@ -153,8 +156,9 @@ type ExecutionEnvironment interface {
 	// Grep searches files for pattern and returns matches formatted per
 	// outputMode ("content" (default), "files_with_matches", or "count").
 	// contextLines, when given (0-10), includes that many lines of context
-	// before/after each match; omitted or non-positive means no context.
-	Grep(pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error)
+	// before/after each match; omitted or non-positive means no context. The
+	// context bounds the filesystem walk and any ripgrep subprocess.
+	Grep(ctx context.Context, pattern string, path string, globFilter string, caseInsensitive bool, maxResults int, outputMode string, contextLines ...int) (string, error)
 	// ListDirectory lists entries under path, recursing up to depth levels.
 	ListDirectory(path string, depth int) ([]DirEntry, error)
 
