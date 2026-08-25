@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { canonicalFixture } from "../core/fixtures";
 import { getPlatformPrimitives } from "../core/platform";
@@ -35,6 +35,29 @@ function setup(open = true) {
     </PrototypeProvider>,
   );
   return { dispatch, storage, store };
+}
+
+function setupInteractive() {
+  const storage: PreferenceStorage = {
+    getItem: () => null,
+    setItem: vi.fn(),
+    removeItem: vi.fn(),
+  };
+  const store = createPrototypeStore({
+    platform: "android",
+    storage,
+    fixtureInput: canonicalFixture,
+    diagnostics: { report: vi.fn() },
+  });
+  render(
+    <PrototypeProvider store={store}>
+      <LabControls
+        dispatch={(action) => store.getState().dispatch(action)}
+        primitives={getPlatformPrimitives("android")}
+      />
+    </PrototypeProvider>,
+  );
+  return { store };
 }
 
 describe("LabControls", () => {
@@ -98,5 +121,28 @@ describe("LabControls", () => {
     expect(
       screen.getByRole("button", { name: "Reset prototype" }),
     ).not.toHaveAttribute("tabindex", "-1");
+  });
+
+  it("moves focus inside, traps both Tab directions, and restores the opener", async () => {
+    setupInteractive();
+    const opener = screen.getByRole("button", { name: "Lab Controls" });
+    opener.focus();
+    fireEvent.click(opener);
+
+    const close = screen.getByRole("button", { name: "Close Lab Controls" });
+    const reset = screen.getByRole("button", { name: "Reset prototype" });
+    await waitFor(() => expect(close).toHaveFocus());
+    expect(opener).toHaveAttribute("inert");
+    expect(opener).toHaveAttribute("tabindex", "-1");
+
+    fireEvent.keyDown(close, { key: "Tab", shiftKey: true });
+    expect(reset).toHaveFocus();
+    fireEvent.keyDown(reset, { key: "Tab" });
+    expect(close).toHaveFocus();
+    opener.focus();
+    expect(close).toHaveFocus();
+
+    fireEvent.click(close);
+    await waitFor(() => expect(opener).toHaveFocus());
   });
 });
