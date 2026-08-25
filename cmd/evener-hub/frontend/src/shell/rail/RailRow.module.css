@@ -216,9 +216,13 @@
   min-width: 0;
 }
 
-/* The trailing chevron button: a quiet inline glyph hugging the title text,
+/* The trailing chevron: a quiet inline glyph hugging the title text,
  * smaller than the app's default 14px icon box so it reads as part of the
- * line rather than as a separate control.
+ * line rather than as a separate control. Rendered as a non-focusable
+ * <span> (see RailRow.tsx's TrailingChevron): a <button> would receive
+ * focus on click, and a focused aria-hidden element is the violation
+ * Chrome's a11y console warns about. The border/background rules below are
+ * harmless on a span and keep the class self-describing if it is ever reused.
  *
  * The chevron IS the row's disclosure triangle, and its clickability no
  * longer depends on stacking order (issue #196: see `.actions`'s own
