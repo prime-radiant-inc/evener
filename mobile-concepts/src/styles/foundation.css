@@ -1,0 +1,380 @@
+:root {
+  --foundation-ink: #17211d;
+  --foundation-muted: #5b665f;
+  --foundation-paper: #f5f3ec;
+  --foundation-panel: #fffdf7;
+  --foundation-line: #d8d4c9;
+  --foundation-accent: #1f6a51;
+  --keyboard-inset: 0px;
+  --visual-viewport-height: 100dvh;
+}
+
+:root[data-appearance="dark"] {
+  --foundation-ink: #edf2ed;
+  --foundation-muted: #aeb9b1;
+  --foundation-paper: #101612;
+  --foundation-panel: #18201b;
+  --foundation-line: #364039;
+  --foundation-accent: #82d5b1;
+  color-scheme: dark;
+}
+
+:root[data-appearance="light"] {
+  color-scheme: light;
+}
+
+:root[data-text-scale="large"] {
+  font-size: 118.75%;
+}
+
+:root[data-text-scale="accessibility"] {
+  font-size: 137.5%;
+}
+
+:root[data-reduced-motion="true"] *,
+:root[data-reduced-motion="true"] *::before,
+:root[data-reduced-motion="true"] *::after {
+  scroll-behavior: auto;
+  animation-duration: 0.01ms;
+  animation-iteration-count: 1;
+  transition-duration: 0.01ms;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+button {
+  color: inherit;
+}
+
+.foundation-app {
+  position: relative;
+  width: 100%;
+  min-height: var(--visual-viewport-height, 100dvh);
+  padding: var(--safe-area-top) var(--safe-area-right) var(--safe-area-bottom)
+    var(--safe-area-left);
+  overflow-x: hidden;
+  background:
+    radial-gradient(circle at 88% 5%, rgb(113 160 139 / 16%), transparent 30rem),
+    var(--foundation-paper);
+  color: var(--foundation-ink);
+}
+
+.concept-gallery {
+  width: min(100%, 76rem);
+  margin-inline: auto;
+  padding: clamp(2rem, 8vw, 6rem) clamp(1rem, 4vw, 3rem) 7rem;
+}
+
+.concept-gallery__header {
+  max-width: 48rem;
+  margin-bottom: clamp(2rem, 5vw, 4rem);
+}
+
+.concept-gallery__eyebrow,
+.lab-controls__eyebrow,
+.recovery__eyebrow {
+  margin: 0 0 0.65rem;
+  color: var(--foundation-accent);
+  font-size: 0.75rem;
+  font-weight: 750;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+}
+
+.concept-gallery h1 {
+  max-width: 13ch;
+  margin: 0;
+  font-family: ui-serif, Georgia, serif;
+  font-size: clamp(2.5rem, 8vw, 5.75rem);
+  font-weight: 500;
+  letter-spacing: -0.055em;
+  line-height: 0.98;
+}
+
+.concept-gallery__header > p:last-child {
+  max-width: 40rem;
+  margin: 1.5rem 0 0;
+  color: var(--foundation-muted);
+  font-size: 1.05rem;
+  line-height: 1.65;
+}
+
+.concept-gallery__grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: clamp(0.9rem, 2vw, 1.5rem);
+}
+
+.concept-card {
+  display: flex;
+  min-width: 0;
+  padding: clamp(1rem, 2.5vw, 1.5rem);
+  border: 1px solid var(--foundation-line);
+  border-radius: 1.25rem;
+  flex-direction: column;
+  background: color-mix(in srgb, var(--foundation-panel) 93%, transparent);
+  box-shadow: 0 1rem 3rem rgb(23 33 29 / 7%);
+  transition:
+    border-color 180ms ease,
+    transform 180ms ease;
+}
+
+.concept-card[data-selected="true"] {
+  border-color: var(--foundation-accent);
+  outline: 2px solid
+    color-mix(in srgb, var(--foundation-accent) 28%, transparent);
+  outline-offset: 3px;
+  transform: translateY(-0.2rem);
+}
+
+.concept-card__preview {
+  position: relative;
+  display: grid;
+  min-height: 9.5rem;
+  margin-bottom: 1.5rem;
+  padding: 1rem;
+  border-radius: 0.8rem;
+  align-content: end;
+  gap: 0.55rem;
+  overflow: hidden;
+  background: #dce7df;
+  color: #173d30;
+}
+
+.concept-card[data-accent="luminous mint"] .concept-card__preview {
+  background: #162a27;
+  color: #8ff0c7;
+}
+
+.concept-card[data-accent="rust"] .concept-card__preview {
+  background: #e7d8c9;
+  color: #8a3f28;
+}
+
+.concept-card__number {
+  position: absolute;
+  top: 0.85rem;
+  right: 1rem;
+  font-size: 2.25rem;
+  font-weight: 250;
+}
+
+.concept-card__line {
+  display: block;
+  width: 80%;
+  height: 0.35rem;
+  border-radius: 1rem;
+  background: currentColor;
+  opacity: 0.35;
+}
+
+.concept-card__line--strong {
+  width: 58%;
+  height: 0.8rem;
+  opacity: 0.9;
+}
+
+.concept-card__line--short {
+  width: 42%;
+}
+
+.concept-card__family {
+  margin: 0;
+  color: var(--foundation-muted);
+  font-size: 0.72rem;
+  font-weight: 700;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.concept-card h2 {
+  margin: 0.4rem 0 0.75rem;
+  font-family: ui-serif, Georgia, serif;
+  font-size: clamp(1.65rem, 3vw, 2.25rem);
+  font-weight: 550;
+}
+
+.concept-card__thesis {
+  margin: 0 0 1.5rem;
+  color: var(--foundation-muted);
+  line-height: 1.55;
+}
+
+.concept-card__select {
+  width: 100%;
+  margin-top: auto;
+  padding: 0.65rem 1rem;
+  border: 1px solid var(--foundation-ink);
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.concept-card__select[aria-pressed="true"] {
+  background: var(--foundation-ink);
+  color: var(--foundation-paper);
+}
+
+.lab-controls-trigger {
+  position: fixed;
+  z-index: 10;
+  right: calc(1rem + var(--safe-area-right));
+  bottom: calc(1rem + var(--safe-area-bottom) + var(--keyboard-inset));
+  padding: 0.65rem 1.1rem;
+  border: 0;
+  border-radius: 999px;
+  background: var(--foundation-ink);
+  color: var(--foundation-paper);
+  box-shadow: 0 0.8rem 2.5rem rgb(0 0 0 / 20%);
+  cursor: pointer;
+}
+
+.lab-controls-backdrop {
+  position: fixed;
+  z-index: 20;
+  inset: 0;
+  display: grid;
+  padding: max(1rem, var(--safe-area-top)) max(1rem, var(--safe-area-right))
+    calc(max(1rem, var(--safe-area-bottom)) + var(--keyboard-inset))
+    max(1rem, var(--safe-area-left));
+  place-items: end center;
+  background: rgb(7 14 10 / 56%);
+}
+
+.lab-controls {
+  width: min(100%, 46rem);
+  max-height: min(48rem, calc(var(--visual-viewport-height) - 2rem));
+  padding: clamp(1rem, 4vw, 2rem);
+  border: 1px solid var(--foundation-line);
+  border-radius: 1.5rem;
+  overflow-y: auto;
+  background: var(--foundation-panel);
+  box-shadow: 0 2rem 5rem rgb(0 0 0 / 30%);
+}
+
+.lab-controls[data-sheet="material-modal-bottom-sheet"] {
+  border-radius: 1.75rem 1.75rem 0 0;
+}
+
+.lab-controls__header {
+  display: flex;
+  margin-bottom: 1.5rem;
+  align-items: start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.lab-controls__header h2 {
+  margin: 0;
+  font-size: 1.75rem;
+}
+
+.lab-controls__header button,
+.lab-controls__reset {
+  padding-inline: 1rem;
+  border: 1px solid var(--foundation-line);
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.lab-controls fieldset {
+  margin: 0 0 1.25rem;
+  padding: 0;
+  border: 0;
+}
+
+.lab-controls legend {
+  margin-bottom: 0.55rem;
+  font-weight: 750;
+}
+
+.lab-controls__options {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.4rem;
+}
+
+.lab-controls__options label,
+.lab-controls__check {
+  display: inline-flex;
+  padding: 0.45rem 0.8rem;
+  border: 1px solid var(--foundation-line);
+  border-radius: 0.75rem;
+  align-items: center;
+  gap: 0.5rem;
+  cursor: pointer;
+}
+
+.lab-controls__options--scenarios label {
+  flex: 1 1 8.5rem;
+}
+
+.lab-controls__reset {
+  width: 100%;
+  border-color: #a84d3d;
+  color: #a84d3d;
+}
+
+.recovery {
+  width: min(100% - 2rem, 38rem);
+  margin: 10vh auto;
+  padding: 2rem;
+  border: 1px solid var(--foundation-line);
+  border-radius: 1.25rem;
+  background: var(--foundation-panel);
+}
+
+.recovery button {
+  padding-inline: 1rem;
+  border: 0;
+  border-radius: 999px;
+  background: var(--foundation-ink);
+  color: var(--foundation-paper);
+}
+
+.foundation-app[data-minimum-target="44"] button,
+.foundation-app[data-minimum-target="44"] label {
+  min-height: 44px;
+}
+
+.foundation-app[data-minimum-target="48"] button,
+.foundation-app[data-minimum-target="48"] label {
+  min-height: 48px;
+}
+
+button:focus-visible,
+input:focus-visible {
+  outline: 3px solid var(--foundation-accent);
+  outline-offset: 3px;
+}
+
+@media (max-width: 52rem) {
+  .concept-gallery__grid {
+    grid-template-columns: 1fr;
+  }
+
+  .concept-card {
+    display: grid;
+    grid-template-columns: minmax(7rem, 0.8fr) minmax(0, 1.2fr);
+    column-gap: 1rem;
+  }
+
+  .concept-card__preview {
+    grid-row: 1 / span 4;
+    margin: 0;
+  }
+}
+
+@media (max-width: 31rem) {
+  .concept-card {
+    display: flex;
+  }
+
+  .concept-card__preview {
+    min-height: 7rem;
+  }
+}
