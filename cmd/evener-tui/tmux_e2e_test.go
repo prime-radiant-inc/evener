@@ -1701,9 +1701,20 @@ func normalizePane(s string) string {
 }
 
 type tuiE2EHub struct {
-	t      *testing.T
-	server *httptest.Server
-	app    *appserver.Server
+	t         *testing.T
+	server    *httptest.Server
+	app       *appserver.Server
+	closeOnce sync.Once
+	// ready is closed by the HTTP handler, not by httptest.NewServer's
+	// listener setup.  The latter only proves that a port was allocated; it
+	// does not prove that the server goroutine has reached the handler under a
+	// constrained scheduler.
+	ready chan struct{}
+	// changed is a coalescing notification for state observed by the wait
+	// helpers below.  Waiting on handler events avoids turning a 5-second hang
+	// backstop into a timer-driven polling loop.
+	changed       chan struct{}
+	readyRequests atomic.Int32
 
 	mu              sync.Mutex
 	order           []string
@@ -1754,6 +1765,8 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 		sessions:  map[string]*tuiE2ESession{},
 		actions:   map[string]int{},
 		harnesses: []appwire.HarnessDescriptor{{ID: "evener", Label: "evener", Kind: "evener"}},
+		ready:     make(chan struct{}),
+		changed:   make(chan struct{}, 1),
 	}
 	h.addSession(&tuiE2ESession{
 		ID:           "01LIVE",
@@ -1837,13 +1850,52 @@ func newTUIE2EHub(t *testing.T) *tuiE2EHub {
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "evener-hub", SourceID: "local"})
 	h.app = app
 	h.registerHandlers(app)
+	var readyOnce sync.Once
 	h.server = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/ready" {
+			h.readyRequests.Add(1)
+			readyOnce.Do(func() { close(h.ready) })
+			w.WriteHeader(http.StatusNoContent)
+			return
+		}
 		if r.URL.Path != "/rpc" {
 			http.NotFound(w, r)
 			return
 		}
 		app.ServeWebSocket(w, r)
 	}))
+	// Complete one real request through the installed handler before handing
+	// the address to the tmux child.  A bound listener alone is insufficient:
+	// on a loaded runner the child can otherwise spend its entire dial context
+	// waiting for net/http's serve goroutine to be scheduled.
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, h.server.URL+"/ready", nil)
+	if err != nil {
+		cancel()
+		h.server.Close()
+		t.Fatalf("build hub readiness request: %v", err)
+	}
+	resp, err := h.server.Client().Do(req)
+	cancel()
+	if err != nil {
+		h.server.Close()
+		t.Fatalf("hub readiness request: %v", err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNoContent {
+		h.server.Close()
+		t.Fatalf("hub readiness status=%d, want %d", resp.StatusCode, http.StatusNoContent)
+	}
+	if got := h.readyRequests.Load(); got != 1 {
+		h.server.Close()
+		t.Fatalf("hub readiness handler calls=%d, want 1", got)
+	}
+	select {
+	case <-h.ready:
+	default:
+		h.server.Close()
+		t.Fatal("hub readiness request completed without handler readiness event")
+	}
 	return h
 }
 
@@ -1896,7 +1948,17 @@ func (h *tuiE2EHub) URL() string {
 }
 
 func (h *tuiE2EHub) Close() {
-	h.server.Close()
+	h.closeOnce.Do(func() { h.server.Close() })
+}
+
+// notify wakes a waiter after a handler has observed a request or changed
+// fixture state. Notifications are intentionally coalesced: every waiter
+// re-checks its predicate, so one wakeup is sufficient for a burst of RPCs.
+func (h *tuiE2EHub) notify() {
+	select {
+	case h.changed <- struct{}{}:
+	default:
+	}
 }
 
 func (h *tuiE2EHub) SetHarnesses(harnesses []appwire.HarnessDescriptor) {
@@ -2033,6 +2095,7 @@ func (h *tuiE2EHub) addSession(s *tuiE2ESession) {
 }
 
 func (h *tuiE2EHub) handleThreadList(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.treeGets++
@@ -2058,6 +2121,7 @@ func (h *tuiE2EHub) handleThreadRead(ctx context.Context, params appwire.ThreadR
 }
 
 func (h *tuiE2EHub) handleModelList(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	authRequired := h.authRequired
 	h.mu.Unlock()
@@ -2079,11 +2143,13 @@ func (h *tuiE2EHub) handleModelList(_ context.Context, params appwire.ModelListP
 }
 
 func (h *tuiE2EHub) handleAuthStatus(_ context.Context, params appwire.AuthStatusParams) (appwire.AuthStatusResponse, error) {
+	defer h.notify()
 	h.recordAuthCall("status", params.Provider)
 	return appwire.AuthStatusResponse{Provider: "openai", Supported: true, ActiveSource: "signed-out"}, nil
 }
 
 func (h *tuiE2EHub) handleAuthLoginStart(_ context.Context, params appwire.AuthLoginStartParams) (appwire.AuthLoginStartResponse, error) {
+	defer h.notify()
 	h.recordAuthCall("login-start", params.Provider)
 	return appwire.AuthLoginStartResponse{
 		Provider: "openai",
@@ -2093,6 +2159,7 @@ func (h *tuiE2EHub) handleAuthLoginStart(_ context.Context, params appwire.AuthL
 }
 
 func (h *tuiE2EHub) handleAuthLoginComplete(_ context.Context, params appwire.AuthLoginCompleteParams) (appwire.AuthLoginCompleteResponse, error) {
+	defer h.notify()
 	h.recordAuthCall("login-complete", params.Provider)
 	h.mu.Lock()
 	h.authCompletions = append(h.authCompletions, params)
@@ -2109,6 +2176,7 @@ func (h *tuiE2EHub) handleAuthLoginComplete(_ context.Context, params appwire.Au
 }
 
 func (h *tuiE2EHub) handleAuthLogout(_ context.Context, params appwire.AuthLogoutParams) (appwire.AuthLogoutResponse, error) {
+	defer h.notify()
 	h.recordAuthCall("logout", params.Provider)
 	return appwire.AuthLogoutResponse{
 		Removed: true,
@@ -2117,6 +2185,7 @@ func (h *tuiE2EHub) handleAuthLogout(_ context.Context, params appwire.AuthLogou
 }
 
 func (h *tuiE2EHub) handleThreadStart(_ context.Context, params appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.failSpawn {
@@ -2151,6 +2220,7 @@ func (h *tuiE2EHub) handleThreadStart(_ context.Context, params appwire.ThreadSt
 }
 
 func (h *tuiE2EHub) handleThreadResume(_ context.Context, params appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.resumes = append(h.resumes, params)
@@ -2176,6 +2246,7 @@ func (h *tuiE2EHub) handleThreadResume(_ context.Context, params appwire.ThreadR
 }
 
 func (h *tuiE2EHub) handleTurnStart(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.failSend {
@@ -2186,6 +2257,7 @@ func (h *tuiE2EHub) handleTurnStart(_ context.Context, params appwire.TurnStartP
 }
 
 func (h *tuiE2EHub) handleTurnSteer(_ context.Context, params appwire.TurnSteerParams) (appwire.EmptyResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.steers = append(h.steers, params)
@@ -2193,6 +2265,7 @@ func (h *tuiE2EHub) handleTurnSteer(_ context.Context, params appwire.TurnSteerP
 }
 
 func (h *tuiE2EHub) handleTurnQueue(_ context.Context, params appwire.TurnQueueParams) (appwire.EmptyResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.queues = append(h.queues, params)
@@ -2200,6 +2273,7 @@ func (h *tuiE2EHub) handleTurnQueue(_ context.Context, params appwire.TurnQueueP
 }
 
 func (h *tuiE2EHub) handleTurnDrainAsSteer(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.EmptyResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	h.drains = append(h.drains, params)
@@ -2207,6 +2281,7 @@ func (h *tuiE2EHub) handleTurnDrainAsSteer(_ context.Context, params appwire.Tur
 }
 
 func (h *tuiE2EHub) handleTasksList(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	fail := h.failTasks
 	h.mu.Unlock()
@@ -2217,6 +2292,7 @@ func (h *tuiE2EHub) handleTasksList(context.Context, appwire.TaskListParams) (ap
 }
 
 func (h *tuiE2EHub) handleThreadTranscriptList(_ context.Context, params appwire.ThreadTranscriptListParams) (appwire.ThreadTranscriptListResponse, error) {
+	defer h.notify()
 	id := threadIDFromParams(params.Ref, "")
 	if id != "01LIVE" {
 		return appwire.ThreadTranscriptListResponse{}, appwire.Unavailable("thread not found: " + id)
@@ -2228,16 +2304,19 @@ func (h *tuiE2EHub) handleThreadTranscriptList(_ context.Context, params appwire
 }
 
 func (h *tuiE2EHub) handleTurnInterrupt(context.Context, appwire.TurnInterruptParams) (appwire.EmptyResponse, error) {
+	defer h.notify()
 	h.recordAction("interrupt")
 	return appwire.EmptyResponse{}, nil
 }
 
 func (h *tuiE2EHub) handleThreadCompactStart(context.Context, appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
+	defer h.notify()
 	h.recordAction("compact")
 	return appwire.EmptyResponse{}, nil
 }
 
 func (h *tuiE2EHub) handleThreadModelSet(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	h.models = append(h.models, params.Model)
 	h.mu.Unlock()
@@ -2245,6 +2324,7 @@ func (h *tuiE2EHub) handleThreadModelSet(_ context.Context, params appwire.Threa
 }
 
 func (h *tuiE2EHub) handleThreadClear(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
+	defer h.notify()
 	h.recordAction("clear")
 	h.mu.Lock()
 	defer h.mu.Unlock()
@@ -2265,6 +2345,7 @@ func (h *tuiE2EHub) handleThreadClear(context.Context, appwire.ThreadClearParams
 }
 
 func (h *tuiE2EHub) handleThreadFork(_ context.Context, params appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
+	defer h.notify()
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	if h.failFork {
@@ -2580,12 +2661,16 @@ func (h *tuiE2EHub) WaitForActionCount(t *testing.T, action string, count int) i
 
 func (h *tuiE2EHub) waitFor(t *testing.T, pred func() bool, desc string) {
 	t.Helper()
-	deadline := time.Now().Add(5 * time.Second)
-	for time.Now().Before(deadline) {
+	timer := time.NewTimer(5 * time.Second)
+	defer timer.Stop()
+	for {
 		if pred() {
 			return
 		}
-		time.Sleep(20 * time.Millisecond)
+		select {
+		case <-h.changed:
+		case <-timer.C:
+			t.Fatalf("timed out waiting for %s", desc)
+		}
 	}
-	t.Fatalf("timed out waiting for %s", desc)
 }
