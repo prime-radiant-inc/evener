@@ -27,6 +27,7 @@ type relaySession struct {
 	// fence before taking the write side so a blocked send can be interrupted
 	// without allowing a revoked epoch to enter a listener after replacement.
 	publishBoundary  sync.RWMutex
+	publishEntryHook func()
 	publicationEpoch uint64
 	publicationFence *relayPublicationFence
 
@@ -685,6 +686,9 @@ func (s *relaySession) publishToListenerAtEpoch(epoch uint64, fence *relayPublic
 	if epoch != 0 && (s.publicationEpoch != epoch || s.publicationFence != fence) {
 		s.publishBoundary.RUnlock()
 		return false
+	}
+	if hook := s.publishEntryHook; hook != nil {
+		hook()
 	}
 	select {
 	case listener.in <- delivery:

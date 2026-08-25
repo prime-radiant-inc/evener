@@ -155,6 +155,44 @@ type relayPublicationBarrier struct {
 	listener *relayListener
 }
 
+type relayPublisherEntryBarrier struct {
+	session     *relaySession
+	entered     chan struct{}
+	release     chan struct{}
+	enteredOnce sync.Once
+	releaseOnce sync.Once
+}
+
+func newRelayPublisherEntryBarrier(t *testing.T, session *relaySession) *relayPublisherEntryBarrier {
+	t.Helper()
+	barrier := &relayPublisherEntryBarrier{
+		session: session,
+		entered: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	session.publishBoundary.Lock()
+	session.publishEntryHook = func() {
+		barrier.enteredOnce.Do(func() { close(barrier.entered) })
+		<-barrier.release
+	}
+	session.publishBoundary.Unlock()
+	t.Cleanup(func() {
+		barrier.releasePublisher()
+		barrier.disable()
+	})
+	return barrier
+}
+
+func (b *relayPublisherEntryBarrier) releasePublisher() {
+	b.releaseOnce.Do(func() { close(b.release) })
+}
+
+func (b *relayPublisherEntryBarrier) disable() {
+	b.session.publishBoundary.Lock()
+	b.session.publishEntryHook = nil
+	b.session.publishBoundary.Unlock()
+}
+
 func newRelayPublicationBarrier(t *testing.T, session *relaySession, leaseID uint64) *relayPublicationBarrier {
 	t.Helper()
 	barrier := &relayPublicationBarrier{
@@ -894,18 +932,27 @@ func TestRelaySessionDisconnectRevokesBlockedPublicationBeforeRecovery(t *testin
 
 	session := relaySessionFor(t, source)
 	barrier := newRelayPublicationBarrier(t, session, lease.id)
+	entry := newRelayPublisherEntryBarrier(t, session)
 	session.mu.Lock()
 	epoch := session.epoch
+	fence := session.publicationFence
+	session.recovering = true
 	session.mu.Unlock()
 	staleDone := queueRelayNotificationAtEpoch(session, epoch, relayDelta("thread-1", "stale"))
 
-	// The stale publisher is now blocked on the listener's private input. The
-	// disconnect must revoke it before recovery can establish a replacement.
-	session.mu.Lock()
-	session.recovering = true
-	session.mu.Unlock()
-	session.disconnect(epoch)
+	// The entry barrier proves the stale job passed its old token check and
+	// acquired the publication read lock before revocation begins.
+	<-entry.entered
+	disconnectDone := make(chan struct{})
+	go func() {
+		session.disconnect(epoch)
+		close(disconnectDone)
+	}()
+	<-fence.revoked
+	entry.releasePublisher()
 	<-staleDone
+	<-disconnectDone
+	entry.disable()
 	<-barrier.listener.out
 	<-barrier.listener.out
 
@@ -954,21 +1001,27 @@ func TestRelaySessionPreparedHandoffDisconnectRevokesBlockedPublicationBeforeRec
 
 	session := relaySessionFor(t, source)
 	barrier := newRelayPublicationBarrier(t, session, lease.id)
+	entry := newRelayPublisherEntryBarrier(t, session)
 	session.mu.Lock()
 	epoch := session.epoch
+	fence := session.publicationFence
+	session.recovering = true
 	session.mu.Unlock()
 	staleDone := queueRelayNotificationAtEpoch(session, epoch, relayDelta("thread-1", "stale"))
 
 	// Ordinary disconnect only marks a prepared connection. The terminal
 	// handoff outcome is the deferred boundary that must revoke this epoch.
-	session.mu.Lock()
-	session.recovering = true
-	session.mu.Unlock()
+	<-entry.entered
 	session.disconnect(epoch)
-	if !result.result.Handoff.Commit() {
+	commitDone := make(chan bool, 1)
+	go func() { commitDone <- result.result.Handoff.Commit() }()
+	<-fence.revoked
+	entry.releasePublisher()
+	<-staleDone
+	if !<-commitDone {
 		t.Fatal("prepared handoff commit lost")
 	}
-	<-staleDone
+	entry.disable()
 	<-barrier.listener.out
 	<-barrier.listener.out
 
