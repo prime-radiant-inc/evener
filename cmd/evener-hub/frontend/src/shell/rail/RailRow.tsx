@@ -307,19 +307,25 @@ function TrailingChevron({ info }: { info: TreeRowInfo }) {
     // comment and dev/gallery-sections/tree.tsx's identical convention) -
     // out of tab order and hidden from assistive tech so it isn't a second,
     // redundant "toggle" announcement.
-    <button
-      type="button"
+    //
+    // A <span>, not a <button>: the chevron is a mouse-only affordance, and a
+    // <button> receives focus on click - a focused aria-hidden element is the
+    // exact violation Chrome's a11y console warns about ("blocked aria-hidden
+    // on an element because its descendant retained focus"). A non-focusable
+    // span can't hold focus, so aria-hidden is safe here. The owning treeitem
+    // is the Tree widget's one roving Tab stop; keyboard users toggle it with
+    // Left/Right arrow there, never via this glyph.
+    <span
       data-testid="rail-chevron"
       className={CLASS.chevronButton}
       aria-hidden="true"
-      tabIndex={-1}
       onClick={(event) => {
         event.stopPropagation();
         info.toggle();
       }}
     >
       <Chevron direction={info.expanded ? "down" : "right"} size={12} />
-    </button>
+    </span>
   );
 }
 
@@ -330,16 +336,17 @@ function ActionsMenu({ label, items }: { label: string; items: MenuItem[] }) {
   if (items.length === 0) return null;
   return (
     <Menu
-      // Same reasoning as Chevron's own tabIndex={-1} above: the row's
-      // single outer treeitem is the Tree widget's one roving Tab stop -
-      // without this, the trigger becomes a SECOND, always-focusable Tab
-      // stop on every row simultaneously, breaking that contract (Tab
-      // would reach "Actions for Row B" without ever reaching Row B's own
-      // treeitem). Still reachable by click; Menu's own consume-then-stop
-      // key handling (widgets/menu/index.tsx) is the other half of this -
-      // an ArrowDown/Enter/Space this trigger already gives meaning to
-      // must never also bubble into Tree's onKeyDown and move the roving
-      // tabindex to a different row out from under an open menu.
+      // The row's single outer treeitem is the Tree widget's one roving Tab
+      // stop - without triggerTabIndex={-1}, this trigger becomes a SECOND,
+      // always-focusable Tab stop on every row simultaneously, breaking that
+      // contract (Tab would reach "Actions for Row B" without ever reaching
+      // Row B's own treeitem). Still reachable by click; Menu's own
+      // consume-then-stop key handling (widgets/menu/index.tsx) is the other
+      // half of this - an ArrowDown/Enter/Space this trigger already gives
+      // meaning to must never also bubble into Tree's onKeyDown and move the
+      // roving tabindex to a different row out from under an open menu. (The
+      // chevron above sidesteps this differently: it is a non-focusable span,
+      // so it is simply never a tab stop at all.)
       triggerTabIndex={-1}
       variant="quiet"
       trigger={
