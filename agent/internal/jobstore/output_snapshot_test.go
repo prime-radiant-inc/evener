@@ -491,6 +491,37 @@ func TestReadOutputSnapshotTruncatedBelowPendingTailIsCorruption(t *testing.T) {
 	}
 }
 
+func TestReadOutputWindowSnapshotPendingSuccessorIsConcurrentChange(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	const path = "/job.log"
+	const oldContent = "AAAA"
+	const nextContent = "BBBB"
+	mustWriteSnapshotFixture(t, fs, path, []byte(oldContent), 4, 0)
+	if err := writeSnapshotMetadataFile(fs, outputPendingMetaPath(outputMetaPath(path)), []byte(nextContent), 8, 4); err != nil {
+		t.Fatalf("write pending metadata: %v", err)
+	}
+
+	_, err := readOutputWindowSnapshotFs(fs, path, 0, len(nextContent))
+	if !errors.Is(err, ErrOutputChangedDuringRead) {
+		t.Fatalf("snapshot error = %v, want ErrOutputChangedDuringRead", err)
+	}
+}
+
+func TestReadOutputWindowSnapshotPendingMetadataMismatchRemainsCorruption(t *testing.T) {
+	fs := afero.NewMemMapFs()
+	const path = "/job.log"
+	const content = "AAAA"
+	mustWriteSnapshotFixture(t, fs, path, []byte(content), 4, 0)
+	if err := writeSnapshotMetadataFile(fs, outputPendingMetaPath(outputMetaPath(path)), []byte("BBBB"), 4, 0); err != nil {
+		t.Fatalf("write pending metadata: %v", err)
+	}
+
+	_, err := readOutputWindowSnapshotFs(fs, path, 0, len(content))
+	if err == nil || err.Error() != "jobstore: output metadata does not match retained output" {
+		t.Fatalf("snapshot error = %v, want metadata corruption", err)
+	}
+}
+
 func mustWriteSnapshotFixture(t *testing.T, fs afero.Fs, path string, content []byte, total, retainedStart int64) {
 	t.Helper()
 	if err := writeSnapshotFixture(fs, path, content, total, retainedStart); err != nil {

@@ -30,6 +30,12 @@ var ErrInvalidLimit = errors.New("jobstore: invalid limit")
 // the lifetime end of the output stream.
 var ErrInvalidOffset = errors.New("jobstore: invalid offset")
 
+// errOutputPendingHandoff reports the prune protocol's transient handoff:
+// pending metadata names a newer retained tail while the old final metadata
+// and output are still published. Snapshot readers translate it to a
+// concurrent change; durable reopeners surface it to their caller.
+var errOutputPendingHandoff = errors.New("jobstore: output pending metadata handoff")
+
 // SearchOptions bounds a retained-output line search. All offsets are lifetime
 // byte offsets, even when the retained file begins after offset zero.
 type SearchOptions struct {
@@ -917,6 +923,13 @@ func readValidPendingOutputMeta(fs afero.Fs, path string, finalMetaPath string, 
 		return outputMeta{}, false, err
 	}
 	if meta.RetainedSHA256 != hash {
+		finalMeta, ok, err := readOutputMeta(fs, finalMetaPath)
+		if err != nil {
+			return outputMeta{}, false, err
+		}
+		if ok && pendingOutputMetadataHandoff(finalMeta, meta, retained, hash) {
+			return outputMeta{}, false, errOutputPendingHandoff
+		}
 		return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
 	}
 	return meta, true, nil
@@ -963,6 +976,26 @@ func readValidOutputMetaFs(fs afero.Fs, path string, outputPath string, retained
 		return outputMeta{}, false, errors.New("jobstore: output metadata does not match retained output")
 	}
 	return meta, true, nil
+}
+
+func pendingOutputMetadataHandoff(finalMeta, pendingMeta outputMeta, retained int64, outputHash string) bool {
+	finalRetained, err := outputMetaRetainedBytes(finalMeta)
+	if err != nil || finalRetained != retained {
+		return false
+	}
+	pendingRetained, err := outputMetaRetainedBytes(pendingMeta)
+	if err != nil || pendingRetained != retained {
+		return false
+	}
+	if pendingMeta.TotalBytes == finalMeta.TotalBytes && pendingMeta.RetainedStart == finalMeta.RetainedStart {
+		return false
+	}
+	if pendingMeta.TotalBytes-finalMeta.TotalBytes != pendingMeta.RetainedStart-finalMeta.RetainedStart {
+		return false
+	}
+	return pendingMeta.RetainedSHA256 == finalMeta.RetainedSHA256 ||
+		pendingMeta.RetainedSHA256 == outputHash ||
+		finalMeta.RetainedSHA256 == outputHash
 }
 
 func outputMetaRetainedBytes(meta outputMeta) (int64, error) {
