@@ -31,14 +31,13 @@ func FuzzSubagentPolicyProgram(f *testing.F) {
 
 		var parentEnv execenv.ExecutionEnvironment = &agenttest.DenyEnv{WorkDir: t.TempDir()}
 		workspace := ""
+		var sandboxProbers []sandbox.Prober
 		if selector == 1 {
 			workspace = t.TempDir()
 			parentEnv = execenv.NewLocalExecutionEnvironment(workspace)
+			sandboxProbers = []sandbox.Prober{bwrapCapableProber(workspace)}
 		}
-		parent := safzNewParent(t, agenttest.NewFakeClock(), 2, []int{0}, parentEnv)
-		if selector == 1 {
-			parent.cfg.testOnly.sandboxProber = bwrapCapableProber(workspace)
-		}
+		parent := safzNewParent(t, agenttest.NewFakeClock(), 2, []int{0}, parentEnv, sandboxProbers...)
 		ctx := context.Background()
 		agentType := ""
 		grantTools := []string(nil)
