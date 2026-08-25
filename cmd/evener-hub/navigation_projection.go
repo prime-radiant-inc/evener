@@ -132,7 +132,7 @@ func buildNavigationProjection(inputs navigationBuildInputs) (navigationProjecti
 		return navigationProjection{}, err
 	}
 	p := navigationProjection{inputs: cloneNavigationInputs(inputs), pinSectionIDs: make(map[string]bool), projects: make(map[string]hubcore.TreeProject), catalogs: make(map[navigationResourceKind][]hubcore.TreeProject), locations: make(map[string]hubapi.NavigationSessionLocation)}
-	p.inputs.Tree = cloneNavigationTree(inputs.Tree)
+	p.inputs.Tree = inputs.Tree.Snapshot()
 	p.live = p.inputs.Tree.Live
 	p.needsYou = p.inputs.Tree.NeedsYou
 	p.pinCandidates = navigationPinCandidates(inputs.Tree)
@@ -201,33 +201,6 @@ func cloneNavigationStringMap(in map[string]string) map[string]string {
 	out := make(map[string]string, len(in))
 	for key, value := range in {
 		out[key] = value
-	}
-	return out
-}
-
-func cloneNavigationTree(tree hubcore.Tree) hubcore.Tree {
-	return hubcore.Tree{
-		Live:             cloneNavigationNodes(tree.Live),
-		NeedsYou:         cloneNavigationNodes(tree.NeedsYou),
-		Projects:         cloneNavigationProjects(tree.Projects),
-		ArchivedProjects: cloneNavigationProjects(tree.ArchivedProjects),
-	}
-}
-
-func cloneNavigationProjects(projects []hubcore.TreeProject) []hubcore.TreeProject {
-	out := make([]hubcore.TreeProject, len(projects))
-	for index, project := range projects {
-		clone := project
-		// TierRows is authoritative and may contain rows private to hubcore's
-		// capped presentation fields. Retain cloned complete rows in exported
-		// fields so no retained slice aliases the source snapshot.
-		clone.Current, _ = project.TierRows("current")
-		clone.Recent, _ = project.TierRows("recent")
-		clone.Archived, _ = project.TierRows("archived")
-		clone.Current = cloneNavigationNodes(clone.Current)
-		clone.Recent = cloneNavigationNodes(clone.Recent)
-		clone.Archived = cloneNavigationNodes(clone.Archived)
-		out[index] = clone
 	}
 	return out
 }
@@ -493,79 +466,75 @@ func (p navigationProjection) ProjectPage(key, tier string, offset uint32, limit
 	return resource, nil
 }
 
-// The fitters marshal the complete candidate envelope, not a row or array
-// estimate. They always remove the deterministic rightmost branch first and
-// turn that removal into explicit resource/parent overflow metadata.
+// navigationEnvelopeMarshal is a test seam for counting complete candidate
+// probes. Production always uses encoding/json.Marshal.
+var navigationEnvelopeMarshal = json.Marshal
+
+// The fitters marshal complete candidate envelopes. When a resource is too
+// large, they retain the largest deterministic left-to-right node prefix found
+// by binary search; that is equivalent to pruning rightmost branches first but
+// needs O(log n) full-envelope probes rather than one marshal per removed node.
 func fitNavigationSection(resource *hubapi.NavigationSectionResource) {
-	for !navigationJSONFits(*resource, maxNavigationResponseBytes) {
-		resource.Truncated = true
-		if trimNavigationSummaryChildren(resource.Sessions) {
-			continue
-		}
-		if len(resource.Sessions) == 0 {
-			return
-		}
-		resource.Sessions = resource.Sessions[:len(resource.Sessions)-1]
-		resource.Remaining++
+	if navigationJSONFits(*resource, maxNavigationResponseBytes) {
+		return
 	}
+	original := cloneNavigationSummaries(resource.Sessions)
+	baseRemaining := resource.Remaining
+	budget := navigationFittingBudget(navigationSummaryNodes(original), func(budget int) bool {
+		rows, dropped := limitNavigationSummaries(original, budget)
+		candidate := *resource
+		candidate.Sessions = rows
+		candidate.Remaining = baseRemaining + dropped
+		candidate.Truncated = true
+		return navigationJSONFits(candidate, maxNavigationResponseBytes)
+	})
+	resource.Sessions, _ = limitNavigationSummaries(original, budget)
+	resource.Remaining = baseRemaining + len(original) - len(resource.Sessions)
+	resource.Truncated = true
 }
 
 func fitNavigationProjectPage(resource *hubapi.NavigationProjectPage) {
-	for !navigationJSONFits(*resource, maxNavigationResponseBytes) {
-		resource.Truncated = true
-		if trimNavigationSummaryChildren(resource.Sessions) {
-			continue
-		}
-		if len(resource.Sessions) == 0 {
-			return
-		}
-		resource.Sessions = resource.Sessions[:len(resource.Sessions)-1]
-		resource.Remaining++
+	if navigationJSONFits(*resource, maxNavigationResponseBytes) {
+		return
 	}
+	original := cloneNavigationSummaries(resource.Sessions)
+	baseRemaining := resource.Remaining
+	budget := navigationFittingBudget(navigationSummaryNodes(original), func(budget int) bool {
+		rows, dropped := limitNavigationSummaries(original, budget)
+		candidate := *resource
+		candidate.Sessions = rows
+		candidate.Remaining = baseRemaining + dropped
+		candidate.Truncated = true
+		return navigationJSONFits(candidate, maxNavigationResponseBytes)
+	})
+	resource.Sessions, _ = limitNavigationSummaries(original, budget)
+	resource.Remaining = baseRemaining + len(original) - len(resource.Sessions)
+	resource.Truncated = true
 }
 
 func fitNavigationProject(resource *hubapi.NavigationProjectResource) {
-	for !navigationJSONFits(*resource, maxNavigationResponseBytes) {
-		resource.Truncated = true
-		if trimNavigationTier(&resource.Archived) || trimNavigationTier(&resource.Recent) || trimNavigationTier(&resource.Current) {
-			continue
-		}
+	if navigationJSONFits(*resource, maxNavigationResponseBytes) {
 		return
 	}
+	original := cloneNavigationProjectResource(*resource)
+	budget := navigationFittingBudget(navigationSummaryNodes(original.Current.Sessions)+navigationSummaryNodes(original.Recent.Sessions)+navigationSummaryNodes(original.Archived.Sessions), func(budget int) bool {
+		candidate := limitNavigationProject(original, budget)
+		return navigationJSONFits(candidate, maxNavigationResponseBytes)
+	})
+	*resource = limitNavigationProject(original, budget)
 }
 
-func trimNavigationTier(tier *hubapi.NavigationTier) bool {
-	if trimNavigationSummaryChildren(tier.Sessions) {
-		return true
-	}
-	if len(tier.Sessions) == 0 {
-		return false
-	}
-	tier.Sessions = tier.Sessions[:len(tier.Sessions)-1]
-	tier.Remaining++
-	return true
-}
-
-func trimNavigationSummaryChildren(rows hubapi.NavigationArray[hubapi.NavigationSessionSummary]) bool {
-	for index := len(rows) - 1; index >= 0; index-- {
-		if trimNavigationSummary(&rows[index]) {
-			return true
+func navigationFittingBudget(nodes int, fits func(int) bool) int {
+	low, high := 0, nodes+1 // nodes is known not to fit; zero always fits.
+	for high-low > 1 {
+		middle := low + (high-low)/2
+		if fits(middle) {
+			low = middle
+		} else {
+			high = middle
 		}
 	}
-	return false
-}
-
-func trimNavigationSummary(summary *hubapi.NavigationSessionSummary) bool {
-	for index := len(summary.Children) - 1; index >= 0; index-- {
-		if trimNavigationSummary(&summary.Children[index]) {
-			return true
-		}
-		removed := navigationSummaryWeight(summary.Children[index])
-		summary.Children = summary.Children[:index]
-		summary.OmittedDescendants += removed
-		return true
-	}
-	return false
+	return low
 }
 
 func navigationSummaryWeight(summary hubapi.NavigationSessionSummary) int {
@@ -577,8 +546,90 @@ func navigationSummaryWeight(summary hubapi.NavigationSessionSummary) int {
 }
 
 func navigationJSONFits(value any, maxBytes int) bool {
-	encoded, err := json.Marshal(value)
+	encoded, err := navigationEnvelopeMarshal(value)
 	return err == nil && len(encoded) <= maxBytes
+}
+
+func navigationSummaryNodes(rows []hubapi.NavigationSessionSummary) int {
+	count := 0
+	for _, row := range rows {
+		count++
+		count += navigationSummaryNodes(row.Children)
+	}
+	return count
+}
+
+func cloneNavigationSummaries(rows []hubapi.NavigationSessionSummary) hubapi.NavigationArray[hubapi.NavigationSessionSummary] {
+	clone := make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], len(rows))
+	for index, row := range rows {
+		clone[index] = cloneNavigationSummary(row)
+	}
+	return clone
+}
+
+func limitNavigationSummaries(rows []hubapi.NavigationSessionSummary, budget int) (hubapi.NavigationArray[hubapi.NavigationSessionSummary], int) {
+	remaining := budget
+	limited := make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], 0, len(rows))
+	for index, row := range rows {
+		candidate, included, complete := limitNavigationSummary(row, &remaining)
+		if !included {
+			return limited, len(rows) - index
+		}
+		limited = append(limited, candidate)
+		if !complete {
+			return limited, len(rows) - index - 1
+		}
+	}
+	return limited, 0
+}
+
+func limitNavigationSummary(row hubapi.NavigationSessionSummary, budget *int) (hubapi.NavigationSessionSummary, bool, bool) {
+	if *budget == 0 {
+		return hubapi.NavigationSessionSummary{}, false, false
+	}
+	*budget--
+	limited := cloneNavigationSummary(row)
+	limited.Children = hubapi.NavigationArray[hubapi.NavigationSessionSummary]{}
+	for index, child := range row.Children {
+		candidate, included, complete := limitNavigationSummary(child, budget)
+		if !included {
+			for _, omitted := range row.Children[index:] {
+				limited.OmittedDescendants += navigationSummaryWeight(omitted)
+			}
+			return limited, true, false
+		}
+		limited.Children = append(limited.Children, candidate)
+		if !complete {
+			for _, omitted := range row.Children[index+1:] {
+				limited.OmittedDescendants += navigationSummaryWeight(omitted)
+			}
+			return limited, true, false
+		}
+	}
+	return limited, true, true
+}
+
+func cloneNavigationProjectResource(resource hubapi.NavigationProjectResource) hubapi.NavigationProjectResource {
+	clone := resource
+	clone.Current.Sessions = cloneNavigationSummaries(resource.Current.Sessions)
+	clone.Recent.Sessions = cloneNavigationSummaries(resource.Recent.Sessions)
+	clone.Archived.Sessions = cloneNavigationSummaries(resource.Archived.Sessions)
+	return clone
+}
+
+func limitNavigationProject(resource hubapi.NavigationProjectResource, budget int) hubapi.NavigationProjectResource {
+	resource.Truncated = true
+	resource.Current.Sessions, resource.Current.Remaining = limitNavigationTier(resource.Current, budget)
+	budget -= navigationSummaryNodes(resource.Current.Sessions)
+	resource.Recent.Sessions, resource.Recent.Remaining = limitNavigationTier(resource.Recent, budget)
+	budget -= navigationSummaryNodes(resource.Recent.Sessions)
+	resource.Archived.Sessions, resource.Archived.Remaining = limitNavigationTier(resource.Archived, budget)
+	return resource
+}
+
+func limitNavigationTier(tier hubapi.NavigationTier, budget int) (hubapi.NavigationArray[hubapi.NavigationSessionSummary], int) {
+	rows, dropped := limitNavigationSummaries(tier.Sessions, budget)
+	return rows, tier.Remaining + dropped
 }
 
 func (p navigationProjection) Location(ref string) (hubapi.NavigationSessionLocation, bool) {

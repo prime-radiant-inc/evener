@@ -1808,6 +1808,25 @@ func TestTreeProjectPageReturnsCappedAwayTierRows(t *testing.T) {
 	}
 }
 
+func TestTreeSnapshotClonesAuthoritativeTierRows(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	metas := make([]schema.SessionMeta, 0, 60)
+	for index := range 60 {
+		metas = append(metas, schema.SessionMeta{ID: fmt.Sprintf("01SNAP%02d", index), CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/snapshot"}})
+	}
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	snapshot := tree.Snapshot()
+	original, _ := tree.Projects[0].TierRows("current")
+	cloned, _ := snapshot.Projects[0].TierRows("current")
+	if len(original) != 60 || len(cloned) != 60 {
+		t.Fatalf("authoritative rows original=%d snapshot=%d", len(original), len(cloned))
+	}
+	original[55].Title = "mutated"
+	if cloned[55].Title == "mutated" {
+		t.Fatal("snapshot authoritative tier aliases original")
+	}
+}
+
 func fuzzScenarioAllTestSessionsClassifyAsTestRun(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0)
 	mk := func(id, origin string) schema.SessionMeta {

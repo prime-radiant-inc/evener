@@ -37,6 +37,45 @@ type Tree struct {
 	favoriteLive     []TreeNode
 }
 
+// Snapshot returns a deep immutable copy of a tree, including the uncapped
+// private tier slices retained for pagination. Consumers that retain a tree
+// beyond their input snapshot must use this instead of copying Tree values.
+func (t Tree) Snapshot() Tree {
+	return Tree{
+		NeedsYou:         cloneTreeNodes(t.NeedsYou),
+		Live:             cloneTreeNodes(t.Live),
+		Projects:         cloneTreeProjects(t.Projects),
+		ArchivedProjects: cloneTreeProjects(t.ArchivedProjects),
+		favoriteLive:     cloneTreeNodes(t.favoriteLive),
+	}
+}
+
+func cloneTreeProjects(projects []TreeProject) []TreeProject {
+	out := make([]TreeProject, len(projects))
+	for index, project := range projects {
+		out[index] = project
+		out[index].Current = cloneTreeNodes(project.Current)
+		out[index].Recent = cloneTreeNodes(project.Recent)
+		out[index].Archived = cloneTreeNodes(project.Archived)
+		out[index].allCurrent = cloneTreeNodes(project.allCurrent)
+		out[index].allRecent = cloneTreeNodes(project.allRecent)
+		out[index].allArchived = cloneTreeNodes(project.allArchived)
+	}
+	return out
+}
+
+func cloneTreeNodes(nodes []TreeNode) []TreeNode {
+	if nodes == nil {
+		return nil
+	}
+	out := make([]TreeNode, len(nodes))
+	for index, node := range nodes {
+		out[index] = node
+		out[index].Children = cloneTreeNodes(node.Children)
+	}
+	return out
+}
+
 // FavoriteCandidates returns every uncapped, top-level session row that is
 // eligible for the pinned tier. It deliberately reads the retained full tier
 // slices, while excluding archived projects and synthetic cluster rows.

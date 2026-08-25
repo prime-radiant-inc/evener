@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/hubapi"
 )
@@ -267,6 +268,105 @@ func TestNavigationProjectionCapsChildrenAndPreservesRowFields(t *testing.T) {
 	if row.Ref != "local:session-root" || row.HostID != "local" || row.SessionID != "session-root" || row.Title != root.Title || row.Project != root.Project || row.State != root.State || row.Kind != root.Kind || row.Branch != root.Branch || row.ClusterCount != root.ClusterCount || !row.Favorite || !row.Rename || !row.Live || !row.AskPending || !row.Dormant || row.UpdatedAt == nil || !row.UpdatedAt.Equal(updated) || row.MoreSubagents != root.MoreSubagents {
 		t.Fatalf("row fields diverged: %#v", row)
 	}
+}
+
+func TestNavigationProjectionSnapshotsAuthoritativeTierRows(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	metas := make([]schema.SessionMeta, 0, 60)
+	for index := range 60 {
+		metas = append(metas, schema.SessionMeta{ID: fmt.Sprintf("session-snapshot-%03d", index), CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/snapshot"}})
+	}
+	tree := hubcore.BuildTreeAt(metas, nil, map[hubcore.ArchiveKey]bool{}, now)
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: tree})
+	if err != nil {
+		t.Fatal(err)
+	}
+	key := tree.Projects[0].Key
+	before, fingerprint, err := projection.Resource(navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: key, Tier: "current", Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := tree.Projects[0].TierRows("current")
+	rows[0].Title = "mutated authoritative source"
+	after, nextFingerprint, err := projection.Resource(navigationResourceKey{Kind: navigationResourceProjectPage, ProjectKey: key, Tier: "current", Limit: 50})
+	if err != nil || fingerprint != nextFingerprint || before.(hubapi.NavigationProjectPage).Sessions[0].Title != after.(hubapi.NavigationProjectPage).Sessions[0].Title {
+		t.Fatalf("authoritative mutation changed projection: %x %x %v", fingerprint, nextFingerprint, err)
+	}
+	location, ok := projection.Location(before.(hubapi.NavigationProjectPage).Sessions[0].Ref)
+	if !ok || location.Session == nil || location.Session.Title == "mutated authoritative source" {
+		t.Fatalf("authoritative mutation changed location: %#v", location)
+	}
+}
+
+func TestNavigationProjectionFittingUsesLogarithmicEnvelopeProbes(t *testing.T) {
+	roots := oversizeNavigationRoots()
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: roots}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	originalMarshal := navigationEnvelopeMarshal
+	probes := 0
+	navigationEnvelopeMarshal = func(value any) ([]byte, error) {
+		probes++
+		return json.Marshal(value)
+	}
+	defer func() { navigationEnvelopeMarshal = originalMarshal }()
+	section := projection.LivePage(0, 50)
+	encoded, err := json.Marshal(section)
+	if err != nil || len(encoded) > maxNavigationResponseBytes || !section.Truncated {
+		t.Fatalf("invalid bounded section bytes=%d truncated=%v err=%v", len(encoded), section.Truncated, err)
+	}
+	if probes > 14 {
+		t.Fatalf("full-envelope probes=%d, want logarithmic bound <=14", probes)
+	}
+}
+
+func TestNavigationProjectionCutsTwoThousandNodesBeforeByteLimit(t *testing.T) {
+	roots := make([]hubcore.TreeNode, 40)
+	for root := range roots {
+		children := make([]hubcore.TreeNode, 50)
+		for child := range children {
+			children[child] = hubcore.TreeNode{ID: fmt.Sprintf("session-node-%03d-%03d", root, child), Title: "small", Kind: "subagent", State: "idle"}
+		}
+		roots[root] = hubcore.TreeNode{ID: fmt.Sprintf("session-node-root-%03d", root), Title: "small", Kind: "session", State: "idle", Children: children}
+	}
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: roots}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	section := projection.LivePage(0, 50)
+	encoded, _ := json.Marshal(section)
+	if got := countNavigationNodes(section.Sessions); got != maxNavigationNodes || !section.Truncated || len(encoded) >= maxNavigationResponseBytes {
+		t.Fatalf("nodes=%d truncated=%v bytes=%d", got, section.Truncated, len(encoded))
+	}
+}
+
+func TestNavigationProjectionFingerprintSurvivesReturnedOutputMutation(t *testing.T) {
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: []hubcore.TreeNode{{ID: "session", Title: "before", Kind: "session", State: "idle"}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource, fingerprint, err := projection.Resource(navigationResourceKey{Kind: navigationResourceLive, Limit: 50})
+	if err != nil {
+		t.Fatal(err)
+	}
+	resource.(hubapi.NavigationSectionResource).Sessions[0].Title = "mutated returned output"
+	_, nextFingerprint, err := projection.Resource(navigationResourceKey{Kind: navigationResourceLive, Limit: 50})
+	if err != nil || fingerprint != nextFingerprint {
+		t.Fatalf("returned output changed fingerprint: %x %x %v", fingerprint, nextFingerprint, err)
+	}
+}
+
+func oversizeNavigationRoots() []hubcore.TreeNode {
+	roots := make([]hubcore.TreeNode, 40)
+	for root := range roots {
+		children := make([]hubcore.TreeNode, 50)
+		for child := range children {
+			children[child] = hubcore.TreeNode{ID: fmt.Sprintf("session-log-%03d-%03d", root, child), Title: strings.Repeat("t", maxNavigationTitleRunes), Project: strings.Repeat("p", maxNavigationLabelRunes), Branch: strings.Repeat("b", maxNavigationLabelRunes), Kind: "subagent", State: "idle"}
+		}
+		roots[root] = hubcore.TreeNode{ID: fmt.Sprintf("session-log-root-%03d", root), Title: strings.Repeat("t", maxNavigationTitleRunes), Project: strings.Repeat("p", maxNavigationLabelRunes), Branch: strings.Repeat("b", maxNavigationLabelRunes), Kind: "session", State: "idle", Children: children}
+	}
+	return roots
 }
 
 func deepNavigationNode(depth int) hubcore.TreeNode {
