@@ -376,12 +376,19 @@ describe("Stillwater direct interactions", () => {
     expect(result.store.getState().voice.ended).toBe(true);
   });
 
-  it("renders deterministic screen recovery and Settings controls without remote behavior", () => {
+  it("renders deterministic screen recovery and Settings controls without remote behavior", async () => {
     const error = renderRoot("sessions", "ios", "error");
     let main = mainFor("sessions");
     expect(main.querySelector('[data-screen-state="error"]')).toBeVisible();
     fireEvent.click(within(main).getByRole("button", { name: "Retry" }));
-    expect(error.store.getState().refreshState).toBe("refreshing");
+    await waitFor(() => {
+      expect(error.store.getState()).toMatchObject({
+        scenario: "baseline",
+        route: { kind: "root", tab: "sessions" },
+      });
+      expect(main.querySelector('[data-screen-state="error"]')).toBeNull();
+      expect(main.querySelector("[data-session-group-id]")).toBeVisible();
+    });
 
     cleanup();
     const settings = renderRoot("settings");

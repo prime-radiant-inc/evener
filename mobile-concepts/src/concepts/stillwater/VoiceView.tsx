@@ -1,4 +1,5 @@
 import {
+  selectCanMutate,
   selectCurrentVoiceLevel,
   selectCurrentVoiceStep,
 } from "../../core/selectors";
@@ -45,7 +46,7 @@ export function VoiceView({ state, sessionId, dispatch }: VoiceViewProps) {
   }
   const level = selectCurrentVoiceLevel(state);
   const displayedLevel = state.voice.muted || state.voice.stopped ? 0 : level;
-  const offline = state.projection.screenState === "offline";
+  const canMutate = selectCanMutate(state);
 
   return (
     <div className="sw-voice sw-route-enter">
@@ -105,7 +106,7 @@ export function VoiceView({ state, sessionId, dispatch }: VoiceViewProps) {
               type="button"
               aria-label={`Set voice state: ${voiceStep.state}`}
               aria-pressed={voiceStep.id === step.id}
-              disabled={offline}
+              disabled={!canMutate}
               key={voiceStep.id}
               onClick={() =>
                 dispatch({ type: "setVoiceState", state: voiceStep.state })
@@ -122,21 +123,21 @@ export function VoiceView({ state, sessionId, dispatch }: VoiceViewProps) {
         <legend className="sw-visually-hidden">Voice controls</legend>
         <button
           type="button"
-          disabled={state.voice.stopped || offline}
+          disabled={state.voice.stopped || !canMutate}
           onClick={() => dispatch({ type: "advanceVoice" })}
         >
           Advance voice state
         </button>
         <button
           type="button"
-          disabled={offline}
+          disabled={!canMutate}
           onClick={() => dispatch({ type: "toggleVoiceMute" })}
         >
           {state.voice.muted ? "Unmute" : "Mute"}
         </button>
         <button
           type="button"
-          disabled={state.voice.stopped || offline}
+          disabled={state.voice.stopped || !canMutate}
           onClick={() => dispatch({ type: "stopVoice" })}
         >
           <Icon name="stop" decorative />
@@ -145,7 +146,7 @@ export function VoiceView({ state, sessionId, dispatch }: VoiceViewProps) {
         <button
           className="sw-danger-action"
           type="button"
-          disabled={offline}
+          disabled={!canMutate}
           onClick={() => dispatch({ type: "endVoice" })}
         >
           End

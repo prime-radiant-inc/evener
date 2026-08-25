@@ -1,5 +1,8 @@
 import type { QuestionFixture } from "../../core/model";
-import { selectQuestionSubmitValidity } from "../../core/selectors";
+import {
+  selectCanMutate,
+  selectQuestionSubmitValidity,
+} from "../../core/selectors";
 import type { PrototypeAction, PrototypeState } from "../../core/state";
 import { StatusLabel } from "../shared/StatusLabel";
 
@@ -13,7 +16,7 @@ export function QuestionCard({ question, state, dispatch }: QuestionCardProps) {
   const answer = state.answers[question.id];
   const selectedOptionIds = answer?.selectedOptionIds ?? [];
   const submitted = answer?.submitted ?? false;
-  const offline = state.projection.screenState === "offline";
+  const canMutate = selectCanMutate(state);
   const answerValid = selectQuestionSubmitValidity(
     state,
     question.id,
@@ -49,7 +52,6 @@ export function QuestionCard({ question, state, dispatch }: QuestionCardProps) {
       data-question-id={question.id}
       onSubmit={(event) => {
         event.preventDefault();
-        if (offline) return;
         dispatch({
           type: "resolveQuestion",
           questionId: question.id,
@@ -57,7 +59,7 @@ export function QuestionCard({ question, state, dispatch }: QuestionCardProps) {
         });
       }}
     >
-      {offline ? (
+      {!canMutate ? (
         <p className="sw-offline-guard" data-offline-guard="question">
           This saved question is read-only and cannot be resolved offline.
         </p>
@@ -77,7 +79,7 @@ export function QuestionCard({ question, state, dispatch }: QuestionCardProps) {
                 name={`question-${question.id}`}
                 aria-label={option.label}
                 checked={selectedOptionIds.includes(option.id)}
-                disabled={offline}
+                disabled={!canMutate}
                 onChange={(event) =>
                   dispatch({
                     type: "setQuestionOption",
@@ -103,7 +105,7 @@ export function QuestionCard({ question, state, dispatch }: QuestionCardProps) {
           <textarea
             aria-label="Note"
             value={answer?.note ?? ""}
-            disabled={offline}
+            disabled={!canMutate}
             onChange={(event) =>
               dispatch({
                 type: "setQuestionNote",
@@ -119,7 +121,7 @@ export function QuestionCard({ question, state, dispatch }: QuestionCardProps) {
         <button
           className="sw-primary-action"
           type="submit"
-          disabled={!answerValid || offline}
+          disabled={!answerValid || !canMutate}
         >
           Submit answer
         </button>
@@ -127,7 +129,7 @@ export function QuestionCard({ question, state, dispatch }: QuestionCardProps) {
           <button
             type="button"
             data-question-resolution="fallback"
-            disabled={offline}
+            disabled={!canMutate}
             onClick={() =>
               dispatch({
                 type: "resolveQuestion",
@@ -143,7 +145,7 @@ export function QuestionCard({ question, state, dispatch }: QuestionCardProps) {
           <button
             type="button"
             data-question-resolution="decide"
-            disabled={offline}
+            disabled={!canMutate}
             onClick={() =>
               dispatch({
                 type: "resolveQuestion",
@@ -159,7 +161,7 @@ export function QuestionCard({ question, state, dispatch }: QuestionCardProps) {
           <button
             type="button"
             data-question-resolution="skip"
-            disabled={offline}
+            disabled={!canMutate}
             onClick={() =>
               dispatch({
                 type: "resolveQuestion",
