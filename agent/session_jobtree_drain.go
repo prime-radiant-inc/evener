@@ -583,11 +583,12 @@ func delegateAbandonedByDrain(row delegateSnapshot, now, drainStartedAt time.Tim
 // child. Marking once per pass gives every reader one answer for the cost of
 // one snapshot per session per pass.
 //
-// It is gated on TurnEndsProcess. Under serve the session outlives the turn, a
-// stop-requested delegate is nobody's shutdown problem, and DrainJobTree runs
-// for nested delegates too — so without the gate #378 abandoned interactive
-// grandchildren with "so shutdown can proceed" wording, in a process that was
-// not shutting down.
+// The one-shot fallback is gated on TurnEndsProcess. Under serve the session
+// outlives the turn, so an unstopped delegate is nobody's shutdown problem; an
+// explicit stop request is different, because the caller has already declared
+// that delegate's work over and the interactive drain must not wait forever.
+// DrainJobTree runs for nested delegates too, so this distinction applies at
+// every level without abandoning work a user has not stopped.
 //
 // A final mark is monotone only for its captured generation. Activity clears an
 // armed never-stopped phase, terminal evidence clears every phase, and a resumed
@@ -595,7 +596,7 @@ func delegateAbandonedByDrain(row delegateSnapshot, now, drainStartedAt time.Tim
 // arrives from an abandoned generation anyway is still delivered — deliveries
 // land in the PARENT's own pending set, which this skip never hides.
 func (s *Session) markDrainAbandonedDelegates(now, drainStartedAt time.Time) {
-	if s == nil || !s.cfg.TurnEndsProcess {
+	if s == nil {
 		return
 	}
 	rows := make(map[string]delegateSnapshot)
@@ -621,7 +622,7 @@ func (s *Session) markDrainAbandonedDelegates(now, drainStartedAt time.Time) {
 			s.clearDrainGraceChild(child.id)
 			continue
 		}
-		if !tracked || !delegateAbandonedByDrain(row, now, drainStartedAt) {
+		if !tracked || (!s.cfg.TurnEndsProcess && row.pendingStopSeq == 0) || !delegateAbandonedByDrain(row, now, drainStartedAt) {
 			s.clearDrainGraceChild(child.id)
 			child.markDrainAbandonedDelegates(now, drainStartedAt)
 			continue
