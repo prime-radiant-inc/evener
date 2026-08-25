@@ -16,6 +16,73 @@ function isRecord(value: unknown): value is RecordValue {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
+function inspectPlainRecord(value: unknown, path: string): ValidationResult {
+  if (!isRecord(value)) return path;
+  const prototype = Object.getPrototypeOf(value);
+  if (prototype !== Object.prototype && prototype !== null) return path;
+  const keys = Reflect.ownKeys(value);
+  const descriptors = Object.getOwnPropertyDescriptors(
+    value,
+  ) as unknown as Record<PropertyKey, PropertyDescriptor>;
+  for (const key of keys) {
+    if (typeof key !== "string") return path;
+    const descriptor = descriptors[key];
+    if (!descriptor) return path;
+    if (
+      !descriptor.enumerable ||
+      !("value" in descriptor) ||
+      descriptor.get !== undefined ||
+      descriptor.set !== undefined
+    ) {
+      return path;
+    }
+  }
+  return null;
+}
+
+function inspectPlainArray(value: unknown, path: string): ValidationResult {
+  if (!Array.isArray(value)) return path;
+  if (Object.getPrototypeOf(value) !== Array.prototype) return path;
+  const keys = Reflect.ownKeys(value);
+  const descriptors = Object.getOwnPropertyDescriptors(
+    value,
+  ) as unknown as Record<PropertyKey, PropertyDescriptor>;
+  const lengthDescriptor = descriptors.length;
+  if (
+    !lengthDescriptor ||
+    lengthDescriptor.enumerable ||
+    !("value" in lengthDescriptor) ||
+    !Number.isSafeInteger(lengthDescriptor.value) ||
+    lengthDescriptor.value < 0
+  ) {
+    return path;
+  }
+  const length = lengthDescriptor.value as number;
+  if (keys.length !== length + 1) return path;
+  for (const key of keys) {
+    if (typeof key !== "string") return path;
+    if (key === "length") continue;
+    const index = Number(key);
+    if (!Number.isSafeInteger(index) || index < 0 || index >= length)
+      return path;
+    if (String(index) !== key) return path;
+    const descriptor = descriptors[key];
+    if (!descriptor) return path;
+    if (
+      !descriptor.enumerable ||
+      !("value" in descriptor) ||
+      descriptor.get !== undefined ||
+      descriptor.set !== undefined
+    ) {
+      return path;
+    }
+  }
+  for (let index = 0; index < length; index += 1) {
+    if (!Object.hasOwn(descriptors, String(index))) return path;
+  }
+  return null;
+}
+
 function safeString(value: unknown, path: string): ValidationResult {
   if (typeof value !== "string") return path;
   if (/(?:https?:)?\/\//i.test(value)) return path;
@@ -45,13 +112,17 @@ function exactRecord(
   keys: readonly string[],
   path: string,
 ): ValidationResult {
+  const shape = inspectPlainRecord(value, path);
+  if (shape) return shape;
   if (!isRecord(value)) return path;
   const allowed = new Set(keys);
-  for (const key of Object.keys(value)) {
+  const ownKeys = Reflect.ownKeys(value) as string[];
+  for (const key of ownKeys) {
     if (!allowed.has(key)) return path;
   }
+  const present = new Set(ownKeys);
   for (const key of keys) {
-    if (!Object.hasOwn(value, key)) return `${path}.${key}`;
+    if (!present.has(key)) return `${path}.${key}`;
   }
   return null;
 }
@@ -61,6 +132,8 @@ function validateArray(
   path: string,
   validator: (item: unknown, path: string) => ValidationResult,
 ): ValidationResult {
+  const shape = inspectPlainArray(value, path);
+  if (shape) return shape;
   if (!Array.isArray(value)) return path;
   for (const [index, item] of value.entries()) {
     const invalid = validator(item, `${path}[${index}]`);
@@ -489,22 +562,33 @@ export function decodeFixture(
   fallback: PrototypeFixture,
   diagnostics: DiagnosticSink,
 ): PrototypeFixture {
-  if (!isRecord(value)) {
-    diagnostics.report({ code: "fixture-invalid", path: "$" });
-    return fallback;
+  let diagnostic: { code: "fixture-invalid" | "fixture-version"; path: string };
+  try {
+    if (!isRecord(value)) {
+      diagnostic = { code: "fixture-invalid", path: "$" };
+    } else {
+      const rootShape = inspectPlainRecord(value, "$");
+      if (rootShape) {
+        diagnostic = { code: "fixture-invalid", path: rootShape };
+      } else {
+        const versionDescriptor = Object.getOwnPropertyDescriptor(
+          value,
+          "version",
+        );
+        if (!versionDescriptor) {
+          diagnostic = { code: "fixture-invalid", path: "$.version" };
+        } else if (versionDescriptor.value !== 1) {
+          diagnostic = { code: "fixture-version", path: "$.version" };
+        } else {
+          const invalid = validateFixture(value);
+          if (!invalid) return value as unknown as PrototypeFixture;
+          diagnostic = { code: "fixture-invalid", path: invalid };
+        }
+      }
+    }
+  } catch {
+    diagnostic = { code: "fixture-invalid", path: "$" };
   }
-  if (!Object.hasOwn(value, "version")) {
-    diagnostics.report({ code: "fixture-invalid", path: "$.version" });
-    return fallback;
-  }
-  if (value.version !== 1) {
-    diagnostics.report({ code: "fixture-version", path: "$.version" });
-    return fallback;
-  }
-  const invalid = validateFixture(value);
-  if (invalid) {
-    diagnostics.report({ code: "fixture-invalid", path: invalid });
-    return fallback;
-  }
-  return value as unknown as PrototypeFixture;
+  diagnostics.report(diagnostic);
+  return fallback;
 }
