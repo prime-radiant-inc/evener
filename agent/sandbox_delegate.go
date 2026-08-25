@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/delegatestore"
+	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/sandbox"
 )
 
@@ -16,7 +17,107 @@ type delegatePreparedEnvironment struct {
 	stableController bool
 }
 
+type delegateSandboxErrorClass string
+
+const delegateSandboxErrorClassInvalidRequest delegateSandboxErrorClass = "invalid_request"
+
+// delegateSandboxRequestError preserves the model-facing explanation while
+// exposing the machine-readable rejection class and fields to in-process
+// callers. The structured data is the behavioral contract; Error remains the
+// human-facing repair guidance.
+type delegateSandboxRequestError struct {
+	Class             delegateSandboxErrorClass
+	InvalidParameters []string
+	cause             error
+}
+
+func newDelegateSandboxRequestError(cause error, invalidParameters ...string) error {
+	return &delegateSandboxRequestError{
+		Class:             delegateSandboxErrorClassInvalidRequest,
+		InvalidParameters: append([]string(nil), invalidParameters...),
+		cause:             cause,
+	}
+}
+
+func (e *delegateSandboxRequestError) Error() string { return e.cause.Error() }
+
+func (e *delegateSandboxRequestError) Unwrap() error { return e.cause }
+
+// rejectUnavailableDelegateSandboxControls protects explicit confinement
+// requests from generic argument repair. Capability-derived delegate schemas
+// omit controls that the current session cannot enforce; because those schemas
+// also forbid additional properties, RepairArgs would otherwise classify the
+// controls as hallucinated keys and silently delete the requested boundary.
+// Inspect schema membership before repair and reject every supplied control the
+// schema cannot honor. Other tools, supported controls, and unrelated unknown
+// fields retain the generic repair behavior.
+func rejectUnavailableDelegateSandboxControls(toolName string, parameters, args map[string]any) error {
+	if toolName != "delegate" {
+		return nil
+	}
+	properties, _ := parameters["properties"].(map[string]any)
+	invalid := make([]string, 0, 2)
+	for _, field := range []string{"sandbox", "sandbox_net"} {
+		if _, supplied := args[field]; !supplied {
+			continue
+		}
+		if _, supported := properties[field]; supported {
+			continue
+		}
+		invalid = append(invalid, field)
+	}
+	if len(invalid) == 0 {
+		return nil
+	}
+	return newDelegateSandboxRequestError(
+		fmt.Errorf("invalid_request: delegate sandbox controls unavailable in this session: %s; omit every listed parameter", strings.Join(invalid, ", ")),
+		invalid...,
+	)
+}
+
 type delegatePreparedEnvironmentContextKey struct{}
+
+// delegateSandboxSchemaForEnv is the lock-safe form used while tool/prompt
+// caches are rebuilt under s.mu. Callers must pass the environment snapshot
+// they already own instead of calling currentEnv again.
+func (s *Session) delegateSandboxSchemaForEnv(env execenv.ExecutionEnvironment) tool.DelegateSandboxSchema {
+	host := s.sandboxHostFacts()
+	if !delegateSandboxBackendAvailable(host) {
+		return tool.DelegateSandboxSchema{Available: false}
+	}
+	parentMode, parentNetwork, parentWriteBlocked := parentSandboxFloorForEnv(env)
+	modes := make([]string, 0, len(sandbox.AllModes()))
+	for _, mode := range sandbox.AllModes() {
+		if delegateSandboxModeAllowed(mode, parentMode, parentNetwork, parentWriteBlocked) {
+			modes = append(modes, mode.String())
+		}
+	}
+	result := tool.DelegateSandboxSchema{
+		Available:          true,
+		Modes:              modes,
+		SandboxDescription: fmt.Sprintf("The current parent floor permits only these explicit modes: %s.", strings.Join(modes, ", ")),
+	}
+	if !parentNetwork {
+		result.NetworkValues = []bool{false}
+		result.SandboxNetDescription = "Your session has network disabled, so only sandbox_net=false is enforceable."
+	}
+	if parentMode == sandbox.ModeOff {
+		result.RequireNonOffModeForNetwork = true
+		result.SandboxNetDescription += " When sandbox is omitted or set to off, omit sandbox_net; a network setting requires a non-off sandbox mode."
+	}
+	return result
+}
+
+func delegateSandboxBackendAvailable(host sandbox.HostFacts) bool {
+	switch host.OS {
+	case "linux":
+		return host.BwrapCapable
+	case "darwin":
+		return host.SeatbeltAvailable()
+	default:
+		return false
+	}
+}
 
 func (s *Session) prepareSubagentEnvironment(workingDir string, requested *sandbox.SandboxPolicy) (execenv.ExecutionEnvironment, bool, error) {
 	subEnv := s.currentEnv()
@@ -80,15 +181,19 @@ func (s *Session) parentSandboxModeNet() (sandbox.Mode, bool) {
 	return mode, network
 }
 
+func parentSandboxFloorForEnv(env execenv.ExecutionEnvironment) (sandbox.Mode, bool, bool) {
+	if le, ok := env.(*execenv.LocalExecutionEnvironment); ok && le.Sandbox != nil && le.Sandbox.Enforced() {
+		return le.Sandbox.Mode, le.Sandbox.Network, le.Sandbox.WriteBlocked
+	}
+	return sandbox.ModeOff, true, false
+}
+
 // parentSandboxFloor returns every enforced parent axis that a child must not
 // relax. WriteBlocked is separate from Mode because a restricted read-only role
 // keeps ModeRestricted's narrow reads while removing its ordinary workspace
 // writes.
 func (s *Session) parentSandboxFloor() (sandbox.Mode, bool, bool) {
-	if le, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment); ok && le.Sandbox != nil && le.Sandbox.Enforced() {
-		return le.Sandbox.Mode, le.Sandbox.Network, le.Sandbox.WriteBlocked
-	}
-	return sandbox.ModeOff, true, false
+	return parentSandboxFloorForEnv(s.currentEnv())
 }
 
 // readOnlyDelegateSandbox returns the enforced box for a structured read-only
@@ -156,6 +261,10 @@ func delegateSandboxBlocksPersistentWrites(policy *sandbox.SandboxPolicy) bool {
 // explicit write-capable mode is contradictory and fails before admission.
 func (s *Session) applyParentWriteBlockedFloor(sandboxMode string, policy *sandbox.SandboxPolicy) (*sandbox.SandboxPolicy, error) {
 	_, _, parentWriteBlocked := s.parentSandboxFloor()
+	return applyWriteBlockedFloor(parentWriteBlocked, sandboxMode, policy)
+}
+
+func applyWriteBlockedFloor(parentWriteBlocked bool, sandboxMode string, policy *sandbox.SandboxPolicy) (*sandbox.SandboxPolicy, error) {
 	if !parentWriteBlocked {
 		return policy, nil
 	}
@@ -170,6 +279,19 @@ func (s *Session) applyParentWriteBlockedFloor(sandboxMode string, policy *sandb
 		return nil, fmt.Errorf("invalid_request: sandbox %q permits persistent workspace writes that the parent sandbox forbids", strings.TrimSpace(sandboxMode))
 	}
 	return policy, nil
+}
+
+// delegateSandboxModeAllowed applies the same explicit-request validation used by
+// createDelegate, including the separate parent WriteBlocked floor. Keeping the
+// schema predicate on that path prevents it from advertising a mode that create
+// will reject after provider validation.
+func delegateSandboxModeAllowed(mode sandbox.Mode, parentMode sandbox.Mode, parentNetwork, parentWriteBlocked bool) bool {
+	policy, err := buildDelegateSandboxPolicy(mode.String(), nil, parentMode, parentNetwork)
+	if err != nil {
+		return false
+	}
+	_, err = applyWriteBlockedFloor(parentWriteBlocked, mode.String(), policy)
+	return err == nil
 }
 
 // restoreDelegateSandboxFloor validates and, for a legacy descriptor with no
@@ -249,7 +371,10 @@ func resolveDelegateSandboxRequest(sandboxMode string, sandboxNet *bool, parentM
 	}
 	if mode == "" {
 		if parentMode == sandbox.ModeOff {
-			return nil, errors.New("invalid_request: sandbox_net requires a sandbox mode; your session is not sandboxed, so pass sandbox=... as well")
+			return nil, newDelegateSandboxRequestError(
+				errors.New("invalid_request: sandbox_net requires a sandbox mode; your session is not sandboxed, so pass sandbox=... as well"),
+				"sandbox", "sandbox_net",
+			)
 		}
 		mode = parentMode.String()
 	}
@@ -283,7 +408,7 @@ func allowedDelegateModes(parentMode sandbox.Mode) string {
 func buildDelegateSandboxPolicy(sandboxMode string, sandboxNet *bool, parentMode sandbox.Mode, parentNet bool) (*sandbox.SandboxPolicy, error) {
 	requested, err := sandbox.ParseMode(sandboxMode)
 	if err != nil {
-		return nil, fmt.Errorf("invalid_request: %w", err)
+		return nil, newDelegateSandboxRequestError(fmt.Errorf("invalid_request: %w", err), "sandbox")
 	}
 	// The modes are a PARTIAL order (read-only and restricted are incomparable), so a
 	// refusal must not read as "looser" — a read-only parent refusing a restricted
@@ -291,7 +416,10 @@ func buildDelegateSandboxPolicy(sandboxMode string, sandboxNet *bool, parentMode
 	// Name the confinement failure and list the recoverable set, mirroring the
 	// delegation-allowance error's "valid grants" house style.
 	if !requested.AtLeastAsConfining(parentMode) {
-		return nil, fmt.Errorf("invalid_request: sandbox %q allows access on an axis your %s sandbox forbids (it is not at least as confining on both reads and writes); modes allowed under your %s sandbox: %s", requested, parentMode, parentMode, allowedDelegateModes(parentMode))
+		return nil, newDelegateSandboxRequestError(
+			fmt.Errorf("invalid_request: sandbox %q allows access on an axis your %s sandbox forbids (it is not at least as confining on both reads and writes); modes allowed under your %s sandbox: %s", requested, parentMode, parentMode, allowedDelegateModes(parentMode)),
+			"sandbox",
+		)
 	}
 	// off applies NO network confinement — Resolve hard-codes net on for ModeOff and
 	// EnableSandbox treats a non-enforced policy as a no-op — so an explicit
@@ -299,7 +427,10 @@ func buildDelegateSandboxPolicy(sandboxMode string, sandboxNet *bool, parentMode
 	// the caller believes egress is off. Refuse the contradiction (BEFORE the
 	// inherit short-circuit below) rather than drop the flag.
 	if requested == sandbox.ModeOff && sandboxNet != nil {
-		return nil, errors.New(`invalid_request: sandbox_net has no effect with sandbox="off" (off applies no network confinement); pass a non-off sandbox mode or omit sandbox_net`)
+		return nil, newDelegateSandboxRequestError(
+			errors.New(`invalid_request: sandbox_net has no effect with sandbox="off" (off applies no network confinement); pass a non-off sandbox mode or omit sandbox_net`),
+			"sandbox", "sandbox_net",
+		)
 	}
 	// An explicit sandbox="off" that passes the floor (only under an off parent) is
 	// exactly the inherit path: returning nil lets createDelegate skip the clone +
@@ -312,7 +443,10 @@ func buildDelegateSandboxPolicy(sandboxMode string, sandboxNet *bool, parentMode
 		net = *sandboxNet
 	}
 	if net && !parentNet {
-		return nil, errors.New("invalid_request: sandbox_net on grants more network access than your own sandbox (network off); a delegate cannot be less restricted than you; omit sandbox_net or pass sandbox_net=false")
+		return nil, newDelegateSandboxRequestError(
+			errors.New("invalid_request: sandbox_net on grants more network access than your own sandbox (network off); a delegate cannot be less restricted than you; omit sandbox_net or pass sandbox_net=false"),
+			"sandbox_net",
+		)
 	}
 	// The floor compares MODE and NETWORK only, and the returned policy carries only
 	// those two axes — deliberately. SandboxPolicy also has denylist deltas

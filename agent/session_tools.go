@@ -699,6 +699,7 @@ func (s *Session) execTool(ctx context.Context, call llm.ToolCallData, finishRea
 			FullOutput: prep.PrevalErr,
 			IsError:    true,
 			PrevalOnly: true,
+			Err:        prep.Err,
 		}
 	} else {
 		res = s.reg.ExecuteCall(ctx, s.currentEnv(), call)
@@ -1165,7 +1166,7 @@ func (s *Session) delegateCapabilityRoster() string {
 }
 
 func (s *Session) delegateToolDefinition() llm.ToolDefinition {
-	definition := tool.DefDelegate(s.delegateAgentTypeNames())
+	definition := tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), s.delegateSandboxSchemaForEnv(s.env))
 	roster := s.delegateCapabilityRoster()
 	if roster == "" {
 		return definition
@@ -1222,6 +1223,9 @@ func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
 	nameMap := s.profile.ToolNameMap()
 	defs := s.profile.ToolDefinitions()
 	for i := range defs {
+		if defs[i].Name == "delegate" {
+			defs[i] = tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), s.delegateSandboxSchemaForEnv(s.env))
+		}
 		defs[i] = wireToolDef(defs[i], nameMap, s.resultToolName())
 	}
 	return defs
