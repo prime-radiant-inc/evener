@@ -17,6 +17,7 @@
     "zustand": "5.0.14"
   },
   "devDependencies": {
+    "@babel/parser": "8.0.4",
     "@biomejs/biome": "2.5.5",
     "@tauri-apps/cli": "2.11.4",
     "@testing-library/jest-dom": "6.9.1",
@@ -26,6 +27,9 @@
     "@types/react-dom": "19.2.3",
     "@vitejs/plugin-react": "6.0.3",
     "jsdom": "29.1.1",
+    "parse5": "8.0.1",
+    "postcss": "8.5.26",
+    "smol-toml": "1.8.0",
     "typescript": "6.0.3",
     "vite": "8.1.5",
     "vitest": "4.1.10"
