@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -440,6 +441,12 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	t.Parallel()
 	var jobID string
 	watchArmed := make(chan struct{})
+	// budgetCrossed holds the watch-arming turn open until the test has driven
+	// the budget crossing. The escalation is turn-paced, so without the hold the
+	// drain can complete that turn and reach the final warning before the
+	// cleared notification is queued, and the fresh-episode assertions then read
+	// an episode the notification never interrupted.
+	budgetCrossed := make(chan struct{})
 	var clearedNoticeSeen atomic.Bool
 	adapter := &fakeAdapter{name: "openai"}
 	adapter.steps = []func(llm.Request) llm.Response{
@@ -451,6 +458,7 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 		},
 		func(llm.Request) llm.Response {
 			close(watchArmed)
+			<-budgetCrossed
 			return finalResponse("watching; it will finish")
 		},
 		func(req llm.Request) llm.Response {
@@ -480,6 +488,11 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 		res, err := sess.drainJobTreeWith(ctx, feedRechecks(ctx), sess.kickDriveTree, sess.ProcessInputKind)
 		done <- drainResult{res, err}
 	}()
+	// Registered after the join above so it runs before it: a t.Fatal between
+	// here and the release below would otherwise strand the held turn and leave
+	// the join waiting on a drain that can never finish.
+	releaseWatchTurn := sync.OnceFunc(func() { close(budgetCrossed) })
+	t.Cleanup(releaseWatchTurn)
 	select {
 	case <-watchArmed:
 	case d := <-done:
@@ -518,6 +531,7 @@ func TestClearedWatchStartsAFreshAnnouncementEpisode(t *testing.T) {
 	if stillLive {
 		t.Fatal("budget-crossing delivery left the watch live")
 	}
+	releaseWatchTurn()
 
 	d := <-done
 	if d.err != nil {
