@@ -1,0 +1,55 @@
+:root {
+  color-scheme: light dark;
+  font-family:
+    system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --safe-area-top: env(safe-area-inset-top, 0px);
+  --safe-area-right: env(safe-area-inset-right, 0px);
+  --safe-area-bottom: env(safe-area-inset-bottom, 0px);
+  --safe-area-left: env(safe-area-inset-left, 0px);
+}
+
+*,
+*::before,
+*::after {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#root {
+  min-width: 100%;
+  min-height: 100%;
+  margin: 0;
+}
+
+body {
+  background: Canvas;
+  color: CanvasText;
+}
+
+.bootstrap {
+  min-height: 100dvh;
+  /* Safe-area owner: top. */
+  padding-top: var(--safe-area-top);
+  /* Safe-area owner: right. */
+  padding-right: var(--safe-area-right);
+  /* Safe-area owner: bottom. */
+  padding-bottom: var(--safe-area-bottom);
+  /* Safe-area owner: left. */
+  padding-left: var(--safe-area-left);
+}
+
+.bootstrap__eyebrow {
+  margin-block: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    scroll-behavior: auto;
+    animation-duration: 0.01ms;
+    animation-iteration-count: 1;
+    transition-duration: 0.01ms;
+  }
+}

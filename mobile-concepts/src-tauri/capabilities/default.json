@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Allows only Tauri core window behavior for the offline concept lab",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
