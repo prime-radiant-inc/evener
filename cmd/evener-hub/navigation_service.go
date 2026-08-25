@@ -32,12 +32,25 @@ const (
 	defaultNavigationRetryAfter   = 5 * time.Second
 	// A tiny collection window lets requests released together join one service
 	// refresh flight even when a capture itself is faster than goroutine dispatch.
-	defaultNavigationRefreshCoalesceWindow = time.Millisecond
 )
 
 // buildNavigationServiceProjection is a narrow test seam proving resource
 // misses reuse the retained core projection rather than rebuilding it.
 var buildNavigationServiceProjection = buildNavigationProjection
+
+func buildNavigationServiceProjectionContext(ctx context.Context, inputs navigationBuildInputs) (navigationProjection, error) {
+	if err := ctx.Err(); err != nil {
+		return navigationProjection{}, err
+	}
+	projection, err := buildNavigationServiceProjection(inputs)
+	if err != nil {
+		return navigationProjection{}, err
+	}
+	if err := ctx.Err(); err != nil {
+		return navigationProjection{}, err
+	}
+	return projection, nil
+}
 
 type navigationSourceRevision struct {
 	Inputs uint64
@@ -90,7 +103,10 @@ type navigationBuildFlight struct {
 	changes   map[navigationResourceKey]bool
 	err       error
 	id        uint64
-	committed bool
+	hint      navigationChangeHint
+	mutated   bool
+	mutation  hubapi.NavigationMutation
+	finalized bool
 }
 
 type navigationServiceStats struct {
@@ -111,17 +127,21 @@ type NavigationService struct {
 	waitUntil    func(context.Context, time.Time) error
 	buildTimeout time.Duration
 	retryAfter   time.Duration
-	coalesceWait time.Duration
 	cache        *navigationRepresentationCache
 
-	core       *navigationCoreSnapshot
-	resources  map[navigationResourceKey]navigationResourceState // includes tombstones
-	sequence   uint64
-	epoch      uint64
-	flight     *navigationBuildFlight
-	buildID    uint64
-	coreBuilds uint64
-	wake       chan struct{}
+	core             *navigationCoreSnapshot
+	resources        map[navigationResourceKey]navigationResourceState // includes tombstones
+	sequence         uint64
+	epoch            uint64
+	flight           *navigationBuildFlight
+	buildID          uint64
+	coreBuilds       uint64
+	wake             chan struct{}
+	lifecycleCtx     context.Context
+	lifecycleCancel  context.CancelFunc
+	lifecycleWG      sync.WaitGroup
+	lifecycleStopped bool
+	pendingMutation  *hubapi.NavigationMutation
 }
 
 func newNavigationService(cfg navigationServiceConfig) *NavigationService {
@@ -151,18 +171,20 @@ func newNavigationService(cfg navigationServiceConfig) *NavigationService {
 	if cfg.RetryAfter <= 0 {
 		cfg.RetryAfter = defaultNavigationRetryAfter
 	}
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	return &NavigationService{
-		source:       cfg.Source,
-		generation:   id,
-		genErr:       err,
-		now:          now,
-		waitUntil:    waitUntil,
-		buildTimeout: cfg.BuildTimeout,
-		retryAfter:   cfg.RetryAfter,
-		coalesceWait: defaultNavigationRefreshCoalesceWindow,
-		cache:        cache,
-		resources:    make(map[navigationResourceKey]navigationResourceState),
-		wake:         make(chan struct{}, 1),
+		source:          cfg.Source,
+		generation:      id,
+		genErr:          err,
+		now:             now,
+		waitUntil:       waitUntil,
+		buildTimeout:    cfg.BuildTimeout,
+		retryAfter:      cfg.RetryAfter,
+		cache:           cache,
+		resources:       make(map[navigationResourceKey]navigationResourceState),
+		wake:            make(chan struct{}, 1),
+		lifecycleCtx:    lifecycleCtx,
+		lifecycleCancel: lifecycleCancel,
 	}
 }
 
@@ -312,11 +334,22 @@ func (s *NavigationService) Refresh(ctx context.Context, hint navigationChangeHi
 	if s.sequenceAtSafeLimit() {
 		return hubapi.NavigationMutation{}, errors.New("navigation sequence exceeds JavaScript safe integer")
 	}
-	flight, err := s.ensureSnapshot(ctx, true)
+	flight, err := s.ensureSnapshot(ctx, true, hint)
 	if err != nil {
 		return hubapi.NavigationMutation{}, err
 	}
-	return s.commitFlightTargets(flight, hint)
+	s.mu.Lock()
+	mutation := flight.mutation
+	if s.pendingMutation != nil {
+		mutation = *s.pendingMutation
+		s.pendingMutation = nil
+	}
+	s.mu.Unlock()
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+	return mutation, nil
 }
 
 func (s *NavigationService) sequenceAtSafeLimit() bool {
@@ -325,7 +358,7 @@ func (s *NavigationService) sequenceAtSafeLimit() bool {
 	return s.sequence >= maxNavigationSafeInteger
 }
 
-func (s *NavigationService) ensureSnapshot(ctx context.Context, force bool) (*navigationBuildFlight, error) {
+func (s *NavigationService) ensureSnapshot(ctx context.Context, force bool, hints ...navigationChangeHint) (*navigationBuildFlight, error) {
 	if ctx == nil {
 		return nil, errors.New("navigation: nil context")
 	}
@@ -335,26 +368,47 @@ func (s *NavigationService) ensureSnapshot(ctx context.Context, force bool) (*na
 	if s.source == nil {
 		return nil, errors.New("navigation source is unavailable")
 	}
-	revision := s.source.Revision()
+	revision := s.source.Revision() // external call: never under s.mu
 	s.mu.Lock()
+	if s.lifecycleStopped {
+		s.mu.Unlock()
+		return nil, navigationUnavailable(context.Canceled)
+	}
 	if !force && s.core != nil && s.core.source == revision && s.core.epoch == s.epoch {
 		flight := &navigationBuildFlight{changes: map[navigationResourceKey]bool{}, id: s.buildID, done: closedNavigationDone()}
 		s.mu.Unlock()
 		return flight, nil
 	}
-	if flight := s.flight; flight != nil {
+	if flight := s.flight; flight != nil && !flight.finalized {
+		if force && len(hints) != 0 {
+			flight.hint = mergeNavigationChangeHints(flight.hint, hints[0])
+			flight.mutated = true
+		}
 		s.mu.Unlock()
 		return s.waitFlight(ctx, flight)
 	}
 	flight := &navigationBuildFlight{done: make(chan struct{})}
+	if force && len(hints) != 0 {
+		flight.hint, flight.mutated = hints[0], true
+	}
 	s.flight = flight
+	buildCtx, cancel := context.WithTimeout(s.lifecycleCtx, s.buildTimeout)
+	s.lifecycleWG.Add(1)
 	s.mu.Unlock()
-	buildCtx, cancel := context.WithTimeout(context.Background(), s.buildTimeout)
 	go func() {
+		defer s.lifecycleWG.Done()
 		defer cancel()
 		s.buildSnapshot(buildCtx, revision, flight)
 	}()
 	return s.waitFlight(ctx, flight)
+}
+
+func mergeNavigationChangeHints(a, b navigationChangeHint) navigationChangeHint {
+	a.Projects = append(a.Projects, b.Projects...)
+	a.Sources = a.Sources || b.Sources
+	a.Time = a.Time || b.Time
+	a.AllLoadedProjects = a.AllLoadedProjects || b.AllLoadedProjects
+	return a
 }
 
 func closedNavigationDone() chan struct{} {
@@ -378,6 +432,16 @@ func (s *NavigationService) generationError() error {
 	return s.genErr
 }
 
+func (s *NavigationService) stopLifecycle() {
+	s.mu.Lock()
+	if !s.lifecycleStopped {
+		s.lifecycleStopped = true
+		s.lifecycleCancel()
+	}
+	s.mu.Unlock()
+	s.lifecycleWG.Wait()
+}
+
 func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigationSourceRevision, flight *navigationBuildFlight) {
 	defer func() {
 		s.mu.Lock()
@@ -387,20 +451,6 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 		close(flight.done)
 		s.mu.Unlock()
 	}()
-	// Keep the newly-created flight joinable long enough to collect callers that
-	// were released concurrently. Without this bounded window, a fast capture can
-	// finish between scheduler turns and turn one concurrent refresh burst into a
-	// serial run of redundant captures.
-	if s.coalesceWait > 0 {
-		timer := time.NewTimer(s.coalesceWait)
-		select {
-		case <-ctx.Done():
-			timer.Stop()
-			flight.err = navigationUnavailable(ctx.Err())
-			return
-		case <-timer.C:
-		}
-	}
 	for {
 		if err := ctx.Err(); err != nil {
 			flight.err = navigationUnavailable(err)
@@ -423,12 +473,12 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 		inputs.Tree = snapshot.Inputs.Tree.Snapshot()
 		inputs.GenerationID = generation
 		inputs.Revision = 0 // semantic fingerprints never include transport revision.
-		projection, err := buildNavigationServiceProjection(inputs)
+		projection, err := buildNavigationServiceProjectionContext(ctx, inputs)
 		if err != nil {
 			flight.err = err
 			return
 		}
-		fingerprints, dependencies, err := navigationLogicalFingerprints(projection)
+		fingerprints, dependencies, err := navigationLogicalFingerprintsContext(ctx, projection)
 		if err != nil {
 			flight.err = err
 			return
@@ -436,12 +486,12 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 		// Compare immediately before publication. Any source/Invalidate movement
 		// rejects this full build and retries; publication never mixes a newer core
 		// with an older resource version.
-		after := s.source.Revision()
+		after := s.source.Revision() // external call: never under s.mu
 		s.mu.Lock()
-		stale := s.epoch != epoch || after != expected || s.source.Revision() != after
+		stale := ctx.Err() != nil || s.epoch != epoch || after != expected
 		if stale {
 			s.mu.Unlock()
-			expected = s.source.Revision()
+			expected = after
 			continue
 		}
 		changes, states, err := navigationNextStates(s.resources, fingerprints, dependencies)
@@ -456,6 +506,19 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 		flight.changes = changes
 		s.core = &navigationCoreSnapshot{projection: projection, source: after, epoch: epoch, nextBoundary: snapshot.NextBoundary}
 		s.coreBuilds++
+		if flight.mutated {
+			flight.mutation, err = s.commitTargetsLocked(changes, flight.hint)
+			if err != nil {
+				s.mu.Unlock()
+				flight.err = err
+				return
+			}
+			if len(flight.mutation.Targets) != 0 {
+				pending := flight.mutation
+				s.pendingMutation = &pending
+			}
+		}
+		flight.finalized = true
 		s.mu.Unlock()
 		return
 	}
@@ -587,6 +650,23 @@ func navigationLogicalFingerprints(projection navigationProjection) (map[navigat
 	return fingerprints, dependencies, nil
 }
 
+// navigationLogicalFingerprintsContext keeps a canceled build from publishing
+// after expensive complete-resource traversal. The projection and fingerprint
+// helpers remain usable by existing callers through their context-free APIs.
+func navigationLogicalFingerprintsContext(ctx context.Context, projection navigationProjection) (map[navigationResourceKey]navigationFingerprint, map[navigationResourceKey][]navigationResourceKey, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	fingerprints, dependencies, err := navigationLogicalFingerprints(projection)
+	if err != nil {
+		return nil, nil, err
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
+	return fingerprints, dependencies, nil
+}
+
 func navigationLogicalNodes(projection navigationProjection, rows []hubcore.TreeNode) hubapi.NavigationArray[hubapi.NavigationSessionSummary] {
 	out := make(hubapi.NavigationArray[hubapi.NavigationSessionSummary], len(rows))
 	for index, row := range rows {
@@ -612,19 +692,6 @@ func navigationLogicalFingerprint(value any) (navigationFingerprint, error) {
 // commitFlightTargets makes a shared capture one logical mutation. Joined
 // refresh calls must not replay its exact invalidations or advance sequence a
 // second time after the first caller has committed them.
-func (s *NavigationService) commitFlightTargets(flight *navigationBuildFlight, hint navigationChangeHint) (hubapi.NavigationMutation, error) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	if flight.committed {
-		return hubapi.NavigationMutation{GenerationID: s.generation, Targets: hubapi.NavigationArray[appwire.NavigationInvalidationTarget]{}}, nil
-	}
-	mutation, err := s.commitTargetsLocked(flight.changes, hint)
-	if err == nil {
-		flight.committed = true
-	}
-	return mutation, err
-}
-
 func (s *NavigationService) commitTargetsLocked(changes map[navigationResourceKey]bool, hint navigationChangeHint) (hubapi.NavigationMutation, error) {
 	targetSet := make(map[string]appwire.NavigationInvalidationTarget)
 	for key, changed := range changes {
@@ -688,6 +755,7 @@ func navigationTargetForResource(key navigationResourceKey, revision uint64) (ap
 // Start owns a resettable lifecycle scheduler. Empty snapshots and failures are
 // retried; invalidation wakes an earlier-boundary wait immediately.
 func (s *NavigationService) Start(ctx context.Context) {
+	defer s.stopLifecycle()
 	for {
 		_, err := s.ensureSnapshot(ctx, false)
 		if ctx.Err() != nil {

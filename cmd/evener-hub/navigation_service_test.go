@@ -13,6 +13,7 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/hubapi"
 )
 
 const navigationTestSessionID = "01ARZ3NDEKTSV4RRFFQ69G5FAV"
@@ -316,6 +317,39 @@ func TestNavigationServiceCancelledOwnerDoesNotCancelSharedBuild(t *testing.T) {
 	}
 }
 
+func TestNavigationServiceCommitsCanceledRefreshForLaterPublication(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	service := newTestNavigationService(t, source)
+	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		t.Fatal(err)
+	}
+	source.changeTitle("committed-without-waiter")
+	source.entered, source.release = make(chan struct{}), make(chan struct{})
+	ctx, cancel := context.WithCancel(t.Context())
+	result := make(chan error, 1)
+	go func() { _, err := service.Refresh(ctx, navigationChangeHint{Projects: []string{"p1"}}); result <- err }()
+	<-source.entered
+	cancel()
+	if err := <-result; !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled owner = %v", err)
+	}
+	close(source.release)
+	service.mu.Lock()
+	flight := service.flight
+	service.mu.Unlock()
+	<-flight.done
+	if capability := service.Capability(); capability.Sequence != 1 {
+		t.Fatalf("sequence = %d, want committed change", capability.Sequence)
+	}
+	mutation, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !hasNavigationTarget(mutation.Targets, appwire.NavigationTargetProject, "p1") {
+		t.Fatalf("pending mutation = %+v", mutation.Targets)
+	}
+}
+
 func TestNavigationServiceConcurrentRefreshCoalescesCoreBuild(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
@@ -323,6 +357,11 @@ func TestNavigationServiceConcurrentRefreshCoalescesCoreBuild(t *testing.T) {
 		t.Fatal(err)
 	}
 	source.changeTitle("concurrent")
+	source.mu.Lock()
+	source.entered = make(chan struct{})
+	source.release = make(chan struct{})
+	source.enterOnce = sync.Once{}
+	source.mu.Unlock()
 
 	start := make(chan struct{})
 	var failures atomic.Int32
@@ -338,15 +377,75 @@ func TestNavigationServiceConcurrentRefreshCoalescesCoreBuild(t *testing.T) {
 		}()
 	}
 	close(start)
+	<-source.entered
+	// The capture is held until every concurrent caller has registered its hint.
+	deadline := time.After(time.Second)
+	for {
+		service.mu.Lock()
+		joined := service.flight != nil && len(service.flight.hint.Projects) == 20
+		service.mu.Unlock()
+		if joined {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("concurrent callers did not join active flight")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	close(source.release)
 	wg.Wait()
 	if failures.Load() != 0 {
 		t.Fatalf("refresh failures = %d", failures.Load())
 	}
-	if got := source.captureCount(); got > 3 { // initial + one owner; one trailing owner is allowed if a caller arrives after commit.
-		t.Fatalf("captures = %d, concurrent refresh did not coalesce", got)
+	if got := source.captureCount(); got != 2 { // initial + exactly one overlapping refresh build.
+		t.Fatalf("captures = %d, want exactly two", got)
 	}
 	if capability := service.Capability(); capability == nil || capability.Sequence != 1 {
 		t.Fatalf("sequence after one shared refresh = %+v, want one commit", capability)
+	}
+}
+
+func TestNavigationServiceMergesJoinedWildcardHintBeforeCommit(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	service := newTestNavigationService(t, source)
+	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		t.Fatal(err)
+	}
+	source.changeTitle("mixed")
+	source.entered, source.release = make(chan struct{}), make(chan struct{})
+	precise := make(chan hubapi.NavigationMutation, 1)
+	go func() {
+		m, _ := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
+		precise <- m
+	}()
+	<-source.entered
+	wildcard := make(chan hubapi.NavigationMutation, 1)
+	go func() {
+		m, _ := service.Refresh(t.Context(), navigationChangeHint{AllLoadedProjects: true})
+		wildcard <- m
+	}()
+	deadline := time.After(time.Second)
+	for {
+		service.mu.Lock()
+		joined := service.flight != nil && service.flight.hint.AllLoadedProjects
+		service.mu.Unlock()
+		if joined {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("wildcard did not join active flight")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	close(source.release)
+	for _, mutation := range []hubapi.NavigationMutation{<-precise, <-wildcard} {
+		if !hasNavigationTarget(mutation.Targets, appwire.NavigationTargetProject, "p1") || mutation.Targets[len(mutation.Targets)-1].Kind != appwire.NavigationTargetAllLoadedProjects {
+			t.Fatalf("merged targets = %+v", mutation.Targets)
+		}
 	}
 }
 
