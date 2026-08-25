@@ -3,12 +3,70 @@ package agent
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
 )
+
+func TestVisionPromptContractIsUnconditional(t *testing.T) {
+	t.Parallel()
+
+	dir := t.TempDir()
+	adapter := &fakeAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("vision")} },
+			func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("vision")} },
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+	sess, err := NewSession(client, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	purposes := []string{
+		"Describe the layout and visible controls.",
+		"Transcribe the rendered text exactly, including punctuation.",
+	}
+	var suffix string
+	for _, purpose := range purposes {
+		if got := sess.describeImage(context.Background(), tool.ExecResult{ImageData: []byte("image"), ImagePurpose: purpose}); got != "vision" {
+			t.Fatalf("vision response = %q", got)
+		}
+		requests := adapter.Requests()
+		request := requests[len(requests)-1]
+		if len(request.Messages) != 1 || len(request.Messages[0].Content) != 2 {
+			t.Fatalf("vision request content shape = %#v", request.Messages)
+		}
+		prompt := request.Messages[0].Content[0].Text
+		wantPrefix := strings.TrimSpace(purpose) + "\n\n"
+		if !strings.HasPrefix(prompt, wantPrefix) {
+			t.Fatalf("prompt does not preserve purpose: %q", prompt)
+		}
+		gotSuffix := strings.TrimPrefix(prompt, wantPrefix)
+		if gotSuffix != visionRequestContract {
+			t.Fatalf("prompt contract = %q, want one shared contract", gotSuffix)
+		}
+		if strings.Count(prompt, visionRequestContract) != 1 {
+			t.Fatalf("prompt contains %d contract copies, want one", strings.Count(prompt, visionRequestContract))
+		}
+		if suffix == "" {
+			suffix = gotSuffix
+		} else if gotSuffix != suffix {
+			t.Fatal("description and transcription purposes received different contracts")
+		}
+	}
+}
 
 // s3cov_visionSession wires a session whose fake adapter records the last vision
 // request and returns the scripted response.

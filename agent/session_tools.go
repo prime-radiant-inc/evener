@@ -312,6 +312,7 @@ type visionSideChannelStats struct {
 const (
 	visionSideChannelStatsOpen  = "<evener:vision_side_channel_stats>"
 	visionSideChannelStatsClose = "</evener:vision_side_channel_stats>"
+	visionRequestContract       = "Observe the image faithfully and answer the caller's request. Vision is non-authoritative for exact text or bytes; use OCR or the source when exactness matters."
 )
 
 // describeImage makes a side-channel API call with no tools to describe an image
@@ -375,8 +376,9 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	}
 
 	// Use the caller's stated purpose as the vision prompt. The calling LLM
-	// knows what it needs — we just ask the vision model to answer that question.
-	prompt := visionPromptForPurpose(r.ImagePurpose)
+	// knows what it needs — we just ask the vision model to answer that question
+	// under one unconditional observation contract.
+	prompt := visionPrompt(r.ImagePurpose)
 
 	mt := r.ImageMediaType
 	if mt == "" {
@@ -457,49 +459,12 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	}
 }
 
-// visionPromptForPurpose preserves the ordinary description prompt while
-// strengthening requests that explicitly ask for rendered text to be copied.
-// The extra wording is a best-effort model instruction, not an OCR guarantee;
-// the read_file tool contract carries that limitation to the calling agent.
-func visionPromptForPurpose(purpose string) string {
+func visionPrompt(purpose string) string {
 	purpose = strings.TrimSpace(purpose)
 	if purpose == "" {
 		purpose = "Describe what you see in this image in thorough detail."
 	}
-	if requestsLiteralTranscription(purpose) {
-		return purpose + "\n\nFor this exact-transcription request, preserve every visible character exactly as rendered, including case, punctuation, spacing, repeated characters, and symbols. Do not correct, normalize, interpret, or replace uncertain characters with plausible words. If a glyph is unclear, mark it as uncertain instead of guessing.\n\n" + tool.FormatVisionExactnessContract(tool.VisionRequestedModeExactTranscription)
-	}
-	return purpose + "\n\nBe thorough — the reader cannot see the image and will rely entirely on your description."
-}
-
-func visionRequestedModeForPurpose(purpose string) string {
-	if requestsLiteralTranscription(purpose) {
-		return tool.VisionRequestedModeExactTranscription
-	}
-	return tool.VisionRequestedModeDescription
-}
-
-func requestsLiteralTranscription(purpose string) bool {
-	lower := strings.ToLower(purpose)
-	for _, marker := range []string{
-		"transcrib",
-		"verbatim",
-		"character-for-character",
-		"glyph-by-glyph",
-	} {
-		if strings.Contains(lower, marker) {
-			return true
-		}
-	}
-	if !strings.Contains(lower, "exact") {
-		return false
-	}
-	for _, subject := range []string{"text", "string", "character", "glyph", "symbol", "letter", "code"} {
-		if strings.Contains(lower, subject) {
-			return true
-		}
-	}
-	return false
+	return purpose + "\n\n" + visionRequestContract
 }
 
 func (s *Session) canonicalToolName(name string) string {
