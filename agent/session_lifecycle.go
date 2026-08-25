@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"primeradiant.com/evener/agent/events"
@@ -80,6 +81,35 @@ type retryTracker struct {
 // in-flight event emitters to finish, and closes the events channel.
 func (s *Session) Close() {
 	s.close(context.Background(), true)
+}
+
+// joinWithinCloseBudget waits for wg, giving up when the close cascade's shared
+// budget expires and saying so. The joins it replaces exist for DELIVERY
+// ORDERING — an in-flight tool's end event, a detached emitter's event, reaching
+// the stream before it closes — which is a nicety, not a safety property:
+// sendEvent takes eventsMu and re-checks eventsClosed, so a straggler that
+// emits after this gives up is dropped, never a send on a closed channel.
+//
+// Weighed against that: a goroutine parked in an operation nothing can cancel
+// (an uncancellable tool call in a delegate the drain has already abandoned)
+// holds the WaitGroup forever, and an unbounded join converts a bounded drain
+// into an unbounded process. Losing an event that was never going to arrive is
+// the cheaper failure.
+//
+// The waiter goroutine is not leaked in any lasting sense: it holds nothing and
+// exits the moment the WaitGroup does drain.
+func (s *Session) joinWithinCloseBudget(ctx context.Context, wg *sync.WaitGroup, what string) {
+	joined := make(chan struct{})
+	go func() {
+		defer close(joined)
+		wg.Wait()
+	}()
+	select {
+	case <-joined:
+	case <-ctx.Done():
+		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf(
+			"close budget expired joining %s; their remaining events are dropped", what)})
+	}
 }
 
 func (s *Session) releaseAPILogRoute() {
@@ -312,11 +342,16 @@ func (s *Session) close(ctx context.Context, cleanupEnv bool) {
 		s.mu.Lock()
 		s.state = SessionClosed
 		s.mu.Unlock()
-		s.toolEventsWG.Wait()
+		s.joinWithinCloseBudget(budgetCtx, &s.toolEventsWG, "in-flight tool events")
 		// Join detached event emitters (subagent runs, session namer) so their
 		// events are delivered before the channel closes. They are already
-		// cancelled above (child Close + cancelFunc), so this returns promptly.
-		s.sendersWG.Wait()
+		// cancelled above (child Close + cancelFunc), so this normally returns
+		// promptly — but "cancelled" is not the same as "returns", which is the
+		// whole of #317: a delegate parked inside an uncancellable tool call holds
+		// both of these WaitGroups forever, and an unbudgeted join here made the
+		// drain's give-up worthless because run.go prints its answer only after
+		// Close(). Both joins are therefore bounded by the shared close budget.
+		s.joinWithinCloseBudget(budgetCtx, &s.sendersWG, "detached event emitters")
 		s.releaseAPILogRoute()
 		// Close under eventsMu so a caller-owned emit() (Enqueue/DrainAsSteer or
 		// the ProcessInput loop — goroutines the session cannot join) can never
