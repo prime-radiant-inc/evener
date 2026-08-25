@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/base64"
+	"errors"
 	"io/fs"
 	"os"
 	"os/exec"
@@ -737,7 +738,7 @@ func TestGrep_FallbackWithoutRipgrep(t *testing.T) {
 
 	env := NewLocalExecutionEnvironment(dir)
 	// Test the native fallback directly
-	result, err := env.grepNative("hello", dir, "", false, 100, "")
+	result, err := env.grepNative(context.Background(), "hello", dir, "", false, 100, "")
 	if err != nil {
 		t.Fatalf("grepNative: %v", err)
 	}
@@ -761,7 +762,7 @@ func TestGrepNative_CaseInsensitiveAndGlob(t *testing.T) {
 	env := NewLocalExecutionEnvironment(dir)
 
 	// Case insensitive should match both files
-	result, err := env.grepNative("HELLO", dir, "", true, 100, "")
+	result, err := env.grepNative(context.Background(), "HELLO", dir, "", true, 100, "")
 	if err != nil {
 		t.Fatalf("case-insensitive: %v", err)
 	}
@@ -770,7 +771,7 @@ func TestGrepNative_CaseInsensitiveAndGlob(t *testing.T) {
 	}
 
 	// Glob filter should restrict to *.go only
-	result, err = env.grepNative("hello", dir, "*.go", false, 100, "")
+	result, err = env.grepNative(context.Background(), "hello", dir, "*.go", false, 100, "")
 	if err != nil {
 		t.Fatalf("glob filter: %v", err)
 	}
@@ -778,7 +779,7 @@ func TestGrepNative_CaseInsensitiveAndGlob(t *testing.T) {
 		t.Fatalf("glob *.go should not match .txt, got: %q", result)
 	}
 
-	result, err = env.grepNative("hello", dir, "*.{go,txt}", true, 100, "")
+	result, err = env.grepNative(context.Background(), "hello", dir, "*.{go,txt}", true, 100, "")
 	if err != nil {
 		t.Fatalf("brace glob filter: %v", err)
 	}
@@ -800,7 +801,7 @@ func TestGrepNative_SkipsHiddenDirs(t *testing.T) {
 	}
 
 	env := NewLocalExecutionEnvironment(dir)
-	result, err := env.grepNative("hello", dir, "", false, 100, "")
+	result, err := env.grepNative(context.Background(), "hello", dir, "", false, 100, "")
 	if err != nil {
 		t.Fatalf("grepNative: %v", err)
 	}
@@ -822,7 +823,7 @@ func TestGrepNative_SkipsBinaryFiles(t *testing.T) {
 	}
 
 	env := NewLocalExecutionEnvironment(dir)
-	result, err := env.grepNative("hello", dir, "", false, 100, "")
+	result, err := env.grepNative(context.Background(), "hello", dir, "", false, 100, "")
 	if err != nil {
 		t.Fatalf("grepNative: %v", err)
 	}
@@ -846,7 +847,7 @@ func TestGrepNative_SingleFileTargetOmitsFilenamePrefix(t *testing.T) {
 	}
 	env := NewLocalExecutionEnvironment(dir)
 
-	content, err := env.grepNative("needle", file, "", false, 100, "")
+	content, err := env.grepNative(context.Background(), "needle", file, "", false, 100, "")
 	if err != nil {
 		t.Fatalf("content mode: %v", err)
 	}
@@ -854,7 +855,7 @@ func TestGrepNative_SingleFileTargetOmitsFilenamePrefix(t *testing.T) {
 		t.Fatalf("content mode = %q, want %q", content, want)
 	}
 
-	withContext, err := env.grepNative("needle", file, "", false, 100, "content", 1)
+	withContext, err := env.grepNative(context.Background(), "needle", file, "", false, 100, "content", 1)
 	if err != nil {
 		t.Fatalf("context mode: %v", err)
 	}
@@ -862,12 +863,63 @@ func TestGrepNative_SingleFileTargetOmitsFilenamePrefix(t *testing.T) {
 		t.Fatalf("context mode = %q, want %q", withContext, want)
 	}
 
-	count, err := env.grepNative("needle", file, "", false, 100, "count")
+	count, err := env.grepNative(context.Background(), "needle", file, "", false, 100, "count")
 	if err != nil {
 		t.Fatalf("count mode: %v", err)
 	}
 	if count != "2" {
 		t.Fatalf("count mode = %q, want %q", count, "2")
+	}
+}
+
+func TestGrepNative_ExplicitSymlinkRoots(t *testing.T) {
+	root := t.TempDir()
+	targetDir := filepath.Join(root, "target-dir")
+	if err := os.Mkdir(targetDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	targetFile := filepath.Join(targetDir, "target.txt")
+	if err := os.WriteFile(targetFile, []byte("needle in target\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	fileLink := filepath.Join(root, "file-link")
+	dirLink := filepath.Join(root, "dir-link")
+	if err := os.Symlink(targetFile, fileLink); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	if err := os.Symlink(targetDir, dirLink); err != nil {
+		t.Skipf("directory symlinks unavailable: %v", err)
+	}
+
+	env := NewLocalExecutionEnvironment(root)
+	env.lookPath = func(string) (string, error) { return "", errors.New("rg unavailable") }
+	for _, tc := range []struct {
+		name string
+		mode string
+		want string
+	}{
+		{name: "default", mode: "", want: "1:needle in target"},
+		{name: "content", mode: "content", want: "1:needle in target"},
+		{name: "files", mode: "files_with_matches", want: "."},
+		{name: "count", mode: "count", want: "1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := env.Grep(context.Background(), "needle", fileLink, "", false, 100, tc.mode)
+			if err != nil {
+				t.Fatalf("file symlink mode %q: %v", tc.mode, err)
+			}
+			if got != tc.want {
+				t.Fatalf("file symlink mode %q = %q, want %q", tc.mode, got, tc.want)
+			}
+
+			got, err = env.Grep(context.Background(), "needle", dirLink, "", false, 100, tc.mode)
+			if err != nil {
+				t.Fatalf("directory symlink mode %q: %v", tc.mode, err)
+			}
+			if got != "" {
+				t.Fatalf("directory symlink mode %q followed target: got %q", tc.mode, got)
+			}
+		})
 	}
 }
 
@@ -883,7 +935,7 @@ func TestGrepNative_MaxResults(t *testing.T) {
 	}
 
 	env := NewLocalExecutionEnvironment(dir)
-	result, err := env.grepNative("match", dir, "", false, 5, "")
+	result, err := env.grepNative(context.Background(), "match", dir, "", false, 5, "")
 	if err != nil {
 		t.Fatalf("grepNative: %v", err)
 	}
@@ -905,7 +957,7 @@ func TestGrepNative_InvalidRegex(t *testing.T) {
 	}
 
 	env := NewLocalExecutionEnvironment(dir)
-	_, err := env.grepNative("[invalid", dir, "", false, 100, "")
+	_, err := env.grepNative(context.Background(), "[invalid", dir, "", false, 100, "")
 	if err == nil {
 		t.Fatal("expected error for invalid regex")
 	}
@@ -952,7 +1004,7 @@ func TestGrep_DashPrefixedPatternSearchesLiterally(t *testing.T) {
 	env := NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
 
-	result, err := env.Grep("--font-size-body", dir, "", false, 100, "content")
+	result, err := env.Grep(context.Background(), "--font-size-body", dir, "", false, 100, "content")
 	if err != nil {
 		t.Fatalf("Grep with dash-prefixed pattern: %v", err)
 	}
@@ -971,7 +1023,7 @@ func TestGrepNative_ContextLines(t *testing.T) {
 	}
 
 	env := NewLocalExecutionEnvironment(dir)
-	result, err := env.grepNative("MATCH", dir, "", false, 100, "", 1)
+	result, err := env.grepNative(context.Background(), "MATCH", dir, "", false, 100, "", 1)
 	if err != nil {
 		t.Fatalf("grepNative with context_lines: %v", err)
 	}
@@ -1004,7 +1056,7 @@ func TestGrep_ContextLines_Ripgrep(t *testing.T) {
 	env := NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
 
-	result, err := env.Grep("MATCH", dir, "", false, 100, "content", 1)
+	result, err := env.Grep(context.Background(), "MATCH", dir, "", false, 100, "content", 1)
 	if err != nil {
 		t.Fatalf("Grep with context_lines via rg: %v", err)
 	}
@@ -1332,7 +1384,7 @@ func TestGrep_OutputMode_FilesWithMatches(t *testing.T) {
 	env := NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
 
-	result, err := env.Grep("hello", dir, "", false, 100, "files_with_matches")
+	result, err := env.Grep(context.Background(), "hello", dir, "", false, 100, "files_with_matches")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1357,7 +1409,7 @@ func TestGrep_OutputMode_Count(t *testing.T) {
 	env := NewLocalExecutionEnvironment(dir)
 	defer env.Cleanup()
 
-	result, err := env.Grep("hello", dir, "", false, 100, "count")
+	result, err := env.Grep(context.Background(), "hello", dir, "", false, 100, "count")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1379,7 +1431,7 @@ func TestGrep_OutputMode_ContentDefault(t *testing.T) {
 	defer env.Cleanup()
 
 	// Empty string should behave as "content" (default)
-	result, err := env.Grep("hello", dir, "", false, 100, "")
+	result, err := env.Grep(context.Background(), "hello", dir, "", false, 100, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1388,7 +1440,7 @@ func TestGrep_OutputMode_ContentDefault(t *testing.T) {
 	}
 
 	// Explicit "content" should also work
-	result2, err := env.Grep("hello", dir, "", false, 100, "content")
+	result2, err := env.Grep(context.Background(), "hello", dir, "", false, 100, "content")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1411,7 +1463,7 @@ func TestGrepNative_OutputMode_FilesWithMatches(t *testing.T) {
 
 	env := NewLocalExecutionEnvironment(dir)
 
-	result, err := env.grepNative("hello", dir, "", false, 100, "files_with_matches")
+	result, err := env.grepNative(context.Background(), "hello", dir, "", false, 100, "files_with_matches")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1451,7 +1503,7 @@ func TestGrepNative_OutputMode_Count(t *testing.T) {
 
 	env := NewLocalExecutionEnvironment(dir)
 
-	result, err := env.grepNative("hello", dir, "", false, 100, "count")
+	result, err := env.grepNative(context.Background(), "hello", dir, "", false, 100, "count")
 	if err != nil {
 		t.Fatal(err)
 	}
