@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/sandbox"
 )
 
 // FuzzSubagentPolicyProgram exercises the policy decisions that surround a real
@@ -28,8 +29,16 @@ func FuzzSubagentPolicyProgram(f *testing.F) {
 		}
 		assertSubagentPolicyHelpers(t, selector)
 
-		parent := safzNewParent(t, agenttest.NewFakeClock(), 2, []int{0},
-			&agenttest.DenyEnv{WorkDir: t.TempDir()})
+		var parentEnv execenv.ExecutionEnvironment = &agenttest.DenyEnv{WorkDir: t.TempDir()}
+		workspace := ""
+		if selector == 1 {
+			workspace = t.TempDir()
+			parentEnv = execenv.NewLocalExecutionEnvironment(workspace)
+		}
+		parent := safzNewParent(t, agenttest.NewFakeClock(), 2, []int{0}, parentEnv)
+		if selector == 1 {
+			parent.cfg.testOnly.sandboxProber = bwrapCapableProber(workspace)
+		}
 		ctx := context.Background()
 		agentType := ""
 		grantTools := []string(nil)
@@ -104,6 +113,10 @@ func FuzzSubagentPolicyProgram(f *testing.F) {
 			t.Fatalf("selector %d: child received protected ask_user tool", selector)
 		}
 		if selector == 1 {
+			childEnv, ok := sub.sess.env.(*execenv.LocalExecutionEnvironment)
+			if !ok || childEnv.Sandbox == nil || !childEnv.Sandbox.Enforced() || childEnv.Sandbox.Mode != sandbox.ModeReadOnly {
+				t.Fatalf("selector %d: child environment = %#v, want enforced read-only sandbox", selector, sub.sess.env)
+			}
 			for _, name := range []string{"read_file", "grep", "task_list"} {
 				if sub.sess.reg.Get(name) == nil {
 					t.Fatalf("explicit-tool child missing %q", name)
