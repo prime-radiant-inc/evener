@@ -191,6 +191,29 @@ test("an expandable row renders as a real button with no interactive descendants
   );
 });
 
+test("a purpose-less disclosure button covers the visible summary while sibling controls stay outside it", () => {
+  const css = rowCss();
+  render(
+    <ToolRow
+      summary="Fetched https://example.com/page"
+      summaryLink="https://example.com/page"
+      failed={false}
+      expandable
+      expanded={false}
+      onToggle={() => {}}
+      trailing={<button type="button">Open beside</button>}
+    />,
+  );
+  const row = screen.getByTestId("tool-row");
+  const trigger = screen.getByTestId("tool-row-trigger");
+  expect(trigger.parentElement).toBe(row);
+  expect(trigger.contains(screen.getByRole("link"))).toBe(false);
+  expect(trigger.contains(screen.getByRole("button", { name: "Open beside" }))).toBe(false);
+  expect(css).toMatch(/\.row:not\(\[data-purpose="true"\]\) \.trigger\s*\{[^}]*position:\s*absolute[^}]*inset:\s*0/);
+  expect(css).toMatch(/\.row:not\(\[data-purpose="true"\]\) \.summaryLine\s*\{[^}]*pointer-events:\s*none/);
+  expect(css).toMatch(/\.row:not\(\[data-purpose="true"\]\) \.summaryLine a,[\s\S]*pointer-events:\s*auto/);
+});
+
 test("native Enter and Space activation toggle disclosure exactly once", async () => {
   const user = userEvent.setup();
   const onToggle = vi.fn();

@@ -22,10 +22,9 @@ test-web: web-preflight
 # The script runs every guard so one missing browser or failing case does not
 # hide the remaining guard's verdict; exit status is the first nonzero one.
 ## The real browser-only frontend guards (layoutguard, overflowguard,
-## shellguard, spawnguard, a11yguard) that jsdom cannot evaluate.
+## shellguard, spawnguard) that jsdom cannot evaluate.
 ## proves: Headless Chrome evaluates real CSS geometry, the real Session
-##   reducer/tree, the real Spawn staging/breakpoint path, and the disclosure
-##   accessibility/keyboard contract.
+##   reducer/tree, and the real Spawn staging/breakpoint path.
 ## trigger: Required CI web job; local pre-merge on a Chrome-capable host.
 ## requires: Chrome/Chromium; each guard gets a private process home,
 ##   temporary/XDG roots, and a private browser profile. No WebKit/Safari

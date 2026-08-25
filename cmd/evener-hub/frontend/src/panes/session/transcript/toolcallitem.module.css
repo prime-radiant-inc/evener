@@ -19,6 +19,7 @@
  * coupling and must read TIGHTER than the .call padding that separates
  * separate calls (see there). */
 .row {
+  position: relative;
   display: flex;
   flex-wrap: wrap;
   align-items: baseline;
@@ -72,6 +73,33 @@
 
 .row[data-purpose="true"] .summaryLine {
   flex: 1 1 100%;
+}
+
+/* A purpose-less row keeps its visible summary and inline actions as siblings
+ * of the disclosure button. The button still owns the whole visual row: its
+ * transparent box sits under the summary line, while real links/buttons opt
+ * back into pointer hit testing. This restores the old full-row disclosure
+ * target without nesting interactive controls. */
+.row:not([data-purpose="true"]) .trigger {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  justify-content: flex-end;
+}
+
+.row:not([data-purpose="true"]) .summaryLine {
+  position: relative;
+  z-index: var(--z-raised);
+  pointer-events: none;
+}
+
+.row:not([data-purpose="true"]) .summaryLine a,
+.row:not([data-purpose="true"]) .summaryLine button,
+.row:not([data-purpose="true"]) .summaryLine input,
+.row:not([data-purpose="true"]) .summaryLine select,
+.row:not([data-purpose="true"]) .summaryLine textarea {
+  pointer-events: auto;
 }
 
 /* An ink wash, NOT var(--surface-2): measured in the running app, the light

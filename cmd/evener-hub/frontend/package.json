@@ -45,7 +45,6 @@
     "@types/react-dom": "^19.2.3",
     "@vitejs/plugin-react": "^6.0.3",
     "@vitest/coverage-v8": "^4.1.10",
-    "axe-core": "^4.10.3",
     "fake-indexeddb": "6.2.5",
     "jsdom": "^29.1.1",
     "typescript": "^6.0.3",

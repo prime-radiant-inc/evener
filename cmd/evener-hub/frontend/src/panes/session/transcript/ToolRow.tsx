@@ -54,7 +54,7 @@
 //
 // A row with no purpose is a single line: summary, then affordances, then
 // the chevron if there is something to expand.
-import type { ReactNode } from "react";
+import { type ReactNode, useId } from "react";
 import { Chevron, FailureGlyph, ToolIcon, type ToolIconKind } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import styles from "./toolcallitem.module.css";
@@ -218,6 +218,8 @@ export function ToolRow({
   status,
   bodyId,
 }: ToolRowProps) {
+  const generatedBodyId = useId();
+  const disclosureBodyId = bodyId ?? generatedBodyId;
   const statedPurpose = statedPurposeOf({ description: purpose });
   const hasPurpose = statedPurpose !== undefined;
   const hasSummary = summary.trim() !== "";
@@ -445,7 +447,7 @@ export function ToolRow({
           className={CLASS.trigger}
           data-testid="tool-row-trigger"
           aria-expanded={expanded}
-          aria-controls={bodyId}
+          aria-controls={disclosureBodyId}
           onClick={() => onToggle?.()}
         >
           {iconNode}
@@ -470,7 +472,7 @@ export function ToolRow({
           className={CLASS.trigger}
           data-testid="tool-row-trigger"
           aria-expanded={expanded}
-          aria-controls={bodyId}
+          aria-controls={disclosureBodyId}
           aria-label={triggerLabel}
           onClick={() => onToggle?.()}
         >
