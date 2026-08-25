@@ -318,7 +318,7 @@ func (s *Session) backgroundDrainState() (undisposed, background []string, sole,
 	undisposed = make([]string, 0, len(background))
 	allWatched = true
 	for _, id := range background {
-		if !s.jobManager.hasLiveWatchOnTarget(id) {
+		if !s.jobManager.hasLiveUnfiredWatchOnTarget(id) {
 			allWatched = false
 			undisposed = append(undisposed, id)
 		}
@@ -583,11 +583,12 @@ func delegateAbandonedByDrain(row delegateSnapshot, now, drainStartedAt time.Tim
 // child. Marking once per pass gives every reader one answer for the cost of
 // one snapshot per session per pass.
 //
-// It is gated on TurnEndsProcess. Under serve the session outlives the turn, a
-// stop-requested delegate is nobody's shutdown problem, and DrainJobTree runs
-// for nested delegates too — so without the gate #378 abandoned interactive
-// grandchildren with "so shutdown can proceed" wording, in a process that was
-// not shutting down.
+// The one-shot fallback is gated on TurnEndsProcess. Under serve the session
+// outlives the turn, so an unstopped delegate is nobody's shutdown problem; an
+// explicit stop request is different, because the caller has already declared
+// that delegate's work over and the interactive drain must not wait forever.
+// DrainJobTree runs for nested delegates too, so this distinction applies at
+// every level without abandoning work a user has not stopped.
 //
 // A final mark is monotone only for its captured generation. Activity clears an
 // armed never-stopped phase, terminal evidence clears every phase, and a resumed
@@ -595,7 +596,7 @@ func delegateAbandonedByDrain(row delegateSnapshot, now, drainStartedAt time.Tim
 // arrives from an abandoned generation anyway is still delivered — deliveries
 // land in the PARENT's own pending set, which this skip never hides.
 func (s *Session) markDrainAbandonedDelegates(now, drainStartedAt time.Time) {
-	if s == nil || !s.cfg.TurnEndsProcess {
+	if s == nil {
 		return
 	}
 	rows := make(map[string]delegateSnapshot)
@@ -621,7 +622,7 @@ func (s *Session) markDrainAbandonedDelegates(now, drainStartedAt time.Time) {
 			s.clearDrainGraceChild(child.id)
 			continue
 		}
-		if !tracked || !delegateAbandonedByDrain(row, now, drainStartedAt) {
+		if !tracked || (!s.cfg.TurnEndsProcess && row.pendingStopSeq == 0) || !delegateAbandonedByDrain(row, now, drainStartedAt) {
 			s.clearDrainGraceChild(child.id)
 			child.markDrainAbandonedDelegates(now, drainStartedAt)
 			continue
@@ -885,6 +886,16 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 	s.SetNotifyFunc(notify)
 	defer s.SetNotifyFunc(nil)
 
+	// A terminal communicate means the turn that just ended is the run's last:
+	// leftovers already pending at this point have no future model turn to be
+	// delivered to, so they are discarded up front (issue #329). Anything live
+	// work produces from here on is fresh and still drains as always.
+	if cut, accepted := s.acceptedTerminalNotificationCut(); accepted {
+		if err := s.discardTerminalDrainLeftovers(cut); err != nil {
+			return "", err
+		}
+	}
+
 	lastResult := ""
 	var stallStart time.Time
 	// drainStartedAt is the instant the root declared the work over: in a
@@ -976,6 +987,31 @@ func (s *Session) drainJobTreeWith(ctx context.Context, recheck <-chan time.Time
 				continue
 			}
 			return lastResult, nil
+		}
+		// Terminal disposition (issue #329): the model has explicitly ended the
+		// process-ending turn, and nothing in the subtree can still PRODUCE a
+		// deliverable — the outstanding work is residue (pending watch sends,
+		// stale delegate attention, a child's undeliverable leftovers) with no
+		// future model turn to be delivered to. Waiting on it held the process
+		// open until an external kill; abandon it instead so Close() can run.
+		// Live work — a running managed job (including the undisposed-background
+		// escalation below), an owed owner notification, an active child — keeps
+		// the drain waiting exactly as before, and anything deliverable right
+		// now was already converted by this pass's turn gate above. The same
+		// wake-edge confirm as every other return guards the verdict, which was
+		// assembled across sequential reads.
+		if s.hasAcceptedTerminalCommunicate() {
+			live, err := s.subtreeHasLiveTerminalDrainWork()
+			if err != nil {
+				return lastResult, err
+			}
+			if !live {
+				if takeDrainWake(wake) {
+					continue
+				}
+				s.emit(events.EventWarning, events.WarningData{Message: "terminal communicate already ended this run; abandoning undeliverable drain residue so shutdown can proceed"})
+				return lastResult, nil
+			}
 		}
 		// A one-shot run cannot finish with an undisposed background job: the
 		// process exits when this drain returns, so a job still running dies

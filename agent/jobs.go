@@ -486,11 +486,17 @@ type jobNotification struct {
 	// payload: a job.notification watch carries the completed job's status.
 	Kind                                                       jobNotificationKind
 	JobID, JobType, Status, Reason, Description, TranscriptRef string
-	ExhaustionBudget                                           string
-	ExhaustionLimit                                            int
-	Resumable                                                  *bool
-	OutputBytes                                                int64
-	ExitCode                                                   *int
+	// TerminalGen is the exact durable terminal generation represented by a
+	// terminal notification. queueSeq is its in-memory queue identity. Together
+	// they let terminal acceptance distinguish a pre-cut leftover from a later
+	// completion even if a job ID appears in both sets.
+	TerminalGen      string
+	queueSeq         uint64
+	ExhaustionBudget string
+	ExhaustionLimit  int
+	Resumable        *bool
+	OutputBytes      int64
+	ExitCode         *int
 	// Provenance is the causal origin carried with this notification: the
 	// triggering watch's lineage so the notification turn it drives stamps the
 	// same origin and a same-watch retrigger is suppressed.
@@ -1365,6 +1371,7 @@ func (jm *jobManager) reconcileLostJobsWithLoad(loadJobs func() (map[string]*job
 		if jm.enqueue != nil {
 			jm.enqueue(jobNotification{
 				JobID:            finished.JobID,
+				TerminalGen:      finished.TerminalGen,
 				JobType:          string(rec.Type),
 				Status:           string(finished.Status),
 				Reason:           finished.Reason,
@@ -1992,6 +1999,7 @@ func (jm *jobManager) armFinalizedJob(run *runningJob, terminal *terminalJob) er
 		// notices first, then the terminal.
 		ownNotices = append(ownNotices, jobNotification{
 			JobID:            run.rec.JobID,
+			TerminalGen:      terminal.generation,
 			JobType:          string(run.rec.Type),
 			Status:           string(terminal.status),
 			Reason:           terminal.reason,
@@ -2145,6 +2153,7 @@ func (jm *jobManager) armPendingTerminalNotifications() error {
 		if jm.enqueue != nil {
 			jm.enqueue(jobNotification{
 				JobID:            rec.JobID,
+				TerminalGen:      rec.TerminalGen,
 				JobType:          string(rec.Type),
 				Status:           string(rec.Status),
 				Reason:           rec.Reason,

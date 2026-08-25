@@ -45,23 +45,24 @@ type jobRefInfo struct {
 // jobResult is the common transcript-ref-bearing result shape returned by
 // delegate, delegate_send, and legacy job_send_message results.
 type jobResult struct {
-	DelegateID            string `json:"delegate_id"`
-	StartedJobID          string `json:"started_job_id"`
-	CurrentJobID          string `json:"current_job_id"`
-	LatestJobID           string `json:"latest_job_id"`
-	JobID                 string `json:"job_id"`
-	Type                  string `json:"type"`
-	Status                string `json:"status"`
-	Reason                string `json:"reason"`
-	RunningInBackground   bool   `json:"running_in_background"`
-	TimedOut              bool   `json:"timed_out"`
-	Action                string `json:"action"`
-	ResumedFromJobID      string `json:"resumed_from_job_id"`
-	TranscriptRef         string `json:"transcript_ref"`
-	Output                string `json:"output"`
-	Truncated             bool   `json:"truncated"`
-	StructuredResult      any    `json:"structured_result"`
-	StructuredResultValid *bool  `json:"structured_result_valid"`
+	DelegateID            string   `json:"delegate_id"`
+	StartedJobID          string   `json:"started_job_id"`
+	CurrentJobID          string   `json:"current_job_id"`
+	LatestJobID           string   `json:"latest_job_id"`
+	JobID                 string   `json:"job_id"`
+	Type                  string   `json:"type"`
+	Status                string   `json:"status"`
+	Reason                string   `json:"reason"`
+	RunningInBackground   bool     `json:"running_in_background"`
+	TimedOut              bool     `json:"timed_out"`
+	Action                string   `json:"action"`
+	ResumedFromJobID      string   `json:"resumed_from_job_id"`
+	TranscriptRef         string   `json:"transcript_ref"`
+	Output                string   `json:"output"`
+	Truncated             bool     `json:"truncated"`
+	Tools                 []string `json:"tools"`
+	StructuredResult      any      `json:"structured_result"`
+	StructuredResultValid *bool    `json:"structured_result_valid"`
 }
 
 func (r jobResult) effectiveJobID() string {

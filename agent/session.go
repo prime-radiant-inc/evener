@@ -181,7 +181,8 @@ type Session struct {
 	//   flag and kickFunc callback, the naming name-state, envTracker,
 	//   envContextState, currentRoundRecorder, salvagedTurnRound, and the worktree
 	//   occupancy fields (worktreeRestoreEnv, worktreeCurrentPath,
-	//   worktreeCurrentManaged, worktreeGitVersionOK, worktreeLiveWorkStub). It
+	//   worktreeCurrentManaged, worktreeGitVersionOK, worktreeLiveWorkStub), and
+	//   detachedProcesses. It
 	//   does NOT guard reg — the tool.Registry self-synchronizes.
 	mu sync.Mutex
 
@@ -370,6 +371,21 @@ type Session struct {
 	// communicate/result tool state (transient, reset each processOneInput call)
 	comm communicateResult
 
+	// terminalCommunicateAccepted latches that a communicate with
+	// end_turn=true completed a turn while TurnEndsProcess: the model has
+	// explicitly ended the turn that ends the process. Unlike comm it is never
+	// reset — the one-shot drain and the round loop read it to refuse to
+	// resurrect a run the model already declared over (issue #329). Guarded by
+	// mu.
+	terminalCommunicateAccepted bool
+	// terminalNotificationCut is captured at the same acceptance boundary. It
+	// identifies exactly which durable terminal generations and in-memory queue
+	// entries existed before the terminal communicate, so a completion that
+	// lands before DrainJobTree enters cannot be mistaken for a leftover.
+	// Guarded by mu; queue sequence assignment is guarded separately by
+	// pendingJobNotifsMu.
+	terminalNotificationCut terminalNotificationCut
+
 	// askPending is the per-turn pending set of questions posted by ask_user
 	// calls this turn (spec §5.1): its length lets a round-boundary check tell
 	// whether the round just posted question(s). The transcript remains the
@@ -442,6 +458,10 @@ type Session struct {
 	// mutex.
 	pendingJobNotifsMu sync.Mutex
 	pendingJobNotifs   []jobNotification
+	// nextJobNotifSeq gives every queue entry a process-lifetime identity. The
+	// terminal acceptance cut snapshots this watermark while jm.mu prevents a
+	// finalizer from crossing its durable-pending/running-map boundary.
+	nextJobNotifSeq uint64
 	// notifyWakeHolds counts in-flight holdJobNotificationWake holds, and
 	// notifyWakeDeferred records that a wake was suppressed while held. Guarded
 	// by pendingJobNotifsMu.
@@ -451,6 +471,12 @@ type Session struct {
 	jobNotifyRetry     notificationRetry
 
 	jobManager *jobManager
+
+	// detachedProcesses contains processes this session explicitly launched with
+	// mode:"detached". They are not managed jobs (and must not hold the one-shot
+	// drain open), but they remain session-owned for end_turn warnings until the
+	// launcher's completion receipt closes. Guarded by mu.
+	detachedProcesses []sessionDetachedProcess
 
 	// context management
 	contextMgr *contextmgr.Manager
@@ -659,6 +685,11 @@ type Session struct {
 	promptSourceLog      []promptSource
 }
 
+type sessionDetachedProcess struct {
+	pid  int
+	done <-chan struct{}
+}
+
 type notificationRetry struct {
 	active     bool
 	delay      time.Duration
@@ -706,11 +737,13 @@ const (
 func (s *Session) enqueueJobNotification(n jobNotification) {
 	s.pendingJobNotifsMu.Lock()
 	defer s.pendingJobNotifsMu.Unlock()
+	s.assignJobNotificationSeqLocked(&n)
 	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
 }
 
 func (s *Session) enqueueJobNotificationAndNotify(n jobNotification) {
 	s.pendingJobNotifsMu.Lock()
+	s.assignJobNotificationSeqLocked(&n)
 	s.pendingJobNotifs = append(s.pendingJobNotifs, n)
 	held := s.notifyWakeHolds > 0
 	if held {
@@ -770,9 +803,20 @@ func (s *Session) requeueJobNotifications(notifs []jobNotification) {
 		return
 	}
 	s.pendingJobNotifsMu.Lock()
+	for i := range notifs {
+		s.assignJobNotificationSeqLocked(&notifs[i])
+	}
 	s.pendingJobNotifs = append(notifs, s.pendingJobNotifs...)
 	s.scheduleJobNotificationRetryLocked()
 	s.pendingJobNotifsMu.Unlock()
+}
+
+func (s *Session) assignJobNotificationSeqLocked(n *jobNotification) {
+	if n == nil || n.queueSeq != 0 {
+		return
+	}
+	s.nextJobNotifSeq++
+	n.queueSeq = s.nextJobNotifSeq
 }
 
 func (s *Session) drainJobNotifications() []jobNotification {
