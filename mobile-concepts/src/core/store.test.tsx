@@ -110,6 +110,18 @@ describe("prototype store", () => {
     store.getState().dispatch({ type: "setScenario", scenario: "offline" });
 
     expect(persistence.setItem).toHaveBeenCalledTimes(5);
+
+    store.getState().dispatch({ type: "selectConcept", concept: "stillwater" });
+    store.getState().dispatch({ type: "setAppearance", appearance: "dark" });
+    store
+      .getState()
+      .dispatch({ type: "setTextScale", textScale: "accessibility" });
+    store
+      .getState()
+      .dispatch({ type: "setReducedMotion", reducedMotion: true });
+    store.getState().dispatch({ type: "setScenario", scenario: "offline" });
+    expect(persistence.setItem).toHaveBeenCalledTimes(5);
+
     for (const [key, encoded] of persistence.setItem.mock.calls) {
       expect(key).toBe(preferenceStorageKey);
       const record = JSON.parse(encoded);

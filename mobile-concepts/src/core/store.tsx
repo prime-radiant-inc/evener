@@ -52,17 +52,24 @@ export function createPrototypeStore(
     canonicalFixture,
     options.diagnostics,
   );
+  const sourceFixture = projectScenario(fixture, "baseline").fixture;
   const initialState = createInitialState({
     platform: options.platform,
     preferences,
-    projection: projectScenario(fixture, preferences.scenario),
+    sourceFixture,
+    projection: projectScenario(sourceFixture, preferences.scenario),
   });
 
   return createStore<PrototypeStore>()((set, get) => ({
     ...initialState,
     dispatch(action) {
-      set((state) => reducePrototype(state, action) as PrototypeStore);
-      if (persistedActions.has(action.type)) {
+      let changed = false;
+      set((state) => {
+        const next = reducePrototype(state, action);
+        changed = next !== state;
+        return next as PrototypeStore;
+      });
+      if (changed && persistedActions.has(action.type)) {
         options.storage.setItem(preferenceStorageKey, encodePreferences(get()));
       }
     },
