@@ -1714,6 +1714,7 @@ type tuiE2EHub struct {
 	rpcClosing   bool
 	rpcStarts    atomic.Int32
 	rpcExits     atomic.Int32
+	rpcJoined    atomic.Bool
 	// rpcExitGate is test-only instrumentation that keeps one handler in its
 	// deferred exit path until the close event-driven rescue releases it.
 	rpcExitGate <-chan struct{}
@@ -1976,12 +1977,17 @@ func (h *tuiE2EHub) Close() {
 		// wait is safe because beginRPCHandler closes the admission gate before
 		// waiting, so no Add can race with Wait.
 		h.server.Close()
-		h.rpcWG.Wait()
+		h.joinRPCHandlers()
 		if h.cleanupTrace != nil {
 			h.cleanupTrace <- 4
 		}
 		close(h.closed)
 	})
+}
+
+func (h *tuiE2EHub) joinRPCHandlers() {
+	h.rpcWG.Wait()
+	h.rpcJoined.Store(true)
 }
 
 func (h *tuiE2EHub) beginRPCHandler() bool {
@@ -2066,6 +2072,9 @@ func TestTUITmuxE2EHubCleanupJoinsClientBeforeServer(t *testing.T) {
 	default:
 		t.Fatal("hub cleanup completed without the joined closed event")
 	}
+	if !hub.rpcJoined.Load() {
+		t.Fatal("hub cleanup completed without joining RPC handlers")
+	}
 }
 
 func TestTUITmuxE2EHubHandlerLifetimeEdges(t *testing.T) {
@@ -2079,6 +2088,9 @@ func TestTUITmuxE2EHubHandlerLifetimeEdges(t *testing.T) {
 		}
 		if got := hub.rpcExits.Load(); got != 0 {
 			t.Fatalf("RPC exits=%d, want 0", got)
+		}
+		if !hub.rpcJoined.Load() {
+			t.Fatal("zero-handler close did not complete the join")
 		}
 	})
 
@@ -2097,6 +2109,9 @@ func TestTUITmuxE2EHubHandlerLifetimeEdges(t *testing.T) {
 		}
 		if got := hub.rpcExits.Load(); got != 1 {
 			t.Fatalf("RPC exits=%d, want 1", got)
+		}
+		if !hub.rpcJoined.Load() {
+			t.Fatal("accept-error close did not complete the join")
 		}
 	})
 
@@ -2121,6 +2136,9 @@ func TestTUITmuxE2EHubHandlerLifetimeEdges(t *testing.T) {
 		}
 		if got := hub.rpcExits.Load(); got != 2 {
 			t.Fatalf("RPC exits=%d, want 2", got)
+		}
+		if !hub.rpcJoined.Load() {
+			t.Fatal("multiple-handler close did not complete the join")
 		}
 	})
 }
