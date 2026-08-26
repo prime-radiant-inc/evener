@@ -109,6 +109,8 @@ rm -rf "$tmpdir"
 - React's controlled textarea ignores a plain `ta.value = "..."` assignment;
   use the native value setter plus an `input` event, as the snippet does.
 
-**Verified live 2026-08-26** against the Composer guard on an isolated session;
-the daemon acceptance behavior is recorded in issue #171 and intentionally
-not asserted here.
+**Composer observation verified live 2026-07-31** against the then-current card
+on an isolated `$HOME` and kernel-assigned port. **Source, unit, and docs
+contracts were re-audited 2026-08-26**; no new live run is claimed here. The
+daemon acceptance behavior is recorded in issue #171 and intentionally not
+asserted in this card.
