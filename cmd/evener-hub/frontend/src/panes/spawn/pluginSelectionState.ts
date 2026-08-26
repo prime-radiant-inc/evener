@@ -8,9 +8,9 @@ function orderedNames(names: Iterable<string>, preview: PluginPreviewResponse): 
   for (const plugin of preview.plugins) {
     if (wanted.delete(plugin.name)) ordered.push(plugin.name);
   }
-  // Keep names the server could not currently enumerate when it reports a
-  // selection error. This lets the user recover from a transient/stale
-  // candidate without silently changing the explicit wire selection.
+  // Keep names the server could not currently enumerate. The next Preview or
+  // Start must carry them so the server can report a blocking selection error;
+  // the user can then remove the stale name explicitly.
   for (const name of wanted) ordered.push(name);
   return ordered;
 }
@@ -27,10 +27,7 @@ export function reconcilePluginSelection(
   preview: PluginPreviewResponse,
 ): PluginSelectionState {
   if (selection.mode === "default") return selection;
-  const candidateNames = new Set(preview.plugins.map((plugin) => plugin.name));
-  const erroredNames = new Set((preview.selectionErrors ?? []).map((error) => error.name));
-  const retained = selection.names.filter((name) => candidateNames.has(name) || erroredNames.has(name));
-  return { mode: "explicit", names: orderedNames(retained, preview) };
+  return { mode: "explicit", names: orderedNames(selection.names, preview) };
 }
 
 export function setPluginSelected(

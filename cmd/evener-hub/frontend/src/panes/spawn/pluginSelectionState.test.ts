@@ -55,11 +55,11 @@ describe("plugin selection state", () => {
     expect(reconcilePluginSelection({ mode: "default" }, preview(candidate("new", true)))).toEqual({ mode: "default" });
   });
 
-  test("explicit refresh keeps surviving names in candidate order and leaves new names unselected", () => {
+  test("explicit refresh keeps surviving names in candidate order and retains stale names", () => {
     const selection: PluginSelectionState = { mode: "explicit", names: ["old", "a", "b"] };
     expect(reconcilePluginSelection(selection, preview(candidate("b"), candidate("new"), candidate("a")))).toEqual({
       mode: "explicit",
-      names: ["b", "a"],
+      names: ["b", "a", "old"],
     });
   });
 
@@ -70,6 +70,13 @@ describe("plugin selection state", () => {
         { ...preview(candidate("a")), selectionErrors: [{ name: "missing", reason: "not found" }] },
       ),
     ).toEqual({ mode: "explicit", names: ["a", "missing"] });
+  });
+
+  test("removed explicit names remain on the wire even without a selection error", () => {
+    expect(reconcilePluginSelection({ mode: "explicit", names: ["removed", "a"] }, preview(candidate("a")))).toEqual({
+      mode: "explicit",
+      names: ["a", "removed"],
+    });
   });
 
   test("explicit toggles preserve stable preview order", () => {
