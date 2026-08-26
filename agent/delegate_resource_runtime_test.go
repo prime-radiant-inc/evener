@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -57,6 +58,23 @@ func TestDelegateResourceRuntime_RunningSendPersistsBeforeAck(t *testing.T) {
 	}
 	if !fs.controllerWasUnlocked {
 		t.Fatal("controller mutex was held at the transcript durability boundary")
+	}
+}
+
+func TestDelegateResourceRuntime_RestoresDescriptorPluginDirs(t *testing.T) {
+	pluginDir := makePluginDir(t, "delegate-selected")
+	fixture := newColdStableDelegateFixtureConfigured(t, "", func(descriptor *delegatestore.Descriptor) {
+		descriptor.Config.PluginDirs = []string{pluginDir}
+	})
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	aggregate := delegateAggregateSnapshot(t, root.delegateController, fixture.delegateID)
+	got := subagentConfigFromFrozenDescriptor(aggregate.Descriptor.Config, SessionConfig{PluginDirs: []string{"/parent/plugin"}})
+	if !slices.Equal(got.PluginDirs, []string{pluginDir}) {
+		t.Fatalf("restored delegate PluginDirs = %v, want [%q]", got.PluginDirs, pluginDir)
 	}
 }
 

@@ -35,6 +35,25 @@ func newTestSession(t *testing.T) *Session {
 	}))
 }
 
+func TestSubagentInheritsSelectedPluginDirs(t *testing.T) {
+	want := []string{"/plugins/selected-alpha", "/plugins/selected-beta"}
+	parent := newSession(t, withConfig(SessionConfig{
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		PluginDirs:       want,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}))
+	prepared, err := parent.prepareSubagentRun(context.Background(), "inspect", "", "", 1, "", "", nil, nil)
+	if err != nil {
+		t.Fatalf("prepareSubagentRun: %v", err)
+	}
+	defer releasePreparedTreeSlot(prepared)
+	defer prepared.sub.sess.Close()
+	if !slices.Equal(prepared.sub.sess.cfg.PluginDirs, want) {
+		t.Fatalf("child PluginDirs = %v, want %v", prepared.sub.sess.cfg.PluginDirs, want)
+	}
+}
+
 func TestEnsureRecoveryReaderPreservesPolicyShape(t *testing.T) {
 	reg := tool.NewRegistry()
 	register := func(name string, limit schema.ToolOutputLimit) {

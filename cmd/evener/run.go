@@ -171,6 +171,22 @@ func run(ctx context.Context, cfg runConfig) error {
 			return err
 		}
 		meta = &m
+		if cfg.resumeWith != "" {
+			childID, err := agent.AsideSession(stateDir, meta.ID)
+			if err != nil {
+				return fmt.Errorf("create resume-with session: %w", err)
+			}
+			childMeta, err := schema.LoadSessionMeta(stateDir, childID)
+			if err != nil {
+				return fmt.Errorf("load resume-with session: %w", err)
+			}
+			childMeta.Config = meta.Config.Clone()
+			childMeta.Config.PluginDirs = append([]string(nil), resolvedPlugins.SelectedDirs...)
+			if err := schema.SaveSessionMeta(stateDir, childMeta); err != nil {
+				return fmt.Errorf("save resume-with session: %w", err)
+			}
+			meta = &childMeta
+		}
 	}
 
 	// Determine prompt.

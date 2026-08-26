@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"testing"
 	"time"
 
@@ -110,6 +111,39 @@ func TestAsideSession_CopiesFullTranscriptAtTip(t *testing.T) {
 	}
 	if parentMeta.ForkLabel != "" {
 		t.Errorf("parent ForkLabel: got %q, want empty (aside leaves the parent untouched)", parentMeta.ForkLabel)
+	}
+}
+
+func TestAsideSession_PreservesSelectedPluginDirs(t *testing.T) {
+	t.Parallel()
+	stateDir, parentID := buildAsideParentSession(t)
+	parentMeta, err := schema.LoadSessionMeta(stateDir, parentID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(parent): %v", err)
+	}
+	want := []string{"/plugins/selected-alpha", "/plugins/selected-beta"}
+	parentMeta.Config.PluginDirs = want
+	if err := schema.SaveSessionMeta(stateDir, parentMeta); err != nil {
+		t.Fatalf("SaveSessionMeta(parent): %v", err)
+	}
+
+	childID, err := AsideSession(stateDir, parentID)
+	if err != nil {
+		t.Fatalf("AsideSession: %v", err)
+	}
+	childMeta, err := schema.LoadSessionMeta(stateDir, childID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(child): %v", err)
+	}
+	if !slices.Equal(childMeta.Config.PluginDirs, want) {
+		t.Fatalf("child PluginDirs = %v, want %v", childMeta.Config.PluginDirs, want)
+	}
+	parentAfter, err := schema.LoadSessionMeta(stateDir, parentID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(parent after): %v", err)
+	}
+	if !slices.Equal(parentAfter.Config.PluginDirs, want) {
+		t.Fatalf("parent PluginDirs = %v, want unchanged %v", parentAfter.Config.PluginDirs, want)
 	}
 }
 

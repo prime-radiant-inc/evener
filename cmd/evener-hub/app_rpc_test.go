@@ -7730,6 +7730,11 @@ func TestHubRPCThreadResumeRoutesConfiguredCodexSource(t *testing.T) {
 		if params["threadId"] != "th_codex" {
 			t.Fatalf("thread/resume params=%+v", params)
 		}
+		for _, field := range []string{"pluginDirs", "enabledPlugins"} {
+			if _, present := params[field]; present {
+				t.Fatalf("thread/resume unexpectedly carried launch selection %q: %+v", field, params)
+			}
+		}
 		return map[string]any{"thread": map[string]any{
 			"id":            "th_codex",
 			"sessionId":     "th_codex",

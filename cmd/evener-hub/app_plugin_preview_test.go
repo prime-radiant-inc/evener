@@ -2,6 +2,7 @@ package hub
 
 import (
 	"context"
+	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
@@ -77,5 +78,44 @@ func TestPluginPreviewControllerMapsFullResolution(t *testing.T) {
 	}
 	if len(resp.SelectionErrors) != 1 || resp.SelectionErrors[0] != (appwire.PluginSelectionError{Name: "missing-fixture", Reason: "no valid plugin candidate"}) {
 		t.Fatalf("mapped selection errors = %+v", resp.SelectionErrors)
+	}
+}
+
+func TestPluginSelectionPreviewUsesOnlySelectedConcreteDirectories(t *testing.T) {
+	root := t.TempDir()
+	selectedDir := filepath.Join(root, "selected")
+	excludedDir := filepath.Join(root, "excluded")
+	writePreviewFixturePlugin(t, selectedDir, "selected", filepath.Join(root, "selected-marker"))
+	writePreviewFixturePlugin(t, excludedDir, "excluded", filepath.Join(root, "excluded-marker"))
+	ctl := newHubPluginsController(t.TempDir(), t.TempDir())
+	selected := []string{"selected"}
+	resp, err := ctl.Preview(context.Background(), appwire.PluginPreviewParams{
+		CWD: t.TempDir(),
+		LaunchOverrides: &appwire.LaunchConfigLayer{
+			PluginDirs:     []string{selectedDir, excludedDir},
+			EnabledPlugins: &selected,
+		},
+	})
+	if err != nil {
+		t.Fatalf("Preview: %v", err)
+	}
+	if len(resp.Plugins) != 2 || !resp.Plugins[0].Selected {
+		// Candidate order follows explicit directory order; assert the complete
+		// selection shape below so this failure cannot be confused with ordering.
+		t.Fatalf("preview candidates = %+v", resp.Plugins)
+	}
+	for _, candidate := range resp.Plugins {
+		switch candidate.Name {
+		case "selected":
+			if !candidate.Selected {
+				t.Fatalf("selected candidate was not selected: %+v", candidate)
+			}
+		case "excluded":
+			if candidate.Selected {
+				t.Fatalf("excluded candidate was selected: %+v", candidate)
+			}
+		default:
+			t.Fatalf("unexpected candidate: %+v", candidate)
+		}
 	}
 }
