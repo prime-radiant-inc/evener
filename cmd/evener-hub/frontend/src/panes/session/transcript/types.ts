@@ -81,10 +81,15 @@ export function ignoringTurn(prev: ItemRenderProps, next: ItemRenderProps): bool
   );
 }
 
-export function threadFingerprintForItem(item: ItemModel, thread: ThreadModel | undefined): string {
+export function threadFingerprintForItem(
+  item: ItemModel,
+  thread: ThreadModel | undefined,
+  summarySuffix?: string,
+): string {
+  if (item.type !== "commandExecution") return "";
   if (thread === undefined) return "";
   let after = false;
-  const laterSameTool: Array<[string, string | undefined, boolean | undefined]> = [];
+  const laterSameTool: Array<[string, string | undefined, boolean | undefined, string]> = [];
   for (const turn of thread.turns) {
     for (const candidate of turn.items) {
       if (candidate.id === item.id) {
@@ -92,13 +97,20 @@ export function threadFingerprintForItem(item: ItemModel, thread: ThreadModel | 
         continue;
       }
       if (after && candidate.toolName === item.toolName) {
-        laterSameTool.push([candidate.id, candidate.error, candidate.prevalOnly]);
+        laterSameTool.push([candidate.id, candidate.error, candidate.prevalOnly, candidate.status ?? ""]);
       }
     }
   }
   return JSON.stringify({
     cwd: thread.cwd,
-    delegates: thread.delegates?.map((delegate) => [delegate.delegateId, delegate.status, delegate.latestActivityAt]),
+    delegates: thread.delegates?.map((delegate) => [
+      delegate.delegateId,
+      delegate.status,
+      delegate.terminal,
+      delegate.outcome,
+      delegate.latestActivityAt,
+    ]),
     laterSameTool,
+    summarySuffix,
   });
 }

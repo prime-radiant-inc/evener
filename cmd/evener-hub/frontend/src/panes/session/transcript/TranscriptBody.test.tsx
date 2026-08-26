@@ -1,4 +1,4 @@
-import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ItemModel, ThreadModel } from "../../../protocol/model";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
@@ -9,6 +9,7 @@ import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclo
 import { captureTranscriptViews, resetTranscriptViewRegistryForTests } from "./flow/transcriptViewRegistry";
 import { ToolCallCluster } from "./ToolCallCluster";
 import { TranscriptBody } from "./TranscriptBody";
+import { threadFingerprintForItem } from "./types";
 
 function preset(level: "chat" | "intent" | "tools" | "activity" | "full") {
   return makeTranscriptDisplayConfig({ kind: "preset", level });
@@ -46,6 +47,40 @@ const fixture = {
           status: "completed",
         },
         { id: "agent_1", turnId: "turn_1", type: "agentMessage", text: "The tree is ready", status: "completed" },
+      ],
+    },
+  ],
+} as unknown as ThreadModel;
+
+const ordinaryToolFixture = {
+  ...fixture,
+  cwd: "/workspace",
+  turns: [
+    {
+      id: "ordinary_turn",
+      status: "completed",
+      items: [
+        { id: "ordinary_user", turnId: "ordinary_turn", type: "userMessage", text: "run tools", status: "completed" },
+        {
+          id: "ordinary_shell",
+          turnId: "ordinary_turn",
+          type: "commandExecution",
+          toolName: "shell",
+          description: "Run tests",
+          argumentsJSON: '{"command":"cd /workspace && make test"}',
+          status: "completed",
+        },
+        { id: "ordinary_agent", turnId: "ordinary_turn", type: "agentMessage", text: "done", status: "completed" },
+        {
+          id: "ordinary_read",
+          turnId: "ordinary_turn",
+          type: "commandExecution",
+          toolName: "read_file",
+          description: "Read README",
+          argumentsJSON: '{"file_path":"/workspace/README.md"}',
+          status: "completed",
+        },
+        { id: "ordinary_agent_2", turnId: "ordinary_turn", type: "agentMessage", text: "read", status: "completed" },
       ],
     },
   ],
@@ -328,6 +363,164 @@ describe("TranscriptBody", () => {
 
     expect(screen.queryByTestId("transcript-virtual-list")).toBeNull();
     expect(screen.getByText("Inspect the tree")).toBeTruthy();
+  });
+
+  test.each(["live", "readOnly"] as const)(
+    "passes initial snapshot inputs to ordinary %s tool rows",
+    async (surface) => {
+      const getState = vi.spyOn(threadsStore, "getState");
+      render(
+        <TranscriptBody
+          model={ordinaryToolFixture}
+          config={preset("tools")}
+          surface={surface}
+          disclosureScope={`${surface}:ordinary-initial`}
+          sessionRef="ordinary:initial"
+        />,
+      );
+      let shellRow: HTMLElement | undefined;
+      await waitFor(() => {
+        shellRow = screen.getAllByTestId("tool-call-item").find((row) => row.textContent?.includes("make test"));
+        expect(shellRow).toBeDefined();
+      });
+      expect(shellRow?.textContent).not.toContain("cd /workspace && make test");
+      expect(screen.getByRole("button", { name: "Open beside: README.md" })).toBeTruthy();
+      expect(getState).not.toHaveBeenCalled();
+    },
+  );
+
+  test("refreshes ordinary ask_user suffix, delegate terminal outcome, and supersession", async () => {
+    const askItem = {
+      id: "ordinary_ask",
+      turnId: "ask_turn",
+      type: "commandExecution",
+      toolName: "ask_user",
+      description: "Ask about mode",
+      argumentsJSON: JSON.stringify({
+        questions: [{ header: "Mode", question: "Choose", options: [{ label: "Fast", detail: "" }] }],
+      }),
+      status: "completed",
+    };
+    const askBefore = {
+      ...ordinaryToolFixture,
+      turns: [{ id: "ask_turn", status: "completed", items: [askItem] }],
+    } as unknown as ThreadModel;
+    const askAfter = {
+      ...askBefore,
+      turns: [
+        {
+          id: "ask_turn",
+          status: "completed",
+          items: [
+            askItem,
+            {
+              id: "answer",
+              turnId: "ask_turn",
+              type: "userMessage",
+              text: "[answers]\n1. [Mode] → Fast",
+              status: "completed",
+            },
+          ],
+        },
+      ],
+    } as unknown as ThreadModel;
+    const { rerender } = render(
+      <TranscriptBody model={askBefore} config={preset("tools")} surface="preview" disclosureScope="ordinary:ask" />,
+    );
+    expect(screen.getByTestId("tool-row-summary").textContent).toContain("Asked: [Mode]");
+    rerender(
+      <TranscriptBody model={askAfter} config={preset("tools")} surface="preview" disclosureScope="ordinary:ask" />,
+    );
+    expect(screen.getByTestId("tool-row-summary").textContent).toContain("answered: Fast");
+
+    const delegateItem = {
+      id: "ordinary_delegate",
+      turnId: "delegate_turn",
+      type: "commandExecution",
+      text: "",
+      toolName: "delegate",
+      description: "Inspect a child session",
+      argumentsJSON: '{"task":"inspect"}',
+      output: JSON.stringify({ delegate_id: "dlg_ordinary", status: "running", transcript_ref: "local:child" }),
+      status: "completed",
+    };
+    const delegateBefore = {
+      ...ordinaryToolFixture,
+      delegates: [{ delegateId: "dlg_ordinary", status: "running", terminal: false }],
+      turns: [{ id: "delegate_turn", status: "completed", items: [delegateItem] }],
+    } as unknown as ThreadModel;
+    const delegateAfter = {
+      ...delegateBefore,
+      delegates: [{ delegateId: "dlg_ordinary", status: "done", outcome: "done", terminal: true }],
+    } as unknown as ThreadModel;
+    rerender(
+      <TranscriptBody
+        model={delegateBefore}
+        config={preset("tools")}
+        surface="preview"
+        disclosureScope="ordinary:delegate"
+        sessionRef="ordinary:delegate"
+      />,
+    );
+    expect(screen.getByRole("img", { name: "Working" })).toBeTruthy();
+    rerender(
+      <TranscriptBody
+        model={delegateAfter}
+        config={preset("tools")}
+        surface="preview"
+        disclosureScope="ordinary:delegate"
+        sessionRef="ordinary:delegate"
+      />,
+    );
+    expect(threadFingerprintForItem(delegateItem, delegateBefore)).not.toBe(
+      threadFingerprintForItem(delegateItem, delegateAfter),
+    );
+    await waitFor(() => expect(screen.getByRole("img", { name: "Ended" })).toBeTruthy());
+
+    const failed = {
+      id: "ordinary_failed",
+      turnId: "supersede_turn",
+      type: "commandExecution",
+      toolName: "shell",
+      description: "Retry shell",
+      error: "bad",
+      prevalOnly: true,
+      status: "failed",
+    };
+    const corrected = {
+      id: "ordinary_corrected",
+      turnId: "supersede_turn",
+      type: "commandExecution",
+      toolName: "shell",
+      description: "Retry shell",
+      status: "completed",
+    };
+    const supersedeBefore = {
+      ...ordinaryToolFixture,
+      turns: [{ id: "supersede_turn", status: "completed", items: [failed] }],
+    } as unknown as ThreadModel;
+    const supersedeAfter = {
+      ...supersedeBefore,
+      turns: [{ id: "supersede_turn", status: "completed", items: [failed, corrected] }],
+    } as unknown as ThreadModel;
+    rerender(
+      <TranscriptBody
+        model={supersedeBefore}
+        config={preset("tools")}
+        surface="preview"
+        disclosureScope="ordinary:supersede"
+      />,
+    );
+    expect((screen.getAllByTestId("tool-call-item")[0] as HTMLDetailsElement).open).toBe(true);
+    rerender(
+      <TranscriptBody
+        model={supersedeAfter}
+        config={preset("tools")}
+        surface="preview"
+        disclosureScope="ordinary:supersede"
+      />,
+    );
+    expect((screen.getAllByTestId("tool-call-item")[0] as HTMLDetailsElement).open).toBe(false);
   });
 
   test.each(["live", "readOnly"] as const)("places the detail toolbar above the %s scroller", (surface) => {

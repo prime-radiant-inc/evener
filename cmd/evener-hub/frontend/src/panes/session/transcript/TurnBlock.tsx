@@ -31,6 +31,7 @@ import { TurnSeparator } from "./messages";
 import { ToolCallCluster } from "./ToolCallCluster";
 import { TurnFailureEndCap } from "./TurnFailureEndCap";
 import { shouldGroup, toolRunFor } from "./toolGrouping";
+import { toolRendererFor } from "./toolRenderers";
 import { itemScopeKey } from "./tools/subagentModuleStore";
 import styles from "./turnblock.module.css";
 import { asTurnError } from "./turnFailure";
@@ -240,6 +241,11 @@ export function TurnBlock({
       renderedEntries.push(
         <div key={entry.id} {...viewAnchorFor(entry)}>
           <ItemRenderer
+            key={`${entry.id}:${threadFingerprintForItem(
+              item,
+              thread,
+              toolRendererFor(item.toolName ?? "").summarySuffix?.(item, thread),
+            )}`}
             item={item}
             turn={shownTurn}
             live={isItemLive(item)}
@@ -249,7 +255,11 @@ export function TurnBlock({
             projectedSummary={entry.kind === "critical" ? entry.summary : undefined}
             renderContext={itemRenderContext}
             thread={thread}
-            threadFingerprint={threadFingerprintForItem(item, thread)}
+            threadFingerprint={threadFingerprintForItem(
+              item,
+              thread,
+              toolRendererFor(item.toolName ?? "").summarySuffix?.(item, thread),
+            )}
           />
         </div>,
       );
@@ -257,6 +267,11 @@ export function TurnBlock({
       renderedEntries.push(
         <div key={entry.id} className={CLASS.runContent} data-testid="run-content" {...viewAnchorFor(entry)}>
           <ItemRenderer
+            key={`${entry.id}:${threadFingerprintForItem(
+              item,
+              thread,
+              toolRendererFor(item.toolName ?? "").summarySuffix?.(item, thread),
+            )}`}
             item={item}
             turn={shownTurn}
             live={isItemLive(item)}
@@ -264,7 +279,13 @@ export function TurnBlock({
             opensExchange={exchangeOpeners?.has(item.id)}
             agentLabel={agentLabel}
             projectedSummary={entry.kind === "critical" ? entry.summary : undefined}
-            renderContext={renderContext}
+            renderContext={itemRenderContext}
+            thread={thread}
+            threadFingerprint={threadFingerprintForItem(
+              item,
+              thread,
+              toolRendererFor(item.toolName ?? "").summarySuffix?.(item, thread),
+            )}
           />
         </div>,
       );
