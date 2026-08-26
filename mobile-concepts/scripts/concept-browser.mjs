@@ -62,6 +62,18 @@ async function stabilizePaint(client) {
   );
 }
 
+export function assembleCaseStabilization(
+  preCollection,
+  focusSteps,
+  postFocus,
+) {
+  return mergeStabilizationEvidence({
+    preCollection,
+    focusSteps,
+    postFocus,
+  });
+}
+
 function actionSource(concept, destination, textScale, variant = {}) {
   return `(async () => {
     const frame = () => new Promise(resolve => requestAnimationFrame(() => resolve()));
@@ -345,11 +357,11 @@ async function runCase({
       focusOrder: focus.focusOrder,
       focusCandidates: focus.focusCandidates,
     });
-    const mergedStabilization = mergeStabilizationEvidence({
-      preCollection: preCollectionStabilization,
-      focusSteps: focus.stabilizations,
-      postFocus: postFocusStabilization,
-    });
+    const mergedStabilization = assembleCaseStabilization(
+      preCollectionStabilization,
+      focus.stabilizations,
+      postFocusStabilization,
+    );
     const capabilityFailures = [...mergedStabilization.capabilityFailures];
     if (viewport.visibleHeight) {
       const layoutHeight = viewport.layoutHeight ?? viewport.height;

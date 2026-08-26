@@ -370,6 +370,88 @@ test("default DOM snapshot intersects viewport and clipping ancestors", async ()
   });
 });
 
+for (const [name, ancestorStyle] of [
+  ["zero opacity", { opacity: "0", display: "block", visibility: "visible" }],
+  ["display none", { opacity: "1", display: "none", visibility: "visible" }],
+  [
+    "hidden visibility",
+    { opacity: "1", display: "block", visibility: "hidden" },
+  ],
+]) {
+  test(`default DOM rejects target through ancestor ${name}`, async () => {
+    const documentTarget = {
+      fonts: { ready: Promise.resolve() },
+      defaultView: {
+        innerWidth: 100,
+        innerHeight: 100,
+        getComputedStyle(element) {
+          return element === parent
+            ? { ...ancestorStyle, overflowX: "visible", overflowY: "visible" }
+            : {
+                opacity: "1",
+                display: "block",
+                visibility: "visible",
+                overflowX: "visible",
+                overflowY: "visible",
+              };
+        },
+      },
+    };
+    const rectangle = {
+      left: 10,
+      top: 10,
+      right: 54,
+      bottom: 54,
+      width: 44,
+      height: 44,
+    };
+    const parent = {
+      id: "visibility-parent",
+      tagName: "DIV",
+      ownerDocument: documentTarget,
+      parentElement: null,
+      getBoundingClientRect: () => rectangle,
+    };
+    const target = {
+      id: "visible-target",
+      tagName: "BUTTON",
+      ownerDocument: documentTarget,
+      parentElement: parent,
+      getBoundingClientRect: () => rectangle,
+    };
+    const animation = {
+      animationName: "ancestor-visibility-loop",
+      currentTime: 10,
+      effect: {
+        target,
+        getComputedTiming: () => ({ endTime: Infinity }),
+        getTiming: () => ({ duration: 100, iterations: Infinity }),
+      },
+      pause() {},
+    };
+    documentTarget.getAnimations = () => [animation];
+    const evidence = await stabilizePagePaint(documentTarget, () =>
+      Promise.resolve(),
+    );
+    assert.deepEqual(evidence.infiniteStabilized, []);
+    assert.equal(
+      evidence.capabilityFailures[0].code,
+      "infinite-animation-no-visible-representative",
+    );
+    const snapshot = evidence.capabilityFailures[0].before;
+    assert.equal(snapshot.effectiveOpacity, Number(ancestorStyle.opacity));
+    assert.equal(snapshot.effectiveVisible, false);
+    assert.deepEqual(snapshot.ancestorStyles, [
+      {
+        element: "visibility-parent",
+        display: ancestorStyle.display,
+        visibility: ancestorStyle.visibility,
+        opacity: Number(ancestorStyle.opacity),
+      },
+    ]);
+  });
+}
+
 for (const stage of [
   "phase-assignment",
   "phase-frame",
@@ -456,6 +538,112 @@ for (const stage of [
     assert.equal(
       evidence.capabilityFailures[0].affectedElement,
       "fragile-control",
+    );
+    assert.equal(evidence.capabilityFailures[0].stage, stage);
+  });
+}
+
+for (const stage of [
+  "pause",
+  "get-computed-timing",
+  "get-timing",
+  "duration-read",
+  "before-snapshot",
+  "current-time-read",
+  "final-frame",
+  "final-snapshot",
+]) {
+  test(`infinite animation isolates ${stage} exception stage`, async () => {
+    const target = { id: "staged-control", tagName: "BUTTON" };
+    let currentTime = 10;
+    let frameCount = 0;
+    let snapshotCount = 0;
+    const timing = {};
+    Object.defineProperty(timing, "duration", {
+      get() {
+        if (stage === "duration-read") throw new Error("duration exploded");
+        return 100;
+      },
+    });
+    timing.iterations = Infinity;
+    const animation = {
+      animationName: "staged-loop",
+      effect: {
+        target,
+        getComputedTiming() {
+          if (stage === "get-computed-timing")
+            throw new Error("computed timing exploded");
+          return { endTime: Infinity };
+        },
+        getTiming() {
+          if (stage === "get-timing") throw new Error("timing exploded");
+          return timing;
+        },
+      },
+      pause() {
+        if (stage === "pause") throw new Error("pause exploded");
+      },
+      get currentTime() {
+        if (stage === "current-time-read")
+          throw new Error("current time exploded");
+        return currentTime;
+      },
+      set currentTime(value) {
+        currentTime = value;
+      },
+    };
+    const frame = async () => {
+      frameCount += 1;
+      if (stage === "final-frame" && frameCount === 6)
+        throw new Error("final frame exploded");
+    };
+    const snapshot = () => {
+      snapshotCount += 1;
+      if (stage === "before-snapshot" && snapshotCount === 1)
+        throw new Error("before snapshot exploded");
+      if (stage === "final-snapshot" && snapshotCount === 7)
+        throw new Error("final snapshot exploded");
+      return {
+        element: "staged-control",
+        visible: true,
+        opacity: 1,
+        rect: { left: 0, top: 0, right: 44, bottom: 44, width: 44, height: 44 },
+        viewportIntersection: {
+          left: 0,
+          top: 0,
+          right: 44,
+          bottom: 44,
+          width: 44,
+          height: 44,
+        },
+        clipIntersection: {
+          left: 0,
+          top: 0,
+          right: 44,
+          bottom: 44,
+          width: 44,
+          height: 44,
+        },
+        intersection: {
+          left: 0,
+          top: 0,
+          right: 44,
+          bottom: 44,
+          width: 44,
+          height: 44,
+        },
+      };
+    };
+    const evidence = await stabilizePagePaint(
+      { fonts: { ready: Promise.resolve() }, getAnimations: () => [animation] },
+      frame,
+      snapshot,
+    );
+    assert.equal(evidence.infiniteStabilized.length, 0);
+    assert.equal(evidence.capabilityFailures[0].identity, "staged-loop");
+    assert.equal(
+      evidence.capabilityFailures[0].affectedElement,
+      "staged-control",
     );
     assert.equal(evidence.capabilityFailures[0].stage, stage);
   });
