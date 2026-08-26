@@ -28,7 +28,7 @@ jobs:
       - name: Test, build, and browser guards
         run: make test-web && make build-web && make test-web-browser
 
-  static:
+  static-build:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -41,26 +41,79 @@ jobs:
       - name: Vet (all go.work modules)
         run: make vet
 
+      - name: Fuzz gap check (every decode/parse package has a target — static, fast)
+        run: make fuzz-gap-check
+
+  lint-golangci:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-toolchain
+
       - name: Read tool versions
         id: tool-versions
         run: |
           echo "golangci=$(awk '$1=="golangci-lint" {print $2}' .tool-versions)" >> "$GITHUB_OUTPUT"
-          echo "gitleaks=$(awk '$1=="gitleaks" {print $2}' .tool-versions)" >> "$GITHUB_OUTPUT"
           echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
 
       - name: Install golangci-lint
         run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" "v${{ steps.tool-versions.outputs.golangci }}"
 
-      - name: Install gitleaks
-        run: go install github.com/zricethezav/gitleaks/v8@v${{ steps.tool-versions.outputs.gitleaks }}
+      - name: Lint (golangci-lint across all go.work modules)
+        run: make lint-golangci
 
-      - name: Lint (make lint — every family of the local gate, all go.work modules)
+  lint-tagged:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-toolchain
+
+      - name: Read golangci-lint version
+        id: golangci-version
+        run: |
+          echo "version=$(awk '$1=="golangci-lint" {print $2}' .tool-versions)" >> "$GITHUB_OUTPUT"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Install golangci-lint
+        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" "v${{ steps.golangci-version.outputs.version }}"
+
+      - name: Lint tagged compile floors (evenerfuzz and eval)
+        run: make lint-evenerfuzz lint-eval
+
+  lint-repository:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-toolchain
+
+      - name: Read gitleaks version
+        id: gitleaks-version
+        run: |
+          echo "version=$(awk '$1=="gitleaks" {print $2}' .tool-versions)" >> "$GITHUB_OUTPUT"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Install gitleaks
+        run: go install github.com/zricethezav/gitleaks/v8@v${{ steps.gitleaks-version.outputs.version }}
+
+      - name: Lint repository structure, generated output, formatting, and secrets
         env:
           EVENER_GITLEAKS_REQUIRED: "1"
-        run: make lint
+        run: make lint-generated lint-naming lint-gofmt lint-internal lint-fuzz-registry secret-scan
 
-      - name: Fuzz gap check (every decode/parse package has a target — static, fast)
-        run: make fuzz-gap-check
+  static:
+    if: always()
+    needs: [static-build, lint-golangci, lint-tagged, lint-repository]
+    runs-on: ubuntu-latest
+    steps:
+      - name: Require every static lane
+        env:
+          RESULTS: ${{ toJSON(needs) }}
+        run: |
+          echo "$RESULTS"
+          test "$(jq -r '[.[].result] | all(. == "success")' <<<"$RESULTS")" = true
 
   race-root:
     runs-on: ubuntu-latest

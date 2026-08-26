@@ -191,11 +191,8 @@ lint-fuzz-registry:
 	$(call run_quiet_lint,scripts/fuzz/fuzz-registry-check.sh)
 
 LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry secret-scan
-LINT_FAMILY_PARALLEL ?= 3
 
-## Go lint, formatting, tagged floors, generated outputs, and secrets. Runs
-## generated-output freshness first, then the independent read-only families
-## with LINT_FAMILY_PARALLEL workers (default 3).
+## Go lint, formatting, tagged floors, generated outputs, and secrets.
 ## proves: TOML naming; gofmt over every tracked .go file; the evenerfuzz and
 ##   eval compile floors; the internal-type check; golangci-lint across every
 ##   workspace module; generated-output freshness; the fuzz registry check;
@@ -203,5 +200,4 @@ LINT_FAMILY_PARALLEL ?= 3
 ## trigger: Required CI; local pre-merge.
 ## requires: golangci-lint, gitleaks.
 ## fails-when: Any member of LINT_TARGETS exits nonzero.
-lint: lint-generated
-	+@$(MAKE) --no-print-directory -j$(LINT_FAMILY_PARALLEL) $(filter-out lint-generated,$(LINT_TARGETS))
+lint: $(LINT_TARGETS)
