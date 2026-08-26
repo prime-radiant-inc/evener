@@ -31,14 +31,16 @@ export class RecoveryBoundary extends Component<
   render() {
     if (this.state.error !== null) {
       return (
-        <section className="recovery" role="alert">
-          <p className="recovery__eyebrow">Local recovery</p>
-          <h2>This concept could not be rendered.</h2>
-          <p>Reset the deterministic prototype and choose a concept again.</p>
-          <button type="button" onClick={this.recover}>
-            Reset prototype
-          </button>
-        </section>
+        <main>
+          <section className="recovery" role="alert">
+            <p className="recovery__eyebrow">Local recovery</p>
+            <h2>This concept could not be rendered.</h2>
+            <p>Reset the deterministic prototype and choose a concept again.</p>
+            <button type="button" onClick={this.recover}>
+              Reset prototype
+            </button>
+          </section>
+        </main>
       );
     }
     return this.props.children;
