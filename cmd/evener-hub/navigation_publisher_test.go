@@ -14,6 +14,17 @@ type navigationPublisherRecorder struct {
 	methods []string
 	items   []appwire.NavigationInvalidatedPayload
 	seen    chan struct{}
+	entered chan struct{}
+	release chan struct{}
+}
+
+func waitNavigationSignal(t *testing.T, signal <-chan struct{}, name string) {
+	t.Helper()
+	select {
+	case <-signal:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for %s", name)
+	}
 }
 
 func (p *navigationPublisherRecorder) BroadcastAll(method string, params any) {
@@ -23,6 +34,13 @@ func (p *navigationPublisherRecorder) BroadcastAll(method string, params any) {
 	p.items = append(p.items, payload)
 	p.mu.Unlock()
 	p.seen <- struct{}{}
+	if p.entered != nil {
+		select {
+		case p.entered <- struct{}{}:
+		default:
+		}
+		<-p.release
+	}
 }
 
 func (p *navigationPublisherRecorder) snapshot() ([]string, []appwire.NavigationInvalidatedPayload) {
@@ -37,7 +55,11 @@ func TestNavigationPublisherLifecycleCoalescesReadinessAndBroadcastsFIFOOnce(t *
 	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
 		t.Fatal(err)
 	}
-	recorder := &navigationPublisherRecorder{seen: make(chan struct{}, 4)}
+	recorder := &navigationPublisherRecorder{
+		seen:    make(chan struct{}, 4),
+		entered: make(chan struct{}, 1),
+		release: make(chan struct{}),
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() {
@@ -50,13 +72,18 @@ func TestNavigationPublisherLifecycleCoalescesReadinessAndBroadcastsFIFOOnce(t *
 	if err != nil {
 		t.Fatal(err)
 	}
+	waitNavigationSignal(t, recorder.entered, "first BroadcastAll") // blocked
 	source.changeTitle("two")
 	second, err := service.Refresh(t.Context(), navigationChangeHint{AllLoadedProjects: true})
 	if err != nil {
 		t.Fatal(err)
 	}
+	if got := source.captureCount(); got != 3 {
+		t.Fatalf("captures while publisher blocked = %d, want initial plus two refreshes", got)
+	}
+	close(recorder.release)
 	for range 2 {
-		<-recorder.seen
+		waitNavigationSignal(t, recorder.seen, "broadcast")
 	}
 
 	methods, payloads := recorder.snapshot()
@@ -80,7 +107,7 @@ func TestNavigationPublisherLifecycleCoalescesReadinessAndBroadcastsFIFOOnce(t *
 	default:
 	}
 	cancel()
-	<-done
+	waitNavigationSignal(t, done, "publisher shutdown")
 }
 
 func TestNavigationPublisherDrainDoesNotRefresh(t *testing.T) {

@@ -57,6 +57,8 @@ var navigationRefreshTicketAttached = func(*NavigationService, *navigationBuildF
 
 var navigationBeforePublicationDrainLock = func() {}
 
+var navigationPendingCleared = func() {}
+
 type navigationSourceRevision struct {
 	Inputs uint64
 	Remote uint64
@@ -1149,6 +1151,7 @@ func (s *NavigationService) refreshPending(ctx context.Context) {
 	if s.pendingEpoch == epoch {
 		s.pendingHint = navigationChangeHint{}
 		s.pendingInvalidation = false
+		navigationPendingCleared()
 	}
 	s.mu.Unlock()
 }

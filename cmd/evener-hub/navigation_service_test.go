@@ -529,27 +529,50 @@ func TestNavigationServicePendingEpochSurvivesCommitBeforeClear(t *testing.T) {
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	go service.Start(ctx)
-	<-source.captured // initial non-forced scheduler snapshot
+	waitNavigationSignal(t, source.captured, "initial scheduler snapshot")
 
 	previous := navigationPublicationCommittedLocked
+	previousCleared := navigationPendingCleared
 	commit := make(chan struct{}, 1)
+	secondCommit := make(chan struct{}, 1)
+	releaseSecond := make(chan struct{})
+	cleared := make(chan struct{}, 1)
+	var commitCount int
 	navigationPublicationCommittedLocked = func(locked *NavigationService) {
 		// This hook runs at the commit cutoff while the service lock is held.
 		// Model an identical producer event without attempting to reacquire it.
-		if len(commit) == 0 {
+		commitCount++
+		if commitCount == 1 {
 			locked.epoch++
 			locked.pendingHint = mergeNavigationChangeHints(locked.pendingHint, navigationChangeHint{Projects: []string{"p1"}})
 			locked.pendingInvalidation = true
 			locked.pendingEpoch++
+			source.changeTitle("second")
+		} else {
+			secondCommit <- struct{}{}
+			<-releaseSecond
 		}
 		commit <- struct{}{}
 	}
-	t.Cleanup(func() { navigationPublicationCommittedLocked = previous })
+	navigationPendingCleared = func() { cleared <- struct{}{} }
+	t.Cleanup(func() {
+		navigationPublicationCommittedLocked = previous
+		navigationPendingCleared = previousCleared
+	})
 	source.changeTitle("first")
 	service.Invalidate(navigationChangeHint{Projects: []string{"p1"}})
-	<-commit
-	<-source.captured // first forced refresh
-	<-source.captured // second forced refresh retained by the raced epoch
+	waitNavigationSignal(t, commit, "first commit")
+	waitNavigationSignal(t, source.captured, "first forced refresh")
+	waitNavigationSignal(t, source.captured, "second forced refresh retained by raced epoch")
+	waitNavigationSignal(t, secondCommit, "second commit")
+	service.mu.Lock()
+	if !service.pendingInvalidation {
+		service.mu.Unlock()
+		t.Fatal("pending invalidation cleared before second commit completed")
+	}
+	service.mu.Unlock()
+	close(releaseSecond)
+	waitNavigationSignal(t, cleared, "second refresh pending clear")
 	if got := source.captureCount(); got != 3 {
 		t.Fatalf("captures = %d, want initial plus two forced refreshes", got)
 	}
@@ -559,6 +582,113 @@ func TestNavigationServicePendingEpochSurvivesCommitBeforeClear(t *testing.T) {
 	if pending {
 		t.Fatal("same-hint pending epoch was cleared by the first commit")
 	}
+}
+
+func TestNavigationServiceCanceledJoinedCallerAtCommitCutoffDoesNotPoisonFlight(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	service := newTestNavigationService(t, source)
+	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		t.Fatal(err)
+	}
+	source.changeTitle("cutoff")
+	source.entered, source.release = make(chan struct{}), make(chan struct{})
+	source.enterOnce = sync.Once{}
+	ownerCtx, cancelOwner := context.WithCancel(t.Context())
+	defer cancelOwner()
+	ownerErr := make(chan error, 1)
+	waiterResult := make(chan error, 1)
+	attached := make(chan struct{}, 1)
+	previousAttached := navigationRefreshTicketAttached
+	navigationRefreshTicketAttached = func(_ *NavigationService, flight *navigationBuildFlight) {
+		if len(flight.tickets) == 2 {
+			attached <- struct{}{}
+		}
+	}
+	t.Cleanup(func() { navigationRefreshTicketAttached = previousAttached })
+	go func() {
+		_, err := service.Refresh(ownerCtx, navigationChangeHint{Projects: []string{"p1"}})
+		ownerErr <- err
+	}()
+	waitNavigationSignal(t, source.entered, "refresh capture")
+	go func() {
+		_, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
+		waiterResult <- err
+	}()
+	waitNavigationSignal(t, attached, "joined refresh ticket")
+
+	previousCutoff := navigationBeforeSnapshotCommit
+	navigationBeforeSnapshotCommit = func(context.Context) { cancelOwner() }
+	t.Cleanup(func() { navigationBeforeSnapshotCommit = previousCutoff })
+	close(source.release)
+	select {
+	case err := <-ownerErr:
+		if err == nil {
+			t.Fatal("canceled owner unexpectedly succeeded")
+		}
+		var status interface{ StatusCode() int }
+		if !errors.As(err, &status) || status.StatusCode() != 503 {
+			t.Fatalf("owner error = %T %v, want 503", err, err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("canceled owner did not return")
+	}
+	select {
+	case err := <-waiterResult:
+		if err != nil {
+			t.Fatalf("joined waiter inherited cancellation: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("joined waiter did not complete")
+	}
+	if got := service.Capability(); got == nil || got.Sequence != 1 {
+		t.Fatalf("commit cutoff sequence = %+v, want one committed publication", got)
+	}
+	if got := service.DrainPublications(); len(got) != 1 {
+		t.Fatalf("commit cutoff publications = %d, want one", len(got))
+	}
+}
+
+func TestNavigationServiceFailedRefreshPreservesNewerPendingEpoch(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	source.captured = make(chan struct{}, 4)
+	service := newTestNavigationService(t, source)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { service.Start(ctx); close(done) }()
+	waitNavigationSignal(t, source.captured, "initial scheduler snapshot")
+
+	attached := make(chan struct{}, 1)
+	previousAttached := navigationRefreshTicketAttached
+	navigationRefreshTicketAttached = func(locked *NavigationService, _ *navigationBuildFlight) {
+		// Simulate a newer producer epoch arriving while the failed flight owns
+		// the lock; the retry must not clear this newer hint.
+		if len(attached) == 0 {
+			locked.epoch++
+			locked.pendingEpoch++
+			locked.pendingHint = mergeNavigationChangeHints(locked.pendingHint, navigationChangeHint{Sources: true})
+			locked.pendingInvalidation = true
+			attached <- struct{}{}
+		}
+	}
+	t.Cleanup(func() { navigationRefreshTicketAttached = previousAttached })
+	source.mu.Lock()
+	source.err = errors.New("capture failed")
+	source.revision++
+	source.mu.Unlock()
+	service.Invalidate(navigationChangeHint{Projects: []string{"p1"}})
+	waitNavigationSignal(t, attached, "failed refresh ticket")
+	service.mu.Lock()
+	pending := service.pendingInvalidation
+	hint := service.pendingHint
+	service.mu.Unlock()
+	if !pending || !hint.Sources || len(hint.Projects) != 1 || hint.Projects[0] != "p1" {
+		t.Fatalf("failed refresh lost newer pending hint: pending=%v hint=%+v", pending, hint)
+	}
+	if got := service.DrainPublications(); len(got) != 0 {
+		t.Fatalf("failed refresh published %+v", got)
+	}
+	cancel()
+	waitNavigationSignal(t, done, "scheduler shutdown")
 }
 
 func TestNavigationServiceConcurrentAppendAndDrainKeepFIFOAndWakeAtomic(t *testing.T) {
