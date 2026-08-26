@@ -18,10 +18,10 @@ type drainAbandonedChild struct {
 }
 
 type drainGraceChild struct {
-	delegateID            string
-	generation            uint64
-	latestActivityAt      time.Time
-	secondWindowStartedAt time.Time
+	delegateID                 string
+	generation                 uint64
+	latestProductiveActivityAt time.Time
+	secondWindowStartedAt      time.Time
 }
 
 // DrainStallTimeout bounds how long the one-shot drain will keep blocking on a
@@ -532,8 +532,8 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 // admitLeaseLocked, which rejects on PendingStopSeq != 0, so a stop-requested
 // delegate CANNOT report activity at all. The honest first-window question for
 // that branch is how long the stop has gone unanswered. A never-stopped
-// delegate remains able to report genuine activity, so its branch deliberately
-// does read that stamp and restarts window one when it advances.
+// delegate remains able to report productive activity, so its branch
+// deliberately reads that clock and restarts window one when it advances.
 //
 // NO RUN COMPLETION. currentRunOpen is the "with no run-completion" half: a
 // delegate whose run has finished is not wedged, it is done, and its terminal
@@ -552,8 +552,9 @@ func (s *Session) subtreeHasLiveComponent() (bool, error) {
 //
 // For an explicit pending stop, window one starts at the durable request time.
 // For a never-stopped delegate it starts at the one-shot drain boundary and any
-// later admitted activity restarts it. Stop-requested rows cannot admit activity
-// (the controller fence above), so those two branches are intentionally distinct.
+// later admitted productive activity restarts it. Stop-requested rows cannot
+// admit activity (the controller fence above), so those two branches are
+// intentionally distinct.
 func delegateAbandonedByDrain(row delegateSnapshot, now, drainStartedAt time.Time) bool {
 	if !row.currentRunOpen {
 		return false
@@ -561,8 +562,8 @@ func delegateAbandonedByDrain(row delegateSnapshot, now, drainStartedAt time.Tim
 	since := row.pendingStopAt
 	if since.IsZero() {
 		since = drainStartedAt
-		if row.latestActivityAt.After(since) {
-			since = row.latestActivityAt
+		if row.latestProductiveActivityAt.After(since) {
+			since = row.latestProductiveActivityAt
 		}
 	}
 	if since.IsZero() {
@@ -632,9 +633,9 @@ func (s *Session) markDrainAbandonedDelegates(now, drainStartedAt time.Time) {
 			s.recordDrainGraceChild(child.id, row, now)
 			continue
 		}
-		if row.latestActivityAt.After(phase.latestActivityAt) {
-			// A never-stopped delegate proved it is alive. Restart window one at
-			// that activity stamp rather than carrying a stale phase forward.
+		if row.latestProductiveActivityAt.After(phase.latestProductiveActivityAt) {
+			// A never-stopped delegate made productive progress. Restart window
+			// one at that progress stamp rather than carrying a stale phase forward.
 			s.clearDrainGraceChild(child.id)
 			continue
 		}
@@ -654,7 +655,7 @@ func (s *Session) recordDrainGraceChild(childSessionID string, row delegateSnaps
 	}
 	s.drainGraceChildren[childSessionID] = drainGraceChild{
 		delegateID: row.id, generation: row.generation,
-		latestActivityAt: row.latestActivityAt, secondWindowStartedAt: now,
+		latestProductiveActivityAt: row.latestProductiveActivityAt, secondWindowStartedAt: now,
 	}
 }
 
