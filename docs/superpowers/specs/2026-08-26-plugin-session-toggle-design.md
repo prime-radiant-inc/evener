@@ -56,6 +56,9 @@ Approved visual artifacts:
   behavior.
 - Saving plugin selections as global or project launch defaults.
 - Selecting individual contributions inside a plugin.
+- Pinning a plugin version, install path, marketplace, or content hash. The
+  allow-list fixes manifest names only; normal upgrades and source replacement
+  keep their existing behavior.
 - Changing standalone skill directories, evener-wide commands, or ordinary MCP
   configuration.
 - Mutating the plugin set of an already-running session.
@@ -138,23 +141,40 @@ one-session allow-list cannot override global disablement.
 
 ### Launch layer
 
-Add a presence-sensitive field to the wire and internal launch layer:
+Add a presence-sensitive field to the appwire launch layer:
 
 ```go
 // nil means inherit the default set; non-nil empty means no plugins.
 EnabledPlugins *[]string `json:"enabledPlugins,omitempty"`
 ```
 
-The internal launch layer carries the same pointer-to-slice distinction. This
-field is per-launch only:
+The internal launch layer carries the same distinction without making the field
+TOML-persistable:
+
+```go
+EnabledPlugins *[]string `toml:"-"`
+```
+
+`FromWire`, `ToWire`, clone, merge, and resolved-to-wire paths deep-copy the
+pointer and slice. Raw JSON must encode nil by omitting the key and encode a
+non-nil empty slice as `"enabledPlugins":[]`; decoding must restore that
+distinction. The existing custom `LaunchConfigLayer.MarshalJSON` path must not
+erase the new field while handling `modelFallbacks`.
+
+This field is per-launch only:
 
 - the launch schema reports `PerLaunch=true`;
 - `DefaultableLayers` is empty;
-- global, repository, and project layer writes reject it;
+- `evener/launch/setLayer` rejects it for global and project writes;
+- repository TOML reports `enabled_plugins` as an unsupported field rather than
+  treating it as a launch selection;
 - persistent TOML does not serialize it.
 
-The highest present per-launch value replaces rather than appends. This differs
-intentionally from `plugin_dirs`, which continue to append.
+Merge handles this field in an explicit pointer branch: a non-nil launch value
+replaces the lower value even when its slice is empty, copies the slice, and
+records launch provenance for `enabled_plugins`. An absent launch value leaves
+the field nil. This differs intentionally from `plugin_dirs`, which continue to
+append.
 
 ### Preview protocol
 
@@ -177,8 +197,9 @@ Response:
 
 ```go
 type PluginPreviewResponse struct {
-    Plugins     []PluginLaunchCandidate `json:"plugins"`
-    Diagnostics []PluginDiagnostic      `json:"diagnostics,omitempty"`
+    Plugins         []PluginLaunchCandidate `json:"plugins"`
+    Diagnostics     []PluginDiagnostic      `json:"diagnostics,omitempty"`
+    SelectionErrors []PluginSelectionError  `json:"selectionErrors,omitempty"`
 }
 
 type PluginLaunchCandidate struct {
@@ -195,14 +216,24 @@ type PluginLaunchCandidate struct {
     HookCount    int      `json:"hookCount"`
     MCPCount     int      `json:"mcpCount"`
 }
+
+type PluginSelectionError struct {
+    Name   string `json:"name"`
+    Reason string `json:"reason"`
+}
 ```
 
-The exact diagnostic shape should reuse existing launch diagnostic conventions:
-field/source, plugin name or path when known, and a safe message. Responses never
+Diagnostics are nonblocking candidate problems and should reuse existing launch
+diagnostic conventions: field/source, plugin name or path when known, and a safe
+message. Selection errors are blocking problems with names explicitly requested
+by the allow-list. Keeping them separate lets Preview return the remaining
+candidate rows while Start rejects the same stale selection. Responses never
 include component bodies, command lines, credentials, or environment values.
 
 Preview uses the same resolver as startup. It parses plugin files but does not
-execute hooks, start MCP processes, or register tools.
+execute hooks, start MCP processes, or register tools. Preview returns selection
+errors in its response; startup converts any selection error into an invalid
+launch request before creating session state.
 
 ### Manager resolution result
 
@@ -214,20 +245,51 @@ logical input is:
 explicit directories + global registry + optional enabled manifest names
 ```
 
+The internal API has one explicit result boundary:
+
+```go
+type LaunchPluginResolution struct {
+    Candidates      []LaunchPluginCandidate
+    SelectedDirs    []string
+    Diagnostics     []PluginDiagnostic
+    SelectionErrors []PluginSelectionError
+}
+
+func (m *Manager) ResolveForLaunch(
+    explicitDirs []string,
+    enabledNames *[]string,
+) (LaunchPluginResolution, error)
+```
+
+The returned `error` is reserved for infrastructure failures that prevent a
+truthful enumeration, such as an unreadable registry. One bad candidate belongs
+in `Diagnostics`; a requested name without a valid winner belongs in
+`SelectionErrors`.
+
 Its ordered stages are:
 
 1. enumerate explicit candidates;
-2. enumerate globally enabled, non-broken registry candidates;
-3. parse candidates with the existing plugin loader;
+2. enumerate globally enabled registry entries, including entries currently
+   marked broken so Preview can account for them diagnostically;
+3. parse candidates with the existing plugin loader, recording invalid explicit
+   directories and broken registry entries as nonblocking diagnostics;
 4. preserve first-wins manifest-name deduplication;
 5. if the allow-list is omitted, select every valid winner;
-6. if present, validate that every requested name has a valid winner;
-7. return candidate metadata, diagnostics, and selected directories.
+6. if present, record every requested name without a valid winner as a selection
+   error;
+7. return candidate metadata, diagnostics, selection errors, and selected
+   directories.
 
 `EnabledPluginDirs` may remain as a compatibility wrapper around this resolver.
 Direct CLI startup, `serve`, preview, effective listing, and hub command catalog
 construction must call the shared contract rather than reimplementing its
 ordering or validation.
+
+The manager API returns one result object containing ordered candidates,
+selected directories, diagnostics, and selection errors. It does not print
+warnings itself. CLI callers render nonblocking diagnostics to stderr, Preview
+returns them structurally, and startup rejects any selection errors before
+constructing the session. This keeps policy out of the shared enumeration code.
 
 ## End-to-end data flow
 
@@ -247,7 +309,7 @@ shared plugin resolver
     | globally enabled registry entries second
     | parse + validate + dedupe by manifest name
     v
-candidate list + diagnostics
+candidate list + diagnostics + selection errors
     |
     | user edits selection
     v
@@ -273,6 +335,30 @@ session snapshot -> plugin initialization
 The second resolution at Start is authoritative. Preview is an informed UI, not
 a security boundary.
 
+### Session snapshot boundary
+
+No new selection field is stored in session metadata. Startup first resolves
+the allow-list to concrete directories, then writes those directories through
+the existing `SessionConfig.PluginDirs` -> `schema.ConfigSnapshot.PluginDirs`
+conversion. Restore reads the same existing field through `configFromSnapshot`.
+This needs no snapshot schema bump or migration.
+
+Lifecycle rules are explicit:
+
+- `--resume`, `--resume-last`, and `thread/resume` restore the snapshot and do
+  not accept a replacement plugin selection;
+- `--resume-with` creates a new session from prior context and resolves its own
+  startup selection;
+- fork and aside copy the parent snapshot's concrete directories;
+- direct child/subagent and durable delegate descriptors freeze the parent
+  snapshot, so they inherit the same directories;
+- old snapshots keep their recorded `PluginDirs` exactly as today. An absent or
+  empty historical field is not re-expanded from the current global registry.
+
+Tests must exercise each lifecycle separately. Broad “descendants inherit”
+coverage is not a substitute for resume-with, fork, aside, direct child, and
+durable delegate cases.
+
 ## CLI
 
 ### Startup flag
@@ -292,6 +378,11 @@ Names are trimmed; empty elements inside a non-empty list, duplicates, and
 invalid manifest-name syntax are usage errors. Preserve user order only for
 error reporting. Runtime load order remains candidate order, so selection does
 not change plugin precedence.
+
+The flag configures a newly created session. Reject it with `--resume` or
+`--resume-last`, because those commands must restore the existing session's
+frozen plugin directories rather than mutate them. `--resume-with` creates a new
+session from prior context, so it may use a new explicit plugin set.
 
 ### Effective listing
 
@@ -349,11 +440,25 @@ The launcher maintains two distinct modes:
 - **explicit:** the first toggle, All, or None action materializes an explicit
   list, including `[]` for None.
 
+While Preview is pending, the summary reads `Inspecting plugins…`; it never
+shows a guessed count. Start remains available in default mode because omission
+retains the existing server-side behavior, but the disclosure cannot be edited
+until Preview succeeds.
+
 Changing `cwd`, `pluginDirs`, or another input that affects launch resolution
 refreshes Preview. In default mode, the new candidate set becomes selected. In
 explicit mode, surviving selected names stay selected; removed or invalid names
-remain a blocking stale-selection error until the user refreshes or changes the
-selection. Newly appearing candidates remain unselected.
+remain blocking selection errors until the user removes them or chooses All or
+None. Newly appearing candidates remain unselected.
+
+Debounce cwd and override edits with the launcher's existing settle pattern,
+and discard responses whose request key no longer matches the current cwd and
+overrides. Plugin parsing must not run once per typed path character or let a
+late response resurrect an older candidate set.
+
+The existing plugin-updated notification also invalidates an open Preview, so a
+global install, remove, enable, disable, or upgrade is reflected without closing
+the launcher. It follows the same default-versus-explicit reconciliation rules.
 
 A successful Start clears the explicit selection and returns the singleton
 launcher to default mode. Failed Start preserves it for correction.
@@ -376,12 +481,18 @@ touch-target rules.
 ### Slash-command catalog
 
 The hub's current `evener/command/list` is global and can include commands from a
-plugin excluded by the active session. When a session is active, the web command
-palette filters plugin command descriptors against
-`Thread.Diagnostics.Plugins`. If diagnostics are temporarily unavailable, it
-fails closed for plugin command suggestions while retaining built-in and
-user-global commands. The session itself remains authoritative for slash-command
-expansion.
+plugin excluded by the active session. This design keeps that RPC and its
+`EmptyParams` contract global. Its server implementation calls the shared plugin
+resolver with an omitted selection to build the default hub-wide catalog; it
+does not become a session-aware endpoint.
+
+When a session is active, the web command palette filters the returned plugin
+descriptors against `Thread.Diagnostics.Plugins`. If diagnostics are temporarily
+unavailable, it fails closed for plugin command suggestions while retaining
+built-in and user-global commands. The session itself remains authoritative for
+slash-command expansion. The web store owns this view filter; the TUI has no
+current consumer of `evener/command/list`, so no parallel TUI catalog change is
+required.
 
 ## Terminal UI
 
@@ -434,6 +545,9 @@ successful start.
 - With selection untouched, a plugin installed before Start joins the default
   set, matching current behavior.
 - With an explicit allow-list, a plugin installed after Preview does not join.
+- The allow-list pins manifest names, not versions or sources. An upgrade or
+  deterministic winner change under the same manifest name follows existing
+  plugin behavior.
 - Global enable/disable or plugin removal does not mutate an already-created
   session's snapshot.
 - The Start path validates again; it never trusts preview freshness.
@@ -442,30 +556,31 @@ successful start.
 
 ### Preview errors
 
-If Preview fails, show `Couldn't inspect plugins` with retry. Keep an untouched
-default launch available because omission preserves current behavior, but
-disable selection editing until inspection succeeds. Never display a fabricated
-zero count.
+If the Preview request itself fails, show `Couldn't inspect plugins` with retry.
+Keep an untouched default launch available because omission preserves current
+behavior, but disable selection editing until inspection succeeds. Never display
+a fabricated zero count. A successful Preview may still carry selection errors;
+those keep the candidate list usable but block Start until corrected.
 
-Nonfatal candidate diagnostics include invalid explicit directories, broken
-registry entries already excluded by registry state, and duplicate losers. The
-summary reports diagnostic presence without turning warnings into selected rows.
+Nonfatal candidate diagnostics include invalid explicit directories, globally
+enabled registry entries that fail manager validation, and duplicate losers.
+Globally disabled registry entries are intentionally absent rather than warnings;
+the global plugin manager is their source of truth. The summary reports
+diagnostic presence without turning warnings into selected rows.
 
 ### Strict explicit selection
 
 A present allow-list is a contract. Startup fails before session creation when:
 
-- a requested manifest name is unknown;
-- the selected winner disappeared;
-- the selected candidate no longer parses;
-- global state disabled the selected registry plugin;
-- the selected name no longer wins deterministic candidate resolution.
+- a requested manifest name has no valid current winner because it is unknown,
+  disappeared, no longer parses, or is no longer globally enabled; or
+- allow-list syntax is malformed or contains duplicate names.
 
 The error names every affected manifest and tells the UI to refresh the plugin
 selection. It contains no secrets or component payloads.
 
 An explicit empty list is valid and must not collapse to omission during JSON,
-TOML-layer conversion, argv generation, or flag parsing.
+wire-to-layer conversion, argv generation, or flag parsing.
 
 ### Startup rollback
 
@@ -493,6 +608,8 @@ scripted boundaries; they never install from the network or call a provider.
 - explicit names choose exactly those winners without changing load order;
 - duplicate list names and malformed CLI elements are rejected;
 - unknown or newly invalid selected names fail strictly;
+- Preview reports stale selected names while startup rejects the same resolver
+  result;
 - invalid unselected candidates remain diagnostics;
 - source metadata and component counts match the loaded manifest;
 - path and manifest data in diagnostics are safely bounded.
@@ -500,10 +617,18 @@ scripted boundaries; they never install from the network or call a provider.
 ### Launch and wire tests
 
 - omitted, empty, and non-empty lists round-trip distinctly through appwire;
+- raw JSON asserts an omitted key for nil and a literal
+  `"enabledPlugins":[]` for non-nil empty, including the custom marshal path;
 - per-launch conversion preserves pointer presence;
-- global/project layer persistence rejects the field;
+- clone and merge deep-copy the list, preserve a present empty value, and record
+  launch provenance;
+- global/project writes and repository TOML reject the field;
 - argv emits no flag for omission, `--enabled-plugins=` for empty, and one
   canonical comma-separated flag for names;
+- `--resume` and `--resume-last` reject the flag, while a fresh run and
+  `--resume-with` accept it;
+- direct CLI parsing distinguishes omission, empty, and names, and a strict
+  selection error occurs before session ID, metadata, transcript, or hook state;
 - direct run and `serve` resolve the same effective directories;
 - `evener plugin list --effective --json` matches the shared resolver.
 
@@ -514,16 +639,24 @@ servers. Prove an excluded plugin contributes none of them, emits no
 `PLUGIN_LOADED` event, runs no startup hook, starts no MCP process, and grants no
 sandbox infrastructure root. Prove selected sibling plugins still load.
 
-Prove the effective filtered directories persist through resume, fork, and
-child/delegate construction even after global registry state changes.
+Prove Preview itself executes no hook, starts no MCP process, registers no tool,
+and creates no session state.
+
+Prove the existing snapshot field preserves effective filtered directories in
+separate tests for resume, resume-last/thread-resume, resume-with as a new
+selection, fork, aside, direct child/subagent construction, and durable delegate
+construction. Repeat restore from a pre-feature snapshot to prove no migration
+or global-registry re-expansion occurs.
 
 ### Hub tests
 
 - Preview resolves the same cwd and launch overrides as Thread Start;
 - Preview and Start agree without concurrent changes;
 - registry or filesystem changes between them are caught by Start revalidation;
-- selection failure occurs before spawn;
+- selection failure occurs before spawn or any durable state;
 - explicit empty selection reaches `serve` intact;
+- globally enabled broken entries appear as nonblocking diagnostics while
+  globally disabled entries stay absent;
 - protocol catalog, both routers, generated docs, and TypeScript types include
   the new method and field.
 
@@ -533,6 +666,8 @@ child/delegate construction even after global registry state changes.
 - default versus explicit state;
 - All, None, individual toggle, and filtering;
 - cwd and plugin-directory refresh behavior;
+- debouncing and stale Preview response rejection;
+- plugin-updated notification refresh behavior in both selection modes;
 - stale selected-name blocking state;
 - preview retry without a fabricated empty result;
 - successful-start reset and failed-start preservation;
@@ -540,6 +675,8 @@ child/delegate construction even after global registry state changes.
 - switch names, `aria-checked`, keyboard operation, and diagnostic alerts;
 - command palette hides commands from plugins absent in active thread
   diagnostics;
+- command-palette fail-closed filtering still retains built-in and user-global
+  commands;
 - desktop, narrow pane, phone, and touch-target geometry guards.
 
 ### TUI tests
@@ -549,6 +686,7 @@ child/delegate construction even after global registry state changes.
 - explicit empty versus omitted request payload;
 - one-shot reset after successful start;
 - stale-selection and Preview errors;
+- plugin-updated notification refresh while the overlay is open;
 - 80-column and narrow-terminal wrapping;
 - bounded scrolling for long lists;
 - text-only state remains understandable without color.
@@ -603,6 +741,10 @@ favor of manifest name, with source metadata retained for display.
 - Centralize enumeration, validation, deduplication, selection, metadata, and
   diagnostics in one manager resolver.
 - Apply selection before sandbox roots and session construction.
+- Treat `plugin list --effective` as the CLI read-only view of that resolver,
+  not as a second selection or persistence system.
+- Keep `evener/command/list` global; limit catalog work to the existing hub
+  default resolver call and the active web palette's view filter.
 - Keep global plugin mutation RPCs and settings surfaces unchanged.
 - Keep `plugin_dirs` append semantics unchanged.
 - Do not add contribution-level selectors.
