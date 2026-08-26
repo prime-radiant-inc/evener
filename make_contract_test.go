@@ -1,6 +1,7 @@
 package evener_test
 
 import (
+	"bytes"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,7 +71,7 @@ func TestMakeMergeApprovalGateIsOrderedAndFailClosed(t *testing.T) {
 		t.Fatal(err)
 	}
 	marker := "merge-approval-gate:\n"
-	start := strings.Index(string(raw), marker)
+	start := bytes.Index(raw, []byte(marker))
 	if start < 0 {
 		t.Fatal("merge-approval-gate recipe is missing")
 	}
