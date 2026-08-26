@@ -148,7 +148,7 @@ call-site proximity:
     *top-level* schema (unchanged behavior) before hardcoding it.
   - The former `questions[0].header` length reproduction is superseded: the
     current `DefAskUser` schema intentionally has no hard header-length cap.
-    Generic `maxLength` formatter coverage uses an independent constrained
+    Generic bounded-string formatter coverage uses an independent constrained
     fixture instead.
   - Regression case: flat top-level missing arg (existing behavior) still
     produces the unqualified `"Required arguments:"` line with no `"in "`

@@ -43,8 +43,8 @@ test("an option resolution joins labels with a comma, each quoted", () => {
 });
 
 test("an unsafe header is JSON-encoded so answer framing stays parseable", () => {
-  const text = composeAskAnswers([item({ header: "A]B\n<C&" })]);
-  expect(text).toBe('[answers]\n1. ["A]B\\n<C&"] → skipped (no answer)');
+  const text = composeAskAnswers([item({ header: "A]B\n<C&\u2028" })]);
+  expect(text).toBe('[answers]\n1. ["A]B\\n<C&\\u2028"] → skipped (no answer)');
 });
 
 test("a multi-select option resolution quotes each label separately, comma-joined", () => {

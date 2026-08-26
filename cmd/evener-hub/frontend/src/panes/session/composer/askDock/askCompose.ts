@@ -30,7 +30,10 @@ export interface AskAnswerItem {
 
 function askAnswerHeader(header: string | undefined, index: number): string {
   const value = header ?? `Question ${index + 1}`;
-  return /[\]\r\n]/u.test(value) ? JSON.stringify(value) : value;
+  if (!/[\]\r\n]/u.test(value)) return value;
+  return JSON.stringify(value)
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
 }
 
 // quoteGoString mirrors Go's %q escaping (renderer.js:6975-6994) exactly:

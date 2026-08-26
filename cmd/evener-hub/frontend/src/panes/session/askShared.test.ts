@@ -124,9 +124,9 @@ test("answeredAskUserSuffix reads the answer back from a later [answers] reply",
 });
 
 test("answeredAskUserSuffix decodes a JSON-encoded unsafe header", () => {
-  const unsafeHeader = "A]B\n<C&";
+  const unsafeHeader = "A]B\n<C&\u2028";
   const ask = item({ argumentsJSON: askUserArgs([{ ...ONE_QUESTION[0], header: unsafeHeader }]) });
-  const reply = userMessage({ text: '[answers]\n1. ["A]B\\n<C&"] → "Yes"' });
+  const reply = userMessage({ text: '[answers]\n1. ["A]B\\n<C&\\u2028"] → "Yes"' });
   expect(answeredAskUserSuffix(threadModel([ask, reply]), ask)).toBe(' — answered: "Yes"');
 });
 
