@@ -93,7 +93,11 @@ export function FieldNotesShell({
       }
       style={edgeStyles(primitives)}
     >
-      <main className="fn-scroll-owner" data-route={routeName}>
+      <main
+        className="fn-scroll-owner"
+        data-route={routeName}
+        data-pushed-route={pushed ? "true" : undefined}
+      >
         <header
           className="fn-topbar"
           style={{
@@ -143,6 +147,9 @@ export function FieldNotesShell({
           className="fn-route-content"
           style={{
             paddingRight: "max(1rem, var(--fn-edge-right))",
+            paddingBottom: pushed
+              ? "calc(1.5rem + var(--fn-edge-bottom) + var(--keyboard-inset-height, var(--keyboard-inset, 0px)))"
+              : undefined,
             paddingLeft: "max(1rem, var(--fn-edge-left))",
           }}
         >

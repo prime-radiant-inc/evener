@@ -47,7 +47,7 @@
   --fn-raised: #eadfce;
   --fn-surface-strong: var(--fn-raised);
   --fn-ink: #312d28;
-  --fn-muted: #74695e;
+  --fn-muted: #72675c;
   --fn-line: #d9cbb8;
   --fn-control-line: #8d7d6e;
   --fn-accent: #a14d36;
@@ -72,7 +72,7 @@
     --fn-raised: #eadfce;
     --fn-surface-strong: var(--fn-raised);
     --fn-ink: #312d28;
-    --fn-muted: #74695e;
+    --fn-muted: #72675c;
     --fn-line: #d9cbb8;
     --fn-control-line: #8d7d6e;
     --fn-accent: #a14d36;
@@ -744,7 +744,7 @@
 .fn-transcript {
   display: grid;
   width: min(100%, 46rem);
-  padding-left: clamp(2.7rem, 9vw, 4.5rem);
+  padding-left: clamp(4.8rem, 15vw, 6.5rem);
   border-left: 1px solid var(--fn-line);
   margin-inline: auto;
   gap: clamp(1.5rem, 5vw, 2.4rem);
@@ -761,7 +761,7 @@
   top: 0.15rem;
   right: calc(100% + 0.8rem);
   display: grid;
-  width: 3rem;
+  width: 4.5rem;
   color: var(--fn-muted);
   font-size: 0.58rem;
   letter-spacing: 0.08em;
@@ -772,7 +772,7 @@
 
 .fn-chronology-stamp span:first-child {
   color: var(--fn-accent);
-  font-size: 0.72rem;
+  font-size: 0.64rem;
   font-variant-numeric: tabular-nums;
 }
 
