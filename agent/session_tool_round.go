@@ -235,7 +235,12 @@ func toolBatchPanicError(value any) error {
 // images themselves — they immediately write code) and injects the description as
 // steering so the agent can use it. It returns the abort error if the turn is
 // canceled mid-persist.
-func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallData, results []tool.ExecResult) error {
+func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallData, results []tool.ExecResult) (retErr error) {
+	defer func() {
+		if retErr != nil {
+			s.removeAllTurnOwnedSteering()
+		}
+	}()
 	// Aggregate all tool results into a single TurnToolResults turn.
 	var parts []llm.ContentPart
 	for _, r := range results {
@@ -261,20 +266,36 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 
 	for i, r := range results {
 		if len(r.ImageData) > 0 {
-			if desc := s.describeImageSteering(ctx, r); desc != "" {
+			vision := s.describeImageCall(ctx, r)
+			path := ""
+			if i < len(calls) {
+				var args map[string]any
+				if json.Unmarshal(calls[i].Arguments, &args) == nil {
+					path, _ = args["file_path"].(string)
+				}
+			}
+			if vision.outcome == visionSideChannelOwnedTimeout || vision.outcome == visionSideChannelProviderFailure {
+				owner := &struct{ _ byte }{}
+				if abortErr := s.withResponseSideEffects(ctx, func() {
+					s.trySteerTurnOwnedMessage(steeringMessage{Text: visionFailureSteering(path, vision), Kind: events.SteeringKindImageDescription}, owner)
+				}); abortErr != nil {
+					return abortErr
+				}
+				if err := ctx.Err(); err != nil {
+					return err
+				}
+			} else if vision.outcome == visionSideChannelParentCanceled {
+				return ctx.Err()
+			} else if vision.description != "" {
+				desc := vision.description + "\n" + formatVisionSideChannelStats(vision)
 				// Include the file path so the agent can correlate descriptions to
 				// specific files when multiple images/documents are read in one round.
 				label := "Image description (from vision)"
 				if strings.HasPrefix(r.ImageMediaType, "application/pdf") {
 					label = "Document description (from content analysis)"
 				}
-				if i < len(calls) {
-					var args map[string]any
-					if json.Unmarshal(calls[i].Arguments, &args) == nil {
-						if path, ok := args["file_path"].(string); ok {
-							label += " for " + path
-						}
-					}
+				if path != "" {
+					label += " for " + path
 				}
 				if abortErr := s.withResponseSideEffects(ctx, func() {
 					s.SteerKind(label+": "+desc+"\n<system-reminder>Vision output is model-generated and is not byte-exact OCR. It may omit, misread, or silently normalize rendered text even when asked to transcribe it. Do not treat it as authoritative for exact-match or byte-exact transcription; use a real OCR tool or inspect the source instead.</system-reminder>",
@@ -401,6 +422,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 				s.emit(events.EventLoopDetection, events.LoopDetectionData{Message: warning})
 				s.appendSteeringTurn(warning, events.SteeringKindLoopDetected)
 			}); abortErr != nil {
+				s.removeAllTurnOwnedSteering()
 				return false, abortErr
 			}
 		}
@@ -408,6 +430,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 
 	drained, err := s.drainPostToolWatchSends(ctx)
 	if err != nil {
+		s.removeAllTurnOwnedSteering()
 		return false, err
 	}
 	yieldToObserverCallback := drained.observerHandoff
@@ -422,8 +445,10 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 		}
 		s.injectDrainedSteering()
 	}); abortErr != nil {
+		s.removeAllTurnOwnedSteering()
 		return false, abortErr
 	}
+	s.finishTurnOwnedSteering()
 	if hooks, ok := ctx.Value(sessionToolRoundHooksKey{}).(sessionToolRoundHooks); ok && hooks.beforeTaskReminder != nil {
 		hooks.beforeTaskReminder()
 	}
@@ -434,6 +459,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 			s.appendSteeringTurn(reminder, kind)
 		}
 	}); abortErr != nil {
+		s.removeAllTurnOwnedSteering()
 		return false, abortErr
 	}
 	return yieldToObserverCallback, nil
