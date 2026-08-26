@@ -6,12 +6,14 @@ import {
   within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { ConversationClientLike } from "../services/conversation";
 import type { ProfileRedacted } from "../services/nativeProfiles";
 import { createConnectionStore } from "../state/connection";
 import { createNavigationStore } from "../state/navigation";
 import { createPreferencesStore } from "../state/preferences";
 import type { FakeProfileService } from "../test/fakeProfileService";
 import { createShellServices } from "./fixture-services";
+import { createProfileScopedServices } from "./production-services";
 import { RootShell } from "./RootShell";
 
 afterEach(() => {
@@ -232,5 +234,57 @@ describe("RootShell — honest states", () => {
       (await screen.findAllByText("Connection")).length,
     ).toBeGreaterThanOrEqual(1);
     expect(await screen.findByText(/Permissions/i)).toBeInTheDocument();
+  });
+});
+
+describe("RootShell — production AppWire services", () => {
+  it("connects the active profile and passes a roster service to Sessions", async () => {
+    const profile = PROFILES[0];
+    if (profile === undefined) throw new Error("missing test profile");
+    let resolveConnect = (_value: unknown): void => {
+      throw new Error("connect resolver was not initialized");
+    };
+    const connectPromise = new Promise<unknown>((resolve) => {
+      resolveConnect = resolve;
+    });
+    const client: ConversationClientLike & {
+      connect: () => Promise<unknown>;
+      close: () => void;
+      onStateChange: (handler: (state: string) => void) => () => void;
+    } = {
+      request: vi.fn(() => Promise.resolve({ data: [] })),
+      onNotification: vi.fn(() => () => {}),
+      connect: vi.fn(() => connectPromise),
+      close: vi.fn(),
+      onStateChange: vi.fn(() => () => {}),
+    };
+    const base = createShellServices({
+      profiles: [profile],
+      activeProfileId: profile.id,
+    });
+    const services = {
+      ...base,
+      createProfileScopedServices: () =>
+        createProfileScopedServices(profile, () => client),
+    };
+    const stores = {
+      connection: createConnectionStore(services.profile),
+      navigation: createNavigationStore(),
+      preferences: createPreferencesStore(),
+    };
+
+    render(<RootShell services={services} stores={stores} />);
+
+    await waitForTabs();
+    await vi.waitFor(() => expect(client.connect).toHaveBeenCalledTimes(1));
+    expect(client.request).not.toHaveBeenCalled();
+    resolveConnect({});
+    await vi.waitFor(() =>
+      expect(client.request).toHaveBeenCalledWith("thread/list", {}),
+    );
+
+    stores.connection.setState({ generation: 2 });
+    await vi.waitFor(() => expect(client.connect).toHaveBeenCalledTimes(2));
+    expect(client.close).toHaveBeenCalledTimes(1);
   });
 });
