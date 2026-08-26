@@ -28,10 +28,8 @@ func TestNewSessionReusesValidatedModelsAndBoundsDelegateSchema(t *testing.T) {
 	for i := range models {
 		models[i].ID = fmt.Sprintf("model-%03d-%s", i, strings.Repeat("x", 12))
 	}
-	adapter := &modelAvailabilityAdapter{
-		fakeAdapter: fakeAdapter{name: "openai"},
-		models:      models,
-	}
+	adapter := &modelAvailabilityAdapter{models: models}
+	adapter.name = "openai"
 	client := llm.NewClient()
 	client.Register(adapter)
 
