@@ -232,7 +232,7 @@ func decodeStrictActivityObject(raw []byte, dst any, allowed, required map[strin
 		return err
 	}
 	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
-		return fmt.Errorf("want object")
+		return errors.New("want object")
 	}
 	seen := make(map[string]struct{}, len(allowed))
 	for dec.More() {
@@ -242,7 +242,7 @@ func decodeStrictActivityObject(raw []byte, dst any, allowed, required map[strin
 		}
 		key, ok := keyTok.(string)
 		if !ok {
-			return fmt.Errorf("want object key")
+			return errors.New("want object key")
 		}
 		if _, ok := allowed[key]; !ok {
 			return fmt.Errorf("unknown field %q", key)
@@ -263,7 +263,7 @@ func decodeStrictActivityObject(raw []byte, dst any, allowed, required map[strin
 		return err
 	}
 	if _, err := dec.Token(); err != io.EOF {
-		return fmt.Errorf("trailing JSON")
+		return errors.New("trailing JSON")
 	}
 	for key := range required {
 		if _, ok := seen[key]; !ok {
