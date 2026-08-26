@@ -60,12 +60,42 @@ test("entering Full clears closed overrides once and opens current eligible ids"
   expect(readOpen(scopedId(scope, "thought"), disclosureDefault(scope, "thought", false))).toBe(true);
 });
 
+test("an explicit open survives Full and a later Activity transition", () => {
+  const scope = "live:explicit-open";
+  beginDisclosureBaseline(scope, ["tool"], false);
+  setDisclosureOpen(scopedId(scope, "tool"), true);
+
+  beginDisclosureBaseline(scope, ["tool"], true);
+  beginDisclosureBaseline(scope, ["tool"], false);
+
+  expect(readOpen(scopedId(scope, "tool"), disclosureDefault(scope, "tool", false))).toBe(true);
+});
+
 test("a later manual collapse wins and a new eligible Full id opens by default", () => {
   const scope = "live:full-manual";
   beginDisclosureBaseline(scope, ["tool"], false);
   beginDisclosureBaseline(scope, ["tool"], true);
   toggleDisclosure(scopedId(scope, "tool"), disclosureDefault(scope, "tool", false));
 
+  beginDisclosureBaseline(scope, ["tool", "new-tool"], true);
+
+  expect(readOpen(scopedId(scope, "tool"), disclosureDefault(scope, "tool", false))).toBe(false);
+  expect(readOpen(scopedId(scope, "new-tool"), disclosureDefault(scope, "new-tool", false))).toBe(true);
+});
+
+test("a stale false choice opens when its id becomes newly eligible during Full", () => {
+  const scope = "live:stale-new-id";
+  setDisclosureOpen(scopedId(scope, "new-tool"), false);
+  beginDisclosureBaseline(scope, ["tool"], true);
+  beginDisclosureBaseline(scope, ["tool", "new-tool"], true);
+
+  expect(readOpen(scopedId(scope, "new-tool"), disclosureDefault(scope, "new-tool", false))).toBe(true);
+});
+
+test("a manual false choice made during the active Full baseline stays closed", () => {
+  const scope = "live:current-close";
+  beginDisclosureBaseline(scope, ["tool"], true);
+  setDisclosureOpen(scopedId(scope, "tool"), false);
   beginDisclosureBaseline(scope, ["tool", "new-tool"], true);
 
   expect(readOpen(scopedId(scope, "tool"), disclosureDefault(scope, "tool", false))).toBe(false);

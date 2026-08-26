@@ -31,6 +31,7 @@ export interface TranscriptRenderContextInput {
   projection?: Pick<TranscriptProjection, "metadata" | "eligibleDisclosureIds">;
   surface?: TranscriptSurface;
   disclosureScope?: string;
+  sessionRef?: string;
   eligibleDisclosureIds?: readonly string[];
   fullBaselineGeneration?: number;
 }
@@ -49,8 +50,13 @@ export function disclosureScopeForSession(
   context: TranscriptRenderContextValue,
   sessionRef: string | undefined,
 ): string {
-  if (context.disclosureScope !== "legacy:default" || sessionRef === undefined) return context.disclosureScope;
-  return `legacy:session:${sessionRef}`;
+  if (sessionRef === undefined || context.disclosureScope !== defaultDisclosureScope(context.surface))
+    return context.disclosureScope;
+  return defaultDisclosureScope(context.surface, sessionRef);
+}
+
+export function defaultDisclosureScope(surface: TranscriptSurface, sessionRef?: string): string {
+  return `transcript:${surface}:${sessionRef ?? "default"}`;
 }
 
 const DEFAULT_CONFIG = makeTranscriptDisplayConfig(
@@ -65,7 +71,7 @@ const DEFAULT_CONTEXT: TranscriptRenderContextValue = {
   metadata: DEFAULT_METADATA,
   projectedMetadata: DEFAULT_METADATA,
   surface: "readOnly",
-  disclosureScope: "legacy:default",
+  disclosureScope: defaultDisclosureScope("readOnly"),
   eligibleDisclosureIds: [],
   fullBaselineGeneration: 0,
 };
@@ -88,7 +94,7 @@ export function createTranscriptRenderContext(input: TranscriptRenderContextInpu
     metadata,
     projectedMetadata: metadata,
     surface: input.surface ?? "readOnly",
-    disclosureScope: input.disclosureScope ?? "legacy:default",
+    disclosureScope: input.disclosureScope ?? defaultDisclosureScope(input.surface ?? "readOnly", input.sessionRef),
     eligibleDisclosureIds,
     fullBaselineGeneration: input.fullBaselineGeneration ?? 0,
   };
@@ -119,6 +125,7 @@ export function TranscriptRenderProvider({
   projection,
   surface,
   disclosureScope,
+  sessionRef,
   eligibleDisclosureIds,
   fullBaselineGeneration,
 }: TranscriptRenderProviderProps) {
@@ -132,6 +139,7 @@ export function TranscriptRenderProvider({
         projection,
         surface,
         disclosureScope,
+        sessionRef,
         eligibleDisclosureIds,
         fullBaselineGeneration,
       }),
@@ -143,6 +151,7 @@ export function TranscriptRenderProvider({
       projection,
       surface,
       disclosureScope,
+      sessionRef,
       eligibleDisclosureIds,
       fullBaselineGeneration,
     ],
