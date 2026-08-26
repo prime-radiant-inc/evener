@@ -139,6 +139,7 @@ no router (reserved).
 | `evener/instance/remove` | hub | `InstanceRemoveParams` | `InstanceListResponse` | Removes a provider instance; returns the updated list. |
 | `evener/instance/setDefault` | hub | `InstanceSetDefaultParams` | `InstanceListResponse` | Sets the default provider instance; returns the updated list. |
 | `evener/plugin/checkNow` | hub | `EmptyParams` | `PluginCheckNowResponse` | Runs one auto-upgrade daemon pass on demand; broadcasts evener/plugin/updated per plugin actually upgraded. |
+| `evener/plugin/preview` | hub | `PluginPreviewParams` | `PluginPreviewResponse` | Previews the plugins selected for a launch without starting a session or executing plugin commands. |
 | `evener/marketplace/list` | hub | `EmptyParams` | `MarketplaceListResponse` | Lists registered plugin marketplaces. |
 | `evener/marketplace/add` | hub | `MarketplaceAddParams` | `MarketplaceListResponse` | Registers a plugin marketplace; returns the updated list. |
 | `evener/marketplace/remove` | hub | `MarketplaceNameParams` | `MarketplaceListResponse` | Unregisters a plugin marketplace; returns the updated list. |
@@ -827,6 +828,7 @@ _(no fields)_
 | `systemPromptAppendText` | `string` | yes |  |
 | `systemPromptAppend` | `[]string` | yes |  |
 | `modelFallbacks` | `[]string` | yes |  |
+| `enabledPlugins` | `*[]string` | yes |  |
 | `mcps` | `[]appwire.MCPServerSpec` | yes |  |
 | `env` | `map[string]string` | yes |  |
 | `verbose` | `*bool` | yes |  |
@@ -981,6 +983,23 @@ _(no fields)_
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `plugins` | `[]appwire.PluginEntry` |  |  |
+
+
+### `PluginPreviewParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `cwd` | `string` |  |  |
+| `launchOverrides` | `*appwire.LaunchConfigLayer` | yes |  |
+
+
+### `PluginPreviewResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `plugins` | `[]appwire.PluginLaunchCandidate` |  |  |
+| `diagnostics` | `[]appwire.PluginDiagnostic` | yes |  |
+| `selectionErrors` | `[]appwire.PluginSelectionError` | yes |  |
 
 
 ### `PluginRefParams`

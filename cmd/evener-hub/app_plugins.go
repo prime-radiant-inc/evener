@@ -5,7 +5,9 @@ import (
 	"sort"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/internal/plugins"
 )
 
@@ -29,13 +31,63 @@ import (
 // otherwise-independent mutations (e.g. two unrelated marketplaces) behind
 // whichever one is slowest.
 type hubPluginsController struct {
-	mgr *plugins.Manager
+	mgr              *plugins.Manager
+	launchConfigRoot string
 }
 
 // newHubPluginsController builds a controller rooted at root, or the default
 // (~/.config/evener/plugins, honoring XDG_CONFIG_HOME) when root == "".
-func newHubPluginsController(root string) *hubPluginsController {
-	return &hubPluginsController{mgr: plugins.NewManager(root)}
+func newHubPluginsController(root string, launchConfigRoots ...string) *hubPluginsController {
+	launchConfigRoot := ""
+	if len(launchConfigRoots) > 0 {
+		launchConfigRoot = launchConfigRoots[0]
+	}
+	return &hubPluginsController{mgr: plugins.NewManager(root), launchConfigRoot: launchConfigRoot}
+}
+
+// Preview resolves the same launch plugin inventory used by session startup.
+// It only reads manifests and registry state; plugin hooks, MCP commands, and
+// session state are never touched.
+func (c *hubPluginsController) Preview(ctx context.Context, params appwire.PluginPreviewParams) (appwire.PluginPreviewResponse, error) {
+	_ = ctx // retained in the controller API for parity with other RPC reads
+	cwd, err := fspaths.CanonicalizeDir(params.CWD)
+	if err != nil {
+		return appwire.PluginPreviewResponse{}, appwire.InvalidParams("cwd: " + err.Error())
+	}
+	var overrides launchconfig.Layer
+	if params.LaunchOverrides != nil {
+		overrides = launchconfig.FromWire(*params.LaunchOverrides)
+	}
+	resolved, err := launchconfig.Resolve(c.launchConfigRoot, cwd, overrides)
+	if err != nil {
+		return appwire.PluginPreviewResponse{}, err
+	}
+	resolution, err := c.mgr.ResolveForLaunch(resolved.Effective.PluginDirs, resolved.Effective.EnabledPlugins)
+	if err != nil {
+		return appwire.PluginPreviewResponse{}, err
+	}
+	resp := appwire.PluginPreviewResponse{
+		Plugins:         make([]appwire.PluginLaunchCandidate, 0, len(resolution.Candidates)),
+		Diagnostics:     make([]appwire.PluginDiagnostic, 0, len(resolution.Diagnostics)),
+		SelectionErrors: make([]appwire.PluginSelectionError, 0, len(resolution.SelectionErrors)),
+	}
+	for _, candidate := range resolution.Candidates {
+		resp.Plugins = append(resp.Plugins, appwire.PluginLaunchCandidate{
+			Name: candidate.Name, Version: candidate.Version, Description: candidate.Description,
+			Source: string(candidate.Source), Marketplace: candidate.Marketplace, Path: candidate.Path,
+			Selected: candidate.Selected, SkillCount: candidate.SkillCount, AgentCount: candidate.AgentCount,
+			CommandCount: candidate.CommandCount, HookCount: candidate.HookCount, MCPCount: candidate.MCPCount,
+		})
+	}
+	for _, diagnostic := range resolution.Diagnostics {
+		resp.Diagnostics = append(resp.Diagnostics, appwire.PluginDiagnostic{
+			Name: diagnostic.Name, Path: diagnostic.Path, Source: string(diagnostic.Source), Message: diagnostic.Message,
+		})
+	}
+	for _, selectionErr := range resolution.SelectionErrors {
+		resp.SelectionErrors = append(resp.SelectionErrors, appwire.PluginSelectionError{Name: selectionErr.Name, Reason: selectionErr.Reason})
+	}
+	return resp, nil
 }
 
 func marketplaceSourceFromWire(in appwire.MarketplaceSourceInput) plugins.Source {

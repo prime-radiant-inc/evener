@@ -35,6 +35,21 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
+func TestHubRPCPluginPreviewRoute(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
+	registerPluginHandlers(server, newHubPluginsController(t.TempDir(), t.TempDir()))
+	out, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		Method: appwire.MethodEvenerPluginPreview,
+		Params: json.RawMessage(`{"cwd":"/tmp"}`),
+	})
+	if err != nil {
+		t.Fatalf("preview route: %v", err)
+	}
+	if _, ok := out.(appwire.PluginPreviewResponse); !ok {
+		t.Fatalf("preview route response = %T, want PluginPreviewResponse", out)
+	}
+}
+
 func TestHubRPCThreadListUsesAppWireRendezvous(t *testing.T) {
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{

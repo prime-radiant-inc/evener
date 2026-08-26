@@ -183,7 +183,7 @@ func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appser
 	// root, not hubStateRoot (machine-generated state).
 	launchController := newHubLaunchController(hubLaunchConfigRoot(cfg))
 	registerLaunchHandlers(server, launchController)
-	pluginsController := newHubPluginsController(cfg.PluginRoot)
+	pluginsController := newHubPluginsController(cfg.PluginRoot, hubLaunchConfigRoot(cfg))
 	registerPluginHandlers(server, pluginsController)
 	registerMiscHandlers(server, cfg, sources)
 	registerPluginAutoUpgradeHandlers(server, plugins.NewManager(cfg.PluginRoot))
@@ -691,6 +691,9 @@ func registerPluginHandlers(server *appserver.Server, pluginsController *hubPlug
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginList, func(_ context.Context, _ appwire.EmptyParams) (appwire.PluginListResponse, error) {
 		return pluginsController.ListPlugins()
 	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginPreview, func(ctx context.Context, params appwire.PluginPreviewParams) (appwire.PluginPreviewResponse, error) {
+		return pluginsController.Preview(ctx, params)
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPluginInstall, func(ctx context.Context, params appwire.PluginRefParams) (appwire.PluginListResponse, error) {
 		resp, err := pluginsController.Install(ctx, params)
 		if err == nil {
@@ -818,8 +821,11 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 // Loading is fail-soft (plugin.LoadAllFailSoft), so one broken or mid-edit
 // plugin dir cannot blank out the whole command catalog.
 func hubCommandList(cfg hubcore.WebConfig) (appwire.CommandListResponse, error) {
-	dirs := plugins.NewManager(cfg.PluginRoot).EnabledPluginDirs(cfg.PluginDirs)
-	loaded, _ := plugin.LoadAllFailSoft(dirs)
+	resolution, err := plugins.NewManager(cfg.PluginRoot).ResolveForLaunch(cfg.PluginDirs, nil)
+	if err != nil {
+		_, _ = fmt.Fprintf(os.Stderr, "warning: listing plugins: %v\n", err)
+	}
+	loaded, _ := plugin.LoadAllFailSoft(resolution.SelectedDirs)
 	evenerwide, _ := plugin.DiscoverEvenerWideCommands(nil)
 	merged := plugin.MergeCommands(loaded, evenerwide)
 	var commands []appwire.CommandDescriptor

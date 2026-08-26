@@ -666,6 +666,7 @@ export interface LaunchConfigLayer {
   systemPromptAppendText?: string;
   systemPromptAppend?: string[];
   modelFallbacks?: string[];
+  enabledPlugins?: string[];
   mcps?: MCPServerSpec[];
   env?: Record<string, string>;
   verbose?: boolean;
@@ -865,6 +866,13 @@ export interface PluginCheckNowResponse {
   errors?: string[];
 }
 
+export interface PluginDiagnostic {
+  name?: string;
+  path?: string;
+  source?: string;
+  message: string;
+}
+
 export interface PluginEntry {
   plugin: string;
   marketplace: string;
@@ -878,13 +886,44 @@ export interface PluginEntry {
   lastUpdated: number;
 }
 
+export interface PluginLaunchCandidate {
+  name: string;
+  version?: string;
+  description?: string;
+  source: string;
+  marketplace?: string;
+  path?: string;
+  selected: boolean;
+  skillCount: number;
+  agentCount: number;
+  commandCount: number;
+  hookCount: number;
+  mcpCount: number;
+}
+
 export interface PluginListResponse {
   plugins: PluginEntry[];
+}
+
+export interface PluginPreviewParams {
+  cwd: string;
+  launchOverrides?: LaunchConfigLayer;
+}
+
+export interface PluginPreviewResponse {
+  plugins: PluginLaunchCandidate[];
+  diagnostics?: PluginDiagnostic[];
+  selectionErrors?: PluginSelectionError[];
 }
 
 export interface PluginRefParams {
   plugin: string;
   marketplace: string;
+}
+
+export interface PluginSelectionError {
+  name: string;
+  reason: string;
 }
 
 export interface PluginSetAutoUpgradeParams {
@@ -1528,6 +1567,7 @@ export const METHOD_NAMES = [
   "evener/instance/remove",
   "evener/instance/setDefault",
   "evener/plugin/checkNow",
+  "evener/plugin/preview",
   "evener/marketplace/list",
   "evener/marketplace/add",
   "evener/marketplace/remove",
@@ -1683,6 +1723,7 @@ export interface MethodTypes {
   "evener/instance/remove": { params: InstanceRemoveParams; result: InstanceListResponse };
   "evener/instance/setDefault": { params: InstanceSetDefaultParams; result: InstanceListResponse };
   "evener/plugin/checkNow": { params: EmptyParams; result: PluginCheckNowResponse };
+  "evener/plugin/preview": { params: PluginPreviewParams; result: PluginPreviewResponse };
   "evener/marketplace/list": { params: EmptyParams; result: MarketplaceListResponse };
   "evener/marketplace/add": { params: MarketplaceAddParams; result: MarketplaceListResponse };
   "evener/marketplace/remove": { params: MarketplaceNameParams; result: MarketplaceListResponse };

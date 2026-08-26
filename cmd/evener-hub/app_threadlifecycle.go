@@ -16,6 +16,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/rendezvous"
 )
 
@@ -120,6 +121,21 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 	}
 	if err := validateEvenerLaunchModel(ctx, cfg, modelRef, workingDir); err != nil {
 		return appwire.ThreadStartResponse{}, err
+	}
+	pluginResolution, pluginErr := plugins.NewManager(cfg.PluginRoot).ResolveForLaunch(spawnResolved.Effective.PluginDirs, spawnResolved.Effective.EnabledPlugins)
+	if pluginErr != nil {
+		if spawnResolved.Effective.EnabledPlugins != nil {
+			return appwire.ThreadStartResponse{}, appwire.HubLaunchError(pluginErr.Error())
+		}
+		// Registry discovery is fail-soft when no explicit selection was
+		// requested. Keep the valid explicit directories the shared resolver
+		// managed to load, rather than handing invalid entries to the daemon.
+		spawnResolved.Effective.PluginDirs = pluginResolution.SelectedDirs
+	} else if err := pluginResolution.ValidateSelection(); err != nil {
+		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
+	}
+	if pluginErr == nil {
+		spawnResolved.Effective.PluginDirs = pluginResolution.SelectedDirs
 	}
 	entry, err := cfg.Spawner.Spawn(ctx, hubcore.SpawnRequest{
 		Project:    spawnResolved.Project,

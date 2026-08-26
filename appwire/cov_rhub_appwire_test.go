@@ -419,6 +419,11 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			return err
 		}},
 		{"PluginList", MethodEvenerPluginList, `{}`, map[string]any{}, func(ctx context.Context, c *Client) error { _, err := c.PluginList(ctx); return err }},
+		{"PluginPreview", MethodEvenerPluginPreview, `{"cwd":"/tmp","launchOverrides":{"enabledPlugins":[]}}`, map[string]any{}, func(ctx context.Context, c *Client) error {
+			empty := []string{}
+			_, err := c.PluginPreview(ctx, PluginPreviewParams{CWD: "/tmp", LaunchOverrides: &LaunchConfigLayer{EnabledPlugins: &empty}})
+			return err
+		}},
 		{"PluginInstall", MethodEvenerPluginInstall, `{"plugin":"fmt","marketplace":"acme"}`, map[string]any{}, func(ctx context.Context, c *Client) error {
 			_, err := c.PluginInstall(ctx, PluginRefParams{Plugin: "fmt", Marketplace: "acme"})
 			return err

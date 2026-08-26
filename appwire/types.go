@@ -75,6 +75,7 @@ const (
 	MethodEvenerInstanceRemove        = "evener/instance/remove"
 	MethodEvenerInstanceSetDefault    = "evener/instance/setDefault"
 	MethodEvenerPluginCheckNow        = "evener/plugin/checkNow"
+	MethodEvenerPluginPreview         = "evener/plugin/preview"
 	MethodEvenerMarketplaceList       = "evener/marketplace/list"
 	MethodEvenerMarketplaceAdd        = "evener/marketplace/add"
 	MethodEvenerMarketplaceRemove     = "evener/marketplace/remove"
@@ -2161,6 +2162,48 @@ type LaunchConfigTrustRepoParams struct {
 type PluginCheckNowResponse struct {
 	Updated []string `json:"updated,omitempty"`
 	Errors  []string `json:"errors,omitempty"`
+}
+
+// PluginPreviewParams requests the side-effect-free launch plugin inventory
+// for a working directory and optional per-launch overrides.
+type PluginPreviewParams struct {
+	CWD             string             `json:"cwd"`
+	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
+}
+
+// PluginPreviewResponse is the launch plugin inventory and structured
+// diagnostics returned by evener/plugin/preview.
+type PluginPreviewResponse struct {
+	Plugins         []PluginLaunchCandidate `json:"plugins"`
+	Diagnostics     []PluginDiagnostic      `json:"diagnostics,omitempty"`
+	SelectionErrors []PluginSelectionError  `json:"selectionErrors,omitempty"`
+}
+
+type PluginLaunchCandidate struct {
+	Name         string `json:"name"`
+	Version      string `json:"version,omitempty"`
+	Description  string `json:"description,omitempty"`
+	Source       string `json:"source"`
+	Marketplace  string `json:"marketplace,omitempty"`
+	Path         string `json:"path,omitempty"`
+	Selected     bool   `json:"selected"`
+	SkillCount   int    `json:"skillCount"`
+	AgentCount   int    `json:"agentCount"`
+	CommandCount int    `json:"commandCount"`
+	HookCount    int    `json:"hookCount"`
+	MCPCount     int    `json:"mcpCount"`
+}
+
+type PluginDiagnostic struct {
+	Name    string `json:"name,omitempty"`
+	Path    string `json:"path,omitempty"`
+	Source  string `json:"source,omitempty"`
+	Message string `json:"message"`
+}
+
+type PluginSelectionError struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
 }
 
 // MarketplaceSourceInput is the wire shape of a marketplace source. Kind
