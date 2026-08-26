@@ -247,6 +247,10 @@ func readForkParent(fs afero.Fs, stateDir, parentID string, maxScanToken int) (t
 // the first turn unique to this branch; editedMessage == nil means the branch
 // diverges past the parent's tip with no replacement turn (the aside case).
 func writeForkChild(fs afero.Fs, stateDir, parentID string, parentHeader transcript.Header, parentMeta schema.SessionMeta, prefixEntries []transcript.Entry, divergenceTurn int, editedMessage *string, deps forkSessionDeps) (string, error) {
+	return writeForkChildWithConfig(fs, stateDir, parentID, parentHeader, parentMeta, prefixEntries, divergenceTurn, editedMessage, nil, deps)
+}
+
+func writeForkChildWithConfig(fs afero.Fs, stateDir, parentID string, parentHeader transcript.Header, parentMeta schema.SessionMeta, prefixEntries []transcript.Entry, divergenceTurn int, editedMessage *string, config *schema.ConfigSnapshot, deps forkSessionDeps) (string, error) {
 	// Mint a new child session ID.
 	childID, err := identifier.NewSessionID()
 	if err != nil {
@@ -277,7 +281,13 @@ func writeForkChild(fs afero.Fs, stateDir, parentID string, parentHeader transcr
 	}
 	// Safety net for early error returns; the success path closes tw explicitly
 	// below and checks that error, after which this defer is a no-op.
-	defer func() { _ = tw.Close() }()
+	published := false
+	defer func() {
+		_ = tw.Close()
+		if !published {
+			_ = fs.Remove(childTranscriptPath)
+		}
+	}()
 
 	modelResponses := 0
 	acceptedInputTurns := 0
@@ -309,11 +319,15 @@ func writeForkChild(fs afero.Fs, stateDir, parentID string, parentHeader transcr
 	}
 
 	// Build and save the child meta.
+	childConfig := parentMeta.Config
+	if config != nil {
+		childConfig = config.Clone()
+	}
 	childMeta := schema.SessionMeta{
 		ID:                 childID,
 		ProfileID:          parentMeta.ProfileID,
 		Model:              parentMeta.Model,
-		Config:             parentMeta.Config,
+		Config:             childConfig,
 		EnvInfo:            parentMeta.EnvInfo,
 		CreatedAt:          now,
 		UpdatedAt:          now,
@@ -328,6 +342,7 @@ func writeForkChild(fs afero.Fs, stateDir, parentID string, parentHeader transcr
 	if err := deps.saveMeta(fs, stateDir, childMeta); err != nil {
 		return "", fmt.Errorf("save child session meta: %w", err)
 	}
+	published = true
 
 	return childID, nil
 }

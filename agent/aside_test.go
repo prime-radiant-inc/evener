@@ -147,6 +147,38 @@ func TestAsideSession_PreservesSelectedPluginDirs(t *testing.T) {
 	}
 }
 
+func TestAsideSessionWithConfigPublishesFinalPluginDirs(t *testing.T) {
+	t.Parallel()
+	stateDir, parentID := buildAsideParentSession(t)
+	parentMeta, err := schema.LoadSessionMeta(stateDir, parentID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(parent): %v", err)
+	}
+	parentMeta.Config.PluginDirs = []string{"/plugins/historical"}
+	if err := schema.SaveSessionMeta(stateDir, parentMeta); err != nil {
+		t.Fatalf("SaveSessionMeta(parent): %v", err)
+	}
+	fresh := schema.ConfigSnapshot{PluginDirs: []string{"/plugins/fresh-alpha", "/plugins/fresh-beta"}}
+	childID, err := AsideSessionWithConfig(stateDir, parentID, fresh)
+	if err != nil {
+		t.Fatalf("AsideSessionWithConfig: %v", err)
+	}
+	childMeta, err := schema.LoadSessionMeta(stateDir, childID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(child): %v", err)
+	}
+	if !slices.Equal(childMeta.Config.PluginDirs, fresh.PluginDirs) {
+		t.Fatalf("child PluginDirs = %v, want final %v", childMeta.Config.PluginDirs, fresh.PluginDirs)
+	}
+	parentAfter, err := schema.LoadSessionMeta(stateDir, parentID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(parent after): %v", err)
+	}
+	if !slices.Equal(parentAfter.Config.PluginDirs, parentMeta.Config.PluginDirs) {
+		t.Fatalf("parent PluginDirs = %v, want unchanged %v", parentAfter.Config.PluginDirs, parentMeta.Config.PluginDirs)
+	}
+}
+
 // TestAsideSession_ChildRestoresAsSideThread proves the aside child is a
 // resumable session whose lineage survives the restore+meta-rewrite cycle,
 // i.e. it stays addressable as a child of the main session in the tree.

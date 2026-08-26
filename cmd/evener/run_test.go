@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -180,16 +181,22 @@ func TestRunResumeWithCreatesFreshPluginSnapshot(t *testing.T) {
 		return plugins.LaunchPluginResolution{SelectedDirs: fresh}, nil
 	}
 	var restored schema.SessionMeta
+	var persisted schema.SessionMeta
+	stateDir := t.TempDir()
 	var reserved string
 	runAttachAPILogger = func(*llm.Client, string, io.Writer) (func(string) error, func() error, error) {
 		return func(id string) error { reserved = id; return nil }, func() error { return nil }, nil
 	}
 	runRestoreSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, meta schema.SessionMeta, _ agent.RestoreSessionConfig) (*agent.Session, error) {
 		restored = meta
+		var err error
+		persisted, err = schema.LoadSessionMeta(stateDir, meta.ID)
+		if err != nil {
+			return nil, fmt.Errorf("reload child metadata: %w", err)
+		}
 		return nil, errors.New("stop after resume-with restore")
 	}
 
-	stateDir := t.TempDir()
 	const sourceID = "02wMz5Txv1C3Hut0M8GCeB"
 	old := []string{"/plugins/historical"}
 	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
@@ -223,6 +230,9 @@ func TestRunResumeWithCreatesFreshPluginSnapshot(t *testing.T) {
 	if !reflect.DeepEqual(restored.Config.PluginDirs, fresh) {
 		t.Fatalf("resume-with PluginDirs = %v, want %v", restored.Config.PluginDirs, fresh)
 	}
+	if !reflect.DeepEqual(persisted.Config.PluginDirs, fresh) {
+		t.Fatalf("persisted resume-with PluginDirs = %v, want %v", persisted.Config.PluginDirs, fresh)
+	}
 	if reserved != restored.ID {
 		t.Fatalf("reserved session = %q, want new session %q", reserved, restored.ID)
 	}
@@ -232,6 +242,14 @@ func TestRunResumeWithCreatesFreshPluginSnapshot(t *testing.T) {
 	}
 	if !reflect.DeepEqual(source.Config.PluginDirs, old) {
 		t.Fatalf("source PluginDirs = %v, want unchanged %v", source.Config.PluginDirs, old)
+	}
+	for _, suffix := range []string{".meta.json", ".transcript.jsonl", ".api.jsonl", ".log.jsonl"} {
+		if _, err := os.Stat(filepath.Join(stateDir, "sessions", restored.ID+suffix)); !os.IsNotExist(err) {
+			t.Fatalf("failed resume-with child artifact %q remains: %v", suffix, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", restored.ID)); !os.IsNotExist(err) {
+		t.Fatalf("failed resume-with child jobs directory remains: %v", err)
 	}
 }
 

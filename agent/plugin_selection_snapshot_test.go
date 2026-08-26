@@ -30,12 +30,53 @@ func TestPluginSelectionHistoricalSnapshotPreservesDirs(t *testing.T) {
 	}
 }
 
-func writePluginSelectionFixture(t *testing.T, dir, name, hookMarker, mcpMarker string) {
+func TestPluginSelectionRestorePreservesPersistedDirs(t *testing.T) {
+	pluginDir := makePluginDir(t, "restore-selected")
+	stateDir := t.TempDir()
+	workDir := t.TempDir()
+	config := SessionConfig{
+		PluginDirs:       []string{pluginDir},
+		StateDir:         stateDir,
+		NoProjectPrompts: true,
+		testOnly:         testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true},
+	}
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	source, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), config)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	meta := source.Meta()
+	source.Close()
+
+	restoreClient := llm.NewClient()
+	restoreClient.Register(&fakeAdapter{name: "openai"})
+	restored, err := RestoreSessionFromMetaWithConfig(
+		restoreClient,
+		NewOpenAIProfile("gpt-5.2"),
+		execenv.NewLocalExecutionEnvironment(workDir),
+		meta,
+		RestoreSessionConfig{StateDir: stateDir, testOnly: testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true}},
+	)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer restored.Close()
+	if !slices.Equal(restored.cfg.PluginDirs, []string{pluginDir}) {
+		t.Fatalf("restored PluginDirs = %v, want [%q]", restored.cfg.PluginDirs, pluginDir)
+	}
+	status := restored.DetailedStatus()
+	if len(status.Plugins) != 1 || status.Plugins[0].Name != "restore-selected" {
+		t.Fatalf("restored plugins = %+v", status.Plugins)
+	}
+}
+
+func writePluginSelectionFixture(t *testing.T, dir, name, hookMarker, mcpServer, mcpMarker string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	manifest := `{"name":"` + name + `","hooks":{"SessionStart":[{"matcher":"startup","hooks":[{"type":"command","command":"touch ` + hookMarker + `"}]}]},"mcpServers":{"` + name + `-mcp":{"command":"` + mcpMarker + `"}}}`
+	manifest := `{"name":"` + name + `","hooks":{"SessionStart":[{"matcher":"startup","hooks":[{"type":"command","command":"touch ` + hookMarker + `"}]}]},"mcpServers":{"` + name + `-mcp":{"command":"` + mcpServer + `","args":["` + mcpMarker + `"]}}}`
 	if err := os.WriteFile(filepath.Join(dir, ".claude-plugin", "plugin.json"), []byte(manifest), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -67,8 +108,9 @@ func TestPluginSelectionExcludedContributionsDoNotInitialize(t *testing.T) {
 	excludedHook := filepath.Join(workDir, "excluded-hook-marker")
 	selectedMCP := filepath.Join(workDir, "selected-mcp-marker")
 	excludedMCP := filepath.Join(workDir, "excluded-mcp-marker")
-	writePluginSelectionFixture(t, selectedDir, "selected", selectedHook, selectedMCP)
-	writePluginSelectionFixture(t, excludedDir, "excluded", excludedHook, excludedMCP)
+	mcpServer := intg_buildMCPServer(t)
+	writePluginSelectionFixture(t, selectedDir, "selected", selectedHook, mcpServer, selectedMCP)
+	writePluginSelectionFixture(t, excludedDir, "excluded", excludedHook, mcpServer, excludedMCP)
 
 	resolution, err := plugins.NewManager(t.TempDir()).ResolveForLaunch([]string{selectedDir}, nil)
 	if err != nil {
@@ -122,6 +164,12 @@ func TestPluginSelectionExcludedContributionsDoNotInitialize(t *testing.T) {
 	}
 	if _, ok := sess.pluginCommands["excluded:hello"]; ok {
 		t.Fatalf("excluded command initialized: %v", sess.pluginCommands)
+	}
+	if !slices.Contains(intg_toolDefNames(sess.mcpTools), "plugin_selected_selected_mcp__echo") || sess.reg.Get("plugin_selected_selected_mcp__echo") == nil {
+		t.Fatalf("selected MCP tool missing: defs=%v registry=%v", intg_toolDefNames(sess.mcpTools), sess.reg.Names())
+	}
+	if slices.Contains(intg_toolDefNames(sess.mcpTools), "plugin_excluded_excluded_mcp__echo") || sess.reg.Get("plugin_excluded_excluded_mcp__echo") != nil {
+		t.Fatalf("excluded MCP tool initialized: defs=%v registry=%v", intg_toolDefNames(sess.mcpTools), sess.reg.Names())
 	}
 	if !slices.Contains(sess.cfg.PluginDirs, selectedDir) || slices.Contains(sess.cfg.PluginDirs, excludedDir) {
 		t.Fatalf("session PluginDirs = %v", sess.cfg.PluginDirs)
