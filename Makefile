@@ -27,13 +27,14 @@ DEV_TOOLING_TEST_SCRIPTS := lib/private-go-home ops/setup-gocache web/web-prefli
 define run_quiet_lint
 	@set -u; start="$$(date +%s)"; log="$$(mktemp "$${TMPDIR:-/tmp}/evener-lint-check.XXXXXX")" || exit 1; \
 	trap 'rm -f "$$log"' EXIT HUP INT TERM; \
-	if ( $(1) ) >"$$log" 2>&1; then \
+	( $(1) ) >"$$log" 2>&1; status=$$?; \
+	if [ "$$status" -eq 0 ]; then \
 		if [ "$(2)" = preserve-gitleaks-warning ]; then \
 			grep -F 'warning: gitleaks not installed; skipping repo secret scan' "$$log" >&2 || :; \
 		fi; \
 		elapsed="$$(($$(date +%s) - $$start))"; printf 'PASS %s (%ss)\n' "$@" "$$elapsed"; \
 	else \
-		status=$$?; cat "$$log"; elapsed="$$(($$(date +%s) - $$start))"; printf 'FAIL %s (%ss)\n' "$@" "$$elapsed" >&2; exit $$status; \
+		cat "$$log"; elapsed="$$(($$(date +%s) - $$start))"; printf 'FAIL %s (%ss)\n' "$@" "$$elapsed" >&2; exit $$status; \
 	fi
 endef
 
