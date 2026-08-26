@@ -285,6 +285,7 @@ func run(ctx context.Context, cfg runConfig) error {
 	}
 	if meta != nil {
 		sess, err = runRestoreSession(client, profile, env, *meta, agent.RestoreSessionConfig{
+			LifetimeContext:             ctx,
 			StateDir:                    stateDir,
 			Project:                     project,
 			ResolveProfile:              baseSessionCfg.ResolveProfile,

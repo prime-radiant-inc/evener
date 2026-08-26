@@ -626,6 +626,7 @@ func (s *Session) prepareStableDelegateRun(ctx context.Context, descriptor deleg
 func subagentConfigFromFrozenDescriptor(frozenConfig schema.ConfigSnapshot, parentCfg SessionConfig) SessionConfig {
 	subCfg := configFromSnapshot(frozenConfig.Clone())
 	subCfg.Project = parentCfg.Project
+	subCfg.LifetimeContext = parentCfg.LifetimeContext
 	subCfg.LLMRetryPolicy = parentCfg.LLMRetryPolicy
 	subCfg.LLMSleep = parentCfg.LLMSleep
 	subCfg.clock = parentCfg.clock

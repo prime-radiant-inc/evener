@@ -464,6 +464,9 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 // persisted session. Persisted fields still come from SessionMeta.Config; this
 // struct layers non-serialized values such as StateDir and ResolveProfile.
 type RestoreSessionConfig struct {
+	// LifetimeContext owns this restored session tree when supplied by a
+	// one-shot run. Nil preserves daemon/background ownership.
+	LifetimeContext             context.Context
 	StateDir                    string
 	Project                     identifier.Project
 	ResolveProfile              func(ref string) (*provider.Profile, error)
@@ -558,6 +561,7 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}()
 
 	cfg := configFromSnapshot(meta.Config)
+	cfg.LifetimeContext = restoreCfg.LifetimeContext
 	cfg.StateDir = restoreCfg.StateDir
 	cfg.Project = restoreCfg.Project
 	cfg.ResolveProfile = restoreCfg.ResolveProfile
@@ -670,7 +674,11 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 		}
 	}
 
-	sessCtx, sessCancel := context.WithCancel(context.Background())
+	owner := cfg.LifetimeContext
+	if owner == nil {
+		owner = context.Background()
+	}
+	sessCtx, sessCancel := context.WithCancel(owner)
 	delegationAllowance := cfg.spawn.delegationAllowance
 	if cfg.spawn.parentSessionID == "" {
 		// Root sessions derive their allowance from MaxSubagentDepth (already
