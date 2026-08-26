@@ -10,8 +10,56 @@ import {
   bounded,
   closeBrowserProcess,
   closePageTarget,
+  exitEvent,
+  finalizeChromeProfile,
   runOwnedCleanup,
 } from "./chrome.mjs";
+
+test("exit event preserves the exact Node code and signal shape", async () => {
+  const child = new EventEmitter();
+  child.exitCode = null;
+  child.signalCode = null;
+  const observed = exitEvent(child);
+  child.emit("exit", 0, null);
+  assert.deepEqual(await observed, { code: 0, signal: null });
+});
+
+test("already-exited child preserves code and signal shape", async () => {
+  assert.deepEqual(
+    await exitEvent({ exitCode: 0, signalCode: null }),
+    { code: 0, signal: null },
+  );
+  assert.deepEqual(
+    await exitEvent({ exitCode: null, signalCode: "SIGKILL" }),
+    { code: null, signal: "SIGKILL" },
+  );
+});
+
+test("only clean zero-exit shutdown removes the owned profile", async () => {
+  const removed = [];
+  const removeProfile = async (profile) => removed.push(profile);
+  assert.equal(
+    await finalizeChromeProfile(
+      "/clean-profile",
+      { retainProfile: false, shutdownFailed: false },
+      removeProfile,
+    ),
+    false,
+  );
+  assert.deepEqual(removed, ["/clean-profile"]);
+
+  for (const [profile, state] of [
+    ["/nonzero-profile", { retainProfile: false, shutdownFailed: true }],
+    ["/matrix-red-profile", { retainProfile: true, shutdownFailed: false }],
+    ["/forced-red-profile", { retainProfile: true, shutdownFailed: true }],
+  ]) {
+    assert.equal(
+      await finalizeChromeProfile(profile, state, removeProfile),
+      true,
+    );
+  }
+  assert.deepEqual(removed, ["/clean-profile"]);
+});
 
 test("bounded rejects a hung Browser.close request", async () => {
   await assert.rejects(

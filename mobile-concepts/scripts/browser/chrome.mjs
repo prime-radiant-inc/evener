@@ -50,15 +50,17 @@ export async function activePort(profile, child, stderr) {
   return { port: Number(port), browserPath };
 }
 
-function exitEvent(child) {
-  return child.exitCode === null && !child.signalCode
-    ? new Promise((resolve) =>
-        child.once("exit", (code, signal) => resolve({ code, signal })),
-      )
-    : Promise.resolve({
-        code: child.exitCode,
-        signal: child.signalCode ?? null,
-      });
+export function exitEvent(child) {
+  const shape = (code, signal) => ({
+    code: code ?? null,
+    signal: signal ?? null,
+  });
+  if (child.exitCode !== null || child.signalCode) {
+    return Promise.resolve(shape(child.exitCode, child.signalCode));
+  }
+  return new Promise((resolve) =>
+    child.once("exit", (code, signal) => resolve(shape(code, signal))),
+  );
 }
 
 export async function bounded(promise, milliseconds, label) {
@@ -143,6 +145,17 @@ export async function closeBrowserProcess(browser, child, timeout = 3_000) {
   }
 }
 
+export async function finalizeChromeProfile(
+  profile,
+  { retainProfile = false, shutdownFailed = false },
+  removeProfile = (ownedProfile) =>
+    rm(ownedProfile, { recursive: true, force: true }),
+) {
+  const retained = retainProfile || shutdownFailed;
+  if (!retained) await removeProfile(profile);
+  return retained;
+}
+
 export async function startChrome(options = {}) {
   const chrome = options.chromeBin ?? process.env.CHROME_BIN ?? defaultChrome;
   await access(chrome);
@@ -224,10 +237,12 @@ export async function startChrome(options = {}) {
       closed = true;
       const shutdownFailed = await closeBrowserProcess(browser, child);
       await browser.close().catch(() => {});
-      if (retainProfile || shutdownFailed) {
+      const retained = await finalizeChromeProfile(profile, {
+        retainProfile,
+        shutdownFailed,
+      });
+      if (retained) {
         console.error(`Owned Chrome profile retained: ${profile}`);
-      } else {
-        await rm(profile, { recursive: true, force: true });
       }
     },
   };
