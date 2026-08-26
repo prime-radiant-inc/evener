@@ -4,18 +4,71 @@ import type { PrototypeAction } from "../core/state";
 import { usePrototypeState } from "../core/store";
 import { conceptMetadata } from "./conceptMetadata";
 
-const conceptIds = [
+export const conceptIds = [
   "stillwater",
   "constellation",
   "field-notes",
 ] as const satisfies readonly ConceptId[];
 
+interface ConceptCardsProps {
+  selectedConcept: ConceptId | null;
+  onSelect(concept: ConceptId): void;
+  galleryFocusTarget?: boolean;
+}
+
+export function ConceptCards({
+  selectedConcept,
+  onSelect,
+  galleryFocusTarget = false,
+}: ConceptCardsProps) {
+  return conceptIds.map((conceptId) => {
+    const metadata = conceptMetadata[conceptId];
+    const selected = selectedConcept === conceptId;
+    return (
+      <article
+        className="concept-card"
+        data-accent={metadata.accent}
+        data-selected={selected}
+        key={conceptId}
+      >
+        <div className="concept-card__preview" aria-hidden="true">
+          <span className="concept-card__number">{metadata.number}</span>
+          <span className="concept-card__line concept-card__line--strong" />
+          <span className="concept-card__line" />
+          <span className="concept-card__line concept-card__line--short" />
+        </div>
+        <p className="concept-card__family">{metadata.family}</p>
+        <h2>{metadata.name}</h2>
+        <p className="concept-card__thesis">{metadata.thesis}</p>
+        <button
+          className="concept-card__select"
+          type="button"
+          data-gallery-focus-target={
+            galleryFocusTarget && conceptId === "stillwater"
+              ? "true"
+              : undefined
+          }
+          aria-pressed={selected}
+          onClick={() => onSelect(conceptId)}
+        >
+          Select {metadata.name}
+        </button>
+      </article>
+    );
+  });
+}
+
 export interface ConceptGalleryProps {
   primitives: PlatformPrimitives;
   dispatch(action: PrototypeAction): void;
+  onSelectConcept?(concept: ConceptId): void;
 }
 
-export function ConceptGallery({ primitives, dispatch }: ConceptGalleryProps) {
+export function ConceptGallery({
+  primitives,
+  dispatch,
+  onSelectConcept,
+}: ConceptGalleryProps) {
   const selectedConcept = usePrototypeState((state) => state.concept);
 
   return (
@@ -37,41 +90,14 @@ export function ConceptGallery({ primitives, dispatch }: ConceptGalleryProps) {
         </p>
       </header>
       <div className="concept-gallery__grid">
-        {conceptIds.map((conceptId) => {
-          const metadata = conceptMetadata[conceptId];
-          const selected = selectedConcept === conceptId;
-          return (
-            <article
-              className="concept-card"
-              data-accent={metadata.accent}
-              data-selected={selected}
-              key={conceptId}
-            >
-              <div className="concept-card__preview" aria-hidden="true">
-                <span className="concept-card__number">{metadata.number}</span>
-                <span className="concept-card__line concept-card__line--strong" />
-                <span className="concept-card__line" />
-                <span className="concept-card__line concept-card__line--short" />
-              </div>
-              <p className="concept-card__family">{metadata.family}</p>
-              <h2>{metadata.name}</h2>
-              <p className="concept-card__thesis">{metadata.thesis}</p>
-              <button
-                className="concept-card__select"
-                type="button"
-                data-gallery-focus-target={
-                  conceptId === "stillwater" ? "true" : undefined
-                }
-                aria-pressed={selected}
-                onClick={() =>
-                  dispatch({ type: "selectConcept", concept: conceptId })
-                }
-              >
-                Select {metadata.name}
-              </button>
-            </article>
-          );
-        })}
+        <ConceptCards
+          selectedConcept={selectedConcept}
+          galleryFocusTarget
+          onSelect={(concept) => {
+            if (onSelectConcept) onSelectConcept(concept);
+            else dispatch({ type: "selectConcept", concept });
+          }}
+        />
       </div>
     </section>
   );
