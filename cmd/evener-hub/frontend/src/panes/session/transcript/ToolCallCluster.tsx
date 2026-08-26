@@ -110,7 +110,11 @@ function ToolCallClusterBody({
               sessionRef={sessionRef}
               renderContext={context}
               thread={thread}
-              threadFingerprint={threadFingerprintForItem(item, thread)}
+              threadFingerprint={threadFingerprintForItem(
+                item,
+                thread,
+                toolRendererFor(item.toolName ?? "").summarySuffix?.(item, thread),
+              )}
             />
           ))}
         </div>
