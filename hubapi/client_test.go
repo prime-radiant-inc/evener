@@ -103,6 +103,145 @@ func TestNavigationOversizeResponse(t *testing.T) {
 	}
 }
 
+func TestNavigationDecodeBoundary(t *testing.T) {
+	for _, test := range []struct {
+		name string
+		size int
+		want string
+	}{
+		{"exact", 2 << 20, ""},
+		{"oversize", (2 << 20) + 1, "exceeds"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				body := `{"generation_id":"` + strings.Repeat("x", test.size-len(`{"generation_id":""}`)-1) + `"}`
+				if len(body) < test.size {
+					body += strings.Repeat(" ", test.size-len(body))
+				} else if len(body) > test.size {
+					body = body[:test.size]
+				}
+				_, _ = fmt.Fprint(w, body)
+			})
+			defer srv.Close()
+			_, err := client.NavigationManifest(context.Background(), "")
+			if test.want == "" && err != nil {
+				t.Fatalf("exact boundary error: %v", err)
+			}
+			if test.want != "" && (err == nil || !strings.Contains(err.Error(), test.want)) {
+				t.Fatalf("error=%v, want %q", err, test.want)
+			}
+		})
+	}
+}
+
+func TestNavigationAllRoutesAndWireTypes(t *testing.T) {
+	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		paged := strings.Contains(r.URL.Path, "/sections/") || strings.Contains(r.URL.Path, "/pin-sections") || strings.Contains(r.URL.Path, "/catalogs/") || r.URL.Query().Get("tier") != ""
+		if paged && (r.URL.Query().Get("offset") != "2" || r.URL.Query().Get("limit") != "5") {
+			t.Errorf("query for %s: %v", r.URL.Path, r.URL.Query())
+		}
+		w.Header().Set("ETag", `"matrix"`)
+		switch {
+		case r.URL.Path == "/api/navigation":
+			_ = json.NewEncoder(w).Encode(hubapi.NavigationManifest{Sources: hubapi.NavigationArray[hubapi.Source]{}})
+		case strings.Contains(r.URL.Path, "/sections/") || strings.Contains(r.URL.Path, "/pin-sections/"):
+			_ = json.NewEncoder(w).Encode(hubapi.NavigationSectionResource{Sessions: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{}})
+		case r.URL.Path == "/api/navigation/pin-sections":
+			_ = json.NewEncoder(w).Encode(hubapi.NavigationPinSectionCatalog{PinSections: hubapi.NavigationArray[hubapi.NavigationPinSectionDescriptor]{}})
+		case strings.Contains(r.URL.Path, "/catalogs/"):
+			_ = json.NewEncoder(w).Encode(hubapi.NavigationProjectCatalog{Projects: hubapi.NavigationArray[hubapi.NavigationProjectSummary]{}})
+		case strings.Contains(r.URL.Path, "/projects/") && r.URL.Query().Get("tier") != "":
+			_ = json.NewEncoder(w).Encode(hubapi.NavigationProjectPage{Sessions: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{}})
+		case strings.Contains(r.URL.Path, "/projects/"):
+			_ = json.NewEncoder(w).Encode(hubapi.NavigationProjectResource{})
+		case strings.Contains(r.URL.Path, "/sessions/"):
+			_ = json.NewEncoder(w).Encode(hubapi.NavigationSessionLocation{})
+		default:
+			t.Errorf("unexpected route %s", r.URL.Path)
+		}
+	})
+	defer srv.Close()
+	ctx := context.Background()
+	if got, err := client.NavigationManifest(ctx, ""); err != nil || got.Value.Sources == nil {
+		t.Fatalf("manifest: %+v %v", got, err)
+	}
+	if got, err := client.NavigationSection(ctx, "needs-you", 2, 5, ""); err != nil || got.Value.Sessions == nil {
+		t.Fatalf("section: %+v %v", got, err)
+	}
+	if got, err := client.NavigationPinSection(ctx, "p", 2, 5, ""); err != nil || got.Value.Sessions == nil {
+		t.Fatalf("pin section: %+v %v", got, err)
+	}
+	if got, err := client.NavigationPinSections(ctx, 2, 5, ""); err != nil || got.Value.PinSections == nil {
+		t.Fatalf("pin catalog: %+v %v", got, err)
+	}
+	if got, err := client.NavigationCatalog(ctx, "projects", 2, 5, ""); err != nil || got.Value.Projects == nil {
+		t.Fatalf("catalog: %+v %v", got, err)
+	}
+	if got, err := client.NavigationProject(ctx, "a", ""); err != nil {
+		t.Fatalf("project: %+v %v", got, err)
+	}
+	if got, err := client.NavigationProjectPage(ctx, "a", "recent", 2, 5, ""); err != nil {
+		t.Fatalf("project page: %+v %v", got, err)
+	}
+	if got, err := client.NavigationSessionLocation(ctx, "local:a", ""); err != nil {
+		t.Fatalf("location: %+v %v", got, err)
+	}
+}
+
+func TestNavigationLimitMatrixAndDefaults(t *testing.T) {
+	tests := []struct {
+		name string
+		max  uint32
+		call func(uint32) error
+	}{
+		{"section", 50, func(limit uint32) error {
+			c, s := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+				if limit == 0 && r.URL.RawQuery != "" {
+					t.Errorf("default query=%q", r.URL.RawQuery)
+				}
+				w.Write([]byte(`{}`))
+			})
+			defer s.Close()
+			_, err := c.NavigationSection(context.Background(), "live", 0, limit, "")
+			return err
+		}},
+		{"pin-section", 50, func(limit uint32) error {
+			c, s := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{}`)) })
+			defer s.Close()
+			_, err := c.NavigationPinSection(context.Background(), "p", 0, limit, "")
+			return err
+		}},
+		{"pin-list", 100, func(limit uint32) error {
+			c, s := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{}`)) })
+			defer s.Close()
+			_, err := c.NavigationPinSections(context.Background(), 0, limit, "")
+			return err
+		}},
+		{"catalog", 100, func(limit uint32) error {
+			c, s := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{}`)) })
+			defer s.Close()
+			_, err := c.NavigationCatalog(context.Background(), "projects", 0, limit, "")
+			return err
+		}},
+		{"project-page", 50, func(limit uint32) error {
+			c, s := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { w.Write([]byte(`{}`)) })
+			defer s.Close()
+			_, err := c.NavigationProjectPage(context.Background(), "p", "current", 0, limit, "")
+			return err
+		}},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if err := test.call(test.max); err != nil {
+				t.Fatalf("max accepted: %v", err)
+			}
+			if err := test.call(test.max + 1); err == nil {
+				t.Fatal("over-max accepted")
+			}
+		})
+	}
+}
+
 func TestNavigationConditionalGETNotModifiedIsBodyless(t *testing.T) {
 	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotModified)
@@ -121,14 +260,37 @@ func TestNavigationConditionalGETNotModifiedIsBodyless(t *testing.T) {
 func TestNavigationHTTPErrorIsTyped(t *testing.T) {
 	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
-		_, _ = fmt.Fprint(w, `{"error":"missing","code":404}`)
+		_, _ = fmt.Fprint(w, `{"error":"missing","code":404,"evener_error_info":"detail"}`)
 	})
 	defer srv.Close()
 
 	_, err := client.NavigationSessionLocation(context.Background(), "local:missing", "")
 	var httpErr *hubapi.HTTPError
-	if !errors.As(err, &httpErr) || httpErr.Status != http.StatusNotFound || httpErr.Response.Error != "missing" {
+	if !errors.As(err, &httpErr) || httpErr.Status != http.StatusNotFound || httpErr.Response.Error != "missing" || httpErr.Response.Code != 404 || httpErr.Response.EvenerErrorInfo != "detail" {
 		t.Fatalf("error = %v, want typed 404", err)
+	}
+}
+
+func TestNavigationMalformedAndCancelled(t *testing.T) {
+	started := make(chan struct{})
+	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		close(started)
+		<-r.Context().Done()
+	})
+	defer srv.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { _, err := client.NavigationManifest(ctx, ""); done <- err }()
+	<-started
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("cancelled request returned nil error")
+	}
+
+	client, srv = newTestClient(t, func(w http.ResponseWriter, r *http.Request) { _, _ = fmt.Fprint(w, `{"revision":`) })
+	defer srv.Close()
+	if _, err := client.NavigationManifest(context.Background(), ""); err == nil {
+		t.Fatal("malformed success returned nil error")
 	}
 }
 
