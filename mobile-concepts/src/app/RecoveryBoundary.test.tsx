@@ -23,15 +23,25 @@ function Harness({ reset }: { reset: () => void }) {
 
 describe("RecoveryBoundary", () => {
   it("catches renderer errors and resets locally", () => {
-    vi.spyOn(console, "error").mockImplementation(() => {});
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
     const reset = vi.fn();
-    render(<Harness reset={reset} />);
+    try {
+      render(<Harness reset={reset} />);
 
-    expect(screen.getByRole("alert")).toHaveTextContent(
-      "This concept could not be rendered.",
-    );
-    fireEvent.click(screen.getByRole("button", { name: "Reset prototype" }));
-    expect(reset).toHaveBeenCalledTimes(1);
-    expect(screen.getByText("Recovered locally")).toBeVisible();
+      const main = screen.getByRole("main");
+      expect(main.querySelector("main")).toBeNull();
+      expect(screen.getAllByRole("main")).toHaveLength(1);
+      expect(screen.getAllByRole("alert")).toHaveLength(1);
+      expect(screen.getByRole("alert")).toHaveTextContent(
+        "This concept could not be rendered.",
+      );
+      fireEvent.click(screen.getByRole("button", { name: "Reset prototype" }));
+      expect(reset).toHaveBeenCalledTimes(1);
+      expect(screen.getByText("Recovered locally")).toBeVisible();
+    } finally {
+      consoleError.mockRestore();
+    }
   });
 });

@@ -7,6 +7,7 @@ import {
   waitFor,
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { conceptRegistry } from "../concepts/registry";
 import { preferenceStorageKey } from "../core/persistence";
 import type { PlatformDetectionInput } from "../core/platform";
 import type { PreferenceStorage } from "../core/store";
@@ -155,6 +156,32 @@ describe("App", () => {
       );
     },
   );
+
+  it("preserves one main landmark while recovering from a selected renderer error", () => {
+    const originalRenderer = conceptRegistry.stillwater.Renderer;
+    const consoleError = vi
+      .spyOn(console, "error")
+      .mockImplementation(() => {});
+    try {
+      conceptRegistry.stillwater.Renderer = () => {
+        throw new Error("selected renderer failed");
+      };
+      render(<App platformInput={platformInput} storage={storage()} />);
+      fireEvent.click(
+        screen.getByRole("button", { name: "Select Stillwater" }),
+      );
+
+      expectSoleMain();
+      expect(screen.getAllByRole("alert")).toHaveLength(1);
+      fireEvent.click(screen.getByRole("button", { name: "Reset prototype" }));
+
+      expectSoleMain();
+      expect(screen.getByTestId("concept-gallery")).toBeVisible();
+    } finally {
+      conceptRegistry.stillwater.Renderer = originalRenderer;
+      consoleError.mockRestore();
+    }
+  });
 
   it("makes Lab Controls modal, restores its opener after real Back, and focuses the gallery after Reset", async () => {
     render(<App platformInput={platformInput} storage={storage()} />);
