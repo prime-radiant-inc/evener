@@ -4,6 +4,7 @@ import "testing"
 
 // FuzzCursorDecode keeps the authenticated continuation parser total for
 // arbitrary model-facing cursor bytes.
+// Registry: native:agent:./internal/modelavailability:FuzzCursorDecode::modelavailability.go
 func FuzzCursorDecode(f *testing.F) {
 	f.Add("not-a-cursor")
 	f.Add("")
