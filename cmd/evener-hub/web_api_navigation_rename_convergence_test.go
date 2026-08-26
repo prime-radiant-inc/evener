@@ -93,7 +93,7 @@ func TestRESTNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		if got.Name != "renamed-ended" || got.NameSource != "user" || got.ID != original.ID || got.EnvInfo != original.EnvInfo {
+		if got.Name != "renamed-ended" || got.NameSource != "user" || got.ID != original.ID || !reflect.DeepEqual(got.EnvInfo, original.EnvInfo) {
 			t.Fatalf("renamed meta=%+v, preserved original=%+v", got, original)
 		}
 
