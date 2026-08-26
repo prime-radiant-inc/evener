@@ -300,9 +300,15 @@ func TestProducerAcceptanceArchiveDecidedAtTracksContentOnly(t *testing.T) {
 	if err := store.Set("session", "timestamp", true, time.Unix(99, 0)); err != nil {
 		t.Fatal(err)
 	}
+	assertArchiveTimestamp(t, store, 1, 10)
 	if err := store.Set("session", "timestamp", false, time.Unix(20, 0)); err != nil {
 		t.Fatal(err)
 	}
+	assertArchiveTimestamp(t, store, 0, 20)
+}
+
+func assertArchiveTimestamp(t *testing.T, store *ArchiveStore, wantValue, wantTimestamp int64) {
+	t.Helper()
 	db, err := store.open()
 	if err != nil {
 		t.Fatal(err)
@@ -312,8 +318,8 @@ func TestProducerAcceptanceArchiveDecidedAtTracksContentOnly(t *testing.T) {
 	if err := db.QueryRow("SELECT archived, decided_at FROM archive WHERE kind = 'session' AND id = 'timestamp'").Scan(&archived, &decidedAt); err != nil {
 		t.Fatal(err)
 	}
-	if archived != 0 || decidedAt != 20 {
-		t.Fatalf("archive changed row = value %d timestamp %d, want 0/20 (equivalent 99 must not persist)", archived, decidedAt)
+	if archived != wantValue || decidedAt != wantTimestamp {
+		t.Fatalf("archive row = value %d timestamp %d, want %d/%d", archived, decidedAt, wantValue, wantTimestamp)
 	}
 }
 
@@ -356,9 +362,15 @@ func TestProducerAcceptanceFavoriteDecidedAtTracksContentOnly(t *testing.T) {
 	if err := store.Set("session", "timestamp", true, time.Unix(99, 0)); err != nil {
 		t.Fatal(err)
 	}
+	assertFavoriteTimestamp(t, store, 1, 10)
 	if err := store.Set("session", "timestamp", false, time.Unix(20, 0)); err != nil {
 		t.Fatal(err)
 	}
+	assertFavoriteTimestamp(t, store, 0, 20)
+}
+
+func assertFavoriteTimestamp(t *testing.T, store *FavoriteStore, wantValue, wantTimestamp int64) {
+	t.Helper()
 	db, err := store.open()
 	if err != nil {
 		t.Fatal(err)
@@ -368,8 +380,8 @@ func TestProducerAcceptanceFavoriteDecidedAtTracksContentOnly(t *testing.T) {
 	if err := db.QueryRow("SELECT favorited, decided_at FROM favorite WHERE kind = 'session' AND id = 'timestamp'").Scan(&favorited, &decidedAt); err != nil {
 		t.Fatal(err)
 	}
-	if favorited != 0 || decidedAt != 20 {
-		t.Fatalf("favorite changed row = value %d timestamp %d, want 0/20 (equivalent 99 must not persist)", favorited, decidedAt)
+	if favorited != wantValue || decidedAt != wantTimestamp {
+		t.Fatalf("favorite row = value %d timestamp %d, want %d/%d", favorited, decidedAt, wantValue, wantTimestamp)
 	}
 }
 
