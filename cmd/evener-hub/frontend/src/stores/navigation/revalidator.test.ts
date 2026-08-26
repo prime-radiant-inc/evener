@@ -200,3 +200,81 @@ test.each([
   expect(r.get(key)?.stale).toBe(true);
   expect(r.get(key)?.data).toBe("good");
 });
+
+test("force during a same-revision deferred request queues exactly one conditional trailing read", async () => {
+  const first = d<any>();
+  const second = d<any>();
+  const etags: (string | null)[] = [];
+  const r = new NavigationRevalidator("g");
+  const request = vi.fn((_: AbortSignal, etag: string | null) => {
+    etags.push(etag);
+    if (etags.length === 1)
+      return Promise.resolve({ status: 200, generationID: "g", revision: 1, etag: "a", data: "seed" });
+    return (etags.length === 2 ? first : second).promise;
+  });
+  await r.load(key, request);
+  r.invalidate({ kind: "project", projectKey: "p", revision: 1 });
+  const original = r.load(key, request);
+  r.force([key]);
+  r.force([key]);
+  first.resolve({ status: 200, generationID: "g", revision: 1, etag: "a", data: "old" });
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  expect(request).toHaveBeenCalledTimes(3);
+  expect(etags).toEqual([null, "a", "a"]);
+  second.resolve({ status: 304, generationID: "g", revision: 1, etag: "a" });
+  await original;
+  expect(r.get(key)?.stale).toBe(false);
+});
+
+test("generation-mismatched payload resets and still applies its targets", async () => {
+  const old = d<any>();
+  const fresh = d<any>();
+  const calls: string[] = [];
+  const r = new NavigationRevalidator("old");
+  void r.load(key, (signal, etag) => {
+    calls.push(`${r.generationID}:${etag}`);
+    return (calls.length === 1 ? old : fresh).promise;
+  });
+  applyNavigationInvalidation(r, {
+    generationId: "new",
+    sequence: 1,
+    targets: [{ kind: "project", projectKey: "p", revision: 5 }],
+  });
+  expect(calls).toHaveLength(2);
+  expect(r.get(key)?.targetRevision).toBe(5);
+  expect(r.get(key)?.loading).toBe(true);
+  old.resolve({ status: 200, generationID: "old", revision: 99, etag: "old", data: "bad" });
+  fresh.resolve({ status: 200, generationID: "new", revision: 5, etag: "fresh", data: "good" });
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  expect(r.get(key)?.data).toBe("good");
+  expect(r.get(key)?.generationID).toBe("new");
+});
+
+test("sequence duplicates and reordering do not force, but a gap forces retained callbacks", async () => {
+  const r = new NavigationRevalidator("g");
+  let calls = 0;
+  await r.load(key, async (_, etag) => {
+    calls++;
+    return { status: 200, generationID: "g", revision: 1, etag: etag ?? "a", data: "x" };
+  });
+  applyNavigationInvalidation(r, { generationId: "g", sequence: 1, targets: [] });
+  applyNavigationInvalidation(r, { generationId: "g", sequence: 1, targets: [] });
+  applyNavigationInvalidation(r, { generationId: "g", sequence: 0, targets: [] });
+  expect(calls).toBe(1);
+  applyNavigationInvalidation(r, { generationId: "g", sequence: 3, targets: [] });
+  for (let i = 0; i < 3; i++) await Promise.resolve();
+  expect(calls).toBe(2);
+});
+
+test("listener cannot mutate nested key snapshots and dispose blocks abort-resistant settlement", async () => {
+  const pending = d<any>();
+  const r = new NavigationRevalidator("g");
+  r.subscribe((state) => {
+    expect(() => ((state.key as { kind: string }).kind = "manifest")).toThrow();
+  });
+  const request = r.load(key, () => pending.promise);
+  r.dispose();
+  pending.resolve({ status: 200, generationID: "g", revision: 1, etag: "a", data: { nested: true } });
+  await request;
+  expect(r.states().size).toBe(0);
+});

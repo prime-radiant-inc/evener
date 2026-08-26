@@ -268,7 +268,6 @@ export function applyNavigationInvalidation(
 ): void {
   if (payload.generationId !== revalidator.generationID) {
     revalidator.resetGeneration(payload.generationId);
-    return;
   }
   if (revalidator.acceptSequence(payload.sequence)) revalidator.force(revalidator.loadedKeys());
   for (const target of payload.targets) revalidator.invalidate(target);
