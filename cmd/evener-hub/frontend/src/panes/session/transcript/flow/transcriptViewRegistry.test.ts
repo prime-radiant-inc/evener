@@ -3,6 +3,7 @@ import {
   announceTranscriptViews,
   type CapturedTranscriptView,
   captureTranscriptViews,
+  prepareTranscriptViewRemount,
   type RegisteredTranscriptView,
   registerTranscriptView,
   resetTranscriptViewRegistryForTests,
@@ -72,6 +73,7 @@ test("consumes one pane remount capture only for the matching target layout", ()
     fingerprint: "mobile-config",
     targetLayout: "mobile",
   });
+  prepareTranscriptViewRemount(new Map([["pane", snapshot]]), "mobile");
   unregister();
 
   const replacement = view("pane", captured("replacement-anchor"));
@@ -80,6 +82,55 @@ test("consumes one pane remount capture only for the matching target layout", ()
 
   expect(replacement.restore).toHaveBeenCalledOnce();
   expect(replacement.restore).toHaveBeenCalledWith(snapshot);
+});
+
+test("ordinary unmounts and nonmatching registrations never reuse a capture", () => {
+  const first = view("pane", captured("ordinary"));
+  first.layout = "desktop";
+  const unregisterFirst = registerTranscriptView(first);
+  unregisterFirst();
+
+  const ordinaryReplacement = view("pane", captured("ordinary-replacement"));
+  ordinaryReplacement.layout = "desktop";
+  registerTranscriptView(ordinaryReplacement);
+  expect(ordinaryReplacement.restore).not.toHaveBeenCalled();
+  resetTranscriptViewRegistryForTests();
+
+  const prepared = view("pane", captured("prepared"));
+  prepared.layout = "desktop";
+  const unregisterPrepared = registerTranscriptView(prepared);
+  prepareTranscriptViewRemount(new Map([["pane", captured("prepared")]]), "mobile");
+  unregisterPrepared();
+
+  const wrongLayout = view("pane", captured("wrong-layout"));
+  wrongLayout.layout = "desktop";
+  const unregisterWrongLayout = registerTranscriptView(wrongLayout);
+  expect(wrongLayout.restore).not.toHaveBeenCalled();
+  unregisterWrongLayout();
+
+  const laterMatching = view("pane", captured("later-matching"));
+  laterMatching.layout = "mobile";
+  registerTranscriptView(laterMatching);
+  expect(laterMatching.restore).not.toHaveBeenCalled();
+});
+
+test("clears an unconsumed remount capture at the next nonmatching transition", () => {
+  const first = view("pane", captured("prepared"));
+  first.layout = "desktop";
+  const unregister = registerTranscriptView(first);
+  const snapshot = captured("prepared");
+  prepareTranscriptViewRemount(new Map([["pane", snapshot]]), "mobile");
+  unregister();
+
+  transitionTranscriptViews(() => {}, "Transcript display changed", {
+    fingerprint: "desktop-config",
+    targetLayout: "desktop",
+  });
+
+  const replacement = view("pane", captured("replacement"));
+  replacement.layout = "mobile";
+  registerTranscriptView(replacement);
+  expect(replacement.restore).not.toHaveBeenCalled();
 });
 
 afterEach(() => {

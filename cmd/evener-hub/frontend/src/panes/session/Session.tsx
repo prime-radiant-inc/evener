@@ -53,6 +53,7 @@ import {
   transcriptRowsForProjection,
   transcriptSourceTurnRowIndexesForRows,
 } from "./transcript/TranscriptBody";
+import { TranscriptDetailControl } from "./transcript/TranscriptDetailControl";
 import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
 import { isDormantTranscript } from "./transcript/transcriptVisibility";
 import { useTranscript } from "./transcript/useTranscript";
@@ -187,6 +188,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // here, even though the ref only ever populates once turns.length > 0
   // (see useTranscriptScroll's own "hasContent" handling for that).
   const virtualListRef = useRef<VirtualListHandle>(null);
+  const detailTriggerRef = useRef<HTMLButtonElement>(null);
   // SelectionQuote's own positioning/containment context (its header
   // comment): the non-scrolling `.transcript` wrapper below, not
   // VirtualList's internal scroll node - a selection's own
@@ -284,6 +286,18 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         surface="live"
         disclosureScope={`transcript:live:${ref}`}
         sessionRef={ref}
+        viewId={paneId}
+        detailTriggerRef={detailTriggerRef}
+        toolbar={
+          <TranscriptDetailControl
+            layout={displayViewport}
+            triggerRef={detailTriggerRef}
+            onEditHubDefaults={() => {
+              const url = paneToURL("settings", { section: "transcript" });
+              if (url !== null) navigate(url);
+            }}
+          />
+        }
         showSeenDividerTurnId={seenDividerTurnId ?? undefined}
         loadOlderRow={
           model.olderCursor && (

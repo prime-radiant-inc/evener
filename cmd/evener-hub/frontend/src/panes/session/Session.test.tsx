@@ -305,6 +305,36 @@ test("shows the thread's live name once hydrated, not the raw ref", async () => 
   await waitFor(() => expect(screen.getByText("My session")).toBeTruthy());
 });
 
+test("keeps the live Detail control reachable above the transcript", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "hello", status: "completed" }],
+        },
+      ],
+    }),
+  );
+  const user = userEvent.setup();
+
+  render(
+    <ClientProvider client={fake}>
+      <Session params={{ ref: "ref_a" }} paneId="p1" focused={true} />
+    </ClientProvider>,
+  );
+
+  const trigger = await screen.findByRole("button", { name: /^Detail:/ });
+  expect(trigger.closest('[data-testid="transcript-virtual-list"]')).toBeNull();
+  await user.click(trigger);
+  expect(screen.getByRole("radio", { name: "Tools" })).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Edit hub defaults" }));
+  expect(window.location.pathname).toBe("/settings/transcript");
+});
+
 test("falls back to the raw ref as the title when the thread has no name yet", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));

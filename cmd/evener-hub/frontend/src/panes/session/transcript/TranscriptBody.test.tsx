@@ -2,6 +2,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import type { ThreadModel } from "../../../protocol/model";
 import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
+import { captureTranscriptViews, resetTranscriptViewRegistryForTests } from "./flow/transcriptViewRegistry";
 import { TranscriptBody } from "./TranscriptBody";
 
 function preset(level: "chat" | "intent" | "tools" | "activity" | "full") {
@@ -214,7 +215,10 @@ const mixedBoundaryFixture = {
   ],
 } as unknown as ThreadModel;
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  resetTranscriptViewRegistryForTests();
+});
 
 let offsetHeightDescriptor: PropertyDescriptor | undefined;
 
@@ -251,6 +255,28 @@ describe("TranscriptBody", () => {
     ).toBe("1");
   });
 
+  test("registers live/read-only bodies but excludes preview", () => {
+    const live = render(
+      <TranscriptBody model={fixture} config={preset("tools")} surface="live" disclosureScope="live:registered" />,
+    );
+    expect(captureTranscriptViews().size).toBe(1);
+    live.unmount();
+
+    const readOnly = render(
+      <TranscriptBody
+        model={fixture}
+        config={preset("tools")}
+        surface="readOnly"
+        disclosureScope="readOnly:registered"
+      />,
+    );
+    expect(captureTranscriptViews().size).toBe(1);
+    readOnly.unmount();
+
+    render(<TranscriptBody model={fixture} config={preset("tools")} surface="preview" disclosureScope="preview" />);
+    expect(captureTranscriptViews().size).toBe(0);
+  });
+
   test("uses normal page flow for preview without an inner virtual scroller", () => {
     render(
       <TranscriptBody model={fixture} config={preset("tools")} surface="preview" disclosureScope="preview:test" />,
@@ -258,6 +284,36 @@ describe("TranscriptBody", () => {
 
     expect(screen.queryByTestId("transcript-virtual-list")).toBeNull();
     expect(screen.getByText("Inspect the tree")).toBeTruthy();
+  });
+
+  test.each(["live", "readOnly"] as const)("places the detail toolbar above the %s scroller", (surface) => {
+    render(
+      <TranscriptBody
+        model={fixture}
+        config={preset("tools")}
+        surface={surface}
+        disclosureScope={`${surface}:toolbar`}
+        toolbar={<button type="button">Detail: Tools</button>}
+      />,
+    );
+
+    const toolbar = screen.getByRole("button", { name: "Detail: Tools" });
+    const scroller = screen.getByTestId("transcript-virtual-list");
+    expect(toolbar.compareDocumentPosition(scroller) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
+  });
+
+  test("does not render a toolbar on the preview surface", () => {
+    render(
+      <TranscriptBody
+        model={fixture}
+        config={preset("tools")}
+        surface="preview"
+        disclosureScope="preview:toolbar"
+        toolbar={<button type="button">Detail: Tools</button>}
+      />,
+    );
+
+    expect(screen.queryByRole("button", { name: "Detail: Tools" })).toBeNull();
   });
 
   test("coalesces purpose-only intents across adjacent turns into one stable virtual row", () => {

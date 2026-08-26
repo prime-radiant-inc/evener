@@ -1382,10 +1382,12 @@ describe("registered transcript view preservation", () => {
     const el = document.createElement("div");
     const anchor = document.createElement("div");
     anchor.dataset.viewAnchorId = "agent-4";
-    anchor.tabIndex = 0;
+    anchor.dataset.viewAnchorSourceIndex = "4";
+    const focusedDescendant = document.createElement("button");
+    anchor.append(focusedDescendant);
     el.append(anchor);
     document.body.append(el);
-    anchor.focus();
+    focusedDescendant.focus();
 
     const captured = captureTranscriptView(
       el,
@@ -1406,9 +1408,12 @@ describe("registered transcript view preservation", () => {
   test("restores a surviving focused entry and focuses the Detail fallback when it disappears", () => {
     const list = makeListHandle();
     document.body.append(list.el);
+    const oldAnchor = document.createElement("div");
+    oldAnchor.dataset.viewAnchorId = "tool-old";
+    oldAnchor.dataset.viewAnchorSourceIndex = "4";
     const oldEntry = document.createElement("button");
-    oldEntry.dataset.viewAnchorId = "tool-old";
-    list.el.append(oldEntry);
+    oldAnchor.append(oldEntry);
+    list.el.append(oldAnchor);
     const detail = document.createElement("button");
     document.body.append(detail);
     oldEntry.focus();
@@ -1446,7 +1451,7 @@ describe("registered transcript view preservation", () => {
     positions = [{ id: "tool-old", sourceIndex: 4, index: 0, offset: 2, height: 40, isMessage: false }];
     act(() => {
       transitionTranscriptViews(() => {
-        oldEntry.remove();
+        oldAnchor.remove();
         positions = [{ id: "agent-new", sourceIndex: 5, index: 1, offset: 0, height: 96, isMessage: true }];
         rerender({
           viewKey: "tools",
@@ -1455,6 +1460,68 @@ describe("registered transcript view preservation", () => {
       }, "Transcript display changed again");
     });
     expect(document.activeElement).toBe(detail);
+    list.el.remove();
+    detail.remove();
+  });
+
+  test("waits for a virtualized source alias and restores the same descendant from Intent to Tools", () => {
+    const list = makeListHandle();
+    document.body.append(list.el);
+    const intentAnchor = document.createElement("div");
+    intentAnchor.dataset.viewAnchorId = "intent:tool-1";
+    intentAnchor.dataset.viewAnchorSourceIndex = "4";
+    const intentButton = document.createElement("button");
+    intentAnchor.append(intentButton);
+    list.el.append(intentAnchor);
+    const detail = document.createElement("button");
+    document.body.append(detail);
+    intentButton.focus();
+
+    let positions: ViewAnchorPosition[] = [
+      { id: "intent:tool-1", sourceIndex: 4, index: 0, offset: 18, height: 40, isMessage: false },
+    ];
+    const intentEntries = [{ id: "intent:tool-1", sourceIndex: 4, index: 0, isMessage: false }];
+    const { result, rerender } = renderHook(
+      ({ viewKey, entries }) =>
+        useTranscriptViewRegistration({
+          enabled: true,
+          id: "alias-pane",
+          layout: "desktop",
+          viewKey,
+          listRef: list.ref,
+          measure: () => ({ scrollTop: 300, scrollHeight: 1200, clientHeight: 300 }),
+          measureAnchors: () => positions,
+          anchorEntries: entries,
+          renderedRowCount: 2,
+          detailTriggerRef: { current: detail },
+        }),
+      { initialProps: { viewKey: "intent", entries: intentEntries } },
+    );
+
+    act(() => {
+      transitionTranscriptViews(() => {
+        intentAnchor.remove();
+        positions = [];
+        rerender({
+          viewKey: "tools",
+          entries: [{ id: "tool-1", sourceIndex: 4, index: 1, isMessage: false }],
+        });
+      }, "Transcript display changed");
+    });
+    expect(list.scrollToIndex).toHaveBeenCalledWith(1, { align: "start" });
+    expect(document.activeElement).not.toBe(detail);
+
+    const toolAnchor = document.createElement("div");
+    toolAnchor.dataset.viewAnchorId = "tool-1";
+    toolAnchor.dataset.viewAnchorSourceIndex = "4";
+    const toolButton = document.createElement("button");
+    toolAnchor.append(toolButton);
+    list.el.append(toolAnchor);
+    positions = [{ id: "tool-1", sourceIndex: 4, index: 1, offset: 18, height: 40, isMessage: false }];
+    act(() => result.current.restoreAfterMeasurement());
+
+    expect(document.activeElement).toBe(toolButton);
+    expect(document.activeElement).not.toBe(detail);
     list.el.remove();
     detail.remove();
   });

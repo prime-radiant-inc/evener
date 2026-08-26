@@ -32,12 +32,14 @@ export interface TranscriptViewTransitionOptions {
   readonly targetLayout?: string;
   /** Capture even when the effective fingerprint is unchanged (breakpoints). */
   readonly force?: boolean;
+  /** Arm deterministic host-remount reuse for a viewport transition only. */
+  readonly prepareRemount?: boolean;
   /** Override the default fingerprint-based announcement decision. */
   readonly announce?: boolean;
 }
 
 const registeredViews = new Map<string, Registration>();
-const lastCapturedViews = new Map<string, RemountCapture>();
+const preparedRemounts = new Map<string, RemountCapture>();
 const remountCaptures = new Map<string, RemountCapture>();
 let hasLastTransitionFingerprint = false;
 let lastTransitionFingerprint: string | undefined;
@@ -48,21 +50,29 @@ export function registerTranscriptView(view: RegisteredTranscriptView): () => vo
   registeredViews.set(id, registration);
 
   const remount = remountCaptures.get(id);
-  if (remount && (view.layout === undefined || view.layout === remount.targetLayout)) {
+  if (remount) {
     remountCaptures.delete(id);
-    try {
-      view.restore(remount.captured);
-    } catch {
-      // A remounted pane may still be completing its own mount. The regular
-      // measurement callback gets another chance to restore its pending view.
+    if (view.layout === undefined || view.layout === remount.targetLayout) {
+      try {
+        view.restore(remount.captured);
+      } catch {
+        // A remounted pane may still be completing its own mount. The regular
+        // measurement callback gets another chance to restore its pending view.
+      }
     }
+  }
+  const prepared = preparedRemounts.get(id);
+  if (prepared && view.layout !== undefined && view.layout !== prepared.targetLayout) {
+    preparedRemounts.delete(id);
   }
 
   return () => {
     if (registeredViews.get(id) === registration) {
-      const lastCapture = lastCapturedViews.get(id);
-      if (lastCapture) remountCaptures.set(id, lastCapture);
-      lastCapturedViews.delete(id);
+      const prepared = preparedRemounts.get(id);
+      if (prepared) {
+        preparedRemounts.delete(id);
+        remountCaptures.set(id, prepared);
+      }
       registeredViews.delete(id);
     }
   };
@@ -84,15 +94,9 @@ export function captureTranscriptViews(): ReadonlyMap<string, CapturedTranscript
   return captured;
 }
 
-export function restoreTranscriptViews(
-  captured: ReadonlyMap<string, CapturedTranscriptView>,
-  targetLayout?: string,
-): void {
+export function restoreTranscriptViews(captured: ReadonlyMap<string, CapturedTranscriptView>): void {
   for (const [id, capturedView] of captured) {
     const registration = registeredViews.get(id);
-    if (targetLayout !== undefined) {
-      lastCapturedViews.set(id, { targetLayout, captured: capturedView });
-    }
     if (!registration) continue;
 
     try {
@@ -100,6 +104,16 @@ export function restoreTranscriptViews(
     } catch {
       // A stale or unmounted pane must not prevent other panes from restoring.
     }
+  }
+}
+
+/** Arm captured panes for an upcoming viewport host remount. */
+export function prepareTranscriptViewRemount(
+  captured: ReadonlyMap<string, CapturedTranscriptView>,
+  targetLayout: string,
+): void {
+  for (const [id, capturedView] of captured) {
+    preparedRemounts.set(id, { targetLayout, captured: capturedView });
   }
 }
 
@@ -134,18 +148,23 @@ export function transitionTranscriptViews(
   const shouldAnnounce = options?.announce ?? fingerprintChanged;
 
   if (options?.targetLayout !== undefined) {
-    for (const [id, remount] of remountCaptures) {
-      if (remount.targetLayout !== options.targetLayout) remountCaptures.delete(id);
+    for (const captures of [preparedRemounts, remountCaptures]) {
+      for (const [id, remount] of captures) {
+        if (remount.targetLayout !== options.targetLayout) captures.delete(id);
+      }
     }
   }
 
   const captured = shouldCapture ? captureTranscriptViews() : new Map<string, CapturedTranscriptView>();
+  if (shouldCapture && options?.prepareRemount && options.targetLayout !== undefined) {
+    prepareTranscriptViewRemount(captured, options.targetLayout);
+  }
   let published = false;
   try {
     publish();
     published = true;
   } finally {
-    if (shouldCapture) restoreTranscriptViews(captured, options?.targetLayout);
+    if (shouldCapture) restoreTranscriptViews(captured);
   }
 
   if (published && shouldAnnounce) announceTranscriptViews(summary);
@@ -157,7 +176,7 @@ export function transitionTranscriptViews(
 
 export function resetTranscriptViewRegistryForTests(): void {
   registeredViews.clear();
-  lastCapturedViews.clear();
+  preparedRemounts.clear();
   remountCaptures.clear();
   hasLastTransitionFingerprint = false;
   lastTransitionFingerprint = undefined;

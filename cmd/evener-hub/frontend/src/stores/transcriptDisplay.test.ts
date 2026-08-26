@@ -533,3 +533,40 @@ test("syncs only local values through BroadcastChannel and storage fallback", ()
   transcriptDisplayStore.getState().applyHubChange({ layout: "desktop", revision: 1, config: preset("tools") });
   expect(active.posted).toHaveLength(1);
 });
+
+test("routes a storage reset through capture/restore, while masking a non-current layout", () => {
+  const events: string[] = [];
+  const capture = vi.fn(() => {
+    events.push("capture");
+    return viewSnapshot("pane");
+  });
+  const restore = vi.fn(() => events.push("restore"));
+  const announce = vi.fn(() => events.push("announce"));
+  const unregister = registerTranscriptView({
+    id: "pane",
+    capture,
+    restore,
+    focusDetailTrigger: vi.fn(),
+    announce,
+  });
+
+  transcriptDisplayStore.getState().setLocal("desktop", preset("full"));
+  events.length = 0;
+  capture.mockClear();
+  restore.mockClear();
+  announce.mockClear();
+  window.dispatchEvent(new StorageEvent("storage", { key: desktopKey, newValue: null }));
+
+  expect(events).toEqual(["capture", "restore", "announce"]);
+  expect(transcriptDisplayStore.getState().local.desktop).toBeUndefined();
+
+  transcriptDisplayStore.getState().setLocal("mobile", preset("chat"));
+  events.length = 0;
+  capture.mockClear();
+  restore.mockClear();
+  announce.mockClear();
+  window.dispatchEvent(new StorageEvent("storage", { key: mobileKey, newValue: null }));
+
+  expect(events).toEqual([]);
+  unregister();
+});

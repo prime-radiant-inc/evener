@@ -139,16 +139,73 @@ function topVisiblePosition(positions: readonly ViewAnchorPosition[]): ViewAncho
   return positions.filter((position) => position.offset >= 0).sort((a, b) => a.offset - b.offset)[0];
 }
 
-function focusedAnchorId(el: HTMLElement): string | undefined {
+interface CapturedFocusMetadata {
+  readonly anchorId: string;
+  readonly sourceIdentity: string;
+  readonly sourceIndex?: number;
+  readonly descendantPath: readonly number[];
+  readonly element: HTMLElement;
+}
+
+const capturedAnchorMetadata = new WeakMap<CapturedTranscriptView, ViewAnchor>();
+const capturedFocusMetadata = new WeakMap<CapturedTranscriptView, CapturedFocusMetadata>();
+
+function sourceIdentity(id: string): string {
+  if (id.startsWith("intent:")) return id.slice("intent:".length);
+  if (id.startsWith("tools:")) return id.slice("tools:".length).split(":")[0] ?? id;
+  return id;
+}
+
+function descendantPath(root: HTMLElement, element: HTMLElement): readonly number[] {
+  const path: number[] = [];
+  let current: HTMLElement = element;
+  while (current !== root) {
+    const parent = current.parentElement;
+    if (!parent) return [];
+    const index = Array.from(parent.children).indexOf(current);
+    if (index < 0) return [];
+    path.unshift(index);
+    current = parent;
+  }
+  return path;
+}
+
+function descendantAtPath(root: HTMLElement, path: readonly number[]): HTMLElement | undefined {
+  let current: HTMLElement = root;
+  for (const index of path) {
+    const next = current.children[index];
+    if (!next) return undefined;
+    if (!(next instanceof HTMLElement)) return undefined;
+    current = next;
+  }
+  return current;
+}
+
+function isFocusableDescendant(element: HTMLElement): boolean {
+  return element.matches("button, a[href], input, select, textarea, [tabindex]");
+}
+
+function sourceIndexFromDataset(element: HTMLElement): number | undefined {
+  const value = Number(element.dataset.viewAnchorSourceIndex);
+  return Number.isSafeInteger(value) ? value : undefined;
+}
+
+function focusMetadataFor(el: HTMLElement): CapturedFocusMetadata | undefined {
   const active = el.ownerDocument.activeElement;
   if (!(active instanceof HTMLElement)) return undefined;
   const anchor = Array.from(el.querySelectorAll<HTMLElement>("[data-view-anchor-id]")).find(
     (candidate) => candidate === active || candidate.contains(active),
   );
-  return anchor?.dataset.viewAnchorId;
+  const anchorId = anchor?.dataset.viewAnchorId;
+  if (!anchor || !anchorId) return undefined;
+  return {
+    anchorId,
+    sourceIdentity: sourceIdentity(anchorId),
+    sourceIndex: sourceIndexFromDataset(anchor),
+    descendantPath: descendantPath(anchor, active),
+    element: active,
+  };
 }
-
-const capturedAnchorMetadata = new WeakMap<CapturedTranscriptView, ViewAnchor>();
 
 /** Capture the state that must survive a projected transcript replacement. */
 export function captureTranscriptView(
@@ -159,14 +216,16 @@ export function captureTranscriptView(
   const metrics = measure(el);
   const scrollable = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
   const firstVisible = topVisiblePosition(measureAnchors(el));
+  const focusMetadata = focusMetadataFor(el);
   const captured: CapturedTranscriptView = {
     anchorId: firstVisible?.id,
     anchorOffset: firstVisible?.offset ?? 0,
     normalizedOffset: scrollable > 0 ? metrics.scrollTop / scrollable : 0,
     followingBottom: isAtBottom(metrics),
-    focusedEntryId: focusedAnchorId(el),
+    focusedEntryId: focusMetadata?.anchorId,
   };
   if (firstVisible) capturedAnchorMetadata.set(captured, captureTopAnchor(firstVisible));
+  if (focusMetadata) capturedFocusMetadata.set(captured, focusMetadata);
   return captured;
 }
 
@@ -181,16 +240,71 @@ function anchorFromCapture(
   return captureTopAnchor({ ...source, offset: captured.anchorOffset });
 }
 
-function focusCapturedEntry(el: HTMLElement, captured: CapturedTranscriptView, focusDetailTrigger: () => void): void {
-  if (captured.focusedEntryId === undefined) return;
-  const focused = Array.from(el.querySelectorAll<HTMLElement>("[data-view-anchor-id]")).find(
-    (candidate) => candidate.dataset.viewAnchorId === captured.focusedEntryId,
-  );
-  if (focused) {
-    focused.focus();
+function focusCandidateMatches(candidate: ViewAnchorPosition, metadata: CapturedFocusMetadata): boolean {
+  if (candidate.id === metadata.anchorId) return true;
+  if (sourceIdentity(candidate.id) !== metadata.sourceIdentity) return false;
+  return metadata.sourceIndex === undefined || candidate.sourceIndex === metadata.sourceIndex;
+}
+
+function focusNodeMatches(candidate: HTMLElement, metadata: CapturedFocusMetadata): boolean {
+  if (candidate.dataset.viewAnchorId === metadata.anchorId) return true;
+  if (sourceIdentity(candidate.dataset.viewAnchorId ?? "") !== metadata.sourceIdentity) return false;
+  const sourceIndex = sourceIndexFromDataset(candidate);
+  return metadata.sourceIndex === undefined || sourceIndex === undefined || sourceIndex === metadata.sourceIndex;
+}
+
+function focusAnchor(anchor: HTMLElement, metadata: CapturedFocusMetadata): void {
+  if (metadata.element.isConnected && anchor.contains(metadata.element)) {
+    metadata.element.focus();
     return;
   }
-  focusDetailTrigger();
+  const descendant = descendantAtPath(anchor, metadata.descendantPath);
+  if (descendant && isFocusableDescendant(descendant)) {
+    descendant.focus();
+    return;
+  }
+  // Production anchors are divs. Make only this programmatic fallback
+  // focusable; tab order remains unchanged because -1 is not tabbable.
+  anchor.tabIndex = -1;
+  anchor.focus();
+}
+
+type FocusRestoreResult = "not-focused" | "restored" | "waiting" | "missing";
+
+function focusCapturedEntry(
+  el: HTMLElement,
+  captured: CapturedTranscriptView,
+  candidates: readonly ViewAnchorPosition[],
+  listRef: RefObject<VirtualListHandle | null> | undefined,
+  pending: PendingTranscriptViewRestore,
+): FocusRestoreResult {
+  if (captured.focusedEntryId === undefined) return "not-focused";
+  const metadata =
+    capturedFocusMetadata.get(captured) ??
+    ({
+      anchorId: captured.focusedEntryId,
+      sourceIdentity: sourceIdentity(captured.focusedEntryId),
+      descendantPath: [],
+      element: el.ownerDocument.activeElement instanceof HTMLElement ? el.ownerDocument.activeElement : el,
+    } satisfies CapturedFocusMetadata);
+  const focused = Array.from(el.querySelectorAll<HTMLElement>("[data-view-anchor-id]")).find((candidate) =>
+    focusNodeMatches(candidate, metadata),
+  );
+  if (focused) {
+    focusAnchor(focused, metadata);
+    return "restored";
+  }
+
+  const logicalFocus = candidates.find((candidate) => focusCandidateMatches(candidate, metadata));
+  if (logicalFocus) {
+    if (!pending.focusScrollRequested && listRef?.current) {
+      pending.focusScrollRequested = true;
+      listRef.current.scrollToIndex(logicalFocus.index, { align: "start" });
+      return "waiting";
+    }
+    return pending.focusScrollRequested ? "waiting" : "missing";
+  }
+  return "missing";
 }
 
 export interface UseTranscriptViewRegistrationOptions {
@@ -216,6 +330,16 @@ interface PendingTranscriptViewRestore {
   readonly captured: CapturedTranscriptView;
   target?: RestoredViewAnchor;
   scrollRequested: boolean;
+  anchorRestored: boolean;
+  focusScrollRequested: boolean;
+}
+
+function focusDetailForOptions(options: UseTranscriptViewRegistrationOptions): void {
+  if (options.focusDetailTrigger) {
+    options.focusDetailTrigger();
+    return;
+  }
+  options.detailTriggerRef?.current?.focus();
 }
 
 /**
@@ -241,49 +365,52 @@ export function useTranscriptViewRegistration(
 
     const measure = currentOptions.measure ?? readScrollMetrics;
     const measureAnchors = currentOptions.measureAnchors ?? readAnchorPositions;
+    const measured = measureAnchors(el);
+    const candidates = currentOptions.anchorEntries?.map((entry) => ({ ...entry, offset: 0 })) ?? measured;
     if (pending.captured.followingBottom) {
       const count = currentOptions.renderedRowCount ?? 0;
       if (count > 0) currentOptions.listRef?.current?.scrollToIndex(count - 1, { align: "end" });
-      focusCapturedEntry(el, pending.captured, () => {
-        currentOptions.focusDetailTrigger?.();
-        currentOptions.detailTriggerRef?.current?.focus();
-      });
+      const focusResult = focusCapturedEntry(el, pending.captured, candidates, currentOptions.listRef, pending);
+      if (focusResult === "waiting") return;
+      if (focusResult === "missing") focusDetailForOptions(currentOptions);
       pendingRef.current = null;
       return;
     }
 
-    const measured = measureAnchors(el);
-    const candidates = currentOptions.anchorEntries?.map((entry) => ({ ...entry, offset: 0 })) ?? measured;
     const anchor = anchorFromCapture(pending.captured, candidates);
-    const restored = pending.target ?? (anchor ? restoreTopAnchor(anchor, candidates) : undefined);
-    if (!restored) {
-      const metrics = measure(el);
-      const scrollable = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
-      el.scrollTop = Math.max(0, Math.min(1, pending.captured.normalizedOffset)) * scrollable;
-      focusCapturedEntry(el, pending.captured, () => {
-        currentOptions.focusDetailTrigger?.();
-        currentOptions.detailTriggerRef?.current?.focus();
-      });
-      pendingRef.current = null;
-      return;
+    if (!pending.anchorRestored) {
+      const pendingTargetStillExists =
+        pending.target === undefined || candidates.some((candidate) => candidate.id === pending.target?.id);
+      if (!pendingTargetStillExists) {
+        pending.target = undefined;
+        pending.scrollRequested = false;
+      }
+      const restored = pending.target ?? (anchor ? restoreTopAnchor(anchor, candidates) : undefined);
+      if (!restored) {
+        const metrics = measure(el);
+        const scrollable = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
+        el.scrollTop = Math.max(0, Math.min(1, pending.captured.normalizedOffset)) * scrollable;
+        pending.anchorRestored = true;
+      } else {
+        const current = measured.find((position) => position.id === restored.id);
+        if (current) {
+          el.scrollTop += current.offset - restored.offset;
+          pending.anchorRestored = true;
+        } else if (!pending.scrollRequested) {
+          pending.target = restored;
+          pending.scrollRequested = true;
+          currentOptions.listRef?.current?.scrollToIndex(restored.index, { align: "start" });
+          return;
+        } else {
+          return;
+        }
+      }
     }
 
-    const current = measured.find((position) => position.id === restored.id);
-    if (current) {
-      el.scrollTop += current.offset - restored.offset;
-      focusCapturedEntry(el, pending.captured, () => {
-        currentOptions.focusDetailTrigger?.();
-        currentOptions.detailTriggerRef?.current?.focus();
-      });
-      pendingRef.current = null;
-      return;
-    }
-
-    if (!pending.scrollRequested) {
-      pending.target = restored;
-      pending.scrollRequested = true;
-      currentOptions.listRef?.current?.scrollToIndex(restored.index, { align: "start" });
-    }
+    const focusResult = focusCapturedEntry(el, pending.captured, candidates, currentOptions.listRef, pending);
+    if (focusResult === "waiting") return;
+    if (focusResult === "missing") focusDetailForOptions(currentOptions);
+    pendingRef.current = null;
   }, []);
 
   const capture = useCallback((): CapturedTranscriptView => {
@@ -300,7 +427,12 @@ export function useTranscriptViewRegistration(
   }, []);
 
   const restore = useCallback((captured: CapturedTranscriptView): void => {
-    pendingRef.current = { captured, scrollRequested: false };
+    pendingRef.current = {
+      captured,
+      scrollRequested: false,
+      anchorRestored: false,
+      focusScrollRequested: false,
+    };
   }, []);
 
   const focusDetailTrigger = useCallback(() => {

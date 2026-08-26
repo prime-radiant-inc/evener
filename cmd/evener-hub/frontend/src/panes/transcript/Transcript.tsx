@@ -17,6 +17,7 @@
 import { useEffect, useMemo, useRef } from "react";
 import { useStore } from "zustand";
 import type { PaneProps } from "../../shell/paneRegistry";
+import { navigate, paneToURL } from "../../shell/routing";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
@@ -25,6 +26,7 @@ import { EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets"
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "../session/liveness";
 import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
 import { TranscriptBody } from "../session/transcript/TranscriptBody";
+import { TranscriptDetailControl } from "../session/transcript/TranscriptDetailControl";
 import { useTranscript } from "../session/transcript/useTranscript";
 import { JobLog } from "./JobLog";
 
@@ -40,7 +42,7 @@ export interface TranscriptParams {
   parentRef?: string;
 }
 
-export default function Transcript({ params }: PaneProps<TranscriptParams>) {
+export default function Transcript({ params, paneId }: PaneProps<TranscriptParams>) {
   // A "job:<id>" ref is a shell job's output log, not a thread: it renders
   // through the job-log surface, which never touches the thread engine (no
   // thread/read, no ensureThread). Refs never change for a mounted pane, so
@@ -48,10 +50,10 @@ export default function Transcript({ params }: PaneProps<TranscriptParams>) {
   if (params.ref.startsWith("job:")) {
     return <JobLog jobRef={params.ref} parentRef={params.parentRef} />;
   }
-  return <ThreadTranscript params={params} />;
+  return <ThreadTranscript params={params} paneId={paneId} />;
 }
 
-function ThreadTranscript({ params }: { params: TranscriptParams }) {
+function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId?: string }) {
   const { ref } = params;
   const now = useNowTick(NOW_TICK_MS);
 
@@ -83,6 +85,7 @@ function ThreadTranscript({ params }: { params: TranscriptParams }) {
   // Session.tsx's own comment on the same wiring.
   const { model, loadingOlder, loadOlderReportingError, olderError } = useTranscript(ref);
   const listRef = useRef<VirtualListHandle>(null);
+  const detailTriggerRef = useRef<HTMLButtonElement>(null);
 
   // Open at the latest turn once, when content first arrives. anchorToEnd on
   // the VirtualList below keeps the viewport pinned to the TRUE end while the
@@ -128,6 +131,18 @@ function ThreadTranscript({ params }: { params: TranscriptParams }) {
           surface="readOnly"
           disclosureScope={`transcript:readOnly:${ref}`}
           sessionRef={ref}
+          viewId={paneId}
+          detailTriggerRef={detailTriggerRef}
+          toolbar={
+            <TranscriptDetailControl
+              layout={displayViewport}
+              triggerRef={detailTriggerRef}
+              onEditHubDefaults={() => {
+                const url = paneToURL("settings", { section: "transcript" });
+                if (url !== null) navigate(url);
+              }}
+            />
+          }
           loadOlderRow={
             model.olderCursor && (
               <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />

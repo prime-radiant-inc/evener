@@ -135,6 +135,7 @@ function publishEffectiveTransition(
     fingerprint: configFingerprint(afterConfig),
     targetLayout,
     force,
+    prepareRemount: force,
     announce: changed,
   });
 }
@@ -278,7 +279,7 @@ function onStorage(event: StorageEvent): void {
     if (state.local[layout] === undefined) return;
     const local = { ...state.local };
     delete local[layout];
-    transcriptDisplayStore.setState({ local });
+    publishEffectiveTransition(state, { ...state, local }, () => transcriptDisplayStore.setState({ local }), layout);
     return;
   }
   const config = decodeLocalConfig(event.newValue);
