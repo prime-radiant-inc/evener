@@ -163,17 +163,137 @@ export function selectFocusIndicator(before, after) {
   return { changed: paints.length > 0, paints };
 }
 
-export async function stabilizePagePaint(documentTarget, frame) {
+export async function stabilizePagePaint(
+  documentTarget,
+  frame,
+  snapshotTarget = (element) => {
+    if (!element) return null;
+    const style = element.ownerDocument?.defaultView?.getComputedStyle(element);
+    const box = element.getBoundingClientRect();
+    const opacity = Number(style?.opacity ?? 1);
+    return {
+      element:
+        element.id ||
+        element.getAttribute?.("aria-label") ||
+        element.getAttribute?.("data-testid") ||
+        element.tagName,
+      visible:
+        style?.display !== "none" &&
+        style?.visibility !== "hidden" &&
+        opacity > 0 &&
+        box.width > 0 &&
+        box.height > 0,
+      opacity,
+      rect: {
+        left: box.left,
+        top: box.top,
+        right: box.right,
+        bottom: box.bottom,
+        width: box.width,
+        height: box.height,
+      },
+    };
+  },
+) {
   const animations = documentTarget.getAnimations({ subtree: true });
   const finite = [];
-  let infiniteFrozen = 0;
-  for (const animation of animations) {
+  const finiteForced = [];
+  const infiniteStabilized = [];
+  const capabilityFailures = [];
+  for (const [index, animation] of animations.entries()) {
     const timing = animation.effect?.getComputedTiming?.() ?? {};
     const specified = animation.effect?.getTiming?.() ?? {};
+    const target = animation.effect?.target;
+    const identity =
+      animation.id ||
+      animation.animationName ||
+      `${target?.tagName ?? "unknown"}-animation-${index}`;
+    const affectedElement =
+      target?.id ||
+      target?.getAttribute?.("aria-label") ||
+      target?.getAttribute?.("data-testid") ||
+      target?.tagName ||
+      "unknown";
     if (timing.endTime === Infinity || specified.iterations === Infinity) {
       animation.pause();
-      animation.currentTime = 0;
-      infiniteFrozen += 1;
+      const before = snapshotTarget(target);
+      const duration = Number(specified.duration);
+      const current = Number(animation.currentTime);
+      const times = [
+        ...(Number.isFinite(current) ? [current] : []),
+        ...(Number.isFinite(duration) && duration > 0
+          ? [0, duration * 0.25, duration * 0.5, duration * 0.75]
+          : []),
+      ].filter((value, position, values) => values.indexOf(value) === position);
+      if (times.length === 0) {
+        capabilityFailures.push({
+          code: "infinite-animation-no-representative-time",
+          identity,
+          affectedElement,
+          before,
+        });
+        continue;
+      }
+      const phases = [];
+      for (const time of times) {
+        animation.currentTime = time;
+        await frame();
+        phases.push({ time, snapshot: snapshotTarget(target) });
+      }
+      const score = ({ snapshot }) =>
+        (snapshot?.visible ? 1e12 : 0) +
+        Number(snapshot?.opacity ?? 0) * 1e9 +
+        Number(snapshot?.rect?.width ?? 0) *
+          Number(snapshot?.rect?.height ?? 0);
+      const chosen = phases.reduce(
+        (best, phase) =>
+          best === null || score(phase) > score(best) ? phase : best,
+        null,
+      );
+      animation.currentTime = chosen.time;
+      await frame();
+      infiniteStabilized.push({
+        identity,
+        affectedElement,
+        before,
+        after: snapshotTarget(target),
+        chosenTime: chosen.time,
+      });
+    } else if (
+      animation.playState === "paused" ||
+      Number(animation.playbackRate) === 0
+    ) {
+      const before = snapshotTarget(target);
+      const terminal = Number(timing.endTime);
+      if (!Number.isFinite(terminal)) {
+        capabilityFailures.push({
+          code: "finite-animation-no-terminal-time",
+          identity,
+          affectedElement,
+          before,
+        });
+        continue;
+      }
+      try {
+        animation.pause();
+        animation.currentTime = terminal;
+        await frame();
+        finiteForced.push({
+          identity,
+          affectedElement,
+          before,
+          after: snapshotTarget(target),
+          chosenTime: terminal,
+        });
+      } catch (error) {
+        capabilityFailures.push({
+          code: "finite-animation-terminal-state-failed",
+          identity,
+          affectedElement,
+          before,
+          error: error.message,
+        });
+      }
     } else if (animation.playState !== "finished") {
       finite.push(animation.finished.catch(() => undefined));
     }
@@ -182,7 +302,12 @@ export async function stabilizePagePaint(documentTarget, frame) {
   await documentTarget.fonts?.ready;
   await frame();
   await frame();
-  return { finiteAwaited: finite.length, infiniteFrozen };
+  return {
+    finiteAwaited: finite.length,
+    finiteForced,
+    infiniteStabilized,
+    capabilityFailures,
+  };
 }
 
 function luminance(color) {
@@ -272,6 +397,18 @@ export function applyRenderedSamples(pair, renderedSamples) {
   const foreground = parseCssColor(pair.raw?.foreground);
   if (!foreground)
     return { ...pair, unsupported: "unparseable-sampled-foreground" };
+  const groupOpacities = [
+    pair.raw?.candidateOpacity ?? 1,
+    ...(pair.raw?.ancestorOpacities ?? []),
+  ].map(Number);
+  if (groupOpacities.some((opacity) => opacity !== 1)) {
+    return {
+      ...pair,
+      ratio: undefined,
+      unsupported: "rendered-group-opacity",
+      raw: { ...pair.raw, renderedSamples },
+    };
+  }
   const distance = (color) =>
     Math.hypot(
       color.red - foreground.red,
@@ -305,15 +442,8 @@ export function applyRenderedSamples(pair, renderedSamples) {
   ];
   if (unique.length === 0)
     return { ...pair, unsupported: "missing-rendered-samples" };
-  const groupOpacity = [
-    pair.raw?.candidateOpacity ?? 1,
-    ...(pair.raw?.ancestorOpacities ?? []),
-  ].reduce((value, opacity) => value * Number(opacity), 1);
   const sampledPairs = unique.map((background) => {
-    const effectiveForeground = compositeColor(
-      { ...foreground, alpha: foreground.alpha * groupOpacity },
-      background,
-    );
+    const effectiveForeground = compositeColor(foreground, background);
     return {
       background,
       foreground: effectiveForeground,
