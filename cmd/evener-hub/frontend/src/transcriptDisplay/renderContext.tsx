@@ -1,4 +1,5 @@
 import { createContext, type ReactNode, useContext, useLayoutEffect, useMemo, useRef } from "react";
+import type { ThreadModel } from "../protocol/model";
 import { beginDisclosureBaseline } from "../widgets/disclosure/disclosureStore";
 import {
   type ContentVector,
@@ -23,6 +24,8 @@ export interface TranscriptRenderContextValue {
   readonly eligibleDisclosureIds: readonly string[];
   /** Incremented by a caller that wants the same Full view to start anew. */
   readonly fullBaselineGeneration: number;
+  /** Snapshot supplied by the owning transcript; never read from threadsStore. */
+  readonly thread?: ThreadModel;
 }
 
 export interface TranscriptRenderContextInput {
@@ -35,6 +38,7 @@ export interface TranscriptRenderContextInput {
   sessionRef?: string;
   eligibleDisclosureIds?: readonly string[];
   fullBaselineGeneration?: number;
+  thread?: ThreadModel;
 }
 
 export function contentVectorForConfig(config: TranscriptDisplayConfigV1): ContentVector {
@@ -75,6 +79,7 @@ const DEFAULT_CONTEXT: TranscriptRenderContextValue = {
   disclosureScope: defaultDisclosureScope("readOnly"),
   eligibleDisclosureIds: [],
   fullBaselineGeneration: 0,
+  thread: undefined,
 };
 
 const TranscriptRenderContext = createContext<TranscriptRenderContextValue | null>(null);
@@ -115,6 +120,7 @@ export function createTranscriptRenderContext(input: TranscriptRenderContextInpu
     disclosureScope: input.disclosureScope ?? defaultDisclosureScope(input.surface ?? "readOnly", input.sessionRef),
     eligibleDisclosureIds,
     fullBaselineGeneration: input.fullBaselineGeneration ?? 0,
+    thread: input.thread,
   };
 }
 
@@ -146,6 +152,7 @@ export function TranscriptRenderProvider({
   sessionRef,
   eligibleDisclosureIds,
   fullBaselineGeneration,
+  thread,
 }: TranscriptRenderProviderProps) {
   const semanticConfig = normalizeConfig(config ?? DEFAULT_CONFIG);
   const semanticMetadata = metadataFor(semanticConfig, metadata ?? projectedMetadata ?? projection?.metadata);
@@ -160,9 +167,10 @@ export function TranscriptRenderProvider({
     semanticSurface,
     semanticScope,
     semanticGeneration,
+    thread,
   ].join("\0");
   const semanticContextRef = useRef<{ key: string; context: TranscriptRenderContextValue } | undefined>(undefined);
-  // biome-ignore lint/correctness/useExhaustiveDependencies: semanticKey covers every value used to construct the retained context
+  // biome-ignore lint/correctness/useExhaustiveDependencies: semanticKey covers semantic display values; thread identity refreshes snapshot-derived summaries
   const context = useMemo(() => {
     if (value !== undefined) return value;
     const previous = semanticContextRef.current;
@@ -174,12 +182,16 @@ export function TranscriptRenderProvider({
       surface: semanticSurface,
       disclosureScope: semanticScope,
       fullBaselineGeneration: semanticGeneration,
+      thread,
     });
     semanticContextRef.current = { key: semanticKey, context: next };
     return next;
-  }, [semanticKey, value]);
+  }, [semanticKey, thread, value]);
   const full = isFullConfig(context.config);
-  const previous = useRef<{ scope: string; full: boolean; generation: number } | undefined>(undefined);
+  const previous = useRef<{ scope: string; full: boolean; generation: number; eligible: string } | undefined>(
+    undefined,
+  );
+  const eligibleFingerprint = eligibleDisclosureFingerprint(context.eligibleDisclosureIds);
 
   useLayoutEffect(() => {
     const prior = previous.current;
@@ -193,6 +205,17 @@ export function TranscriptRenderProvider({
       if (sameScope && prior?.full === true && prior.generation !== context.fullBaselineGeneration)
         beginDisclosureBaseline(context.disclosureScope, [], false);
       beginDisclosureBaseline(context.disclosureScope, context.eligibleDisclosureIds, true);
+    } else if (
+      full &&
+      sameScope &&
+      prior?.full === true &&
+      prior.generation === context.fullBaselineGeneration &&
+      prior.eligible !== eligibleFingerprint
+    ) {
+      // Keep the active Full baseline's inventory current. The disclosure
+      // store removes only stale pre-baseline closes; choices made after the
+      // baseline remain authoritative.
+      beginDisclosureBaseline(context.disclosureScope, context.eligibleDisclosureIds, true);
     } else if (!full && (!sameScope || prior?.full === true || prior?.generation !== context.fullBaselineGeneration)) {
       beginDisclosureBaseline(context.disclosureScope, context.eligibleDisclosureIds, false);
     }
@@ -200,8 +223,9 @@ export function TranscriptRenderProvider({
       scope: context.disclosureScope,
       full,
       generation: context.fullBaselineGeneration,
+      eligible: eligibleFingerprint,
     };
-  }, [context, context.disclosureScope, context.fullBaselineGeneration, full]);
+  }, [context, context.disclosureScope, context.fullBaselineGeneration, eligibleFingerprint, full]);
 
   return <TranscriptRenderContext.Provider value={context}>{children}</TranscriptRenderContext.Provider>;
 }

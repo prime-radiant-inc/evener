@@ -1,6 +1,7 @@
-import { cleanup, render, screen } from "@testing-library/react";
-import { afterEach, beforeEach, describe, expect, test } from "vitest";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ThreadModel } from "../../../protocol/model";
+import { threadsStore } from "../../../stores/threads";
 import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
 import { captureTranscriptViews, resetTranscriptViewRegistryForTests } from "./flow/transcriptViewRegistry";
 import { TranscriptBody } from "./TranscriptBody";
@@ -314,6 +315,28 @@ describe("TranscriptBody", () => {
     );
 
     expect(screen.queryByRole("button", { name: "Detail: Tools" })).toBeNull();
+  });
+
+  test("preview rendering and disclosure interactions never read or subscribe to threadsStore", () => {
+    const getState = vi.spyOn(threadsStore, "getState");
+    const subscribe = vi.spyOn(threadsStore, "subscribe");
+    render(
+      <>
+        <TranscriptBody model={fixture} config={preset("intent")} surface="preview" disclosureScope="preview:one" />
+        <TranscriptBody model={fixture} config={preset("intent")} surface="preview" disclosureScope="preview:two" />
+      </>,
+    );
+    const groups = screen.getAllByTestId("intent-group");
+    expect(groups).toHaveLength(2);
+    expect(groups[0]?.hasAttribute("open")).toBe(false);
+    expect(groups[1]?.hasAttribute("open")).toBe(false);
+    const firstSummary = groups[0]?.querySelector("summary");
+    if (!(firstSummary instanceof HTMLElement)) throw new Error("preview intent summary did not render");
+    fireEvent.click(firstSummary);
+    expect(groups[0]?.hasAttribute("open")).toBe(true);
+    expect(groups[1]?.hasAttribute("open")).toBe(false);
+    expect(getState).not.toHaveBeenCalled();
+    expect(subscribe).not.toHaveBeenCalled();
   });
 
   test("coalesces purpose-only intents across adjacent turns into one stable virtual row", () => {

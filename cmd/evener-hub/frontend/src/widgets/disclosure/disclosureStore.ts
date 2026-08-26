@@ -44,7 +44,14 @@ const store = createStore<DisclosureState>(() => ({ open: new Map(), baselines: 
  * a use- prefix, so biome's hook-name heuristic can't recognize it as a hook. */
 export function isDisclosureOpen(id: string, fallback: boolean): boolean {
   // biome-ignore lint/correctness/useHookAtTopLevel: custom hook wrapping useStore; called unconditionally at the top of Disclosure's render, only the non-use- name defeats the heuristic
-  return useStore(store, (s) => s.open.get(id)?.open ?? fallback);
+  return useStore(store, (s) => {
+    const explicit = s.open.get(id);
+    if (explicit !== undefined) return explicit.open;
+    const baseline = baselineForId(s.baselines, id);
+    if (baseline?.open === true) return true;
+    if (baseline?.ids.has(id)) return baseline.open;
+    return fallback;
+  });
 }
 
 export function setDisclosureOpen(id: string, open: boolean): void {

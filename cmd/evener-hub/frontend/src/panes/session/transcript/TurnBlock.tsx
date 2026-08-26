@@ -11,7 +11,17 @@ import "./tools";
 import type { ReactNode } from "react";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
 import type { ProjectedEntry, ProjectedTurn } from "../../../transcriptDisplay/projector";
-import { expandDetailsByDefault, useTranscriptRenderContext } from "../../../transcriptDisplay/renderContext";
+import {
+  disclosureScopeForSession,
+  expandDetailsByDefault,
+  useTranscriptRenderContext,
+} from "../../../transcriptDisplay/renderContext";
+import {
+  disclosureDefault,
+  isDisclosureOpen,
+  scopedDisclosureId,
+  toggleDisclosure,
+} from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import transcriptStyles from "../session.module.css";
 import { SeenDivider } from "./flow/SeenDivider";
@@ -97,7 +107,13 @@ export function ProjectedIntentGroup({
   viewAnchorIndex,
   showSeenDivider = false,
 }: ProjectedIntentGroupProps) {
-  const { config } = useTranscriptRenderContext();
+  const context = useTranscriptRenderContext();
+  const { config } = context;
+  const scope = disclosureScopeForSession(context, undefined);
+  const identity = rowId ?? `intent-group:${entries[0]?.id ?? "empty"}:${entries.at(-1)?.id ?? "empty"}`;
+  const disclosureKey = scopedDisclosureId(scope, identity);
+  const fallback = expandDetailsByDefault(config) || disclosureDefault(scope, identity, false);
+  const open = isDisclosureOpen(disclosureKey, fallback);
   return (
     <>
       {showSeenDivider && <SeenDivider />}
@@ -106,7 +122,8 @@ export function ProjectedIntentGroup({
         data-testid="intent-group"
         data-transcript-row-id={rowId}
         data-transcript-source-turn-ids={sourceTurnIds.join(",") || undefined}
-        open={expandDetailsByDefault(config)}
+        open={open}
+        onToggle={() => toggleDisclosure(disclosureKey, fallback)}
       >
         <summary className={transcriptStyles.intentGroupSummary}>
           {entries.length} action{entries.length === 1 ? "" : "s"}

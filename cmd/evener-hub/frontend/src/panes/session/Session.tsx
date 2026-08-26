@@ -20,7 +20,7 @@
 // "chips beside the composer", per its own doc comment) and shares its
 // 76rem measure so the input aligns with the transcript's own content
 // column; SessionChrome now lives in the composer's own PromptCard control row.
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import type { ThreadModel } from "../../protocol/model";
 import type { PaneProps } from "../../shell/paneRegistry";
@@ -189,6 +189,8 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // (see useTranscriptScroll's own "hasContent" handling for that).
   const virtualListRef = useRef<VirtualListHandle>(null);
   const detailTriggerRef = useRef<HTMLButtonElement>(null);
+  const announcementSequence = useRef(0);
+  const [viewAnnouncement, setViewAnnouncement] = useState({ text: "", key: 0 });
   // SelectionQuote's own positioning/containment context (its header
   // comment): the non-scrolling `.transcript` wrapper below, not
   // VirtualList's internal scroll node - a selection's own
@@ -298,6 +300,10 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
             }}
           />
         }
+        onAnnounceViewChange={(summary) => {
+          announcementSequence.current += 1;
+          setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });
+        }}
         showSeenDividerTurnId={seenDividerTurnId ?? undefined}
         loadOlderRow={
           model.olderCursor && (
@@ -317,6 +323,9 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         onMeasurementsChange={flow.restoreViewAnchorAfterMeasurement}
         trailingContent={showColdStartSkeleton && <ColdStartSkeleton />}
       />
+      <div key={viewAnnouncement.key} role="status" aria-live="polite" data-testid="transcript-view-announcement">
+        {viewAnnouncement.text}
+      </div>
     </div>
   );
   const transcript = <SessionNowContext.Provider value={now}>{transcriptContent}</SessionNowContext.Provider>;

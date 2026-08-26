@@ -14,7 +14,7 @@
 // Both live and read-only panes now hand their hydrated model to the shared
 // TranscriptBody. The read-only surface injects only its older-row affordance
 // and deliberately omits live flow-overlay/new-content-pill machinery.
-import { useEffect, useMemo, useRef } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
@@ -86,6 +86,8 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
   const { model, loadingOlder, loadOlderReportingError, olderError } = useTranscript(ref);
   const listRef = useRef<VirtualListHandle>(null);
   const detailTriggerRef = useRef<HTMLButtonElement>(null);
+  const announcementSequence = useRef(0);
+  const [viewAnnouncement, setViewAnnouncement] = useState({ text: "", key: 0 });
 
   // Open at the latest turn once, when content first arrives. anchorToEnd on
   // the VirtualList below keeps the viewport pinned to the TRUE end while the
@@ -143,6 +145,10 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
               }}
             />
           }
+          onAnnounceViewChange={(summary) => {
+            announcementSequence.current += 1;
+            setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });
+          }}
           loadOlderRow={
             model.olderCursor && (
               <LoadOlderRow onLoad={loadOlderReportingError} loading={loadingOlder} error={olderError} />
@@ -151,6 +157,9 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
           listRef={listRef}
         />
       )}
+      <div key={viewAnnouncement.key} role="status" aria-live="polite" data-testid="transcript-view-announcement">
+        {viewAnnouncement.text}
+      </div>
     </PaneScaffold>
   );
   return <SessionNowContext.Provider value={now}>{content}</SessionNowContext.Provider>;

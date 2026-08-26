@@ -9,6 +9,8 @@ import { registerPaneForTests } from "../../shell/paneRegistry";
 import { registerDockviewApi, resetWorkspaceStoreForTests } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { resetThreadsStoreForTests } from "../../stores/threads";
+import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
+import { makeTranscriptDisplayConfig } from "../../transcriptDisplay/config";
 import { resetSubagentModuleStoreForTests } from "../session/transcript/tools/subagentModuleStore";
 import Transcript from "./Transcript";
 
@@ -228,6 +230,13 @@ test("keeps the read-only Detail control reachable above the transcript", async 
   expect(trigger.closest('[data-testid="transcript-virtual-list"]')).toBeNull();
   await user.click(trigger);
   expect(screen.getByRole("radio", { name: "Tools" })).toBeTruthy();
+  transcriptDisplayStore.setState({ viewport: "desktop" });
+  transcriptDisplayStore
+    .getState()
+    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }));
+  await waitFor(() =>
+    expect(screen.getByTestId("transcript-view-announcement").textContent).toContain("Transcript detail: Activity"),
+  );
 });
 
 test("is read-only: renders no composer and no session-chrome footer, even for a fully capable thread", async () => {
