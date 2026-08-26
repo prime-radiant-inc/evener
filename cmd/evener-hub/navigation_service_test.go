@@ -420,16 +420,63 @@ func TestNavigationServiceRefreshRegistersCausalTicketOnCommittedFlight(t *testi
 	}()
 	<-source.entered
 	service.mu.Lock()
-	ticket := service.flight.causalTicket
+	ticketCount := len(service.flight.tickets)
 	service.mu.Unlock()
-	if ticket == 0 {
-		t.Fatal("refresh flight was not assigned a causal ticket")
+	if ticketCount != 1 {
+		t.Fatalf("refresh flight tickets = %d, want one", ticketCount)
 	}
 	close(source.release)
 	<-done
 	publications := service.DrainPublications()
 	if len(publications) != 1 {
 		t.Fatalf("publications=%d, want one", len(publications))
+	}
+}
+
+func TestNavigationServiceJoinedTicketsShareExactCommittedOutcome(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	service := newTestNavigationService(t, source)
+	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		t.Fatal(err)
+	}
+	source.changeTitle("joined")
+	source.entered, source.release = make(chan struct{}), make(chan struct{})
+	results := make(chan hubapi.NavigationMutation, 2)
+	go func() {
+		m, _ := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
+		results <- m
+	}()
+	<-source.entered
+	go func() {
+		m, _ := service.Refresh(t.Context(), navigationChangeHint{AllLoadedProjects: true})
+		results <- m
+	}()
+	deadline := time.After(time.Second)
+	for {
+		service.mu.Lock()
+		joined := service.flight != nil && len(service.flight.tickets) == 2
+		service.mu.Unlock()
+		if joined {
+			break
+		}
+		select {
+		case <-deadline:
+			t.Fatal("second refresh did not join active flight")
+		default:
+			time.Sleep(time.Millisecond)
+		}
+	}
+	close(source.release)
+	one, two := <-results, <-results
+	if !reflect.DeepEqual(one, two) {
+		t.Fatalf("joined outcomes differ: %+v vs %+v", one, two)
+	}
+	publications := service.DrainPublications()
+	if len(publications) != 1 || !reflect.DeepEqual([]appwire.NavigationInvalidationTarget(one.Targets), publications[0].Targets) {
+		t.Fatalf("outcome/publication mismatch: %+v %+v", one, publications)
+	}
+	if len(service.DrainPublications()) != 0 {
+		t.Fatal("publication replayed")
 	}
 }
 

@@ -110,15 +110,22 @@ type navigationCoreSnapshot struct {
 }
 
 type navigationBuildFlight struct {
-	done         chan struct{}
-	changes      map[navigationResourceKey]bool
-	err          error
-	id           uint64
-	hint         navigationChangeHint
-	mutated      bool
-	mutation     hubapi.NavigationMutation
-	finalized    bool
-	causalTicket uint64
+	done      chan struct{}
+	changes   map[navigationResourceKey]bool
+	err       error
+	id        uint64
+	hint      navigationChangeHint
+	mutated   bool
+	mutation  hubapi.NavigationMutation
+	finalized bool
+	tickets   []*navigationRefreshTicket
+}
+
+type navigationRefreshTicket struct {
+	done      chan struct{}
+	outcome   hubapi.NavigationMutation
+	err       error
+	completed bool
 }
 
 type navigationServiceStats struct {
@@ -158,7 +165,6 @@ type NavigationService struct {
 	pendingHint         navigationChangeHint
 	pendingInvalidation bool
 	pendingEpoch        uint64
-	nextCausalTicket    uint64
 }
 
 func newNavigationService(cfg navigationServiceConfig) *NavigationService {
@@ -346,18 +352,17 @@ func (s *NavigationService) Refresh(ctx context.Context, hint navigationChangeHi
 	if s.sequenceAtSafeLimit() {
 		return hubapi.NavigationMutation{}, errors.New("navigation sequence exceeds JavaScript safe integer")
 	}
-	s.mu.Lock()
-	s.nextCausalTicket++
-	ticket := s.nextCausalTicket
-	s.mu.Unlock()
-	flight, err := s.ensureSnapshot(ctx, true, []navigationChangeHint{hint}, ticket)
+	ticket := &navigationRefreshTicket{done: make(chan struct{})}
+	_, err := s.ensureSnapshot(ctx, true, []navigationChangeHint{hint}, ticket)
 	if err != nil {
 		return hubapi.NavigationMutation{}, err
 	}
-	s.mu.Lock()
-	mutation := flight.mutation
-	s.mu.Unlock()
-	return mutation, nil
+	select {
+	case <-ctx.Done():
+		return hubapi.NavigationMutation{}, navigationUnavailable(ctx.Err())
+	case <-ticket.done:
+		return ticket.outcome, ticket.err
+	}
 }
 
 // PublicationReady is the sole notification that committed invalidations are
@@ -388,7 +393,7 @@ func (s *NavigationService) sequenceAtSafeLimit() bool {
 	return s.sequence >= maxNavigationSafeInteger
 }
 
-func (s *NavigationService) ensureSnapshot(ctx context.Context, force bool, hints []navigationChangeHint, tickets ...uint64) (*navigationBuildFlight, error) {
+func (s *NavigationService) ensureSnapshot(ctx context.Context, force bool, hints []navigationChangeHint, tickets ...*navigationRefreshTicket) (*navigationBuildFlight, error) {
 	if ctx == nil {
 		return nil, errors.New("navigation: nil context")
 	}
@@ -410,6 +415,9 @@ func (s *NavigationService) ensureSnapshot(ctx context.Context, force bool, hint
 		return flight, nil
 	}
 	if flight := s.flight; flight != nil && !flight.finalized {
+		if len(tickets) != 0 {
+			flight.tickets = append(flight.tickets, tickets[0])
+		}
 		if force && len(hints) != 0 {
 			flight.hint = mergeNavigationChangeHints(flight.hint, hints[0])
 			flight.mutated = true
@@ -419,7 +427,7 @@ func (s *NavigationService) ensureSnapshot(ctx context.Context, force bool, hint
 	}
 	flight := &navigationBuildFlight{done: make(chan struct{})}
 	if len(tickets) != 0 {
-		flight.causalTicket = tickets[0]
+		flight.tickets = append(flight.tickets, tickets[0])
 	}
 	if force && len(hints) != 0 {
 		flight.hint, flight.mutated = hints[0], true
@@ -478,6 +486,9 @@ func (s *NavigationService) stopLifecycle() {
 func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigationSourceRevision, flight *navigationBuildFlight) {
 	defer func() {
 		s.mu.Lock()
+		if flight.err != nil {
+			s.completeRefreshTicketsLocked(flight, hubapi.NavigationMutation{}, flight.err)
+		}
 		if s.flight == flight {
 			s.flight = nil
 		}
@@ -581,6 +592,7 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 				}
 				navigationPublicationCommittedLocked(s)
 			}
+			s.completeRefreshTicketsLocked(flight, flight.mutation, nil)
 		}
 		flight.finalized = true
 		woke := flight.mutated
@@ -593,6 +605,16 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 			}
 		}
 		return
+	}
+}
+
+func (s *NavigationService) completeRefreshTicketsLocked(flight *navigationBuildFlight, outcome hubapi.NavigationMutation, err error) {
+	for _, ticket := range flight.tickets {
+		if ticket.completed {
+			continue
+		}
+		ticket.outcome, ticket.err, ticket.completed = outcome, err, true
+		close(ticket.done)
 	}
 }
 
