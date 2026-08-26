@@ -21,6 +21,23 @@ function createMemoryStorage(initial: string | null = null): ConceptStorage {
   };
 }
 
+// Storage wrapper that counts write calls so tests can prove zero writes.
+function createCountingStorage(initial: string | null = null) {
+  let value = initial;
+  let writes = 0;
+  const storage: ConceptStorage = {
+    read: () => value,
+    write: (id: string) => {
+      value = id;
+      writes++;
+    },
+    remove: () => {
+      value = null;
+    },
+  };
+  return { storage, writeCount: () => writes };
+}
+
 const sampleDraft: QuestionDraft = {
   selectedOptionKeys: ["opt-a"],
   note: "draft note",
@@ -113,15 +130,18 @@ describe("live concept UI store — profile reset", () => {
   });
 
   it("resetProfileScope does not write to storage", () => {
-    const storage = createMemoryStorage("field-notes");
-    const writeSpy = storage.write;
+    const { storage, writeCount } = createCountingStorage("field-notes");
     const store = createLiveConceptUiStore(storage);
+
+    // One write from the initial load should not have occurred — load only
+    // reads. Confirm baseline is zero.
+    expect(writeCount()).toBe(0);
 
     store.getState().resetProfileScope();
 
+    // Prove zero writes during reset and persisted concept unchanged.
+    expect(writeCount()).toBe(0);
     expect(storage.read()).toBe("field-notes");
-    // storage.write was never called by resetProfileScope
-    expect(writeSpy).toBe(storage.write);
     expect(store.getState().concept).toBe("field-notes");
   });
 });
