@@ -3,6 +3,7 @@ package appwire
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 )
@@ -164,14 +165,14 @@ func ValidateTranscriptDisplayConfig(config TranscriptDisplayConfig) error {
 			return fmt.Errorf("invalid transcript display level %q", config.Content.Level)
 		}
 		if config.Content.Custom != nil {
-			return fmt.Errorf("preset content cannot include custom content")
+			return errors.New("preset content cannot include custom content")
 		}
 	case TranscriptContentKindCustom:
 		if config.Content.Level != "" {
-			return fmt.Errorf("custom content cannot include a preset level")
+			return errors.New("custom content cannot include a preset level")
 		}
 		if config.Content.Custom == nil {
-			return fmt.Errorf("custom content is required")
+			return errors.New("custom content is required")
 		}
 	default:
 		return fmt.Errorf("invalid transcript content kind %q", config.Content.Kind)
@@ -224,7 +225,7 @@ func DecodeTranscriptDisplayDefaultsPatchParams(raw json.RawMessage) (Transcript
 		return TranscriptDisplayDefaultsPatchParams{}, err
 	}
 	if string(bytes.TrimSpace(top["expectedRevision"])) == "null" {
-		return TranscriptDisplayDefaultsPatchParams{}, fmt.Errorf("expectedRevision must be an unsigned integer")
+		return TranscriptDisplayDefaultsPatchParams{}, errors.New("expectedRevision must be an unsigned integer")
 	}
 	if !validTranscriptViewportClass(params.Layout) {
 		return TranscriptDisplayDefaultsPatchParams{}, fmt.Errorf("invalid transcript viewport class %q", params.Layout)
@@ -261,14 +262,14 @@ func DecodeTranscriptDisplayDefaultsPatchParams(raw json.RawMessage) (Transcript
 			return TranscriptDisplayDefaultsPatchParams{}, fmt.Errorf("content: %w", err)
 		}
 		if _, ok := contentFields["custom"]; ok {
-			return TranscriptDisplayDefaultsPatchParams{}, fmt.Errorf("content cannot contain both preset and custom representations")
+			return TranscriptDisplayDefaultsPatchParams{}, errors.New("content cannot contain both preset and custom representations")
 		}
 	case TranscriptContentKindCustom:
 		if err := requireTranscriptDisplayFields(contentFields, "custom"); err != nil {
 			return TranscriptDisplayDefaultsPatchParams{}, fmt.Errorf("content: %w", err)
 		}
 		if _, ok := contentFields["level"]; ok {
-			return TranscriptDisplayDefaultsPatchParams{}, fmt.Errorf("content cannot contain both custom and preset representations")
+			return TranscriptDisplayDefaultsPatchParams{}, errors.New("content cannot contain both custom and preset representations")
 		}
 		customFields, err := transcriptDisplayObjectFields(contentFields["custom"])
 		if err != nil {
@@ -299,7 +300,7 @@ func decodeTranscriptDisplayStrictJSON(raw []byte, dst any) error {
 	var trailing any
 	if err := decoder.Decode(&trailing); err != io.EOF {
 		if err == nil {
-			return fmt.Errorf("invalid transcript display patch: trailing JSON value")
+			return errors.New("invalid transcript display patch: trailing JSON value")
 		}
 		return fmt.Errorf("invalid transcript display patch: trailing JSON: %w", err)
 	}
@@ -312,7 +313,7 @@ func transcriptDisplayObjectFields(raw json.RawMessage) (map[string]json.RawMess
 		return nil, err
 	}
 	if fields == nil {
-		return nil, fmt.Errorf("expected JSON object")
+		return nil, errors.New("expected JSON object")
 	}
 	return fields, nil
 }
