@@ -81,7 +81,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 		frontendHash:     fHash,
 		deletionStoreErr: deletionStoreErr,
 	}
-	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}})
+	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}, Now: hubNavigationNow})
 	web.appRPC = newHubAppServerWithNavigation(cfg, sources, web.navigation)
 	if deletionStoreErr == nil {
 		_ = web.resumeProjectDeletions()
