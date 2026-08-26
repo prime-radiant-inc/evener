@@ -242,39 +242,53 @@ func (s *Session) canPromptDelegation() bool {
 	return true
 }
 
-// sandboxPromptLine renders the environment-section sandbox line for a sandboxed
-// env ("<mode> (network on|off) — fixed for this session"), so the model knows the
-// immutable box it runs under. When a kernel wrapper has provisioned a real
-// scratch directory, its path is appended (kata g8q6): a spawned shell command
-// learns the scratch dir through $TMPDIR/$EVENER_SCRATCH_DIR, but the model's own
-// file tools (write_file, read_file, …) never see process environment
-// variables, so without this line a model has no way to discover the one
-// directory its file tools can actually write to outside the worktree — it was
+// sandboxPromptLine renders the environment-section sandbox line for an env whose
+// file tools are confined, so the model knows the immutable box it runs under —
+// its mode and network when an OS sandbox enforces it, and which half is enforced
+// when only the file tools do (see sandboxPromptBoundary). When a scratch
+// directory has been provisioned, its path is appended (kata g8q6): a spawned
+// shell command learns the scratch dir through $TMPDIR/$EVENER_SCRATCH_DIR, but
+// the model's own file tools (write_file, read_file, …) never see process
+// environment variables, so without this line a model has no way to discover the
+// one directory its file tools can actually write to outside the worktree — it was
 // observed guessing a literal "/tmp/...", which every sandboxed mode denies.
-// Empty for an unsandboxed env so the line is omitted entirely (byte-identical
-// prompt to today). Takes the resolved env directly — the prompt-render path
-// holds s.mu, so it must not re-fetch via s.currentEnv().
+// Empty for an env whose file tools are unconfined, so the line is omitted
+// entirely (byte-identical prompt to today). Takes the resolved env directly —
+// the prompt-render path holds s.mu, so it must not re-fetch via s.currentEnv().
 func sandboxPromptLine(env execenv.ExecutionEnvironment) string {
 	le, ok := env.(*execenv.LocalExecutionEnvironment)
-	if !ok || le.Sandbox == nil || !le.Sandbox.Enforced() {
+	if !ok || le.Sandbox == nil || !le.Sandbox.FileToolConfined() {
 		return ""
 	}
-	netStr := "on"
-	if !le.Sandbox.Network {
-		netStr = "off"
-	}
-	line := fmt.Sprintf("%s (network %s) — fixed for this session", le.Sandbox.Mode, netStr)
-	if le.Wrapper != nil {
-		if scratch := le.Wrapper.SessionTmp(); scratch != "" {
-			line += ". Scratch directory (read-write even in this sandbox; also $" +
-				envvars.TmpDir.Name + " / $" + envvars.EVENERScratchDir.Name + " for shell commands): " + scratch
-			if le.Sandbox.Mode == sandbox.ModeReadOnly || le.Sandbox.WriteBlocked {
-				line += ". Read-only delegates may write only inside this scratch directory; all other writes are denied."
-			}
-			line += ". In your final human-readable handoff, report this absolute scratch path and the absolute paths of any artifacts your parent should retain; cleanup is manual."
+	line := sandboxPromptBoundary(le.Sandbox)
+	if scratch := le.SessionScratchDir(); scratch != "" {
+		line += ". Scratch directory (read-write even in this sandbox; also $" +
+			envvars.TmpDir.Name + " / $" + envvars.EVENERScratchDir.Name + " for shell commands): " + scratch
+		if le.Sandbox.Mode == sandbox.ModeReadOnly || le.Sandbox.WriteBlocked {
+			line += ". Read-only delegates may write only inside this scratch directory; all other writes are denied."
 		}
+		line += ". In your final human-readable handoff, report this absolute scratch path and the absolute paths of any artifacts your parent should retain; cleanup is manual."
 	}
 	return line
+}
+
+// sandboxPromptBoundary states what the box actually holds. An enforced policy
+// names its mode and network decision. A write-blocked policy with no OS sandbox
+// — a read-only delegate on a host with no backend — must not name its mode:
+// "off" would describe the ABSENT kernel box rather than the boundary the model
+// actually runs under, and reporting it as an ordinary read-only sandbox would
+// overstate. It says which half is enforced and which half is on the model's
+// honour, because a degradation nobody discloses is how a delegate deleted its
+// parent's deliverable.
+func sandboxPromptBoundary(rp *sandbox.ResolvedPolicy) string {
+	if !rp.Enforced() {
+		return "read-only for your file tools — fixed for this session. This host has no sandbox backend, so the boundary is ENFORCED for your file tools (write_file, edit_file and the rest are denied) and ADVISORY for your shell: nothing stops a shell command from writing, so do not write outside the scratch directory"
+	}
+	netStr := "on"
+	if !rp.Network {
+		netStr = "off"
+	}
+	return fmt.Sprintf("%s (network %s) — fixed for this session", rp.Mode, netStr)
 }
 
 // renderSystemPrompt renders the system prompt using the template resolver. It

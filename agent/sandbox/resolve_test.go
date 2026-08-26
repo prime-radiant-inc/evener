@@ -496,3 +496,99 @@ func TestInfraReadRootsMustBeAbsolute(t *testing.T) {
 		t.Errorf("refusal must name the offending root, got: %s", ref.Reason)
 	}
 }
+
+// TestResolveWriteBlockedOffConfinesFileTools pins the degraded read-only
+// delegate scope: on a host with no sandbox backend the derived read-only box
+// resolves as write-blocked OFF instead of refusing, so the delegate keeps its
+// capability while the in-process file tools carry the whole write boundary. It
+// keeps reads open and grants no write root in either layer. Enforced() stays
+// false — there is no OS sandbox — while FileToolConfined() is true, the separate
+// question the file-tool layer asks.
+//
+// Every host is exercised because off resolves on every host by contract (it
+// consults no backend), and adding a write block must not break that totality.
+// WHERE the degrade may be derived is a separate decision the caller makes with
+// FileToolEnforceable — a Windows delegate keeps the refusal.
+func TestResolveWriteBlockedOffConfinesFileTools(t *testing.T) {
+	t.Parallel()
+	dir := clean(t.TempDir())
+	for _, host := range []HostFacts{bareLinuxHost(), darwinBareHost(), windowsHost(), bwrapHost()} {
+		rp := mustResolve(t, SandboxPolicy{Mode: ModeOff, WriteBlocked: true}, host, dir)
+		if rp.Mode != ModeOff || rp.Backend != BackendNone {
+			t.Errorf("write-blocked off on %s: Mode=%v Backend=%v, want off/none", host.OS, rp.Mode, rp.Backend)
+		}
+		if rp.Enforced() {
+			t.Errorf("write-blocked off on %s reports an OS sandbox in force", host.OS)
+		}
+		if !rp.FileToolConfined() {
+			t.Errorf("write-blocked off on %s must confine the file tools", host.OS)
+		}
+		if !rp.WriteBlocked {
+			t.Errorf("write-blocked off on %s dropped the write block", host.OS)
+		}
+		if rp.FileTool.Read != ReadAnywhere {
+			t.Errorf("write-blocked off on %s: FileTool.Read=%v, want anywhere", host.OS, rp.FileTool.Read)
+		}
+		if len(rp.FileTool.WriteRoots) != 0 || len(rp.Spawned.WriteRoots) != 0 {
+			t.Errorf("write-blocked off on %s granted a write root: file=%v spawned=%v", host.OS, rp.FileTool.WriteRoots, rp.Spawned.WriteRoots)
+		}
+		if !rp.Network {
+			t.Errorf("write-blocked off on %s denied egress; off applies no network confinement", host.OS)
+		}
+	}
+}
+
+// TestFileToolConfinedSeparatesFromEnforced: the two predicates answer different
+// questions. Every enforced mode confines the file tools, a plain off policy
+// confines nothing (today's os path, byte-identical), and only the write-blocked
+// off policy separates them.
+func TestFileToolConfinedSeparatesFromEnforced(t *testing.T) {
+	t.Parallel()
+	main := mainRepo(t)
+	for _, mode := range []Mode{ModeReadOnly, ModeWorkspaceWrite, ModeRestricted} {
+		rp := mustResolve(t, SandboxPolicy{Mode: mode, Network: new(true)}, bwrapHost(), main)
+		if !rp.Enforced() || !rp.FileToolConfined() {
+			t.Errorf("mode %v: Enforced=%v FileToolConfined=%v, want both true", mode, rp.Enforced(), rp.FileToolConfined())
+		}
+	}
+	plain := mustResolve(t, SandboxPolicy{Mode: ModeOff}, bareLinuxHost(), main)
+	if plain.Enforced() || plain.FileToolConfined() {
+		t.Errorf("plain off: Enforced=%v FileToolConfined=%v, want both false", plain.Enforced(), plain.FileToolConfined())
+	}
+
+	// A third question: whether the file-tool layer can enforce ANYTHING on this
+	// host. Its race-safe primitives exist on linux and darwin only, and the
+	// stand-ins elsewhere fail closed on every operation — so a policy that leans
+	// on file-tool enforcement alone must never be derived off those two.
+	for _, host := range []HostFacts{bwrapHost(), bareLinuxHost(), darwinSeatbeltHost(), darwinBareHost()} {
+		if !FileToolEnforceable(host) {
+			t.Errorf("FileToolEnforceable(%s) = false, want true", host.OS)
+		}
+	}
+	if FileToolEnforceable(windowsHost()) {
+		t.Error("FileToolEnforceable(windows) = true, but every file-tool operation there fails closed")
+	}
+}
+
+// TestWriteBlockedOffGrantsSessionScratch: WriteBlocked promises the separately
+// provisioned session scratch stays writable (SandboxPolicy.WriteBlocked's
+// contract), so the late-bound scratch grant must reach a degraded policy — the
+// question WithSessionScratch asks is file-tool confinement, not OS enforcement.
+func TestWriteBlockedOffGrantsSessionScratch(t *testing.T) {
+	t.Parallel()
+	dir := clean(t.TempDir())
+	scratch := clean(t.TempDir())
+	rp := mustResolve(t, SandboxPolicy{Mode: ModeOff, WriteBlocked: true}, bareLinuxHost(), dir)
+	granted := rp.WithSessionScratch(scratch)
+	if !slices.Contains(granted.FileTool.WriteRoots, scratch) {
+		t.Fatalf("degraded policy must keep its session scratch writable: %v", granted.FileTool.WriteRoots)
+	}
+	if slices.Contains(granted.FileTool.WriteRoots, dir) {
+		t.Fatalf("the scratch grant must not widen to the workspace: %v", granted.FileTool.WriteRoots)
+	}
+	// A plain off policy is untouched: its file tools never build an enforcement
+	// layer, so a scratch grant would be a meaningless (and misleading) root.
+	if plain := mustResolve(t, SandboxPolicy{Mode: ModeOff}, bareLinuxHost(), dir).WithSessionScratch(scratch); len(plain.FileTool.WriteRoots) != 0 {
+		t.Fatalf("plain off gained a file-tool write root: %v", plain.FileTool.WriteRoots)
+	}
+}

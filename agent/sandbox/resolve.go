@@ -171,8 +171,34 @@ type ResolvedPolicy struct {
 	resolveHost   HostFacts
 }
 
-// Enforced reports whether this policy imposes any containment. False for off.
+// Enforced reports whether an OS sandbox is in force for this policy. False for
+// off. It is the question the kernel-wrapper layer asks — whether to build bwrap
+// arguments, print the startup enforcement line, or announce a box in the prompt
+// — and is deliberately NOT the question the in-process file tools ask; see
+// FileToolConfined.
 func (rp ResolvedPolicy) Enforced() bool { return rp.Mode != ModeOff }
+
+// FileToolConfined reports whether the in-process file-tool layer must enforce
+// this policy's grants. Every enforced mode confines the file tools, and so does
+// a write-blocked OFF policy: that is the read-only delegate scope degraded on a
+// host with no sandbox backend, where the file tools are the only enforcement
+// available and carry the whole write boundary (the shell stays unconfined, which
+// both the delegate and its parent are told). A plain off policy confines
+// nothing, so the file tools keep today's byte-identical os path.
+func (rp ResolvedPolicy) FileToolConfined() bool { return rp.Mode != ModeOff || rp.WriteBlocked }
+
+// FileToolEnforceable reports whether the in-process file-tool layer can enforce
+// anything at all on this host. Its race-safe primitives (openat2 /
+// RESOLVE_NO_SYMLINKS on Linux, the O_NOFOLLOW tail walk on darwin) exist only
+// there; every other platform's stand-ins fail closed on EVERY operation, reads
+// included. So a policy that leans on file-tool enforcement alone — the degraded
+// read-only delegate — must not be derived off those two: it would hand back a
+// delegate whose file tools are all broken rather than one that is confined.
+// Callers with no such fallback (an ordinary sandboxed mode) never need this: the
+// resolver's backend floor already refuses every mode off Linux/darwin.
+func FileToolEnforceable(host HostFacts) bool {
+	return host.OS == "linux" || host.OS == "darwin"
+}
 
 // RefusalError is the typed fail-closed refusal returned when the host cannot
 // enforce the requested (mode, network) — the floor's "full contract or refuse"
@@ -236,7 +262,24 @@ func guardedHostRoots(candidates []string, home, worktree string) []string {
 // (including Windows) — it is today's behavior with no containment.
 func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, error) {
 	if policy.Mode == ModeOff {
-		return ResolvedPolicy{Mode: ModeOff, Network: true, Backend: BackendNone, resolveInputs: policy, resolveHost: host}, nil
+		off := ResolvedPolicy{Mode: ModeOff, Network: true, Backend: BackendNone, resolveInputs: policy, resolveHost: host}
+		if !policy.WriteBlocked {
+			return off, nil
+		}
+		// Write-blocked off: the read-only delegate scope on a host with no sandbox
+		// backend. There is no backend to choose and no host capability to check —
+		// that is the whole point, since checking one is what refused the spawn — so
+		// this path short-circuits like any other off resolve. What it keeps is the
+		// read-only mode's SCOPE for the in-process file tools: reads anywhere, no
+		// write root at all, leaving the separately provisioned session scratch as
+		// the only writable place (WriteBlocked's contract, granted late by
+		// WithSessionScratch). The spawned layer carries the same empty write scope
+		// for the record, but nothing enforces it without a kernel wrapper.
+		off.WriteBlocked = true
+		off.SessionTmp = true
+		off.FileTool = AccessScope{Read: ReadAnywhere}
+		off.Spawned = AccessScope{Read: ReadAnywhere}
+		return off, nil
 	}
 
 	// Network defaults ON when sandboxed: a nil policy.Network is the unset default,

@@ -29,9 +29,24 @@ whose shell is intended for inspection; the kernel wrapper confines that shell
 and every descendant, while the delegate's own session scratch remains writable.
 A parent already running `restricted` keeps that narrower read scope and applies
 the same write block without widening reads. A role with an explicit mutation
-tool follows the normal delegate floor. An explicit delegate `sandbox` argument
-does **not** bypass the structured read-only floor: `read-only` is accepted when
-it is also compatible with the parent's boundary, while `off`,
+tool follows the normal delegate floor.
+
+On a host where no backend can enforce that box — an ordinary unprivileged Linux
+container without usable bubblewrap — the derived scope **degrades rather than
+refusing the spawn**. The delegate runs with no kernel wrapper; its file tools
+keep the identical write boundary (every `write_file`/`edit_file` outside its own
+scratch dir is denied) and its shell is unconfined. That is strictly stronger than
+the advisory scope this floor replaced, and it keeps the capability instead of
+deleting it: coupling the scope to an OS sandbox made every `explorer` delegate
+fail outright on such a host, and the model usually abandoned delegation rather
+than retrying. The gap is disclosed in both directions — the delegate's own
+environment section says which half is enforced and which half is on its honour,
+and the spawn result the parent reads carries the same warning.
+
+An explicit delegate `sandbox` argument does **not** bypass the structured
+read-only floor, and does **not** get the degrade either — a caller that states
+the contract is refused rather than silently given a weaker box. `read-only` is
+accepted when it is also compatible with the parent's boundary, while `off`,
 `workspace-write`, and ordinary `restricted` are rejected because they permit
 persistent workspace writes. A net-only request is applied to the mandatory
 write-blocked policy and may only preserve or tighten the parent's network

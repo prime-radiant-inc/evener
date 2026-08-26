@@ -196,12 +196,22 @@ func (s *Session) parentSandboxFloor() (sandbox.Mode, bool, bool) {
 	return parentSandboxFloorForEnv(s.currentEnv())
 }
 
-// readOnlyDelegateSandbox returns the enforced box for a structured read-only
-// delegate scope. A restricted parent already has a narrower read surface than
+// readOnlyDelegateSandbox returns the box for a structured read-only delegate
+// scope. A restricted parent already has a narrower read surface than
 // ModeReadOnly, so the two modes are incomparable; in that case the child keeps
 // ModeRestricted and removes every persistent write root instead of widening its
 // reads. The ordinary off/workspace-write/read-only parent cases can safely
 // tighten to ModeReadOnly.
+//
+// Where no backend can enforce ModeReadOnly the scope DEGRADES to write-blocked
+// off rather than refusing: choosing a read-only agent type is not a request for
+// an OS sandbox, and coupling the two made every explorer delegate fail outright
+// on an ordinary unprivileged container — the model usually abandoned delegation
+// rather than retrying. The degraded box still removes every file-tool write root
+// (strictly stronger than the advisory scope that let a delegate delete its
+// parent's deliverable), leaving only the shell unconfined; both the delegate and
+// its parent are told so. A caller that EXPLICITLY asks for sandbox="read-only"
+// gets no such degrade — see resolveReadOnlyDelegateSandboxRequest.
 func (s *Session) readOnlyDelegateSandbox() (*sandbox.SandboxPolicy, error) {
 	parentMode, parentNetwork := s.parentSandboxModeNet()
 	if parentMode == sandbox.ModeRestricted {
@@ -211,7 +221,30 @@ func (s *Session) readOnlyDelegateSandbox() (*sandbox.SandboxPolicy, error) {
 			Network:      &parentNetwork,
 		}, nil
 	}
+	// Checked AFTER the restricted-parent case: an enforced parent proves the host
+	// has a working backend, and inheriting its narrower box is never the degrade.
+	// The degrade needs a file-tool layer that can actually hold the boundary, so a
+	// host with neither an OS backend nor file-tool enforcement keeps the refusal
+	// rather than handing back a delegate whose file tools all fail closed.
+	host := s.sandboxHostFacts()
+	if !delegateSandboxBackendAvailable(host) && sandbox.FileToolEnforceable(host) {
+		return &sandbox.SandboxPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}, nil
+	}
 	return resolveDelegateSandboxRequest(sandbox.ModeReadOnly.String(), nil, parentMode, parentNetwork)
+}
+
+// degradedReadOnlyDelegateAdvisory is the spawn-result disclosure the PARENT
+// reads: the delegate it just launched is read-only for its file tools and only
+// advisory for its shell, because this host cannot enforce the box. It rides the
+// create result's warnings, the same non-blocking channel the shared-workspace
+// advisory uses — metadata for the caller's next decision, not delegate output.
+// Empty for every other policy — only the degraded box is write-blocked with no
+// OS sandbox behind it — so an enforced delegate's result is unchanged.
+func degradedReadOnlyDelegateAdvisory(policy *sandbox.SandboxPolicy) string {
+	if policy == nil || policy.Mode != sandbox.ModeOff || !policy.WriteBlocked {
+		return ""
+	}
+	return "this delegate's read-only boundary is enforced for its file tools (every write_file/edit_file outside its own scratch dir is denied) but ADVISORY for its shell: no sandbox backend is available on this host, so a shell command it runs can still write your workspace. Its prompt says so too. Use isolation=\"worktree\" if you need a hard boundary."
 }
 
 // resolveReadOnlyDelegateSandboxRequest applies the structured read-only role's
@@ -248,8 +281,13 @@ func (s *Session) resolveReadOnlyDelegateSandboxRequest(sandboxMode string, sand
 	return requested, nil
 }
 
+// delegateSandboxBlocksPersistentWrites reports whether a policy removes every
+// persistent workspace write from the delegate's FILE TOOLS. ModeOff alone does
+// not — it is the inherit/unconfined request — but off WITH WriteBlocked does:
+// that is the degraded read-only box, whose file-tool layer denies exactly the
+// writes an enforced read-only box denies.
 func delegateSandboxBlocksPersistentWrites(policy *sandbox.SandboxPolicy) bool {
-	if policy == nil || policy.Mode == sandbox.ModeOff {
+	if policy == nil {
 		return false
 	}
 	return policy.Mode == sandbox.ModeReadOnly || policy.WriteBlocked
@@ -307,6 +345,15 @@ func (s *Session) restoreDelegateSandboxFloor(descriptor *delegatestore.Descript
 	if descriptor.Sandbox != nil && policy == nil {
 		return nil, fmt.Errorf("invalid_request: committed delegate sandbox mode %q is invalid", descriptor.Sandbox.Mode)
 	}
+	// No spawn ever PERSISTS an off box: a snapshot of one records nothing, and the
+	// degraded read-only box is re-derived against the host each restore rather than
+	// replayed. A committed "off" carrying a write block is therefore a corrupt or
+	// hand-edited descriptor asking to be trusted as write-blocked on the strength of
+	// a flag no code path wrote. Refuse it rather than admit a runtime whose claimed
+	// boundary nothing derived.
+	if policy != nil && policy.Mode == sandbox.ModeOff && policy.WriteBlocked {
+		return nil, errors.New(`invalid_request: committed delegate sandbox records mode "off" with a write block, which no spawn produces`)
+	}
 	readOnlyScope := subagentToolScopeIsReadOnly(false, descriptor.ToolNameCeiling)
 	parentMode, parentNetwork, parentWriteBlocked := s.parentSandboxFloor()
 	if policy == nil && readOnlyScope {
@@ -324,12 +371,17 @@ func (s *Session) restoreDelegateSandboxFloor(descriptor *delegatestore.Descript
 		inherited := local.Sandbox.Inputs()
 		policy = &inherited
 	}
-	if policy != nil && descriptor.Sandbox == nil {
-		descriptor.Sandbox = stableDelegateSandboxSnapshot(policy)
-		descriptor.Config.Sandbox = descriptor.Sandbox.Mode
+	// A derived floor with an OS box to record backfills the descriptor. The
+	// degraded read-only box records nothing — it is off, so there is no mode to
+	// persist and no resume to re-apply it to — and the descriptor keeps the empty
+	// snapshot the create path wrote, which is exactly what re-derives this same
+	// floor against the host the next resume actually runs on.
+	if snapshot := stableDelegateSandboxSnapshot(policy); snapshot != nil && descriptor.Sandbox == nil {
+		descriptor.Sandbox = snapshot
+		descriptor.Config.Sandbox = snapshot.Mode
 		descriptor.Config.SandboxNet = nil
-		if descriptor.Sandbox.Network != nil {
-			network := *descriptor.Sandbox.Network
+		if snapshot.Network != nil {
+			network := *snapshot.Network
 			descriptor.Config.SandboxNet = &network
 		}
 	}

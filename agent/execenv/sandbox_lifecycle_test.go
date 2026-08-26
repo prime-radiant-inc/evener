@@ -270,3 +270,145 @@ sleep 300 & wait`
 		t.Errorf("manual scratch cleanup must remove the owned tmp, stat err = %v", err)
 	}
 }
+
+// TestEnableSandboxWriteBlockedOffConfinesFileTools is the enforcement half of
+// the degraded read-only delegate: on a host with no sandbox backend, a
+// write-blocked OFF policy still builds the in-process file-tool layer, so a
+// write the delegate attempts through write_file/edit_file is REFUSED with a
+// typed denial and never reaches the disk. Reads stay open and the delegate's own
+// session scratch stays writable — the whole point of degrading rather than
+// refusing the spawn. No kernel wrapper is built (there is no backend), which is
+// the residual gap the delegate and its parent are told about.
+func TestEnableSandboxWriteBlockedOffConfinesFileTools(t *testing.T) {
+	home := realTempDir(t)
+	worktree := filepath.Join(home, "project")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	noBackend := sandbox.HostFacts{OS: "linux", Home: home}
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}, noBackend, worktree)
+	if err != nil {
+		t.Fatalf("resolving a write-blocked off policy must not refuse: %v", err)
+	}
+	env := NewLocalExecutionEnvironment(worktree)
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	if err := env.EnableSandbox(&rp); err != nil {
+		t.Fatalf("EnableSandbox(write-blocked off): %v", err)
+	}
+	if env.Wrapper != nil {
+		t.Fatalf("a host with no backend must build no kernel wrapper, got %+v", env.Wrapper)
+	}
+	if env.sandbox() == nil {
+		t.Fatal("a write-blocked policy must build the file-tool enforcement layer")
+	}
+
+	// A write into the workspace is refused and lands nothing.
+	target := filepath.Join(worktree, "deliverable.md")
+	if err := os.WriteFile(target, []byte("the parent's work\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	newFile := filepath.Join(worktree, "new.txt")
+	_, werr := env.WriteFile(newFile, "clobber")
+	mustDenied(t, werr, "write_file under a degraded read-only delegate")
+	if _, err := os.Stat(newFile); err == nil {
+		t.Error("a denied write_file must not create the file")
+	}
+	_, eerr := env.EditFile(target, "the parent's work", "destroyed", false)
+	mustDenied(t, eerr, "edit_file under a degraded read-only delegate")
+	if got, _ := os.ReadFile(target); string(got) != "the parent's work\n" {
+		t.Errorf("a denied edit_file mutated the file: %q", got)
+	}
+
+	// Reads stay open: the delegate keeps the capability it was spawned for.
+	got, err := env.ReadFile(target, nil, nil)
+	if err != nil || !strings.Contains(got, "the parent's work") {
+		t.Fatalf("a degraded read-only delegate must still read: got %q err %v", got, err)
+	}
+
+	// The session scratch is the one writable place, and the file tools reach the
+	// same directory a shell command gets as $TMPDIR/$EVENER_SCRATCH_DIR.
+	scratch := env.SessionScratchDir()
+	if scratch == "" {
+		t.Fatal("a write-blocked env must provision a session scratch dir to write into")
+	}
+	note := filepath.Join(scratch, "findings.md")
+	if _, err := env.WriteFile(note, "what I found\n"); err != nil {
+		t.Fatalf("write_file into the delegate's own scratch dir must succeed: %v", err)
+	}
+	if back, err := env.ReadFile(note, nil, nil); err != nil || !strings.Contains(back, "what I found") {
+		t.Fatalf("read_file of the just-written scratch file failed: got %q err %v", back, err)
+	}
+
+	// One scratch dir, both layers: the shell's $TMPDIR/$EVENER_SCRATCH_DIR must be
+	// the SAME directory the file tools may write, or the delegate's own prompt
+	// would name a path half its tools cannot use.
+	shell := envToMap(env.commandEnvironment(nil))
+	if shell["EVENER_SCRATCH_DIR"] != scratch || shell["TMPDIR"] != scratch {
+		t.Errorf("shell scratch vars = %q/%q, want the file tools' scratch %q",
+			shell["EVENER_SCRATCH_DIR"], shell["TMPDIR"], scratch)
+	}
+}
+
+// TestSandboxInvocationGrantWidensWriteBlockedOffEnv: a human approving one
+// denied path must work the same way for a degraded read-only delegate as for an
+// enforced one — the escalation grant widens the file-tool layer that a
+// write-blocked off policy really does have. The short-lived clone must also
+// allocate no scratch directory of its own: it owns nothing, so a second dir
+// would leak on every approval.
+func TestSandboxInvocationGrantWidensWriteBlockedOffEnv(t *testing.T) {
+	home := realTempDir(t)
+	worktree := filepath.Join(home, "project")
+	if err := os.MkdirAll(worktree, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	tmpBase := realTempDir(t)
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeOff, WriteBlocked: true},
+		sandbox.HostFacts{OS: "linux", Home: home}, worktree)
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	env := NewLocalExecutionEnvironment(worktree)
+	env.sandboxTmpBase = tmpBase
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	if err := env.EnableSandbox(&rp); err != nil {
+		t.Fatalf("EnableSandbox: %v", err)
+	}
+	approved := filepath.Join(worktree, "approved.txt")
+	if _, err := env.WriteFile(approved, "denied without approval"); err == nil {
+		t.Fatal("the ungranted env must deny the write")
+	}
+	scratchBefore := scratchDirCount(t, tmpBase)
+
+	granted := env.WithSandboxInvocationGrant(approved)
+	if granted == env {
+		t.Fatal("a write-blocked env must produce a grant clone")
+	}
+	if _, err := granted.WriteFile(approved, "human approved this one\n"); err != nil {
+		t.Fatalf("the approved path must be writable through the grant: %v", err)
+	}
+	if got, err := os.ReadFile(approved); err != nil || string(got) != "human approved this one\n" {
+		t.Fatalf("granted write did not land: got %q err %v", got, err)
+	}
+	if _, err := granted.WriteFile(filepath.Join(worktree, "sibling.txt"), "not approved"); err == nil {
+		t.Error("the grant must widen exactly one leaf, not the directory")
+	}
+	if after := scratchDirCount(t, tmpBase); after != scratchBefore {
+		t.Errorf("the grant clone allocated %d extra scratch dirs; it owns none and would leak them", after-scratchBefore)
+	}
+}
+
+// scratchDirCount counts the per-session scratch dirs directly under base.
+func scratchDirCount(t *testing.T, base string) int {
+	t.Helper()
+	entries, err := os.ReadDir(base)
+	if err != nil {
+		t.Fatalf("read scratch base %q: %v", base, err)
+	}
+	n := 0
+	for _, e := range entries {
+		if e.IsDir() && strings.HasPrefix(e.Name(), "evener-sandbox-") {
+			n++
+		}
+	}
+	return n
+}
