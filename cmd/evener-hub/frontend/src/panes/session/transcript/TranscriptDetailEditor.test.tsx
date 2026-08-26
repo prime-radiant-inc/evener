@@ -101,7 +101,7 @@ test("selecting a regular level preserves every Advanced value", async () => {
   });
 });
 
-test("Advanced content changes show Custom and normalize exact preset vectors", async () => {
+test("Advanced content changes preserve explicit Custom vectors", async () => {
   const user = userEvent.setup();
   const onChange = vi.fn();
   render(
@@ -110,9 +110,14 @@ test("Advanced content changes show Custom and normalize exact preset vectors", 
 
   await user.click(screen.getByRole("button", { name: /Advanced/ }));
   await user.click(screen.getByRole("switch", { name: "Reasoning" }));
-  expect(screen.getByRole("radio", { name: "Activity" }).getAttribute("aria-checked")).toBe("true");
+  expect(screen.getByText("Custom")).toBeTruthy();
+  for (const radio of screen.getAllByRole("radio")) {
+    expect(radio.getAttribute("aria-checked")).toBe("false");
+  }
   expect(onChange).toHaveBeenLastCalledWith(
-    expect.objectContaining({ content: { kind: "preset", level: "activity" } }),
+    expect.objectContaining({
+      content: { kind: "custom", toolIntent: true, toolCalls: true, reasoning: true, expandByDefault: false },
+    }),
   );
 
   await user.click(screen.getByRole("switch", { name: "Tool calls" }));
