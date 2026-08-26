@@ -24,8 +24,9 @@ var newSessionStreamAccumulator = func() sessionStreamAccumulator {
 }
 
 type sessionModelResponse struct {
-	Response          llm.Response
-	StreamedAssistant bool
+	Response                  llm.Response
+	StreamedAssistant         bool
+	CommunicatePreviewCallIDs []string
 }
 
 // attemptObservation carries one consumeModelStream attempt's phase/stats back
@@ -242,15 +243,19 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 	toolNames := map[string]string{}
 	communicateText := map[string]string{}
 	communicatePreviewStarted := map[string]bool{}
+	var communicatePreviewOrder []string
 	streamedAssistant := false
 	assistantStarted := false
 	finished := false
+	previewCallIDs := func() []string {
+		return append([]string(nil), communicatePreviewOrder...)
+	}
 	defer func() {
-		if finished {
-			return
-		}
-		for callID := range communicatePreviewStarted {
-			s.emit(events.EventCommunicatePreviewReset, events.CommunicatePreviewResetData{CallID: callID})
+		if recovered := recover(); recovered != nil {
+			for _, callID := range previewCallIDs() {
+				s.emit(events.EventCommunicatePreviewReset, events.CommunicatePreviewResetData{CallID: callID})
+			}
+			panic(recovered)
 		}
 	}()
 
@@ -338,6 +343,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 		if !communicatePreviewStarted[callID] {
 			s.emit(events.EventCommunicatePreviewStart, events.CommunicatePreviewStartData{CallID: callID})
 			communicatePreviewStarted[callID] = true
+			communicatePreviewOrder = append(communicatePreviewOrder, callID)
 		}
 		s.emit(events.EventCommunicatePreviewDelta, events.CommunicatePreviewDeltaData{CallID: callID, Delta: message[len(prev):]})
 	}
@@ -408,24 +414,24 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 			finished = true
 		case llm.StreamEventError:
 			if ev.Err != nil {
-				return sessionModelResponse{}, observe(ev.Err), ev.Err
+				return sessionModelResponse{CommunicatePreviewCallIDs: previewCallIDs()}, observe(ev.Err), ev.Err
 			}
 			err := llm.NewStreamError(req.Provider, "stream error", nil)
-			return sessionModelResponse{}, observe(err), err
+			return sessionModelResponse{CommunicatePreviewCallIDs: previewCallIDs()}, observe(err), err
 		}
 	}
 
 	if !finished {
 		if err := ctx.Err(); err != nil {
-			return sessionModelResponse{}, observe(err), err
+			return sessionModelResponse{CommunicatePreviewCallIDs: previewCallIDs()}, observe(err), err
 		}
 		err := llm.NewStreamError(req.Provider, "stream ended without finish event", nil)
-		return sessionModelResponse{}, observe(err), err
+		return sessionModelResponse{CommunicatePreviewCallIDs: previewCallIDs()}, observe(err), err
 	}
 	resp := acc.Response()
 	if resp == nil {
 		err := llm.NewStreamError(req.Provider, "stream ended without response", nil)
-		return sessionModelResponse{}, observe(err), err
+		return sessionModelResponse{CommunicatePreviewCallIDs: previewCallIDs()}, observe(err), err
 	}
 	if resp.Provider == "" {
 		resp.Provider = req.Provider
@@ -433,7 +439,7 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 	if resp.Model == "" {
 		resp.Model = req.Model
 	}
-	return sessionModelResponse{Response: *resp, StreamedAssistant: streamedAssistant}, observe(nil), nil
+	return sessionModelResponse{Response: *resp, StreamedAssistant: streamedAssistant, CommunicatePreviewCallIDs: previewCallIDs()}, observe(nil), nil
 }
 
 // salvagedContentBytes counts the salvageable bytes in a response snapshot:

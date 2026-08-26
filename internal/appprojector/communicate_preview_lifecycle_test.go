@@ -80,3 +80,24 @@ func TestCommunicateReplayCommitsWithoutLivePreview(t *testing.T) {
 		t.Fatalf("replayed item = %+v", item)
 	}
 }
+
+func TestCommunicatePreviewSameCallIDStartsNewGeneration(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	commit := func(message string) int {
+		p.Project(events.SessionEvent{Kind: events.EventToolCallStart, Data: events.ToolCallStartData{
+			ToolName: "communicate", CallID: "reused",
+		}})
+		p.Project(events.SessionEvent{Kind: events.EventCommunicatePreviewStart, Data: events.CommunicatePreviewStartData{CallID: "reused"}})
+		p.Project(events.SessionEvent{Kind: events.EventCommunicatePreviewDelta, Data: events.CommunicatePreviewDeltaData{CallID: "reused", Delta: message}})
+		return len(p.Project(events.SessionEvent{Kind: events.EventCommunicate, Data: events.CommunicateData{CallID: "reused", Message: message}}))
+	}
+	if got := commit("first"); got != 1 {
+		t.Fatalf("first commit notifications = %d, want 1", got)
+	}
+	if got := commit("second"); got != 1 {
+		t.Fatalf("same-ID new-generation notifications = %d, want 1", got)
+	}
+	if got := len(p.Project(events.SessionEvent{Kind: events.EventCommunicate, Data: events.CommunicateData{CallID: "reused", Message: "second"}})); got != 0 {
+		t.Fatalf("duplicate same-generation notifications = %d, want 0", got)
+	}
+}

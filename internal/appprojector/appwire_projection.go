@@ -67,7 +67,6 @@ type AppEventProjector struct {
 	assistantItem                string
 	assistantText                string
 	provisionalCommunicateItems  map[string]string
-	provisionalCommunicateText   map[string]string
 	communicateCommittedCalls    map[string]struct{}
 	reasoningItem                string
 	toolItemsByKey               map[string]string
@@ -122,7 +121,6 @@ func NewAppEventProjector(threadID, ref string) *AppEventProjector {
 		heldToolResultImages:        map[string]appwire.ThreadItem{},
 		delegates:                   map[string]appwire.EvenerDelegateInfo{},
 		provisionalCommunicateItems: map[string]string{},
-		provisionalCommunicateText:  map[string]string{},
 		communicateCommittedCalls:   map[string]struct{}{},
 	}
 }
@@ -418,7 +416,6 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		out := p.ensureTurn(event.Timestamp)
 		itemID := p.nextItemID("communicate_preview")
 		p.provisionalCommunicateItems[data.CallID] = itemID
-		p.provisionalCommunicateText[data.CallID] = ""
 		return append(out, p.notification(appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
 			ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID,
 			Item: appwire.ThreadItem{Type: "agentMessage", ID: itemID, TurnID: p.activeTurnID, Status: appwire.TurnStatusInProgress},
@@ -429,7 +426,6 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		if itemID == "" || data.Delta == "" {
 			return nil
 		}
-		p.provisionalCommunicateText[data.CallID] += data.Delta
 		return []AppNotification{p.notification(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
 			ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, ItemID: itemID, Delta: data.Delta,
 		})}
@@ -440,7 +436,6 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			return nil
 		}
 		delete(p.provisionalCommunicateItems, data.CallID)
-		delete(p.provisionalCommunicateText, data.CallID)
 		return []AppNotification{p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
 			ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, ItemID: itemID,
 		})}
@@ -459,7 +454,6 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.communicateCommittedCalls[data.CallID] = struct{}{}
 			if itemID := p.provisionalCommunicateItems[data.CallID]; itemID != "" {
 				delete(p.provisionalCommunicateItems, data.CallID)
-				delete(p.provisionalCommunicateText, data.CallID)
 				p.recordAssistantMessage(p.activeTurnID, text)
 				return append(out, p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
 					ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID,
@@ -496,6 +490,15 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.skillCandidate = skillActivationCandidate{}
 		}
 		if data.ToolName == "communicate" {
+			// A provider may reuse a raw call ID in a later tool-call generation;
+			// deduplication is only valid until the next matching start.
+			delete(p.communicateCommittedCalls, data.CallID)
+			if itemID := p.provisionalCommunicateItems[data.CallID]; itemID != "" {
+				delete(p.provisionalCommunicateItems, data.CallID)
+				out = append(out, p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
+					ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, ItemID: itemID,
+				}))
+			}
 			p.suppressedTools[data.CallID] = struct{}{}
 			return out
 		}
@@ -555,7 +558,6 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		if data.Error != "" {
 			if itemID := p.provisionalCommunicateItems[data.CallID]; itemID != "" {
 				delete(p.provisionalCommunicateItems, data.CallID)
-				delete(p.provisionalCommunicateText, data.CallID)
 				out = append(out, p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
 					ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, ItemID: itemID,
 				}))
@@ -1748,6 +1750,8 @@ func (p *AppEventProjector) resetTurnScopedState() {
 	p.toolArgsByKey = map[string]string{}
 	p.toolStartByKey = map[string]time.Time{}
 	p.suppressedTools = map[string]struct{}{}
+	p.provisionalCommunicateItems = map[string]string{}
+	p.communicateCommittedCalls = map[string]struct{}{}
 }
 
 func (p *AppEventProjector) startTurn() string {

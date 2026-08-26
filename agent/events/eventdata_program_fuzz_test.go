@@ -100,7 +100,7 @@ func eventDataProgramCases(text string, n int, flag bool) []eventDataProgramCase
 		{ReasoningEffortChangedData{ReasoningEffort: text}, EventReasoningEffortChanged},
 		{TurnLimitData{MaxTurns: n, MaxToolRoundsPerInput: n}, EventTurnLimit},
 		{LoopDetectionData{Message: text}, EventLoopDetection},
-		{CommunicateData{EndTurn: flag, Message: text}, EventCommunicate},
+		{CommunicateData{CallID: text, EndTurn: flag, Message: text}, EventCommunicate},
 		{SkillActivatedData{Name: text}, EventSkillActivated},
 		{ContextCompactionData{Layer: text, TurnsBefore: n, TurnsAfter: n}, EventContextCompaction},
 		{CompactionTurnData{Kind: text, Text: text}, EventCompactionTurn},
