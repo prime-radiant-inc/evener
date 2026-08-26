@@ -303,8 +303,8 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   Session B discovers Session A by content (`find({query})`), gets A's
   `transcript_ref`, and reads it to reconstruct A's work — B is never
   handed A's ref. Makes the bucket-sharing precondition explicit.
-- `transcript-subagent-audit-children-of.md` — a parent starts a delegate
-  job; `find({children_of:"<parent ref>"})` enumerates the child (kind
+- `transcript-subagent-audit-children-of.md` — a parent starts a stable
+  delegate resource; `find({children_of:"<parent ref>"})` enumerates the child (kind
   `subagent`, `parent_ref` set, no transcript opened), then an outline +
   range read judges whether the child actually ran the commands it claims
   (the delegation trust-but-verify loop).
@@ -320,7 +320,7 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
 ## Job control (CLI)
 
 - `subagent-cancel-runaway.md` — `job_stop` stops a long-running delegate
-  job, then `delegate_send` targets the delegate_id to
+  resource, then `delegate_send` targets the delegate_id to
   continue the preserved child conversation and complete a shorter follow-up.
 - `subagent-list-and-output.md` — `job_list` orients on a stable delegate
   resource and `read_transcript` reads its session transcript twice without
@@ -361,7 +361,7 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   result), and a resumed turn inherits the original schema.
 - `job-send-message-surface.md` — the handle split: a `job_id` handed to
   `delegate_send` is rejected with guidance toward the `delegate_id`, a
-  RUNNING delegate takes a live steer with no new job, and an IDLE one automatically starts its next job in the same conversation.
+  RUNNING delegate takes a live steer with no new activation job, and an IDLE one automatically starts its next private run in the same conversation.
 - `job-delegate-wait-no-poll.md` — a parent that delegated its whole task
   and has no independent work ends its turn and waits for the notification
   instead of looping `job_status`; falsifies the polling-loop regression from

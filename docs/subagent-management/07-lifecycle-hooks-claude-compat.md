@@ -186,18 +186,18 @@ Existing event names remain; ordering is stable and tested. Steps for events eve
 13. Run `PostToolUse` hooks with sanitized result/error (the reserved `PostToolUseFailure` on failure once implemented).
 14. (Reserved) After a batch of tool calls, run `PostToolBatch` before the next model request once batching is implemented.
 
-### Delegate job lifecycle
+### Delegate lifecycle
 
 1. Decode delegate request.
 2. Resolve agent type and plugin/builtin/project agent definition.
 3. Compute effective child policy.
-4. Create child session/job so hook input can include stable child identity/session metadata.
+4. Create the stable `dlg_...` delegate resource and child session so hook input can include stable child identity/session metadata. Delegate run generations are private and are not activation jobs or public `job_id` values.
 5. (Reserved) Run `SubagentStart` compatibility/SDK hooks before the child model receives initial context once implemented.
-6. Emit `JOB_STARTED` with stable job and child identity.
+6. Emit the typed delegate lifecycle attention event (`<delegate-notification delegate_id="dlg_...">`) when the delegate reaches a terminal outcome; do not emit shell `JOB_STARTED`/`JOB_FINISHED` records for the delegate.
 7. Run child turns.
-8. On completion, failure, cancellation, or close, run `SubagentStop` if configured.
-9. Finalize result/diagnostics/status.
-10. Emit `JOB_FINISHED` and release bounded readers/watchers in deterministic tested order.
+8. On completion, failure, exhaustion, cancellation, or close, run `SubagentStop` if configured.
+9. Finalize the private run outcome and the stable delegate aggregate/diagnostics.
+10. Release bounded readers/watchers in deterministic tested order. The delegate conversation remains available through its session `transcript_ref`.
 
 ## Claude-compatible hook config contract
 
