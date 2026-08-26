@@ -116,6 +116,24 @@ func (s *Session) removeTurnOwnedSteering(owner *struct{ _ byte }) {
 	s.mu.Unlock()
 }
 
+func (s *Session) removeAllTurnOwnedSteering() {
+	s.mu.Lock()
+	owners := make(map[*struct{ _ byte }]struct{}, len(s.visionTurnOwners))
+	for _, owner := range s.visionTurnOwners {
+		owners[owner] = struct{}{}
+	}
+	filtered := s.steeringQueue[:0]
+	for _, entry := range s.steeringQueue {
+		if _, ok := owners[entry.turnOwner]; !ok {
+			filtered = append(filtered, entry)
+		}
+	}
+	s.steeringQueue = filtered
+	s.visionTurnOwners = nil
+	s.mu.Unlock()
+	s.persistQueuesSnapshot()
+}
+
 func steeringInjectedDataFromMessage(msg steeringMessage) events.SteeringInjectedData {
 	return events.SteeringInjectedData{
 		Text:             msg.Text,

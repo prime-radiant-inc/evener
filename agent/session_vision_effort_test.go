@@ -387,6 +387,21 @@ func TestPersistToolResults_VisionErrorDoesNotClaimSuccessfulUsage(t *testing.T)
 	}
 }
 
+func TestVisionFailureSteering_EmptyPathSanitizesProviderError(t *testing.T) {
+	const secret = "https://provider.invalid/body secret-request-id"
+	got := visionFailureSteering("", visionSideChannelResult{
+		outcome: visionSideChannelProviderFailure,
+		err:     errors.New(secret),
+	})
+	want := "Vision is unavailable because the vision provider failed. Use OCR or inspect the source data, or continue without vision."
+	if got != want {
+		t.Fatalf("steering = %q, want %q", got, want)
+	}
+	if strings.Contains(got, secret) {
+		t.Fatalf("steering leaked provider error: %q", got)
+	}
+}
+
 func TestDescribeImage_CancelsTheSideChannelOnTimeout(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()

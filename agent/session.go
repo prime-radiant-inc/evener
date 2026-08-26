@@ -289,8 +289,9 @@ type Session struct {
 
 	reg *tool.Registry
 
-	steeringQueue []steeringMessage
-	followups     []string
+	steeringQueue    []steeringMessage
+	visionTurnOwners []*struct{ _ byte }
+	followups        []string
 
 	// activeProvenance is the causal provenance carried by the input currently
 	// being processed. It is stamped onto every event the turn emits, reset to

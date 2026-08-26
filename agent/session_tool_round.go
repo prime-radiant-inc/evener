@@ -280,6 +280,11 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 					}
 					return abortErr
 				}
+				if queued {
+					s.mu.Lock()
+					s.visionTurnOwners = append(s.visionTurnOwners, owner)
+					s.mu.Unlock()
+				}
 				if err := ctx.Err(); err != nil {
 					if queued {
 						s.removeTurnOwnedSteering(owner)
@@ -424,8 +429,12 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 				s.emit(events.EventLoopDetection, events.LoopDetectionData{Message: warning})
 				s.appendSteeringTurn(warning, events.SteeringKindLoopDetected)
 			}); abortErr != nil {
+				s.removeAllTurnOwnedSteering()
 				return false, abortErr
 			}
+			s.mu.Lock()
+			s.visionTurnOwners = nil
+			s.mu.Unlock()
 		}
 	}
 

@@ -343,9 +343,9 @@ func visionUnavailableSteering(path string) string {
 }
 
 func visionFailureSteering(path string, result visionSideChannelResult) string {
-	if result.outcome == visionSideChannelProviderFailure && result.err != nil {
+	if result.outcome == visionSideChannelProviderFailure {
 		if path == "" {
-			return fmt.Sprintf("Vision is unavailable because the vision provider failed: %v. Use OCR or inspect the source data, or continue without vision.", result.err)
+			return "Vision is unavailable because the vision provider failed. Use OCR or inspect the source data, or continue without vision."
 		}
 		return fmt.Sprintf("Vision is unavailable for %s because the vision provider failed. Use OCR or inspect the source data, or continue without vision.", strconv.Quote(path))
 	}
