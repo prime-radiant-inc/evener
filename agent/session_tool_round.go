@@ -510,5 +510,8 @@ func (s *Session) deliverIfCommunicated(ctx context.Context, askedThisRound bool
 		}
 	}
 	s.finishProcessingAtBoundary(ctx, boundaryState)
+	if hook := s.cfg.testOnly.afterCommunicateBoundary; hook != nil {
+		hook(s)
+	}
 	return true, text, nil
 }
