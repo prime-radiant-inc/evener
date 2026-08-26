@@ -1036,7 +1036,7 @@ func mutateWebWaitDeferral(t *testing.T, fixture runtimeBuildFixture) {
 	fi
 	printf '%s\n' "$check_status" >"$dir/$c.status"
 	consume_interrupt`
-	new := `	defer_signals=1
+	deferredWaitBlock := `	defer_signals=1
 	if wait "$pid"; then check_status=0; else check_status=$?; fi
 	if ! owned_job_is_running "$pid"; then
 		forget_pid "$pid"
@@ -1047,7 +1047,7 @@ func mutateWebWaitDeferral(t *testing.T, fixture runtimeBuildFixture) {
 	if !bytes.Contains(data, []byte(old)) {
 		t.Fatal("test-web wait mutation target changed; update the mechanism RED test")
 	}
-	data = bytes.Replace(data, []byte(old), []byte(new), 1)
+	data = bytes.Replace(data, []byte(old), []byte(deferredWaitBlock), 1)
 	if err := os.WriteFile(path, data, 0o755); err != nil {
 		t.Fatalf("write test-web mutation: %v", err)
 	}
