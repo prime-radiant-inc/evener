@@ -151,8 +151,12 @@ func composeAskAnswers(questions []askQuestion) string {
 
 func answerHeader(header string) string {
 	if strings.ContainsAny(header, "]\r\n") {
-		encoded, _ := json.Marshal(header)
-		return string(encoded)
+		var b strings.Builder
+		encoder := json.NewEncoder(&b)
+		encoder.SetEscapeHTML(false)
+		if err := encoder.Encode(header); err == nil {
+			return strings.TrimSuffix(b.String(), "\n")
+		}
 	}
 	return header
 }
