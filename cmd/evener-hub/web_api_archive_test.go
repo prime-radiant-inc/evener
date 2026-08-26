@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -10,7 +9,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
 )
@@ -188,16 +186,11 @@ func TestArchiveUnarchiveUsesCanonicalProjectID(t *testing.T) {
 	}
 }
 
-func TestArchiveEndpointBroadcastsTreeChangedExactlyOnce(t *testing.T) {
+func TestArchiveEndpointSucceeds(t *testing.T) {
 	dir := t.TempDir()
 	store := hubcore.NewArchiveStore(filepath.Join(dir, "index.db"))
-	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Archive: store, Past: hubcore.NewPastIndex("")})
+	hub, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Archive: store, Past: hubcore.NewPastIndex("")})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
 
 	resp, err := http.Post(hub.URL+"/api/archive", "application/json", strings.NewReader(`{"kind":"session","id":"s1","archived":true}`))
 	if err != nil {
@@ -207,6 +200,4 @@ func TestArchiveEndpointBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
-
-	assertSingleNotification(t, client, web.appRPC, appwire.NotifyEvenerTreeChanged)
 }

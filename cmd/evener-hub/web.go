@@ -27,9 +27,6 @@ type WebServer struct {
 	appRPC            *appserver.Server
 	navigation        *NavigationService
 	navigationMetrics navigationMetricSink
-	// legacyTreeBuild is nil in production; tests may provide a narrow builder
-	// seam to assert that the HTTP compatibility projector is cached/coalesced.
-	legacyTreeBuild func(navigationBuildInputs) (any, error)
 	sources         *appsource.Registry
 	startedAt       time.Time
 
@@ -173,8 +170,6 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/api/health", s.handleAPIHealth)
 	mux.HandleFunc("/api/mobile/pairing", s.handleAPIMobilePairing)
 	mux.HandleFunc("/api/upgrade", s.handleAPIUpgrade)
-	mux.HandleFunc("/api/tree/project", s.handleAPITreeProject)
-	mux.HandleFunc("/api/tree", s.handleAPITree)
 	mux.HandleFunc("/api/navigation", s.handleNavigation)
 	mux.HandleFunc("/api/navigation/", s.handleNavigation)
 	mux.HandleFunc("/api/archive", s.handleAPIArchive)

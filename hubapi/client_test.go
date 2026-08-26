@@ -408,7 +408,6 @@ func TestClientHealth(t *testing.T) {
 		StartedAt: time.Date(2024, 1, 1, 0, 0, 0, 0, time.UTC),
 		HubAddr:   "127.0.0.1:9180",
 		Capabilities: hubapi.HealthCapabilities{
-			Tree:  true,
 			Spawn: true,
 		},
 	}
@@ -433,9 +432,6 @@ func TestClientHealth(t *testing.T) {
 	if got.HubAddr != want.HubAddr {
 		t.Errorf("hub_addr: got %q, want %q", got.HubAddr, want.HubAddr)
 	}
-	if !got.Capabilities.Tree {
-		t.Error("expected Tree capability")
-	}
 	if !got.Capabilities.Spawn {
 		t.Error("expected Spawn capability")
 	}
@@ -457,48 +453,6 @@ func TestClientHealth_Error(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "400") {
 		t.Errorf("error should report status code 400, got %v", err)
-	}
-}
-
-func TestClientTree(t *testing.T) {
-	want := hubapi.TreeResponse{
-		Projects: []hubapi.TreeProject{
-			{Key: "proj1", Name: "Project 1"},
-		},
-	}
-	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Errorf("method: got %s, want GET", r.Method)
-		}
-		if r.URL.Path != "/api/tree" {
-			t.Errorf("path: got %s, want /api/tree", r.URL.Path)
-		}
-		_ = json.NewEncoder(w).Encode(want)
-	})
-	defer srv.Close()
-
-	got, err := client.Tree(context.Background())
-	if err != nil {
-		t.Fatalf("Tree: %v", err)
-	}
-	if len(got.Projects) != 1 || got.Projects[0].Key != "proj1" {
-		t.Errorf("projects: got %+v", got.Projects)
-	}
-}
-
-func TestClientTree_Error(t *testing.T) {
-	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusInternalServerError)
-		_ = json.NewEncoder(w).Encode(hubapi.TreeResponse{})
-	})
-	defer srv.Close()
-
-	_, err := client.Tree(context.Background())
-	if err == nil {
-		t.Fatal("expected error for 500 response")
-	}
-	if !strings.Contains(err.Error(), "500") {
-		t.Errorf("error should report status code 500, got %v", err)
 	}
 }
 

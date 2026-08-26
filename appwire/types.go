@@ -147,11 +147,6 @@ const (
 	// card. Emitted exactly once per escalation, from the convergence point in
 	// agent/session_escalation.go's escalateOnSandboxDenial.
 	NotifyEvenerSandboxEscalationResolved = "evener/sandbox/escalation/resolved"
-	// NotifyEvenerTreeChanged pushes a hint that tree-relevant state changed
-	// (roster delta, past-index change, or an archive/favorite/rename/
-	// project-delete mutation) so the web sidebar can refetch /api/tree
-	// instead of polling. Hub-originated; never sent by daemons.
-	NotifyEvenerTreeChanged = "evener/tree/changed"
 )
 
 const (

@@ -399,23 +399,15 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		RemoteThreadCache:   remoteCache,
 	})
 
-	// evener/tree/changed push (spec §7.3 item 3): Roster/PastIndex's onChange
-	// hook already gates on an actual content-fingerprint delta (never a
-	// no-op probe/rebuild cycle — see bump above), so composing the broadcast
-	// into the same hook pushes the sidebar exactly on a daemon appearing/
-	// disappearing/changing liveness, or a session appearing/ending/changing
-	// in the past index. Rename and project-delete both route their session
-	// edits through PastIndex.UpdateMeta/Rebuild, so this hook covers the
-	// common case for them too — those handlers do NOT also call
-	// notifyTreeChanged unconditionally (it would double-broadcast); they
-	// call it conditionally, only when UpdateMeta/Rebuild report the hook
-	// didn't fire (see notifyTreeChanged's doc comment). Archive and favorite
-	// decisions live in ArchiveStore/FavoriteStore, which never route through
-	// PastIndex at all, so those two mutations broadcast unconditionally
-	// instead via WebServer.notifyMutation (web_api_archive.go,
-	// web_api_favorite.go).
-	past.SetOnChange(func() { bump(); notifyTreeChanged(web.appRPC); web.navigation.Invalidate(navigationChangeHint{}) })
-	roster.SetOnChange(func() { bump(); notifyTreeChanged(web.appRPC); web.navigation.Invalidate(navigationChangeHint{}) })
+	// Navigation invalidation hooks: Roster/PastIndex's onChange hook already
+	// gates on an actual content-fingerprint delta (never a no-op probe/rebuild
+	// cycle — see bump above), so composing the navigation invalidation into the
+	// same hook pushes the sidebar exactly on a daemon appearing/disappearing/
+	// changing liveness, or a session appearing/ending/changing in the past
+	// index. Archive and favorite decisions live in ArchiveStore/FavoriteStore,
+	// which never route through PastIndex at all, so they invalidate directly.
+	past.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
+	roster.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
 	archive.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
 	favorite.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
 	if remoteCache != nil {

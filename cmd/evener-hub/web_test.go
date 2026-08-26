@@ -27,7 +27,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubtest"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/hubapi"
-	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/internal/selfupdate"
 	"primeradiant.com/evener/llm"
@@ -101,31 +100,6 @@ func (s *WebServer) injectMetasForTest(metas []schema.SessionMeta) {
 	s.cfg.Past = idx
 }
 
-// allTreeProjects returns every project in a TreeResponse regardless of
-// activity tier. Task 4 split active/archived projects into separate wire
-// arrays (Projects/ArchivedProjects); tests that only care whether a session
-// shows up somewhere in the tree — not which tier its project landed in —
-// scan both. Archived projects arrive as session-less stubs in /api/tree, so
-// this hydrates each one from /api/tree/project?key= exactly like the
-// sidebar's lazy expand does.
-func allTreeProjects(t *testing.T, web *WebServer, resp hubapi.TreeResponse) []hubapi.TreeProject {
-	t.Helper()
-	out := append([]hubapi.TreeProject(nil), resp.Projects...)
-	for _, p := range resp.ArchivedProjects {
-		req := httptest.NewRequest(http.MethodGet, "/api/tree/project?key="+url.QueryEscape(p.Key), nil)
-		rec := httptest.NewRecorder()
-		web.Handler().ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("hydrating archived project %q: status=%d body=%s", p.Key, rec.Code, rec.Body.String())
-		}
-		var full hubapi.TreeProject
-		if err := json.Unmarshal(rec.Body.Bytes(), &full); err != nil {
-			t.Fatalf("hydrating archived project %q: %v", p.Key, err)
-		}
-		out = append(out, full)
-	}
-	return out
-}
 
 func TestWebAPIUpgradeRunsSelfUpdater(t *testing.T) {
 	var got selfupdate.Options
@@ -366,125 +340,6 @@ func TestAPI_CodexSessionDetailReadsConfiguredSource(t *testing.T) {
 	}
 }
 
-func TestWeb_APITreeIncludesConfiguredCodexSourceThreads(t *testing.T) {
-	// Recent timestamps: the tree auto-archives by last-activity age (14d),
-	// and the Live tier excludes archived rows — this scenario asserts
-	// source-qualified identity, not aging.
-	nowUnix := time.Now().Unix()
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-	appserver.HandleTyped(codex.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (map[string]any, error) {
-		return map[string]any{"data": []map[string]any{{
-			"id":            "th_codex",
-			"sessionId":     "th_codex",
-			"preview":       "Codex tree task",
-			"modelProvider": "openai",
-			"createdAt":     nowUnix - 100,
-			"updatedAt":     nowUnix,
-			"status":        map[string]any{"type": "idle"},
-			"cwd":           "/work/codex",
-			"cliVersion":    "codex-test",
-			"source":        "appServer",
-		}}}, nil
-	})
-	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
-	defer codexHTTP.Close()
-
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Past:    hubcore.NewPastIndex(""),
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID:       "codex",
-			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
-		}},
-	})
-	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	var got hubapi.TreeResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(got.Live) != 1 {
-		t.Fatalf("live=%+v", got.Live)
-	}
-	if got.Live[0].Ref != "codex:th_codex" || got.Live[0].HostID != "codex" || got.Live[0].SessionID != "th_codex" {
-		t.Fatalf("codex live node lost source-qualified identity: %+v", got.Live[0])
-	}
-	var foundProject bool
-	for _, project := range allTreeProjects(t, web, got) {
-		for _, session := range project.Sessions {
-			if session.Ref == "codex:th_codex" && session.Title == "Codex tree task" {
-				foundProject = true
-			}
-		}
-	}
-	if !foundProject {
-		t.Fatalf("codex thread missing from project tree: %+v", got.Projects)
-	}
-}
-
-func TestWeb_APITreeMarksConfiguredCodexEndedThreadsRecent(t *testing.T) {
-	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
-	appserver.HandleTyped(codex.Router(), appwire.MethodThreadList, func(_ context.Context, _ appwire.ThreadListParams) (map[string]any, error) {
-		return map[string]any{"data": []map[string]any{{
-			"id":            "th_codex_ended",
-			"sessionId":     "th_codex_ended",
-			"preview":       "Codex ended tree task",
-			"modelProvider": "openai",
-			"createdAt":     100,
-			"updatedAt":     200,
-			"status":        map[string]any{"type": "closed"},
-			"cwd":           "/work/codex",
-			"cliVersion":    "codex-test",
-			"source":        "appServer",
-		}}}, nil
-	})
-	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
-	defer codexHTTP.Close()
-
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		Past:    hubcore.NewPastIndex(""),
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID:       "codex",
-			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
-		}},
-	})
-	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	var got hubapi.TreeResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(got.Live) != 0 {
-		t.Fatalf("ended codex thread appeared in live tree: %+v", got.Live)
-	}
-	var found *hubapi.TreeNode
-	for _, project := range allTreeProjects(t, web, got) {
-		for i := range project.Sessions {
-			if project.Sessions[i].Ref == "codex:th_codex_ended" {
-				found = &project.Sessions[i]
-			}
-		}
-	}
-	if found == nil {
-		t.Fatalf("ended codex thread missing from project tree: %+v", got.Projects)
-		return
-	}
-	if found.Live || found.State != "ended" {
-		t.Fatalf("ended codex thread live metadata = %+v, want live=false state=ended", *found)
-	}
-}
-
 func TestAPI_ManagedCodexSessionDetailEnsuresSource(t *testing.T) {
 	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
 	defer shutdownCodexLauncher(t, launcher)
@@ -509,45 +364,6 @@ func TestAPI_ManagedCodexSessionDetailEnsuresSource(t *testing.T) {
 	}
 	if detail.Ref != "codex-managed:th_fake" || detail.Capabilities.Send || !detail.Capabilities.Compact {
 		t.Fatalf("detail=%+v", detail)
-	}
-}
-
-func TestWeb_APITreeIncludesManagedCodexLaunchThreads(t *testing.T) {
-	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
-	defer shutdownCodexLauncher(t, launcher)
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr:       "127.0.0.1:9180",
-		Past:          hubcore.NewPastIndex(""),
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
-		CodexLauncher: launcher,
-	})
-
-	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	var got hubapi.TreeResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode: %v body=%s", err, rec.Body.String())
-	}
-	var hasSource, hasThread bool
-	for _, source := range got.Sources {
-		if source.ID == "codex-managed" && source.Online {
-			hasSource = true
-		}
-	}
-	for _, project := range allTreeProjects(t, web, got) {
-		for _, session := range project.Sessions {
-			if session.Ref == "codex-managed:th_fake" && session.Title == "fake codex" {
-				hasThread = true
-			}
-		}
-	}
-	if !hasSource || !hasThread {
-		t.Fatalf("managed codex launch missing from tree: source=%v thread=%v tree=%+v", hasSource, hasThread, got)
 	}
 }
 
@@ -768,26 +584,6 @@ func TestWeb_LocalSendUnavailableCapabilityDoesNotStartTurn(t *testing.T) {
 // error (400, the handler's early-return validation) and an unrecognized key
 // is a 404 (the "not found in the memoized tree" branch) — distinct from the
 // old route, which 404'd on both.
-func TestWeb_APITreeProjectUnknownKeyErrors(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: hubcore.NewRoster(t.TempDir(), nil), Past: hubcore.NewPastIndex("")})
-	cases := []struct {
-		key  string
-		want int
-	}{
-		{"", http.StatusBadRequest},
-		{"does-not-exist", http.StatusNotFound},
-	}
-	for _, c := range cases {
-		req := httptest.NewRequest(http.MethodGet, "/api/tree/project?key="+url.QueryEscape(c.key), nil)
-		req.Host = "127.0.0.1:9180"
-		rec := httptest.NewRecorder()
-		web.Handler().ServeHTTP(rec, req)
-		if rec.Code != c.want {
-			t.Fatalf("key=%q status=%d, want %d body=%q", c.key, rec.Code, c.want, rec.Body.String())
-		}
-	}
-}
-
 // TestStateLabel_ErroredAndNeedsYou pins the two label changes the errored
 // render lane requires: "awaiting" reads as "Your move" (not the flat,
 // unlabeled "Awaiting"), and "errored" gets its own human label rather than
@@ -2498,101 +2294,9 @@ func TestWeb_ApiSearch_OrdersLiveResultsByStartedAtAndID(t *testing.T) {
 // the same session. The SPA opens sessions only by qualified ref (e.g.
 // "local:<id>" — appwire.ParseRef rejects bare ids), so a bare id alone left
 // SPA clients unable to open a search hit.
-func TestWeb_ApiSearch_LiveResultRefMatchesTreeAPI(t *testing.T) {
-	projectDir := filepath.Join(t.TempDir(), "foo")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	project, err := identifier.ResolveProject(projectDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	roster := hubcore.NewRosterWithEntries(
-		hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "01L", WorkingDir: project.CanonicalPath}, SessionID: "01L", Status: "active"},
-	)
-	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Roster: roster})
-
-	treeReq := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
-	treeRec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(treeRec, treeReq)
-	var tree hubapi.TreeResponse
-	if err := json.Unmarshal(treeRec.Body.Bytes(), &tree); err != nil {
-		t.Fatalf("decode tree: %v", err)
-	}
-	if len(tree.Projects) != 1 || len(tree.Projects[0].Sessions) != 1 {
-		t.Fatalf("want 1 project with 1 session, got %+v", tree.Projects)
-	}
-	treeNode := tree.Projects[0].Sessions[0]
-	if treeNode.SessionID != "01L" || treeNode.Ref == "" {
-		t.Fatalf("tree node = %+v, want SessionID 01L with a non-empty ref", treeNode)
-	}
-
-	searchReq := httptest.NewRequest(http.MethodGet, "/api/search", nil)
-	searchRec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(searchRec, searchReq)
-	var search searchResponse
-	if err := json.Unmarshal(searchRec.Body.Bytes(), &search); err != nil {
-		t.Fatalf("decode search: %v", err)
-	}
-	if len(search.Live) != 1 {
-		t.Fatalf("live results = %d, want 1: %+v", len(search.Live), search.Live)
-	}
-	if search.Live[0].Ref != treeNode.Ref {
-		t.Fatalf("search live ref = %q, want tree ref %q", search.Live[0].Ref, treeNode.Ref)
-	}
-	if search.Live[0].Ref != "local:01L" {
-		t.Fatalf("search live ref = %q, want %q", search.Live[0].Ref, "local:01L")
-	}
-}
-
 // TestWeb_ApiSearch_PastResultRefMatchesTreeAPI pins the same qualified-ref
 // guarantee as TestWeb_ApiSearch_LiveResultRefMatchesTreeAPI for a past
 // (ended) session hit.
-func TestWeb_ApiSearch_PastResultRefMatchesTreeAPI(t *testing.T) {
-	now := time.Now()
-	projectDir := filepath.Join(t.TempDir(), "proj")
-	if err := os.MkdirAll(projectDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	metas := []schema.SessionMeta{
-		{ID: "01A", CreatedAt: now.Add(-30 * time.Hour), UpdatedAt: now.Add(-30 * time.Hour), EnvInfo: schema.EnvironmentInfo{WorkingDir: projectDir}},
-	}
-	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
-	web.injectMetasForTest(metas)
-
-	treeReq := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
-	treeRec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(treeRec, treeReq)
-	var tree hubapi.TreeResponse
-	if err := json.Unmarshal(treeRec.Body.Bytes(), &tree); err != nil {
-		t.Fatalf("decode tree: %v", err)
-	}
-	if len(tree.Projects) != 1 || len(tree.Projects[0].Sessions) != 1 {
-		t.Fatalf("want 1 project with 1 session, got %+v", tree.Projects)
-	}
-	treeNode := tree.Projects[0].Sessions[0]
-	if treeNode.SessionID != "01A" || treeNode.Ref == "" {
-		t.Fatalf("tree node = %+v, want SessionID 01A with a non-empty ref", treeNode)
-	}
-
-	searchReq := httptest.NewRequest(http.MethodGet, "/api/search", nil)
-	searchRec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(searchRec, searchReq)
-	var search searchResponse
-	if err := json.Unmarshal(searchRec.Body.Bytes(), &search); err != nil {
-		t.Fatalf("decode search: %v", err)
-	}
-	if len(search.Past) != 1 {
-		t.Fatalf("past results = %d, want 1: %+v", len(search.Past), search.Past)
-	}
-	if search.Past[0].Ref != treeNode.Ref {
-		t.Fatalf("search past ref = %q, want tree ref %q", search.Past[0].Ref, treeNode.Ref)
-	}
-	if search.Past[0].Ref != "local:01A" {
-		t.Fatalf("search past ref = %q, want %q", search.Past[0].Ref, "local:01A")
-	}
-}
-
 // TestWeb_ApiModels_ReturnsListWithProviderEnv verifies the endpoint
 // shape — returns a JSON array of {provider, model, …} entries when
 // run against a live provider API. Skips unless live tests are explicitly
@@ -3575,7 +3279,7 @@ func TestWeb_APIHealth(t *testing.T) {
 	if got.Version == "" || got.HubAddr != "127.0.0.1:9180" {
 		t.Fatalf("unexpected health: %+v", got)
 	}
-	if !got.Capabilities.Tree || !got.Capabilities.SpawnSchema || !got.Capabilities.TranscriptFollow {
+	if !got.Capabilities.SpawnSchema || !got.Capabilities.TranscriptFollow {
 		t.Fatalf("missing capabilities: %+v", got.Capabilities)
 	}
 }
@@ -3652,141 +3356,6 @@ func TestWeb_APIHealthReportsCodexLaunchSpawnCapability(t *testing.T) {
 	}
 	if !got.Capabilities.Spawn {
 		t.Fatalf("spawn capability not reported for codex launches: %+v", got.Capabilities)
-	}
-}
-
-func TestWeb_APITreeReturnsRefsAndNormalizesAwaitingInput(t *testing.T) {
-	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "project-x-0123456789")
-	if err := os.MkdirAll(proj, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	workingDir := filepath.Join(root, "project")
-	if err := os.MkdirAll(workingDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	project, err := identifier.ResolveProject(workingDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: "01TREE", UpdatedAt: time.Now(), OriginalPrompt: "tree task",
-		EnvInfo: schema.EnvironmentInfo{WorkingDir: project.CanonicalPath},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID: 44, Address: "127.0.0.1:4444", WorkingDir: project.CanonicalPath, Model: "gpt-5",
-	})
-	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "01TREE", status: appwire.ThreadStatusAwaiting})
-	r.Refresh()
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
-
-	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
-	}
-	var got hubapi.TreeResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(got.Live) != 1 {
-		t.Fatalf("live=%d: %+v", len(got.Live), got.Live)
-	}
-	if got.Live[0].Ref != "local:01TREE" || got.Live[0].RowID != "live:local:01TREE" || got.Live[0].State != "awaiting" {
-		t.Fatalf("unexpected live node: %+v", got.Live[0])
-	}
-	if len(got.Projects) != 1 || len(got.Projects[0].Sessions) != 1 {
-		t.Fatalf("projects=%+v", got.Projects)
-	}
-	if got.Projects[0].Sessions[0].Ref != "local:01TREE" {
-		t.Fatalf("project node missing ref: %+v", got.Projects[0].Sessions[0])
-	}
-}
-
-func TestWeb_APITreeGroupsLiveOnlySessionsByProject(t *testing.T) {
-	workingDir := filepath.Join(t.TempDir(), "evener")
-	if err := os.MkdirAll(workingDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	project, err := identifier.ResolveProject(workingDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 50, Address: "127.0.0.1:4050", WorkingDir: project.CanonicalPath, Model: "gpt-5"})
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 51, Address: "127.0.0.1:4051", WorkingDir: project.CanonicalPath, Model: "gpt-5"})
-	r := hubcore.NewRoster(runDir, perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{
-		"127.0.0.1:4050": {SessionID: "02wMz5Txv9yYdSRJat13MZ", Status: appwire.ThreadStatusIdle},
-		"127.0.0.1:4051": {SessionID: "02wMz5TxvBRJC3228LTWod", Status: appwire.ThreadStatusAwaiting},
-	}})
-	r.Refresh()
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
-
-	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
-	}
-	var got hubapi.TreeResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	var evenerProjects []hubapi.TreeProject
-	for _, p := range got.Projects {
-		if p.Name == "evener" {
-			evenerProjects = append(evenerProjects, p)
-		}
-	}
-	if len(evenerProjects) != 1 {
-		t.Fatalf("evener projects=%d: %+v", len(evenerProjects), got.Projects)
-	}
-	if len(evenerProjects[0].Sessions) != 2 || evenerProjects[0].RollupState != "awaiting" {
-		t.Fatalf("unexpected evener project: %+v", evenerProjects[0])
-	}
-	if evenerProjects[0].WorkingDir != project.CanonicalPath {
-		t.Fatalf("working_dir=%q, want %q", evenerProjects[0].WorkingDir, project.CanonicalPath)
-	}
-}
-
-func TestWeb_APITreeSkipsLiveEntriesUntilSessionIDKnown(t *testing.T) {
-	workingDir := filepath.Join(t.TempDir(), "evener")
-	if err := os.MkdirAll(workingDir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	project, err := identifier.ResolveProject(workingDir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 52, Address: "127.0.0.1:4052", WorkingDir: project.CanonicalPath, Model: "gpt-5"})
-	r := hubcore.NewRoster(runDir, fakeProber{sessionID: "", status: appwire.ThreadStatusIdle})
-	r.Refresh()
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: hubcore.NewPastIndex("")})
-
-	req := httptest.NewRequest(http.MethodGet, "/api/tree", nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
-	}
-	var got hubapi.TreeResponse
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	if len(got.Live) != 0 || len(got.Projects) != 0 {
-		t.Fatalf("tree rendered undrillable live entry: %+v", got)
 	}
 }
 

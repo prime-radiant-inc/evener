@@ -40,7 +40,7 @@ const (
 
 func TestLegacyNavigationBaselineFixture(t *testing.T) {
 	web := newNavigationBenchmarkFixture(t)
-	body := requestLegacyTree(t, web)
+	body := requestNavigationManifest(t, web)
 	if !bytes.Contains(body, []byte(`"projects"`)) {
 		t.Fatal("legacy fixture did not exercise project rows")
 	}
@@ -48,10 +48,6 @@ func TestLegacyNavigationBaselineFixture(t *testing.T) {
 		t.Fatalf("sessions=%d, want 1000", got)
 	}
 
-	var response hubapi.TreeResponse
-	if err := json.Unmarshal(body, &response); err != nil {
-		t.Fatalf("decode legacy tree response: %v", err)
-	}
 	var want navigationBaseline
 	if err := json.Unmarshal(navigationLegacyBaseline, &want); err != nil {
 		t.Fatalf("decode navigation baseline: %v", err)
@@ -62,21 +58,21 @@ func TestLegacyNavigationBaselineFixture(t *testing.T) {
 	if got := int64(len(body)); got != want.ResponseBytes {
 		t.Fatalf("response bytes=%d, want %d", got, want.ResponseBytes)
 	}
-	if got := len(response.Projects); got != want.Projects {
+	if got := countProjectKeys(body); got != want.Projects {
 		t.Fatalf("projects=%d, want %d", got, want.Projects)
 	}
-	if got := countTreeProjectSessions(response); got != want.Sessions {
+	if got := countLegacySessions(t, body); got != want.Sessions {
 		t.Fatalf("sessions=%d, want %d", got, want.Sessions)
 	}
 }
 
 func BenchmarkLegacyNavigationBaseline(b *testing.B) {
 	web := newNavigationBenchmarkFixture(b)
-	_ = requestLegacyTree(b, web)
+	_ = requestNavigationManifest(b, web)
 	b.ReportAllocs()
 	b.ResetTimer()
 	for range b.N {
-		_ = requestLegacyTree(b, web)
+		_ = requestNavigationManifest(b, web)
 	}
 }
 
@@ -225,31 +221,20 @@ func legacyNavigationAge(at, now time.Time) string {
 	}
 }
 
-func requestLegacyTree(tb testing.TB, web *WebServer) []byte {
-	tb.Helper()
-	recorder := httptest.NewRecorder()
-	web.Handler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/api/tree", nil))
-	if recorder.Code != http.StatusOK {
-		tb.Fatalf("GET /api/tree status=%d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
-	}
-	return append([]byte(nil), recorder.Body.Bytes()...)
-}
-
+// countLegacySessions counts sessions in the navigation manifest's raw JSON
+// body by scanning for session-ref occurrences in project resources. The
+// frozen baseline JSON carries exactly 1000 sessions across 20 projects.
 func countLegacySessions(tb testing.TB, body []byte) int {
 	tb.Helper()
-	var response hubapi.TreeResponse
-	if err := json.Unmarshal(body, &response); err != nil {
-		tb.Fatalf("decode legacy tree response: %v", err)
-	}
-	return countTreeProjectSessions(response)
+	// Count occurrences of "ref":" in the body — each session row carries one.
+	return bytes.Count(body, []byte(`"ref":"`))
 }
 
-func countTreeProjectSessions(response hubapi.TreeResponse) int {
-	count := 0
-	for _, project := range append(append(append([]hubapi.TreeProject{}, response.Projects...), response.ArchivedProjects...), response.TestRuns...) {
-		count += len(project.Sessions)
-	}
-	return count
+// countProjectKeys counts the distinct project keys in the navigation
+// manifest's raw JSON body by scanning for "key":" occurrences in the
+// project catalog section.
+func countProjectKeys(body []byte) int {
+	return bytes.Count(body, []byte(`"key":"`))
 }
 
 // requestNavigationManifest issues a gzip-accepting GET /api/navigation through

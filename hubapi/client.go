@@ -263,14 +263,6 @@ func (c *Client) Health(ctx context.Context) (HealthResponse, error) {
 	return out, err
 }
 
-// Tree is deprecated; use NavigationManifest and the navigation resource
-// methods for bounded, revisioned navigation data.
-func (c *Client) Tree(ctx context.Context) (TreeResponse, error) {
-	var out TreeResponse
-	err := c.get(ctx, "/api/tree", &out)
-	return out, err
-}
-
 func (c *Client) Session(ctx context.Context, ref Ref) (SessionDetail, error) {
 	var out SessionDetail
 	err := c.get(ctx, "/api/sessions/"+ref.PathEscaped(), &out)

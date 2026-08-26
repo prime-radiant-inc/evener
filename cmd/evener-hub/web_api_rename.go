@@ -137,17 +137,17 @@ func (s *WebServer) handleAPIRename(w http.ResponseWriter, r *http.Request, id s
 		writeAPIError(w, http.StatusInternalServerError, "save meta: "+err.Error())
 		return
 	}
-	// re-sort + FTS + inputs bump; notified reports whether evener/tree/changed
-	// already broadcast via the composed onChange hook (main.go).
+	// re-sort + FTS + inputs bump; notified reports whether the navigation
+	// invalidation already fired via the composed onChange hook (main.go).
 	notified := s.cfg.Past.UpdateMeta(pe.ID, meta)
 	if s.cfg.PokeAttention != nil {
 		s.cfg.PokeAttention()
 	}
 	if !notified {
-		// A successful rename must notify exactly once, never zero;
-		// compensate when UpdateMeta's composed hook didn't fire (e.g.
-		// renaming to the session's current name is a genuine content no-op).
-		notifyTreeChanged(s.appRPC)
+		// A successful rename must invalidate navigation exactly once; compensate
+		// when UpdateMeta's composed hook didn't fire (e.g. renaming to the
+		// session's current name is a genuine content no-op).
+		s.navigation.Invalidate(navigationChangeHint{})
 	}
 	unlockDeletionTarget()
 	locked = false
@@ -155,14 +155,14 @@ func (s *WebServer) handleAPIRename(w http.ResponseWriter, r *http.Request, id s
 }
 
 // refreshRenamedMeta re-reads the persisted meta after a live rename and pushes
-// it into the past index so the next tree resync shows the new name without a
-// full Rebuild. It is only ever called after the daemon already confirmed the
-// rename succeeded, so every path through here is a successful mutation that
-// must notify exactly once: UpdateMeta's composed onChange hook (main.go)
-// covers the common case, and the trailing notifyTreeChanged below
-// compensates when it didn't fire — id not (yet) indexed (Find missed) or no
-// PastIndex-visible change (a reload/fallback edit that matched what was
-// already indexed).
+// it into the past index so the next navigation resync shows the new name
+// without a full Rebuild. It is only ever called after the daemon already
+// confirmed the rename succeeded, so every path through here is a successful
+// mutation that must invalidate navigation exactly once: UpdateMeta's
+// composed onChange hook (main.go) covers the common case, and the trailing
+// navigation invalidation below compensates when it didn't fire — id not
+// (yet) indexed (Find missed) or no PastIndex-visible change (a reload/
+// fallback edit that matched what was already indexed).
 func (s *WebServer) refreshRenamedMeta(id, name string) {
 	rid := canonicalRouteID(id)
 	notified := false
@@ -180,6 +180,6 @@ func (s *WebServer) refreshRenamedMeta(id, name string) {
 		s.cfg.PokeAttention()
 	}
 	if !notified {
-		notifyTreeChanged(s.appRPC)
+		s.navigation.Invalidate(navigationChangeHint{})
 	}
 }

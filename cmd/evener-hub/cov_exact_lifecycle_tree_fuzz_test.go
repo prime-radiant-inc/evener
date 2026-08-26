@@ -117,7 +117,6 @@ func FuzzExactLifecycleTree(f *testing.F) {
 			hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "orphan", WorkingDir: "/work/p", StartedAt: now}, SessionID: "orphan", Status: "error"},
 		)
 		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: treeRoster, Favorite: fav})
-		web.handleAPITree(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/tree", nil))
 
 		oldBuild, oldDerive := hubBuildNavigationTree, hubDeriveNavigationAttention
 		oldNormalize, oldRef, oldNavigation, oldLiveTitle, oldIsLive, oldWorkspace, oldRank := hubNormalizeTreeState, hubAppThreadRef, hubNavigationInputs, hubLiveTreeTitle, hubIsSessionLive, hubTreeWorkspaceData, hubTreeAttentionRank
@@ -164,7 +163,6 @@ func FuzzExactLifecycleTree(f *testing.F) {
 			return 0
 		}
 		structured := NewWebServer(hubcore.WebConfig{Roster: structuredRoster, Favorite: fav})
-		structured.handleAPITree(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/tree", nil))
 		hubNavigationInputs = oldNavigation
 		hubTreeAttentionRank = oldRank
 

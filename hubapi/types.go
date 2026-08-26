@@ -20,32 +20,11 @@ type HealthResponse struct {
 }
 
 type HealthCapabilities struct {
-	Tree             bool `json:"tree"`
 	TranscriptFollow bool `json:"transcript_follow"`
 	SpawnSchema      bool `json:"spawn_schema"`
 	Spawn            bool `json:"spawn"`
 	Fork             bool `json:"fork"`
 	RemoteSources    bool `json:"remote_sources"`
-}
-
-// TreeResponse is returned by GET /api/tree.
-type TreeResponse struct {
-	GeneratedAt      time.Time        `json:"generated_at"`
-	Sources          []Source         `json:"sources"`
-	Live             []TreeNode       `json:"live"`
-	NeedsYou         []TreeNode       `json:"needs_you"`
-	PinSections      []PinSectionTree `json:"pin_sections"`
-	Projects         []TreeProject    `json:"projects"`
-	ArchivedProjects []TreeProject    `json:"archived_projects"`
-	TestRuns         []TreeProject    `json:"test_runs"`
-	AttentionSummary AttentionSummary `json:"attentionSummary"` //nolint:tagliatelle // camelCase: see AttentionSummary's doc
-}
-
-// PinSectionTree is one non-empty named pin section in GET /api/tree.
-type PinSectionTree struct {
-	ID       string     `json:"id"`
-	Name     string     `json:"name"`
-	Sessions []TreeNode `json:"sessions"`
 }
 
 // AttentionSummary is the authoritative badge count set: how many live,
@@ -89,71 +68,6 @@ type SessionPinMutationResponse struct {
 	OK         bool                 `json:"ok"`
 	Changed    bool                 `json:"changed"`
 	Assignment SessionPinAssignment `json:"assignment"`
-}
-
-type TreeProject struct {
-	Key             string `json:"key"`
-	Name            string `json:"name"`
-	WorkingDir      string `json:"working_dir,omitempty"`
-	RollupState     string `json:"rollup_state,omitempty"`
-	RollupLive      int    `json:"rollup_live,omitempty"`
-	RollupAttn      int    `json:"rollup_attn,omitempty"`
-	DefaultExpanded bool   `json:"default_expanded,omitempty"`
-	MoreCurrent     int    `json:"more_current,omitempty"`
-	MoreRecent      int    `json:"more_recent,omitempty"`
-	MoreArchived    int    `json:"more_archived,omitempty"`
-	Worktrees       int    `json:"worktrees,omitempty"`
-	IsArchived      bool   `json:"is_archived,omitempty"`
-	// Favorite mirrors the project-kind decision POST /api/favorite accepts
-	// (kind:"project"); TreeNode's own Favorite field is the session-kind
-	// counterpart.
-	Favorite bool `json:"favorite,omitempty"`
-	// SessionCount is set on archived-project stubs in /api/tree, whose
-	// Sessions are omitted (null) to keep the snapshot bounded; the sidebar
-	// lazy-loads the sessions from /api/tree/project?key= on expand.
-	SessionCount int        `json:"session_count,omitempty"`
-	Sessions     []TreeNode `json:"sessions"`
-}
-
-// TreeProjectPage is the bounded response for revealing rows omitted from one
-// project's capped activity tier. Offset is the requested position in that
-// tier; Remaining is the number still beyond the returned page.
-type TreeProjectPage struct {
-	Key       string     `json:"key"`
-	Tier      string     `json:"tier"`
-	Offset    int        `json:"offset"`
-	Sessions  []TreeNode `json:"sessions"`
-	Remaining int        `json:"remaining"`
-}
-
-type TreeNode struct {
-	RowID        string `json:"row_id"`
-	Ref          string `json:"ref"`
-	HostID       string `json:"host_id"`
-	SessionID    string `json:"session_id"`
-	Title        string `json:"title"`
-	Project      string `json:"project"`
-	State        string `json:"state"`
-	Kind         string `json:"kind"`
-	Tier         string `json:"tier,omitempty"`
-	Branch       string `json:"branch,omitempty"`
-	ClusterCount int    `json:"cluster_count,omitempty"`
-	Favorite     bool   `json:"favorite,omitempty"`
-	PinSectionID string `json:"pin_section_id,omitempty"`
-	Rename       bool   `json:"rename,omitempty"`
-	Live         bool   `json:"live"`
-	AskPending   bool   `json:"ask_pending,omitempty"`
-	// Dormant is true for a session that has never run — no model response and
-	// no accepted user input. It rides beside State rather than inside it: a
-	// dormant session reports State "idle", exactly like a session that ran and
-	// went quiet, and the two are only distinguishable by this field. See
-	// hubcore.TreeNode.Dormant for why it is not a state value.
-	Dormant       bool       `json:"dormant,omitempty"`
-	UpdatedAt     time.Time  `json:"updated_at"`
-	Age           string     `json:"age,omitempty"`
-	Model         string     `json:"model,omitempty"`
-	MoreSubagents int        `json:"more_subagents,omitempty"`
-	Children      []TreeNode `json:"children,omitempty"`
 }
 
 // SessionDetail is returned by GET /api/sessions/{ref}.

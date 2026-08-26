@@ -91,7 +91,6 @@ func coverClient(t *testing.T) {
 	_ = client.URL("plain")
 	_ = client.URL("query?a=b")
 	_, _ = client.Health(ctx)
-	_, _ = client.Tree(ctx)
 	_, _ = client.Session(ctx, ref)
 	_, _ = client.SpawnSchema(ctx)
 	_, _ = client.Spawn(ctx, SpawnRequest{})

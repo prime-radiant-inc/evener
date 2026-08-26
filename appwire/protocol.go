@@ -245,5 +245,4 @@ var Notifications = []NotificationSpec{
 	{NotifyEvenerTaskUpdated, TaskUpdatedParams{}, "The session's task-list progress (total/done) changed."},
 	{NotifyEvenerSandboxEscalationRequested, SandboxEscalationRequested{}, "A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via evener/sandbox/escalation/resolve."},
 	{NotifyEvenerSandboxEscalationResolved, SandboxEscalationResolved{}, "A previously-raised sandbox escalation left the pending set — resolved, turn-interrupted, or cleared by session close (M7); every OTHER subscribed client clears its now-stale copy of the card."},
-	{NotifyEvenerTreeChanged, EmptyParams{}, "Broadcast after tree-relevant state changes (roster delta, past-index change, or an archive/favorite/rename/project-delete mutation); no payload. Clients refetch /api/tree (debounced). Hub-originated; never sent by daemons."},
 }

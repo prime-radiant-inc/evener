@@ -122,9 +122,9 @@ func (s *WebServer) handleAPISessionDelete(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	// Same post-delete freshness contract as cleanupProjectDeletion: refresh
-	// the roster before the bump and broadcast so the UI's immediate
-	// follow-up GET /api/tree carries no ghost row, and bust the tree memo
-	// even when the past rebuild reported no delta.
+	// the roster before the bump so the UI's immediate follow-up carries no
+	// ghost row, and bust the tree memo even when the past rebuild reported no
+	// delta.
 	if s.cfg.Roster != nil {
 		hubRosterRefresh(s.cfg.Roster)
 	}
@@ -135,7 +135,7 @@ func (s *WebServer) handleAPISessionDelete(w http.ResponseWriter, r *http.Reques
 		s.cfg.PokeAttention()
 	}
 	if !rebuilt {
-		notifyTreeChanged(s.appRPC)
+		s.navigation.Invalidate(navigationChangeHint{})
 	}
 	if len(decisionErrors) > 0 {
 		writeAPIError(w, http.StatusInternalServerError, strings.Join(decisionErrors, "; "))

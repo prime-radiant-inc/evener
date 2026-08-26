@@ -283,12 +283,12 @@ func TestMutationExpectedQueueRevisionRequiresUnsignedInteger(t *testing.T) {
 
 func TestThreadNotificationsRequireAuthoritativeRoutingIdentity(t *testing.T) {
 	global := map[string]bool{
-		NotifyEvenerAuthUpdated:        true,
-		NotifyEvenerLaunchUpdated:      true,
-		NotifyEvenerAttentionChanged:   true,
-		NotifyEvenerMarketplaceUpdated: true,
-		NotifyEvenerPluginUpdated:      true,
-		NotifyEvenerTreeChanged:        true,
+		NotifyEvenerAuthUpdated:           true,
+		NotifyEvenerLaunchUpdated:         true,
+		NotifyEvenerAttentionChanged:      true,
+		NotifyEvenerMarketplaceUpdated:    true,
+		NotifyEvenerPluginUpdated:         true,
+		NotifyEvenerNavigationInvalidated: true,
 	}
 	for _, notification := range Notifications {
 		if global[notification.Name] {

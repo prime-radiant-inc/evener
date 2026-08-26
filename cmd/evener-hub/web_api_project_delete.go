@@ -447,7 +447,7 @@ func (s *WebServer) cleanupProjectDeletion(
 		}
 		// Bust the tree memo unconditionally: a no-delta past rebuild plus a
 		// nil PokeAttention would otherwise leave InputsVersion unmoved and
-		// /api/tree serving the memoized pre-delete tree for its bucket.
+		// navigation serving the memoized pre-delete snapshot for its bucket.
 		if s.cfg.Inputs != nil {
 			s.cfg.Inputs.Bump()
 		}
@@ -455,7 +455,7 @@ func (s *WebServer) cleanupProjectDeletion(
 			s.cfg.PokeAttention()
 		}
 		if !rebuilt {
-			notifyTreeChanged(s.appRPC)
+			s.navigation.Invalidate(navigationChangeHint{})
 		}
 	}
 	if len(result.Skipped) == 0 && len(result.DecisionErrors) == 0 {
