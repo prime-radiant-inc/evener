@@ -24,6 +24,10 @@ var newSessionStreamAccumulator = func() sessionStreamAccumulator {
 	return llm.NewStreamAccumulator()
 }
 
+// sessionCallModelAfterConsumeHook is a test-only seam for the ownership
+// boundary between stream consumption and retry bookkeeping.
+var sessionCallModelAfterConsumeHook func()
+
 type sessionModelResponse struct {
 	Response                  llm.Response
 	StreamedAssistant         bool
@@ -192,6 +196,9 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 			var consumeErr error
 			result, obs, consumeErr = s.consumeModelStream(ctx, req, st)
 			rememberPreviewCalls(result.CommunicatePreviewCallIDs)
+			if sessionCallModelAfterConsumeHook != nil {
+				sessionCallModelAfterConsumeHook()
+			}
 			// Recorded inside the closure, so the group keeps this attempt's
 			// partial before OnReset discards it ahead of the next one.
 			group.observe(attemptRecord{

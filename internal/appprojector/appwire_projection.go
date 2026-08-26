@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -450,6 +451,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			return nil
 		}
 		delete(p.provisionalCommunicateItems, data.CallID)
+		p.communicatePhases[data.CallID] = communicatePhaseClosed
 		return []AppNotification{p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
 			ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, ItemID: itemID,
 		})}
@@ -588,9 +590,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}
 		if _, ok := p.suppressedTools[data.CallID]; ok {
 			delete(p.suppressedTools, data.CallID)
-			if p.communicatePhases[data.CallID] == communicatePhaseExecuting {
-				p.communicatePhases[data.CallID] = communicatePhaseClosed
-			}
+			p.communicatePhases[data.CallID] = communicatePhaseClosed
+			return out
+		}
+		if data.ToolName == "communicate" && p.toolItemsByKey[data.CallID] == "" {
 			return out
 		}
 		raw := data.ToolState
@@ -1785,7 +1788,13 @@ func (p *AppEventProjector) resetTurnScopedState() {
 
 func (p *AppEventProjector) resetProvisionalCommunicates() []AppNotification {
 	out := make([]AppNotification, 0, len(p.provisionalCommunicateItems))
-	for callID, itemID := range p.provisionalCommunicateItems {
+	callIDs := make([]string, 0, len(p.provisionalCommunicateItems))
+	for callID := range p.provisionalCommunicateItems {
+		callIDs = append(callIDs, callID)
+	}
+	sort.Strings(callIDs)
+	for _, callID := range callIDs {
+		itemID := p.provisionalCommunicateItems[callID]
 		if itemID == "" {
 			continue
 		}

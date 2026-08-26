@@ -2,6 +2,7 @@ package appprojector
 
 import (
 	"testing"
+	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/appwire"
@@ -98,6 +99,112 @@ func TestCommunicatePreviewTurnCloseResetsLiveItems(t *testing.T) {
 	}
 	if resets != 1 {
 		t.Fatalf("turn close reset notifications = %d, want 1: %+v", resets, out)
+	}
+}
+
+func TestCommunicatePreviewDuplicateStartIsIdempotent(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	start := events.SessionEvent{Kind: events.EventCommunicatePreviewStart, Data: events.CommunicatePreviewStartData{CallID: "dup"}}
+	first := p.Project(start)
+	second := p.Project(start)
+	if len(first) != 2 || first[1].Method != appwire.NotifyItemStarted || len(second) != 0 {
+		t.Fatalf("duplicate preview start first=%+v second=%+v", first, second)
+	}
+	reset := p.Project(events.SessionEvent{Kind: events.EventCommunicatePreviewReset, Data: events.CommunicatePreviewResetData{CallID: "dup"}})
+	if len(reset) != 1 || reset[0].Method != appwire.NotifyAgentMessageReset {
+		t.Fatalf("duplicate start stranded preview: reset=%+v", reset)
+	}
+}
+
+func TestCommunicatePreviewReuseAfterToolEndStartsNewGeneration(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	p.Project(events.SessionEvent{Kind: events.EventToolCallStart, Data: events.ToolCallStartData{ToolName: "communicate", CallID: "reuse"}})
+	first := p.Project(events.SessionEvent{Kind: events.EventCommunicate, Data: events.CommunicateData{CallID: "reuse", Message: "one"}})
+	p.Project(events.SessionEvent{Kind: events.EventToolCallEnd, Timestamp: time.Now(), Data: events.ToolCallEndData{ToolName: "communicate", CallID: "reuse"}})
+	p.Project(events.SessionEvent{Kind: events.EventToolCallStart, Data: events.ToolCallStartData{ToolName: "communicate", CallID: "reuse"}})
+	second := p.Project(events.SessionEvent{Kind: events.EventCommunicate, Data: events.CommunicateData{CallID: "reuse", Message: "two"}})
+	if len(first) != 1 || len(second) != 1 {
+		t.Fatalf("reuse completions first=%+v second=%+v", first, second)
+	}
+}
+
+func TestCommunicatePreviewDuplicateCommittedStartEndDoesNotCreateToolItem(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	p.Project(events.SessionEvent{Kind: events.EventToolCallStart, Data: events.ToolCallStartData{ToolName: "communicate", CallID: "dup-tool"}})
+	p.Project(events.SessionEvent{Kind: events.EventCommunicate, Data: events.CommunicateData{CallID: "dup-tool", Message: "done"}})
+	if out := p.Project(events.SessionEvent{Kind: events.EventToolCallStart, Data: events.ToolCallStartData{ToolName: "communicate", CallID: "dup-tool"}}); len(out) != 0 {
+		t.Fatalf("duplicate committed start emitted notifications: %+v", out)
+	}
+	if out := p.Project(events.SessionEvent{Kind: events.EventToolCallEnd, Data: events.ToolCallEndData{ToolName: "communicate", CallID: "dup-tool"}}); len(out) != 0 {
+		t.Fatalf("duplicate committed end emitted notifications: %+v", out)
+	}
+}
+
+func TestCommunicatePreviewResetOrderIsStableAcrossInterleavedCalls(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	for _, callID := range []string{"b", "a", "c"} {
+		p.Project(events.SessionEvent{Kind: events.EventCommunicatePreviewStart, Data: events.CommunicatePreviewStartData{CallID: callID}})
+	}
+	out := p.Project(events.SessionEvent{Kind: events.EventUserInput, Data: events.UserInputData{Text: "next"}})
+	var got []string
+	for _, n := range out {
+		if n.Method == appwire.NotifyAgentMessageReset {
+			got = append(got, n.Params.(appwire.AgentMessageResetParams).ItemID)
+		}
+	}
+	want := []string{"item_communicate_preview_2", "item_communicate_preview_1", "item_communicate_preview_3"}
+	if len(got) != len(want) {
+		t.Fatalf("reset count=%d output=%+v", len(got), out)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("reset order=%v want=%v", got, want)
+		}
+	}
+}
+
+func TestCommunicatePreviewMalformedOrderingDoesNotCreateOrLeakItems(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	for _, event := range []events.SessionEvent{
+		{Kind: events.EventCommunicatePreviewDelta, Data: events.CommunicatePreviewDeltaData{CallID: "missing", Delta: "ignored"}},
+		{Kind: events.EventCommunicatePreviewReset, Data: events.CommunicatePreviewResetData{CallID: "missing"}},
+		{Kind: events.EventToolCallEnd, Data: events.ToolCallEndData{ToolName: "communicate", CallID: "missing"}},
+	} {
+		if out := p.Project(event); len(out) != 0 {
+			t.Fatalf("malformed event %+v emitted %+v", event, out)
+		}
+	}
+	p.Project(events.SessionEvent{Kind: events.EventCommunicatePreviewStart, Data: events.CommunicatePreviewStartData{CallID: "fail"}})
+	p.Project(events.SessionEvent{Kind: events.EventCommunicatePreviewStart, Data: events.CommunicatePreviewStartData{CallID: "success"}})
+	if out := p.Project(events.SessionEvent{Kind: events.EventToolCallEnd, Data: events.ToolCallEndData{ToolName: "communicate", CallID: "fail", Error: "failed"}}); len(out) != 1 {
+		t.Fatalf("failed interleaved call output=%+v", out)
+	}
+	out := p.Project(events.SessionEvent{Kind: events.EventCommunicate, Data: events.CommunicateData{CallID: "success", Message: "ok"}})
+	if len(out) != 1 || out[0].Method != appwire.NotifyItemCompleted {
+		t.Fatalf("successful interleaved call output=%+v", out)
+	}
+}
+
+func TestCommunicatePreviewInterleavedFailureAndSuccessKeepIdentity(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	started := map[string]string{}
+	for _, callID := range []string{"fail", "success"} {
+		out := p.Project(events.SessionEvent{Kind: events.EventCommunicatePreviewStart, Data: events.CommunicatePreviewStartData{CallID: callID}})
+		for _, n := range out {
+			if n.Method == appwire.NotifyItemStarted {
+				started[callID] = n.Params.(appwire.ItemLifecycleParams).Item.ID
+			}
+		}
+		p.Project(events.SessionEvent{Kind: events.EventCommunicatePreviewDelta, Data: events.CommunicatePreviewDeltaData{CallID: callID, Delta: callID}})
+		p.Project(events.SessionEvent{Kind: events.EventToolCallStart, Data: events.ToolCallStartData{ToolName: "communicate", CallID: callID}})
+	}
+	failed := p.Project(events.SessionEvent{Kind: events.EventToolCallEnd, Data: events.ToolCallEndData{ToolName: "communicate", CallID: "fail", Error: "failed"}})
+	succeeded := p.Project(events.SessionEvent{Kind: events.EventCommunicate, Data: events.CommunicateData{CallID: "success", Message: "corrected final"}})
+	if len(failed) != 1 || failed[0].Method != appwire.NotifyAgentMessageReset || failed[0].Params.(appwire.AgentMessageResetParams).ItemID != started["fail"] {
+		t.Fatalf("failed identity start=%v output=%+v", started["fail"], failed)
+	}
+	if len(succeeded) != 1 || succeeded[0].Method != appwire.NotifyItemCompleted || succeeded[0].Params.(appwire.ItemLifecycleParams).Item.ID != started["success"] {
+		t.Fatalf("success identity start=%v output=%+v", started["success"], succeeded)
 	}
 }
 

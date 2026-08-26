@@ -63,6 +63,42 @@ func writeTranscriptPairs(t testing.TB, path string, pairs int) {
 	}
 }
 
+func TestPrepareAppIdentityHydratesPersistedCommunicate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "communicate.transcript.jsonl")
+	tw, err := transcript.NewWriter(path, transcript.Header{SessionID: "th_hydrate", CreatedAt: time.Now(), ProfileID: "openai", Model: "gpt-test"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	call := llm.ToolCallData{ID: "persisted-call", Name: "communicate", Arguments: json.RawMessage(`{"message":"hydrated"}`)}
+	if err := tw.Append(schema.NewTurn(schema.TurnUserInput, llm.User("run"))); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Append(schema.Turn{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &call}}}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	prepared, err := PrepareAppIdentity("local", "th_hydrate", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(prepared.turns.turns) == 0 {
+		t.Fatal("hydration produced no turns")
+	}
+	found := false
+	for _, turn := range prepared.turns.turns {
+		for _, item := range turn.Items {
+			if item.Type == "agentMessage" && item.Text == "hydrated" {
+				found = true
+			}
+		}
+	}
+	if !found {
+		t.Fatalf("persisted communicate missing after runtime hydration: %+v", prepared.turns.turns)
+	}
+}
+
 // installTranscriptIdentity seeds srv from a real transcript the way production
 // serve does: project once, then publish.
 func installTranscriptIdentity(t testing.TB, srv *Server, threadID, path string) {
