@@ -305,7 +305,7 @@ func (d *waiterInterruptDaemon) mutationSnapshot(t *testing.T) waiterInterruptMu
 	return snapshot
 }
 
-func awaitWaiterInterruptSignal(t *testing.T, ctx context.Context, signal <-chan struct{}, label string) {
+func awaitWaiterInterruptSignal(ctx context.Context, t *testing.T, signal <-chan struct{}, label string) {
 	t.Helper()
 	select {
 	case <-signal:
@@ -324,11 +324,11 @@ func TestRunServeInterruptSettlesClaimedPositiveWaitDelegateSend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("TurnStart: %v", err)
 	}
-	awaitWaiterInterruptSignal(t, daemon.ctx, daemon.positiveWaitSeen, "positive-wait delegate_send start")
-	awaitWaiterInterruptSignal(t, daemon.ctx, daemon.adapter.childSecondEntered, "positive-wait delegate generation")
+	awaitWaiterInterruptSignal(daemon.ctx, t, daemon.positiveWaitSeen, "positive-wait delegate_send start")
+	awaitWaiterInterruptSignal(daemon.ctx, t, daemon.adapter.childSecondEntered, "positive-wait delegate generation")
 	daemon.server.armed.Store(true)
 	close(daemon.adapter.childMayFinish)
-	awaitWaiterInterruptSignal(t, daemon.ctx, daemon.terminalClaimed, "terminal delegate waiter claim")
+	awaitWaiterInterruptSignal(daemon.ctx, t, daemon.terminalClaimed, "terminal delegate waiter claim")
 	select {
 	case <-daemon.server.notification:
 		// The unfixed path has accepted and deferred the waiter-bearing plan.
