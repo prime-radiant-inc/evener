@@ -1,9 +1,11 @@
 # tui-steer-in-idle-fails-fast: optimistic-rendering reject path (unit-driven)
 
-TUI counterpart of `web-steer-in-idle-fails-fast.md`. The production
-TUI intentionally does not drive Ctrl+S as a force-steer action in IDLE:
-`handleSessionForceSteer` returns early unless the composer is in queue
-mode (`cmd/evener-tui/hub_session_keys.go#handleSessionForceSteer`). That gate is correct. This scenario documents the deterministic
+This is a distinct TUI optimistic-pending rejection scenario; it is not a
+counterpart to the web Composer guard and does not pin the AppWire v3 idle
+carrier contract. The production TUI intentionally does not drive Ctrl+S as a
+force-steer action in IDLE: `handleSessionForceSteer` returns early unless
+the composer is in queue mode
+(`cmd/evener-tui/hub_session_keys.go#handleSessionForceSteer`). That gate is correct. This scenario documents the deterministic
 falsification path for the underlying reject behavior without asking a
 live tmux driver to bypass production UI state.
 
@@ -32,8 +34,8 @@ go test ./cmd/evener-tui -run TestHubModel_SteerFailsFastOnRPCUnavailable
 
 ## Related
 
-- Web browser scenario:
-  `test/scenarios/web-steer-in-idle-fails-fast.md`
+- Web browser scenario (distinct Composer guard):
+  `test/scenarios/web-steer-no-active-turn-guard.md`
 - Unit coverage:
   `cmd/evener-tui/pending_test.go:TestHubModel_SteerFailsFastOnRPCUnavailable`
   and `cmd/evener-tui/internal/pending/pending.go:53`
