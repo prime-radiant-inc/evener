@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/delegatestore"
 	"primeradiant.com/evener/agent/internal/jobstore"
+	"primeradiant.com/evener/llm"
 )
 
 // wedgedDelegateFixture is a root with exactly one direct stable delegate that
@@ -88,28 +89,58 @@ func newWedgedDelegateFixtureIn(t *testing.T, delegateID string, turnEndsProcess
 
 func TestRetryActivityDoesNotRefreshDrainLiveness(t *testing.T) {
 	f := newWedgedDelegateFixture(t, "dlg_retry")
-	productive := f.clk.Now()
-	f.clk.Advance(DrainStallTimeout - time.Second)
-	if err := f.root.delegateController.ReportActivityPhase(f.lease, f.clk.Now(), jobPhaseModelRetrying); err != nil {
-		t.Fatalf("retry activity: %v", err)
+	bindStableDelegateActivityToOwner(f.child, f.root.delegateController, f.lease, f.root)
+	f.child.mu.Lock()
+	activity := f.child.cfg.spawn.parentJobActivity
+	f.child.mu.Unlock()
+	if activity == nil {
+		t.Fatal("production binding did not install parent activity callback")
 	}
-	f.clk.Advance(2 * time.Second)
-	f.root.delegateController.mu.Lock()
-	got := f.root.delegateController.live[f.delegateID].activityAt
-	f.root.delegateController.mu.Unlock()
-	if !got.Equal(productive) {
-		t.Fatalf("retry refreshed productive activity to %v, want %v", got, productive)
+	retry := f.child.emitModelRetry(llm.RetryPolicy{}, llm.Request{}, nil)
+	drainStartedAt := f.clk.Now()
+	f.clk.Advance(DrainStallTimeout)
+	retry(errors.New("429"), 1, time.Second)
+	f.root.markDrainAbandonedDelegates(f.clk.Now(), drainStartedAt)
+	if !f.root.childDrainGracePending(f.child.ID()) {
+		t.Fatal("first drain window did not arm")
+	}
+	f.clk.Advance(DrainStallTimeout - time.Nanosecond)
+	retry(errors.New("429"), 2, time.Second)
+	f.root.markDrainAbandonedDelegates(f.clk.Now(), drainStartedAt)
+	if !f.root.childDrainGracePending(f.child.ID()) || f.root.childDrainAbandoned(f.child.ID()) {
+		t.Fatal("retry-only callback restarted drain grace")
 	}
 	f.clk.Advance(time.Second)
-	productive = f.clk.Now()
-	if err := f.root.delegateController.ReportActivityPhase(f.lease, productive, jobPhaseToolRunning); err != nil {
-		t.Fatalf("productive activity: %v", err)
+	activity("child", jobPhaseToolRunning)
+	f.root.markDrainAbandonedDelegates(f.clk.Now(), drainStartedAt)
+	if f.root.childDrainGracePending(f.child.ID()) {
+		t.Fatal("productive progress did not rearm from the current point")
+	}
+	f.clk.Advance(DrainStallTimeout)
+	f.root.markDrainAbandonedDelegates(f.clk.Now(), drainStartedAt)
+	f.clk.Advance(DrainStallTimeout + time.Nanosecond)
+	f.root.markDrainAbandonedDelegates(f.clk.Now(), drainStartedAt)
+	if !f.root.childDrainAbandoned(f.child.ID()) {
+		t.Fatal("expected terminal drain abandonment after retry and productive windows")
+	}
+}
+
+func TestRetryActivityRejectsStaleLeaseWithoutMutation(t *testing.T) {
+	f := newWedgedDelegateFixture(t, "dlg_retry_stale")
+	f.root.delegateController.mu.Lock()
+	beforeAt := f.root.delegateController.live[f.delegateID].activityAt
+	beforeEvidence := f.root.delegateController.evidenceVersion
+	f.root.delegateController.mu.Unlock()
+	stale := delegateLease{delegateID: f.delegateID, generation: f.lease.generation + 1}
+	if err := f.root.delegateController.ReportActivityPhase(stale, f.clk.Now(), jobPhaseModelRetrying); !errors.Is(err, errDelegateStaleLease) {
+		t.Fatalf("stale retry error = %v, want %v", err, errDelegateStaleLease)
 	}
 	f.root.delegateController.mu.Lock()
-	got = f.root.delegateController.live[f.delegateID].activityAt
+	afterAt := f.root.delegateController.live[f.delegateID].activityAt
+	afterEvidence := f.root.delegateController.evidenceVersion
 	f.root.delegateController.mu.Unlock()
-	if !got.Equal(productive) {
-		t.Fatalf("productive activity did not refresh liveness: got %v, want %v", got, productive)
+	if !afterAt.Equal(beforeAt) || afterEvidence != beforeEvidence {
+		t.Fatalf("stale retry mutated activity/evidence: activity %v -> %v, evidence %d -> %d", beforeAt, afterAt, beforeEvidence, afterEvidence)
 	}
 }
 
