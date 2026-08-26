@@ -36,7 +36,7 @@ export interface NavigationStoreState {
   resources: ResourceMap;
   expanded: ReadonlyMap<string, boolean>;
   attention: { changed: AttentionChanged[]; summary: AttentionSummary | null };
-  mode: "unknown" | "legacy" | "v1";
+  mode: "unknown" | "legacy" | "v1" | "error";
   protocolError: Error | null;
   loadManifest(): Promise<ResourceState<NavigationManifest>>;
   loadSection(
@@ -50,11 +50,7 @@ export interface NavigationStoreState {
     limit?: number,
   ): Promise<ResourceState<NavigationProjectCatalog>>;
   loadPinCatalog(offset?: number, limit?: number): Promise<ResourceState<NavigationPinSectionCatalog>>;
-  loadPinSection(
-    sectionId: string,
-    offset?: number,
-    limit?: number,
-  ): Promise<ResourceState<NavigationPinSectionCatalog>>;
+  loadPinSection(sectionId: string, offset?: number, limit?: number): Promise<ResourceState<NavigationSectionResource>>;
   loadProject(projectKey: string): Promise<ResourceState<NavigationProjectResource>>;
   loadProjectPage(
     projectKey: string,
@@ -104,7 +100,8 @@ let revalidator: NavigationRevalidator | null = null;
 let unsubs: Array<() => void> = [];
 let bootEpoch = 0;
 let bootStartedEpoch = -1;
-const LIMIT = 50;
+const PAGE_LIMIT = 50;
+const CATALOG_LIMIT = 100;
 const key = (k: ResourceKey) => Object.freeze(k);
 function setResource(state: ResourceState, client = activeClient, epoch = bootEpoch): void {
   if (client !== activeClient || epoch !== bootEpoch) return;
@@ -160,7 +157,7 @@ function urlFor(k: ResourceKey): string {
     case "project_page":
       return `/api/navigation/projects/${encodeURIComponent(k.projectKey)}?tier=${k.tier}&offset=${k.offset}&limit=${k.limit}`;
     case "location":
-      return `/api/navigation/location/${encodeURIComponent(k.ref)}`;
+      return `/api/navigation/sessions/${encodeURIComponent(k.ref)}`;
   }
 }
 function load<T>(k: ResourceKey): Promise<ResourceState<T>> {
@@ -192,7 +189,7 @@ async function withProjectRecovery(projectKey: string): Promise<ResourceState<Na
     await Promise.all(candidates.map((r) => load(r.key).catch(() => undefined)));
   }
   const present = [...navigationStore.getState().resources.values()].some((r) => {
-    if (r.key.kind !== "catalog") return false;
+    if (r.key.kind !== "catalog" || r.stale || r.error) return false;
     return (r.data as NavigationProjectCatalog | null)?.projects.some((p) => p.key === projectKey) ?? false;
   });
   if (!present) return first;
@@ -201,36 +198,43 @@ async function withProjectRecovery(projectKey: string): Promise<ResourceState<Na
 function actions() {
   return {
     loadManifest: () => load<NavigationManifest>({ kind: "manifest" }),
-    loadSection: (section: "live" | "needs_you", offset = 0, limit = LIMIT) =>
+    loadSection: (section: "live" | "needs_you", offset = 0, limit = PAGE_LIMIT) =>
       load<NavigationSectionResource>({ kind: "section", section, offset, limit }),
-    loadCatalog: (catalog: "projects" | "archived_projects" | "test_runs", offset = 0, limit = LIMIT) =>
+    loadCatalog: (catalog: "projects" | "archived_projects" | "test_runs", offset = 0, limit = CATALOG_LIMIT) =>
       load<NavigationProjectCatalog>({ kind: "catalog", catalog, offset, limit }),
-    loadPinCatalog: (offset = 0, limit = LIMIT) =>
+    loadPinCatalog: (offset = 0, limit = CATALOG_LIMIT) =>
       load<NavigationPinSectionCatalog>({ kind: "pin_catalog", offset, limit }),
-    loadPinSection: (sectionId: string, offset = 0, limit = LIMIT) =>
-      load<NavigationPinSectionCatalog>({ kind: "pin_section", sectionId, offset, limit }),
+    loadPinSection: (sectionId: string, offset = 0, limit = PAGE_LIMIT) =>
+      load<NavigationSectionResource>({ kind: "pin_section", sectionId, offset, limit }),
     loadProject: (projectKey: string) => withProjectRecovery(projectKey),
-    loadProjectPage: (projectKey: string, tier: "current" | "recent" | "archived", offset = 0, limit = LIMIT) =>
+    loadProjectPage: (projectKey: string, tier: "current" | "recent" | "archived", offset = 0, limit = PAGE_LIMIT) =>
       load<NavigationProjectPage>({ kind: "project_page", projectKey, tier, offset, limit }),
     lookupLocation: (ref: string) => load<NavigationSessionLocation>({ kind: "location", ref }),
     setExpanded: (projectKey: string, expanded: boolean) => {
       const expandedMap = new Map(navigationStore.getState().expanded);
       expandedMap.set(projectKey, expanded);
-      saveExpansion(expandedMap);
       navigationStore.setState({ expanded: expandedMap });
+      saveExpansion(expandedMap);
+      if (expanded && navigationStore.getState().mode === "v1") void hydrateProject(projectKey, bootEpoch);
     },
     toggleExpanded: (projectKey: string) => {
       const m = new Map(navigationStore.getState().expanded);
       m.set(projectKey, !(m.get(projectKey) ?? false));
       saveExpansion(m);
       navigationStore.setState({ expanded: m });
+      if (m.get(projectKey) && navigationStore.getState().mode === "v1") void hydrateProject(projectKey, bootEpoch);
     },
   };
 }
 
-async function boot(cap: NavigationCapability, epoch: number): Promise<void> {
+async function boot(cap: NavigationCapability, epoch: number, client: AppwireClientLike): Promise<void> {
+  if (client !== activeClient || epoch !== bootEpoch) return;
   if (cap.version !== 1) {
-    navigationStore.setState({ protocolError: new Error(`unsupported navigation capability version ${cap.version}`) });
+    navigationStore.setState({
+      mode: "error",
+      capability: cap,
+      protocolError: new Error(`unsupported navigation capability version ${cap.version}`),
+    });
     return;
   }
   if (revalidator && revalidator.generationID !== cap.generationId) revalidator.resetGeneration(cap.generationId);
@@ -246,7 +250,7 @@ async function boot(cap: NavigationCapability, epoch: number): Promise<void> {
     .getState()
     .loadManifest()
     .catch(() => null);
-  if (!manifest || epoch !== bootEpoch) return;
+  if (!manifest || epoch !== bootEpoch || client !== activeClient) return;
   const m = manifest.data;
   if (!m) return;
   const jobs: Array<() => Promise<unknown>> = [];
@@ -257,7 +261,9 @@ async function boot(cap: NavigationCapability, epoch: number): Promise<void> {
     if (m.catalogs[c].count > 0) jobs.push(() => navigationStore.getState().loadCatalog(c));
   await runBounded(jobs, epoch);
   if (epoch !== bootEpoch || activeClient === null) return;
-  const pinCatalog = navigationStore.getState().resources.get(keyID({ kind: "pin_catalog", offset: 0, limit: LIMIT }));
+  const pinCatalog = navigationStore
+    .getState()
+    .resources.get(keyID({ kind: "pin_catalog", offset: 0, limit: CATALOG_LIMIT }));
   const pinSections = (pinCatalog?.data as NavigationPinSectionCatalog | null)?.pin_sections ?? [];
   await runBounded(
     pinSections.filter((p) => p.count > 0).map((p) => () => navigationStore.getState().loadPinSection(p.id)),
@@ -270,13 +276,24 @@ async function boot(cap: NavigationCapability, epoch: number): Promise<void> {
     .filter((p) => navigationStore.getState().expanded.get(p.key) ?? p.default_expanded)
     .map((p) => p.key);
   await runBounded(
-    pending.map((project) => () => navigationStore.getState().loadProject(project)),
+    pending.map((project) => () => hydrateProject(project, epoch)),
     epoch,
   );
+}
+async function hydrateProject(projectKey: string, epoch: number): Promise<void> {
+  if (epoch !== bootEpoch || navigationStore.getState().mode !== "v1") return;
+  const resource = await navigationStore
+    .getState()
+    .loadProject(projectKey)
+    .catch(() => null);
+  if (!resource?.data || resource.error || epoch !== bootEpoch) return;
+  const project = resource.data;
   const pages: Array<() => Promise<unknown>> = [];
-  for (const project of pending)
-    for (const tier of ["current", "recent", "archived"] as const)
-      pages.push(() => navigationStore.getState().loadProjectPage(project, tier));
+  for (const tier of ["current", "recent", "archived"] as const) {
+    const value = project[tier];
+    if (value.remaining > 0)
+      pages.push(() => navigationStore.getState().loadProjectPage(projectKey, tier, value.sessions.length, PAGE_LIMIT));
+  }
   await runBounded(pages, epoch);
 }
 async function runBounded(jobs: Array<() => Promise<unknown>>, epoch: number): Promise<void> {
@@ -309,13 +326,18 @@ export function initNavigation(
   activeClient = client;
   bootEpoch++;
   const epoch = bootEpoch;
+  const ownedClient = client;
   const start = (info?: InitializeResponse | NavigationCapability | null) => {
+    if (ownedClient !== activeClient || epoch !== bootEpoch) return;
     const cap: NavigationCapability | undefined =
       info && "navigation" in info ? info.navigation : info && "version" in info ? info : undefined;
-    if (cap) void boot(cap, epoch);
+    if (!cap) {
+      navigationStore.setState({ mode: "legacy", capability: null, clientGenerationID: "", lastSequence: 0 });
+      return;
+    }
+    void boot(cap, epoch, ownedClient);
   };
   revalidator = new NavigationRevalidator();
-  const ownedClient = client;
   unsubs.push(revalidator.subscribe((state) => setResource(state, ownedClient, epoch)));
   unsubs.push(
     client.onNotification((n) => {
@@ -354,7 +376,7 @@ export function initNavigation(
             navigationStore.setState({ mode: "legacy", capability: null });
             return;
           }
-          const same = revalidator?.generationID === cap.generationId;
+          const same = cap.version === 1 && revalidator?.generationID === cap.generationId;
           if (same) {
             navigationStore.setState({
               capability: cap,
@@ -374,8 +396,7 @@ export function initNavigation(
       .connect()
       .then((i) => {
         if (ownedClient !== activeClient || epoch !== bootEpoch) return;
-        if (!i.navigation) navigationStore.setState({ mode: "legacy", capability: null });
-        else start(i);
+        start(i);
       })
       .catch(() => {});
   return () => {
