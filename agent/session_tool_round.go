@@ -261,20 +261,30 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 
 	for i, r := range results {
 		if len(r.ImageData) > 0 {
-			if desc := s.describeImageSteering(ctx, r); desc != "" {
+			vision := s.describeImageCall(ctx, r)
+			path := ""
+			if i < len(calls) {
+				var args map[string]any
+				if json.Unmarshal(calls[i].Arguments, &args) == nil {
+					path, _ = args["file_path"].(string)
+				}
+			}
+			if vision.outcome == visionSideChannelOwnedTimeout || vision.outcome == visionSideChannelProviderFailure {
+				if abortErr := s.withResponseSideEffects(ctx, func() {
+					s.SteerKind(visionFailureSteering(path, vision), events.SteeringKindImageDescription)
+				}); abortErr != nil {
+					return abortErr
+				}
+			} else if vision.description != "" {
+				desc := vision.description + "\n" + formatVisionSideChannelStats(vision)
 				// Include the file path so the agent can correlate descriptions to
 				// specific files when multiple images/documents are read in one round.
 				label := "Image description (from vision)"
 				if strings.HasPrefix(r.ImageMediaType, "application/pdf") {
 					label = "Document description (from content analysis)"
 				}
-				if i < len(calls) {
-					var args map[string]any
-					if json.Unmarshal(calls[i].Arguments, &args) == nil {
-						if path, ok := args["file_path"].(string); ok {
-							label += " for " + path
-						}
-					}
+				if path != "" {
+					label += " for " + path
 				}
 				if abortErr := s.withResponseSideEffects(ctx, func() {
 					s.SteerKind(label+": "+desc+"\n<system-reminder>Vision output is model-generated and is not byte-exact OCR. It may omit, misread, or silently normalize rendered text even when asked to transcribe it. Do not treat it as authoritative for exact-match or byte-exact transcription; use a real OCR tool or inspect the source instead.</system-reminder>",

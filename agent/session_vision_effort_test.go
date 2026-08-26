@@ -382,8 +382,8 @@ func TestPersistToolResults_VisionErrorDoesNotClaimSuccessfulUsage(t *testing.T)
 	}}); err != nil {
 		t.Fatalf("persistToolResults: %v", err)
 	}
-	if steered := sess.drainSteering(); len(steered) != 0 {
-		t.Fatalf("failed vision call produced model steering: %#v", steered)
+	if steered := sess.drainSteering(); len(steered) != 1 || !strings.Contains(steered[0].Text, "vision failed") {
+		t.Fatalf("failed vision call steering = %#v, want one unavailable message", steered)
 	}
 }
 
@@ -449,8 +449,104 @@ func TestDescribeImage_CancelsTheSideChannelOnTimeout(t *testing.T) {
 	if gotErr != nil {
 		t.Fatal(gotErr)
 	}
+	if steered := sess.drainSteering(); len(steered) != 1 || !strings.Contains(steered[0].Text, "Vision is unavailable") {
+		t.Fatalf("timed-out vision call steering = %#v, want one unavailable message", steered)
+	}
+}
+
+func TestDescribeImage_ParentCancellationDoesNotSteerUnavailable(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	adapter := &contextBlockingAdapter{name: "openai", started: started, canceled: canceled}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess, err := NewSession(c, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: dir,
+		testOnly: testConfig{visionSideChannelTimeout: time.Second},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() {
+		done <- sess.persistToolResults(ctx, []llm.ToolCallData{{ID: "c1", Name: "read_file"}}, []tool.ExecResult{{
+			CallID: "c1", ToolName: "read_file", ImageData: []byte("png"), ImageMediaType: "image/png",
+		}})
+	}()
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("vision call did not start")
+	}
+	cancel()
+	if err := <-done; err != nil {
+		t.Fatalf("persistToolResults: %v", err)
+	}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("vision call did not observe parent cancellation")
+	}
 	if steered := sess.drainSteering(); len(steered) != 0 {
-		t.Fatalf("timed-out vision call produced model steering: %#v", steered)
+		t.Fatalf("parent cancellation produced stale unavailable steering: %#v", steered)
+	}
+}
+
+func TestPersistToolResults_VisionTimeoutSteersWithPathAndFallback(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	started := make(chan struct{})
+	canceled := make(chan struct{})
+	adapter := &contextBlockingAdapter{name: "openai", started: started, canceled: canceled}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess, err := NewSession(c, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{
+		StateDir: dir,
+		testOnly: testConfig{visionSideChannelTimeout: 20 * time.Millisecond},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+
+	path := filepath.Join(dir, "image.png")
+	if err := sess.persistToolResults(context.Background(), []llm.ToolCallData{{
+		ID: "c1", Name: "read_file", Arguments: []byte(`{"file_path":"` + path + `"}`),
+	}}, []tool.ExecResult{{
+		CallID: "c1", ToolName: "read_file", ImageData: []byte("png"), ImageMediaType: "image/png",
+	}}); err != nil {
+		t.Fatalf("persistToolResults: %v", err)
+	}
+	select {
+	case <-started:
+	case <-time.After(time.Second):
+		t.Fatal("vision call did not start")
+	}
+	select {
+	case <-canceled:
+	case <-time.After(time.Second):
+		t.Fatal("vision call did not observe its deadline")
+	}
+	steered := sess.drainSteering()
+	if len(steered) != 1 {
+		t.Fatalf("steering count = %d, want 1 (%#v)", len(steered), steered)
+	}
+	for _, want := range []string{"Vision is unavailable", path, "OCR", "source data", "continue without vision"} {
+		if !strings.Contains(steered[0].Text, want) {
+			t.Errorf("steering = %q, missing %q", steered[0].Text, want)
+		}
 	}
 }
 

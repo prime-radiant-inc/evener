@@ -287,10 +287,21 @@ func (s *Session) visionSideChannelDuration() time.Duration {
 	return visionSideChannelTimeout
 }
 
+type visionSideChannelOutcome uint8
+
+const (
+	visionSideChannelSuccess visionSideChannelOutcome = iota
+	visionSideChannelOwnedTimeout
+	visionSideChannelParentCanceled
+	visionSideChannelProviderFailure
+)
+
 type visionSideChannelResult struct {
 	description string
 	elapsed     time.Duration
 	usage       llm.Usage
+	outcome     visionSideChannelOutcome
+	err         error
 }
 
 // visionSideChannelStats is the machine-readable accounting contract carried
@@ -334,6 +345,23 @@ func (s *Session) describeImageSteering(ctx context.Context, r tool.ExecResult) 
 	return result.description + "\n" + formatVisionSideChannelStats(result)
 }
 
+func visionUnavailableSteering(path string) string {
+	if path == "" {
+		return "Vision is unavailable. Use OCR or inspect the source data, or continue without vision."
+	}
+	return fmt.Sprintf("Vision is unavailable for %s. Use OCR or inspect the source data, or continue without vision.", path)
+}
+
+func visionFailureSteering(path string, result visionSideChannelResult) string {
+	if result.outcome == visionSideChannelProviderFailure && result.err != nil {
+		if path == "" {
+			return fmt.Sprintf("Vision is unavailable because the vision provider failed: %v. Use OCR or inspect the source data, or continue without vision.", result.err)
+		}
+		return fmt.Sprintf("Vision is unavailable for %s because the vision provider failed: %v. Use OCR or inspect the source data, or continue without vision.", path, result.err)
+	}
+	return visionUnavailableSteering(path)
+}
+
 func formatVisionSideChannelStats(result visionSideChannelResult) string {
 	stats := visionSideChannelStats{
 		ElapsedMS:      result.elapsed.Milliseconds(),
@@ -368,11 +396,11 @@ func visionUsageAvailable(usage llm.Usage) bool {
 
 func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visionSideChannelResult {
 	if len(r.ImageData) == 0 {
-		return visionSideChannelResult{}
+		return visionSideChannelResult{outcome: visionSideChannelSuccess}
 	}
 	// Skip for explorer agents — they're just inventorying files, not analyzing images.
 	if s.cfg.AgentName == "explorer" {
-		return visionSideChannelResult{}
+		return visionSideChannelResult{outcome: visionSideChannelSuccess}
 	}
 
 	// Use the caller's stated purpose as the vision prompt. The calling LLM
@@ -448,14 +476,23 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	elapsed := s.sclock().Now().Sub(start)
 	elapsed = max(elapsed, 0)
 	if err != nil {
+		outcome := visionSideChannelProviderFailure
+		if ctx.Err() != nil {
+			// Parent cancellation owns races with the side-channel deadline. This
+			// prevents a stale unavailable steering message after a canceled turn.
+			outcome = visionSideChannelParentCanceled
+		} else if errors.Is(visionCtx.Err(), context.DeadlineExceeded) {
+			outcome = visionSideChannelOwnedTimeout
+		}
 		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("vision side-channel failed: %v", err)})
-		return visionSideChannelResult{}
+		return visionSideChannelResult{elapsed: elapsed, outcome: outcome, err: err}
 	}
 
 	return visionSideChannelResult{
 		description: strings.TrimSpace(resp.Message.Text()),
 		elapsed:     elapsed,
 		usage:       resp.Usage,
+		outcome:     visionSideChannelSuccess,
 	}
 }
 
