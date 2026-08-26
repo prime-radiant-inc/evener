@@ -1,9 +1,11 @@
 package hub
 
 import (
+	"context"
 	"encoding/json"
 	"net/http"
-	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -11,36 +13,25 @@ import (
 
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/identifier"
 )
 
-// navigationRESTCapture is deliberately built at the real handler boundary:
-// Refresh returns the ticket handed to REST, while DrainPublications is the
-// publisher FIFO consumed by the broadcaster in main. Keeping both values in
-// this helper prevents tests from comparing two independently-built targets.
-type navigationRESTCapture struct {
-	generation string
-	targets    []appwire.NavigationInvalidationTarget
-	published  []appwire.NavigationInvalidatedPayload
-}
-
-func captureNavigationREST(t *testing.T, web *WebServer, rr *httptest.ResponseRecorder) navigationRESTCapture {
-	t.Helper()
-	var response favoriteMutationResponse
-	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response %q: %v", rr.Body.String(), err)
+func TestRESTNavigationTicketConvergesWithPublisherBroadcast(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	published := web.navigation.DrainPublications()
-	return navigationRESTCapture{
-		generation: response.Navigation.GenerationID,
-		targets:    append([]appwire.NavigationInvalidationTarget(nil), response.Navigation.Targets...),
-		published:  published,
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
 	}
-}
-
-func TestRESTNavigationTicketConvergesWithPublisherFIFO(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	source.mu.Lock()
+	source.inputs.Tree.Projects[0].Key = project.ID
+	source.mu.Unlock()
 	web := NewWebServer(hubcore.WebConfig{
-		Favorite: hubcore.NewFavoriteStore(t.TempDir() + "/favorites.db"),
+		Archive: hubcore.NewArchiveStore(filepath.Join(root, "archive.db")),
 	})
 	web.navigation = newTestNavigationService(t, source)
 
@@ -50,38 +41,44 @@ func TestRESTNavigationTicketConvergesWithPublisherFIFO(t *testing.T) {
 	if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
 		t.Fatal(err)
 	}
+	recorder := &navigationPublisherRecorder{seen: make(chan struct{}, 2)}
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() {
+		runNavigationPublisher(ctx, web.navigation, recorder)
+		close(done)
+	}()
 	source.changeTitle("changed")
-	rr := postFavorite(t, web, "project", "p1", true)
+	body := `{"kind":"project","id":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `","archived":true}`
+	rr := postJSON(t, web.Handler(), "/api/archive", body)
 	if rr.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
 	}
-	var response favoriteMutationResponse
+	var response archiveMutationResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
-	if !response.OK {
-		t.Fatal("successful favorite response did not preserve ok=true")
+	waitNavigationSignal(t, recorder.seen, "archive navigation broadcast")
+	methods, payloads := recorder.snapshot()
+	if len(methods) != 1 || methods[0] != appwire.NotifyEvenerNavigationInvalidated || len(payloads) != 1 {
+		t.Fatalf("broadcasts=%v payloads=%+v, want one navigation frame", methods, payloads)
 	}
-	capture := captureNavigationREST(t, web, rr)
-	if len(capture.published) != 1 {
-		t.Fatalf("published events=%d, want exactly one: %+v", len(capture.published), capture.published)
+	publication := payloads[0]
+	responseTargets := append([]appwire.NavigationInvalidationTarget(nil), response.Navigation.Targets...)
+	if publication.GenerationID != response.Navigation.GenerationID || !reflect.DeepEqual(responseTargets, publication.Targets) {
+		t.Fatalf("response navigation=%+v broadcast=%+v", response.Navigation, publication)
 	}
-	publication := capture.published[0]
-	if publication.GenerationID != capture.generation {
-		t.Fatalf("generation response=%q publication=%q", capture.generation, publication.GenerationID)
-	}
-	if !reflect.DeepEqual(capture.targets, publication.Targets) {
-		t.Fatalf("response targets=%+v publication targets=%+v", capture.targets, publication.Targets)
-	}
-	if len(publication.Targets) != 1 || publication.Targets[0].Kind != appwire.NavigationTargetProject || publication.Targets[0].ProjectKey != "p1" {
+	if len(publication.Targets) != 1 || publication.Targets[0].Kind != appwire.NavigationTargetProject || publication.Targets[0].ProjectKey != project.ID {
 		t.Fatalf("publication targets=%+v", publication.Targets)
 	}
 	if publication.Targets[0].Revision == 0 {
-		t.Fatalf("scoped favorite target has zero revision: %+v", publication.Targets[0])
+		t.Fatalf("scoped archive target has zero revision: %+v", publication.Targets[0])
 	}
 	if replay := web.navigation.DrainPublications(); len(replay) != 0 {
 		t.Fatalf("publisher replayed events: %+v", replay)
 	}
+	cancel()
+	waitNavigationSignal(t, done, "navigation publisher shutdown")
 }
 
 func TestRESTNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
@@ -110,6 +107,17 @@ func TestRESTNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
 	}
 	if first.Navigation.GenerationID != initialGeneration || len(first.Navigation.Targets) != 0 || len(web.navigation.DrainPublications()) != 0 {
 		t.Fatalf("no-op response/events: response=%+v events=%+v", first.Navigation, web.navigation.DrainPublications())
+	}
+	repeatFavorite := postJSON(t, web.Handler(), "/api/favorite", `{"kind":"project","id":"p1","favorited":true}`)
+	if repeatFavorite.Code != http.StatusOK {
+		t.Fatalf("repeat favorite status=%d body=%s", repeatFavorite.Code, repeatFavorite.Body.String())
+	}
+	var repeated favoriteMutationResponse
+	if err := json.Unmarshal(repeatFavorite.Body.Bytes(), &repeated); err != nil {
+		t.Fatal(err)
+	}
+	if repeated.Navigation.GenerationID != initialGeneration || len(repeated.Navigation.Targets) != 0 || len(web.navigation.DrainPublications()) != 0 {
+		t.Fatalf("repeat favorite response/events: response=%+v events=%+v", repeated.Navigation, web.navigation.DrainPublications())
 	}
 
 	// Session archive deliberately uses the handler's unscoped hint. The

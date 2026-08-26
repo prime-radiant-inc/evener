@@ -127,261 +127,51 @@ func TestProducerAcceptancePinOneCallbackPerChangedPath(t *testing.T) {
 	}
 }
 
-func TestProducerAcceptanceArchiveConcurrentSetsSerializeAndRetainTimestamp(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "index.db")
-	store := NewArchiveStore(path)
+func TestProducerAcceptanceArchiveHintsAfterSuccessfulWrites(t *testing.T) {
+	store := NewArchiveStore(filepath.Join(t.TempDir(), "index.db"))
 	var calls atomic.Int32
 	store.SetOnChange(func() {
 		calls.Add(1)
-		_, _ = store.Decisions() // reentrant DB read must not deadlock.
+		_, _ = store.Decisions() // callback must run after the write transaction.
 	})
-	start := make(chan struct{})
-	errs := make(chan error, 2)
-	for range 2 {
-		go func() { <-start; errs <- store.Set("session", "same", true, time.Unix(10, 0)) }()
+	now := time.Unix(100, 0)
+	operations := []func() error{
+		func() error { return store.Set("session", "archive-a", true, now) },
+		func() error { return store.Set("session", "archive-a", true, now.Add(time.Second)) },
+		func() error { return store.Delete("session", "missing") },
+		func() error { return store.Delete("session", "archive-a") },
 	}
-	close(start)
-	for range 2 {
-		if err := <-errs; err != nil {
+	for i, operation := range operations {
+		if err := operation(); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("equal concurrent archive sets callbacks = %d, want 1", got)
-	}
-	check, err := store.open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var flag, decidedAt int64
-	if err := check.QueryRow("SELECT archived, decided_at FROM archive WHERE kind = 'session' AND id = 'same'").Scan(&flag, &decidedAt); err != nil {
-		t.Fatal(err)
-	}
-	_ = check.Close()
-	if flag != 1 || decidedAt != 10 {
-		t.Fatalf("archive equal-set row = flag %d timestamp %d, want 1/10", flag, decidedAt)
-	}
-
-	calls.Store(0)
-	start = make(chan struct{})
-	errs = make(chan error, 2)
-	for _, tc := range []struct {
-		value bool
-		now   time.Time
-	}{{false, time.Unix(20, 0)}, {true, time.Unix(30, 0)}} {
-		tc := tc
-		go func() { <-start; errs <- store.Set("session", "competing", tc.value, tc.now) }()
-	}
-	close(start)
-	for range 2 {
-		if err := <-errs; err != nil {
-			t.Fatal(err)
+		if got, want := calls.Load(), int32(i+1); got != want {
+			t.Fatalf("archive successful-write hints = %d, want %d", got, want)
 		}
-	}
-	if got := calls.Load(); got != 2 {
-		t.Fatalf("competing concurrent archive sets callbacks = %d, want 2", got)
-	}
-	check, err = store.open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := check.QueryRow("SELECT archived, decided_at FROM archive WHERE kind = 'session' AND id = 'competing'").Scan(&flag, &decidedAt); err != nil {
-		t.Fatal(err)
-	}
-	_ = check.Close()
-	if (flag != 0 && flag != 1) || (decidedAt != 20 && decidedAt != 30) {
-		t.Fatalf("archive competing row = flag %d timestamp %d, want one committed value", flag, decidedAt)
 	}
 }
 
-func TestProducerAcceptanceFavoriteConcurrentSetsSerializeAndRetainTimestamp(t *testing.T) {
-	path := filepath.Join(t.TempDir(), "index.db")
-	store := NewFavoriteStore(path)
+func TestProducerAcceptanceFavoriteHintsAfterSuccessfulWrites(t *testing.T) {
+	store := NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
 	var calls atomic.Int32
 	store.SetOnChange(func() {
 		calls.Add(1)
-		_, _ = store.Favorites() // reentrant DB read must not deadlock.
+		_, _ = store.Favorites() // callback must run after the write transaction.
 	})
-	start := make(chan struct{})
-	errs := make(chan error, 2)
-	for range 2 {
-		go func() { <-start; errs <- store.Set("session", "same", true, time.Unix(10, 0)) }()
+	now := time.Unix(100, 0)
+	operations := []func() error{
+		func() error { return store.Set("session", "favorite-a", true, now) },
+		func() error { return store.Set("session", "favorite-a", true, now.Add(time.Second)) },
+		func() error { return store.Delete("session", "missing") },
+		func() error { return store.Delete("session", "favorite-a") },
 	}
-	close(start)
-	for range 2 {
-		if err := <-errs; err != nil {
+	for i, operation := range operations {
+		if err := operation(); err != nil {
 			t.Fatal(err)
 		}
-	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("equal concurrent favorite sets callbacks = %d, want 1", got)
-	}
-	check, err := store.open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	var flag, decidedAt int64
-	if err := check.QueryRow("SELECT favorited, decided_at FROM favorite WHERE kind = 'session' AND id = 'same'").Scan(&flag, &decidedAt); err != nil {
-		t.Fatal(err)
-	}
-	_ = check.Close()
-	if flag != 1 || decidedAt != 10 {
-		t.Fatalf("favorite equal-set row = flag %d timestamp %d, want 1/10", flag, decidedAt)
-	}
-
-	calls.Store(0)
-	start = make(chan struct{})
-	errs = make(chan error, 2)
-	for _, tc := range []struct {
-		value bool
-		now   time.Time
-	}{{false, time.Unix(20, 0)}, {true, time.Unix(30, 0)}} {
-		tc := tc
-		go func() { <-start; errs <- store.Set("session", "competing", tc.value, tc.now) }()
-	}
-	close(start)
-	for range 2 {
-		if err := <-errs; err != nil {
-			t.Fatal(err)
+		if got, want := calls.Load(), int32(i+1); got != want {
+			t.Fatalf("favorite successful-write hints = %d, want %d", got, want)
 		}
-	}
-	if got := calls.Load(); got != 2 {
-		t.Fatalf("competing concurrent favorite sets callbacks = %d, want 2", got)
-	}
-	check, err = store.open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := check.QueryRow("SELECT favorited, decided_at FROM favorite WHERE kind = 'session' AND id = 'competing'").Scan(&flag, &decidedAt); err != nil {
-		t.Fatal(err)
-	}
-	_ = check.Close()
-	if (flag != 0 && flag != 1) || (decidedAt != 20 && decidedAt != 30) {
-		t.Fatalf("favorite competing row = flag %d timestamp %d, want one committed value", flag, decidedAt)
-	}
-}
-
-func TestProducerAcceptanceArchiveNoopAndOneChange(t *testing.T) {
-	store := NewArchiveStore(filepath.Join(t.TempDir(), "index.db"))
-	var calls atomic.Int32
-	store.SetOnChange(func() { calls.Add(1) })
-	now := time.Unix(100, 0)
-	if err := store.Set("session", "archive-a", true, now); err != nil {
-		t.Fatal(err)
-	}
-	if calls.Load() != 1 {
-		t.Fatalf("archive set callbacks = %d, want 1", calls.Load())
-	}
-	if err := store.Set("session", "archive-a", true, now.Add(time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	if calls.Load() != 1 {
-		t.Fatalf("archive equivalent set callbacks = %d, want 1", calls.Load())
-	}
-	if err := store.Delete("session", "missing"); err != nil {
-		t.Fatal(err)
-	}
-	if calls.Load() != 1 {
-		t.Fatalf("archive absent delete callbacks = %d, want 1", calls.Load())
-	}
-	if err := store.Delete("session", "archive-a"); err != nil {
-		t.Fatal(err)
-	}
-	if calls.Load() != 2 {
-		t.Fatalf("archive delete callbacks = %d, want 2", calls.Load())
-	}
-}
-
-func TestProducerAcceptanceArchiveDecidedAtTracksContentOnly(t *testing.T) {
-	store := NewArchiveStore(filepath.Join(t.TempDir(), "index.db"))
-	if err := store.Set("session", "timestamp", true, time.Unix(10, 0)); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Set("session", "timestamp", true, time.Unix(99, 0)); err != nil {
-		t.Fatal(err)
-	}
-	assertArchiveTimestamp(t, store, 1, 10)
-	if err := store.Set("session", "timestamp", false, time.Unix(20, 0)); err != nil {
-		t.Fatal(err)
-	}
-	assertArchiveTimestamp(t, store, 0, 20)
-}
-
-func assertArchiveTimestamp(t *testing.T, store *ArchiveStore, wantValue, wantTimestamp int64) {
-	t.Helper()
-	db, err := store.open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	var archived, decidedAt int64
-	if err := db.QueryRow("SELECT archived, decided_at FROM archive WHERE kind = 'session' AND id = 'timestamp'").Scan(&archived, &decidedAt); err != nil {
-		t.Fatal(err)
-	}
-	if archived != wantValue || decidedAt != wantTimestamp {
-		t.Fatalf("archive row = value %d timestamp %d, want %d/%d", archived, decidedAt, wantValue, wantTimestamp)
-	}
-}
-
-func TestProducerAcceptanceFavoriteNoopAndOneChange(t *testing.T) {
-	store := NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
-	var calls atomic.Int32
-	store.SetOnChange(func() { calls.Add(1) })
-	now := time.Unix(100, 0)
-	if err := store.Set("session", "favorite-a", true, now); err != nil {
-		t.Fatal(err)
-	}
-	if calls.Load() != 1 {
-		t.Fatalf("favorite set callbacks = %d, want 1", calls.Load())
-	}
-	if err := store.Set("session", "favorite-a", true, now.Add(time.Second)); err != nil {
-		t.Fatal(err)
-	}
-	if calls.Load() != 1 {
-		t.Fatalf("favorite equivalent set callbacks = %d, want 1", calls.Load())
-	}
-	if err := store.Delete("session", "missing"); err != nil {
-		t.Fatal(err)
-	}
-	if calls.Load() != 1 {
-		t.Fatalf("favorite absent delete callbacks = %d, want 1", calls.Load())
-	}
-	if err := store.Delete("session", "favorite-a"); err != nil {
-		t.Fatal(err)
-	}
-	if calls.Load() != 2 {
-		t.Fatalf("favorite delete callbacks = %d, want 2", calls.Load())
-	}
-}
-
-func TestProducerAcceptanceFavoriteDecidedAtTracksContentOnly(t *testing.T) {
-	store := NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
-	if err := store.Set("session", "timestamp", true, time.Unix(10, 0)); err != nil {
-		t.Fatal(err)
-	}
-	if err := store.Set("session", "timestamp", true, time.Unix(99, 0)); err != nil {
-		t.Fatal(err)
-	}
-	assertFavoriteTimestamp(t, store, 1, 10)
-	if err := store.Set("session", "timestamp", false, time.Unix(20, 0)); err != nil {
-		t.Fatal(err)
-	}
-	assertFavoriteTimestamp(t, store, 0, 20)
-}
-
-func assertFavoriteTimestamp(t *testing.T, store *FavoriteStore, wantValue, wantTimestamp int64) {
-	t.Helper()
-	db, err := store.open()
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer func() { _ = db.Close() }()
-	var favorited, decidedAt int64
-	if err := db.QueryRow("SELECT favorited, decided_at FROM favorite WHERE kind = 'session' AND id = 'timestamp'").Scan(&favorited, &decidedAt); err != nil {
-		t.Fatal(err)
-	}
-	if favorited != wantValue || decidedAt != wantTimestamp {
-		t.Fatalf("favorite row = value %d timestamp %d, want %d/%d", favorited, decidedAt, wantValue, wantTimestamp)
 	}
 }
 

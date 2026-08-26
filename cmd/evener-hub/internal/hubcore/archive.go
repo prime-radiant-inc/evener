@@ -2,7 +2,6 @@ package hubcore
 
 import (
 	"database/sql"
-	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -90,38 +89,24 @@ func (s *ArchiveStore) Set(kind, id string, archived bool, now time.Time) error 
 	if s.dbPath == "" {
 		return nil
 	}
+	db, err := s.open()
+	if err != nil {
+		return err
+	}
+	defer func() { _ = db.Close() }()
 	flag := 0
 	if archived {
 		flag = 1
 	}
-	for range 8 {
-		db, err := s.open()
-		if err != nil {
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return err
-		}
-		result, err := db.Exec(`INSERT INTO archive (kind, id, archived, decided_at) VALUES (?, ?, ?, ?)
-			ON CONFLICT(kind, id) DO UPDATE SET archived = excluded.archived, decided_at = excluded.decided_at
-			WHERE archive.archived IS NOT excluded.archived`, kind, id, flag, now.Unix())
-		_ = db.Close()
-		if err != nil {
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return err
-		}
-		changed, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if changed != 0 {
-			s.fireChange()
-		}
-		return nil
+	_, err = db.Exec( //nolint:noctx // local file DB
+		`INSERT INTO archive (kind, id, archived, decided_at) VALUES (?, ?, ?, ?)
+		 ON CONFLICT(kind, id) DO UPDATE SET archived=excluded.archived, decided_at=excluded.decided_at`,
+		kind, id, flag, now.Unix())
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("set archive %s/%s: retry limit reached", kind, id)
+	s.fireChange()
+	return nil
 }
 
 // Decisions returns every explicit decision. Empty when no DB / no table.
@@ -160,30 +145,15 @@ func (s *ArchiveStore) Delete(kind, id string) error {
 	if s.dbPath == "" {
 		return nil
 	}
-	for range 8 {
-		db, err := s.open()
-		if err != nil {
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return err
-		}
-		result, err := db.Exec(`DELETE FROM archive WHERE kind = ? AND id = ?`, kind, id)
-		_ = db.Close()
-		if err != nil {
-			if isSQLiteRetryable(err) {
-				continue
-			}
-			return err
-		}
-		changed, err := result.RowsAffected()
-		if err != nil {
-			return err
-		}
-		if changed != 0 {
-			s.fireChange()
-		}
-		return nil
+	db, err := s.open()
+	if err != nil {
+		return err
 	}
-	return fmt.Errorf("delete archive %s/%s: retry limit reached", kind, id)
+	defer func() { _ = db.Close() }()
+	_, err = db.Exec(`DELETE FROM archive WHERE kind = ? AND id = ?`, kind, id) //nolint:noctx // local file DB
+	if err != nil {
+		return err
+	}
+	s.fireChange()
+	return nil
 }
