@@ -267,13 +267,13 @@ func hasNavigationTarget(targets []appwire.NavigationInvalidationTarget, kind ap
 
 func TestNavigationServiceReusesRetainedProjectionAcrossResourceMisses(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
-	previous := buildNavigationServiceProjection
+	previous := buildNavigationServiceProjectionContext
 	var builds atomic.Int32
-	buildNavigationServiceProjection = func(inputs navigationBuildInputs) (navigationProjection, error) {
+	buildNavigationServiceProjectionContext = func(ctx context.Context, inputs navigationBuildInputs) (navigationProjection, error) {
 		builds.Add(1)
-		return previous(inputs)
+		return previous(ctx, inputs)
 	}
-	t.Cleanup(func() { buildNavigationServiceProjection = previous })
+	t.Cleanup(func() { buildNavigationServiceProjectionContext = previous })
 	service := newTestNavigationService(t, source)
 	for _, key := range []navigationResourceKey{
 		{Kind: navigationResourceManifest},
@@ -341,9 +341,69 @@ func TestNavigationServiceCommitsCanceledRefreshForLaterPublication(t *testing.T
 	if capability := service.Capability(); capability.Sequence != 1 {
 		t.Fatalf("sequence = %d, want committed change", capability.Sequence)
 	}
-	pending := service.ConsumePendingInvalidations()
-	if len(pending) != 1 || !hasNavigationTarget(pending[0].Targets, appwire.NavigationTargetProject, "p1") {
-		t.Fatalf("pending mutations = %+v", pending)
+	select {
+	case <-service.PublicationReady():
+	default:
+		t.Fatal("committed publication did not signal readiness")
+	}
+	pending := service.DrainPublications()
+	if len(pending) != 1 || pending[0].Sequence != 1 || !hasNavigationTarget(pending[0].Targets, appwire.NavigationTargetProject, "p1") {
+		t.Fatalf("pending publications = %+v", pending)
+	}
+	select {
+	case <-service.wake:
+	default:
+		t.Fatal("build commit with no remaining waiter did not wake scheduler")
+	}
+}
+
+func TestNavigationServicePublicationFIFOHasExactSequencesAndRefreshNeverConsumes(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	service := newTestNavigationService(t, source)
+	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		t.Fatal(err)
+	}
+
+	source.changeTitle("first")
+	first, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	source.changeTitle("second")
+	second, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}, AllLoadedProjects: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.GenerationID != second.GenerationID || len(first.Targets) == 0 || len(second.Targets) == 0 {
+		t.Fatalf("refresh metadata mismatch: first=%+v second=%+v", first, second)
+	}
+	if capability := service.Capability(); capability == nil || capability.Sequence != 2 {
+		t.Fatalf("capability after commits = %+v", capability)
+	}
+
+	publications := service.DrainPublications()
+	if len(publications) != 2 {
+		t.Fatalf("publications = %+v, want two retained Refresh commits", publications)
+	}
+	for index, payload := range publications {
+		wantSequence := uint64(index + 1)
+		if payload.Sequence != wantSequence || payload.GenerationID != first.GenerationID {
+			t.Fatalf("publication %d = %+v, want sequence %d", index, payload, wantSequence)
+		}
+	}
+	if !hasNavigationTarget(publications[0].Targets, appwire.NavigationTargetProject, "p1") || publications[0].Targets[len(publications[0].Targets)-1].Kind == appwire.NavigationTargetAllLoadedProjects {
+		t.Fatalf("first publication targets = %+v", publications[0].Targets)
+	}
+	if publications[1].Targets[len(publications[1].Targets)-1].Kind != appwire.NavigationTargetAllLoadedProjects {
+		t.Fatalf("second publication targets = %+v", publications[1].Targets)
+	}
+	if again := service.DrainPublications(); len(again) != 0 {
+		t.Fatalf("second drain replayed publications: %+v", again)
+	}
+	select {
+	case <-service.PublicationReady():
+		t.Fatal("publication-ready remained signaled after drain")
+	default:
 	}
 }
 
@@ -483,6 +543,79 @@ func TestNavigationServicePreservesLastGoodAndMapsChurnCancellationTo503(t *test
 	}
 }
 
+func TestNavigationServiceBuildDeadlineInterruptsProjectionWithoutCommitOrPublication(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	previous := buildNavigationServiceProjectionContext
+	entered := make(chan struct{})
+	buildNavigationServiceProjectionContext = func(ctx context.Context, inputs navigationBuildInputs) (navigationProjection, error) {
+		close(entered)
+		<-ctx.Done()
+		return navigationProjection{}, ctx.Err()
+	}
+	t.Cleanup(func() { buildNavigationServiceProjectionContext = previous })
+	service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) {
+		cfg.BuildTimeout = 10 * time.Millisecond
+	})
+	_, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
+	<-entered
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want deadline", err)
+	}
+	var status interface{ StatusCode() int }
+	if !errors.As(err, &status) || status.StatusCode() != 503 {
+		t.Fatalf("error = %T %v, want typed 503", err, err)
+	}
+	if capability := service.Capability(); capability.Sequence != 0 {
+		t.Fatalf("sequence advanced after canceled projection: %+v", capability)
+	}
+	if service.Stats().CoreBuilds != 0 || service.Stats().Cache.Entries != 0 || len(service.DrainPublications()) != 0 {
+		t.Fatalf("canceled projection published state: stats=%+v", service.Stats())
+	}
+}
+
+type cancelAfterChecksContext struct {
+	context.Context
+	checks atomic.Int32
+	limit  int32
+}
+
+func (c *cancelAfterChecksContext) Err() error {
+	if c.checks.Add(1) >= c.limit {
+		return context.Canceled
+	}
+	return nil
+}
+
+func TestNavigationProjectionAndLogicalFingerprintTraversalCheckContextInternally(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	inputs := newTestNavigationSource(now).inputs
+	rows := make([]hubcore.TreeNode, 200)
+	for index := range rows {
+		rows[index] = hubcore.TreeNode{ID: fmt.Sprintf("%026d", index+1), Kind: "session", Title: "row", UpdatedAt: now}
+	}
+	inputs.Tree.Projects[0].Current = rows
+	inputs.GenerationID = "0123456789abcdef0123456789abcdef"
+	projectionCtx := &cancelAfterChecksContext{Context: context.Background(), limit: 25}
+	if _, err := buildNavigationProjectionContext(projectionCtx, inputs); !errors.Is(err, context.Canceled) {
+		t.Fatalf("projection error = %v, want internal cancellation", err)
+	}
+	if got := projectionCtx.checks.Load(); got > projectionCtx.limit+2 {
+		t.Fatalf("projection continued after cancellation: %d checks", got)
+	}
+
+	projection, err := buildNavigationProjection(inputs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	fingerprintCtx := &cancelAfterChecksContext{Context: context.Background(), limit: 25}
+	if _, _, err := navigationLogicalFingerprintsContext(fingerprintCtx, projection); !errors.Is(err, context.Canceled) {
+		t.Fatalf("fingerprint error = %v, want internal cancellation", err)
+	}
+	if got := fingerprintCtx.checks.Load(); got > fingerprintCtx.limit+2 {
+		t.Fatalf("fingerprint traversal continued after cancellation: %d checks", got)
+	}
+}
+
 func TestNavigationServiceGenerationAndSafeIntegerOverflow(t *testing.T) {
 	generated, err := newNavigationGenerationID()
 	if err != nil {
@@ -572,43 +705,87 @@ func TestNavigationServiceStartUsesExactBoundaryAndResets(t *testing.T) {
 	first := now.Add(14 * 24 * time.Hour)
 	second := now.Add(24 * time.Hour)
 	source.nextBoundary = first
-	waits := make(chan time.Time, 4)
-	releases := make(chan struct{}, 4)
+	timers := make(chan *fakeNavigationTimer, 4)
 	service := newTestNavigationService(t, source, func(cfg *navigationServiceConfig) {
 		cfg.Now = func() time.Time { return now }
-		cfg.WaitUntil = func(ctx context.Context, boundary time.Time) error {
-			waits <- boundary
-			select {
-			case <-ctx.Done():
-				return ctx.Err()
-			case <-releases:
-				return nil
-			}
+		cfg.NewTimer = func(delay time.Duration) navigationTimer {
+			timer := &fakeNavigationTimer{delay: delay, ch: make(chan time.Time, 1)}
+			timers <- timer
+			return timer
 		}
 	})
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() { service.Start(ctx); close(done) }()
-	if got := <-waits; !got.Equal(first) {
-		t.Fatalf("first boundary = %v, want %v", got, first)
+	firstTimer := <-timers
+	if got, want := firstTimer.delay, first.Sub(now); got != want {
+		t.Fatalf("first boundary delay = %v, want %v", got, want)
 	}
 	source.mu.Lock()
 	source.nextBoundary = second
 	source.revision++
 	source.mu.Unlock()
 	service.Invalidate(navigationChangeHint{Time: true})
-	releases <- struct{}{}
-	if got := <-waits; !got.Equal(second) {
-		t.Fatalf("reset boundary = %v, want %v", got, second)
+	secondTimer := <-timers
+	if !firstTimer.stopped.Load() {
+		t.Fatal("superseded boundary timer was not stopped")
+	}
+	if got, want := secondTimer.delay, second.Sub(now); got != want {
+		t.Fatalf("reset boundary delay = %v, want %v", got, want)
 	}
 	cancel()
-	releases <- struct{}{}
 	select {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("scheduler did not stop with lifecycle context")
 	}
+	if !secondTimer.stopped.Load() {
+		t.Fatal("active boundary timer was not stopped")
+	}
 }
+
+func TestNavigationServiceStartWaitsForOwnedBuildToStop(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	previous := buildNavigationServiceProjectionContext
+	entered := make(chan struct{})
+	canceled := make(chan struct{})
+	release := make(chan struct{})
+	buildNavigationServiceProjectionContext = func(ctx context.Context, inputs navigationBuildInputs) (navigationProjection, error) {
+		close(entered)
+		<-ctx.Done()
+		close(canceled)
+		<-release
+		return navigationProjection{}, ctx.Err()
+	}
+	t.Cleanup(func() { buildNavigationServiceProjectionContext = previous })
+	service := newTestNavigationService(t, source)
+	ctx, cancel := context.WithCancel(t.Context())
+	done := make(chan struct{})
+	go func() { service.Start(ctx); close(done) }()
+	<-entered
+	cancel()
+	<-canceled
+	select {
+	case <-done:
+		t.Fatal("Start returned while its projection build was still running")
+	default:
+	}
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("Start did not return after owned build stopped")
+	}
+}
+
+type fakeNavigationTimer struct {
+	delay   time.Duration
+	ch      chan time.Time
+	stopped atomic.Bool
+}
+
+func (t *fakeNavigationTimer) C() <-chan time.Time { return t.ch }
+func (t *fakeNavigationTimer) Stop() bool          { return !t.stopped.Swap(true) }
 
 func TestNavigationServiceSchedulerRetriesEmptyAndFailedCaptures(t *testing.T) {
 	now := time.Unix(1_700_000_000, 0).UTC()

@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
@@ -130,26 +131,50 @@ type navigationPinSection struct {
 // already ordered and tiered by hubcore; this function only adds wire shaping,
 // pin/favorite decorations, bounds, and indexes.
 func buildNavigationProjection(inputs navigationBuildInputs) (navigationProjection, error) {
-	if err := validateNavigationInputs(inputs); err != nil {
+	return buildNavigationProjectionContext(context.Background(), inputs)
+}
+
+// buildNavigationProjectionContext is the bounded form used by the service.
+// Every potentially large collection and recursive walk checks ctx.
+func buildNavigationProjectionContext(ctx context.Context, inputs navigationBuildInputs) (navigationProjection, error) {
+	if err := validateNavigationInputsContext(ctx, inputs); err != nil {
 		return navigationProjection{}, err
 	}
-	p := navigationProjection{inputs: cloneNavigationInputs(inputs), pinSectionIDs: make(map[string]bool), projects: make(map[string]hubcore.TreeProject), catalogs: make(map[navigationResourceKind][]hubcore.TreeProject), locations: make(map[string]hubapi.NavigationSessionLocation)}
-	p.inputs.Tree = inputs.Tree.Snapshot()
+	cloned, err := cloneNavigationInputsContext(ctx, inputs)
+	if err != nil {
+		return navigationProjection{}, err
+	}
+	p := navigationProjection{inputs: cloned, pinSectionIDs: make(map[string]bool), projects: make(map[string]hubcore.TreeProject), catalogs: make(map[navigationResourceKind][]hubcore.TreeProject), locations: make(map[string]hubapi.NavigationSessionLocation)}
 	p.live = p.inputs.Tree.Live
 	p.needsYou = p.inputs.Tree.NeedsYou
-	p.pinCandidates = navigationPinCandidates(inputs.Tree)
+	p.pinCandidates, err = navigationPinCandidatesContext(ctx, p.inputs.Tree)
+	if err != nil {
+		return navigationProjection{}, err
+	}
 	for _, section := range p.inputs.PinSections {
+		if err := ctx.Err(); err != nil {
+			return navigationProjection{}, err
+		}
 		p.pinSectionIDs[section.ID] = true
 	}
 
 	buckets := navigationProjectBuckets(p.inputs.Tree)
+	if err := ctx.Err(); err != nil {
+		return navigationProjection{}, err
+	}
 	p.catalogs[navigationResourceProjects] = append([]hubcore.TreeProject(nil), buckets.active...)
 	p.catalogs[navigationResourceArchivedProjects] = append([]hubcore.TreeProject(nil), buckets.archived...)
 	p.catalogs[navigationResourceTestRuns] = append([]hubcore.TreeProject(nil), buckets.testRuns...)
 	for _, project := range buckets.all() {
+		if err := ctx.Err(); err != nil {
+			return navigationProjection{}, err
+		}
 		p.projects[project.Key] = project
 	}
-	p.pinSections = p.buildPinSections()
+	p.pinSections, err = p.buildPinSectionsContext(ctx)
+	if err != nil {
+		return navigationProjection{}, err
+	}
 	p.manifest = hubapi.NavigationManifest{
 		GenerationID:     p.inputs.GenerationID,
 		Revision:         p.inputs.Revision,
@@ -169,8 +194,61 @@ func buildNavigationProjection(inputs navigationBuildInputs) (navigationProjecti
 	if err := navigationJSONWithin(p.manifest, maxNavigationManifestBytes); err != nil {
 		return navigationProjection{}, fmt.Errorf("navigation manifest: %w", err)
 	}
-	p.indexLocations()
+	if err := p.indexLocationsContext(ctx); err != nil {
+		return navigationProjection{}, err
+	}
 	return p, nil
+}
+
+func cloneNavigationInputsContext(ctx context.Context, in navigationBuildInputs) (navigationBuildInputs, error) {
+	if err := ctx.Err(); err != nil {
+		return navigationBuildInputs{}, err
+	}
+	out := in
+	out.Sources = append([]hubapi.Source(nil), in.Sources...)
+	cloneBool := func(values map[string]bool) (map[string]bool, error) {
+		result := make(map[string]bool, len(values))
+		for key, value := range values {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			result[key] = value
+		}
+		return result, nil
+	}
+	var err error
+	if out.Live, err = cloneBool(in.Live); err != nil {
+		return navigationBuildInputs{}, err
+	}
+	if out.Renameable, err = cloneBool(in.Renameable); err != nil {
+		return navigationBuildInputs{}, err
+	}
+	if out.SessionFavorite, err = cloneBool(in.SessionFavorite); err != nil {
+		return navigationBuildInputs{}, err
+	}
+	if out.ProjectFavorite, err = cloneBool(in.ProjectFavorite); err != nil {
+		return navigationBuildInputs{}, err
+	}
+	out.PinSectionBySession = make(map[string]string, len(in.PinSectionBySession))
+	for key, value := range in.PinSectionBySession {
+		if err := ctx.Err(); err != nil {
+			return navigationBuildInputs{}, err
+		}
+		out.PinSectionBySession[key] = value
+	}
+	out.PinSections = append([]hubcore.PinSection(nil), in.PinSections...)
+	out.PinAssignments = make(map[string]hubcore.SessionPin, len(in.PinAssignments))
+	for id, assignment := range in.PinAssignments {
+		if err := ctx.Err(); err != nil {
+			return navigationBuildInputs{}, err
+		}
+		out.PinAssignments[id] = assignment
+	}
+	out.Tree, err = in.Tree.SnapshotContext(ctx)
+	if err != nil {
+		return navigationBuildInputs{}, err
+	}
+	return out, nil
 }
 
 func cloneNavigationInputs(in navigationBuildInputs) navigationBuildInputs {
@@ -208,15 +286,32 @@ func cloneNavigationStringMap(in map[string]string) map[string]string {
 }
 
 func cloneNavigationNodes(nodes []hubcore.TreeNode) []hubcore.TreeNode {
-	out := make([]hubcore.TreeNode, len(nodes))
-	for index, node := range nodes {
-		out[index] = node
-		out[index].Children = cloneNavigationNodes(node.Children)
-	}
+	out, _ := cloneNavigationNodesContext(context.Background(), nodes)
 	return out
 }
 
+func cloneNavigationNodesContext(ctx context.Context, nodes []hubcore.TreeNode) ([]hubcore.TreeNode, error) {
+	out := make([]hubcore.TreeNode, len(nodes))
+	for index, node := range nodes {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		out[index] = node
+		children, err := cloneNavigationNodesContext(ctx, node.Children)
+		if err != nil {
+			return nil, err
+		}
+		out[index].Children = children
+	}
+	return out, nil
+}
+
 func navigationPinCandidates(tree hubcore.Tree) []hubcore.TreeNode {
+	out, _ := navigationPinCandidatesContext(context.Background(), tree)
+	return out
+}
+
+func navigationPinCandidatesContext(ctx context.Context, tree hubcore.Tree) ([]hubcore.TreeNode, error) {
 	// Tree.PinCandidates reads hubcore's retained uncapped slices. Snapshot
 	// fixtures and deserialized trees may only have exported tier fields, so use
 	// TierRows and retain the same session/cluster eligibility here.
@@ -229,29 +324,51 @@ func navigationPinCandidates(tree hubcore.Tree) []hubcore.TreeNode {
 		seen[node.ID] = true
 		out = append(out, node)
 	}
-	appendRows := func(rows []hubcore.TreeNode) {
+	appendRows := func(rows []hubcore.TreeNode) error {
 		for _, node := range rows {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			switch node.Kind {
 			case "session":
 				appendNode(node)
 			case "cluster":
 				for _, child := range node.Children {
+					if err := ctx.Err(); err != nil {
+						return err
+					}
 					appendNode(child)
 				}
 			}
 		}
+		return nil
 	}
-	appendRows(tree.PinCandidates())
+	if err := appendRows(tree.PinCandidates()); err != nil {
+		return nil, err
+	}
 	for _, project := range append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...) {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		for _, tier := range []string{"current", "recent", "archived"} {
 			rows, _ := project.TierRows(tier)
-			appendRows(rows)
+			if err := appendRows(rows); err != nil {
+				return nil, err
+			}
 		}
 	}
-	return cloneNavigationNodes(out)
+	cloned, err := cloneNavigationNodesContext(ctx, out)
+	return cloned, err
 }
 
 func validateNavigationInputs(inputs navigationBuildInputs) error {
+	return validateNavigationInputsContext(context.Background(), inputs)
+}
+
+func validateNavigationInputsContext(ctx context.Context, inputs navigationBuildInputs) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if err := validateNavigationIdentity("generation", inputs.GenerationID, false); err != nil {
 		return err
 	}
@@ -259,6 +376,9 @@ func validateNavigationInputs(inputs navigationBuildInputs) error {
 		return fmt.Errorf("navigation has %d sources, maximum is 64", len(inputs.Sources))
 	}
 	for _, source := range inputs.Sources {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := validateNavigationIdentity("source ID", source.ID, false); err != nil {
 			return err
 		}
@@ -270,6 +390,9 @@ func validateNavigationInputs(inputs navigationBuildInputs) error {
 		}
 	}
 	for _, section := range inputs.PinSections {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := validateNavigationIdentity("pin section ID", section.ID, false); err != nil {
 			return err
 		}
@@ -278,6 +401,9 @@ func validateNavigationInputs(inputs navigationBuildInputs) error {
 		}
 	}
 	for _, project := range append(append([]hubcore.TreeProject(nil), inputs.Tree.Projects...), inputs.Tree.ArchivedProjects...) {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if err := validateNavigationIdentity("project key", project.Key, false); err != nil {
 			return err
 		}
@@ -292,15 +418,15 @@ func validateNavigationInputs(inputs navigationBuildInputs) error {
 			if !ok {
 				return fmt.Errorf("project %q has invalid %s tier", project.Key, tier)
 			}
-			if err := validateNavigationNodes(rows); err != nil {
+			if err := validateNavigationNodesContext(ctx, rows); err != nil {
 				return err
 			}
 		}
 	}
-	if err := validateNavigationNodes(inputs.Tree.Live); err != nil {
+	if err := validateNavigationNodesContext(ctx, inputs.Tree.Live); err != nil {
 		return err
 	}
-	return validateNavigationNodes(inputs.Tree.NeedsYou)
+	return validateNavigationNodesContext(ctx, inputs.Tree.NeedsYou)
 }
 
 func navigationSources(sources []hubapi.Source) hubapi.NavigationArray[hubapi.Source] {
@@ -313,7 +439,14 @@ func navigationSources(sources []hubapi.Source) hubapi.NavigationArray[hubapi.So
 }
 
 func validateNavigationNodes(rows []hubcore.TreeNode) error {
+	return validateNavigationNodesContext(context.Background(), rows)
+}
+
+func validateNavigationNodesContext(ctx context.Context, rows []hubcore.TreeNode) error {
 	for _, node := range rows {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		if _, err := navigationRef(node.ID); err != nil {
 			return err
 		}
@@ -326,7 +459,7 @@ func validateNavigationNodes(rows []hubcore.TreeNode) error {
 		if err := validateNavigationString("branch", node.Branch, maxNavigationLabelRunes); err != nil {
 			return err
 		}
-		if err := validateNavigationNodes(node.Children); err != nil {
+		if err := validateNavigationNodesContext(ctx, node.Children); err != nil {
 			return err
 		}
 	}
@@ -738,17 +871,31 @@ func (p navigationProjection) projectSummary(project hubcore.TreeProject) hubapi
 }
 
 func (p navigationProjection) buildPinSections() []navigationPinSection {
+	out, _ := p.buildPinSectionsContext(context.Background())
+	return out
+}
+
+func (p navigationProjection) buildPinSectionsContext(ctx context.Context) ([]navigationPinSection, error) {
 	byID := make(map[string]navigationPinSection, len(p.inputs.PinSections))
 	for _, section := range p.inputs.PinSections {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		byID[section.ID] = navigationPinSection{id: section.ID, name: section.Name}
 	}
 	assignment := cloneNavigationStringMap(p.inputs.PinSectionBySession)
 	for sessionID, pin := range p.inputs.PinAssignments {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if assignment[sessionID] == "" {
 			assignment[sessionID] = pin.SectionID
 		}
 	}
 	for _, node := range p.pinCandidates {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		ref, err := navigationRef(node.ID)
 		if err != nil {
 			continue
@@ -766,11 +913,17 @@ func (p navigationProjection) buildPinSections() []navigationPinSection {
 	}
 	out := make([]navigationPinSection, 0, len(byID))
 	for _, section := range byID {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		if len(section.rows) != 0 {
 			out = append(out, section)
 		}
 	}
 	for index := range out {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		sort.SliceStable(out[index].rows, func(left, right int) bool {
 			leftNode, rightNode := out[index].rows[left], out[index].rows[right]
 			if !leftNode.UpdatedAt.Equal(rightNode.UpdatedAt) {
@@ -791,17 +944,33 @@ func (p navigationProjection) buildPinSections() []navigationPinSection {
 		}
 		return left < right
 	})
-	return out
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return out, nil
 }
 
 func (p navigationProjection) indexLocations() {
+	_ = p.indexLocationsContext(context.Background())
+}
+
+func (p navigationProjection) indexLocationsContext(ctx context.Context) error {
 	indexRows := func(rows []hubcore.TreeNode, projectKey, tier string) {
 		for _, root := range rows {
-			p.indexLocationNode(root, root, projectKey, tier, true)
+			if ctx.Err() != nil {
+				return
+			}
+			_ = p.indexLocationNodeContext(ctx, root, root, projectKey, tier, true)
 		}
 	}
 	for _, kind := range []navigationResourceKind{navigationResourceProjects, navigationResourceArchivedProjects, navigationResourceTestRuns} {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
 		for _, project := range p.catalogs[kind] {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
 			for _, tier := range []string{"current", "recent", "archived"} {
 				rows, _ := project.TierRows(tier)
 				indexRows(rows, project.Key, tier)
@@ -809,25 +978,39 @@ func (p navigationProjection) indexLocations() {
 		}
 	}
 	indexRows(p.live, "", "live")
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	indexRows(p.needsYou, "", "needs_you")
+	return ctx.Err()
 }
 
 func (p navigationProjection) indexLocationNode(node, root hubcore.TreeNode, projectKey, tier string, topLevel bool) {
+	_ = p.indexLocationNodeContext(context.Background(), node, root, projectKey, tier, topLevel)
+}
+
+func (p navigationProjection) indexLocationNodeContext(ctx context.Context, node, root hubcore.TreeNode, projectKey, tier string, topLevel bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	ref, err := navigationRef(node.ID)
 	if err != nil {
-		return
+		return nil
 	}
 	rootRef, err := navigationRef(root.ID)
 	if err != nil {
-		return
+		return nil
 	}
 	if _, exists := p.locations[ref.String()]; !exists {
 		summary := navigationProjector{projection: p}.projectShallow(node)
 		p.locations[ref.String()] = hubapi.NavigationSessionLocation{GenerationID: p.inputs.GenerationID, Revision: p.inputs.Revision, Ref: ref.String(), TopLevelRef: rootRef.String(), ProjectKey: projectKey, TopLevel: topLevel, Tier: tier, PinSectionID: p.pinSectionFor(node.ID, ref.String()), Session: &summary}
 	}
 	for _, child := range node.Children {
-		p.indexLocationNode(child, root, projectKey, tier, false)
+		if err := p.indexLocationNodeContext(ctx, child, root, projectKey, tier, false); err != nil {
+			return err
+		}
 	}
+	return nil
 }
 
 // navigationTraversal is shared by every recursive row projection in a single

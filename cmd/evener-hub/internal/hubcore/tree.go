@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -41,39 +42,94 @@ type Tree struct {
 // private tier slices retained for pagination. Consumers that retain a tree
 // beyond their input snapshot must use this instead of copying Tree values.
 func (t Tree) Snapshot() Tree {
-	return Tree{
-		NeedsYou:         cloneTreeNodes(t.NeedsYou),
-		Live:             cloneTreeNodes(t.Live),
-		Projects:         cloneTreeProjects(t.Projects),
-		ArchivedProjects: cloneTreeProjects(t.ArchivedProjects),
-		favoriteLive:     cloneTreeNodes(t.favoriteLive),
+	out, _ := t.SnapshotContext(context.Background())
+	return out
+}
+
+// SnapshotContext is Snapshot with cancellation checks at every collection and
+// recursive node boundary. It lets bounded navigation builds stop before a
+// large retained tree has been copied in full.
+func (t Tree) SnapshotContext(ctx context.Context) (Tree, error) {
+	needsYou, err := cloneTreeNodesContext(ctx, t.NeedsYou)
+	if err != nil {
+		return Tree{}, err
 	}
+	live, err := cloneTreeNodesContext(ctx, t.Live)
+	if err != nil {
+		return Tree{}, err
+	}
+	projects, err := cloneTreeProjectsContext(ctx, t.Projects)
+	if err != nil {
+		return Tree{}, err
+	}
+	archived, err := cloneTreeProjectsContext(ctx, t.ArchivedProjects)
+	if err != nil {
+		return Tree{}, err
+	}
+	favorites, err := cloneTreeNodesContext(ctx, t.favoriteLive)
+	if err != nil {
+		return Tree{}, err
+	}
+	return Tree{NeedsYou: needsYou, Live: live, Projects: projects, ArchivedProjects: archived, favoriteLive: favorites}, nil
 }
 
 func cloneTreeProjects(projects []TreeProject) []TreeProject {
-	out := make([]TreeProject, len(projects))
-	for index, project := range projects {
-		out[index] = project
-		out[index].Current = cloneTreeNodes(project.Current)
-		out[index].Recent = cloneTreeNodes(project.Recent)
-		out[index].Archived = cloneTreeNodes(project.Archived)
-		out[index].allCurrent = cloneTreeNodes(project.allCurrent)
-		out[index].allRecent = cloneTreeNodes(project.allRecent)
-		out[index].allArchived = cloneTreeNodes(project.allArchived)
-	}
+	out, _ := cloneTreeProjectsContext(context.Background(), projects)
 	return out
 }
 
+func cloneTreeProjectsContext(ctx context.Context, projects []TreeProject) ([]TreeProject, error) {
+	out := make([]TreeProject, len(projects))
+	for index, project := range projects {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		out[index] = project
+		var err error
+		if out[index].Current, err = cloneTreeNodesContext(ctx, project.Current); err != nil {
+			return nil, err
+		}
+		if out[index].Recent, err = cloneTreeNodesContext(ctx, project.Recent); err != nil {
+			return nil, err
+		}
+		if out[index].Archived, err = cloneTreeNodesContext(ctx, project.Archived); err != nil {
+			return nil, err
+		}
+		if out[index].allCurrent, err = cloneTreeNodesContext(ctx, project.allCurrent); err != nil {
+			return nil, err
+		}
+		if out[index].allRecent, err = cloneTreeNodesContext(ctx, project.allRecent); err != nil {
+			return nil, err
+		}
+		if out[index].allArchived, err = cloneTreeNodesContext(ctx, project.allArchived); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
 func cloneTreeNodes(nodes []TreeNode) []TreeNode {
+	out, _ := cloneTreeNodesContext(context.Background(), nodes)
+	return out
+}
+
+func cloneTreeNodesContext(ctx context.Context, nodes []TreeNode) ([]TreeNode, error) {
 	if nodes == nil {
-		return nil
+		return nil, ctx.Err()
 	}
 	out := make([]TreeNode, len(nodes))
 	for index, node := range nodes {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		out[index] = node
-		out[index].Children = cloneTreeNodes(node.Children)
+		children, err := cloneTreeNodesContext(ctx, node.Children)
+		if err != nil {
+			return nil, err
+		}
+		out[index].Children = children
 	}
-	return out
+	return out, nil
 }
 
 // FavoriteCandidates returns every uncapped, top-level session row that is
