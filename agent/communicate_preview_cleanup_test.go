@@ -7,7 +7,6 @@ import (
 	"slices"
 	"sync/atomic"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
@@ -233,9 +232,6 @@ func TestCommunicatePreviewResetsWhenCallerAbortsAfterStream(t *testing.T) {
 	ctx := context.WithValue(context.Background(), sessionLifecycleFaultsKey{}, map[string]error{
 		"abort_after_model": errors.New("abort after model"),
 	})
-	// TRIPWIRE: scripted in-process stream; this only bounds a lifecycle deadlock.
-	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
-	defer cancel()
 	if _, err := sess.ProcessInput(ctx, "run", nil); err == nil {
 		t.Fatal("ProcessInput succeeded after injected abort_after_model")
 	}
