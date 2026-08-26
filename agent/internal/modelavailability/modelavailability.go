@@ -12,7 +12,6 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"sort"
 	"strings"
 	"sync"
@@ -194,7 +193,7 @@ func (s *Snapshot) Page(token string, maxCount, maxBytes int) (Page, error) {
 		end++
 	}
 	if end == off {
-		return Page{}, fmt.Errorf("model choice exceeds byte budget")
+		return Page{}, errors.New("model choice exceeds byte budget")
 	}
 	p := Page{Choices: append([]string(nil), s.Choices[off:end]...), Version: s.Version, Complete: s.Complete, Status: s.Status}
 	if end < len(s.Choices) {

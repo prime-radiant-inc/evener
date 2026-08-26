@@ -2,7 +2,8 @@ package agent
 
 import (
 	"context"
-	"fmt"
+	"errors"
+
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/modelavailability"
 	"primeradiant.com/evener/agent/internal/tool"
@@ -22,7 +23,7 @@ func registerModelListTool(reg *tool.Registry, s *Session) error {
 				bytes = int(n)
 			}
 			if count > modelavailability.DefaultInlineMaxCount || bytes > modelavailability.DefaultInlineMaxBytes {
-				return nil, fmt.Errorf("page bounds exceed contract")
+				return nil, errors.New("page bounds exceed contract")
 			}
 			return s.modelSnapshot.Page(cursor, count, bytes)
 		},
