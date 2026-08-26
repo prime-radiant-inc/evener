@@ -113,6 +113,7 @@ async function focusAudit(client) {
   );
   const expected = setup.map(({ id }) => id);
   const actual = [];
+  const stabilizations = [stabilization];
   for (let index = 0; index < expected.length; index += 1) {
     await client.send("Input.dispatchKeyEvent", {
       type: "keyDown",
@@ -126,7 +127,7 @@ async function focusAudit(client) {
       code: "Tab",
       windowsVirtualKeyCode: 9,
     });
-    await stabilizePaint(client);
+    stabilizations.push(await stabilizePaint(client));
     actual.push(
       await evaluate(
         client,
@@ -179,6 +180,7 @@ async function focusAudit(client) {
       actualOrder: index + 1,
     })),
     stabilization,
+    stabilizations,
   };
 }
 
@@ -342,7 +344,12 @@ async function runCase({
       focusOrder: focus.focusOrder,
       focusCandidates: focus.focusCandidates,
     });
-    const capabilityFailures = [];
+    const capabilityFailures = [
+      ...(preCollectionStabilization.capabilityFailures ?? []),
+      ...focus.stabilizations.flatMap(
+        (evidence) => evidence.capabilityFailures ?? [],
+      ),
+    ];
     if (viewport.visibleHeight) {
       const layoutHeight = viewport.layoutHeight ?? viewport.height;
       if (
@@ -403,6 +410,7 @@ async function runCase({
       stabilization: {
         preCollection: preCollectionStabilization,
         focusStart: focus.stabilization,
+        focusSteps: focus.stabilizations,
       },
       state,
       name,

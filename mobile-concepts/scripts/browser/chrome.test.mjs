@@ -9,6 +9,7 @@ import {
   activePort,
   bounded,
   closeBrowserProcess,
+  closePageTarget,
   runOwnedCleanup,
 } from "./chrome.mjs";
 
@@ -69,4 +70,35 @@ test("owned cleanup attempts every release and preserves primary errors", async 
     },
   );
   assert.deepEqual(calls, ["target", "listener"]);
+});
+
+test("actual target cleanup releases WebSocket after Target.closeTarget rejects", async () => {
+  const calls = [];
+  const browser = {
+    async send(method, params) {
+      calls.push([method, params]);
+      throw new Error("target close rejected");
+    },
+  };
+  const page = {
+    async close() {
+      calls.push(["WebSocket.close"]);
+      throw new Error("websocket close rejected");
+    },
+  };
+  await assert.rejects(
+    closePageTarget(browser, page, "target-1", new Error("case failed")),
+    (error) => {
+      assert(error instanceof AggregateError);
+      assert.deepEqual(
+        error.errors.map(({ message }) => message),
+        ["case failed", "target close rejected", "websocket close rejected"],
+      );
+      return true;
+    },
+  );
+  assert.deepEqual(calls, [
+    ["Target.closeTarget", { targetId: "target-1" }],
+    ["WebSocket.close"],
+  ]);
 });
