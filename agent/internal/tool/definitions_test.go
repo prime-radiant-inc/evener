@@ -820,3 +820,16 @@ func TestDefAskUserDescriptionIsSpecVerbatim(t *testing.T) {
 		}
 	}
 }
+
+func TestDefDelegateWithSandboxIncludesVerifiedModelChoices(t *testing.T) {
+	def := DefDelegateWithSandbox(nil, DelegateSandboxSchema{
+		Available:        true,
+		Modes:            []string{"off"},
+		ModelDescription: "Verified at startup (snapshot v1): openai/gpt-5, vertex/gemini-2.5.",
+	})
+	props := def.Parameters["properties"].(map[string]any)
+	model := props["model"].(map[string]any)
+	if got := model["description"].(string); !strings.Contains(got, "openai/gpt-5") {
+		t.Fatalf("model description = %q", got)
+	}
+}

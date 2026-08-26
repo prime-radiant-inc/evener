@@ -26,6 +26,7 @@ import (
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/installid"
 	"primeradiant.com/evener/agent/internal/mcp"
+	"primeradiant.com/evener/agent/internal/modelavailability"
 	"primeradiant.com/evener/agent/internal/sessionlog"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/mcpconfig"
@@ -272,6 +273,21 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		artifactStore:                 store,
 		ownsArtifactStore:             ownsArtifactStore,
 		subscriberCountFn:             cfg.spawn.subscriberCount,
+	}
+	// Capture model availability once, before tool schemas are projected. The
+	// snapshot is startup-bound and never refreshed silently; failed providers
+	// remain visible as unverified rather than being mistaken for empty lists.
+	if names := client.ProviderNames(); len(names) > 0 {
+		snapshot := modelavailability.Capture(context.Background(), names, func(ctx context.Context, name string) ([]llm.ModelInfo, error) {
+			return client.ListModels(ctx, name)
+		}, 2*time.Second)
+		if text, ok := snapshot.Inline(modelavailability.DefaultInlineMaxCount, modelavailability.DefaultInlineMaxBytes); ok {
+			s.delegateModelDescription = text
+		} else if len(snapshot.Choices) > 0 {
+			s.delegateModelDescription = fmt.Sprintf("Startup model snapshot %s is incomplete or too large; use the model-list read tool to browse verified choices.", snapshot.Version)
+		} else {
+			s.delegateModelDescription = fmt.Sprintf("Startup model snapshot %s has no verified choices; provider availability is unverified.", snapshot.Version)
+		}
 	}
 	s.createdAt = s.sclock().Now().UTC()
 	s.initEnvContext(nil)

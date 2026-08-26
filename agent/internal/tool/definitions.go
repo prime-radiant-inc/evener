@@ -110,6 +110,10 @@ type DelegateSandboxSchema struct {
 	RequireNonOffModeForNetwork bool
 	SandboxDescription          string
 	SandboxNetDescription       string
+	// ModelDescription is appended to the model override description when a
+	// caller has captured a bounded, startup-frozen availability snapshot.
+	// Empty preserves the generic string contract.
+	ModelDescription string
 }
 
 // DefDelegate defines the delegate tool, which starts a NEW delegate
@@ -228,6 +232,9 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 	}
 	if sandboxSchema.SandboxNetDescription != "" {
 		props["sandbox_net"].(map[string]any)["description"] = strings.TrimSpace(props["sandbox_net"].(map[string]any)["description"].(string) + " " + sandboxSchema.SandboxNetDescription)
+	}
+	if sandboxSchema.ModelDescription != "" {
+		props["model"].(map[string]any)["description"] = strings.TrimSpace(props["model"].(map[string]any)["description"].(string) + " " + sandboxSchema.ModelDescription)
 	}
 	return def
 }

@@ -1224,7 +1224,9 @@ func (s *Session) delegateCapabilityRoster() string {
 }
 
 func (s *Session) delegateToolDefinition() llm.ToolDefinition {
-	definition := tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), s.delegateSandboxSchemaForEnv(s.env))
+	sandboxSchema := s.delegateSandboxSchemaForEnv(s.env)
+	sandboxSchema.ModelDescription = s.delegateModelDescription
+	definition := tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), sandboxSchema)
 	roster := s.delegateCapabilityRoster()
 	if roster == "" {
 		return definition
@@ -1282,7 +1284,9 @@ func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
 	defs := s.profile.ToolDefinitions()
 	for i := range defs {
 		if defs[i].Name == "delegate" {
-			defs[i] = tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), s.delegateSandboxSchemaForEnv(s.env))
+			sandboxSchema := s.delegateSandboxSchemaForEnv(s.env)
+			sandboxSchema.ModelDescription = s.delegateModelDescription
+			defs[i] = tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), sandboxSchema)
 		}
 		defs[i] = wireToolDef(defs[i], nameMap, s.resultToolName())
 	}
