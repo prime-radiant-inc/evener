@@ -269,6 +269,12 @@ type testConfig struct {
 	// cut is captured. Tests use it only to place deterministic finalize/cut
 	// ordering barriers. Nil in production.
 	beforeTerminalCommunicateAccept func()
+	// afterCommunicateBoundary observes the state transition at a completed
+	// communicate boundary. Nil in production.
+	afterCommunicateBoundary func(*Session)
+	// delegateDeliveryClassified observes whether an incoming waiterless delivery
+	// was deferred to the enclosing ProcessInput drain. Nil in production.
+	delegateDeliveryClassified func(*Session, bool)
 	// terminalCutAfterManagerLock observes captureTerminalNotificationCut after
 	// it owns jm.mu and before it reads durable/running/queue state. It permits a
 	// concurrent finalizer to prove which side of the cut owns the notification.
