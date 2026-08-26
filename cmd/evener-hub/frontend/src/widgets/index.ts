@@ -78,6 +78,8 @@ export type { RadioGroupOption, RadioGroupProps } from "./radiogroup";
 export { RadioGroup } from "./radiogroup";
 export type { RecommendationCardAlternative, RecommendationCardProps } from "./recommendationcard";
 export { RecommendationCard } from "./recommendationcard";
+export type { SegmentedControlOption, SegmentedControlProps } from "./segmentedcontrol";
+export { SegmentedControl } from "./segmentedcontrol";
 export type { SelectOption, SelectProps } from "./select";
 export { Select } from "./select";
 export { SendIcon } from "./sendicon";
