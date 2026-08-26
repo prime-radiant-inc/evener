@@ -20,9 +20,9 @@ import {
   usePrototypeState,
 } from "../core/store";
 import { installViewportMetrics } from "../core/viewport";
-import { ConceptGallery } from "./ConceptGallery";
 import { LabControls } from "./LabControls";
 import { RecoveryBoundary } from "./RecoveryBoundary";
+import { RootApp } from "./RootApp";
 
 interface DiagnosticConsole {
   warn(message: string, detail: { code: string; path: string }): void;
@@ -104,7 +104,6 @@ function FoundationApp({
   const appearance = usePrototypeState((state) => state.appearance);
   const textScale = usePrototypeState((state) => state.textScale);
   const reducedMotion = usePrototypeState((state) => state.reducedMotion);
-  const overlay = usePrototypeState((state) => state.overlay);
   const { prefersDark, prefersReducedMotion } = useSystemPreferences();
   const navigation = useRef<ReturnType<
     typeof createNavigationController
@@ -168,13 +167,7 @@ function FoundationApp({
       data-minimum-target={primitives.minimumTarget}
     >
       <RecoveryBoundary resetPrototype={() => dispatch({ type: "reset" })}>
-        <div
-          data-testid="foundation-background"
-          aria-hidden={overlay !== null || undefined}
-          inert={overlay !== null || undefined}
-        >
-          <ConceptGallery primitives={primitives} dispatch={dispatch} />
-        </div>
+        <RootApp primitives={primitives} dispatch={dispatch} />
         <LabControls primitives={primitives} dispatch={dispatch} />
       </RecoveryBoundary>
     </main>

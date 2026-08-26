@@ -166,7 +166,7 @@ describe("App", () => {
     expect(JSON.stringify(warn.mock.calls)).not.toContain("raw-secret-marker");
   });
 
-  it("resolves one platform shell and remains gallery-focused after selection", () => {
+  it("resolves one platform shell and opens the selected live renderer", () => {
     render(<App platformInput={platformInput} storage={storage()} />);
     expect(document.documentElement).toHaveAttribute(
       "data-platform",
@@ -178,10 +178,16 @@ describe("App", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "Select Stillwater" }));
-    expect(
-      screen.getByRole("button", { name: "Select Stillwater" }),
-    ).toHaveAttribute("aria-pressed", "true");
-    expect(screen.getAllByRole("article")).toHaveLength(3);
+    expect(screen.queryByTestId("concept-gallery")).not.toBeInTheDocument();
+    expect(document.querySelector(".concept-stillwater")).toHaveAttribute(
+      "data-platform",
+      "android",
+    );
+    expect(document.querySelector(".concept-stillwater main")).toHaveAttribute(
+      "data-route",
+      "sessions",
+    );
+    expect(screen.getByText("Mobile release checklist")).toBeVisible();
     expect(screen.queryByText(/fake session/i)).not.toBeInTheDocument();
   });
 
@@ -242,7 +248,9 @@ describe("App", () => {
 
   it("combines explicit preferences with system values", () => {
     render(<App platformInput={platformInput} storage={storage()} />);
-    fireEvent.click(screen.getByRole("button", { name: "Lab Controls" }));
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Lab Controls" })[0] as HTMLElement,
+    );
     fireEvent.click(screen.getByRole("radio", { name: "light" }));
     fireEvent.click(screen.getByRole("checkbox", { name: "Reduce motion" }));
     act(() => {
@@ -275,7 +283,9 @@ describe("App", () => {
       screen.getByRole("button", { name: "Select Constellation" }),
     );
     expect(preferenceStorage.setItem).toHaveBeenCalled();
-    fireEvent.click(screen.getByRole("button", { name: "Lab Controls" }));
+    fireEvent.click(
+      screen.getAllByRole("button", { name: "Lab Controls" })[0] as HTMLElement,
+    );
     fireEvent.click(screen.getByRole("button", { name: "Reset prototype" }));
 
     expect(preferenceStorage.removeItem).toHaveBeenCalled();
