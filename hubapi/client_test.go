@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -185,6 +186,84 @@ func TestNavigationAllRoutesAndWireTypes(t *testing.T) {
 	}
 	if got, err := client.NavigationSessionLocation(ctx, "local:a", ""); err != nil {
 		t.Fatalf("location: %+v %v", got, err)
+	}
+}
+
+func TestNavigationExactRoutesAndDefaultQueries(t *testing.T) {
+	type expectedRequest struct {
+		path, query string
+	}
+	want := []expectedRequest{
+		{"/api/navigation", ""},
+		{"/api/navigation/sections/needs-you+%252F%21", ""},
+		{"/api/navigation/pin-sections", ""},
+		{"/api/navigation/pin-sections/p%2F+%252F", ""},
+		{"/api/navigation/catalogs/archived+%252F%21", ""},
+		{"/api/navigation/projects/a%2Fb+%25252F", ""},
+		{"/api/navigation/projects/a%2Fb+%25252F", "tier=recent"},
+		{"/api/navigation/sessions/local:a%2Fb+%252F", ""},
+	}
+	seen := 0
+	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if seen >= len(want) {
+			t.Errorf("unexpected request %s", r.URL.RequestURI())
+		} else {
+			got := expectedRequest{r.URL.EscapedPath(), r.URL.RawQuery}
+			if got != want[seen] {
+				t.Errorf("request %d = %+v, want %+v", seen, got, want[seen])
+			}
+		}
+		seen++
+		_ = json.NewEncoder(w).Encode(map[string]any{})
+	})
+	defer srv.Close()
+	ctx := context.Background()
+	_, _ = client.NavigationManifest(ctx, "")
+	_, _ = client.NavigationSection(ctx, "needs-you+%2F!", 0, 0, "")
+	_, _ = client.NavigationPinSections(ctx, 0, 0, "")
+	_, _ = client.NavigationPinSection(ctx, "p/+%2F", 0, 0, "")
+	_, _ = client.NavigationCatalog(ctx, "archived+%2F!", 0, 0, "")
+	_, _ = client.NavigationProject(ctx, "a/b+%252F", "")
+	_, _ = client.NavigationProjectPage(ctx, "a/b+%252F", "recent", 0, 0, "")
+	_, _ = client.NavigationSessionLocation(ctx, "local:a/b+%2F", "")
+	if seen != len(want) {
+		t.Fatalf("saw %d requests, want %d", seen, len(want))
+	}
+}
+
+func TestNavigationContractsHaveNoSequenceMember(t *testing.T) {
+	values := []any{
+		hubapi.NavigationManifest{}, hubapi.NavigationSectionResource{}, hubapi.NavigationPinSectionCatalog{},
+		hubapi.NavigationProjectCatalog{}, hubapi.NavigationProjectResource{}, hubapi.NavigationProjectPage{}, hubapi.NavigationSessionLocation{},
+	}
+	for _, value := range values {
+		raw, err := json.Marshal(value)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var object map[string]json.RawMessage
+		if err := json.Unmarshal(raw, &object); err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := object["sequence"]; ok {
+			t.Fatalf("%T unexpectedly has sequence member: %s", value, raw)
+		}
+	}
+}
+
+func TestNavigationMalformedErrorRetainsTypedStatusAndZeroPayload(t *testing.T) {
+	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		_, _ = fmt.Fprint(w, "not json")
+	})
+	defer srv.Close()
+	got, err := client.NavigationManifest(context.Background(), "")
+	var httpErr *hubapi.HTTPError
+	if !errors.As(err, &httpErr) || httpErr.Status != http.StatusBadGateway {
+		t.Fatalf("error=%v, want typed 502", err)
+	}
+	if httpErr.Response != (hubapi.ErrorResponse{}) || !reflect.DeepEqual(got.Value, hubapi.NavigationManifest{}) {
+		t.Fatalf("payload leaked: error=%+v result=%+v", httpErr.Response, got.Value)
 	}
 }
 
