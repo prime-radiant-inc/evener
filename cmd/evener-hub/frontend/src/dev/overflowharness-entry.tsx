@@ -26,7 +26,8 @@ import { DockHost } from "../shell/DockHost";
 import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { threadsStore } from "../stores/threads";
-import { initTranscriptDisplay } from "../stores/transcriptDisplay";
+import { initTranscriptDisplay, transcriptDisplayStore } from "../stores/transcriptDisplay";
+import { makeTranscriptDisplayConfig } from "../transcriptDisplay/config";
 import "../styles/tokens.css";
 import "../styles/global.css";
 
@@ -213,6 +214,19 @@ threadsStore.setState((s) => ({
   threads: new Map(s.threads).set(REF, hydrateThread(snapshot, REF, 1000)),
 }));
 initTranscriptDisplay();
+// The browser guard must not inherit a developer's local transcript settings.
+// Activity plus both diagnostic families keeps the real system-prompt and raw
+// notification disclosure fixtures mounted in both layout classes.
+const guardTranscriptConfig = makeTranscriptDisplayConfig(
+  { kind: "preset", level: "activity" },
+  {
+    systemEvents: true,
+    promptEvents: true,
+  },
+);
+transcriptDisplayStore.setState({
+  local: { desktop: guardTranscriptConfig, mobile: guardTranscriptConfig },
+});
 
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("overflowharness.html is missing #root");
@@ -289,7 +303,12 @@ interface DetailGeometry {
   panel: { left: number; right: number; top: number; bottom: number; width: number; height: number } | null;
   horizontalOverflowCount: number;
   targetHeights: number[];
+  targets: Array<{ kind: string; label: string; height: number }>;
+  fieldsetsFound: number;
+  overflowElements: string[];
   fieldsetStacked: boolean;
+  sheetBottomAnchored: boolean;
+  popoverAnchored: boolean;
 }
 
 interface SettingsGeometry {
@@ -299,6 +318,7 @@ interface SettingsGeometry {
   cardOverflowCount: number;
   previewOverflowCount: number;
   previewInnerScrollCount: number;
+  previewsFound: number;
 }
 
 function geometryOf(element: Element) {
@@ -313,13 +333,33 @@ function geometryOf(element: Element) {
   };
 }
 
+function isScrollableElement(element: HTMLElement): boolean {
+  if (element.clientWidth <= 1) return false;
+  const style = getComputedStyle(element);
+  return (
+    ((style.overflowX === "auto" || style.overflowX === "scroll") && element.scrollWidth > element.clientWidth + 1) ||
+    ((style.overflowY === "auto" || style.overflowY === "scroll") && element.scrollHeight > element.clientHeight + 1)
+  );
+}
+
+function scrollOverflowElements(root: Element): HTMLElement[] {
+  return [root, ...Array.from(root.querySelectorAll<HTMLElement>("*"))].filter(
+    (element): element is HTMLElement => element instanceof HTMLElement && isScrollableElement(element),
+  );
+}
+
 function scrollOverflowCount(root: Element): number {
-  return [root, ...Array.from(root.querySelectorAll<HTMLElement>("*"))].filter((element) => {
-    if (!(element instanceof HTMLElement) || element.clientWidth <= 1) return false;
-    const style = getComputedStyle(element);
-    if (style.overflowX === "hidden" || style.overflowX === "clip") return false;
-    return element.scrollWidth > element.clientWidth + 1;
-  }).length;
+  return scrollOverflowElements(root).length;
+}
+
+function horizontalOverflowElements(root: Element): HTMLElement[] {
+  return [root, ...Array.from(root.querySelectorAll<HTMLElement>("*"))].filter(
+    (element): element is HTMLElement =>
+      element instanceof HTMLElement &&
+      element.clientWidth > 1 &&
+      (getComputedStyle(element).overflowX === "auto" || getComputedStyle(element).overflowX === "scroll") &&
+      element.scrollWidth > element.clientWidth + 1,
+  );
 }
 
 function measureSettings(): SettingsGeometry {
@@ -332,6 +372,7 @@ function measureSettings(): SettingsGeometry {
       cardOverflowCount: 0,
       previewOverflowCount: 0,
       previewInnerScrollCount: 0,
+      previewsFound: 0,
     };
   }
   const cards = Array.from(content.querySelectorAll<HTMLElement>('[data-testid^="transcript-display-card-"]'));
@@ -353,15 +394,23 @@ function measureSettings(): SettingsGeometry {
     cardsStacked,
     cardOverflowCount: cards.reduce((count, card) => count + scrollOverflowCount(card), 0),
     previewOverflowCount: previews.reduce((count, preview) => count + scrollOverflowCount(preview), 0),
+    previewsFound: previews.length,
     // A preview's production TranscriptBody is normal flow. Count only
     // descendants other than the preview root here so the assertion names an
-    // accidental nested scroller instead of the card's own containing box.
+    // accidental nested scroll container instead of the card's own box.
     previewInnerScrollCount: previews.reduce(
       (count, preview) =>
         count +
-        Array.from(preview.querySelectorAll<HTMLElement>("*")).filter(
-          (element) => element.clientWidth > 1 && element.scrollWidth > element.clientWidth + 1,
-        ).length,
+        Array.from(preview.querySelectorAll<HTMLElement>("*")).filter((element) => {
+          if (element.clientWidth <= 1) return false;
+          const style = getComputedStyle(element);
+          return (
+            ((style.overflowX === "auto" || style.overflowX === "scroll") &&
+              element.scrollWidth > element.clientWidth + 1) ||
+            ((style.overflowY === "auto" || style.overflowY === "scroll") &&
+              element.scrollHeight > element.clientHeight + 1)
+          );
+        }).length,
       0,
     ),
   };
@@ -383,7 +432,12 @@ async function inspectDetail(): Promise<DetailGeometry> {
       panel: null,
       horizontalOverflowCount: 0,
       targetHeights: [],
+      targets: [],
+      fieldsetsFound: 0,
+      overflowElements: [],
       fieldsetStacked: false,
+      sheetBottomAnchored: false,
+      popoverAnchored: false,
     };
   }
   const mobile = window.matchMedia("(max-width: 899px)").matches;
@@ -391,11 +445,13 @@ async function inspectDetail(): Promise<DetailGeometry> {
   const triggerBox = geometryOf(trigger);
   const triggerReachable =
     !trigger.disabled &&
+    visible(trigger) &&
     triggerBox.width > 0 &&
     triggerBox.height > 0 &&
     triggerBox.left >= paneBox.left - 1 &&
     triggerBox.right <= paneBox.right + 1 &&
-    triggerBox.top >= paneBox.top - 1;
+    triggerBox.top >= paneBox.top - 1 &&
+    triggerBox.bottom <= paneBox.bottom + 1;
   trigger.click();
   await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
   const finite = document
@@ -417,13 +473,34 @@ async function inspectDetail(): Promise<DetailGeometry> {
       panel: null,
       horizontalOverflowCount: 0,
       targetHeights: [],
+      targets: [],
+      fieldsetsFound: 0,
+      overflowElements: [],
       fieldsetStacked: false,
+      sheetBottomAnchored: false,
+      popoverAnchored: false,
     };
   }
   const panelBox = geometryOf(panel);
-  const targetHeights = Array.from(panel.querySelectorAll<HTMLElement>("button, select")).map(
-    (element) => element.getBoundingClientRect().height,
+  const advanced = Array.from(panel.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+    button.textContent?.trim().startsWith("Advanced"),
   );
+  if (!advanced) throw new Error("Detail editor Advanced disclosure is missing");
+  advanced.click();
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  const panelAnimations = document
+    .getAnimations()
+    .filter((animation) => animation.effect?.getTiming().iterations !== Number.POSITIVE_INFINITY);
+  await Promise.all(panelAnimations.map((animation) => animation.finished.catch(() => undefined)));
+  const targets = [
+    trigger,
+    ...Array.from(panel.querySelectorAll<HTMLElement>("button, select, [role=radio], [role=switch]")),
+  ].map((element) => ({
+    kind: element === trigger ? "trigger" : (element.getAttribute("role") ?? element.tagName.toLowerCase()),
+    label: element.getAttribute("aria-label") ?? element.textContent?.trim().replace(/\s+/g, " ").slice(0, 80) ?? "",
+    height: element.getBoundingClientRect().height,
+  }));
+  const targetHeights = targets.map((target) => target.height);
   const fieldsets = Array.from(panel.querySelectorAll<HTMLElement>("fieldset"));
   const fieldsetBoxes = fieldsets.map(geometryOf);
   const fieldsetStacked =
@@ -445,9 +522,18 @@ async function inspectDetail(): Promise<DetailGeometry> {
       panelBox.top >= -1 &&
       panelBox.bottom <= window.innerHeight + 1,
     panel: panelBox,
-    horizontalOverflowCount: scrollOverflowCount(panel),
+    horizontalOverflowCount: horizontalOverflowElements(panel).length,
     targetHeights,
+    targets,
+    fieldsetsFound: fieldsets.length,
+    overflowElements: horizontalOverflowElements(panel).map(
+      (element) =>
+        `${element.tagName.toLowerCase()}.${element.className || "(no-class)"} ` +
+        `${element.scrollWidth}/${element.clientWidth}x${element.scrollHeight}/${element.clientHeight}`,
+    ),
     fieldsetStacked,
+    sheetBottomAnchored: mobile && panelBox.bottom >= window.innerHeight - 1,
+    popoverAnchored: !mobile && panelBox.top >= triggerBox.bottom - 1,
   };
 }
 
@@ -628,7 +714,7 @@ function measure() {
         continue;
       }
       const overflowX = getComputedStyle(el).overflowX;
-      if (overflowX === "hidden" || overflowX === "clip") {
+      if (overflowX !== "auto" && overflowX !== "scroll") {
         ignored.push(
           `${el.tagName.toLowerCase()}.${el.className || ""} (overflow-x: ${overflowX}, clipped not scrollable)`,
         );
