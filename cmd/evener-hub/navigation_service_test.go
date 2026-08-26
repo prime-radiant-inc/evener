@@ -442,6 +442,14 @@ func TestNavigationServiceJoinedTicketsShareExactCommittedOutcome(t *testing.T) 
 	source.changeTitle("joined")
 	source.entered, source.release = make(chan struct{}), make(chan struct{})
 	results := make(chan hubapi.NavigationMutation, 2)
+	attached := make(chan struct{}, 1)
+	previousAttached := navigationRefreshTicketAttached
+	navigationRefreshTicketAttached = func(_ *NavigationService, flight *navigationBuildFlight) {
+		if len(flight.tickets) == 2 {
+			attached <- struct{}{}
+		}
+	}
+	t.Cleanup(func() { navigationRefreshTicketAttached = previousAttached })
 	go func() {
 		m, _ := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
 		results <- m
@@ -451,20 +459,10 @@ func TestNavigationServiceJoinedTicketsShareExactCommittedOutcome(t *testing.T) 
 		m, _ := service.Refresh(t.Context(), navigationChangeHint{AllLoadedProjects: true})
 		results <- m
 	}()
-	deadline := time.After(time.Second)
-	for {
-		service.mu.Lock()
-		joined := service.flight != nil && len(service.flight.tickets) == 2
-		service.mu.Unlock()
-		if joined {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("second refresh did not join active flight")
-		default:
-			time.Sleep(time.Millisecond)
-		}
+	select {
+	case <-attached:
+	case <-time.After(time.Second):
+		t.Fatal("second refresh did not attach")
 	}
 	close(source.release)
 	one, two := <-results, <-results
@@ -477,6 +475,50 @@ func TestNavigationServiceJoinedTicketsShareExactCommittedOutcome(t *testing.T) 
 	}
 	if len(service.DrainPublications()) != 0 {
 		t.Fatal("publication replayed")
+	}
+}
+
+func TestNavigationServiceBuildErrorCompletesEveryAttachedTicket(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	service := newTestNavigationService(t, source)
+	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		t.Fatal(err)
+	}
+	source.entered, source.release = make(chan struct{}), make(chan struct{})
+	source.mu.Lock()
+	source.err = errors.New("capture failed")
+	source.revision++
+	source.mu.Unlock()
+	attached := make(chan struct{}, 1)
+	previousAttached := navigationRefreshTicketAttached
+	navigationRefreshTicketAttached = func(_ *NavigationService, flight *navigationBuildFlight) {
+		if len(flight.tickets) == 2 {
+			attached <- struct{}{}
+		}
+	}
+	t.Cleanup(func() { navigationRefreshTicketAttached = previousAttached })
+	errs := make(chan error, 2)
+	go func() {
+		_, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
+		errs <- err
+	}()
+	go func() {
+		_, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
+		errs <- err
+	}()
+	select {
+	case <-attached:
+	case <-time.After(time.Second):
+		t.Fatal("second ticket did not attach")
+	}
+	close(source.release)
+	for range 2 {
+		if err := <-errs; err == nil || !strings.Contains(err.Error(), "capture failed") {
+			t.Fatalf("ticket error=%v", err)
+		}
+	}
+	if got := service.DrainPublications(); len(got) != 0 {
+		t.Fatalf("error flight published %+v", got)
 	}
 }
 

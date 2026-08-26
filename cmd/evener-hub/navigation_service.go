@@ -51,6 +51,10 @@ var navigationFingerprintStringChunkContext = func(ctx context.Context, _ string
 
 var navigationPublicationCommittedLocked = func(*NavigationService) {}
 
+// navigationRefreshTicketAttached is a deterministic test seam for observing
+// the causal cutoff while the service lock is held. Production leaves it nil.
+var navigationRefreshTicketAttached = func(*NavigationService, *navigationBuildFlight) {}
+
 var navigationBeforePublicationDrainLock = func() {}
 
 type navigationSourceRevision struct {
@@ -417,6 +421,7 @@ func (s *NavigationService) ensureSnapshot(ctx context.Context, force bool, hint
 	if flight := s.flight; flight != nil && !flight.finalized {
 		if len(tickets) != 0 {
 			flight.tickets = append(flight.tickets, tickets[0])
+			navigationRefreshTicketAttached(s, flight)
 		}
 		if force && len(hints) != 0 {
 			flight.hint = mergeNavigationChangeHints(flight.hint, hints[0])
@@ -428,6 +433,7 @@ func (s *NavigationService) ensureSnapshot(ctx context.Context, force bool, hint
 	flight := &navigationBuildFlight{done: make(chan struct{})}
 	if len(tickets) != 0 {
 		flight.tickets = append(flight.tickets, tickets[0])
+		navigationRefreshTicketAttached(s, flight)
 	}
 	if force && len(hints) != 0 {
 		flight.hint, flight.mutated = hints[0], true
