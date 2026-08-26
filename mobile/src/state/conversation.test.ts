@@ -9,8 +9,13 @@ import type {
   MutationReceipt,
   ThreadCapabilities,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
-import type { MobileConversation } from "../conversation/model";
+import type {
+  MobileCapabilities,
+  MobileConversation,
+} from "../conversation/model";
+import type { ActivityView } from "../services/activity";
 import type { ConversationService } from "../services/conversation";
+import { createActivityStore } from "./activity";
 import { createConversationStore } from "./conversation";
 
 // --- fixture helpers ---------------------------------------------------------
@@ -72,6 +77,9 @@ class FakeConversationService implements ConversationService {
   receipt: MutationReceipt = makeReceipt();
   sendShouldReject: Error | null = null;
   sendCallCount = 0;
+  steerCallCount = 0;
+  queueCallCount = 0;
+  interruptCallCount = 0;
   cancelQueuedResult: {
     removedText: string;
     removedImages?: number;
@@ -82,10 +90,38 @@ class FakeConversationService implements ConversationService {
   };
   notificationHandler: ((n: AnyNotification) => void) | null = null;
   closed = false;
+  // readProjection support
+  readProjectionResult: {
+    conversation: MobileConversation;
+    activity: ActivityView;
+    olderCursor: string | null;
+  } | null = null;
+  readProjectionCalls: { ref: string; cursor?: string }[] = [];
 
   async open(ref: string): Promise<MobileConversation> {
     this.ref = ref;
     return this.openConv;
+  }
+  async readProjection(
+    ref: string,
+    cursor?: string,
+  ): Promise<{
+    conversation: MobileConversation;
+    activity: ActivityView;
+    olderCursor: string | null;
+  }> {
+    this.readProjectionCalls.push({ ref, cursor });
+    if (this.readProjectionResult) return this.readProjectionResult;
+    return {
+      conversation: this.openConv,
+      activity: {
+        tasks: [],
+        work: [],
+        usage: {},
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+      },
+      olderCursor: this.olderCursor,
+    };
   }
   async loadOlder(
     _cursor: string,
@@ -104,12 +140,15 @@ class FakeConversationService implements ConversationService {
     return this.receipt;
   }
   async steer(_input: InputItem[]): Promise<MutationReceipt> {
+    this.steerCallCount += 1;
     return this.receipt;
   }
   async queue(_input: InputItem[]): Promise<MutationReceipt> {
+    this.queueCallCount += 1;
     return this.receipt;
   }
   async interrupt(): Promise<MutationReceipt> {
+    this.interruptCallCount += 1;
     return this.receipt;
   }
   async compact(): Promise<void> {}
@@ -229,6 +268,248 @@ describe("ConversationStore", () => {
       // Wait a microtask to ensure no retry is scheduled
       await Promise.resolve();
       expect(service.sendCallCount).toBe(1);
+    });
+  });
+
+  // --- mutation-state tests (Step 3) ------------------------------------------
+
+  describe("mutation state — parameterized send/steer/queue/interrupt", () => {
+    type MutationKind = "send" | "steer" | "queue" | "interrupt";
+
+    const mutationCases: {
+      kind: MutationKind;
+      call: (
+        store: ReturnType<typeof createConversationStore>,
+        service: FakeConversationService,
+        input: InputItem[],
+      ) => Promise<void>;
+      callCountField: keyof FakeConversationService;
+    }[] = [
+      {
+        kind: "send",
+        call: (store, s, i) => store.getState().send(s, i),
+        callCountField: "sendCallCount",
+      },
+      {
+        kind: "steer",
+        call: (store, s, i) => store.getState().steer(s, i),
+        callCountField: "steerCallCount",
+      },
+      {
+        kind: "queue",
+        call: (store, s, i) => store.getState().queue(s, i),
+        callCountField: "queueCallCount",
+      },
+      {
+        kind: "interrupt",
+        call: (store, s, _i) => store.getState().interrupt(s),
+        callCountField: "interruptCallCount",
+      },
+    ];
+
+    for (const { kind, call, callCountField } of mutationCases) {
+      it(`${kind}: calls the service ${kind} method`, async () => {
+        const service = new FakeConversationService();
+        const store = createConversationStore();
+        await store.getState().open(service, "ref-1");
+        if (kind === "interrupt") {
+          await call(store, service, []);
+        } else {
+          await call(store, service, textInput("test"));
+        }
+        expect(service[callCountField]).toBe(1);
+      });
+
+      it(`${kind}: sets pending mutation state while in-flight`, async () => {
+        const service = new FakeConversationService();
+        // Make the service hang so we can inspect the in-flight state.
+        let resolveFn: (() => void) | null = null as (() => void) | null;
+        service.receipt = makeReceipt();
+        const hangPromise = new Promise<MutationReceipt>((resolve) => {
+          resolveFn = () => resolve(makeReceipt());
+        });
+        if (kind === "send") {
+          service.sendShouldReject = null;
+          service.send = async () => hangPromise;
+        } else if (kind === "steer") {
+          service.steer = async () => hangPromise;
+        } else if (kind === "queue") {
+          service.queue = async () => hangPromise;
+        } else {
+          service.interrupt = async () => hangPromise;
+        }
+
+        const store = createConversationStore();
+        await store.getState().open(service, "ref-1");
+        store.getState().setDraft("unsent draft");
+
+        const p = call(store, service, textInput("test"));
+        // While in-flight, mutation state should be pending.
+        const pending = store.getState().pendingMutation;
+        expect(pending).not.toBeNull();
+        expect(pending?.status).toBe("pending");
+        expect(pending?.kind).toBe(kind);
+
+        // Resolve and await
+        resolveFn?.();
+        await p;
+        // After resolution, pending should be cleared
+        expect(store.getState().pendingMutation).toBeNull();
+      });
+
+      it(`${kind}: records exact draft snapshot in mutation state`, async () => {
+        const service = new FakeConversationService();
+        let resolveFn: (() => void) | null = null as (() => void) | null;
+        const hangPromise = new Promise<MutationReceipt>((resolve) => {
+          resolveFn = () => resolve(makeReceipt());
+        });
+        if (kind === "send") {
+          service.send = async () => hangPromise;
+        } else if (kind === "steer") {
+          service.steer = async () => hangPromise;
+        } else if (kind === "queue") {
+          service.queue = async () => hangPromise;
+        } else {
+          service.interrupt = async () => hangPromise;
+        }
+
+        const store = createConversationStore();
+        await store.getState().open(service, "ref-1");
+        store.getState().setDraft("exact draft text");
+        const p = call(store, service, textInput("test"));
+        const pending = store.getState().pendingMutation;
+        expect(pending?.draftSnapshot).toBe("exact draft text");
+        resolveFn?.();
+        await p;
+      });
+
+      it(`${kind}: clears pending and error on success`, async () => {
+        const service = new FakeConversationService();
+        const store = createConversationStore();
+        await store.getState().open(service, "ref-1");
+        await call(store, service, textInput("test"));
+        expect(store.getState().pendingMutation).toBeNull();
+        expect(store.getState().error).toBeNull();
+      });
+
+      it(`${kind}: restores draft and sets failed state on failure`, async () => {
+        const service = new FakeConversationService();
+        const rejectErr = new Error(`${kind} conflict`);
+        if (kind === "send") {
+          service.sendShouldReject = rejectErr;
+        } else if (kind === "steer") {
+          service.steer = async () => Promise.reject(rejectErr);
+        } else if (kind === "queue") {
+          service.queue = async () => Promise.reject(rejectErr);
+        } else {
+          service.interrupt = async () => Promise.reject(rejectErr);
+        }
+
+        const store = createConversationStore();
+        await store.getState().open(service, "ref-1");
+        store.getState().setDraft("draft to restore");
+        await call(store, service, textInput("test"));
+        // Draft should be restored
+        expect(store.getState().draft).toBe("draft to restore");
+        // Error should be set
+        expect(store.getState().error).not.toBeNull();
+        // Pending should be null
+        expect(store.getState().pendingMutation).toBeNull();
+      });
+
+      it(`${kind}: records generation in mutation state`, async () => {
+        const service = new FakeConversationService();
+        let resolveFn: (() => void) | null = null as (() => void) | null;
+        const hangPromise = new Promise<MutationReceipt>((resolve) => {
+          resolveFn = () => resolve(makeReceipt());
+        });
+        if (kind === "send") {
+          service.send = async () => hangPromise;
+        } else if (kind === "steer") {
+          service.steer = async () => hangPromise;
+        } else if (kind === "queue") {
+          service.queue = async () => hangPromise;
+        } else {
+          service.interrupt = async () => hangPromise;
+        }
+
+        const store = createConversationStore();
+        await store.getState().open(service, "ref-1");
+        const genBefore = store.getState().conversationGeneration;
+        store.getState().setDraft("draft");
+        const p = call(store, service, textInput("test"));
+        const pending = store.getState().pendingMutation;
+        expect(pending?.generation).toBe(genBefore);
+        resolveFn?.();
+        await p;
+      });
+    }
+
+    it("send has an independent capability gate from steer", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      // Only send is disabled
+      service.openConv = makeConversation({
+        capabilities: { ...ALL_TRUE_CAPS, send: false } as MobileCapabilities,
+      });
+      await store.getState().open(service, "ref-1");
+      // send should fail, steer should succeed
+      await expect(
+        store.getState().send(service, textInput("x")),
+      ).rejects.toThrow();
+      // steer should work since steer capability is true
+      await store.getState().steer(service, textInput("x"));
+      expect(store.getState().error).toBeNull();
+    });
+
+    it("queue has an independent capability gate from send", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({
+        capabilities: { ...ALL_TRUE_CAPS, queue: false } as MobileCapabilities,
+      });
+      await store.getState().open(service, "ref-1");
+      await expect(
+        store.getState().queue(service, textInput("x")),
+      ).rejects.toThrow();
+      // send should work since send capability is true
+      await store.getState().send(service, textInput("x"));
+      expect(store.getState().error).toBeNull();
+    });
+  });
+
+  describe("actionUnavailable publishes refreshed capabilities before error", () => {
+    it("store updates capabilities before surfacing the command error", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      // Initial: all caps true, send enabled
+      service.openConv = makeConversation({
+        capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+      });
+      await store.getState().open(service, "ref-1");
+
+      // Script send to reject with actionUnavailable
+      const rejectErr = Object.assign(new Error("action unavailable"), {
+        evenerErrorInfo: "actionUnavailable",
+      });
+      service.sendShouldReject = rejectErr as Error;
+
+      // Script the refreshed thread with send=false
+      service.openConv = makeConversation({
+        capabilities: { ...ALL_TRUE_CAPS, send: false } as MobileCapabilities,
+      });
+
+      // Before the send, capabilities should have send=true
+      expect(store.getState().conversation?.capabilities.send).toBe(true);
+
+      // Send will fail with actionUnavailable
+      await store.getState().send(service, textInput("x"));
+
+      // After actionUnavailable, the store should have published the
+      // refreshed capabilities (send=false) BEFORE surfacing the error.
+      expect(store.getState().conversation?.capabilities.send).toBe(false);
+      // And the error should also be set
+      expect(store.getState().error).not.toBeNull();
     });
   });
 
@@ -398,6 +679,632 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       expect(store.getState().conversation?.id).toBe("thread-2");
       expect(store.getState().conversation?.status).toBe("ready");
+    });
+  });
+
+  describe("openProjected", () => {
+    it("uses readProjection to set conversation, cursor, and activity view", async () => {
+      const service = new FakeConversationService();
+      const activityStore = createActivityStore();
+      const store = createConversationStore();
+      const activityView: ActivityView = {
+        tasks: [{ status: "done", count: 3 }],
+        work: [],
+        usage: { totalTokens: 42 },
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+      };
+      service.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-proj" }),
+        activity: activityView,
+        olderCursor: "cursor-initial",
+      };
+      await store.getState().openProjected?.(service, activityStore, "ref-1");
+      expect(store.getState().conversation?.id).toBe("thread-proj");
+      expect(store.getState().olderCursor).toBe("cursor-initial");
+      expect(store.getState().status).toBe("open");
+      // Activity store should have the projected view
+      expect(activityStore.getState().view).toBe(activityView);
+    });
+
+    it("subscribes to notifications", async () => {
+      const service = new FakeConversationService();
+      const activityStore = createActivityStore();
+      const store = createConversationStore();
+      await store.getState().openProjected?.(service, activityStore, "ref-1");
+      // The store should have subscribed for notifications
+      expect(service.notificationHandler).not.toBeNull();
+    });
+
+    it("preserves olderCursor across openProjected", async () => {
+      const service = new FakeConversationService();
+      const activityStore = createActivityStore();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation(),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: "page-1",
+      };
+      await store.getState().openProjected?.(service, activityStore, "ref-1");
+      expect(store.getState().olderCursor).toBe("page-1");
+    });
+  });
+
+  describe("loadOlder retained cap", () => {
+    it("enforces a 500-item retained cap at the store level", async () => {
+      const service = new FakeConversationService();
+      // Generate 600 items from loadOlder; only 500 should be retained.
+      const manyItems = Array.from({ length: 600 }, (_, i) => ({
+        kind: "user" as const,
+        id: `item-${i}`,
+        text: `msg ${i}`,
+      }));
+      service.olderItems = { items: manyItems, nextCursor: undefined };
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      await store.getState().loadOlder(service);
+      const conv = store.getState().conversation;
+      expect(conv).not.toBeNull();
+      // The store should cap retained items at 500.
+      expect(conv?.items.length).toBeLessThanOrEqual(500);
+    });
+  });
+
+  // --- item lifecycle and delta notification tests (Step 2) -------------------
+
+  describe("item/started inserts/replaces authoritative item", () => {
+    it("inserts a new assistant item from item/started", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "item/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "agentMessage",
+            id: "item-a",
+            text: "Hello",
+            status: "inProgress",
+          },
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      const item = conv?.items.find((i) => i.id === "item-a");
+      expect(item).toBeDefined();
+      expect(item?.kind).toBe("assistant");
+    });
+
+    it("replaces an existing item when item/started carries the same id", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "assistant",
+            id: "item-a",
+            markdown: "old",
+            streaming: false,
+          },
+        ],
+      });
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "item/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "agentMessage",
+            id: "item-a",
+            text: "new text",
+            status: "inProgress",
+          },
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      const item = conv?.items.find((i) => i.id === "item-a");
+      expect(item?.kind).toBe("assistant");
+      if (item?.kind === "assistant") {
+        expect(item.markdown).toBe("new text");
+      }
+    });
+  });
+
+  describe("item/completed settles item", () => {
+    it("marks an assistant item as not streaming on item/completed", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "assistant",
+            id: "item-a",
+            markdown: "streaming text",
+            streaming: true,
+          },
+        ],
+      });
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "agentMessage",
+            id: "item-a",
+            text: "streaming text",
+            status: "completed",
+          },
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      const item = conv?.items.find((i) => i.id === "item-a");
+      if (item?.kind === "assistant") {
+        expect(item.streaming).toBe(false);
+      }
+    });
+
+    it("marks an activity item as completed/failed on item/completed", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "activity",
+            id: "tool-1",
+            label: "shell",
+            state: "running",
+            detail: {},
+          },
+        ],
+      });
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "commandExecution",
+            id: "tool-1",
+            toolName: "shell",
+            status: "completed",
+            output: "done",
+          },
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      const item = conv?.items.find((i) => i.id === "tool-1");
+      expect(item?.kind).toBe("activity");
+      if (item?.kind === "activity") {
+        expect(item.state).toBe("completed");
+      }
+    });
+  });
+
+  describe("assistant delta appends to item", () => {
+    it("appends delta text to assistant item markdown", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "assistant",
+            id: "item-a",
+            markdown: "Hello",
+            streaming: true,
+          },
+        ],
+      });
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "item-a",
+          delta: " world",
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      const item = conv?.items.find((i) => i.id === "item-a");
+      if (item?.kind === "assistant") {
+        expect(item.markdown).toBe("Hello world");
+      }
+    });
+
+    it("appends reasoning summary delta to activity item", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "activity",
+            id: "reason-1",
+            label: "Reasoning",
+            state: "running",
+            detail: { output: "Thinking" },
+          },
+        ],
+      });
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "item/reasoning/summaryTextDelta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "reason-1",
+          summaryIndex: 0,
+          delta: " more",
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      const item = conv?.items.find((i) => i.id === "reason-1");
+      if (item?.kind === "activity") {
+        expect(item.detail.output).toBe("Thinking more");
+      }
+    });
+
+    it("appends tool output delta to activity item", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "activity",
+            id: "tool-1",
+            label: "shell",
+            state: "running",
+            detail: { output: "line1" },
+          },
+        ],
+      });
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "item/toolOutput/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "tool-1",
+          callId: "call-1",
+          delta: "\nline2",
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      const item = conv?.items.find((i) => i.id === "tool-1");
+      if (item?.kind === "activity") {
+        expect(item.detail.output).toBe("line1\nline2");
+      }
+    });
+  });
+
+  describe("split Unicode remains valid", () => {
+    it("does not corrupt surrogate pairs split across deltas", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "assistant",
+            id: "item-u",
+            markdown: "",
+            streaming: true,
+          },
+        ],
+      });
+      await store.getState().open(service, "ref-1");
+      // 𝐀 is U+1D400 (surrogate pair D835 DC00)
+      // Send the first half, then the second half as separate deltas.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "item-u",
+          delta: "\uD835",
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "item-u",
+          delta: "\uDC00",
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      const item = conv?.items.find((i) => i.id === "item-u");
+      if (item?.kind === "assistant") {
+        // The combined string should be valid: the surrogate pair forms 𝐀
+        expect(item.markdown).toBe("\uD835\uDC00");
+        // It should be a single code point (length 1 by code point, 2 by UTF-16)
+        expect([...item.markdown].length).toBe(1);
+      }
+    });
+  });
+
+  describe("arguments/output stop at 64 KiB and end with truncation marker", () => {
+    it("truncates assistant item markdown at 64 KiB with marker", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      const largeText = "x".repeat(70_000);
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "assistant",
+            id: "item-big",
+            markdown: largeText,
+            streaming: true,
+          },
+        ],
+      });
+      await store.getState().open(service, "ref-1");
+      const conv = store.getState().conversation;
+      const item = conv?.items.find((i) => i.id === "item-big");
+      if (item?.kind === "assistant") {
+        expect(item.markdown.length).toBeLessThanOrEqual(65536);
+        expect(item.markdown.endsWith("… truncated")).toBe(true);
+        // The marker appears exactly once
+        const markerCount = item.markdown.split("… truncated").length - 1;
+        expect(markerCount).toBe(1);
+      }
+    });
+
+    it("truncates tool output at 64 KiB with marker exactly once", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      const largeOutput = "y".repeat(70_000);
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "activity",
+            id: "tool-big",
+            label: "shell",
+            state: "running",
+            detail: { output: largeOutput },
+          },
+        ],
+      });
+      await store.getState().open(service, "ref-1");
+      const conv = store.getState().conversation;
+      const item = conv?.items.find((i) => i.id === "tool-big");
+      if (item?.kind === "activity") {
+        expect(item.detail.output?.length).toBeLessThanOrEqual(65536);
+        expect(item.detail.output?.endsWith("… truncated")).toBe(true);
+        const markerCount =
+          (item.detail.output?.split("… truncated").length ?? 1) - 1;
+        expect(markerCount).toBe(1);
+      }
+    });
+  });
+
+  describe("resync coalesces to one rehydrate via injected coalescer", () => {
+    it("coalesces evener/thread/resync into one rehydrate call", async () => {
+      const rehydrateCalls: { ref: string }[] = [];
+      const service = new FakeConversationService();
+      const activityStore = createActivityStore();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-1" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: "cursor-after-resync",
+      };
+      await store.getState().openProjected?.(service, activityStore, "ref-1");
+
+      // Create an injected coalescer that batches rehydrate calls.
+      let pending = false;
+      const coalescer = {
+        requestRehydrate(ref: string) {
+          if (pending) return;
+          pending = true;
+          // In production this would be scheduled; in the test we resolve
+          // immediately but only once even if called multiple times.
+          queueMicrotask(() => {
+            pending = false;
+            rehydrateCalls.push({ ref });
+          });
+        },
+      };
+
+      // Inject the coalescer into the store.
+      store.getState().setCoalescer?.(coalescer);
+
+      // Emit multiple resync notifications — they should coalesce to one.
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+
+      // The coalescer should have been invoked once, not three times.
+      // We need to allow microtasks to flush.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(rehydrateCalls.length).toBe(1);
+    });
+
+    it("unsupported item transition triggers coalesced rehydrate", async () => {
+      const rehydrateCalls: { ref: string }[] = [];
+      const service = new FakeConversationService();
+      const activityStore = createActivityStore();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-1" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      await store.getState().openProjected?.(service, activityStore, "ref-1");
+
+      let pending = false;
+      const coalescer = {
+        requestRehydrate(ref: string) {
+          if (pending) return;
+          pending = true;
+          queueMicrotask(() => {
+            pending = false;
+            rehydrateCalls.push({ ref });
+          });
+        },
+      };
+
+      // Inject the coalescer into the store.
+      store.getState().setCoalescer?.(coalescer);
+
+      // An unknown notification method (unsupported item transition) should
+      // also trigger the coalescer, not a crash.
+      store.getState().applyNotification({
+        method: "item/unknownFutureTransition" as never,
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: { type: "futureType", id: "x", status: "unknown" },
+        },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(rehydrateCalls.length).toBe(1);
+    });
+  });
+
+  describe("stale generation completion is ignored", () => {
+    it("drops item/completed from an older generation", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      // Reset to bump generation, then open a new conversation
+      store.getState().reset();
+      service.openConv = makeConversation({ id: "thread-2" });
+      await store.getState().open(service, "ref-2");
+      // A stale completion for thread-1/ref-1 should be dropped
+      const before = store.getState().conversation;
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "agentMessage",
+            id: "item-a",
+            text: "done",
+            status: "completed",
+          },
+        },
+      } as AnyNotification);
+      expect(store.getState().conversation).toBe(before);
+    });
+  });
+
+  describe("rehydrate preserves draft and presentation state", () => {
+    it("preserves draft text across rehydrate", async () => {
+      const service = new FakeConversationService();
+      const activityStore = createActivityStore();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-1" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: "cursor-1",
+      };
+      await store.getState().openProjected?.(service, activityStore, "ref-1");
+      store.getState().setDraft("my unsent draft");
+      // Rehydrate: should preserve the draft
+      await store.getState().rehydrate?.(service, activityStore);
+      expect(store.getState().draft).toBe("my unsent draft");
+    });
+
+    it("preserves expandedToolKeys/presentation state across rehydrate", async () => {
+      const service = new FakeConversationService();
+      const activityStore = createActivityStore();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-1" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: "cursor-1",
+      };
+      await store.getState().openProjected?.(service, activityStore, "ref-1");
+      // Set some presentation state
+      store.getState().setExpandedToolKeys?.(new Set(["tool-1"]));
+      // Rehydrate: presentation state should survive
+      await store.getState().rehydrate?.(service, activityStore);
+      expect(store.getState().expandedToolKeys?.has("tool-1")).toBe(true);
+    });
+  });
+
+  describe("olderCursor survives open/rehydrate", () => {
+    it("preserves olderCursor from openProjected through rehydrate", async () => {
+      const service = new FakeConversationService();
+      const activityStore = createActivityStore();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-1" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: "initial-cursor",
+      };
+      await store.getState().openProjected?.(service, activityStore, "ref-1");
+      expect(store.getState().olderCursor).toBe("initial-cursor");
+      // Update the projection result for rehydrate
+      service.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-1" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: "updated-cursor",
+      };
+      await store.getState().rehydrate?.(service, activityStore);
+      expect(store.getState().olderCursor).toBe("updated-cursor");
     });
   });
 });

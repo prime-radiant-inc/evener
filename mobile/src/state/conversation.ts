@@ -14,7 +14,7 @@
 // The store holds the MobileConversation projection (never the raw wire
 // Thread). Notifications update the projection in place; a re-read via
 // thread/read after evener/thread/resync is the authoritative refresh path
-// (triggered by the screen layer, not the store).
+// (triggered by the injected coalescer, not timers).
 
 import { create } from "zustand";
 import type {
@@ -22,6 +22,7 @@ import type {
   InputItem,
   MutationReceipt,
   ThreadCapabilities,
+  ThreadItem,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type {
   MobileCapabilities,
@@ -30,6 +31,7 @@ import type {
   MobileUsage,
 } from "../conversation/model";
 import type { ConversationService } from "../services/conversation";
+import type { ActivityState } from "./activity";
 
 export type ConversationStatus =
   | "idle"
@@ -37,6 +39,69 @@ export type ConversationStatus =
   | "open"
   | "error"
   | "closed";
+
+// Mutation lifecycle state for send/steer/queue/interrupt. The store tracks
+// the kind, pending/failed status, the exact draft snapshot at submission,
+// and the conversation generation that initiated it.
+export interface ConversationMutationState {
+  kind: "send" | "steer" | "queue" | "interrupt";
+  status: "pending" | "failed";
+  draftSnapshot: string | null;
+  generation: number;
+}
+
+// An injected coalescer that batches rehydrate requests (from resync and
+// unsupported item transitions) into a single rehydrate() call. The store
+// calls requestRehydrate(ref) — the coalescer decides when to actually fire.
+export interface RehydrateCoalescer {
+  requestRehydrate(ref: string): void;
+}
+
+// --- limits and truncation helpers (centralized) ----------------------------
+
+export const MAX_ITEM_TEXT = 64 * 1024; // 64 KiB
+export const TRUNCATION_MARKER = "… truncated";
+export const RETAINED_ITEM_CAP = 500;
+
+// Truncate a string to maxLen + marker, ending with "… truncated" exactly once.
+export function truncateText(text: string, maxLen: number): string {
+  if (text.length <= maxLen) return text;
+  return text.slice(0, maxLen - TRUNCATION_MARKER.length) + TRUNCATION_MARKER;
+}
+
+// Apply truncation to an item's text-bearing fields (arguments, output, error,
+// markdown). Returns a new item with truncated fields.
+function truncateItem(item: MobileTimelineItem): MobileTimelineItem {
+  switch (item.kind) {
+    case "assistant":
+      return { ...item, markdown: truncateText(item.markdown, MAX_ITEM_TEXT) };
+    case "activity":
+      return {
+        ...item,
+        detail: {
+          ...item.detail,
+          arguments: item.detail.arguments
+            ? truncateText(item.detail.arguments, MAX_ITEM_TEXT)
+            : item.detail.arguments,
+          output: item.detail.output
+            ? truncateText(item.detail.output, MAX_ITEM_TEXT)
+            : item.detail.output,
+          error: item.detail.error
+            ? truncateText(item.detail.error, MAX_ITEM_TEXT)
+            : item.detail.error,
+        },
+      };
+    default:
+      return item;
+  }
+}
+
+// Enforce the 500-item retained cap. Trims the oldest items (front of array)
+// when the list exceeds the cap, since newest items are at the end.
+function capItems(items: MobileTimelineItem[]): MobileTimelineItem[] {
+  if (items.length <= RETAINED_ITEM_CAP) return items;
+  return items.slice(items.length - RETAINED_ITEM_CAP);
+}
 
 export interface ConversationState {
   readonly ref: string | null;
@@ -52,10 +117,23 @@ export interface ConversationState {
 
   readonly draft: string;
   readonly pendingSend: string | null;
+  readonly pendingMutation?: ConversationMutationState | null;
+  readonly expandedToolKeys?: ReadonlySet<string>;
 
   open(service: ConversationService, ref: string): Promise<void>;
+  openProjected?(
+    service: ConversationService,
+    activityStore: { getState: () => ActivityState },
+    ref: string,
+  ): Promise<void>;
+  rehydrate?(
+    service: ConversationService,
+    activityStore: { getState: () => ActivityState },
+  ): Promise<void>;
+  setCoalescer?(coalescer: RehydrateCoalescer): void;
   loadOlder(service: ConversationService): Promise<void>;
   setDraft(text: string): void;
+  setExpandedToolKeys?(keys: ReadonlySet<string>): void;
   send(service: ConversationService, input: InputItem[]): Promise<void>;
   steer(service: ConversationService, input: InputItem[]): Promise<void>;
   queue(service: ConversationService, input: InputItem[]): Promise<void>;
@@ -79,8 +157,80 @@ function notificationRef(
   return { threadId, ref };
 }
 
+// Check if an error carries the actionUnavailable evenerErrorInfo.
+function isActionUnavailableError(err: unknown): boolean {
+  if (err === null || err === undefined || typeof err !== "object")
+    return false;
+  const obj = err as Record<string, unknown>;
+  return obj.evenerErrorInfo === "actionUnavailable";
+}
+
+// Check a capability on the current conversation and throw if false. This
+// mirrors the service's requireCap but runs in the store so the fake
+// service (which has no capability gating) still respects capabilities.
+function requireCap(
+  conv: MobileConversation,
+  cap: keyof MobileCapabilities,
+  action: string,
+): void {
+  if (!conv.capabilities[cap]) {
+    throw new Error(`Action "${action}" is not available for this thread`);
+  }
+}
+
+// Project a wire ThreadItem into a mobile timeline item for insertion from
+// item/started and item/completed notifications. This reuses the same field
+// mapping as the full projection but handles a single item in isolation.
+function projectSingleItem(item: ThreadItem): MobileTimelineItem | null {
+  if (item.type === "userMessage") {
+    return { kind: "user", id: item.id, text: item.text ?? "" };
+  }
+  if (item.type === "agentMessage") {
+    return {
+      kind: "assistant",
+      id: item.id,
+      markdown: `${item.text ?? ""}${item.delta ?? ""}`,
+      streaming: item.status === "inProgress",
+    };
+  }
+  if (item.type === "commandExecution") {
+    return {
+      kind: "activity",
+      id: item.id,
+      label: item.toolName ?? item.description?.trim() ?? "Tool",
+      state:
+        item.error !== undefined && item.error !== ""
+          ? "failed"
+          : item.status === "inProgress"
+            ? "running"
+            : "completed",
+      detail: {
+        arguments: item.argumentsJson,
+        output: item.output,
+        error: item.error,
+        exitCode: item.exitCode,
+        durationMs: item.durationMs,
+        callId: item.callId,
+      },
+    };
+  }
+  if (item.type === "reasoning") {
+    return {
+      kind: "activity",
+      id: item.id,
+      label: "Reasoning",
+      state: item.status === "inProgress" ? "running" : "completed",
+      detail: { output: item.text },
+    };
+  }
+  // Unknown item types — return null to signal an unsupported transition
+  // that should trigger a coalesced rehydrate.
+  return null;
+}
+
 export function createConversationStore() {
   let conversationGen = 0;
+  let coalescer: RehydrateCoalescer | null = null;
 
   return create<ConversationState>((set, get) => ({
     ref: null,
@@ -96,6 +246,8 @@ export function createConversationStore() {
 
     draft: "",
     pendingSend: null,
+    pendingMutation: null,
+    expandedToolKeys: new Set<string>(),
 
     async open(service, ref) {
       // Increment conversation generation so late frames from a previous
@@ -110,6 +262,7 @@ export function createConversationStore() {
         loadingOlder: false,
         draft: "",
         pendingSend: null,
+        pendingMutation: null,
         conversationGeneration: gen,
       });
       try {
@@ -117,7 +270,10 @@ export function createConversationStore() {
         // Reject if a newer conversation generation was opened during the await.
         if (gen !== conversationGen) return;
         set({
-          conversation: conv,
+          conversation: {
+            ...conv,
+            items: capItems(conv.items.map(truncateItem)),
+          },
           status: "open",
           olderCursor: null,
         });
@@ -135,6 +291,88 @@ export function createConversationStore() {
       }
     },
 
+    async openProjected(service, activityStore, ref) {
+      if (!service.readProjection) {
+        // Fallback to open() if readProjection is not available.
+        return get().open(service, ref);
+      }
+      const gen = ++conversationGen;
+      set({
+        status: "opening",
+        ref,
+        error: null,
+        conversation: null,
+        olderCursor: null,
+        loadingOlder: false,
+        pendingSend: null,
+        pendingMutation: null,
+        conversationGeneration: gen,
+      });
+      try {
+        const { conversation, activity, olderCursor } =
+          await service.readProjection(ref);
+        if (gen !== conversationGen) return;
+        set({
+          conversation: {
+            ...conversation,
+            items: capItems(conversation.items.map(truncateItem)),
+          },
+          status: "open",
+          olderCursor,
+        });
+        activityStore.getState().setView(activity);
+        service.subscribeNotifications((n) => {
+          if (gen !== conversationGen) return;
+          get().applyNotification(n);
+        });
+      } catch (err) {
+        if (gen !== conversationGen) return;
+        set({
+          status: "error",
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+
+    async rehydrate(service, activityStore) {
+      // Rehydrate uses readProjection to refresh the conversation without
+      // calling destructive open(). Preserves draft and presentation state.
+      const state = get();
+      if (state.ref === null) return;
+      const ref = state.ref;
+      const currentDraft = state.draft;
+      const currentExpanded = state.expandedToolKeys;
+      if (!service.readProjection) return;
+      try {
+        const { conversation, activity, olderCursor } =
+          await service.readProjection(ref);
+        // Guard: a newer generation may have opened during the await.
+        if (get().conversationGeneration !== state.conversationGeneration) {
+          return;
+        }
+        set({
+          conversation: {
+            ...conversation,
+            items: capItems(conversation.items.map(truncateItem)),
+          },
+          olderCursor,
+          // Preserve draft and presentation state
+          draft: currentDraft,
+          expandedToolKeys: currentExpanded,
+          error: null,
+        });
+        activityStore.getState().setView(activity);
+      } catch (err) {
+        set({
+          error: err instanceof Error ? err.message : String(err),
+        });
+      }
+    },
+
+    setCoalescer(c) {
+      coalescer = c;
+    },
+
     async loadOlder(service) {
       const state = get();
       if (state.loadingOlder || state.conversation === null) return;
@@ -149,11 +387,12 @@ export function createConversationStore() {
         }
         const currentConv = get().conversation;
         if (currentConv !== null) {
+          const merged = capItems([
+            ...result.items.map(truncateItem),
+            ...currentConv.items,
+          ]);
           set({
-            conversation: {
-              ...currentConv,
-              items: [...result.items, ...currentConv.items],
-            },
+            conversation: { ...currentConv, items: merged },
             olderCursor: result.nextCursor ?? null,
             loadingOlder: false,
           });
@@ -170,59 +409,189 @@ export function createConversationStore() {
       set({ draft: text });
     },
 
+    setExpandedToolKeys(keys) {
+      set({ expandedToolKeys: keys });
+    },
+
     async send(service, input) {
       const state = get();
       if (state.conversation === null) return;
+      requireCap(state.conversation, "send", "send");
       const draftText = state.draft;
-      set({ draft: "", pendingSend: "pending" });
+      const gen = state.conversationGeneration;
+      const mutation: ConversationMutationState = {
+        kind: "send",
+        status: "pending",
+        draftSnapshot: draftText,
+        generation: gen,
+      };
+      set({ draft: "", pendingSend: "pending", pendingMutation: mutation });
       try {
         const receipt: MutationReceipt = await service.send(input);
-        // Only clear pendingSend if it's still ours. A newer conversation would
-        // have reset pendingSend to null already.
-        if (get().pendingSend !== null) {
-          set({ pendingSend: null, error: null });
+        if (get().pendingMutation?.generation === gen) {
+          set({ pendingSend: null, pendingMutation: null, error: null });
         }
         void receipt;
       } catch (err) {
-        // On conflict, restore the draft and show the error. Never auto-retry.
-        set({
-          pendingSend: null,
-          draft: draftText,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        if (isActionUnavailableError(err) && state.ref !== null) {
+          // Refresh capabilities before surfacing the error.
+          try {
+            const refreshed = await service.open(state.ref);
+            if (get().conversationGeneration === gen) {
+              set({
+                conversation: {
+                  ...(get().conversation as MobileConversation),
+                  capabilities: refreshed.capabilities,
+                },
+              });
+            }
+          } catch {
+            // If refresh fails, continue to surface the original error.
+          }
+        }
+        if (get().pendingMutation?.generation === gen) {
+          set({
+            pendingSend: null,
+            pendingMutation: { ...mutation, status: "failed" },
+            draft: draftText,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          // Clear the failed mutation state after setting error + draft.
+          set({ pendingMutation: null });
+        }
       }
     },
 
     async steer(service, input) {
       const state = get();
       if (state.conversation === null) return;
+      requireCap(state.conversation, "steer", "steer");
+      const draftText = state.draft;
+      const gen = state.conversationGeneration;
+      const mutation: ConversationMutationState = {
+        kind: "steer",
+        status: "pending",
+        draftSnapshot: draftText,
+        generation: gen,
+      };
+      set({ pendingMutation: mutation });
       try {
         await service.steer(input);
-        set({ error: null });
+        if (get().pendingMutation?.generation === gen) {
+          set({ pendingMutation: null, error: null });
+        }
       } catch (err) {
-        set({ error: err instanceof Error ? err.message : String(err) });
+        if (isActionUnavailableError(err) && state.ref !== null) {
+          try {
+            const refreshed = await service.open(state.ref);
+            if (get().conversationGeneration === gen) {
+              set({
+                conversation: {
+                  ...(get().conversation as MobileConversation),
+                  capabilities: refreshed.capabilities,
+                },
+              });
+            }
+          } catch {
+            // If refresh fails, continue to surface the original error.
+          }
+        }
+        if (get().pendingMutation?.generation === gen) {
+          set({
+            pendingMutation: { ...mutation, status: "failed" },
+            draft: draftText,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          set({ pendingMutation: null });
+        }
       }
     },
 
     async queue(service, input) {
       const state = get();
       if (state.conversation === null) return;
+      requireCap(state.conversation, "queue", "queue");
+      const draftText = state.draft;
+      const gen = state.conversationGeneration;
+      const mutation: ConversationMutationState = {
+        kind: "queue",
+        status: "pending",
+        draftSnapshot: draftText,
+        generation: gen,
+      };
+      set({ pendingMutation: mutation });
       try {
         await service.queue(input);
-        set({ error: null });
+        if (get().pendingMutation?.generation === gen) {
+          set({ pendingMutation: null, error: null });
+        }
       } catch (err) {
-        set({ error: err instanceof Error ? err.message : String(err) });
+        if (isActionUnavailableError(err) && state.ref !== null) {
+          try {
+            const refreshed = await service.open(state.ref);
+            if (get().conversationGeneration === gen) {
+              set({
+                conversation: {
+                  ...(get().conversation as MobileConversation),
+                  capabilities: refreshed.capabilities,
+                },
+              });
+            }
+          } catch {
+            // If refresh fails, continue to surface the original error.
+          }
+        }
+        if (get().pendingMutation?.generation === gen) {
+          set({
+            pendingMutation: { ...mutation, status: "failed" },
+            draft: draftText,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          set({ pendingMutation: null });
+        }
       }
     },
 
     async interrupt(service) {
       const state = get();
       if (state.conversation === null) return;
+      requireCap(state.conversation, "interrupt", "interrupt");
+      const gen = state.conversationGeneration;
+      const mutation: ConversationMutationState = {
+        kind: "interrupt",
+        status: "pending",
+        draftSnapshot: state.draft || null,
+        generation: gen,
+      };
+      set({ pendingMutation: mutation });
       try {
         await service.interrupt();
-        set({ error: null });
+        if (get().pendingMutation?.generation === gen) {
+          set({ pendingMutation: null, error: null });
+        }
       } catch (err) {
-        set({ error: err instanceof Error ? err.message : String(err) });
+        if (isActionUnavailableError(err) && state.ref !== null) {
+          try {
+            const refreshed = await service.open(state.ref);
+            if (get().conversationGeneration === gen) {
+              set({
+                conversation: {
+                  ...(get().conversation as MobileConversation),
+                  capabilities: refreshed.capabilities,
+                },
+              });
+            }
+          } catch {
+            // If refresh fails, continue to surface the original error.
+          }
+        }
+        if (get().pendingMutation?.generation === gen) {
+          set({
+            pendingMutation: { ...mutation, status: "failed" },
+            error: err instanceof Error ? err.message : String(err),
+          });
+          set({ pendingMutation: null });
+        }
       }
     },
 
@@ -233,6 +602,7 @@ export function createConversationStore() {
         ref: null,
         draft: "",
         pendingSend: null,
+        pendingMutation: null,
         olderCursor: null,
         loadingOlder: false,
       });
@@ -345,6 +715,63 @@ export function createConversationStore() {
           break;
         }
 
+        case "item/started": {
+          const params = n.params as { item: ThreadItem };
+          const projected = projectSingleItem(params.item);
+          if (projected !== null) {
+            const truncated = truncateItem(projected);
+            const existingIdx = conv.items.findIndex(
+              (i) => i.id === params.item.id,
+            );
+            if (existingIdx >= 0) {
+              // Replace existing item
+              set({
+                conversation: {
+                  ...conv,
+                  items: conv.items.map((i, idx) =>
+                    idx === existingIdx ? truncated : i,
+                  ),
+                },
+              });
+            } else {
+              // Insert new item
+              set({
+                conversation: {
+                  ...conv,
+                  items: capItems([...conv.items, truncated]),
+                },
+              });
+            }
+          } else {
+            // Unsupported item transition — coalesce to one rehydrate.
+            if (coalescer !== null && state.ref !== null) {
+              coalescer.requestRehydrate(state.ref);
+            }
+          }
+          break;
+        }
+
+        case "item/completed": {
+          const params = n.params as { item: ThreadItem };
+          const projected = projectSingleItem(params.item);
+          if (projected !== null) {
+            const truncated = truncateItem(projected);
+            set({
+              conversation: {
+                ...conv,
+                items: conv.items.map((i) =>
+                  i.id === params.item.id ? truncated : i,
+                ),
+              },
+            });
+          } else {
+            if (coalescer !== null && state.ref !== null) {
+              coalescer.requestRehydrate(state.ref);
+            }
+          }
+          break;
+        }
+
         case "item/agentMessage/delta": {
           const params = n.params as { itemId: string; delta: string };
           set({
@@ -352,7 +779,13 @@ export function createConversationStore() {
               ...conv,
               items: conv.items.map((item) =>
                 item.kind === "assistant" && item.id === params.itemId
-                  ? { ...item, markdown: item.markdown + params.delta }
+                  ? {
+                      ...item,
+                      markdown: truncateText(
+                        item.markdown + params.delta,
+                        MAX_ITEM_TEXT,
+                      ),
+                    }
                   : item,
               ),
             },
@@ -375,6 +808,54 @@ export function createConversationStore() {
           break;
         }
 
+        case "item/reasoning/summaryTextDelta": {
+          const params = n.params as { itemId: string; delta: string };
+          set({
+            conversation: {
+              ...conv,
+              items: conv.items.map((item) =>
+                item.kind === "activity" && item.id === params.itemId
+                  ? {
+                      ...item,
+                      detail: {
+                        ...item.detail,
+                        output: truncateText(
+                          (item.detail.output ?? "") + params.delta,
+                          MAX_ITEM_TEXT,
+                        ),
+                      },
+                    }
+                  : item,
+              ),
+            },
+          });
+          break;
+        }
+
+        case "item/toolOutput/delta": {
+          const params = n.params as { itemId: string; delta: string };
+          set({
+            conversation: {
+              ...conv,
+              items: conv.items.map((item) =>
+                item.kind === "activity" && item.id === params.itemId
+                  ? {
+                      ...item,
+                      detail: {
+                        ...item.detail,
+                        output: truncateText(
+                          (item.detail.output ?? "") + params.delta,
+                          MAX_ITEM_TEXT,
+                        ),
+                      },
+                    }
+                  : item,
+              ),
+            },
+          });
+          break;
+        }
+
         case "warning": {
           const params = n.params as { message?: string; title?: string };
           const id = `warning:${params.title ?? params.message ?? Date.now()}`;
@@ -390,20 +871,22 @@ export function createConversationStore() {
           break;
         }
 
-        // evener/thread/resync should trigger a re-read. The store cannot
-        // re-read on its own (it has no service reference in applyNotification),
-        // so it sets a flag the screen layer can watch. For now, we do nothing
-        // — the screen layer calls service.open() again on resync.
-        case "evener/thread/resync":
+        // evener/thread/resync triggers a coalesced rehydrate via the injected
+        // coalescer. The store does not re-read on its own.
+        case "evener/thread/resync": {
+          if (coalescer !== null && state.ref !== null) {
+            coalescer.requestRehydrate(state.ref);
+          }
           break;
+        }
 
-        // item/started, item/completed, item/reasoning/summaryTextDelta,
-        // item/toolOutput/delta, and other notifications update item-level
-        // state. The simplest correct approach is to update the projection;
-        // but without the full Thread we cannot re-project. These are handled
-        // by the screen layer triggering a re-read when needed.
-        default:
+        // Unsupported item transitions coalesce to one rehydrate.
+        default: {
+          if (coalescer !== null && state.ref !== null) {
+            coalescer.requestRehydrate(state.ref);
+          }
           break;
+        }
       }
     },
 
@@ -421,6 +904,7 @@ export function createConversationStore() {
         error: null,
         draft: "",
         pendingSend: null,
+        pendingMutation: null,
         conversationGeneration: conversationGen,
       });
     },

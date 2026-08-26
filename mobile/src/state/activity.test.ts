@@ -7,6 +7,7 @@
 
 import { describe, expect, it, vi } from "vitest";
 import type {
+  AnyNotification,
   EvenerDiagnostics,
   EvenerThread,
   QueueState,
@@ -181,6 +182,261 @@ describe("ActivityStore", () => {
     store.getState().project(realService, t);
     const v2 = store.getState().view;
     expect(v1).toEqual(v2);
+  });
+
+  // --- Step 4: Activity notification and setView tests -----------------------
+
+  describe("setView", () => {
+    it("replaces the activity view directly", () => {
+      const view: ActivityView = {
+        tasks: [{ status: "done", count: 5 }],
+        work: [],
+        usage: { totalTokens: 100 },
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+      };
+      const store = createActivityStore();
+      store.getState().setView(view);
+      expect(store.getState().view).toBe(view);
+      expect(store.getState().status).toBe("open");
+    });
+
+    it("setView from a read-boundary contains tasks/work/usage", () => {
+      const view: ActivityView = {
+        tasks: [
+          { status: "active", count: 1 },
+          { status: "open", count: 2 },
+          { status: "done", count: 3 },
+        ],
+        work: [
+          {
+            kind: "job",
+            label: "shell",
+            tone: "running",
+            outputSummary: "1.0 KB",
+          },
+        ],
+        usage: { totalTokens: 42, cost: "$0.01" },
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+      };
+      const store = createActivityStore();
+      store.getState().setView(view);
+      const v = store.getState().view;
+      expect(v?.tasks).toHaveLength(3);
+      expect(v?.work).toHaveLength(1);
+      expect(v?.usage.totalTokens).toBe(42);
+      expect(v?.usage.cost).toBe("$0.01");
+    });
+  });
+
+  describe("activity notification patching", () => {
+    it("evener/job/started patches a sanitized work entry", () => {
+      const store = createActivityStore();
+      const initialView: ActivityView = {
+        tasks: [],
+        work: [],
+        usage: {},
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+      };
+      store.getState().setView(initialView);
+      store.getState().applyNotification({
+        method: "evener/job/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          job: {
+            jobId: "job-new",
+            jobType: "shell",
+            status: "running",
+            outputBytes: 0,
+          },
+        },
+      } as AnyNotification);
+      const v = store.getState().view;
+      expect(v?.work).toHaveLength(1);
+      expect(v?.work[0]?.label).toBe("shell");
+      // Sanitized: diagnostics has rawId but no command/task
+      expect(v?.work[0]?.diagnostics?.rawId).toBe("job-new");
+      expect(v?.work[0]?.diagnostics).not.toHaveProperty("command");
+    });
+
+    it("evener/delegate/updated patches a sanitized delegate entry", () => {
+      const store = createActivityStore();
+      const initialView: ActivityView = {
+        tasks: [],
+        work: [],
+        usage: {},
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+      };
+      store.getState().setView(initialView);
+      store.getState().applyNotification({
+        method: "evener/delegate/updated",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          delegate: {
+            delegateId: "dlg-1",
+            ownerSessionId: "sess",
+            rootSessionId: "sess",
+            childSessionId: "child",
+            transcriptRef: "local:abc",
+            type: "subagent",
+            lifecycle: "running",
+            phase: "running",
+            status: "running",
+            resumable: true,
+            projectionRevision: 1,
+            needsAttention: false,
+          },
+        },
+      } as AnyNotification);
+      const v = store.getState().view;
+      expect(v?.work).toHaveLength(1);
+      expect(v?.work[0]?.kind).toBe("delegate");
+      // Sanitized: no transcriptRef exposed in the view model
+      expect(v?.work[0]?.diagnostics).not.toHaveProperty("transcriptRef");
+    });
+
+    it("evener/task/updated patches task counts", () => {
+      const store = createActivityStore();
+      const initialView: ActivityView = {
+        tasks: [],
+        work: [],
+        usage: {},
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+      };
+      store.getState().setView(initialView);
+      store.getState().applyNotification({
+        method: "evener/task/updated",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          total: 10,
+          done: 3,
+        },
+      } as AnyNotification);
+      const v = store.getState().view;
+      const doneGroup = v?.tasks.find((g) => g.status === "done");
+      expect(doneGroup?.count).toBe(3);
+      const openGroup = v?.tasks.find((g) => g.status === "open");
+      expect(openGroup?.count).toBe(7);
+    });
+
+    it("turn/completed refreshes usage", () => {
+      const store = createActivityStore();
+      const initialView: ActivityView = {
+        tasks: [],
+        work: [],
+        usage: { totalTokens: 50 },
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+      };
+      store.getState().setView(initialView);
+      store.getState().applyNotification({
+        method: "turn/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          turn: {
+            id: "t1",
+            itemsView: "default",
+            status: "completed",
+            usage: { totalTokens: 200, inputTokens: 100, outputTokens: 100 },
+          },
+        },
+      } as AnyNotification);
+      const v = store.getState().view;
+      expect(v?.usage.totalTokens).toBe(200);
+      expect(v?.usage.inputTokens).toBe(100);
+      expect(v?.usage.outputTokens).toBe(100);
+    });
+  });
+
+  describe("jobs-tree revision coalesces one rehydrate", () => {
+    it("evener/jobs/treeUpdated triggers one rehydrate call", () => {
+      const rehydrateCalls: { ref: string }[] = [];
+      let pending = false;
+      const coalescer = {
+        requestRehydrate(ref: string) {
+          if (pending) return;
+          pending = true;
+          queueMicrotask(() => {
+            pending = false;
+            rehydrateCalls.push({ ref });
+          });
+        },
+      };
+      const store = createActivityStore();
+      const initialView: ActivityView = {
+        tasks: [],
+        work: [],
+        usage: {},
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+      };
+      store.getState().setView(initialView);
+      store.getState().setCoalescer(coalescer);
+
+      // Emit multiple jobs/treeUpdated notifications
+      store.getState().applyNotification({
+        method: "evener/jobs/treeUpdated",
+        params: { threadId: "thread-1", ref: "ref-1", revision: 1 },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "evener/jobs/treeUpdated",
+        params: { threadId: "thread-1", ref: "ref-1", revision: 2 },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "evener/jobs/treeUpdated",
+        params: { threadId: "thread-1", ref: "ref-1", revision: 3 },
+      } as AnyNotification);
+
+      return Promise.resolve().then(() =>
+        Promise.resolve().then(() => {
+          expect(rehydrateCalls.length).toBe(1);
+        }),
+      );
+    });
+  });
+
+  describe("profile switch resets activity and rejects stale patches", () => {
+    it("reset clears activity view", () => {
+      const store = createActivityStore();
+      store.getState().setView({
+        tasks: [{ status: "done", count: 1 }],
+        work: [],
+        usage: {},
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+      });
+      store.getState().reset();
+      expect(store.getState().view).toBeNull();
+      expect(store.getState().status).toBe("idle");
+    });
+
+    it("rejects stale notification after reset (generation safety)", () => {
+      const store = createActivityStore();
+      store.getState().setView({
+        tasks: [{ status: "done", count: 1 }],
+        work: [],
+        usage: {},
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+      });
+      const genBefore = store.getState().generationForTest();
+      store.getState().reset();
+      const genAfter = store.getState().generationForTest();
+      expect(genAfter).toBeGreaterThan(genBefore);
+
+      // After reset, a stale notification should not produce a view
+      store.getState().applyNotification({
+        method: "evener/task/updated",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          total: 5,
+          done: 5,
+        },
+      } as AnyNotification);
+      // View should still be null after reset
+      expect(store.getState().view).toBeNull();
+    });
   });
 });
 

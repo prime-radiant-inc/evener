@@ -34,6 +34,13 @@ import type {
   MobileTimelineItem,
 } from "../conversation/model";
 import { projectThread } from "../conversation/project";
+import type { ActivityView } from "./activity";
+import { createActivityService } from "./activity";
+
+// The bounded read page limit and retained item cap, centralized so every
+// caller uses the same constant.
+export const READ_TURN_LIMIT = 50;
+export const RETAINED_ITEM_CAP = 500;
 
 // The narrow client surface the service depends on. Structurally compatible
 // with AppwireClient and FakeClient, so tests inject a FakeClient without
@@ -55,8 +62,18 @@ export interface ConversationServiceOptions {
   readonly idFactory?: IdFactory;
 }
 
+export interface ConversationReadProjection {
+  conversation: MobileConversation;
+  activity: ActivityView;
+  olderCursor: string | null;
+}
+
 export interface ConversationService {
   open(ref: string, cursor?: string): Promise<MobileConversation>;
+  readProjection?(
+    ref: string,
+    cursor?: string,
+  ): Promise<ConversationReadProjection>;
   loadOlder(cursor: string): Promise<{
     items: MobileTimelineItem[];
     nextCursor?: string;
@@ -100,6 +117,7 @@ export function createConversationService(
   options: ConversationServiceOptions = {},
 ): ConversationService {
   const idFactory: IdFactory = options.idFactory ?? defaultIdFactory;
+  const activityService = createActivityService();
 
   // Current thread identity and capabilities, set by open(). Mutations check
   // these before reaching the wire; a re-read on actionUnavailable refreshes
@@ -119,14 +137,15 @@ export function createConversationService(
     }
   }
 
-  async function refreshCapabilities(): Promise<void> {
-    if (ref === null) return;
+  async function refreshCapabilities(): Promise<ThreadCapabilities | null> {
+    if (ref === null) return null;
     const response: ThreadReadResponse = await client.request("thread/read", {
       ref,
       includeTurns: false,
       subscribe: false,
     });
     capabilities = response.thread.evener.capabilities;
+    return capabilities;
   }
 
   // isActionUnavailable returns true when a WireError carries the
@@ -169,11 +188,31 @@ export function createConversationService(
       return projectThread(response.thread);
     },
 
+    async readProjection(threadRef, cursor) {
+      ref = threadRef;
+      const response: ThreadReadResponse = await client.request("thread/read", {
+        ref: threadRef,
+        includeTurns: true,
+        subscribe: true,
+        replaceSubscription: true,
+        turnLimit: READ_TURN_LIMIT,
+        ...(cursor !== undefined ? { cursor } : {}),
+      });
+      capabilities = response.thread.evener.capabilities;
+      const conversation = projectThread(response.thread);
+      const activity = activityService.projectActivity(response.thread);
+      return {
+        conversation,
+        activity,
+        olderCursor: response.olderCursor ?? null,
+      };
+    },
+
     async loadOlder(cursor) {
       const threadRef = requireRef();
       const response: ThreadTurnsListResponse = await client.request(
         "thread/turns/list",
-        { ref: threadRef, cursor },
+        { ref: threadRef, cursor, limit: READ_TURN_LIMIT },
       );
       // Project the older turns into mobile items by projecting a minimal
       // Thread containing just these turns. projectThread handles empty/missing
