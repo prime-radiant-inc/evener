@@ -50,6 +50,9 @@ func assertPinNavigationPublication(t *testing.T, web *WebServer, generation str
 	}
 	for index, target := range targets {
 		want := expected[index]
+		if target.Revision == 0 {
+			t.Fatalf("target[%d]=%+v, want positive revision", index, target)
+		}
 		if target.Kind != want.Kind || target.Section != want.Section || target.SectionID != want.SectionID || target.Catalog != want.Catalog || target.ProjectKey != want.ProjectKey {
 			t.Fatalf("target[%d]=%+v, want exact identity=%+v", index, target, want)
 		}
@@ -59,10 +62,13 @@ func assertPinNavigationPublication(t *testing.T, web *WebServer, generation str
 	}
 }
 
-func assertPinNoNavigation(t *testing.T, web *WebServer, targets []appwire.NavigationInvalidationTarget) {
+func assertPinNoNavigation(t *testing.T, web *WebServer, generation string, targets []appwire.NavigationInvalidationTarget) {
 	t.Helper()
 	if len(targets) != 0 {
 		t.Fatalf("no-op navigation targets=%+v, want empty", targets)
+	}
+	if generation == "" {
+		t.Fatal("no-op navigation generation is empty")
 	}
 	if events := web.navigation.DrainPublications(); len(events) != 0 {
 		t.Fatalf("no-op published events=%+v, want empty", events)
@@ -90,7 +96,10 @@ func TestRESTNavigationPinSectionRenameDeleteConverges(t *testing.T) {
 		if !repeatResponse.OK || repeatResponse.Changed || repeatResponse.Section.ID != section.ID || repeatResponse.Section.Name != "RESEARCH" || repeatResponse.Section.MemberCount != 1 {
 			t.Fatalf("repeat response=%+v", repeatResponse)
 		}
-		assertPinNoNavigation(t, web, repeatResponse.Navigation.Targets)
+		if repeatResponse.Navigation.GenerationID != response.Navigation.GenerationID {
+			t.Fatalf("repeat generation=%q, want changed generation=%q", repeatResponse.Navigation.GenerationID, response.Navigation.GenerationID)
+		}
+		assertPinNoNavigation(t, web, response.Navigation.GenerationID, repeatResponse.Navigation.Targets)
 	})
 
 	t.Run("delete changed and absent", func(t *testing.T) {
@@ -136,7 +145,10 @@ func TestRESTNavigationSessionPinAssignUnpinConverges(t *testing.T) {
 	if !repeatResponse.OK || repeatResponse.Changed || repeatResponse.Assignment.SessionRef != "local:session-a" || repeatResponse.Assignment.Section.ID != sectionID || repeatResponse.Assignment.Section.MemberCount != 1 {
 		t.Fatalf("repeat assign response=%+v", repeatResponse)
 	}
-	assertPinNoNavigation(t, web, repeatResponse.Navigation.Targets)
+	if repeatResponse.Navigation.GenerationID != assignResponse.Navigation.GenerationID {
+		t.Fatalf("repeat generation=%q, want changed generation=%q", repeatResponse.Navigation.GenerationID, assignResponse.Navigation.GenerationID)
+	}
+	assertPinNoNavigation(t, web, assignResponse.Navigation.GenerationID, repeatResponse.Navigation.Targets)
 
 	unpinned := deleteURL(t, web.Handler(), "/api/session-pin?ref=local%3Asession-a")
 	if unpinned.Code != http.StatusOK {
@@ -156,7 +168,10 @@ func TestRESTNavigationSessionPinAssignUnpinConverges(t *testing.T) {
 	if !repeatUnpinResponse.OK || repeatUnpinResponse.Changed || repeatUnpinResponse.Assignment.SessionRef != "local:session-a" {
 		t.Fatalf("repeat unpin response=%+v", repeatUnpinResponse)
 	}
-	assertPinNoNavigation(t, web, repeatUnpinResponse.Navigation.Targets)
+	if repeatUnpinResponse.Navigation.GenerationID != unpinResponse.Navigation.GenerationID {
+		t.Fatalf("repeat unpin generation=%q, want changed generation=%q", repeatUnpinResponse.Navigation.GenerationID, unpinResponse.Navigation.GenerationID)
+	}
+	assertPinNoNavigation(t, web, unpinResponse.Navigation.GenerationID, repeatUnpinResponse.Navigation.Targets)
 }
 
 func TestRESTNavigationSessionPinAbsentAssignHasNoEvent(t *testing.T) {
