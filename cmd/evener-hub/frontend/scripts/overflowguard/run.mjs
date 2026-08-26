@@ -187,7 +187,11 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
           'inline session chrome',
         );
         await until(() => chrome.clientWidth > 0 && chrome.clientWidth < 640, 'narrowed chrome');
-        const detail = await window.inspectDetail();
+        // The dedicated width sweep opens Advanced and measures the final
+        // expanded geometry. This dock-collapse probe keeps its existing
+        // trigger/popover containment check without creating an impossible
+        // 338px-pane, 1100px-tall expanded editor fixture.
+        const detail = await window.inspectDetail(false);
         const actionsAgain = actionsTrigger();
         if (!actionsAgain) throw new Error('session actions trigger missing');
         actionsAgain.click();
@@ -224,7 +228,8 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
 function assertDetail(result, width) {
   const failures = [];
   const detail = result.detail;
-  if (!detail?.found || !detail.triggerReachable) failures.push("Detail trigger is not reachable inside the pane");
+  if (!detail?.found || !detail.triggerReachable || !detail.triggerHitTestable)
+    failures.push("Detail trigger is not reachable or is occluded at its center hit point");
   if (!detail?.open) failures.push("Detail trigger did not open its production portal/sheet");
   if (!detail?.portalContained) failures.push(`Detail portal/sheet escapes the viewport: ${JSON.stringify(detail?.panel)}`);
   if ((detail?.horizontalOverflowCount ?? 1) !== 0) {
@@ -235,17 +240,23 @@ function assertDetail(result, width) {
   const mobile = result.viewport?.mobile === true;
   if (detail?.mobile !== mobile) failures.push(`Detail layout mode is ${detail?.mobile}, realized viewport mode is ${mobile}`);
   if (detail?.fieldsetsFound !== 3) failures.push(`Detail Advanced rendered ${detail?.fieldsetsFound ?? "unknown"} fieldsets, expected 3`);
-  const expectedTargets = mobile ? 20 : 19;
+  const expectedTargets = mobile ? 29 : 28;
   if ((detail?.targets?.length ?? 0) !== expectedTargets) {
     failures.push(`Detail mounted ${detail?.targets?.length ?? "unknown"} interactive targets, expected ${expectedTargets}`);
   }
+  const switchLabels = detail?.targets?.filter((target) => target.kind === "switch-label") ?? [];
+  if (switchLabels.length !== 9) failures.push(`Detail mounted ${switchLabels.length} Switch label targets, expected 9`);
   if (!detail?.popoverAnchored && !mobile) failures.push("Desktop Detail popover is not spatially anchored to its trigger");
   if (!detail?.sheetBottomAnchored && mobile) failures.push("Mobile Detail sheet is not bottom-anchored");
   if (mobile && (detail?.panel?.width ?? 0) <= 34 * 16 && !detail?.fieldsetStacked)
     failures.push("Mobile Detail fieldsets are not stacked in the narrow sheet");
   if (mobile) {
-    const undersized = (detail?.targetHeights ?? []).filter((height) => height < 44 - 0.5);
-    if (undersized.length > 0) failures.push(`Mobile Detail target(s) are below 44px: ${undersized.join(", ")}`);
+    const undersized = (detail?.targets ?? []).filter((target) => target.height < 44 - 0.5);
+    if (undersized.length > 0) {
+      failures.push(
+        `Mobile Detail target(s) are below 44px: ${undersized.map((target) => `${target.kind}:${JSON.stringify(target.label)}=${target.height}`).join(", ")}`,
+      );
+    }
   }
   return failures;
 }
@@ -330,6 +341,7 @@ async function main() {
       panelCollapse.checkedText !== "Tasks ✓" ||
       panelCollapse.horizontalOverflowCount !== 0 ||
       !panelCollapse.detail?.triggerReachable ||
+      !panelCollapse.detail?.triggerHitTestable ||
       !panelCollapse.detail?.open ||
       panelCollapse.detail.horizontalOverflowCount !== 0 ||
       !panelCollapse.detail.portalContained
@@ -413,9 +425,12 @@ async function main() {
             `${result.footer.statusScrollWidth}px in ${result.footer.statusClientWidth}px`,
         );
       }
-      if (!result.viewport.mobile && result.footer.modelClientWidth <= 0) {
+      if (result.footer.modelClientWidth <= 0) {
         widthFailed = true;
-        console.log(`${width}px ... FAIL - pressured footer model has zero visible width`);
+        console.log(
+          `${width}px ... FAIL - pressured footer model has zero visible width: ` +
+            JSON.stringify(result.footer.geometry),
+        );
       }
       if (
         width === 390 &&
@@ -510,7 +525,8 @@ async function main() {
       } else {
         console.log(
           `${width}px Detail ... PASS - trigger reachable, ${result.detail.mobile ? "sheet" : "popover"} contained, ` +
-            `no horizontal scroll${result.detail.mobile ? ", 44px targets" : ""}`,
+            `no horizontal scroll${result.detail.mobile ? ", 44px targets" : ""}; ` +
+            `final panel=${JSON.stringify(result.detail.panel)}, model=${result.footer.modelClientWidth}px`,
         );
       }
     }

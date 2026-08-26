@@ -175,6 +175,8 @@ test("CSS provides wrapper, panel, container compaction, and reduced-motion cont
 
   expect(css).toMatch(/\.detailControl\s*\{/);
   expect(css).toMatch(/\.detailPanel\s*\{/);
+  expect(css).toMatch(/\.detailPanel\s*\{[^}]*max-height:\s*calc\(100dvh - var\(--space-4\)\)/);
+  expect(css).toMatch(/\.detailPanel\s*\{[^}]*overflow-y:\s*auto/);
   expect(css).toMatch(/@container\s*\(/);
   expect(css).toMatch(/prefers-reduced-motion:\s*reduce/);
   expect(css).not.toMatch(/@media\s*\([^)]*width/);

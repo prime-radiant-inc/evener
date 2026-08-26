@@ -197,6 +197,8 @@
 .detailPanel {
   min-width: min(32rem, calc(100vw - 2rem));
   max-width: min(42rem, calc(100vw - 2rem));
+  max-height: calc(100dvh - var(--space-4));
+  overflow-y: auto;
   border-radius: var(--radius-pane);
   background: var(--surface-0);
   box-shadow: var(--shadow-overlay);
