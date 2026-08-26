@@ -14,6 +14,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/agenttest"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -584,8 +585,19 @@ func TestPersistToolResults_VisionFailureCanceledBeforeInjectionRemovesOnlyOwned
 		for range sess.Events() {
 		}
 	}()
-	sess.Steer("daemon survives")
-	sess.SteerFromUser("client survives")
+	daemon := steeringMessage{Text: "daemon survives", Images: []ImageAttachment{{MediaType: "image/png", Data: []byte("daemon-image"), Name: "daemon.png"}}, ClientMutationID: "daemon-mutation", StableTurnID: "daemon-turn", Source: "daemon-source", Kind: "daemon-kind", TaskCompletion: &events.TaskCompletionSteeringData{CompletionState: events.TaskCompletionWaitingForBlockingDelegates, BlockingDelegateIDs: []string{"delegate-daemon"}}}
+	client := steeringMessage{Text: "client survives", Images: []ImageAttachment{{MediaType: "image/jpeg", Data: []byte("client-image"), Name: "client.jpg"}}, ClientMutationID: "client-mutation", StableTurnID: "client-turn", Source: events.SteeringSourceUser, Kind: "client-kind", TaskCompletion: &events.TaskCompletionSteeringData{CompletionState: events.TaskCompletionReadyForFinalOutput, BlockingDelegateIDs: []string{"delegate-client"}}}
+	sess.mu.Lock()
+	sess.steeringQueue = append(sess.steeringQueue, daemon, client)
+	sess.mu.Unlock()
+	sess.persistQueuesSnapshot()
+	sess.mu.Lock()
+	before := append([]steeringMessage(nil), sess.steeringQueue...)
+	sess.mu.Unlock()
+	beforeJSON, err := json.Marshal(before)
+	if err != nil {
+		t.Fatalf("marshal before queue: %v", err)
+	}
 	if err := sess.persistToolResults(context.Background(), []llm.ToolCallData{{ID: "c1", Name: "read_file"}}, []tool.ExecResult{{
 		CallID: "c1", ToolName: "read_file", ImageData: []byte("png"), ImageMediaType: "image/png",
 	}}); err != nil {
@@ -618,12 +630,67 @@ func TestPersistToolResults_VisionFailureCanceledBeforeInjectionRemovesOnlyOwned
 		t.Fatalf("injectPostToolSteering error = %v, want context.Canceled", err)
 	}
 	sess.mu.Lock()
-	defer sess.mu.Unlock()
 	if len(sess.visionTurnOwners) != 0 {
+		sess.mu.Unlock()
 		t.Fatalf("owners after canceled injection = %d, want 0", len(sess.visionTurnOwners))
 	}
-	if len(sess.steeringQueue) != 2 || sess.steeringQueue[0].Text != "daemon survives" || sess.steeringQueue[1].Text != "client survives" {
-		t.Fatalf("unrelated queue after canceled injection = %#v", sess.steeringQueue)
+	after := append([]steeringMessage(nil), sess.steeringQueue...)
+	sess.mu.Unlock()
+	afterJSON, err := json.Marshal(after)
+	if err != nil {
+		t.Fatalf("marshal after queue: %v", err)
+	}
+	// The owned entry is the final queue item; compare its removal without
+	// inspecting the private owner marker or weakening any public fields.
+	wantJSON, err := json.Marshal(before[:2])
+	if len(after) != 2 || err != nil || string(afterJSON) != string(wantJSON) {
+		t.Fatalf("unrelated queue fields/order changed: before=%s after=%s want=%s", beforeJSON, afterJSON, wantJSON)
+	}
+}
+
+func TestPersistToolResults_VisionFailureInjectsOnceAndDoesNotReappearNextBoundary(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&immediateVisionFailureAdapter{name: "openai"})
+	sess, err := NewSession(c, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+	if err := sess.persistToolResults(context.Background(), []llm.ToolCallData{{ID: "c1", Name: "read_file"}}, []tool.ExecResult{{CallID: "c1", ToolName: "read_file", ImageData: []byte("png"), ImageMediaType: "image/png"}}); err != nil {
+		t.Fatalf("persistToolResults: %v", err)
+	}
+	var sigs []string
+	var failed []bool
+	if _, err := sess.injectPostToolSteering(context.Background(), nil, nil, &sigs, &failed); err != nil {
+		t.Fatalf("injectPostToolSteering: %v", err)
+	}
+	sess.mu.Lock()
+	if len(sess.visionTurnOwners) != 0 || len(sess.steeringQueue) != 0 {
+		sess.mu.Unlock()
+		t.Fatalf("successful injection left queue/owners: %d/%d", len(sess.steeringQueue), len(sess.visionTurnOwners))
+	}
+	var visionTurns int
+	for _, turn := range sess.history {
+		if turn.Kind == schema.TurnSteering && strings.Contains(turn.Message.Text(), "Vision is unavailable because the vision provider failed") {
+			visionTurns++
+		}
+	}
+	sess.mu.Unlock()
+	if visionTurns != 1 {
+		t.Fatalf("vision steering turns = %d, want exactly 1", visionTurns)
+	}
+	// A later boundary must remain ordinary and must not resurrect the consumed entry.
+	sess.injectDrainedSteering()
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if len(sess.steeringQueue) != 0 || len(sess.visionTurnOwners) != 0 {
+		t.Fatalf("subsequent boundary resurrected queue/owners: %d/%d", len(sess.steeringQueue), len(sess.visionTurnOwners))
 	}
 }
 
