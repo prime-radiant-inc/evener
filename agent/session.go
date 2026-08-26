@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/installid"
 	"primeradiant.com/evener/agent/internal/mcp"
+	"primeradiant.com/evener/agent/internal/modelavailability"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/plugin"
@@ -77,6 +78,7 @@ type Session struct {
 	profile                  *provider.Profile
 	resolveProfile           func(ref string) (*provider.Profile, error) // cross-provider resolver; may be nil
 	delegateModelDescription string
+	modelSnapshot            *modelavailability.Snapshot
 	// lastDroppedModelFallbacks records the cfg.ModelFallbacks entries dropped
 	// by the most recent SetModel's post-switch revalidation (entries that no
 	// longer validate against the new profile). Nil until a switch drops any.

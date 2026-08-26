@@ -262,6 +262,24 @@ func DefDelegateSend() llm.ToolDefinition {
 	}
 }
 
+// DefModelList exposes a bounded read-only view of a startup-frozen model
+// snapshot. Cursor values are opaque and snapshot-authenticated by the agent.
+func DefModelList() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name:        "model_list",
+		Description: "List choices from the startup-frozen model availability snapshot. This is read-only; use the opaque cursor returned for the next page. Pages are bounded by both max_count and max_bytes and are never truncated.",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"cursor":    map[string]any{"type": "string", "description": "Opaque snapshot-bound continuation cursor; omit for the first page."},
+				"max_count": map[string]any{"type": "integer", "minimum": 1, "maximum": 128},
+				"max_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 4096},
+			},
+		},
+	}
+}
+
 // DefJobWatch defines the job_watch tool, available to any session that can
 // run jobs; cross-session sources authorize themselves. eventKinds are the
 // model-facing session/job event-kind names available this session; they are

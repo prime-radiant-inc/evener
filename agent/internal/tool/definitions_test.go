@@ -833,3 +833,10 @@ func TestDefDelegateWithSandboxIncludesVerifiedModelChoices(t *testing.T) {
 		t.Fatalf("model description = %q", got)
 	}
 }
+
+func TestDefModelListIsBoundedReadOnlyContract(t *testing.T) {
+	def := DefModelList()
+	if def.Name != "model_list" || def.Parameters["additionalProperties"] != false {
+		t.Fatalf("definition = %#v", def)
+	}
+}

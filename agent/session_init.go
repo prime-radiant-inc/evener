@@ -281,6 +281,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		snapshot := modelavailability.Capture(context.Background(), names, func(ctx context.Context, name string) ([]llm.ModelInfo, error) {
 			return client.ListModels(ctx, name)
 		}, 2*time.Second)
+		s.modelSnapshot = &snapshot
 		if text, ok := snapshot.Inline(modelavailability.DefaultInlineMaxCount, modelavailability.DefaultInlineMaxBytes); ok {
 			s.delegateModelDescription = text
 		} else if len(snapshot.Choices) > 0 {
