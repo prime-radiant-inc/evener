@@ -7,7 +7,7 @@ import { connectCdp } from "./cdp.mjs";
 const defaultChrome =
   "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome";
 
-async function activePort(profile, child, stderr) {
+export async function activePort(profile, child, stderr) {
   const file = path.join(profile, "DevToolsActivePort");
   const controller = new AbortController();
   const exited = new Promise((_, reject) =>
@@ -17,6 +17,11 @@ async function activePort(profile, child, stderr) {
           `Chrome exited before readiness (${code ?? signal})\n${stderr()}`,
         ),
       ),
+    ),
+  );
+  const errored = new Promise((_, reject) =>
+    child.once("error", (error) =>
+      reject(new Error(`Chrome process error: ${error.message}\n${stderr()}`)),
     ),
   );
   const changed = (async () => {
@@ -33,7 +38,7 @@ async function activePort(profile, child, stderr) {
     () => changed,
   );
   try {
-    await Promise.race([immediate, exited]);
+    await Promise.race([immediate, exited, errored]);
   } finally {
     controller.abort();
   }
@@ -51,7 +56,7 @@ function exitEvent(child) {
     : Promise.resolve();
 }
 
-async function bounded(promise, milliseconds, label) {
+export async function bounded(promise, milliseconds, label) {
   let timer;
   try {
     return await Promise.race([
@@ -68,6 +73,32 @@ async function bounded(promise, milliseconds, label) {
   }
 }
 
+export async function runOwnedCleanup(primaryError, operations) {
+  const errors = primaryError ? [primaryError] : [];
+  for (const operation of operations) {
+    try {
+      await operation();
+    } catch (error) {
+      errors.push(error);
+    }
+  }
+  if (errors.length > 1)
+    throw new AggregateError(errors, "owned operation and cleanup failed");
+  if (errors.length === 1) throw errors[0];
+}
+
+export async function withOwnedCleanup(operation, cleanups) {
+  let result;
+  let primaryError;
+  try {
+    result = await operation();
+  } catch (error) {
+    primaryError = error;
+  }
+  await runOwnedCleanup(primaryError, cleanups);
+  return result;
+}
+
 async function terminateOwned(child) {
   if (child.exitCode !== null) return false;
   const graceful = exitEvent(child);
@@ -79,6 +110,21 @@ async function terminateOwned(child) {
     const forced = exitEvent(child);
     child.kill("SIGKILL");
     await bounded(forced, 3_000, "Chrome SIGKILL shutdown");
+    return true;
+  }
+}
+
+export async function closeBrowserProcess(browser, child, timeout = 3_000) {
+  try {
+    const exit = exitEvent(child);
+    await bounded(
+      Promise.all([browser.send("Browser.close"), exit]),
+      timeout,
+      "Chrome protocol Browser.close and process exit",
+    );
+    return false;
+  } catch {
+    await terminateOwned(child);
     return true;
   }
 }
@@ -163,15 +209,7 @@ export async function startChrome(options = {}) {
     async close({ retainProfile = false } = {}) {
       if (closed) return;
       closed = true;
-      let shutdownFailed = false;
-      try {
-        const exit = exitEvent(child);
-        await browser.send("Browser.close");
-        await bounded(exit, 3_000, "Chrome protocol shutdown");
-      } catch {
-        shutdownFailed = true;
-        await terminateOwned(child);
-      }
+      const shutdownFailed = await closeBrowserProcess(browser, child);
       await browser.close().catch(() => {});
       if (retainProfile || shutdownFailed) {
         console.error(`Owned Chrome profile retained: ${profile}`);
