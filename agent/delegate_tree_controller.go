@@ -134,6 +134,7 @@ type delegateLiveState struct {
 	// encountered a finalization failure has completed all retained-runtime writes.
 	recoveryRunnerPending bool
 	activityAt            time.Time
+	productiveActivityAt  time.Time
 	quietSequence         uint64
 	quietNotified         bool
 	quietClaim            *delegateQuietAttentionClaim
@@ -154,6 +155,10 @@ type delegateSnapshot struct {
 	transcriptRef      string
 	notResumableReason string
 	latestActivityAt   time.Time
+	// latestProductiveActivityAt is the one-shot drain's liveness clock.
+	// Provider retry/backoff remains ordinary activity everywhere else, but it
+	// does not move this clock.
+	latestProductiveActivityAt time.Time
 	// pendingStopSeq is the sequence of a subtree stop admitted against this
 	// delegate and not yet completed; 0 when no stop is outstanding. It is what
 	// distinguishes a delegate that was ASKED to stop from one that has.
@@ -631,8 +636,13 @@ func (c *delegateTreeController) appendResumabilityClosureLocked(delegateID stri
 
 func (c *delegateTreeController) captureDelegateSnapshotLocked(id string) delegateSnapshot {
 	snapshot := captureDelegateSnapshot(c.durable[id])
-	if live := c.live[id]; live != nil && live.activityAt.After(snapshot.latestActivityAt) {
-		snapshot.latestActivityAt = live.activityAt
+	if live := c.live[id]; live != nil {
+		if live.activityAt.After(snapshot.latestActivityAt) {
+			snapshot.latestActivityAt = live.activityAt
+		}
+		if live.productiveActivityAt.After(snapshot.latestProductiveActivityAt) {
+			snapshot.latestProductiveActivityAt = live.productiveActivityAt
+		}
 	}
 	return snapshot
 }
@@ -652,24 +662,25 @@ func captureDelegateSnapshot(aggregate *delegatestore.Aggregate) delegateSnapsho
 		outcome = &value
 	}
 	return delegateSnapshot{
-		id:                 aggregate.DelegateID,
-		parentID:           aggregate.Descriptor.ParentDelegateID,
-		descriptor:         cloneDelegateStartDescriptor(aggregate.Descriptor),
-		generation:         aggregate.Generation,
-		lifecycle:          lifecycle,
-		phase:              aggregate.Phase,
-		currentRunOpen:     aggregate.CurrentRunOpen,
-		runStartedAt:       aggregate.RunStartedAt,
-		resumable:          aggregate.Resumable,
-		needsAttention:     aggregate.NeedsAttention,
-		revision:           aggregate.ProjectionRevision,
-		transcriptRef:      aggregate.Descriptor.TranscriptRef,
-		notResumableReason: aggregate.NotResumableReason,
-		latestActivityAt:   aggregate.LatestActivityAt,
-		pendingStopSeq:     aggregate.PendingStopSeq,
-		pendingStopAt:      aggregate.PendingStopAt,
-		lastOutcome:        outcome,
-		latestPacket:       cloneStableTerminalPacket(aggregate.LatestPacket),
+		id:                         aggregate.DelegateID,
+		parentID:                   aggregate.Descriptor.ParentDelegateID,
+		descriptor:                 cloneDelegateStartDescriptor(aggregate.Descriptor),
+		generation:                 aggregate.Generation,
+		lifecycle:                  lifecycle,
+		phase:                      aggregate.Phase,
+		currentRunOpen:             aggregate.CurrentRunOpen,
+		runStartedAt:               aggregate.RunStartedAt,
+		resumable:                  aggregate.Resumable,
+		needsAttention:             aggregate.NeedsAttention,
+		revision:                   aggregate.ProjectionRevision,
+		transcriptRef:              aggregate.Descriptor.TranscriptRef,
+		notResumableReason:         aggregate.NotResumableReason,
+		latestActivityAt:           aggregate.LatestActivityAt,
+		latestProductiveActivityAt: aggregate.LatestActivityAt,
+		pendingStopSeq:             aggregate.PendingStopSeq,
+		pendingStopAt:              aggregate.PendingStopAt,
+		lastOutcome:                outcome,
+		latestPacket:               cloneStableTerminalPacket(aggregate.LatestPacket),
 	}
 }
 

@@ -82,6 +82,14 @@ type delegateQuietAttentionClaim struct {
 }
 
 func (c *delegateTreeController) ReportActivity(lease delegateLease, at time.Time) error {
+	return c.ReportActivityPhase(lease, at, "")
+}
+
+// ReportActivityPhase records parent-visible activity and separately advances
+// the one-shot drain's productive-liveness clock. Provider retry/backoff is
+// ordinary activity for supervision and reporting, but it is not productive
+// progress that should extend terminal drain grace.
+func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at time.Time, phase string) error {
 	if c == nil {
 		return errDelegateStaleLease
 	}
@@ -94,20 +102,23 @@ func (c *delegateTreeController) ReportActivity(lease delegateLease, at time.Tim
 		c.mu.Unlock()
 		return err
 	}
-	if at.Before(live.activityAt) {
-		c.mu.Unlock()
-		return nil
-	}
 	rearm := live.quietNotified || live.quietClaim != nil && live.quietClaim.sequence == live.quietSequence
-	if at.Equal(live.activityAt) && !rearm {
+	activityChanged := at.After(live.activityAt) || at.Equal(live.activityAt) && rearm
+	productiveChanged := phase != jobPhaseModelRetrying && at.After(live.productiveActivityAt)
+	if !activityChanged && !productiveChanged {
 		c.mu.Unlock()
 		return nil
 	}
-	if rearm {
+	if activityChanged && rearm {
 		live.quietSequence++
 		live.quietNotified = false
 	}
-	live.activityAt = at
+	if activityChanged {
+		live.activityAt = at
+	}
+	if productiveChanged {
+		live.productiveActivityAt = at
+	}
 	c.evidenceVersion++
 	plan := c.capturedPlanLocked(aggregate.DelegateID)
 	c.mu.Unlock()
@@ -297,8 +308,8 @@ func bindStableDelegateActivityToOwner(child *Session, controller *delegateTreeC
 	child.mu.Lock()
 	child.cfg.spawn.parentDelegateID = lease.delegateID
 	child.cfg.spawn.forwardJobEvent = forward
-	child.cfg.spawn.parentJobActivity = func(string, string) {
-		_ = controller.ReportActivity(lease, child.sclock().Now())
+	child.cfg.spawn.parentJobActivity = func(_ string, phase string) {
+		_ = controller.ReportActivityPhase(lease, child.sclock().Now(), phase)
 	}
 	jm := child.jobManager
 	child.mu.Unlock()
