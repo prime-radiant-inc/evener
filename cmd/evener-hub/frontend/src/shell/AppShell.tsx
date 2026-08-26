@@ -18,6 +18,7 @@ import {
 } from "../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../stores/navigation/store";
 import { isNavigationUnavailable, keyID } from "../stores/navigation/types";
+import { initTranscriptDisplay } from "../stores/transcriptDisplay";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { ToastRegion } from "./chrome/ToastRegion";
 import { ClientProvider } from "./clientContext";
@@ -52,6 +53,7 @@ import { initPrefs } from "../stores/prefs";
 // the default. Idempotent; sections re-apply on change. (Wave-7 T4's
 // documented wiring line, pre-proven against the full suite by its review.)
 initPrefs();
+initTranscriptDisplay();
 
 // Start the notifications engine once, at module evaluation, beside initPrefs.
 // Idempotent no-op in T1; T4 fills it (title count / favicon badge / OS
@@ -273,7 +275,10 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
     // guard/rationale, narrowed to only the client AppShell itself dialed).
     if (!(owned && import.meta.env.MODE === "test")) {
       void client.connect().then(
-        (info) => connectionStore.setState({ serverInfo: info.serverInfo }),
+        (info) => {
+          if (connectionStore.getState().client !== client || client.state === "closed") return;
+          connectionStore.setState({ serverInfo: info.serverInfo, features: info.features });
+        },
         () => {
           // Failure is already reflected via the client's own onStateChange
           // -> connectionStore.state transition (to "closed"); nothing

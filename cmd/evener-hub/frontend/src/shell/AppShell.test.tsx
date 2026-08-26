@@ -931,7 +931,7 @@ test("clicking the rail's own Search button opens the command palette", async ()
   expect(await screen.findByRole("dialog", { name: "Command palette" })).toBeTruthy();
 });
 
-test("populates connectionStore.serverInfo from the injected client's scripted connect() response", async () => {
+test("populates connectionStore metadata from one injected initialize response", async () => {
   const fake = new FakeClient("ready");
   const scripted: InitializeResponse = {
     serverInfo: { name: "evener-hub-test", version: "9.9.9" },
@@ -946,6 +946,7 @@ test("populates connectionStore.serverInfo from the injected client's scripted c
 
   await waitFor(() => {
     expect(connectionStore.getState().serverInfo).toEqual({ name: "evener-hub-test", version: "9.9.9" });
+    expect(connectionStore.getState().features).toEqual(scripted.features);
   });
 });
 

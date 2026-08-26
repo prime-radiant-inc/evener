@@ -7,11 +7,12 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { ConnectionState } from "../protocol/client";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
-import type { ServerInfo } from "../protocol/types.gen";
+import type { FeatureSet, ServerInfo } from "../protocol/types.gen";
 
 export interface ConnectionStoreState {
   state: ConnectionState;
   serverInfo?: ServerInfo;
+  features?: FeatureSet;
   // The wired client, for other stores (threads.ts) to ride. Not part of
   // Task 7's locked shape, but the only way a store without its own
   // connect() (threads.ts has none) can reach the client at all.
@@ -21,20 +22,9 @@ export interface ConnectionStoreState {
   // Idempotent: calling it again with the same client instance no-ops,
   // rather than attaching a second onStateChange listener.
   //
-  // serverInfo is part of the locked shape, but this function never
-  // populates it: AppwireClientLike DOES expose a connect() that resolves
-  // with the InitializeResponse (protocol/testing/fakeClient.ts) - but
-  // connect(client) here only mirrors ConnectionState, so it stays safe to
-  // call before any handshake has even started (a real client is typically
-  // still "idle" the moment a caller wires it in). Instead, each caller that
-  // actually drives a handshake (AppShell.tsx's initial boot;
-  // ConnectionBanner.tsx's manual retry) sets serverInfo itself, directly,
-  // via connectionStore.setState({serverInfo}) once its own client.connect()
-  // promise resolves. Re-requesting "initialize" a second time to get the
-  // same value some other way is rejected server-side once a connection is
-  // already initialized (internal/appserver/server.go: "already
-  // initialized"), so there isn't a second path for this function to use
-  // instead.
+  // Handshake metadata is populated by the caller that drives connect(), from
+  // that one InitializeResponse. This function only mirrors client state and
+  // deliberately remains safe to call before a handshake has started.
   connect: (client: AppwireClientLike) => void;
 }
 
@@ -66,6 +56,7 @@ let unwireStateChange: (() => void) | null = null;
 export const connectionStore = createStore<ConnectionStoreState>(() => ({
   state: "idle",
   serverInfo: undefined,
+  features: undefined,
   client: null,
   connect: (client) => {
     if (connectionStore.getState().client === client) return;
@@ -78,13 +69,15 @@ export const connectionStore = createStore<ConnectionStoreState>(() => ({
     // transition has no listener and is lost until the client's next one.
     const unwire = client.onStateChange((s) => {
       if (connectionStore.getState().client !== client) return;
-      connectionStore.setState({ state: s });
+      connectionStore.setState(
+        s === "closed" ? { state: s, serverInfo: undefined, features: undefined } : { state: s },
+      );
     });
     // Read client.state here, not before registering: a transition that
     // landed during registration is already reflected in it, and the
     // callback above could not have published it while this client was
     // still not the store's.
-    connectionStore.setState({ client, state: client.state });
+    connectionStore.setState({ client, state: client.state, serverInfo: undefined, features: undefined });
     // The synchronous dispatch above can re-enter connect() with a different
     // client. That frame completed and owns the slot, so this one is stale:
     // retire its own listener instead of clobbering the newer entry, which
