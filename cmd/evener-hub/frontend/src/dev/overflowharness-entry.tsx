@@ -297,6 +297,7 @@ interface DetailGeometry {
   found: boolean;
   mobile: boolean;
   triggerReachable: boolean;
+  triggerHitTestable: boolean;
   trigger: { left: number; right: number; top: number; bottom: number; width: number; height: number } | null;
   open: boolean;
   portalContained: boolean;
@@ -331,6 +332,29 @@ function geometryOf(element: Element) {
     width: box.width,
     height: box.height,
   };
+}
+
+async function waitForStablePanel(panel: HTMLElement): Promise<void> {
+  let previous = "";
+  let stableFrames = 0;
+  for (let frame = 0; frame < 120; frame += 1) {
+    await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+    const box = geometryOf(panel);
+    const current = [box.left, box.right, box.top, box.bottom, box.width, box.height]
+      .map((value) => value.toFixed(3))
+      .join(",");
+    const finiteAnimations = document
+      .getAnimations()
+      .filter((animation) => animation.effect?.getTiming().iterations !== Number.POSITIVE_INFINITY);
+    if (current === previous && finiteAnimations.length === 0) {
+      stableFrames += 1;
+      if (stableFrames >= 2) return;
+    } else {
+      stableFrames = 0;
+    }
+    previous = current;
+  }
+  throw new Error("Detail panel geometry did not stabilize after Advanced opened");
 }
 
 function isScrollableElement(element: HTMLElement): boolean {
@@ -416,7 +440,7 @@ function measureSettings(): SettingsGeometry {
   };
 }
 
-async function inspectDetail(): Promise<DetailGeometry> {
+async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
   const pane = document.getElementById("oh-pane");
   const trigger = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
     button.textContent?.trim().startsWith("Detail:"),
@@ -426,6 +450,7 @@ async function inspectDetail(): Promise<DetailGeometry> {
       found: trigger !== undefined,
       mobile: window.matchMedia("(max-width: 899px)").matches,
       triggerReachable: false,
+      triggerHitTestable: false,
       trigger: null,
       open: false,
       portalContained: false,
@@ -443,6 +468,9 @@ async function inspectDetail(): Promise<DetailGeometry> {
   const mobile = window.matchMedia("(max-width: 899px)").matches;
   const paneBox = pane.getBoundingClientRect();
   const triggerBox = geometryOf(trigger);
+  const triggerCenter = { x: (triggerBox.left + triggerBox.right) / 2, y: (triggerBox.top + triggerBox.bottom) / 2 };
+  const hit = document.elementFromPoint(triggerCenter.x, triggerCenter.y);
+  const triggerHitTestable = hit === trigger || (hit instanceof Node && trigger.contains(hit));
   const triggerReachable =
     !trigger.disabled &&
     visible(trigger) &&
@@ -468,6 +496,7 @@ async function inspectDetail(): Promise<DetailGeometry> {
       mobile,
       triggerReachable,
       trigger: triggerBox,
+      triggerHitTestable,
       open: false,
       portalContained: false,
       panel: null,
@@ -481,25 +510,58 @@ async function inspectDetail(): Promise<DetailGeometry> {
       popoverAnchored: false,
     };
   }
+  await waitForStablePanel(panel);
+  if (includeAdvanced) {
+    const advanced = Array.from(panel.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+      button.textContent?.trim().startsWith("Advanced"),
+    );
+    if (!advanced) throw new Error("Detail editor Advanced disclosure is missing");
+    advanced.click();
+    await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+    const panelAnimations = document
+      .getAnimations()
+      .filter((animation) => animation.effect?.getTiming().iterations !== Number.POSITIVE_INFINITY);
+    await Promise.all(panelAnimations.map((animation) => animation.finished.catch(() => undefined)));
+    await waitForStablePanel(panel);
+  }
   const panelBox = geometryOf(panel);
-  const advanced = Array.from(panel.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
-    button.textContent?.trim().startsWith("Advanced"),
-  );
-  if (!advanced) throw new Error("Detail editor Advanced disclosure is missing");
-  advanced.click();
-  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
-  const panelAnimations = document
-    .getAnimations()
-    .filter((animation) => animation.effect?.getTiming().iterations !== Number.POSITIVE_INFINITY);
-  await Promise.all(panelAnimations.map((animation) => animation.finished.catch(() => undefined)));
-  const targets = [
+  const finalTriggerBox = geometryOf(trigger);
+  const accessibleName = (element: Element): string => {
+    const ariaLabel = element.getAttribute("aria-label");
+    if (ariaLabel) return ariaLabel;
+    const labelledBy = element.getAttribute("aria-labelledby");
+    if (labelledBy) {
+      const name = labelledBy
+        .split(/\s+/)
+        .map((id) => document.getElementById(id)?.textContent ?? "")
+        .join(" ")
+        .trim();
+      if (name) return name.replace(/\s+/g, " ");
+    }
+    return element.textContent?.trim().replace(/\s+/g, " ").slice(0, 80) ?? "";
+  };
+  const controls = [
     trigger,
     ...Array.from(panel.querySelectorAll<HTMLElement>("button, select, [role=radio], [role=switch]")),
-  ].map((element) => ({
-    kind: element === trigger ? "trigger" : (element.getAttribute("role") ?? element.tagName.toLowerCase()),
-    label: element.getAttribute("aria-label") ?? element.textContent?.trim().replace(/\s+/g, " ").slice(0, 80) ?? "",
-    height: element.getBoundingClientRect().height,
-  }));
+  ];
+  const switchLabels = Array.from(panel.querySelectorAll<HTMLElement>('[role="switch"]')).flatMap((switchElement) => {
+    const ids = switchElement.getAttribute("aria-labelledby")?.split(/\s+/) ?? [];
+    return ids
+      .map((id) => document.getElementById(id))
+      .filter((label): label is HTMLElement => label instanceof HTMLElement && panel.contains(label));
+  });
+  const targets = [
+    ...controls.map((element) => ({
+      kind: element === trigger ? "trigger" : (element.getAttribute("role") ?? element.tagName.toLowerCase()),
+      label: accessibleName(element),
+      height: element.getBoundingClientRect().height,
+    })),
+    ...switchLabels.map((element) => ({
+      kind: "switch-label",
+      label: accessibleName(element),
+      height: element.getBoundingClientRect().height,
+    })),
+  ];
   const targetHeights = targets.map((target) => target.height);
   const fieldsets = Array.from(panel.querySelectorAll<HTMLElement>("fieldset"));
   const fieldsetBoxes = fieldsets.map(geometryOf);
@@ -515,6 +577,7 @@ async function inspectDetail(): Promise<DetailGeometry> {
     mobile,
     triggerReachable,
     trigger: triggerBox,
+    triggerHitTestable,
     open: true,
     portalContained:
       panelBox.left >= -1 &&
@@ -533,7 +596,15 @@ async function inspectDetail(): Promise<DetailGeometry> {
     ),
     fieldsetStacked,
     sheetBottomAnchored: mobile && panelBox.bottom >= window.innerHeight - 1,
-    popoverAnchored: !mobile && panelBox.top >= triggerBox.bottom - 1,
+    popoverAnchored:
+      !mobile &&
+      panelBox.left <= finalTriggerBox.right + 1 &&
+      panelBox.right >= finalTriggerBox.left - 1 &&
+      (panelBox.bottom <= finalTriggerBox.top
+        ? finalTriggerBox.top - panelBox.bottom
+        : panelBox.top >= finalTriggerBox.bottom
+          ? panelBox.top - finalTriggerBox.bottom
+          : 0) <= 24,
   };
 }
 
@@ -764,6 +835,18 @@ function measure() {
   const subagentQuote = subagentCard?.querySelector<HTMLElement>('[data-testid="subagent-quote"]');
   const subagentStats = subagentCard?.querySelector<HTMLElement>('[data-testid="subagent-stats"]');
   const quoteFontSize = subagentQuote ? Number.parseFloat(getComputedStyle(subagentQuote).fontSize) : 0;
+  const statusGeometry = (element: HTMLElement | null) =>
+    element === null
+      ? null
+      : {
+          ...geometryOf(element),
+          clientWidth: element.clientWidth,
+          scrollWidth: element.scrollWidth,
+          display: getComputedStyle(element).display,
+          flex: getComputedStyle(element).flex,
+          minWidth: getComputedStyle(element).minWidth,
+          overflow: getComputedStyle(element).overflow,
+        };
   return {
     width,
     scrollers,
@@ -784,6 +867,14 @@ function measure() {
       statusClientWidth: status?.clientWidth ?? 0,
       statusScrollWidth: status?.scrollWidth ?? 0,
       modelClientWidth: model?.clientWidth ?? 0,
+      geometry: {
+        status: statusGeometry(status),
+        identity: statusGeometry(pane.querySelector<HTMLElement>('[data-testid="status-row-identity"]')),
+        model: statusGeometry(model),
+        effort: statusGeometry(effort),
+        context: statusGeometry(context),
+        queue: statusGeometry(queue),
+      },
     },
   };
 }

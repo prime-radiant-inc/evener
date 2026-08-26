@@ -138,3 +138,11 @@ test("the unchecked track background is --field", () => {
   const rule = /\.track\s*\{([^}]*)\}/.exec(css)?.[1] ?? "";
   expect(rule).toContain("background: var(--field)");
 });
+
+test("the clickable label gets the coarse-pointer touch floor", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "switch.module.css"), "utf8");
+  const coarsePointer = /@media \(pointer: coarse\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
+  expect(coarsePointer).toContain(".label");
+  expect(coarsePointer).toContain("min-height: var(--tap-min)");
+});

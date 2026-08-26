@@ -26,6 +26,14 @@ test("status CSS declares the approved 560, 480, and 400px compression threshold
   expect(css).toContain("@container (max-width: 399px)");
 });
 
+test("phone status CSS reserves a visible model label without dropping fixed facts", () => {
+  const css = readFileSync(join(here, "statusrow.module.css"), "utf8");
+  const phoneBlock = /@container \(max-width: 399px\) \{([\s\S]*?)\n\}/.exec(css)?.[1] ?? "";
+  expect(phoneBlock).toContain("gap: var(--space-1)");
+  expect(phoneBlock).toContain("padding-inline: 0");
+  expect(phoneBlock).toContain("min-width: 1rem");
+});
+
 const CAPABILITIES: ThreadCapabilities = {
   send: true,
   steer: true,

@@ -60,6 +60,17 @@
   cursor: pointer;
 }
 
+/* The label is an intentional click target as well as the switch button. Keep
+ * that mouse-only convenience, but give the span the same coarse-pointer hit
+ * floor as the native control. */
+@media (pointer: coarse) {
+  .label {
+    display: inline-flex;
+    align-items: center;
+    min-height: var(--tap-min);
+  }
+}
+
 /* the label is a <span>, not a form control, so it has no native :disabled
  * of its own - matched off the track's disabled state instead (they're
  * siblings, track first). */

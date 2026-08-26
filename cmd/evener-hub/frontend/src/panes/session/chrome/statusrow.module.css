@@ -97,6 +97,23 @@
 }
 
 @container (max-width: 399px) {
+  /* The model label is the first child of the Popover trigger wrapper. At the
+   * phone-width allocation measured by the browser, the fixed effort/context/
+   * queue facts consume the row exactly; compacting the row gap and model
+   * trigger padding reserves the measured 1rem label floor without dropping
+   * any fact or creating a scrollable status row. */
+  .row {
+    gap: var(--space-1);
+  }
+
+  .identity > span:first-child > :global(button) {
+    padding-inline: 0;
+  }
+
+  .identity > span:first-child > :global(button) > :global(span:first-child) {
+    min-width: 1rem;
+  }
+
   .contextMeter {
     display: none;
   }
