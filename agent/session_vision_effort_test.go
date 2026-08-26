@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -643,7 +644,7 @@ func TestPersistToolResults_VisionFailureCanceledBeforeInjectionRemovesOnlyOwned
 	// The owned entry is the final queue item. Compare directly with the
 	// serialized pre-cancellation queue so in-place mutations of referenced
 	// metadata cannot make both expected and actual values change together.
-	if len(after) != 2 || string(afterJSON) != string(beforeJSON) {
+	if len(after) != 2 || !bytes.Equal(afterJSON, beforeJSON) {
 		t.Fatalf("unrelated queue fields/order changed: before=%s after=%s", beforeJSON, afterJSON)
 	}
 }
