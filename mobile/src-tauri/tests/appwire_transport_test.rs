@@ -87,6 +87,7 @@ mod ws_server {
         received_authorization: Arc<Mutex<Option<String>>>,
         received_origin: Arc<Mutex<Option<String>>>,
         received_protocol: Arc<Mutex<Option<String>>>,
+        echo_subprotocol: Arc<AtomicBool>,
     }
 
     impl ScriptedWsServer {
@@ -109,6 +110,7 @@ mod ws_server {
             let received_authorization: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
             let received_origin: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
             let received_protocol: Arc<Mutex<Option<String>>> = Arc::new(Mutex::new(None));
+            let echo_subprotocol = Arc::new(AtomicBool::new(true));
 
             let cc = connection_count.clone();
             let fts = frames_to_send.clone();
@@ -124,6 +126,7 @@ mod ws_server {
             let ra = received_authorization.clone();
             let ro = received_origin.clone();
             let rp = received_protocol.clone();
+            let esp = echo_subprotocol.clone();
 
             tokio::spawn(async move {
                 loop {
@@ -146,6 +149,7 @@ mod ws_server {
                     let ra = ra.clone();
                     let ro = ro.clone();
                     let rp = rp.clone();
+                    let esp = esp.clone();
 
                     tokio::spawn(async move {
                         // Capture the handshake headers before accepting and
@@ -164,11 +168,13 @@ mod ws_server {
                                 .map(|v| v.to_str().unwrap_or("").to_owned());
                             *rp.lock().unwrap() = proto.clone();
                             // Echo the subprotocol the client requested.
-                            if let Some(p) = proto {
-                                resp.headers_mut().insert(
-                                    "sec-websocket-protocol",
-                                    p.as_str().try_into().unwrap(),
-                                );
+                            if esp.load(Ordering::SeqCst) {
+                                if let Some(p) = proto {
+                                    resp.headers_mut().insert(
+                                        "sec-websocket-protocol",
+                                        p.as_str().try_into().unwrap(),
+                                    );
+                                }
                             }
                             Ok(resp)
                         };
@@ -247,6 +253,7 @@ mod ws_server {
                 received_authorization,
                 received_origin,
                 received_protocol,
+                echo_subprotocol,
             }
         }
 
@@ -322,6 +329,10 @@ mod ws_server {
         pub fn received_protocol(&self) -> Option<String> {
             self.received_protocol.lock().unwrap().clone()
         }
+
+        pub fn disable_subprotocol_echo(&self) {
+            self.echo_subprotocol.store(false, Ordering::SeqCst);
+        }
     }
 }
 
@@ -379,6 +390,31 @@ async fn appwire_open_and_receive_ordered_frames() {
         AppwireEvent::Text { data: t, .. } => assert!(t.contains("ping"), "second frame: {t:?}"),
         other => panic!("expected Text, got {other:?}"),
     }
+
+    manager.close(conn_id).await;
+}
+
+#[tokio::test]
+async fn appwire_open_accepts_hub_that_does_not_echo_websocket_subprotocol() {
+    use ws_server::ScriptedWsServer;
+
+    let server = ScriptedWsServer::start().await;
+    server.disable_subprotocol_echo();
+    server.enqueue_frame(r#"{"id":1,"method":"initialize","params":{}}"#.to_owned());
+
+    let manager = test_manager();
+    let (tx, _rx) = tokio::sync::mpsc::channel::<_>(256);
+
+    let conn_id = manager
+        .open(
+            "profile-no-subprotocol",
+            0,
+            server.url.clone(),
+            "test-token".to_owned(),
+            tx,
+        )
+        .await
+        .expect("Hub does not negotiate a WebSocket subprotocol");
 
     manager.close(conn_id).await;
 }
@@ -1108,13 +1144,10 @@ async fn appwire_injects_bearer_and_origin_upstream() {
     let origin = server.received_origin();
     assert!(origin.is_some(), "Origin header missing");
 
-    // Sec-WebSocket-Protocol is evener-appwire-v3.
+    // AppWire negotiates its protocol in the initialize frame. The Hub does
+    // not use a WebSocket subprotocol response header.
     let proto = server.received_protocol();
-    assert_eq!(
-        proto.as_deref(),
-        Some("evener-appwire-v3"),
-        "appwire protocol not negotiated"
-    );
+    assert_eq!(proto, None, "unexpected WebSocket subprotocol header");
 
     manager.close(conn).await;
 }
