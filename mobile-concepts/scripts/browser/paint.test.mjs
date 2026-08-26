@@ -838,7 +838,7 @@ test("focus extraction distinguishes changed outline and multiple shadows", () =
   );
 });
 
-test("rendered sampling resolves image paint and checks both focus surfaces", () => {
+test("rendered sampling resolves image paint and retains both focus surfaces", () => {
   const pair = applyRenderedSamples(
     {
       id: "image-backed focus",
@@ -855,22 +855,29 @@ test("rendered sampling resolves image paint and checks both focus surfaces", ()
       unsupported: "background-image",
     },
     {
-      inside: [{ red: 0, green: 0, blue: 0, alpha: 1 }],
-      outside: [{ red: 90, green: 90, blue: 90, alpha: 1 }],
-      points: { inside: [[10, 10]], outside: [[8, 8]] },
+      ratio: 2,
+      mask: { pixelCount: 2, bounds: { left: 8, top: 8, right: 11, bottom: 11 }, runs: [{ y: 8, startX: 8, endX: 8 }, { y: 10, startX: 10, endX: 10 }] },
+      surfacePalette: {
+        behind: [],
+        inside: [{ color: { red: 0, green: 0, blue: 0, alpha: 1 }, count: 1 }],
+        outside: [{ color: { red: 90, green: 90, blue: 90, alpha: 1 }, count: 1 }],
+      },
+      surfaceVerdicts: {
+        inside: { ratio: 21, minimumEvidence: { ratio: 21 } },
+        outside: { ratio: 2, minimumEvidence: { ratio: 2 } },
+      },
+      minimumEvidence: { ratio: 2 },
     },
   );
   assert.equal(pair.unsupported, undefined);
-  assert.equal(pair.sampling.method, "rendered-adjacent-pixels");
+  assert.equal(pair.sampling.method, "rendered-differential-mask");
   assert.equal(pair.sampledRatios.length, 2);
   assert.equal(pair.ratio, Math.min(...pair.sampledRatios));
-  assert.deepEqual(pair.raw.renderedSamples.points, {
-    inside: [[10, 10]],
-    outside: [[8, 8]],
-  });
+  assert.equal(pair.raw.renderedSamples.surfacePalette.inside.length, 1);
+  assert.equal(pair.raw.renderedSamples.surfacePalette.outside.length, 1);
 });
 
-test("rendered fallback refuses non-unit group opacity instead of double-compositing", () => {
+test("differential rendered evidence supports already-composited group opacity", () => {
   const pair = applyRenderedSamples(
     {
       id: "faded-image-text",
@@ -886,8 +893,14 @@ test("rendered fallback refuses non-unit group opacity instead of double-composi
       },
       unsupported: "background-image",
     },
-    { inside: [{ red: 0, green: 0, blue: 0, alpha: 1 }], outside: [] },
+    {
+      ratio: 4.6,
+      mask: { pixelCount: 1, bounds: { left: 0, top: 0, right: 1, bottom: 1 }, runs: [{ y: 0, startX: 0, endX: 0 }] },
+      surfacePalette: { behind: [{ color: { red: 0, green: 0, blue: 0, alpha: 1 }, count: 1 }], inside: [], outside: [] },
+      surfaceVerdicts: { behind: { ratio: 4.6, minimumEvidence: { ratio: 4.6 } } },
+      minimumEvidence: { ratio: 4.6 },
+    },
   );
-  assert.equal(pair.unsupported, "rendered-group-opacity");
-  assert.equal(pair.ratio, undefined);
+  assert.equal(pair.unsupported, undefined);
+  assert.equal(pair.ratio, 4.6);
 });

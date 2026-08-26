@@ -6,6 +6,7 @@ import { preview } from "vite";
 import { evaluate, navigate } from "./browser/cdp.mjs";
 import { startChrome, withOwnedCleanup } from "./browser/chrome.mjs";
 import {
+  analyzeDifferentialCapture,
   applyRenderedSamples,
   assertGeometry,
   extractPaintStack,
@@ -153,7 +154,7 @@ async function focusAudit(client) {
       const outside=extractPaintStack(e.parentElement,(target,pseudo)=>getComputedStyle(target,pseudo));
       const inside=extractPaintStack(e,(target,pseudo)=>getComputedStyle(target,pseudo));
       const box=e.getBoundingClientRect(),geometry={left:box.left,right:box.right,top:box.top,bottom:box.bottom,width:box.width,height:box.height};
-      const candidates=indicator.paints.map((paint)=>({id:subject+' focus '+paint.source,kind:'focus',foreground:paint.color,backgrounds:[{color:'transparent',image:'none',opacity:Number(s.opacity),owner:subject},...outside.layers],insideBackgrounds:inside.layers,minimum:3,changed:true,before,after,source:paint.source,candidateOpacity:Number(s.opacity),ancestorOpacities:outside.layers.map(layer=>layer.opacity),geometry,paint}));
+      const candidates=indicator.changed?[{id:subject+' focus indicator',kind:'focus',foreground:indicator.paints[0]?.color??'transparent',backgrounds:[{color:'transparent',image:'none',opacity:Number(s.opacity),owner:subject},...outside.layers],insideBackgrounds:inside.layers,minimum:3,changed:true,before,after,source:'rendered-focus-difference',candidateOpacity:Number(s.opacity),ancestorOpacities:outside.layers.map(layer=>layer.opacity),geometry,paint:{source:'rendered-focus-difference'},oracleId:e.dataset.browserFocusId,geometryCollectedAt:performance.now()}]:[];
       if(!indicator.changed)candidates.push({id:subject,kind:'focus',foreground:'transparent',backgrounds:outside.layers,minimum:3,changed:false,before,after,source:'none'});
       return{id:e.dataset.browserFocusId||'',subject,visible:indicator.changed,candidates};
     })()`,
@@ -258,40 +259,206 @@ async function screenshot(client, file) {
   return image.data;
 }
 
-async function sampleRenderedContrast(client, screenshotData, pairs) {
-  const unresolved = pairs
-    .map((pair, index) => ({ index, pair }))
-    .filter(
-      ({ pair }) =>
-        (pair.unsupported || pair.kind === "focus") && pair.raw?.geometry,
-    )
-    .map(({ index, pair }) => ({
-      index,
-      geometry: pair.raw.geometry,
-      paint: pair.raw.paint,
-    }));
-  if (unresolved.length === 0) return pairs;
-  const samples = await evaluate(
+async function paintFrames(client) {
+  await evaluate(
     client,
-    `(async()=>{
-      const image=new Image();
-      const loaded=new Promise((resolve,reject)=>{image.onload=resolve;image.onerror=()=>reject(new Error('screenshot decode failed'));});
-      image.src=${JSON.stringify(`data:image/png;base64,${screenshotData}`)};
-      await loaded;
-      const canvas=document.createElement('canvas');canvas.width=image.naturalWidth;canvas.height=image.naturalHeight;
-      const context=canvas.getContext('2d',{willReadFrequently:true});context.drawImage(image,0,0);
-      const scaleX=image.naturalWidth/innerWidth,scaleY=image.naturalHeight/innerHeight;
-      const color=(x,y)=>{const px=Math.max(0,Math.min(canvas.width-1,Math.round(x*scaleX))),py=Math.max(0,Math.min(canvas.height-1,Math.round(y*scaleY))),data=context.getImageData(px,py,1,1).data;return{red:data[0],green:data[1],blue:data[2],alpha:data[3]/255};};
-      const unique=values=>[...new Map(values.map(value=>[[value.red,value.green,value.blue,value.alpha].join(':'),value])).values()];
-      return ${JSON.stringify(unresolved)}.map(({index,geometry,paint})=>{
-        const {left,right,top,bottom}=geometry,inset=Math.max(2,Math.min(6,Math.min(geometry.width,geometry.height)/5)),distance=(paint?.offset??0)+(paint?.width??0)+1;
-        const insidePoints=[[left+inset,top+inset],[right-inset,top+inset],[left+inset,bottom-inset],[right-inset,bottom-inset],[(left+right)/2,top+inset],[(left+right)/2,bottom-inset],[left+inset,(top+bottom)/2],[right-inset,(top+bottom)/2]];
-        const outsidePoints=[[left-distance,top+inset],[right+distance,top+inset],[left-distance,bottom-inset],[right+distance,bottom-inset],[(left+right)/2,top-distance],[(left+right)/2,bottom+distance]];
-        return{index,inside:unique(insidePoints.map(([x,y])=>color(x,y))),outside:unique(outsidePoints.map(([x,y])=>color(x,y))),points:{inside:insidePoints,outside:outsidePoints},image:{width:image.naturalWidth,height:image.naturalHeight,scaleX,scaleY}};
-      });
+    "new Promise(resolve=>requestAnimationFrame(()=>requestAnimationFrame(()=>resolve(true))))",
+  );
+}
+
+async function fullPageCapture(client) {
+  const metrics = await client.send("Page.getLayoutMetrics");
+  const content = metrics.cssContentSize ?? metrics.contentSize;
+  const clip = {
+    x: content.x,
+    y: content.y,
+    width: content.width,
+    height: content.height,
+    scale: 1,
+  };
+  const state = await evaluate(
+    client,
+    "({scroll:{x:scrollX,y:scrollY},devicePixelRatio,viewport:{width:innerWidth,height:innerHeight},capturedAt:performance.now()})",
+  );
+  const image = await client.send("Page.captureScreenshot", {
+    format: "png",
+    fromSurface: true,
+    captureBeyondViewport: true,
+    clip,
+  });
+  return {
+    data: image.data,
+    metadata: {
+      coordinateSystem: "document-css-pixels",
+      clip,
+      scroll: state.scroll,
+      devicePixelRatio: state.devicePixelRatio,
+      viewport: state.viewport,
+      capturedAt: state.capturedAt,
+    },
+  };
+}
+
+async function installGlobalProbe(client, kind, state, oracleIds) {
+  await evaluate(
+    client,
+    `(() => {
+      let style=document.getElementById('browser-contrast-probe');
+      if(!style){style=document.createElement('style');style.id='browser-contrast-probe';document.head.append(style)}
+      const kind=${JSON.stringify(kind)},state=${JSON.stringify(state)},oracleIds=${JSON.stringify(oracleIds)};
+      const color=state==='black'?'rgb(0 0 0)':state==='white'?'rgb(255 255 255)':'transparent';
+      const attribute=kind==='text'?'data-browser-text-candidate':'data-browser-nontext-candidate';
+      const selectors=oracleIds.map(id=>'['+attribute+'="'+CSS.escape(id)+'"]');
+      if(kind==='text'){const joined=selectors.join(',');style.textContent=joined+'{color:'+color+'!important;-webkit-text-fill-color:'+color+'!important;text-shadow:none!important}'+selectors.map(selector=>selector+'::placeholder').join(',')+'{color:'+color+'!important;-webkit-text-fill-color:'+color+'!important;opacity:1!important}'}
+      else {const fill=selectors.map(selector=>selector+'[data-browser-nontext-source="fill"]').join(','),border=selectors.map(selector=>selector+'[data-browser-nontext-source="border"]').join(',');style.textContent=fill+'{background-color:'+color+'!important;background-image:none!important}'+border+'{border-color:'+color+'!important;border-image:none!important}'}
+      return true;
     })()`,
   );
-  const byIndex = new Map(samples.map((sample) => [sample.index, sample]));
+  await paintFrames(client);
+}
+
+async function removeGlobalProbe(client) {
+  await evaluate(
+    client,
+    "document.getElementById('browser-contrast-probe')?.remove();true",
+  );
+  await paintFrames(client);
+}
+
+async function decodeAndAnalyze(client, candidates, captures) {
+  return evaluate(
+    client,
+    `(async()=>{
+      const decode=source=>new Promise((resolve,reject)=>{const image=new Image();image.onload=()=>{const canvas=document.createElement('canvas');canvas.width=image.naturalWidth;canvas.height=image.naturalHeight;const context=canvas.getContext('2d',{willReadFrequently:true});context.drawImage(image,0,0);resolve({width:canvas.width,height:canvas.height,data:context.getImageData(0,0,canvas.width,canvas.height).data})};image.onerror=()=>reject(new Error('contrast screenshot decode failed'));image.src='data:image/png;base64,'+source});
+      const names=['original','hidden','black','white'],decoded={};
+      for(const name of names)decoded[name]=await decode(${JSON.stringify(captures)}[name].data);
+      const metadata=${JSON.stringify(captures.original.metadata)};
+      metadata.timing={sequence:['stabilized','geometry','original','hidden','black-probe','white-probe'],eventDriven:true,captures:{original:${JSON.stringify(captures.original.metadata.capturedAt)},hidden:${JSON.stringify(captures.hidden.metadata.capturedAt)},blackProbe:${JSON.stringify(captures.black.metadata.capturedAt)},whiteProbe:${JSON.stringify(captures.white.metadata.capturedAt)}}};
+      const analyze=${analyzeDifferentialCapture.toString()};
+      return ${JSON.stringify(candidates)}.map(candidate=>analyze(candidate,{...metadata,images:decoded}));
+    })()`,
+  );
+}
+
+async function captureGlobalCandidates(client, candidates) {
+  const results = new Map();
+  for (const kind of ["text", "nontext"]) {
+    const selected = candidates.filter((candidate) => candidate.kind === kind);
+    if (selected.length === 0) continue;
+    const batches = [];
+    const overlaps = (left, right) =>
+      left.left < right.right &&
+      left.right > right.left &&
+      left.top < right.bottom &&
+      left.bottom > right.top;
+    for (const candidate of selected) {
+      const batch = batches.find((values) =>
+        values.every((value) => !overlaps(value.geometry, candidate.geometry)),
+      );
+      if (batch) batch.push(candidate);
+      else batches.push([candidate]);
+    }
+    for (const batch of batches) {
+      const captures = { original: await fullPageCapture(client) };
+      try {
+        for (const state of ["hidden", "black", "white"]) {
+          await installGlobalProbe(
+            client,
+            kind,
+            state,
+            batch.map(({ raw }) => raw.oracleId),
+          );
+          captures[state] = await fullPageCapture(client);
+        }
+      } finally {
+        await removeGlobalProbe(client);
+      }
+      const evidence = await decodeAndAnalyze(client, batch, captures);
+      batch.forEach((candidate, index) =>
+        results.set(candidate.index, evidence[index]),
+      );
+    }
+  }
+  return results;
+}
+
+function focusProbeSource(candidate, state) {
+  return `(() => {
+    const target=document.querySelector('[data-browser-focus-id=${JSON.stringify(candidate.raw.oracleId)}]');
+    if(!target)throw new Error('missing focus oracle target: '+${JSON.stringify(candidate.raw.oracleId)});
+    const before=${JSON.stringify(candidate.raw.before)},after=${JSON.stringify(candidate.raw.after)},state=${JSON.stringify(state)};
+    const split=value=>{if(!value||value==='none')return[];const parts=[];let depth=0,start=0;for(let index=0;index<value.length;index+=1){const char=value[index];if(char==='(')depth+=1;else if(char===')')depth-=1;else if(char===','&&depth===0){parts.push(value.slice(start,index).trim());start=index+1}}parts.push(value.slice(start).trim());return parts.filter(Boolean)};
+    const recolor=(shadow,color)=>shadow.replace(/(?:rgba?\\([^)]*\\)|#[0-9a-fA-F]{3,8}|\\b(?:black|white|transparent)\\b)/,color);
+    const beforeShadows=split(before.boxShadow),afterShadows=split(after.boxShadow),remaining=[...beforeShadows];
+    const changed=afterShadows.map(shadow=>{const index=remaining.indexOf(shadow);if(index>=0){remaining.splice(index,1);return false}return true});
+    if(!target.dataset.browserContrastSavedStyle)target.dataset.browserContrastSavedStyle=target.getAttribute('style')??'__missing__';
+    if(state==='restore'){
+      const saved=target.dataset.browserContrastSavedStyle;if(saved==='__missing__')target.removeAttribute('style');else target.setAttribute('style',saved);delete target.dataset.browserContrastSavedStyle;return true;
+    }
+    const color=state==='black'?'rgb(0 0 0)':state==='white'?'rgb(255 255 255)':null;
+    const outlineChanged=after.outlineStyle!==before.outlineStyle||after.outlineWidth!==before.outlineWidth||after.outlineColor!==before.outlineColor||after.outlineOffset!==before.outlineOffset;
+    const outline=state==='hidden'?before:after;
+    for(const [property,key] of [['outline-style','outlineStyle'],['outline-width','outlineWidth'],['outline-offset','outlineOffset']])target.style.setProperty(property,outline[key],'important');
+    target.style.setProperty('outline-color',color&&outlineChanged?color:outline.outlineColor,'important');
+    const shadows=state==='hidden'?beforeShadows:afterShadows.map((shadow,index)=>color&&changed[index]?recolor(shadow,color):shadow);
+    target.style.setProperty('box-shadow',shadows.length?shadows.join(', '):'none','important');
+    return true;
+  })()`;
+}
+
+async function captureFocusCandidates(client, candidates) {
+  const results = new Map();
+  for (const candidate of candidates.filter(({ kind }) => kind === "focus")) {
+    const geometry = await evaluate(
+      client,
+      `new Promise(resolve=>{const target=document.querySelector('[data-browser-focus-id=${JSON.stringify(candidate.raw.oracleId)}]');if(!target)throw new Error('missing focus target');target.focus();requestAnimationFrame(()=>requestAnimationFrame(()=>{const box=target.getBoundingClientRect();resolve({left:box.left,top:box.top,right:box.right,bottom:box.bottom,width:box.width,height:box.height,geometryCollectedAt:performance.now()})}))})`,
+    );
+    const current = {
+      ...candidate,
+      geometry,
+      raw: {
+        ...candidate.raw,
+        geometryCollectedAt: geometry.geometryCollectedAt,
+      },
+    };
+    const captures = { original: await fullPageCapture(client) };
+    try {
+      for (const state of ["hidden", "black", "white"]) {
+        await evaluate(client, focusProbeSource(candidate, state));
+        await paintFrames(client);
+        captures[state] = await fullPageCapture(client);
+      }
+    } finally {
+      await evaluate(client, focusProbeSource(candidate, "restore"));
+      await paintFrames(client);
+    }
+    const [evidence] = await decodeAndAnalyze(client, [current], captures);
+    results.set(candidate.index, evidence);
+  }
+  await evaluate(
+    client,
+    "document.body.tabIndex=-1;document.body.focus();document.body.removeAttribute('tabindex');true",
+  );
+  return results;
+}
+
+async function captureRenderedCandidates(client, candidates) {
+  const global = await captureGlobalCandidates(client, candidates);
+  const focus = await captureFocusCandidates(client, candidates);
+  return candidates.map((candidate) => global.get(candidate.index) ?? focus.get(candidate.index));
+}
+
+export async function sampleRenderedContrast(client, pairs, options = {}) {
+  const candidates = pairs
+    .map((pair, index) => ({
+      ...pair,
+      index,
+      geometry: pair.raw?.geometry,
+    }))
+    .filter(({ geometry }) => geometry);
+  const captureCandidates = options.captureCandidates ?? ((values) => captureRenderedCandidates(client, values));
+  const evidence = await captureCandidates(candidates);
+  const byIndex = new Map(candidates.map((candidate, index) => [candidate.index, evidence[index]]));
   return pairs.map((pair, index) =>
     byIndex.has(index) ? applyRenderedSamples(pair, byIndex.get(index)) : pair,
   );
@@ -399,7 +566,6 @@ async function runCase({
     const screenshotData = await screenshot(client, file);
     measurements.contrastPairs = await sampleRenderedContrast(
       client,
-      screenshotData,
       measurements.contrastPairs,
     );
     const violations = assertGeometry(measurements, { route, safeArea });

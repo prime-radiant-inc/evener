@@ -520,6 +520,384 @@ function ratio(left, right) {
   return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
 }
 
+export function analyzeDifferentialCapture(candidate, capture) {
+  const relativeLuminance = (color) => {
+    const channel = (value) => {
+      const normalized = value / 255;
+      return normalized <= 0.04045
+        ? normalized / 12.92
+        : ((normalized + 0.055) / 1.055) ** 2.4;
+    };
+    return (
+      0.2126 * channel(color.red) +
+      0.7152 * channel(color.green) +
+      0.0722 * channel(color.blue)
+    );
+  };
+  const contrastRatio = (left, right) => {
+    const first = relativeLuminance(left);
+    const second = relativeLuminance(right);
+    return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
+  };
+  const { images, clip, scroll = { x: 0, y: 0 } } = capture;
+  const imageNames = ["original", "hidden", "black", "white"];
+  const first = images?.original;
+  const timing = capture.timing ?? {
+    sequence: [
+      "stabilized",
+      "geometry",
+      "original",
+      "hidden",
+      "black-probe",
+      "white-probe",
+    ],
+    eventDriven: true,
+  };
+  timing.geometryCollectedAt ??= candidate.raw?.geometryCollectedAt;
+  const emptyMask = { pixelCount: 0, bounds: null, runs: [] };
+  const geometry = candidate.geometry ?? candidate.raw?.geometry;
+  const candidateDocument = geometry
+    ? {
+        left: geometry.left + scroll.x,
+        top: geometry.top + scroll.y,
+        right: geometry.right + scroll.x,
+        bottom: geometry.bottom + scroll.y,
+      }
+    : null;
+  const mapping = {
+    coordinateSystem: capture.coordinateSystem,
+    cssGeometry: geometry,
+    candidateDocument,
+    screenshotGeometry: first
+      ? { width: first.width, height: first.height }
+      : null,
+    devicePixelRatio: capture.devicePixelRatio,
+    scroll,
+    clip,
+    scaleX: first && clip ? first.width / clip.width : null,
+    scaleY: first && clip ? first.height / clip.height : null,
+  };
+  const unresolved = (reason) => ({
+    unresolved: reason,
+    mapping,
+    timing,
+    mask: emptyMask,
+    surfacePalette: { behind: [], inside: [], outside: [] },
+    surfaceVerdicts: {},
+  });
+  if (!geometry || !clip || !first)
+    return unresolved("missing-capture-geometry");
+  if (
+    imageNames.some(
+      (name) =>
+        !images[name] ||
+        images[name].width !== first.width ||
+        images[name].height !== first.height ||
+        images[name].data?.length !== first.width * first.height * 4,
+    )
+  )
+    return unresolved("inconsistent-differential-capture");
+  const clipRight = clip.x + clip.width;
+  const clipBottom = clip.y + clip.height;
+  if (
+    candidate.kind !== "focus" &&
+    (candidateDocument.right <= clip.x ||
+      candidateDocument.left >= clipRight ||
+      candidateDocument.bottom <= clip.y ||
+      candidateDocument.top >= clipBottom)
+  )
+    return unresolved("candidate-outside-capture");
+
+  const scaleX = mapping.scaleX;
+  const scaleY = mapping.scaleY;
+  const read = (image, x, y) => {
+    const offset = (y * image.width + x) * 4;
+    return {
+      red: image.data[offset],
+      green: image.data[offset + 1],
+      blue: image.data[offset + 2],
+      alpha: image.data[offset + 3] / 255,
+    };
+  };
+  const documentPoint = (x, y) => ({
+    x: clip.x + (x + 0.5) / scaleX,
+    y: clip.y + (y + 0.5) / scaleY,
+  });
+  const inCandidate = (point) =>
+    point.x >= candidateDocument.left &&
+    point.x < candidateDocument.right &&
+    point.y >= candidateDocument.top &&
+    point.y < candidateDocument.bottom;
+  const imageBounds =
+    candidate.kind === "focus"
+      ? { left: 0, top: 0, right: first.width, bottom: first.height }
+      : {
+          left: Math.max(
+            0,
+            Math.ceil((candidateDocument.left - clip.x) * scaleX - 0.5),
+          ),
+          top: Math.max(
+            0,
+            Math.ceil((candidateDocument.top - clip.y) * scaleY - 0.5),
+          ),
+          right: Math.min(
+            first.width,
+            Math.ceil((candidateDocument.right - clip.x) * scaleX - 0.5),
+          ),
+          bottom: Math.min(
+            first.height,
+            Math.ceil((candidateDocument.bottom - clip.y) * scaleY - 0.5),
+          ),
+        };
+  const pixels = [];
+  const maskKeys = new Set();
+  for (let y = imageBounds.top; y < imageBounds.bottom; y += 1) {
+    for (let x = imageBounds.left; x < imageBounds.right; x += 1) {
+      const black = read(images.black, x, y);
+      const white = read(images.white, x, y);
+      const coverage =
+        (Math.abs(white.red - black.red) +
+          Math.abs(white.green - black.green) +
+          Math.abs(white.blue - black.blue)) /
+        (3 * 255);
+      if (coverage <= 1 / 255) continue;
+      const point = documentPoint(x, y);
+      if (candidate.kind !== "focus" && !inCandidate(point)) continue;
+      const original = read(images.original, x, y);
+      const background = read(images.hidden, x, y);
+      const channel = (name) =>
+        Math.max(
+          0,
+          Math.min(
+            255,
+            (original[name] - (1 - coverage) * background[name]) / coverage,
+          ),
+        );
+      pixels.push({
+        x,
+        y,
+        point,
+        coverage,
+        original,
+        background,
+        foreground: {
+          red: channel("red"),
+          green: channel("green"),
+          blue: channel("blue"),
+          alpha: 1,
+        },
+        probes: { black, white },
+      });
+      maskKeys.add(`${x}:${y}`);
+    }
+  }
+  if (pixels.length === 0) return unresolved("missing-differential-mask");
+
+  const runs = [];
+  const rows = new Map();
+  for (const pixel of pixels) {
+    if (!rows.has(pixel.y)) rows.set(pixel.y, []);
+    rows.get(pixel.y).push(pixel.x);
+  }
+  for (const [y, values] of [...rows].sort((left, right) => left[0] - right[0])) {
+    const sorted = [...new Set(values)].sort((left, right) => left - right);
+    let startX = sorted[0];
+    let endX = sorted[0];
+    for (const x of sorted.slice(1)) {
+      if (x === endX + 1) {
+        endX = x;
+      } else {
+        runs.push({ y, startX, endX });
+        startX = x;
+        endX = x;
+      }
+    }
+    runs.push({ y, startX, endX });
+  }
+  const mask = {
+    pixelCount: pixels.length,
+    bounds: {
+      left: Math.min(...pixels.map(({ x }) => x)),
+      top: Math.min(...pixels.map(({ y }) => y)),
+      right: Math.max(...pixels.map(({ x }) => x)) + 1,
+      bottom: Math.max(...pixels.map(({ y }) => y)) + 1,
+    },
+    runs,
+  };
+  const reliablePixels = pixels.filter(({ coverage }) => coverage >= 0.1);
+  if (reliablePixels.length === 0)
+    return {
+      ...unresolved("ambiguous-low-coverage-mask"),
+      mask,
+    };
+  const colorKey = (color) =>
+    [color.red, color.green, color.blue, color.alpha].join(":");
+  const palette = (entries) => {
+    const values = new Map();
+    for (const entry of entries) {
+      const key = colorKey(entry.color);
+      const current = values.get(key);
+      if (current) current.count += 1;
+      else values.set(key, { color: entry.color, count: 1 });
+    }
+    return [...values.values()];
+  };
+  const coordinate = (pixel) => ({
+    image: { x: pixel.x, y: pixel.y },
+    document: pixel.point,
+    viewport: {
+      x: pixel.point.x - scroll.x,
+      y: pixel.point.y - scroll.y,
+    },
+  });
+  const evidence = (foregroundPixel, backgroundEntry, value) => ({
+    ratio: value,
+    coordinate: coordinate(foregroundPixel),
+    backgroundCoordinate: backgroundEntry.coordinate,
+    coverage: foregroundPixel.coverage,
+    foreground: foregroundPixel.foreground,
+    background: backgroundEntry.color,
+    original: foregroundPixel.original,
+    probes: foregroundPixel.probes,
+  });
+  const verdict = (foregrounds, backgrounds) => {
+    let minimum = null;
+    for (const foregroundPixel of foregrounds) {
+      for (const backgroundEntry of backgrounds) {
+        const value = contrastRatio(
+          foregroundPixel.foreground,
+          backgroundEntry.color,
+        );
+        if (minimum === null || value < minimum.ratio)
+          minimum = evidence(foregroundPixel, backgroundEntry, value);
+      }
+    }
+    return minimum
+      ? { ratio: minimum.ratio, sampleCount: backgrounds.length, minimumEvidence: minimum }
+      : null;
+  };
+  const pairedVerdict = (foregrounds, backgrounds) => {
+    let minimum = null;
+    for (let index = 0; index < foregrounds.length; index += 1) {
+      const foregroundPixel = foregrounds[index];
+      const backgroundEntry = backgrounds[index];
+      const value = contrastRatio(
+        foregroundPixel.foreground,
+        backgroundEntry.color,
+      );
+      if (minimum === null || value < minimum.ratio)
+        minimum = evidence(foregroundPixel, backgroundEntry, value);
+    }
+    return minimum
+      ? { ratio: minimum.ratio, sampleCount: backgrounds.length, minimumEvidence: minimum }
+      : null;
+  };
+
+  const behind = pixels.map((pixel) => ({
+    color: pixel.background,
+    coordinate: coordinate(pixel),
+  }));
+  let inside = [];
+  let outside = [];
+  if (candidate.kind === "focus") {
+    const directions = [
+      [-1, 0],
+      [1, 0],
+      [0, -1],
+      [0, 1],
+    ];
+    const seen = { inside: new Set(), outside: new Set() };
+    for (const pixel of pixels) {
+      const distanceToCandidate = Math.max(
+        Math.abs(pixel.point.x - candidateDocument.left),
+        Math.abs(pixel.point.x - candidateDocument.right),
+        Math.abs(pixel.point.y - candidateDocument.top),
+        Math.abs(pixel.point.y - candidateDocument.bottom),
+      );
+      const limit = Math.ceil(
+        (distanceToCandidate +
+          Math.max(geometry.width, geometry.height) +
+          2) *
+          Math.max(scaleX, scaleY),
+      );
+      for (const [dx, dy] of directions) {
+        const found = { inside: false, outside: false };
+        for (let step = 1; step <= limit; step += 1) {
+          const x = pixel.x + dx * step;
+          const y = pixel.y + dy * step;
+          if (x < 0 || y < 0 || x >= first.width || y >= first.height) break;
+          if (maskKeys.has(`${x}:${y}`)) continue;
+          const point = documentPoint(x, y);
+          const group = inCandidate(point) ? "inside" : "outside";
+          if (found[group]) continue;
+          found[group] = true;
+          const key = `${x}:${y}`;
+          if (!seen[group].has(key)) {
+            seen[group].add(key);
+            const entry = {
+              color: read(images.hidden, x, y),
+              coordinate: {
+                image: { x, y },
+                document: point,
+                viewport: { x: point.x - scroll.x, y: point.y - scroll.y },
+              },
+            };
+            if (group === "inside") inside.push(entry);
+            else outside.push(entry);
+          }
+          if (found.inside && found.outside) break;
+        }
+      }
+    }
+    if (inside.length === 0)
+      return { ...unresolved("missing-focus-inside-surface"), mask };
+    if (outside.length === 0)
+      return { ...unresolved("missing-focus-outside-surface"), mask };
+  }
+  const surfaceVerdicts =
+    candidate.kind === "focus"
+      ? {
+          inside: verdict(reliablePixels, inside),
+          outside: verdict(reliablePixels, outside),
+        }
+      : {
+          behind: pairedVerdict(
+            pixels.map((pixel) => {
+              if (pixel.coverage >= 0.1) return pixel;
+              return reliablePixels.reduce((nearest, value) => {
+                const distance =
+                  (value.x - pixel.x) ** 2 + (value.y - pixel.y) ** 2;
+                return nearest === null || distance < nearest.distance
+                  ? { pixel: value, distance }
+                  : nearest;
+              }, null).pixel;
+            }),
+            behind,
+          ),
+        };
+  const minimumEvidence = Object.values(surfaceVerdicts)
+    .filter(Boolean)
+    .map((value) => value.minimumEvidence)
+    .reduce(
+      (minimum, value) =>
+        minimum === null || value.ratio < minimum.ratio ? value : minimum,
+      null,
+    );
+  return {
+    mapping,
+    timing,
+    mask,
+    surfacePalette: {
+      behind: palette(behind),
+      inside: palette(inside),
+      outside: palette(outside),
+    },
+    surfaceVerdicts,
+    minimumEvidence,
+    ratio: minimumEvidence.ratio,
+  };
+}
+
 export function buildContrastMeasurements(candidates) {
   return candidates.map((candidate) => {
     const raw = {
@@ -535,6 +913,8 @@ export function buildContrastMeasurements(candidates) {
       geometry: candidate.geometry,
       adjacent: candidate.adjacent,
       paint: candidate.paint,
+      oracleId: candidate.oracleId,
+      geometryCollectedAt: candidate.geometryCollectedAt,
     };
     if (candidate.kind === "focus" && !candidate.changed) {
       return {
@@ -584,73 +964,28 @@ export function buildContrastMeasurements(candidates) {
 }
 
 export function applyRenderedSamples(pair, renderedSamples) {
-  const foreground = parseCssColor(pair.raw?.foreground);
-  if (!foreground)
-    return { ...pair, unsupported: "unparseable-sampled-foreground" };
-  const groupOpacities = [
-    pair.raw?.candidateOpacity ?? 1,
-    ...(pair.raw?.ancestorOpacities ?? []),
-  ].map(Number);
-  if (groupOpacities.some((opacity) => opacity !== 1)) {
+  if (renderedSamples?.unresolved || !Number.isFinite(renderedSamples?.ratio)) {
     return {
       ...pair,
       ratio: undefined,
-      unsupported: "rendered-group-opacity",
+      unsupported: renderedSamples?.unresolved ?? "missing-rendered-samples",
       raw: { ...pair.raw, renderedSamples },
     };
   }
-  const distance = (color) =>
-    Math.hypot(
-      color.red - foreground.red,
-      color.green - foreground.green,
-      color.blue - foreground.blue,
-    );
-  const withoutForegroundPixels = (colors) => {
-    if (colors.length <= 1) return colors;
-    const maximum = Math.max(...colors.map(distance));
-    return colors.filter((color) => distance(color) >= maximum * 0.5);
-  };
-  let surfaces =
-    pair.kind === "focus"
-      ? [
-          ...withoutForegroundPixels(renderedSamples.inside ?? []),
-          ...withoutForegroundPixels(renderedSamples.outside ?? []),
-        ]
-      : pair.kind === "nontext"
-        ? (renderedSamples.outside ?? [])
-        : (renderedSamples.inside ?? []);
-  if (pair.kind === "text" && surfaces.length > 1) {
-    surfaces = withoutForegroundPixels(surfaces);
-  }
-  const unique = [
-    ...new Map(
-      surfaces.map((color) => [
-        [color.red, color.green, color.blue, color.alpha].join(":"),
-        color,
-      ]),
-    ).values(),
-  ];
-  if (unique.length === 0)
-    return { ...pair, unsupported: "missing-rendered-samples" };
-  const sampledPairs = unique.map((background) => {
-    const effectiveForeground = compositeColor(foreground, background);
-    return {
-      background,
-      foreground: effectiveForeground,
-      ratio: ratio(effectiveForeground, background),
-    };
-  });
+  const verdicts = Object.values(renderedSamples.surfaceVerdicts ?? {}).filter(
+    Boolean,
+  );
   return {
     ...pair,
     unsupported: undefined,
-    ratio: Math.min(...sampledPairs.map((sample) => sample.ratio)),
-    sampledRatios: sampledPairs.map((sample) => sample.ratio),
-    sampledPairs,
+    ratio: renderedSamples.ratio,
+    sampledRatios: verdicts.map(({ ratio: value }) => value),
+    sampledPairs: verdicts.map(({ minimumEvidence }) => minimumEvidence),
     raw: { ...pair.raw, renderedSamples },
     sampling: {
-      method: "rendered-adjacent-pixels",
+      method: "rendered-differential-mask",
       logic:
-        "Minimum contrast across sampled adjacent surfaces; WCAG 2.2 SC 1.4.3, 1.4.11, and focus SC 2.4.11 use 4.5:1/3:1 thresholds without averaging gradients.",
+        "Minimum contrast across every differential-mask pixel and independently retained adjacent surface; WCAG 2.2 SC 1.4.3, 1.4.11, and focus SC 2.4.11 use 4.5:1/3:1 thresholds without averaging gradients.",
     },
   };
 }
@@ -802,15 +1137,18 @@ export async function measurePage(client, options = {}) {
     const fixedBottom=[...document.querySelectorAll('nav,[class*="composer"],[data-fixed-bottom]')].filter(element=>{const style=getComputedStyle(element);return visible(element)&&(style.position==='fixed'||style.position==='sticky');}).map((element,index)=>({id:name(element,index),bottom:rect(element).bottom}));
     const rootStyle=getComputedStyle(document.documentElement);const root={};for(const edge of ['top','right','bottom','left'])root[edge]=rootStyle.getPropertyValue('--safe-area-'+edge).trim();
     const ownerElements=[...document.querySelectorAll('[data-safe-area-owner],[data-safe-area-owner-top],[data-safe-area-owner-right],[data-safe-area-owner-bottom],[data-safe-area-owner-left]')].filter(visible);const owners=ownerElements.map((element,index)=>{const style=getComputedStyle(element),tokens=(element.getAttribute('data-safe-area-owner')||'').split(/[\\s,]+/).filter(Boolean),owned=new Set(tokens);for(const edge of ['top','right','bottom','left'])if(element.hasAttribute('data-safe-area-owner-'+edge))owned.add(edge);const values={top:style.paddingTop,right:style.paddingRight,bottom:style.paddingBottom,left:style.paddingLeft};const result={};for(const edge of owned)result[edge]=values[edge];return{id:name(element,index),edges:result};});
-    const text=[...document.querySelectorAll('h1,h2,h3,p,label,button:not([disabled]),a,input:not([disabled]):not([type="radio"]):not([type="checkbox"]),textarea:not([disabled]),select:not([disabled])')].filter(visible).map((element,index)=>{const style=getComputedStyle(element),stack=backgrounds(element);return{id:name(element,index),kind:'text',foreground:style.color,backgrounds:stack.layers,minimum:parseFloat(style.fontSize)>=24||(parseFloat(style.fontSize)>=18.66&&Number(style.fontWeight)>=700)?3:4.5,pseudo:stack.pseudoPaint.length>0,candidateOpacity:stack.candidateOpacity,ancestorOpacities:stack.ancestorOpacities,pseudoPaint:stack.pseudoPaint,geometry:rect(element)};});
-    const nontext=[...document.querySelectorAll('button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),a[href]')].filter(visible).map((element,index)=>{const style=getComputedStyle(element),borderVisible=style.borderTopStyle!=='none'&&parseFloat(style.borderTopWidth)>0&&!transparent(style.borderTopColor),fillVisible=!transparent(style.backgroundColor),parentStack=backgrounds(element.parentElement);if(!borderVisible&&!fillVisible)return null;const layers=[{color:'transparent',image:'none',opacity:Number(style.opacity),owner:name(element,index)},...parentStack.layers];return{id:name(element,index),kind:'nontext',foreground:borderVisible?style.borderTopColor:style.backgroundColor,backgrounds:layers,minimum:3,source:borderVisible?'border':'fill',candidateOpacity:Number(style.opacity),ancestorOpacities:parentStack.layers.map(layer=>layer.opacity),pseudoPaint:backgrounds(element).pseudoPaint,geometry:rect(element)};}).filter(Boolean);
-    return {devicePixelRatio,viewport:{width:innerWidth,height:innerHeight,visualWidth:visualViewport?.width??innerWidth,visualHeight:visualViewport?.height??innerHeight,visualTop:visualViewport?.offsetTop??0},document:{scrollWidth:document.documentElement.scrollWidth,clientWidth:document.documentElement.clientWidth},controls,duplicateIds,scrollers,primaryActions,fixedBottom,safe:{root,owners},contrastCandidates:[...text,...nontext]};
+    const text=[...document.querySelectorAll('h1,h2,h3,p,label,button:not([disabled]),a,input:not([disabled]):not([type="radio"]):not([type="checkbox"]),textarea:not([disabled]),select:not([disabled])')].filter(visible).map((element,index)=>{const style=getComputedStyle(element),stack=backgrounds(element),oracleId='text-'+index;element.setAttribute('data-browser-text-candidate',oracleId);return{id:name(element,index),kind:'text',foreground:style.color,backgrounds:stack.layers,minimum:parseFloat(style.fontSize)>=24||(parseFloat(style.fontSize)>=18.66&&Number(style.fontWeight)>=700)?3:4.5,pseudo:stack.pseudoPaint.length>0,candidateOpacity:stack.candidateOpacity,ancestorOpacities:stack.ancestorOpacities,pseudoPaint:stack.pseudoPaint,geometry:rect(element),oracleId};});
+    const nontext=[...document.querySelectorAll('button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),a[href]')].filter(visible).map((element,index)=>{const style=getComputedStyle(element),borderVisible=style.borderTopStyle!=='none'&&parseFloat(style.borderTopWidth)>0&&!transparent(style.borderTopColor),fillVisible=!transparent(style.backgroundColor),parentStack=backgrounds(element.parentElement);if(!borderVisible&&!fillVisible)return null;const source=borderVisible?'border':'fill',oracleId='nontext-'+index;element.setAttribute('data-browser-nontext-candidate',oracleId);element.setAttribute('data-browser-nontext-source',source);const layers=[{color:'transparent',image:'none',opacity:Number(style.opacity),owner:name(element,index)},...parentStack.layers];return{id:name(element,index),kind:'nontext',foreground:borderVisible?style.borderTopColor:style.backgroundColor,backgrounds:layers,minimum:3,source,candidateOpacity:Number(style.opacity),ancestorOpacities:parentStack.layers.map(layer=>layer.opacity),pseudoPaint:backgrounds(element).pseudoPaint,geometry:rect(element),oracleId};}).filter(Boolean);
+    return {collectionTime:performance.now(),devicePixelRatio,viewport:{width:innerWidth,height:innerHeight,visualWidth:visualViewport?.width??innerWidth,visualHeight:visualViewport?.height??innerHeight,visualTop:visualViewport?.offsetTop??0},document:{scrollWidth:document.documentElement.scrollWidth,clientWidth:document.documentElement.clientWidth},controls,duplicateIds,scrollers,primaryActions,fixedBottom,safe:{root,owners},contrastCandidates:[...text,...nontext]};
   })()`,
   );
   const geometry = classifyGeometrySnapshot(raw);
   const safeAreas = buildSafeAreaMeasurements(raw.safe);
   const contrastPairs = buildContrastMeasurements([
-    ...raw.contrastCandidates,
+    ...raw.contrastCandidates.map((candidate) => ({
+      ...candidate,
+      geometryCollectedAt: raw.collectionTime,
+    })),
     ...focusCandidates,
   ]);
   const keyboardTop = raw.viewport.visualTop + raw.viewport.visualHeight;
