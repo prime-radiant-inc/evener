@@ -323,7 +323,6 @@ impl AppwireManager {
             .header("Host", host_with_port(&pinned))
             .header("Authorization", format!("Bearer {token}"))
             .header("Origin", ws_url.origin().ascii_serialization())
-            .header("Sec-WebSocket-Protocol", "evener-appwire-v3")
             .header("Sec-WebSocket-Version", "13")
             .header("Connection", "Upgrade")
             .header("Upgrade", "websocket")
