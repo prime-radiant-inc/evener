@@ -4,11 +4,15 @@
 import type { StoreApi } from "zustand";
 import type { UseBoundStore } from "zustand/react";
 import type { NativeBridge } from "../native/client";
-import type { ProfileService } from "../services/nativeProfiles";
+import type {
+  ProfileRedacted,
+  ProfileService,
+} from "../services/nativeProfiles";
 import type { ConnectionState } from "../state/connection";
 import type { NavigationState } from "../state/navigation";
 import type { PreferencesState } from "../state/preferences";
 import type { RosterState } from "../state/roster";
+import type { ProfileScopedServices } from "./production-services";
 
 export type ConnectionStore = UseBoundStore<StoreApi<ConnectionState>>;
 export type NavigationStore = UseBoundStore<StoreApi<NavigationState>>;
@@ -32,4 +36,8 @@ export interface ShellServiceBundle {
 export interface ShellServices {
   readonly profile: ProfileService;
   readonly native: NativeBridge;
+  /** Production-only factory for the active profile's AppWire service graph. */
+  readonly createProfileScopedServices?: (
+    profile: ProfileRedacted,
+  ) => ProfileScopedServices;
 }

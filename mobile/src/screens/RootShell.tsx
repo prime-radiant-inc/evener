@@ -13,6 +13,8 @@
  * has saved profiles that haven't been read yet.
  */
 import { type JSX, useEffect, useRef, useState } from "react";
+import { createAttachmentStore } from "../state/attachments";
+import type { Reachability } from "../state/connection";
 import { createConversationStore } from "../state/conversation";
 import type { RootTab } from "../state/navigation";
 import { createVoiceStore } from "../state/voice";
@@ -26,6 +28,7 @@ import { Loading } from "../ui/States";
 import { ConversationScreen } from "./ConversationScreen";
 import { NewSessionScreen } from "./NewSessionScreen";
 import { OnboardingScreen } from "./OnboardingScreen";
+import type { ProfileScopedServices } from "./production-services";
 import type {
   ConnectionStore,
   NavigationStore,
@@ -58,9 +61,17 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
   const { connection, navigation, preferences } = stores;
   const profiles = connection((s) => s.profiles);
   const activeProfileId = connection((s) => s.activeProfileId);
+  const activeProfileGeneration = connection((s) => s.generation);
+  const activeProfileOrigin = connection((s) => {
+    const active = s.profiles.find(
+      (profile) => profile.id === s.activeProfileId,
+    );
+    return active?.origin ?? null;
+  });
   const status = connection((s) => s.status);
   const tab = navigation((s) => s.tab);
   const conversationStack = navigation((s) => s.conversationStack);
+  const activeConversation = navigation((s) => s.activeConversation);
   const theme = preferences((s) => s.theme);
   const reducedMotion = preferences((s) => s.reducedMotion);
   const contentSize = preferences((s) => s.contentSize);
@@ -78,9 +89,13 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
 
   // Conversation store created once and reused across re-renders. The store is
   // always created (hook order must be stable); it stays idle until a
-  // conversation is pushed. A real ConversationService is wired in a later task.
+  // conversation is pushed.
   const conversationStoreRef = useRef(createConversationStore());
   const voiceStoreRef = useRef(createVoiceStore());
+  const attachmentStoreRef = useRef(createAttachmentStore());
+  const liveServicesRef = useRef<ProfileScopedServices | null>(null);
+  const [liveServices, setLiveServices] =
+    useState<ProfileScopedServices | null>(null);
 
   // Load profiles on mount.
   useEffect(() => {
@@ -125,6 +140,87 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
       unsubscribe();
     };
   }, [services.native, connection, preferences]);
+
+  // Build one AppWire client and all server-scoped wrappers for the active
+  // profile. The native side selects the profile's credential by ID; JS only
+  // sees the redacted profile summary and never receives the token.
+  useEffect(() => {
+    const previous = liveServicesRef.current;
+    if (previous !== null) {
+      previous.client.close();
+      liveServicesRef.current = null;
+    }
+    setLiveServices(null);
+
+    const profile = connection
+      .getState()
+      .profiles.find((candidate) => candidate.id === activeProfileId);
+    const profileGeneration = connection.getState().generation;
+    const createScoped = services.createProfileScopedServices;
+    if (
+      profile === undefined ||
+      profile.origin !== activeProfileOrigin ||
+      profileGeneration !== activeProfileGeneration ||
+      createScoped === undefined
+    ) {
+      return;
+    }
+
+    let disposed = false;
+    const scoped = createScoped(profile);
+    liveServicesRef.current = scoped;
+
+    const setReachability = (state: string): void => {
+      const reachability = mapClientState(state);
+      if (reachability !== null && !disposed) {
+        connection.getState().setReachability(profile.id, reachability);
+      }
+    };
+    const unsubscribe = scoped.client.onStateChange(setReachability);
+    setReachability("connecting");
+
+    void scoped.client
+      .connect()
+      .then(() => {
+        if (disposed) return;
+        connection.getState().setReachability(profile.id, "reachable");
+        setLiveServices(scoped);
+      })
+      .catch(() => {
+        if (!disposed) {
+          connection.getState().setReachability(profile.id, "unreachable");
+        }
+      });
+
+    return () => {
+      disposed = true;
+      unsubscribe();
+      scoped.client.close();
+      if (liveServicesRef.current === scoped) {
+        liveServicesRef.current = null;
+      }
+    };
+  }, [
+    activeProfileId,
+    activeProfileOrigin,
+    activeProfileGeneration,
+    connection,
+    services.createProfileScopedServices,
+  ]);
+
+  // Open the selected conversation only after the profile-scoped AppWire
+  // client exists. ConversationStore owns generation checks for late frames.
+  useEffect(() => {
+    if (activeConversation === null || liveServices === null) {
+      if (activeConversation === null) {
+        conversationStoreRef.current.getState().reset();
+      }
+      return;
+    }
+    void conversationStoreRef.current
+      .getState()
+      .open(liveServices.conversationService, activeConversation.sessionId);
+  }, [activeConversation, liveServices]);
 
   const isLoading = status === "initial" || status === "loading";
   // Auto-select the first profile if profiles exist but none is active.
@@ -205,9 +301,7 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
   }
 
   // Conversation push above the tab bar. ConversationScreen owns the top bar,
-  // virtualized timeline, and composer placeholder. The conversation store is
-  // created lazily on first use and reused across re-renders; a real
-  // ConversationService is wired in a later task.
+  // virtualized timeline, and composer.
   if (inConversation) {
     if (showVoice) {
       return (
@@ -230,6 +324,8 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
         <ConversationScreen
           conversationStore={conversationStoreRef.current}
           navigationStore={navigation}
+          conversationService={liveServices?.conversationService}
+          attachmentStore={attachmentStoreRef.current}
           onShowVoice={() => setShowVoice(true)}
         />
       </div>
@@ -248,9 +344,17 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
           <SessionsScreen
             connection={connection}
             onOpenSwitcher={() => setSwitcherOpen(true)}
+            rosterService={liveServices?.rosterService}
+            rosterStore={liveServices?.rosterStore}
+            navigation={navigation}
           />
         ) : null}
-        {tab === "new" ? <NewSessionScreen /> : null}
+        {tab === "new" ? (
+          <NewSessionScreen
+            service={liveServices?.newSessionService}
+            navigation={navigation}
+          />
+        ) : null}
         {tab === "settings" ? (
           <SettingsScreen
             connection={connection}
@@ -283,4 +387,18 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
       </Sheet>
     </div>
   );
+}
+
+function mapClientState(state: string): Reachability | null {
+  switch (state) {
+    case "ready":
+      return "reachable";
+    case "connecting":
+    case "reconnecting":
+      return "reconnecting";
+    case "closed":
+      return "unreachable";
+    default:
+      return null;
+  }
 }

@@ -10,16 +10,74 @@
  * This module is imported only by the production App path — never by tests or
  * fixture mode. No credential, raw URL, or token is ever held in JS state.
  */
+
+import { rpcURLFromLocation } from "../../../cmd/evener-hub/frontend/src/protocol/transport";
 import type { NativeBridge } from "../native/client";
 import { createNativeBridge } from "../native/client";
-import type { ProfileService } from "../services/nativeProfiles";
+import { createAppwireClient } from "../services/appwireSocket";
+import {
+  type ConversationClientLike,
+  type ConversationService,
+  createConversationService,
+} from "../services/conversation";
+import type {
+  ProfileRedacted,
+  ProfileService,
+} from "../services/nativeProfiles";
 import { createProfileService } from "../services/nativeProfiles";
+import {
+  createNewSessionService,
+  type NewSessionService,
+} from "../services/newSession";
+import { createRosterService, type RosterService } from "../services/roster";
 import { createTauriBridge } from "../services/tauri";
+import { createRosterStore } from "../state/roster";
 import { createTauriNativeTransport } from "./production-transport";
+
+export interface ProfileAppwireClient extends ConversationClientLike {
+  connect(): Promise<unknown>;
+  close(): void;
+  onStateChange(handler: (state: string) => void): () => void;
+}
+
+export interface ProfileScopedServices {
+  readonly client: ProfileAppwireClient;
+  readonly rosterService: RosterService;
+  readonly rosterStore: ReturnType<typeof createRosterStore>;
+  readonly newSessionService: NewSessionService;
+  readonly conversationService: ConversationService;
+}
+
+export type ProfileClientFactory = (
+  profile: ProfileRedacted,
+) => ProfileAppwireClient;
+
+/**
+ * Build all server-scoped services around one AppWire client. The client owns
+ * the native socket lifecycle; the wrappers only translate protocol calls.
+ * Keeping this graph together prevents a screen from silently falling back to
+ * its header-only fixture path in production.
+ */
+export function createProfileScopedServices(
+  profile: ProfileRedacted,
+  createClient: ProfileClientFactory,
+): ProfileScopedServices {
+  const client = createClient(profile);
+  return {
+    client,
+    rosterService: createRosterService(client),
+    rosterStore: createRosterStore(),
+    newSessionService: createNewSessionService(client),
+    conversationService: createConversationService(client),
+  };
+}
 
 export interface ProductionServices {
   readonly profile: ProfileService;
   readonly native: NativeBridge;
+  readonly createProfileScopedServices: (
+    profile: ProfileRedacted,
+  ) => ProfileScopedServices;
 }
 
 /**
@@ -31,5 +89,18 @@ export function createProductionServices(): ProductionServices {
   const bridge = createTauriBridge();
   const profile = createProfileService(bridge);
   const native = createNativeBridge(createTauriNativeTransport(bridge));
-  return { profile, native };
+  const createClient: ProfileClientFactory = (profileSummary) => {
+    const origin = new URL(profileSummary.origin);
+    return createAppwireClient({
+      bridge,
+      profileId: profileSummary.id,
+      url: rpcURLFromLocation(origin),
+    });
+  };
+  return {
+    profile,
+    native,
+    createProfileScopedServices: (profileSummary) =>
+      createProfileScopedServices(profileSummary, createClient),
+  };
 }
