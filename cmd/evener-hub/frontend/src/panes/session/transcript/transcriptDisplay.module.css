@@ -165,3 +165,140 @@
     transition: none;
   }
 }
+
+.detailControl {
+  container-type: inline-size;
+  min-width: 0;
+}
+
+.detailTrigger {
+  min-height: 44px;
+  max-width: 100%;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  background: var(--surface-1);
+  padding: var(--space-2) var(--space-3);
+  color: var(--ink-hi);
+  font: inherit;
+  font-weight: var(--font-weight-medium);
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.detailTrigger:hover {
+  background: var(--hover-1);
+}
+
+.detailTrigger:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.detailPanel {
+  min-width: min(32rem, calc(100vw - 2rem));
+  max-width: min(42rem, calc(100vw - 2rem));
+  border-radius: var(--radius-pane);
+  background: var(--surface-0);
+  box-shadow: var(--shadow-overlay);
+}
+
+.detailPanelTitle {
+  margin: 0;
+  color: var(--ink-hi);
+  font-size: var(--font-size-pane-title);
+}
+
+.detailContent,
+.detailSheetContent {
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-3);
+  min-width: 0;
+}
+
+.detailScope {
+  margin: 0;
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+  font-weight: var(--font-weight-medium);
+}
+
+.detailStatus,
+.detailWarning {
+  margin: 0;
+  border-inline-start: 3px solid var(--accent);
+  background: var(--surface-1);
+  padding: var(--space-2) var(--space-3);
+  color: var(--ink-mid);
+  font-size: var(--font-size-ui);
+  line-height: 1.45;
+}
+
+.detailStatus p {
+  margin: 0;
+}
+
+.detailStatus p + p {
+  margin-top: var(--space-1);
+}
+
+.detailWarning {
+  border-inline-start-color: var(--warning, var(--accent));
+}
+
+.detailActions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--space-2);
+}
+
+.detailActions button {
+  min-height: 44px;
+  border: 1px solid var(--edge);
+  border-radius: var(--radius-control);
+  background: var(--surface-1);
+  padding: var(--space-2) var(--space-3);
+  color: var(--ink-hi);
+  font: inherit;
+  cursor: pointer;
+}
+
+.detailActions button:hover {
+  background: var(--hover-1);
+}
+
+.detailActions button:focus-visible {
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+
+@container (max-width: 34rem) {
+  .detailTrigger {
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+
+  .detailPanel {
+    min-width: min(24rem, calc(100vw - 1rem));
+  }
+
+  .fieldsets {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .detailActions {
+    flex-direction: column;
+  }
+
+  .detailActions button {
+    width: 100%;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .detailTrigger,
+  .detailActions button {
+    transition: none;
+  }
+}
