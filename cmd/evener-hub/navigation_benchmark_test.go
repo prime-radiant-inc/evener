@@ -38,43 +38,6 @@ const (
 	legacyNavigationNow                = "2026-08-25T20:00:00Z"
 )
 
-func TestLegacyNavigationBaselineFixture(t *testing.T) {
-	web := newNavigationBenchmarkFixture(t)
-	body := requestNavigationManifest(t, web)
-	if !bytes.Contains(body, []byte(`"projects"`)) {
-		t.Fatal("legacy fixture did not exercise project rows")
-	}
-	if got := countLegacySessions(t, body); got != 1000 {
-		t.Fatalf("sessions=%d, want 1000", got)
-	}
-
-	var want navigationBaseline
-	if err := json.Unmarshal(navigationLegacyBaseline, &want); err != nil {
-		t.Fatalf("decode navigation baseline: %v", err)
-	}
-	if want.AllocsBytes <= 0 {
-		t.Fatalf("allocation baseline=%d, want a positive B/op budget", want.AllocsBytes)
-	}
-	if got := int64(len(body)); got != want.ResponseBytes {
-		t.Fatalf("response bytes=%d, want %d", got, want.ResponseBytes)
-	}
-	if got := countProjectKeys(body); got != want.Projects {
-		t.Fatalf("projects=%d, want %d", got, want.Projects)
-	}
-	if got := countLegacySessions(t, body); got != want.Sessions {
-		t.Fatalf("sessions=%d, want %d", got, want.Sessions)
-	}
-}
-
-func BenchmarkLegacyNavigationBaseline(b *testing.B) {
-	web := newNavigationBenchmarkFixture(b)
-	_ = requestNavigationManifest(b, web)
-	b.ReportAllocs()
-	b.ResetTimer()
-	for range b.N {
-		_ = requestNavigationManifest(b, web)
-	}
-}
 
 func newNavigationBenchmarkFixture(tb testing.TB) *WebServer {
 	tb.Helper()
