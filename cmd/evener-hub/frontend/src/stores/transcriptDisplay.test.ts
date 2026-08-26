@@ -1,4 +1,9 @@
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import {
+  type CapturedTranscriptView,
+  registerTranscriptView,
+  resetTranscriptViewRegistryForTests,
+} from "../panes/session/transcript/flow/transcriptViewRegistry";
 import { WireError } from "../protocol/errors";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import {
@@ -81,23 +86,124 @@ function deferred<T>(): {
   return { promise, resolve };
 }
 
+function viewSnapshot(id: string): CapturedTranscriptView {
+  return {
+    anchorId: `${id}-anchor`,
+    anchorOffset: 18,
+    normalizedOffset: 0.25,
+    followingBottom: false,
+    focusedEntryId: `${id}-entry`,
+  };
+}
+
 beforeEach(() => {
   storage.clear();
   // @ts-expect-error MemoryStorage is the deterministic browser storage seam.
   globalThis.localStorage = storage;
   connectionStore.setState({ state: "idle", serverInfo: undefined, features: undefined, client: null });
   resetTranscriptDisplayStoreForTests();
+  resetTranscriptViewRegistryForTests();
   initTranscriptDisplay();
 });
 
 afterEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, features: undefined, client: null });
   resetTranscriptDisplayStoreForTests();
+  resetTranscriptViewRegistryForTests();
   vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
 describe("effective transcript display state", () => {
+  test("captures both mounted panes before a local publish and coalesces an identical fingerprint", () => {
+    const events: string[] = [];
+    const leftSnapshot = viewSnapshot("left");
+    const rightSnapshot = viewSnapshot("right");
+    const left = {
+      id: "left",
+      capture: vi.fn(() => {
+        events.push("capture:left");
+        return leftSnapshot;
+      }),
+      restore: vi.fn(() => events.push("restore:left")),
+      focusDetailTrigger: vi.fn(),
+      announce: vi.fn(() => events.push("announce:left")),
+    };
+    const right = {
+      id: "right",
+      capture: vi.fn(() => {
+        events.push("capture:right");
+        return rightSnapshot;
+      }),
+      restore: vi.fn(() => events.push("restore:right")),
+      focusDetailTrigger: vi.fn(),
+      announce: vi.fn(() => events.push("announce:right")),
+    };
+    const unregisterLeft = registerTranscriptView(left);
+    const unregisterRight = registerTranscriptView(right);
+
+    const next = preset("full");
+    transcriptDisplayStore.getState().setLocal("desktop", next);
+    transcriptDisplayStore.getState().setLocal("desktop", next);
+
+    expect(events).toEqual([
+      "capture:left",
+      "capture:right",
+      "restore:left",
+      "restore:right",
+      "announce:left",
+      "announce:right",
+    ]);
+    expect(transcriptDisplayStore.getState().effective("desktop")).toEqual(next);
+    unregisterLeft();
+    unregisterRight();
+  });
+
+  test("does not capture or announce a hub update hidden by a local override", () => {
+    const capture = vi.fn(() => viewSnapshot("pane"));
+    const announce = vi.fn();
+    const unregister = registerTranscriptView({
+      id: "pane",
+      capture,
+      restore: vi.fn(),
+      focusDetailTrigger: vi.fn(),
+      announce,
+    });
+
+    transcriptDisplayStore.getState().setLocal("desktop", preset("activity"));
+    capture.mockClear();
+    announce.mockClear();
+    transcriptDisplayStore.getState().applyHubChange({ layout: "desktop", revision: 1, config: preset("chat") });
+
+    expect(capture).not.toHaveBeenCalled();
+    expect(announce).not.toHaveBeenCalled();
+    unregister();
+  });
+
+  test("captures a breakpoint transition even when both layout configurations are identical", () => {
+    const events: string[] = [];
+    const unregister = registerTranscriptView({
+      id: "pane",
+      layout: "desktop",
+      capture: vi.fn(() => {
+        events.push("capture");
+        return viewSnapshot("pane");
+      }),
+      restore: vi.fn(() => events.push("restore")),
+      focusDetailTrigger: vi.fn(),
+      announce: vi.fn(() => events.push("announce")),
+    });
+    const sameConfig = preset("full");
+    transcriptDisplayStore.getState().setLocal("desktop", sameConfig);
+    transcriptDisplayStore.getState().setLocal("mobile", sameConfig);
+    events.length = 0;
+
+    transcriptDisplayStore.getState().setViewport("mobile");
+
+    expect(events).toEqual(["capture", "restore"]);
+    unregister();
+  });
+
   test("uses shipped Desktop and Mobile defaults when no local or hub value exists", () => {
     expect(transcriptDisplayStore.getState().hubSupport).toBe("unknown");
     expect(transcriptDisplayStore.getState().effective("desktop")).toEqual(shippedDesktopConfig);

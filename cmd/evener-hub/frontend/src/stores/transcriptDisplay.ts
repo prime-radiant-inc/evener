@@ -1,5 +1,6 @@
 import { useStore } from "zustand";
 import { createStore, type StoreApi } from "zustand/vanilla";
+import { transitionTranscriptViews } from "../panes/session/transcript/flow/transcriptViewRegistry";
 import { WireError } from "../protocol/errors";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type { AnyNotification } from "../protocol/types.gen";
@@ -105,6 +106,38 @@ let activeReadyEpoch = -1;
 let refreshSerial = 0;
 let patchSerial = 0;
 const patchTokens = new Map<ViewportClass, number>();
+
+type EffectiveLayers = Pick<TranscriptDisplayStoreState, "viewport" | "local" | "hub">;
+
+function effectiveForLayers(layers: EffectiveLayers, layout: ViewportClass): TranscriptDisplayConfigV1 {
+  return resolveEffectiveConfig({
+    local: layers.local[layout],
+    hub: layers.hub[layout],
+    layout,
+  });
+}
+
+function publishEffectiveTransition(
+  before: EffectiveLayers,
+  after: EffectiveLayers,
+  publish: () => void,
+  targetLayout: ViewportClass,
+  force = false,
+): void {
+  const beforeConfig = effectiveForLayers(before, before.viewport);
+  const afterConfig = effectiveForLayers(after, after.viewport);
+  const changed = configFingerprint(beforeConfig) !== configFingerprint(afterConfig);
+  if (!changed && !force) {
+    publish();
+    return;
+  }
+  transitionTranscriptViews(publish, "Transcript display changed", {
+    fingerprint: configFingerprint(afterConfig),
+    targetLayout,
+    force,
+    announce: changed,
+  });
+}
 
 function makeSourceId(): string {
   try {
@@ -213,12 +246,23 @@ function applyIncomingLocal(message: LocalMessage): void {
     if (current === undefined) return;
     const local = { ...state.local };
     delete local[message.layout];
-    transcriptDisplayStore.setState({ local });
+    publishEffectiveTransition(
+      state,
+      { ...state, local },
+      () => transcriptDisplayStore.setState({ local }),
+      message.layout,
+    );
     return;
   }
   const config = decodeLocalConfig(message.config);
   if (config === undefined || (current !== undefined && configFingerprint(current) === message.fingerprint)) return;
-  transcriptDisplayStore.setState({ local: { ...state.local, [message.layout]: config } });
+  const local = { ...state.local, [message.layout]: config };
+  publishEffectiveTransition(
+    state,
+    { ...state, local },
+    () => transcriptDisplayStore.setState({ local }),
+    message.layout,
+  );
 }
 
 function onChannelMessage(event: MessageEvent<unknown>): void {
@@ -241,7 +285,9 @@ function onStorage(event: StorageEvent): void {
   if (config === undefined) return;
   const current = transcriptDisplayStore.getState().local[layout];
   if (current !== undefined && configFingerprint(current) === configFingerprint(config)) return;
-  transcriptDisplayStore.setState({ local: { ...transcriptDisplayStore.getState().local, [layout]: config } });
+  const state = transcriptDisplayStore.getState();
+  const local = { ...state.local, [layout]: config };
+  publishEffectiveTransition(state, { ...state, local }, () => transcriptDisplayStore.setState({ local }), layout);
 }
 
 function isLayoutKey(key: string | null): key is string {
@@ -328,7 +374,8 @@ function applyHubDefault(layout: ViewportClass, value: HubTranscriptDisplayDefau
   const state = transcriptDisplayStore.getState();
   const previous = state.hub[layout];
   if (previous !== undefined && value.revision <= previous.revision) return;
-  transcriptDisplayStore.setState({ hub: { ...state.hub, [layout]: value } });
+  const hub = { ...state.hub, [layout]: value };
+  publishEffectiveTransition(state, { ...state, hub }, () => transcriptDisplayStore.setState({ hub }), layout);
 }
 
 function onNotification(notification: AnyNotification): void {
@@ -415,11 +462,21 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
   () => ({
     ...initialState(),
     setViewport: (layout) => {
-      if (transcriptDisplayStore.getState().viewport !== layout) transcriptDisplayStore.setState({ viewport: layout });
+      const state = transcriptDisplayStore.getState();
+      if (state.viewport === layout) return;
+      publishEffectiveTransition(
+        state,
+        { ...state, viewport: layout },
+        () => transcriptDisplayStore.setState({ viewport: layout }),
+        layout,
+        true,
+      );
     },
     setLocal: (layout, input) => {
       const config = normalizeConfig(input);
-      transcriptDisplayStore.setState({ local: { ...transcriptDisplayStore.getState().local, [layout]: config } });
+      const state = transcriptDisplayStore.getState();
+      const local = { ...state.local, [layout]: config };
+      publishEffectiveTransition(state, { ...state, local }, () => transcriptDisplayStore.setState({ local }), layout);
       const encoded = encodeLocalConfig(config);
       const localOK = writeLocal(layout, encoded);
       dualWriteTranscriptDisplayLegacy(config);
@@ -431,7 +488,7 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
       const state = transcriptDisplayStore.getState();
       const local = { ...state.local };
       delete local[layout];
-      transcriptDisplayStore.setState({ local });
+      publishEffectiveTransition(state, { ...state, local }, () => transcriptDisplayStore.setState({ local }), layout);
       const localOK = removeLocal(layout);
       const fallback = resolveEffectiveConfig({ local: undefined, hub: state.hub[layout], layout });
       dualWriteTranscriptDisplayLegacy(fallback);
