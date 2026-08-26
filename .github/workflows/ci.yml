@@ -99,6 +99,7 @@ jobs:
 
   snapshot-artifacts:
     name: Build snapshot artifacts
+    if: github.event_name == 'pull_request'
     needs: [static, race, tests-and-fuzz, web]
     runs-on: ubuntu-latest
     steps:
