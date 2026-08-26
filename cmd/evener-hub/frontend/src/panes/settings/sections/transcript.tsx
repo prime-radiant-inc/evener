@@ -5,6 +5,7 @@ import {
   useTranscriptDisplayStore,
 } from "../../../stores/transcriptDisplay";
 import {
+  configFingerprint,
   type HubTranscriptDisplayDefault,
   shippedDefault,
   type TranscriptDisplayConfigV1,
@@ -74,8 +75,14 @@ export function TranscriptSection() {
       // remain usable by local-view consumers. A Settings mutation must not
       // claim success in that case.
       const state = transcriptDisplayStore.getState();
-      if (state.hubSupport !== "supported" || state.hubError !== null) {
-        throw new Error(state.hubError ?? "Hub transcript display settings are unavailable.");
+      const confirmed = state.hub[layout] ?? shippedDefault(layout);
+      const acknowledged =
+        state.hubSupport === "supported" &&
+        state.hubError === null &&
+        state.drafts[layout] === undefined &&
+        configFingerprint(confirmed.config) === configFingerprint(config);
+      if (!acknowledged) {
+        throw new Error(state.hubError ?? "Hub did not acknowledge this transcript display default.");
       }
       setPending((current) => ({ ...current, [layout]: { state: "idle" } }));
       // A success toast is deliberately after the request and canonical
@@ -83,11 +90,14 @@ export function TranscriptSection() {
       push("success", "Settings saved");
     } catch (error) {
       if (saveOperations.current[layout] !== operation) return;
+      const currentDraft = transcriptDisplayStore.getState().drafts[layout];
       setPending((current) => ({
         ...current,
         [layout]: {
           state: "error",
-          config,
+          // If another writer left a newer draft in the store, preserve that
+          // draft for Retry rather than replacing it with this stale request.
+          config: currentDraft ?? config,
           error: error instanceof Error ? error.message : String(error),
         },
       }));
