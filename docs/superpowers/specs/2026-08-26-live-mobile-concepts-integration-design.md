@@ -6,15 +6,15 @@
 
 ## Summary
 
-Evener Concepts is an offline comparison lab. The production mobile app already owns secure Hub pairing, native transport, AppWire, lifecycle, roster, conversation, activity, attachments, and voice. The fastest reliable route to a live concept alpha is therefore to move the three presentation systems into the production mobile runtime and add one compatibility facade between production stores/services and the concept renderers.
+Evener Concepts is an offline comparison lab. The production mobile app already owns secure Hub pairing, native transport, AppWire, lifecycle, roster, conversation, activity, attachments, and voice. The fastest reliable route to a live concept alpha is to move only the relevant presentation systems into the production mobile runtime and define one new live renderer contract over production stores and services.
 
-The first milestone keeps Stillwater, Constellation, and Field Notes switchable over one live connection. It supports pairing/profile selection, a real session roster, a subscribed streaming conversation, send/steer/queue/stop, and real work/activity/usage. Search, new-session concept treatments, attachments, and concept-specific voice treatments follow after the live core is usable.
+The first milestone keeps Stillwater, Constellation, and Field Notes switchable over one live connection. It supports pairing/profile selection, a real session roster, a bounded subscribed conversation, send/steer/queue/stop, and real work/activity/usage. Search, concept-specific New Session, attachments, and concept-specific voice treatments follow after the live core is usable.
 
 This is a prototype integration, not a second production client and not a release-hardening project.
 
 ## User Goal
 
-On a physical phone, connect to a real Evener Hub and switch among all three concepts without losing the selected profile, session, transcript, draft, or activity context. Actions in any concept must affect the real Hub and live AppWire events must update the visible concept in real time.
+On a physical phone, connect to a real Evener Hub and switch among all three concepts without losing the selected profile, session, transcript position, draft, disclosure state, or activity context. Actions in any concept must affect the real Hub, and live AppWire events must update the visible concept in real time.
 
 ## Decisions
 
@@ -26,27 +26,31 @@ On a physical phone, connect to a real Evener Hub and switch among all three con
    - It stays useful for fixture-driven visual comparison.
    - It does not become a second credentialed app.
 
-3. **Vendor the pure concept renderer source once.**
-   - Copy the renderer components, shared presentation components, CSS, and only the concept model/types/selectors they require into `mobile/src/live-concepts/`.
-   - Do not copy the concept Tauri shell, fixture store, scenario reducer, browser harness, native project, or packaging tooling.
+3. **Vendor only milestone presentation source.**
+   - Copy the concept Sessions, Conversation, and Work presentations, shared presentation components, shell chrome, and scoped CSS into `mobile/src/live-concepts/`.
+   - Do not copy the concept Tauri shell, fixture store, canonical fixture, scenario reducer, browser harness, native project, Lab Controls, Search, New Session, Settings, or Voice views.
    - After integration, production `mobile/` is canonical for live concept behavior. The offline lab may diverge deliberately.
 
-4. **Preserve the renderer contract through a live facade.**
-   - The first integration will not rewrite every concept screen around production DTOs.
-   - A `LiveConceptFacade` will project production stores into a renderer-compatible snapshot and translate concept UI intents into production commands.
-   - The facade is derived state, not a second copy of server state.
+4. **Define a new live renderer contract.**
+   - Do not present `PrototypeState` or `PrototypeAction` as live data.
+   - Foundation defines `LiveConceptState`, `LiveConceptIntent`, and `LiveConceptRendererProps` around production-safe view models and independent capability flags.
+   - Mechanically adapt the three copied renderers to this contract.
 
-5. **Keep concept selection local and presentation-only.**
+5. **RootShell remains the sole lifecycle and navigation owner.**
+   - A concept renderer presents exactly one surface: Sessions, Conversation, or Work.
+   - It does not own browser history, root tabs, profile lifecycle, AppWire clients, New, Settings, or Voice.
+
+6. **Keep concept selection local and presentation-only.**
    - The selected concept persists locally.
-   - Switching concepts changes no Hub state and preserves profile, route, selected thread, draft, disclosure state, and activity state.
+   - Switching concepts changes no Hub state and preserves profile, route, selected thread, draft, disclosures, question drafts, activity state, and a per-concept scroll anchor.
 
-6. **Use real states, never fixture scenarios, in live mode.**
-   - Loading, empty, offline, error, attention, and running states come from production stores and AppWire capabilities.
-   - Lab Controls and synthetic completion controls do not appear in the live app.
+7. **Use real states, never fixture scenarios, in live mode.**
+   - Loading, empty, offline, error, attention, running, and capability states come from production stores and AppWire.
+   - Synthetic completion controls and Lab Controls do not appear in the live app.
 
-7. **Defer unsupported surfaces explicitly.**
+8. **Defer unsupported surfaces explicitly.**
    - Global Search has no production service and is not part of milestone one.
-   - New Session, Settings, and existing production Voice remain reachable through production screens until their concept-specific live treatments are wired.
+   - New Session, Settings, and existing production Voice remain reachable through production screens.
    - No live screen silently falls back to canonical fixture data.
 
 ## Existing Production Runtime
@@ -72,23 +76,165 @@ The design reuses these current seams:
 - `mobile/src-tauri/`
   - Keychain, HTTP, TLS pinning, AppWire, lifecycle, diagnostics, and native commands
 
-The Hub already implements every milestone method. The integration requires client work, not a new backend protocol.
+The Hub source implements every milestone method. The integration requires client work, not a new backend protocol.
 
-## Current Client Gaps
+## Required Production-Client Corrections
 
-Two production-mobile gaps must be fixed for the milestone to be honestly live:
+### Complete mutation state
 
-1. **Incomplete item streaming projection**
-   - Assistant text deltas update live.
-   - `item/started`, `item/completed`, reasoning summary deltas, tool-output deltas, and `evener/thread/resync` are currently dropped.
-   - The conversation store must apply or resync these events.
+The current store exposes robust pending/draft restoration only for `send`. Milestone one adds one store-owned mutation state for all commands:
 
-2. **Empty live task/work sections**
-   - The Hub exposes task/job/delegate data and notifications.
-   - The current `activityViewFromConversation()` path cannot recover the raw diagnostics needed for tasks and work, so those sections stay empty.
-   - The conversation service boundary must project and retain a sanitized `ActivityView`, or a dedicated activity service must fetch and subscribe to tasks/jobs. Milestone one chooses projection at the service boundary to minimize new RPC plumbing.
+```ts
+interface ConversationMutationState {
+  kind: "send" | "steer" | "queue" | "interrupt";
+  status: "pending" | "failed";
+  draftSnapshot: string | null;
+  generation: number;
+}
+```
 
-A live smoke must also prove that the running Hub binary answers bounded `thread/list`. The source fix is committed. If the current process is stale, rebuilding or restarting it is an operational prerequisite, not an API change. Do not restart an active Hub without explicit authorization.
+Rules:
+
+- send, steer, and queue capture the exact draft before mutation;
+- successful text-bearing mutations clear the appropriate draft;
+- failure restores the exact captured draft if its generation is still current;
+- interrupt has pending/error state but no draft snapshot;
+- profile or conversation generation change rejects stale completion;
+- `actionUnavailable` refresh publishes the new capabilities to the store before the original mutation error is surfaced;
+- renderer controls derive send, steer, queue, and interrupt availability independently.
+
+### Bounded authoritative conversation projection
+
+One generation-aware conversation-store effect owns notification application and authoritative rereads.
+
+- Initial `thread/read` uses an explicit `turnLimit`.
+- Store retains `olderCursor` and pages older turns with an explicit page limit.
+- `item/started` and `item/completed` apply their authoritative item payloads.
+- assistant, reasoning-summary, and tool-output deltas append with byte bounds.
+- `evener/thread/resync`, unsupported item transitions, and jobs-tree revision changes schedule one coalesced authoritative reread.
+- Rehydrate/resync atomically replaces server projection while preserving draft and presentation-only state.
+- Reread rejects stale profile/conversation generations.
+- Reread does not call the current destructive `open` path.
+
+Initial limits:
+
+- `thread/read` turn limit: 50 turns;
+- older-page limit: 50 turns;
+- retained timeline cap: 500 projected items;
+- displayed tool arguments/output: 64 KiB per item with an explicit `… truncated` marker;
+- one coalesced reread at a time per active conversation generation.
+
+The implementation plan may centralize these constants, but tests bind their values and truncation behavior.
+
+### Sanitized activity at the read boundary
+
+The same `thread/read` result produces:
+
+```ts
+interface ConversationReadProjection {
+  conversation: MobileConversation;
+  activity: ActivityView;
+  olderCursor: string | null;
+}
+```
+
+The service boundary projects activity before discarding the raw `Thread`. RootShell creates an `ActivityStore` beside the `ConversationStore` and resets both on profile/conversation generation changes.
+
+Notification behavior is explicit:
+
+- job and delegate payloads patch matching sanitized entries;
+- task aggregate payloads replace the matching task projection;
+- jobs-tree revision schedules the same coalesced bounded authoritative reread;
+- turn completion and resync refresh usage from the authoritative projection;
+- no raw `Thread` is retained in renderer state.
+
+### Real-time roster
+
+- Every `thread/list` request sends `limit: 100`.
+- Roster follows cursors to a client cap of 500 entries.
+- If another cursor remains, state exposes `hasMore: true`; the UI must not claim completeness.
+- While Sessions is visible, `evener/tree/changed` and relevant attention/status signals schedule one debounced roster refresh.
+- Preserve the last successful roster on refresh failure.
+
+A live smoke must prove that the running Hub binary answers bounded `thread/list`. The source fix is committed. If the current process is stale, rebuilding or restarting it is an operational prerequisite, not an API change. Do not restart an active Hub without explicit authorization.
+
+## Live Renderer Contract
+
+### State
+
+```ts
+interface LiveConceptState {
+  concept: "stillwater" | "constellation" | "field-notes";
+  platform: Platform;
+  appearance: Appearance;
+  textScale: TextScale;
+  reducedMotion: boolean;
+  surface: "sessions" | "conversation" | "work";
+  connection: LiveConnectionView;
+  roster: LiveRosterView;
+  conversation: LiveConversationView | null;
+  activity: LiveActivityView | null;
+  composer: LiveComposerView;
+  ui: LiveConceptUiState;
+}
+```
+
+View models contain only display-safe fields. Operational IDs needed for intents live in a private adapter map, not rendered models.
+
+`LiveComposerView` exposes independent booleans and pending state:
+
+```ts
+interface LiveComposerView {
+  draft: string;
+  canSend: boolean;
+  canSteer: boolean;
+  canQueue: boolean;
+  canInterrupt: boolean;
+  pending: ConversationMutationState | null;
+  error: string | null;
+}
+```
+
+### Intents
+
+```ts
+type LiveConceptIntent =
+  | { type: "switchConcept"; concept: ConceptId }
+  | { type: "refreshRoster" }
+  | { type: "setRosterQuery"; value: string }
+  | { type: "openConversation"; key: string }
+  | { type: "openWork" }
+  | { type: "closeWork" }
+  | { type: "setDraft"; value: string }
+  | { type: "submit"; mode: "send" | "steer" | "queue" }
+  | { type: "interrupt" }
+  | { type: "toggleTool"; key: string }
+  | { type: "toggleWork"; key: string }
+  | { type: "setQuestionDraft"; key: string; value: QuestionDraft }
+  | { type: "submitQuestion"; key: string }
+  | { type: "goBack" }
+  | { type: "openNew" }
+  | { type: "openSettings" }
+  | { type: "openVoice" };
+```
+
+There are no scenario, fixture, synthetic completion, Lab Controls, global Search, or prototype reset intents.
+
+### Props
+
+```ts
+interface LiveConceptRendererProps {
+  state: LiveConceptState;
+  dispatch(intent: LiveConceptIntent): void;
+}
+```
+
+A static boundary test rejects these beneath `mobile/src/live-concepts/`:
+
+- imports from copied fixture/scenario/reducer/store/persistence modules;
+- `PrototypeState`, `PrototypeAction`, `sourceFixture`, `projection.fixture`, `syntheticTurn`, and `onOpenLabControls`;
+- direct `fetch`, WebSocket, Tauri invoke, or production service construction;
+- canonical fixture IDs or copy.
 
 ## Source Boundary
 
@@ -96,41 +242,53 @@ A live smoke must also prove that the running Hub binary answers bounded `thread
 
 Create `mobile/src/live-concepts/` containing:
 
-- `renderers/contract.ts`
-- `renderers/registry.ts`
-- `renderers/shared/**`
-- `renderers/stillwater/**`
-- `renderers/constellation/**`
-- `renderers/field-notes/**`
-- `model/` with the minimum copied concept model, route, state-shape, platform, and selector definitions needed by renderers
-- `styles/base.css` and `styles/foundation.css` only if required after checking production global-style overlap
+- `contract.ts`
+- `model.ts`
+- `registry.ts`
+- `shared/**`
+- `stillwater/` with Sessions, Conversation, Work, shell presentation, and scoped CSS
+- `constellation/` with Sessions, Conversation, Work, shell presentation, and scoped CSS
+- `field-notes/` with Sessions, Conversation, Work, shell presentation, and scoped CSS
+- `project-roster.ts`
+- `project-conversation.ts`
+- `project-activity.ts`
+- `dispatch-live-intent.ts`
+- `live-ui-store.ts`
+- `LiveConceptHost.tsx`
+- `ConceptSwitcher.tsx`
+- focused tests beside each module
 
 Exclude:
 
 - `mobile-concepts/src/app/**`
-- fixture decoding and canonical fixture data
-- scenarios and Lab Controls
-- the prototype reducer and Zustand store
+- `mobile-concepts/src/core/{fixtures,decodeFixture,scenarios,reducer,store,persistence,history}.ts*`
+- Search, New Session, Settings, QuestionCard implementation tied to prototype state, and Voice views
+- `mobile-concepts/src/styles/{base,foundation}.css` until a collision audit proves a required token cannot remain scoped
 - prototype browser tests/harness
 - `mobile-concepts/src-tauri/**`
 
-### New live modules
-
-- `mobile/src/live-concepts/LiveConceptHost.tsx`
-- `mobile/src/live-concepts/live-model.ts`
-- `mobile/src/live-concepts/project-live-state.ts`
-- `mobile/src/live-concepts/dispatch-live-intent.ts`
-- `mobile/src/live-concepts/live-ui-store.ts`
-- `mobile/src/live-concepts/ConceptSwitcher.tsx`
-- focused tests beside each module
+Copy only scoped per-concept CSS initially. Foundation records every global selector that must be rewritten under a concept root before production import.
 
 No new npm dependency is expected. React, Zustand, and all current rendering dependencies already exist in `mobile/`.
 
-## Live Facade
+## Runtime Composition and Ownership
 
-### Inputs
+### RootShell
 
-`LiveConceptHost` receives production handles rather than creating transports:
+RootShell remains the sole owner of:
+
+- onboarding and pairing;
+- active profile and profile switching;
+- profile-scoped services and AppWire client;
+- production root navigation;
+- production conversation stack;
+- production New, Settings, and Voice screens;
+- lifecycle/reconnect coordination;
+- `ConversationStore` and `ActivityStore` identity/reset.
+
+### LiveConceptHost
+
+`LiveConceptHost` receives production handles; it never creates a transport:
 
 ```ts
 interface LiveConceptRuntime {
@@ -142,86 +300,67 @@ interface LiveConceptRuntime {
   conversationStore: ConversationStore;
   conversationService: ConversationService | null;
   activityStore: ActivityStore;
-  newSessionService: NewSessionService | null;
   native: NativeBridge;
   profileId: string | null;
 }
 ```
 
-RootShell remains the sole owner of profile-scoped services and socket lifecycle. The live-concepts layer never constructs an AppWire client.
+It renders one `surface`:
 
-### Derived renderer snapshot
+- `sessions` inside the production Sessions tab;
+- `conversation` for the active production conversation stack entry;
+- `work` as a concept-owned sub-surface over the active conversation.
 
-`projectLiveConceptState(runtime, uiState)` builds a renderer-compatible snapshot on each subscribed render:
+It owns no browser history and no duplicate bottom navigation. Back, New, Settings, and Voice dispatch into RootShell/navigation callbacks.
 
-- roster entries become concept session records;
-- the active `MobileConversation` becomes transcript items;
-- ask batches become concept questions;
-- sanitized activity becomes the work hierarchy and usage;
-- production theme/content-size/reduced-motion become concept presentation preferences;
-- production navigation becomes the concept route;
-- roster/conversation status and profile reachability become screen states;
-- production capabilities become available composer actions.
+### Concept switcher
 
-The projection must not retain raw credentials, raw authorization URLs, or unbounded raw tool output.
+RootShell owns one portal/sheet mount point outside the current concept renderer. `ConceptSwitcher` writes only the local selected-concept preference, closes, and restores focus to its opener. Because the portal survives renderer replacement, switcher focus lifecycle does not depend on a concept component remaining mounted.
 
-### Local UI state
+## Local Presentation State
 
-`live-ui-store.ts` owns only presentation state:
+`live-ui-store.ts` owns only:
 
 - selected concept;
-- concept-switcher open/closed;
-- selected composer intent (`send`, `steer`, or `queue`) when more than one is available;
-- expanded tool/work IDs;
-- focused item ID;
+- switcher open/opener identity;
+- active Work sub-surface;
+- selected composer mode when several commands are available;
+- expanded tool/work keys;
+- focused item key;
 - question option/note drafts until submission;
-- concept-local route decoration needed for Work.
+- scroll anchors keyed by `{concept, surface, threadRef}`.
 
 It does not own roster entries, transcript text, connection state, capabilities, task state, or usage.
 
-### Intent dispatch
+On concept switch:
 
-`dispatchLiveIntent()` is exhaustive. Every renderer action is classified as:
+1. capture the current scroll anchor as the first visible stable item key plus offset;
+2. replace the renderer;
+3. restore the target concept's anchor for the same surface/thread when present, otherwise restore the shared stable item key;
+4. preserve production draft, pending mutation, disclosures, and question drafts in shared stores;
+5. do not reconnect or reread solely because presentation changed.
 
-- a synchronous local UI change;
-- a production store/navigation change;
-- an asynchronous service command; or
-- explicitly unavailable in milestone one.
+## Intent Dispatch
 
-Representative mappings:
+`dispatchLiveIntent()` is exhaustive. Every intent is a local UI change, production store/navigation change, or asynchronous production command.
 
-| Concept intent | Live behavior |
+| Intent | Live behavior |
 |---|---|
-| refresh sessions | `rosterStore.refresh(rosterService)` |
-| filter sessions | local roster search term |
-| open session | push production conversation route and open subscribed conversation |
+| refresh roster | `rosterStore.refresh(rosterService)` |
+| filter roster | roster-store/local query |
+| open conversation | push production route and open bounded subscribed read |
 | set draft | `conversationStore.setDraft()` |
 | submit send/steer/queue | matching conversation-store command, capability-gated |
-| stop response | `conversationStore.interrupt()` |
+| interrupt | `conversationStore.interrupt()` |
 | toggle tool/work | local disclosure state |
-| open Work | concept-local Work presentation over sanitized live activity |
-| resolve question | existing byte-exact ask-answer composition sent through `ConversationService.send()` |
+| open/close Work | local surface over active conversation |
+| submit question | canonical shared ask-answer composer, then `ConversationService.send()` |
 | switch concept | local persisted selection only |
-| Search in milestone one | explicit unavailable surface; never fixture results |
-| New/Settings/Voice in milestone one | route to existing production screen |
+| open New/Settings/Voice | callback to existing production screen |
 
-Async commands are not fire-and-forget failures. The dispatcher catches rejections and relies on production stores' pending/error/draft-restoration semantics.
+Async commands are not unobserved promises. The dispatcher invokes store-owned effects that publish pending/error state.
 
-## Navigation and Screen Composition
-
-RootShell keeps onboarding, server switching, connection state, and the production bottom-level lifecycle.
-
-After a profile is selected:
-
-- Sessions and Conversation render through `LiveConceptHost`.
-- Work renders through the chosen concept using live activity.
-- New Session and Settings continue to use existing production screens.
-- Voice continues to use the existing production VoiceScreen.
-- Search is hidden or presented as unavailable until a real strategy exists.
-
-The concept shells must not create a second browser-history owner. Their Back, Work, Voice, and root-navigation intents delegate to the production navigation owner.
-
-Concept switching is available from Sessions, Conversation, and Work. It does not reconnect, reload the thread, or reset scroll/draft/disclosures.
+The existing byte-exact ask-answer composition is private inside `AskComposer.tsx`. Foundation extracts it into one pure shared module consumed by both canonical `AskComposer` and live concepts, retaining all existing vectors.
 
 ## Real-Time Data Flow
 
@@ -234,36 +373,51 @@ Concept switching is available from Sessions, Conversation, and Work. It does no
 
 ### Roster
 
-1. `RosterService.list()` calls `thread/list`.
-2. `RosterStore` groups attention/running/recent and applies local filtering.
-3. The live projection maps entries into concept session rows.
-4. Milestone one supports explicit refresh. Automatic `evener/tree/changed` refresh may follow.
+1. `RosterService.list()` calls paged, bounded `thread/list`.
+2. `RosterStore` follows cursors to its cap, groups attention/running/recent, and applies local filtering.
+3. The live projection maps entries into display-safe concept rows.
+4. Explicit refresh and debounced tree/attention refresh use the same generation-aware effect.
 
-### Conversation
+### Conversation and activity
 
-1. Opening a session calls subscribed `thread/read`.
-2. The service projects the thread into sanitized conversation and activity views.
-3. AppWire notifications update conversation/activity stores.
-4. The live projection produces transcript/work snapshots.
+1. Opening a session calls bounded subscribed `thread/read`.
+2. The service returns sanitized conversation, activity, and cursor projections.
+3. AppWire notifications patch projections or schedule one coalesced authoritative reread.
+4. The three pure projectors produce concept conversation and work view models.
 5. The active renderer updates without changing concept selection.
 
 ### Mutations
 
 1. A concept control dispatches a live intent.
-2. Capability checks happen before the wire request.
-3. The production store owns pending state and draft restoration.
-4. AppWire notifications, not synthetic completion buttons, settle the visible turn.
+2. Independent capability checks happen before the request.
+3. The conversation store owns mutation pending/error and exact draft restoration.
+4. AppWire notifications, not synthetic buttons, settle the visible turn.
+
+## Display Data Safety
+
+The live concept projection must not expose:
+
+- authorization URLs or tokens;
+- profile IDs;
+- filesystem paths unless already intentional user-visible transcript content;
+- task prompts or hidden instructions;
+- transcript refs, delegate IDs, job IDs, call IDs, or commands as display values;
+- raw unbounded tool/work output.
+
+Operational keys remain in private adapter maps. Display output uses the 64 KiB per-item cap and explicit truncation marker. Tests cover hostile strings, oversized deltas, split Unicode, repeated truncation, and absence of sensitive adapter-only fields.
+
+Attachments are deferred. Milestone one projects an attachment as a metadata-only unavailable row with an action that routes to the existing production viewer when a valid production attachment reference exists. It never renders fixture attachment data.
 
 ## Error and Lifecycle Rules
 
 - Preserve the last roster on refresh failure.
-- Preserve and restore a draft when send/steer/queue fails.
-- Show capability changes immediately after `actionUnavailable` refresh.
-- Reject stale profile, connection, and conversation generations.
+- Restore the exact draft snapshot when a text-bearing mutation fails.
+- Publish refreshed capabilities after `actionUnavailable`.
+- Reject stale profile, connection, conversation, roster, mutation, and activity generations.
 - Rehydrate roster and active conversation after foreground reconnect.
-- Handle `evener/thread/resync` by bounded re-read, not by ignoring it.
+- Handle `evener/thread/resync` through a bounded coalesced reread.
 - Switching concept during a pending command changes presentation only.
-- Profile switching clears old profile-scoped roster/conversation/activity state before the new generation renders.
+- Profile switching clears old profile-scoped roster, conversation, activity, and local thread-keyed UI state before the new generation renders.
 - No live error path falls back to fixture data.
 
 ## First Milestone Acceptance Criteria
@@ -271,105 +425,154 @@ Concept switching is available from Sessions, Conversation, and Work. It does no
 On a physical iPhone against a real Hub:
 
 1. Existing pairing/profile selection succeeds without moving credentials into JS.
-2. A bounded `thread/list` returns and all three concepts show the same real grouped roster.
-3. Switching concepts preserves the selected profile and roster query.
-4. Opening a real thread renders its real transcript in all three concepts.
-5. Assistant text, item lifecycle, reasoning summaries, and tool output update without manual refresh.
-6. Send, steer, queue, and stop invoke the real Hub and show pending/error/capability state correctly.
-7. Work shows real tasks, delegates/jobs, usage, and controls rather than empty fixture placeholders.
-8. Switching concept in Conversation or Work preserves thread, draft, disclosures, and running state.
-9. Background/foreground and one reconnect preserve or rehydrate the active thread without stale frames.
-10. Search contains no fixture results; New, Settings, and Voice use existing production screens.
+2. Paged bounded `thread/list` returns, exposes `hasMore` honestly, and all three concepts show the same real grouped roster IDs.
+3. Visible Sessions refreshes after a real tree/attention event without manual pull.
+4. Switching concepts preserves selected profile, roster query, and scroll anchor.
+5. Opening a real thread renders the same thread ID and bounded transcript in all three concepts.
+6. Assistant text, item lifecycle, reasoning summaries, and tool output update without manual refresh.
+7. Send, steer, queue, and interrupt each invoke the real Hub and show independent capability, pending, success, and failure state.
+8. Failed send/steer/queue restores the exact draft sentinel.
+9. Work shows real tasks, delegates/jobs, usage, and disclosure controls rather than empty placeholders.
+10. Switching concept in Conversation or Work preserves thread, draft, pending mutation, disclosures, question drafts, and scroll anchor.
+11. Background/foreground and one reconnect preserve or rehydrate the active thread without stale frames.
+12. Search and Lab Controls are absent; New, Settings, and Voice use existing production screens.
+13. No canonical fixture ID, scenario, synthetic completion control, or fixture content appears.
 
 ## Testing Strategy
 
-### Pure adapter tests
+### Static boundary
+
+Reject forbidden prototype imports/symbols, direct transport calls, global unscoped CSS, and fixture identifiers beneath `mobile/src/live-concepts/`.
+
+### Pure projection
 
 - roster projection and attention buckets;
-- transcript item-kind projection;
+- transcript item-kind projection and bounds;
 - activity hierarchy and usage projection;
-- route projection;
-- concept persistence;
+- route/surface projection;
+- concept persistence and scroll anchors;
 - exhaustive intent classification;
 - unsupported surfaces never expose fixture data.
 
-### Store/service tests
+### Store/service
 
-- all required item notification families update or resync;
-- send/steer/queue/interrupt method and capability mapping;
-- pending state and exact draft restoration;
-- sanitized activity projection from the thread-read boundary;
-- profile/conversation generation rejection;
-- reconnect rehydration.
+- all required item notification families update or trigger one resync;
+- bounded read, cursor retention, paging, and retained-item cap;
+- send/steer/queue/interrupt method, capability, pending, and failure behavior;
+- exact draft restoration and stale-generation rejection;
+- sanitized activity projection and notification/reread behavior;
+- paged roster cap, hasMore, debounced tree refresh, and last-good retention;
+- profile/conversation reconnect rehydration.
 
-### Renderer contract tests
+### Renderer contract
 
-Parameterize Stillwater, Constellation, and Field Notes over one live-state fixture produced by the adapter:
+Parameterize Stillwater, Constellation, and Field Notes over one `LiveConceptState` fixture:
 
 - roster;
 - conversation with streaming item;
-- running and failed command;
+- every command pending/failure state;
 - work/activity;
-- concept switch preserving identity and local disclosure state;
+- concept switch preserving identity/local state;
 - loading/offline/error/empty.
 
-### Integration and live smoke
+### Integration and physical smoke
 
-- scripted AppWire integration below the real production composition root;
-- full mobile typecheck, Biome, boundary, tests, production build, Rust tests/check/clippy;
-- real Hub six-step smoke: pair, roster, open/subscribe, send, steer/queue/interrupt, work/usage;
-- signed physical iOS build/install/launch and semantic checks for all three concepts.
+The smoke report records:
+
+- device model/OS;
+- signed app bundle ID/version/hash;
+- Hub commit/version/protocol and redacted origin;
+- known thread ref held only in scratch evidence;
+- roster/read/page limits;
+- expected request and notification sequence;
+- per-concept roster IDs and active thread ID;
+- draft sentinel before and after each switch;
+- receipts for send, steer, queue, and interrupt;
+- DOM result for item lifecycle, reasoning summary, and tool delta;
+- task/job/delegate/usage values;
+- background/foreground generation and reconnect result;
+- absence of fixture, Search, and Lab content.
+
+A stale Hub binary is a blocked prerequisite. Do not restart it without authorization.
+
+## Baseline Before Parallel Work
+
+Current live service composition and AppWire handshake corrections are dirty and absent from HEAD. Before any isolated worktree branches:
+
+1. inspect and review the exact current dirty source diff;
+2. run focused and full relevant gates;
+3. create baseline commit A containing only:
+   - `mobile/src-tauri/src/appwire_transport.rs`
+   - `mobile/src-tauri/tests/appwire_transport_test.rs`
+4. create baseline commit B containing only the approved production service composition/screen source and tests:
+   - `mobile/src/screens/RootShell.tsx`
+   - `mobile/src/screens/RootShell.test.tsx`
+   - `mobile/src/screens/SessionsScreen.tsx`
+   - `mobile/src/screens/production-services.ts`
+   - `mobile/src/screens/production-services.test.ts`
+   - `mobile/src/screens/root-types.ts`
+5. exclude unrelated generated Xcode edits, concept-native tooling/generated files, and deleted reports;
+6. record baseline B's SHA in the implementation plan and branch every Luna worktree from it.
+
+If review shows any listed file contains unrelated changes, split or omit it rather than broadening the baseline.
 
 ## Parallel Implementation Strategy
 
-Before fanout, one serial baseline task must inspect and preserve the current dirty production-mobile work. Existing live-service composition changes cannot be lost when isolated worktrees branch from HEAD. The baseline task runs focused/full gates, reviews the exact dirty source diff, and commits only the approved production-mobile source paths. Unrelated generated-project edits remain untouched unless required.
-
-After the baseline, use one foundation task followed by parallel Luna medium lanes in isolated worktrees.
-
 ### Foundation — serialized
 
-- Vendor the minimum renderer source.
-- Define the live facade interfaces and ownership rules.
-- Add compile-only contract tests.
-- Commit before parallel workers branch.
+- vendor the minimum renderer source;
+- define `LiveConceptState`, intents, props, registry, surface ownership, and static boundary;
+- extract shared ask-answer composition;
+- audit and scope CSS;
+- add compile-only contract tests;
+- commit before parallel workers branch.
 
 ### Parallel lanes
 
-1. **Live roster projection**
-   - new adapter files and tests only;
-   - no RootShell edits.
+1. **Roster projection and live refresh**
+   - owns `project-roster.ts` and roster service/store changes;
+   - paged cap, hasMore, tree refresh, last-good tests.
 
-2. **Conversation streaming completeness**
-   - production conversation service/store and notification tests;
-   - includes resync, tool/reasoning/item lifecycle.
+2. **Conversation wire completeness plus activity boundary**
+   - one combined owner for conversation service/store and activity read projection;
+   - bounded read/paging, all item events, resync, mutations, capabilities, activity, and tests.
 
-3. **Activity/work projection**
-   - service-boundary sanitized activity and activity tests;
-   - no RootShell edits.
+3. **Intent dispatcher**
+   - owns `dispatch-live-intent.ts` and pure dispatcher tests;
+   - consumes foundation contract and production store interfaces.
 
-4. **Live intent dispatcher**
-   - async command mapping, capability behavior, question submission, error tests;
-   - consumes foundation interfaces.
+4. **Concept switcher and local UI state**
+   - owns switcher, persistence, disclosure/question state, scroll anchors, and tests.
 
-5. **Concept switcher and local UI state**
-   - new live-concepts files only;
-   - persistence and state-preservation tests.
+5. **Renderer adaptation lanes**
+   - one worktree each for Stillwater, Constellation, and Field Notes when the mechanical diff is large;
+   - each owns only its concept directory and contract tests.
 
-6. **Renderer adaptation**
-   - split by concept only if necessary after facade compilation;
-   - each worker owns one concept directory.
+Projection files are split by owner:
+
+- roster lane: `project-roster.ts`;
+- conversation/activity lane: `project-conversation.ts` and `project-activity.ts`;
+- no shared `project-live-state.ts`.
 
 ### Integration — serialized
 
-One integration owner merges reviewed lane commits, owns `RootShell.tsx`, `App.tsx`, package/lock files if needed, and real service composition. No parallel lane edits shared bootstrap files.
+One integration owner merges reviewed lane commits and exclusively owns:
+
+- `LiveConceptHost.tsx`;
+- live concept registry wiring;
+- RootShell/App integration;
+- concept portal mount;
+- production global style imports;
+- package/lock/protocol allowlist files if needed;
+- full deterministic and real-Hub/device smoke.
 
 ### Review rules
 
-- Every writing lane uses an isolated worktree.
+- Every writing lane uses an isolated worktree from the recorded baseline SHA.
 - Every lane has a named path allowlist and TDD evidence.
 - Review each lane before integration.
 - Run one whole-branch review after integration.
-- Do not start voice-native expansion, global Search, or Android-specific hardening during milestone one.
+- Do not start native voice expansion, global Search, or Android hardening during milestone one.
 
 ## Alternatives Rejected
 
@@ -381,9 +584,9 @@ Rejected because it duplicates security-sensitive native composition, profile/ke
 
 Rejected because it reverses the lab's isolation boundary and makes an offline comparison package credential-aware.
 
-### Rewrite all concept components directly against production DTOs first
+### Keep the current PrototypeState contract
 
-Rejected for milestone one because it multiplies changes across three renderer trees before a live vertical slice exists. The compatibility facade is faster and reversible.
+Rejected because it imports fixture/scenario/runtime semantics, has all-or-nothing mutation capability, and forces synthetic controls into live screens.
 
 ### Shared npm workspace package before integration
 
@@ -394,12 +597,11 @@ Rejected for milestone one because it adds package/boundary/lock complexity with
 - global or server-backed Search;
 - concept-specific New Session and Settings treatments;
 - concept-specific native Voice presentation;
-- attachments and safe viewer inside each concept;
-- automatic roster refresh from tree notifications;
+- full attachment presentation inside each concept;
 - Android packaging and geometry hardening;
-- removing the compatibility facade after the preferred product model is selected;
+- removing the live contract after the preferred product model is selected;
 - release qualification and artifact-isolation hardening.
 
 ## Success Definition
 
-The milestone succeeds when the same real Hub session can be opened, observed, and controlled through Stillwater, Constellation, and Field Notes on a physical phone, with concept switching affecting only presentation and no fixture data appearing in live mode.
+The milestone succeeds when the same real Hub session can be opened, observed, and controlled through Stillwater, Constellation, and Field Notes on a physical phone; concept switching affects only presentation; and no fixture data or synthetic behavior appears in live mode.
