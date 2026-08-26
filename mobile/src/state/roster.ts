@@ -199,19 +199,24 @@ export function createRosterStore(options: CreateRosterStoreOptions = {}) {
       const gen = get().generation;
       const key = `roster-refresh:${gen}`;
       scheduler.schedule(key, () => {
+        // Execution-time generation check: if the generation changed between
+        // scheduling and execution (profile switch / reset), this callback is
+        // a no-op — it must not call the old service or mutate state.
+        if (gen !== get().generation) return;
         void get().refresh(service);
       });
     },
 
     reset() {
-      set({
+      set((s) => ({
         entries: [],
         loading: false,
         error: null,
         searchTerm: "",
         hasMore: false,
+        generation: s.generation + 1,
         ...derive([], ""),
-      });
+      }));
     },
   }));
 

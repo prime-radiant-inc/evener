@@ -4,9 +4,14 @@
 // no network — given the same input it produces the same output.
 //
 // Display safety: the raw thread ref does NOT appear in the enumerable row
-// data. It is carried separately in refsByKey so operational lookups (opening
-// a conversation) can resolve the ref from the display key without exposing it
-// to the renderer.
+// data or anywhere in the serialized view. Row keys are opaque hashes derived
+// deterministically from the ref — not reversible, not prefixed with the ref.
+// The raw ref is carried separately in refsByKey so operational lookups
+// (opening a conversation) can resolve the ref from the opaque key.
+//
+// createRosterProjector() returns a projector instance whose .project() method
+// shares the same deterministic key derivation as the standalone projectLiveRoster
+// so keys are stable across independent instances for the same ref.
 
 import type { RosterEntry } from "../services/roster";
 import type { DisplayTone, LiveRosterRow, LiveRosterView } from "./model";
@@ -44,24 +49,17 @@ function connectedWorkCount(entry: RosterEntry): number {
   return entry.attention === "running" || entry.status === "active" ? 1 : 0;
 }
 
-// Build a stable display key from the entry. This key is NOT the raw ref — it
-// is derived from the entry's identity so it stays stable across projections
-// for the same entry while never exposing the raw wire ref to the renderer.
-function displayKey(entry: RosterEntry): string {
-  return `row:${entry.ref}`;
-}
-
-// Project a single entry to a display-safe row.
-function projectRow(entry: RosterEntry): LiveRosterRow {
-  return {
-    key: displayKey(entry),
-    title: entry.title,
-    project: entry.project,
-    summary: entry.status,
-    updatedLabel: formatUpdated(entry.updatedAt),
-    tone: attentionToTone(entry.attention),
-    connectedWorkCount: connectedWorkCount(entry),
-  };
+// Deterministic non-cryptographic hash (djb2) of a string, returned as a
+// base36 string. This produces a short, opaque, stable key from the raw ref
+// without revealing the ref itself or any reversible prefix. The same input
+// always produces the same output across instances; different inputs produce
+// different outputs with negligible collision probability for typical refs.
+function opaqueKey(ref: string): string {
+  let hash = 5381;
+  for (let i = 0; i < ref.length; i++) {
+    hash = ((hash << 5) + hash + ref.charCodeAt(i)) | 0;
+  }
+  return `k${(hash >>> 0).toString(36)}`;
 }
 
 // Format the updatedAt timestamp as a relative-ish label. This is a
@@ -72,6 +70,19 @@ function formatUpdated(updatedAt: number): string {
   const hours = date.getHours().toString().padStart(2, "0");
   const minutes = date.getMinutes().toString().padStart(2, "0");
   return `${hours}:${minutes}`;
+}
+
+// Project a single entry to a display-safe row.
+function projectRow(entry: RosterEntry): LiveRosterRow {
+  return {
+    key: opaqueKey(entry.ref),
+    title: entry.title,
+    project: entry.project,
+    summary: entry.status,
+    updatedLabel: formatUpdated(entry.updatedAt),
+    tone: attentionToTone(entry.attention),
+    connectedWorkCount: connectedWorkCount(entry),
+  };
 }
 
 // Derive the roster view status from the store flags.
@@ -96,9 +107,9 @@ function filterByQuery(
   );
 }
 
-export function projectLiveRoster(
-  input: RosterProjectionInput,
-): ProjectedRoster {
+// Core projection logic shared by the standalone function and the projector
+// instance.
+function project(input: RosterProjectionInput): ProjectedRoster {
   const status = deriveStatus(input);
   const filtered = filterByQuery(input.entries, input.searchTerm);
 
@@ -143,4 +154,26 @@ export function projectLiveRoster(
   };
 
   return { view, refsByKey };
+}
+
+// Standalone projection function (backward-compatible with existing callers).
+export function projectLiveRoster(
+  input: RosterProjectionInput,
+): ProjectedRoster {
+  return project(input);
+}
+
+// A projector instance with a .project() method. The opaque key derivation is
+// deterministic (pure function of the ref) so keys are stable across
+// independent instances — no instance-local random state.
+export interface RosterProjector {
+  project(input: RosterProjectionInput): ProjectedRoster;
+}
+
+export function createRosterProjector(): RosterProjector {
+  return {
+    project(input) {
+      return project(input);
+    },
+  };
 }
