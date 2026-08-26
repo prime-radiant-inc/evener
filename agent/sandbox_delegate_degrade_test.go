@@ -172,6 +172,55 @@ func TestDegradedReadOnlyDelegateFileToolsRefuseWrites(t *testing.T) {
 	}
 }
 
+// TestDegradedDelegateSpawnFailureDisposesItsScratch: the degraded box provisions
+// a scratch dir like any other per-delegate sandbox, so a spawn that fails after
+// provisioning must dispose it. The leak is not just a stray directory: the
+// scratch holds a flock lease until it is retained or cleaned, and the crashed-
+// scratch sweeper only reclaims candidates whose lease it can acquire — so a
+// leaked one survives the sweeper for the daemon's whole uptime. Driven through
+// the real abort path (a nil child client fails NewSession after
+// prepareSubagentEnvironment), not by calling DisposeSandboxScratch directly. Not
+// parallel: it isolates TMPDIR to observe the scratch base.
+func TestDegradedDelegateSpawnFailureDisposesItsScratch(t *testing.T) {
+	isolated := t.TempDir()
+	t.Setenv("TMPDIR", isolated)
+
+	lane, home := sbxLane(t)
+	client := llm.NewClient()
+	client.Register(&fakeAdapter{name: "openai"})
+	s := newSession(t, withClient(client), withConfig(SessionConfig{
+		StateDir:         packageFixtureTempDir(t, "sbx-degrade-leak-*"),
+		MaxSubagentDepth: 1,
+		NoProjectPrompts: true,
+		testOnly: testConfig{
+			skipGitSnapshot:     true,
+			minimalSystemPrompt: true,
+			noSyncJobStore:      true,
+			sandboxProber:       sandbox.FakeProber{Facts: sbxNoBackendFacts(home)},
+			childClientFactory:  func() *llm.Client { return nil },
+		},
+	}))
+	if before := sandboxScratchDirs(t, isolated); len(before) != 0 {
+		t.Fatalf("isolated tmp base must start free of sandbox scratch, got %v", before)
+	}
+
+	policy, err := s.readOnlyDelegateSandbox()
+	if err != nil {
+		t.Fatalf("readOnlyDelegateSandbox: %v", err)
+	}
+	ctx := context.WithValue(context.Background(), ctxDelegationAllowance, 0)
+	ctx = context.WithValue(ctx, ctxDelegateSandboxPolicy, policy)
+	prepared, err := s.prepareSubagentRun(ctx, "child task", "", lane, 0, "", "", nil, nil)
+	if err == nil {
+		releasePreparedTreeSlot(prepared)
+		prepared.sub.sess.Close()
+		t.Fatal("expected NewSession to fail with a nil child client")
+	}
+	if left := sandboxScratchDirs(t, isolated); len(left) != 0 {
+		t.Errorf("degraded delegate scratch leaked on spawn failure (with its lease): %v", left)
+	}
+}
+
 // TestSandboxPromptLineDisclosesDegradedReadOnlyDelegate: silent degradation is
 // its own bug, so the delegate's own prompt must say exactly where its read-only
 // boundary holds — enforced for the file tools, advisory for the shell — and name
@@ -200,6 +249,12 @@ func TestSandboxPromptLineDisclosesDegradedReadOnlyDelegate(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("degraded sandbox line must mention %q: %q", want, got)
 		}
+	}
+	// The one thing the file-tool layer takes away that a plain-off delegate had:
+	// it will not traverse a symlinked directory. A model that hits that denial
+	// must be able to act on it instead of retrying the same path.
+	if !strings.Contains(got, "symlink") {
+		t.Errorf("degraded sandbox line must disclose the symlink-traversal refusal: %q", got)
 	}
 	scratch := local.SessionScratchDir()
 	if scratch == "" {
@@ -245,6 +300,44 @@ func TestCreateExplorerDelegateDegradesInsteadOfRefusing(t *testing.T) {
 	}
 }
 
+// TestDegradedAdvisoryPromisesOnlyWhatThisHostDelivers: the advisory's
+// remediation has to be true on the host it fires on. A worktree lane changes
+// WHERE the delegate works, not what confines it — an isolated delegate takes the
+// same unwrapped path, so its shell can still write any absolute path — so the
+// advisory may claim a separate checkout and must not claim a boundary.
+func TestDegradedAdvisoryPromisesOnlyWhatThisHostDelivers(t *testing.T) {
+	lane, home := sbxLane(t)
+	parent := sbxDelegateSession(t, sbxNoBackendFacts(home))
+	sbxSetParentEnv(t, parent, lane)
+
+	policy, err := parent.readOnlyDelegateSandbox()
+	if err != nil {
+		t.Fatalf("readOnlyDelegateSandbox: %v", err)
+	}
+	// The isolation path (an explicit working dir) is what the advisory would be
+	// pointing at. It confines nothing more: no backend, so no kernel wrapper.
+	isolated, _, err := parent.prepareSubagentEnvironment(lane, policy)
+	if err != nil {
+		t.Fatalf("prepareSubagentEnvironment(isolated): %v", err)
+	}
+	le, ok := isolated.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("isolated env must be a LocalExecutionEnvironment")
+	}
+	t.Cleanup(le.DisposeSandboxScratch)
+	if le.KernelWrapper() != nil {
+		t.Fatal("this host has no backend; an isolated delegate must be no more confined than a shared one")
+	}
+
+	advisory := degradedReadOnlyDelegateAdvisory(policy)
+	if strings.Contains(advisory, "hard boundary") {
+		t.Errorf("the advisory must not offer a boundary this host cannot enforce: %q", advisory)
+	}
+	if !strings.Contains(advisory, "separate checkout") {
+		t.Errorf("the advisory must claim what a worktree lane actually gives — a separate checkout: %q", advisory)
+	}
+}
+
 // TestCreateExplorerDelegateEnforcedHostSaysNothing: the disclosure is a report
 // of a real gap, not decoration. Where the host CAN enforce the read-only box,
 // the spawn carries no such warning.
@@ -262,6 +355,54 @@ func TestCreateExplorerDelegateEnforcedHostSaysNothing(t *testing.T) {
 		if strings.Contains(warning, "no sandbox backend") {
 			t.Errorf("an enforced read-only delegate must not claim a degraded boundary: %q", warning)
 		}
+	}
+}
+
+// TestDegradedParentPropagatesItsWriteBlock: WriteBlocked is a FLOOR, built so a
+// child can never drop it. A degraded parent's block is real — its file tools deny
+// every workspace write — so it must reach its own children too, both as the
+// floor an explicit child request is checked against and as the box a restoring
+// child inherits. Reading that axis through the OS-sandbox predicate reported
+// false and silently dropped the floor.
+func TestDegradedParentPropagatesItsWriteBlock(t *testing.T) {
+	_, home := sbxLane(t)
+	parent := sbxDelegateSession(t, sbxNoBackendFacts(home))
+	policy, err := parent.readOnlyDelegateSandbox()
+	if err != nil {
+		t.Fatalf("readOnlyDelegateSandbox: %v", err)
+	}
+	env, _, err := parent.prepareSubagentEnvironment("", policy)
+	if err != nil {
+		t.Fatalf("prepareSubagentEnvironment: %v", err)
+	}
+	le, ok := env.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("degraded env must be a LocalExecutionEnvironment")
+	}
+	t.Cleanup(le.DisposeSandboxScratch)
+
+	mode, network, writeBlocked := parentSandboxFloorForEnv(le)
+	if !writeBlocked {
+		t.Errorf("a degraded parent must report its write block to its children, got mode=%v net=%v blocked=%v", mode, network, writeBlocked)
+	}
+
+	// The floor is what an explicitly write-capable child request is refused
+	// against, and what a child with no request of its own inherits.
+	if _, err := applyWriteBlockedFloor(writeBlocked, sandbox.ModeWorkspaceWrite.String(),
+		&sandbox.SandboxPolicy{Mode: sandbox.ModeWorkspaceWrite}); err == nil {
+		t.Error("a write-capable child under a write-blocked parent must be refused")
+	}
+	sub := sbxDelegateSession(t, sbxNoBackendFacts(home))
+	sub.mu.Lock()
+	sub.env = le
+	sub.mu.Unlock()
+	descriptor := delegatestore.Descriptor{ToolNameCeiling: []string{"read_file", "shell"}}
+	inherited, err := sub.restoreDelegateSandboxFloor(&descriptor)
+	if err != nil {
+		t.Fatalf("a child restoring under a degraded parent must inherit its box, not fail: %v", err)
+	}
+	if inherited == nil || !inherited.WriteBlocked {
+		t.Fatalf("restored child floor = %+v, want the parent's write block", inherited)
 	}
 }
 

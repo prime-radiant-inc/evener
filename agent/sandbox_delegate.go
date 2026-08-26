@@ -181,8 +181,15 @@ func (s *Session) parentSandboxModeNet() (sandbox.Mode, bool) {
 	return mode, network
 }
 
+// The gate is FileToolConfined, not Enforced: WriteBlocked is a FLOOR a child must
+// never drop, and a degraded parent's block is real — its file tools deny every
+// workspace write — even though no OS sandbox stands behind it. Read through the
+// OS predicate, such a parent reported an unblocked floor and its children could
+// ask for writes it does not have itself. The MODE it reports is still off, which
+// is exactly right: off is what the no-escalation comparison should see from a
+// parent with no OS box.
 func parentSandboxFloorForEnv(env execenv.ExecutionEnvironment) (sandbox.Mode, bool, bool) {
-	if le, ok := env.(*execenv.LocalExecutionEnvironment); ok && le.Sandbox != nil && le.Sandbox.Enforced() {
+	if le, ok := env.(*execenv.LocalExecutionEnvironment); ok && le.Sandbox != nil && le.Sandbox.FileToolConfined() {
 		return le.Sandbox.Mode, le.Sandbox.Network, le.Sandbox.WriteBlocked
 	}
 	return sandbox.ModeOff, true, false
@@ -207,10 +214,13 @@ func (s *Session) parentSandboxFloor() (sandbox.Mode, bool, bool) {
 // off rather than refusing: choosing a read-only agent type is not a request for
 // an OS sandbox, and coupling the two made every explorer delegate fail outright
 // on an ordinary unprivileged container — the model usually abandoned delegation
-// rather than retrying. The degraded box still removes every file-tool write root
-// (strictly stronger than the advisory scope that let a delegate delete its
-// parent's deliverable), leaving only the shell unconfined; both the delegate and
-// its parent are told so. A caller that EXPLICITLY asks for sandbox="read-only"
+// rather than retrying. The degraded box removes every file-tool write root and
+// masks the credential denylist, both of which the advisory scope that let a
+// delegate delete its parent's deliverable had neither of; only the shell is left
+// unconfined. It is not a pure superset of that scope: the file-tool layer also
+// refuses to traverse a symlinked directory, which a plain-off delegate could, so
+// the delegate's prompt says so. Both the delegate and its parent are told what
+// holds and what does not. A caller that EXPLICITLY asks for sandbox="read-only"
 // gets no such degrade — see resolveReadOnlyDelegateSandboxRequest.
 func (s *Session) readOnlyDelegateSandbox() (*sandbox.SandboxPolicy, error) {
 	parentMode, parentNetwork := s.parentSandboxModeNet()
@@ -240,11 +250,16 @@ func (s *Session) readOnlyDelegateSandbox() (*sandbox.SandboxPolicy, error) {
 // advisory uses — metadata for the caller's next decision, not delegate output.
 // Empty for every other policy — only the degraded box is write-blocked with no
 // OS sandbox behind it — so an enforced delegate's result is unchanged.
+// The remediation it offers claims only what this host can deliver. A worktree
+// lane is NOT a boundary here — an isolated delegate takes the same unwrapped
+// path, so its shell can still write any absolute path — but it does put the
+// delegate's own directory somewhere an ACCIDENTAL write lands harmlessly, which
+// is the same collision-avoidance claim the shared-workspace advisory makes.
 func degradedReadOnlyDelegateAdvisory(policy *sandbox.SandboxPolicy) string {
 	if policy == nil || policy.Mode != sandbox.ModeOff || !policy.WriteBlocked {
 		return ""
 	}
-	return "this delegate's read-only boundary is enforced for its file tools (every write_file/edit_file outside its own scratch dir is denied) but ADVISORY for its shell: no sandbox backend is available on this host, so a shell command it runs can still write your workspace. Its prompt says so too. Use isolation=\"worktree\" if you need a hard boundary."
+	return "this delegate's read-only boundary is enforced for its file tools (every write_file/edit_file outside its own scratch dir is denied) but ADVISORY for its shell: no sandbox backend is available on this host, so a shell command it runs can still write your workspace. Its prompt says so too. No sandbox mode can harden this here; isolation=\"worktree\" only gives it a separate checkout, so a stray write lands off your tree rather than being blocked."
 }
 
 // resolveReadOnlyDelegateSandboxRequest applies the structured read-only role's
@@ -363,9 +378,13 @@ func (s *Session) restoreDelegateSandboxFloor(descriptor *delegatestore.Descript
 			return nil, fmt.Errorf("read-only delegate sandbox: %w", err)
 		}
 	}
+	// Paired with parentSandboxFloorForEnv above: whatever reported the write block
+	// is what the child inherits, so this reads the same predicate. Requiring an OS
+	// sandbox here would make every child of a DEGRADED parent fail to restore, the
+	// moment that parent started reporting the block it really enforces.
 	if policy == nil && parentWriteBlocked {
 		local, ok := s.currentEnv().(*execenv.LocalExecutionEnvironment)
-		if !ok || local.Sandbox == nil || !local.Sandbox.Enforced() {
+		if !ok || local.Sandbox == nil || !local.Sandbox.FileToolConfined() {
 			return nil, errors.New("invalid_request: current parent write-blocked sandbox is unavailable during delegate restore")
 		}
 		inherited := local.Sandbox.Inputs()

@@ -2,6 +2,7 @@ package execenv
 
 import (
 	"context"
+	"fmt"
 	"io"
 	"os"
 	"os/exec"
@@ -349,66 +350,130 @@ func TestEnableSandboxWriteBlockedOffConfinesFileTools(t *testing.T) {
 	}
 }
 
-// TestSandboxInvocationGrantWidensWriteBlockedOffEnv: a human approving one
-// denied path must work the same way for a degraded read-only delegate as for an
-// enforced one — the escalation grant widens the file-tool layer that a
-// write-blocked off policy really does have. The short-lived clone must also
-// allocate no scratch directory of its own: it owns nothing, so a second dir
-// would leak on every approval.
-func TestSandboxInvocationGrantWidensWriteBlockedOffEnv(t *testing.T) {
+// TestWriteBlockedOffMasksCredentialPaths: the degraded box's reads are "anywhere
+// MINUS the denylist", the same set every confining mode masks. Without the
+// denylist a read-only delegate — the one shape that runs with no shell at all,
+// so the file tools are its whole surface — would read ~/.ssh and evener's own
+// environment out of /proc.
+func TestWriteBlockedOffMasksCredentialPaths(t *testing.T) {
 	home := realTempDir(t)
 	worktree := filepath.Join(home, "project")
+	if err := os.MkdirAll(filepath.Join(home, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	tmpBase := realTempDir(t)
-	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeOff, WriteBlocked: true},
-		sandbox.HostFacts{OS: "linux", Home: home}, worktree)
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+	secret := filepath.Join(home, ".ssh", "id_rsa")
+	if err := os.WriteFile(secret, []byte("PRIVATE KEY\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	env := NewLocalExecutionEnvironment(worktree)
-	env.sandboxTmpBase = tmpBase
-	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
-	if err := env.EnableSandbox(&rp); err != nil {
-		t.Fatalf("EnableSandbox: %v", err)
-	}
-	approved := filepath.Join(worktree, "approved.txt")
-	if _, err := env.WriteFile(approved, "denied without approval"); err == nil {
-		t.Fatal("the ungranted env must deny the write")
-	}
-	scratchBefore := scratchDirCount(t, tmpBase)
+	env := writeBlockedOffEnv(t, home, worktree)
 
-	granted := env.WithSandboxInvocationGrant(approved)
-	if granted == env {
-		t.Fatal("a write-blocked env must produce a grant clone")
+	_, err := env.ReadFile(secret, nil, nil)
+	mustDenied(t, err, "read_file of a credential path under a degraded read-only delegate")
+	if _, err := env.ReadFile(fmt.Sprintf("/proc/%d/environ", os.Getpid()), nil, nil); err == nil {
+		t.Error("read_file of evener's own /proc environ must be denied (it holds the provider API key)")
 	}
-	if _, err := granted.WriteFile(approved, "human approved this one\n"); err != nil {
-		t.Fatalf("the approved path must be writable through the grant: %v", err)
+	// A non-masked path outside the worktree still reads: the mode is anywhere
+	// MINUS the denylist, not worktree-only.
+	sibling := filepath.Join(home, "notes.txt")
+	if err := os.WriteFile(sibling, []byte("ordinary\n"), 0o644); err != nil {
+		t.Fatal(err)
 	}
-	if got, err := os.ReadFile(approved); err != nil || string(got) != "human approved this one\n" {
-		t.Fatalf("granted write did not land: got %q err %v", got, err)
-	}
-	if _, err := granted.WriteFile(filepath.Join(worktree, "sibling.txt"), "not approved"); err == nil {
-		t.Error("the grant must widen exactly one leaf, not the directory")
-	}
-	if after := scratchDirCount(t, tmpBase); after != scratchBefore {
-		t.Errorf("the grant clone allocated %d extra scratch dirs; it owns none and would leak them", after-scratchBefore)
+	if got, err := env.ReadFile(sibling, nil, nil); err != nil || !strings.Contains(got, "ordinary") {
+		t.Fatalf("an ordinary out-of-worktree read must still work: got %q err %v", got, err)
 	}
 }
 
-// scratchDirCount counts the per-session scratch dirs directly under base.
-func scratchDirCount(t *testing.T, base string) int {
+// TestReadsThroughSymlinkedWorkspaceRoot: a workspace reached through a symlinked
+// ancestor (a bind-mounted link, a symlinked checkout, macOS /tmp) must stay
+// readable. The file-tool layer anchors an in-worktree read at the worktree's own
+// fd, which tolerates that ancestor while still refusing a symlink component
+// INSIDE the worktree. Both shapes with no write root are covered: the degraded
+// box, and the enforced read-only box that has always had the same gap.
+//
+// The root is deliberately NOT canonicalized here — resolving it in the test is
+// what hid this in the first place.
+func TestReadsThroughSymlinkedWorkspaceRoot(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		build func(t *testing.T, home, worktree string) *LocalExecutionEnvironment
+	}{
+		{name: "degraded", build: writeBlockedOffEnv},
+		{name: "enforced-read-only", build: func(t *testing.T, home, worktree string) *LocalExecutionEnvironment {
+			t.Helper()
+			env := NewLocalExecutionEnvironment(worktree)
+			env.Sandbox = resolvePolicy(t, sandbox.ModeReadOnly, home, worktree)
+			t.Cleanup(env.Cleanup)
+			return env
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home := realTempDir(t)
+			target := filepath.Join(home, "real")
+			if err := os.MkdirAll(filepath.Join(target, "sub"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			// The session's working directory IS the symlink.
+			worktree := filepath.Join(home, "link")
+			if err := os.Symlink(target, worktree); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(target, "README.md"), []byte("hello\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(target, "sub", "deep.txt"), []byte("nested\n"), 0o644); err != nil {
+				t.Fatal(err)
+			}
+			env := tc.build(t, home, worktree)
+
+			got, err := env.ReadFile(filepath.Join(worktree, "README.md"), nil, nil)
+			if err != nil || !strings.Contains(got, "hello") {
+				t.Fatalf("read through a symlinked workspace root: got %q err %v", got, err)
+			}
+			if got, err := env.ReadFile(filepath.Join(worktree, "sub", "deep.txt"), nil, nil); err != nil || !strings.Contains(got, "nested") {
+				t.Fatalf("nested read through a symlinked workspace root: got %q err %v", got, err)
+			}
+			entries, err := env.ListDirectory(worktree, 1)
+			if err != nil || len(entries) == 0 {
+				t.Fatalf("list_dir through a symlinked workspace root: %d entries, err %v", len(entries), err)
+			}
+			matches, err := env.Glob(context.Background(), "*.md", worktree)
+			if err != nil || len(matches) == 0 {
+				t.Fatalf("glob through a symlinked workspace root: %v err %v", matches, err)
+			}
+
+			// The anchor tolerates the ancestor only. A write is still denied, and a
+			// symlink INSIDE the worktree is still refused (the same refusal every
+			// enforced mode makes).
+			if _, err := env.WriteFile(filepath.Join(worktree, "new.txt"), "nope"); err == nil {
+				t.Error("the read anchor must not make the workspace writable")
+			}
+			if err := os.Symlink(filepath.Join(target, "sub"), filepath.Join(target, "inner")); err != nil {
+				t.Fatal(err)
+			}
+			if _, err := env.ReadFile(filepath.Join(worktree, "inner", "deep.txt"), nil, nil); err == nil {
+				t.Error("a symlink component inside the worktree must still be refused")
+			}
+		})
+	}
+}
+
+// writeBlockedOffEnv builds the degraded read-only delegate's environment through
+// the real EnableSandbox path: a resolved write-blocked off policy on a host with
+// no sandbox backend.
+func writeBlockedOffEnv(t *testing.T, home, worktree string) *LocalExecutionEnvironment {
 	t.Helper()
-	entries, err := os.ReadDir(base)
+	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeOff, WriteBlocked: true},
+		sandbox.HostFacts{OS: "linux", Home: home}, worktree)
 	if err != nil {
-		t.Fatalf("read scratch base %q: %v", base, err)
+		t.Fatalf("Resolve(write-blocked off): %v", err)
 	}
-	n := 0
-	for _, e := range entries {
-		if e.IsDir() && strings.HasPrefix(e.Name(), "evener-sandbox-") {
-			n++
-		}
+	env := NewLocalExecutionEnvironment(worktree)
+	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
+	if err := env.EnableSandbox(&rp); err != nil {
+		t.Fatalf("EnableSandbox(write-blocked off): %v", err)
 	}
-	return n
+	return env
 }

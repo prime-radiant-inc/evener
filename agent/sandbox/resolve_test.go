@@ -500,34 +500,26 @@ func TestInfraReadRootsMustBeAbsolute(t *testing.T) {
 // TestResolveWriteBlockedOffConfinesFileTools pins the degraded read-only
 // delegate scope: on a host with no sandbox backend the derived read-only box
 // resolves as write-blocked OFF instead of refusing, so the delegate keeps its
-// capability while the in-process file tools carry the whole write boundary. It
-// keeps reads open and grants no write root in either layer. Enforced() stays
-// false — there is no OS sandbox — while FileToolConfined() is true, the separate
-// question the file-tool layer asks.
+// capability while the in-process file tools carry the whole write boundary.
+// Enforced() stays false — there is no OS sandbox — while FileToolConfined() is
+// true, the separate question the file-tool layer asks.
 //
-// Every host is exercised because off resolves on every host by contract (it
-// consults no backend), and adding a write block must not break that totality.
-// WHERE the degrade may be derived is a separate decision the caller makes with
-// FileToolEnforceable — a Windows delegate keeps the refusal.
+// The grants must be the ones the file tools will actually enforce, not a
+// hand-built shell of them: the same credential/pseudo-fs denylist every
+// sandboxed mode masks, the worktree as a read anchor, and no write root at all.
 func TestResolveWriteBlockedOffConfinesFileTools(t *testing.T) {
 	t.Parallel()
-	dir := clean(t.TempDir())
-	for _, host := range []HostFacts{bareLinuxHost(), darwinBareHost(), windowsHost(), bwrapHost()} {
-		rp := mustResolve(t, SandboxPolicy{Mode: ModeOff, WriteBlocked: true}, host, dir)
+	main := mainRepo(t)
+	for _, host := range []HostFacts{bareLinuxHost(), darwinBareHost(), bwrapHost()} {
+		rp := mustResolve(t, SandboxPolicy{Mode: ModeOff, WriteBlocked: true}, host, main)
 		if rp.Mode != ModeOff || rp.Backend != BackendNone {
 			t.Errorf("write-blocked off on %s: Mode=%v Backend=%v, want off/none", host.OS, rp.Mode, rp.Backend)
 		}
 		if rp.Enforced() {
 			t.Errorf("write-blocked off on %s reports an OS sandbox in force", host.OS)
 		}
-		if !rp.FileToolConfined() {
-			t.Errorf("write-blocked off on %s must confine the file tools", host.OS)
-		}
-		if !rp.WriteBlocked {
-			t.Errorf("write-blocked off on %s dropped the write block", host.OS)
-		}
-		if rp.FileTool.Read != ReadAnywhere {
-			t.Errorf("write-blocked off on %s: FileTool.Read=%v, want anywhere", host.OS, rp.FileTool.Read)
+		if !rp.FileToolConfined() || !rp.WriteBlocked {
+			t.Errorf("write-blocked off on %s lost its file-tool confinement: confined=%v blocked=%v", host.OS, rp.FileToolConfined(), rp.WriteBlocked)
 		}
 		if len(rp.FileTool.WriteRoots) != 0 || len(rp.Spawned.WriteRoots) != 0 {
 			t.Errorf("write-blocked off on %s granted a write root: file=%v spawned=%v", host.OS, rp.FileTool.WriteRoots, rp.Spawned.WriteRoots)
@@ -535,6 +527,57 @@ func TestResolveWriteBlockedOffConfinesFileTools(t *testing.T) {
 		if !rp.Network {
 			t.Errorf("write-blocked off on %s denied egress; off applies no network confinement", host.OS)
 		}
+		// The denylist is the whole point of "reads anywhere MINUS the masked set".
+		// Without it the file tools would read ~/.ssh and /proc/<evener-pid>/environ,
+		// which every other confining mode denies.
+		assertMaskedContainsDefaults(t, rp, host.Home)
+		assertNoRootIsMasked(t, rp)
+		// The worktree is the read ANCHOR (see openRead): without it a workspace
+		// reached through a symlinked ancestor is unreadable.
+		if !slices.Contains(rp.FileTool.ReadRoots, main) {
+			t.Errorf("write-blocked off on %s: FileTool.ReadRoots=%v, want the worktree %q as a read anchor", host.OS, rp.FileTool.ReadRoots, main)
+		}
+		if rp.Git.WorktreeRoot != main {
+			t.Errorf("write-blocked off on %s did not resolve its git layout: WorktreeRoot=%q, want %q", host.OS, rp.Git.WorktreeRoot, main)
+		}
+	}
+}
+
+// TestResolveWriteBlockedOffNeedsAnAbsoluteHome: the write-blocked box leans
+// entirely on the file-tool denylist, which is home-relative. A non-absolute home
+// would join to relative entries the enforcement layer never matches — a silent
+// unmask of every credential directory — so it refuses, exactly as every
+// sandboxed mode does. Plain off is unaffected: it masks nothing and confines
+// nothing.
+func TestResolveWriteBlockedOffNeedsAnAbsoluteHome(t *testing.T) {
+	t.Parallel()
+	dir := clean(t.TempDir())
+	homeless := HostFacts{OS: "linux", Home: ""}
+	ref := mustRefuse(t, SandboxPolicy{Mode: ModeOff, WriteBlocked: true}, homeless, dir, "")
+	if !strings.Contains(ref.Reason, "credential denylist") {
+		t.Errorf("refusal must name the unmask it prevents, got: %s", ref.Reason)
+	}
+	if rp := mustResolve(t, SandboxPolicy{Mode: ModeOff}, homeless, dir); rp.FileToolConfined() {
+		t.Error("plain off must still resolve on a host with no home; it confines nothing")
+	}
+}
+
+// TestResolveWriteBlockedOffRefusesWhereFileToolsCannotEnforce: the degraded box
+// has no backend behind it, so the in-process file tools ARE the enforcement. On a
+// platform whose file-tool primitives do not exist, every operation would fail
+// closed instead — a delegate with broken file tools rather than a confined one.
+// Refuse at the resolver so no caller can produce that env, whatever it asks for.
+func TestResolveWriteBlockedOffRefusesWhereFileToolsCannotEnforce(t *testing.T) {
+	t.Parallel()
+	dir := clean(t.TempDir())
+	ref := mustRefuse(t, SandboxPolicy{Mode: ModeOff, WriteBlocked: true}, windowsHost(), dir, "")
+	if !strings.Contains(ref.Reason, "file tools") || !strings.Contains(ref.Reason, windowsHost().OS) {
+		t.Errorf("refusal must say the file tools cannot enforce on this host, got: %s", ref.Reason)
+	}
+	// Plain off still resolves everywhere, including Windows: it is today's
+	// behavior with no containment and no enforcement to be missing.
+	if rp := mustResolve(t, SandboxPolicy{Mode: ModeOff}, windowsHost(), dir); rp.FileToolConfined() {
+		t.Error("plain off on windows must stay unconfined, not refuse")
 	}
 }
 

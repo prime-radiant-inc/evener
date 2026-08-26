@@ -35,13 +35,20 @@ On a host where no backend can enforce that box — an ordinary unprivileged Lin
 container without usable bubblewrap — the derived scope **degrades rather than
 refusing the spawn**. The delegate runs with no kernel wrapper; its file tools
 keep the identical write boundary (every `write_file`/`edit_file` outside its own
-scratch dir is denied) and its shell is unconfined. That is strictly stronger than
-the advisory scope this floor replaced, and it keeps the capability instead of
-deleting it: coupling the scope to an OS sandbox made every `explorer` delegate
-fail outright on such a host, and the model usually abandoned delegation rather
-than retrying. The gap is disclosed in both directions — the delegate's own
-environment section says which half is enforced and which half is on its honour,
-and the spawn result the parent reads carries the same warning.
+scratch dir is denied) and mask the same credential denylist, and its shell is
+unconfined. That keeps the capability instead of deleting it: coupling the scope
+to an OS sandbox made every `explorer` delegate fail outright on such a host, and
+the model usually abandoned delegation rather than retrying.
+
+It is not a pure superset of the advisory scope this floor replaced. Routing the
+file tools through the enforcement layer also means they refuse to traverse a
+**symlinked directory**, which an unsandboxed delegate could — the same refusal
+every enforced mode makes, now paid by a delegate that previously had no sandbox
+at all. A workspace whose ROOT is reached through a symlink is unaffected: reads
+anchor at the worktree, which tolerates a symlinked ancestor. Everything here is
+disclosed in both directions — the delegate's own environment section says which
+half is enforced, which half is on its honour, and what its file tools will not
+traverse, and the spawn result the parent reads carries the same warning.
 
 An explicit delegate `sandbox` argument does **not** bypass the structured
 read-only floor, and does **not** get the degrade either — a caller that states

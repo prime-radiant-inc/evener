@@ -265,7 +265,7 @@ func sandboxPromptLine(env execenv.ExecutionEnvironment) string {
 		line += ". Scratch directory (read-write even in this sandbox; also $" +
 			envvars.TmpDir.Name + " / $" + envvars.EVENERScratchDir.Name + " for shell commands): " + scratch
 		if le.Sandbox.Mode == sandbox.ModeReadOnly || le.Sandbox.WriteBlocked {
-			line += ". Read-only delegates may write only inside this scratch directory; all other writes are denied."
+			line += ". Read-only delegates may write only inside this scratch directory; all other writes are denied"
 		}
 		line += ". In your final human-readable handoff, report this absolute scratch path and the absolute paths of any artifacts your parent should retain; cleanup is manual."
 	}
@@ -282,7 +282,7 @@ func sandboxPromptLine(env execenv.ExecutionEnvironment) string {
 // parent's deliverable.
 func sandboxPromptBoundary(rp *sandbox.ResolvedPolicy) string {
 	if !rp.Enforced() {
-		return "read-only for your file tools — fixed for this session. This host has no sandbox backend, so the boundary is ENFORCED for your file tools (write_file, edit_file and the rest are denied) and ADVISORY for your shell: nothing stops a shell command from writing, so do not write outside the scratch directory"
+		return "read-only for your file tools — fixed for this session. This host has no sandbox backend, so the boundary is ENFORCED for your file tools (write_file, edit_file and the rest are denied) and ADVISORY for your shell: nothing stops a shell command from writing, so do not write outside the scratch directory. Your file tools will not traverse a symlinked directory either; if one is refused, name the real path instead of retrying"
 	}
 	netStr := "on"
 	if !rp.Network {
