@@ -189,3 +189,69 @@ func TestLegacyRepresentationBuildFailureIsExplicitAndNotCached(t *testing.T) {
 		t.Fatal("last good entry was poisoned: ", err)
 	}
 }
+
+func TestLegacyRepresentationColdFailureRetriesSameKey(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	service := newTestNavigationService(t, source)
+	var builds atomic.Int32
+	build := func(navigationBuildInputs) (any, error) {
+		if builds.Add(1) == 1 {
+			return nil, errors.New("cold failure")
+		}
+		return map[string]string{"ok": "yes"}, nil
+	}
+	if _, err := service.LegacyRepresentation(t.Context(), "retry", build); err == nil {
+		t.Fatal("cold failure returned success")
+	}
+	if _, err := service.LegacyRepresentation(t.Context(), "retry", build); err != nil {
+		t.Fatal("retry failed: ", err)
+	}
+	if builds.Load() != 2 {
+		t.Fatalf("builds=%d, want 2", builds.Load())
+	}
+}
+
+func TestLegacyRepresentationEncodeFailureRetriesSameKey(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	service := newTestNavigationService(t, source)
+	var builds atomic.Int32
+	build := func(navigationBuildInputs) (any, error) {
+		if builds.Add(1) == 1 {
+			return make(chan int), nil // json cannot encode channels
+		}
+		return map[string]string{"ok": "yes"}, nil
+	}
+	if _, err := service.LegacyRepresentation(t.Context(), "encode-retry", build); err == nil {
+		t.Fatal("encode failure returned success")
+	}
+	if _, err := service.LegacyRepresentation(t.Context(), "encode-retry", build); err != nil {
+		t.Fatal("encode retry failed: ", err)
+	}
+	if builds.Load() != 2 {
+		t.Fatalf("builds=%d, want 2", builds.Load())
+	}
+}
+
+func TestLegacyRepresentationFreezesGeneratedAtPerRevision(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	service := newTestNavigationService(t, source)
+	build := func(inputs navigationBuildInputs) (any, error) {
+		return struct {
+			GeneratedAt time.Time `json:"generated_at"`
+			Title       string    `json:"title"`
+		}{hubNavigationNow(), inputs.Tree.Projects[0].Current[0].Title}, nil
+	}
+	first, err := service.LegacyRepresentation(t.Context(), "frozen", build)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := service.LegacyRepresentation(t.Context(), "frozen", build)
+	if err != nil || string(first.JSON) != string(second.JSON) {
+		t.Fatalf("cached generated_at changed: %v", err)
+	}
+	source.changeTitle("new revision")
+	third, err := service.LegacyRepresentation(t.Context(), "frozen", build)
+	if err != nil || string(first.JSON) == string(third.JSON) {
+		t.Fatalf("new revision did not change frozen representation: %v", err)
+	}
+}
