@@ -376,7 +376,7 @@ describe("createNavigationController", () => {
     controller.dispose();
   });
 
-  it("records Voice End without double-popping on its following browser Back", () => {
+  it("synchronizes Voice End immediately so the first following Back reaches Sessions", async () => {
     const store = createStore();
     const controller = createNavigationController(store, window);
     controller.dispatch({
@@ -384,7 +384,29 @@ describe("createNavigationController", () => {
       sessionId: "session-native-client",
     });
     controller.dispatch({
-      type: "openWork",
+      type: "openVoice",
+      sessionId: "session-native-client",
+    });
+
+    const synchronized = nextPopState();
+    controller.dispatch({ type: "endVoice" });
+    expect(store.getState().voice.ended).toBe(true);
+    expect(store.getState().route.kind).toBe("conversation");
+    await synchronized;
+    expect(window.history.state).toMatchObject({ depth: 1 });
+
+    const poppedConversation = nextPopState();
+    controller.dispatch({ type: "goBack" });
+    await poppedConversation;
+    expect(store.getState().route).toEqual({ kind: "root", tab: "sessions" });
+    controller.dispose();
+  });
+
+  it("serializes an immediate forward action until Voice End history synchronization completes", async () => {
+    const store = createStore();
+    const controller = createNavigationController(store, window);
+    controller.dispatch({
+      type: "openSession",
       sessionId: "session-native-client",
     });
     controller.dispatch({
@@ -392,17 +414,22 @@ describe("createNavigationController", () => {
       sessionId: "session-native-client",
     });
 
+    const synchronized = nextPopState();
     controller.dispatch({ type: "endVoice" });
-    expect(store.getState().voice.ended).toBe(true);
-    expect(store.getState().route.kind).toBe("work");
-    const back = vi.spyOn(window.history, "back").mockImplementation(() => {});
-    controller.dispatch({ type: "goBack" });
-    expect(back).toHaveBeenCalledTimes(1);
-
-    window.dispatchEvent(new PopStateEvent("popstate", { state: owned(2) }));
-    expect(store.getState().route.kind).toBe("work");
-    window.dispatchEvent(new PopStateEvent("popstate", { state: owned(1) }));
+    controller.dispatch({
+      type: "openWork",
+      sessionId: "session-native-client",
+    });
     expect(store.getState().route.kind).toBe("conversation");
+    await synchronized;
+
+    expect(store.getState().route.kind).toBe("work");
+    expect(window.history.state).toMatchObject({ depth: 2 });
+    const poppedWork = nextPopState();
+    controller.dispatch({ type: "goBack" });
+    await poppedWork;
+    expect(store.getState().route.kind).toBe("conversation");
+    expect(window.history.state).toMatchObject({ depth: 1 });
     controller.dispose();
   });
 

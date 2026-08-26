@@ -675,6 +675,43 @@ describe("prototype reducer", () => {
     ).toBe(ready);
   });
 
+  it("rejects every New Session draft edit by identity while starting", () => {
+    const ready = dispatchAll(
+      initial(),
+      { type: "setNewSessionProject", value: "/workspace/aurora" },
+      { type: "setNewSessionPrompt", value: "Review this fixture" },
+    );
+    const starting = reducePrototype(ready, { type: "submitNewSession" });
+    expect(starting.newSession.outcome).toBe("starting");
+
+    for (const testCase of [
+      {
+        label: "typed project",
+        action: { type: "setNewSessionProject", value: "/workspace/lattice" },
+      },
+      {
+        label: "recent project",
+        action: { type: "selectRecentProject", projectId: "project-harbor" },
+      },
+      {
+        label: "prompt",
+        action: { type: "setNewSessionPrompt", value: "Replace the prompt" },
+      },
+      {
+        label: "model",
+        action: { type: "setNewSessionModel", modelId: "model-lantern" },
+      },
+      {
+        label: "effort",
+        action: { type: "setNewSessionEffort", effort: "high" },
+      },
+    ] as const) {
+      expect(reducePrototype(starting, testCase.action), testCase.label).toBe(
+        starting,
+      );
+    }
+  });
+
   it("updates process-local voice preferences and projects deterministic levels", () => {
     let state = dispatchAll(
       initial(),

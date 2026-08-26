@@ -104,6 +104,11 @@ export function createNavigationController(
   let disposed = false;
   const deferredActions: PrototypeAction[] = [];
 
+  const flushDeferredActions = () => {
+    const actions = deferredActions.splice(0);
+    for (const action of actions) dispatchAction(action);
+  };
+
   const replaceRoot = () => {
     ownedDepth = 0;
     pendingRoutePops = 0;
@@ -139,10 +144,13 @@ export function createNavigationController(
       before.route.kind === "voice" &&
       after.route.kind !== "voice"
     ) {
-      // The canonical reducer records End by popping Voice immediately. The
-      // following browser Back must consume that owned depth without popping
-      // the reducer stack a second time.
-      pendingRoutePops += 1;
+      // The reducer records End immediately. Traverse the matching owned entry
+      // now, then consume that pop without reducing the route a second time.
+      if (ownedDepth > 0) {
+        pendingRoutePops += 1;
+        pendingBack = true;
+        historyTarget.history.back();
+      }
       return;
     }
     if (
@@ -182,8 +190,7 @@ export function createNavigationController(
     if (reconcilingRoot) {
       if (isConceptHistoryState(event.state) && event.state.depth === 0) {
         replaceRoot();
-        const actions = deferredActions.splice(0);
-        for (const action of actions) dispatchAction(action);
+        flushDeferredActions();
       } else {
         failClosed();
       }
@@ -205,20 +212,21 @@ export function createNavigationController(
     } finally {
       suppressHistory = false;
     }
+    if (pendingRoutePops === 0) flushDeferredActions();
   };
 
   const dispatchAction = (action: PrototypeAction) => {
     if (disposed) return;
+    if (reconcilingRoot || pendingRoutePops > 0) {
+      deferredActions.push(action);
+      return;
+    }
     if (action.type === "goBack") {
       if (ownedDepth > 0) {
         if (pendingBack || reconcilingRoot) return;
         pendingBack = true;
       }
       historyTarget.history.back();
-      return;
-    }
-    if (reconcilingRoot) {
-      deferredActions.push(action);
       return;
     }
     reduce(action);
@@ -233,6 +241,7 @@ export function createNavigationController(
       if (disposed) return;
       disposed = true;
       pendingBack = false;
+      deferredActions.length = 0;
       historyTarget.removeEventListener("popstate", onPopState);
     },
   };

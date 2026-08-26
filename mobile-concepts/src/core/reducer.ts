@@ -171,6 +171,7 @@ function editNewSession(
   state: PrototypeState,
   change: Partial<PrototypeState["newSession"]>,
 ): PrototypeState {
+  if (state.newSession.outcome === "starting") return state;
   return {
     ...state,
     newSession: {

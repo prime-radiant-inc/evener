@@ -53,6 +53,38 @@ const platformInput: PlatformDetectionInput = {
   fallback: "ios",
 };
 
+const fullAppCases = (
+  [
+    {
+      platform: "ios",
+      platformInput: {
+        userAgent: "Mozilla/5.0 (iPhone; CPU iPhone OS 18_0 like Mac OS X)",
+        allowOverride: false,
+        override: null,
+        fallback: "android",
+      },
+    },
+    { platform: "android", platformInput },
+  ] as const
+).flatMap(({ platform, platformInput: input }) =>
+  (
+    [
+      { id: "stillwater", label: "Stillwater" },
+      { id: "constellation", label: "Constellation" },
+      { id: "field-notes", label: "Field Notes" },
+    ] as const
+  ).map((concept) => ({ ...concept, platform, platformInput: input })),
+);
+
+function expectSoleMain(): HTMLElement {
+  const mains = screen.getAllByRole("main");
+  expect(mains).toHaveLength(1);
+  const landmark = mains[0];
+  if (!landmark) throw new Error("expected one main landmark");
+  expect(landmark.querySelector("main")).toBeNull();
+  return landmark;
+}
+
 function storage(): PreferenceStorage & { values: Map<string, string> } {
   const values = new Map<string, string>();
   return {
@@ -108,6 +140,22 @@ afterEach(() => {
 });
 
 describe("App", () => {
+  it.each(fullAppCases)(
+    "owns one unnested main in the $platform gallery and selected $label App",
+    ({ id, label, platform, platformInput: input }) => {
+      render(<App platformInput={input} storage={storage()} />);
+
+      expectSoleMain();
+      fireEvent.click(screen.getByRole("button", { name: `Select ${label}` }));
+
+      expect(expectSoleMain()).toHaveAttribute("data-route", "sessions");
+      expect(document.querySelector(`.concept-${id}`)).toHaveAttribute(
+        "data-platform",
+        platform,
+      );
+    },
+  );
+
   it("makes Lab Controls modal, restores its opener after real Back, and focuses the gallery after Reset", async () => {
     render(<App platformInput={platformInput} storage={storage()} />);
     const opener = screen.getByRole("button", { name: "Lab Controls" });

@@ -260,6 +260,74 @@ afterEach(() => {
 
 describe("cross-concept behavioral parity", () => {
   it.each(Object.values(conceptRegistry))(
+    "$id locks every New Session editing affordance while starting",
+    (module) => {
+      const { store } = renderHarness(module);
+      fireEvent.click(screen.getByRole("button", { name: "New Session" }));
+      const recent = canonicalFixture.recentProjects[0];
+      const alternateProject = canonicalFixture.recentProjects[1];
+      const alternateModel = canonicalFixture.models[1];
+      expect(recent).toBeDefined();
+      expect(alternateProject).toBeDefined();
+      expect(alternateModel).toBeDefined();
+      if (!recent || !alternateProject || !alternateModel) return;
+
+      fireEvent.click(
+        domainControl(main("new"), `[data-project-id="${recent.id}"]`),
+      );
+      fireEvent.change(screen.getByRole("textbox", { name: "Prompt" }), {
+        target: { value: "Lock this starting draft" },
+      });
+      fireEvent.click(screen.getByRole("button", { name: "Start session" }));
+      const lockedDraft = store.getState().newSession;
+      expect(lockedDraft.outcome).toBe("starting");
+
+      const recentButtons = main("new").querySelectorAll<HTMLButtonElement>(
+        "[data-project-id] button",
+      );
+      const project = screen.getByRole("textbox", { name: "Project path" });
+      const prompt = screen.getByRole("textbox", { name: "Prompt" });
+      const model = screen.getByRole("combobox", { name: "Model" });
+      const effort = screen.getByRole("combobox", { name: "Effort" });
+      for (const control of [
+        ...recentButtons,
+        project,
+        prompt,
+        model,
+        effort,
+      ]) {
+        expect(control).toBeDisabled();
+      }
+
+      const attempts = [
+        () =>
+          fireEvent.click(
+            domainControl(
+              main("new"),
+              `[data-project-id="${alternateProject.id}"]`,
+            ),
+          ),
+        () =>
+          fireEvent.change(project, {
+            target: { value: alternateProject.path },
+          }),
+        () =>
+          fireEvent.change(prompt, { target: { value: "Replace the prompt" } }),
+        () => fireEvent.change(model, { target: { value: alternateModel.id } }),
+        () => fireEvent.change(effort, { target: { value: "high" } }),
+      ];
+      for (const attempt of attempts) {
+        attempt();
+        expect(store.getState().newSession).toBe(lockedDraft);
+      }
+
+      fireEvent.click(action(main("new"), "complete-new-session-failure"));
+      expect(store.getState().newSession).not.toBe(lockedDraft);
+      expect(store.getState().newSession.outcome).toBe("failure");
+    },
+  );
+
+  it.each(Object.values(conceptRegistry))(
     "$id executes the complete shared behavior sequence",
     async (module) => {
       const { store } = renderHarness(module);
@@ -669,18 +737,16 @@ describe("cross-concept behavioral parity", () => {
         kind: "voice",
         sessionId: "session-native-client",
       });
+      const synchronizedVoiceEnd = nextPopState();
       fireEvent.click(screen.getByRole("button", { name: "End" }));
       await waitFor(() => expect(main("conversation")).toBeVisible());
       expect(store.getState().voice).toMatchObject({
         stopped: false,
         ended: true,
       });
+      await synchronizedVoiceEnd;
 
-      // Consume the Voice browser entry, then the Conversation entry, via real popstate.
-      const consumedVoice = nextPopState();
-      fireEvent.click(screen.getByRole("button", { name: "Back" }));
-      await consumedVoice;
-      expect(store.getState().route.kind).toBe("conversation");
+      // End already consumed Voice, so the first real Back reaches Sessions.
       await clickBack({ kind: "root", tab: "sessions" });
 
       // Display, voice, reset, and exact defaults from Settings.

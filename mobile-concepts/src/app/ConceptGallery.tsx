@@ -75,7 +75,7 @@ export function ConceptGallery({
   const selectedConcept = usePrototypeState((state) => state.concept);
 
   return (
-    <section
+    <main
       className="concept-gallery"
       data-testid="concept-gallery"
       data-minimum-target={primitives.minimumTarget}
@@ -102,6 +102,6 @@ export function ConceptGallery({
           }}
         />
       </div>
-    </section>
+    </main>
   );
 }
