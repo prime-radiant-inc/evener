@@ -235,7 +235,12 @@ func toolBatchPanicError(value any) error {
 // images themselves — they immediately write code) and injects the description as
 // steering so the agent can use it. It returns the abort error if the turn is
 // canceled mid-persist.
-func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallData, results []tool.ExecResult) error {
+func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallData, results []tool.ExecResult) (retErr error) {
+	defer func() {
+		if retErr != nil {
+			s.removeAllTurnOwnedSteering()
+		}
+	}()
 	// Aggregate all tool results into a single TurnToolResults turn.
 	var parts []llm.ContentPart
 	for _, r := range results {
@@ -274,11 +279,9 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 				if abortErr := s.withResponseSideEffects(ctx, func() {
 					s.trySteerTurnOwnedMessage(steeringMessage{Text: visionFailureSteering(path, vision), Kind: events.SteeringKindImageDescription}, owner)
 				}); abortErr != nil {
-					s.removeAllTurnOwnedSteering()
 					return abortErr
 				}
 				if err := ctx.Err(); err != nil {
-					s.removeAllTurnOwnedSteering()
 					return err
 				}
 			} else if vision.outcome == visionSideChannelParentCanceled {
@@ -422,9 +425,6 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 				s.removeAllTurnOwnedSteering()
 				return false, abortErr
 			}
-			s.mu.Lock()
-			s.visionTurnOwners = nil
-			s.mu.Unlock()
 		}
 	}
 

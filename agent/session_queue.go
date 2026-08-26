@@ -101,6 +101,10 @@ type steeringMessage struct {
 
 func (s *Session) removeAllTurnOwnedSteering() {
 	s.mu.Lock()
+	if len(s.visionTurnOwners) == 0 {
+		s.mu.Unlock()
+		return
+	}
 	owners := make(map[*struct{ _ byte }]struct{}, len(s.visionTurnOwners))
 	for _, owner := range s.visionTurnOwners {
 		owners[owner] = struct{}{}
