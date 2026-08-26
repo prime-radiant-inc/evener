@@ -194,9 +194,11 @@ export function SettingsView({ state, dispatch }: SettingsViewProps) {
         <p className="fn-eyebrow">Concept 03 · Editorial Studio</p>
         <h2>Field Notes</h2>
         <p>
-          Deep ink, mint signal, violet depth, and disciplined relationship
-          rails reveal the shape of active work without turning evidence into a
-          graph. Use the header actions to switch concept or open Lab Controls.
+          Warm ivory, graphite, and restrained rust shape a transcript studio
+          built for long-form reading. Editorial rhythm, margin notes, and clear
+          live controls keep the record crafted without making active work feel
+          archival. Use the header actions to switch concept or open Lab
+          Controls.
         </p>
       </section>
     </div>

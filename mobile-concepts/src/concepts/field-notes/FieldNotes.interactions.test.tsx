@@ -72,6 +72,39 @@ function replaceWorkParent(work: readonly WorkNode[]) {
   };
 }
 
+function cssToken(block: string, token: string): string {
+  const match = block.match(new RegExp(`${token}:\\s*(#[0-9a-f]{6})`, "i"));
+  const value = match?.[1];
+  if (!value) throw new Error(`Missing ${token} in palette block`);
+  return value;
+}
+
+function relativeLuminance(hex: string): number {
+  const channels = [1, 3, 5].map((offset) =>
+    Number.parseInt(hex.slice(offset, offset + 2), 16),
+  );
+  const linear = channels.map((channel) => {
+    const value = channel / 255;
+    return value <= 0.04045 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4;
+  });
+  const red = linear[0];
+  const green = linear[1];
+  const blue = linear[2];
+  if (red === undefined || green === undefined || blue === undefined) {
+    throw new Error("Contrast helper needs three channels");
+  }
+  return 0.2126 * red + 0.7152 * green + 0.0722 * blue;
+}
+
+function contrastRatio(first: string, second: string): number {
+  const firstLuminance = relativeLuminance(first);
+  const secondLuminance = relativeLuminance(second);
+  return (
+    (Math.max(firstLuminance, secondLuminance) + 0.05) /
+    (Math.min(firstLuminance, secondLuminance) + 0.05)
+  );
+}
+
 describe("Field Notes transcript studio", () => {
   it("keeps the canonical transcript in chronological DOM order", () => {
     const route = conversationRoute();
@@ -86,6 +119,81 @@ describe("Field Notes transcript studio", () => {
     );
     expect(actual).toEqual(expected);
     expect(main.querySelector("[data-chronology-rail]")).toBeVisible();
+    const session = canonicalFixture.sessions.find(
+      ({ id }) => id === route.sessionId,
+    );
+    if (!session)
+      throw new Error("Field Notes test needs the selected session");
+    const markers = [
+      ...main.querySelectorAll<HTMLElement>("[data-chronology-marker]"),
+    ];
+    expect(markers).toHaveLength(expected.length);
+    for (const [index, marker] of markers.entries()) {
+      expect(marker).toBeVisible();
+      expect(marker).toHaveTextContent(session.updatedLabel);
+      expect(marker).toHaveTextContent(
+        `Chapter ${String(index + 1).padStart(2, "0")}`,
+      );
+    }
+  });
+
+  it("locks every new-workbook draft affordance while starting", () => {
+    const result = renderRoute({ kind: "root", tab: "new" });
+    const fixture = result.store.getState().projection.fixture;
+    const project = fixture.recentProjects[0];
+    const alternateProject = fixture.recentProjects.at(-1);
+    const alternateModel = fixture.models.at(-1);
+    const alternateEffort = fixture.efforts.at(-1);
+    if (!project || !alternateProject || !alternateModel || !alternateEffort) {
+      throw new Error("Field Notes test needs complete new-session choices");
+    }
+    fireEvent.change(screen.getByRole("textbox", { name: "Project path" }), {
+      target: { value: project.path },
+    });
+    fireEvent.change(screen.getByRole("textbox", { name: "Prompt" }), {
+      target: { value: "Open the reviewed workbook" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "Start session" }));
+    expect(result.store.getState().newSession.outcome).toBe("starting");
+    const lockedDraft = result.store.getState().newSession;
+
+    const projectButtons = document.querySelectorAll<HTMLButtonElement>(
+      "[data-project-id] button",
+    );
+    expect(projectButtons.length).toBeGreaterThan(0);
+    for (const button of projectButtons) {
+      expect(button).toBeDisabled();
+      fireEvent.click(button);
+    }
+    const projectField = screen.getByRole("textbox", { name: "Project path" });
+    const promptField = screen.getByRole("textbox", { name: "Prompt" });
+    const modelField = screen.getByRole("combobox", { name: "Model" });
+    const effortField = screen.getByRole("combobox", { name: "Effort" });
+    for (const field of [projectField, promptField, modelField, effortField]) {
+      expect(field).toBeDisabled();
+    }
+    fireEvent.change(projectField, {
+      target: { value: alternateProject.path },
+    });
+    fireEvent.change(promptField, { target: { value: "Mutated prompt" } });
+    fireEvent.change(modelField, { target: { value: alternateModel.id } });
+    fireEvent.change(effortField, { target: { value: alternateEffort } });
+    expect(result.store.getState().newSession).toEqual(lockedDraft);
+
+    fireEvent.click(
+      document.querySelector(
+        '[data-action="complete-new-session-failure"]',
+      ) as HTMLElement,
+    );
+    expect(result.store.getState().newSession).toMatchObject({
+      ...lockedDraft,
+      outcome: "failure",
+      errorCode: "synthetic-start-failed",
+    });
+    expect(projectField).toBeEnabled();
+    expect(promptField).toBeEnabled();
+    expect(modelField).toBeEnabled();
+    expect(effortField).toBeEnabled();
   });
 
   it.each([
@@ -384,6 +492,61 @@ describe("Field Notes transcript studio", () => {
       }
     },
   );
+
+  it("consumes bottom safe area with keyboard clearance only on pushed content", () => {
+    renderRoute(conversationRoute());
+    const pushedMain = mainFor("conversation");
+    const pushedContent =
+      pushedMain.querySelector<HTMLElement>(".fn-route-content");
+    if (!pushedContent) throw new Error("Missing pushed route content");
+    expect(pushedMain).toHaveAttribute("data-pushed-route", "true");
+    expect(pushedContent.style.paddingBottom).toContain("--fn-edge-bottom");
+    expect(pushedContent.style.paddingBottom).toContain(
+      "--keyboard-inset-height",
+    );
+    expect(document.querySelectorAll(".fn-scroll-owner")).toHaveLength(1);
+    expect(screen.queryByRole("navigation", { name: "Primary" })).toBeNull();
+
+    cleanup();
+    renderRoute({ kind: "root", tab: "sessions" });
+    const rootMain = mainFor("sessions");
+    const rootContent =
+      rootMain.querySelector<HTMLElement>(".fn-route-content");
+    const rootNavigation = screen.getByRole("navigation", { name: "Primary" });
+    expect(rootMain).not.toHaveAttribute("data-pushed-route");
+    expect(rootContent?.style.paddingBottom).not.toContain("--fn-edge-bottom");
+    expect(rootNavigation.style.paddingBottom).toContain("--fn-edge-bottom");
+    expect(document.querySelectorAll(".fn-scroll-owner")).toHaveLength(1);
+  });
+
+  it("keeps actual and system-light muted metadata at unrounded AA contrast", () => {
+    const paletteBlocks = [
+      ...fieldNotesCss.matchAll(
+        /\.concept-field-notes\[data-appearance="(?:light|system)"\]\s*\{([^}]*)\}/g,
+      ),
+    ];
+    expect(paletteBlocks).toHaveLength(2);
+    for (const match of paletteBlocks) {
+      const block = match[1];
+      if (!block) throw new Error("Missing light palette declarations");
+      const muted = cssToken(block, "--fn-muted");
+      const surface = cssToken(block, "--fn-surface");
+      expect(contrastRatio(muted, surface)).toBeGreaterThanOrEqual(4.5);
+    }
+  });
+
+  it("describes the Field Notes transcript studio in its Settings note", () => {
+    renderRoute({ kind: "root", tab: "settings" });
+    const note = mainFor("settings").querySelector(".fn-concept-note");
+    expect(note).toBeVisible();
+    expect(note).toHaveTextContent(/warm ivory/i);
+    expect(note).toHaveTextContent(/graphite/i);
+    expect(note).toHaveTextContent(/rust/i);
+    expect(note).toHaveTextContent(/transcript studio/i);
+    expect(note).not.toHaveTextContent(
+      /mint signal|violet depth|turning evidence into a graph/i,
+    );
+  });
 
   it("uses viewport and keyboard variables, wrapping titles, local texture, and contrast fallbacks", () => {
     expect(fieldNotesCss).toContain(

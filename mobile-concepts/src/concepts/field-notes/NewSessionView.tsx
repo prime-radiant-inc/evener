@@ -59,12 +59,15 @@ export function NewSessionView({ state, dispatch }: NewSessionViewProps) {
               <button
                 type="button"
                 aria-pressed={state.newSession.project === project.path}
-                onClick={() =>
-                  dispatch({
-                    type: "selectRecentProject",
-                    projectId: project.id,
-                  })
-                }
+                disabled={starting}
+                onClick={() => {
+                  if (!starting) {
+                    dispatch({
+                      type: "selectRecentProject",
+                      projectId: project.id,
+                    });
+                  }
+                }}
               >
                 <strong>{project.label}</strong>
                 <span>{project.path}</span>
@@ -95,12 +98,14 @@ export function NewSessionView({ state, dispatch }: NewSessionViewProps) {
             placeholder="Enter an exact fixture path"
             value={state.newSession.project}
             disabled={starting}
-            onChange={(event) =>
-              dispatch({
-                type: "setNewSessionProject",
-                value: event.currentTarget.value,
-              })
-            }
+            onChange={(event) => {
+              if (!starting) {
+                dispatch({
+                  type: "setNewSessionProject",
+                  value: event.currentTarget.value,
+                });
+              }
+            }}
           />
           <small>
             Choose a recent project or type a permitted fixture path.
@@ -114,12 +119,14 @@ export function NewSessionView({ state, dispatch }: NewSessionViewProps) {
             placeholder="Describe the first useful outcome"
             value={state.newSession.prompt}
             disabled={starting}
-            onChange={(event) =>
-              dispatch({
-                type: "setNewSessionPrompt",
-                value: event.currentTarget.value,
-              })
-            }
+            onChange={(event) => {
+              if (!starting) {
+                dispatch({
+                  type: "setNewSessionPrompt",
+                  value: event.currentTarget.value,
+                });
+              }
+            }}
           />
         </label>
 
@@ -130,12 +137,14 @@ export function NewSessionView({ state, dispatch }: NewSessionViewProps) {
               aria-label="Model"
               value={state.newSession.modelId}
               disabled={starting}
-              onChange={(event) =>
-                dispatch({
-                  type: "setNewSessionModel",
-                  modelId: event.currentTarget.value,
-                })
-              }
+              onChange={(event) => {
+                if (!starting) {
+                  dispatch({
+                    type: "setNewSessionModel",
+                    modelId: event.currentTarget.value,
+                  });
+                }
+              }}
             >
               {fixture.models.map((model) => (
                 <option value={model.id} key={model.id}>
@@ -157,7 +166,9 @@ export function NewSessionView({ state, dispatch }: NewSessionViewProps) {
                   effort === "medium" ||
                   effort === "high"
                 ) {
-                  dispatch({ type: "setNewSessionEffort", effort });
+                  if (!starting) {
+                    dispatch({ type: "setNewSessionEffort", effort });
+                  }
                 }
               }}
             >

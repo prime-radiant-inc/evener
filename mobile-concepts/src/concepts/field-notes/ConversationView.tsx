@@ -244,9 +244,9 @@ export function ConversationView({
               tabIndex={state.focusedItemId === item.id ? -1 : undefined}
               key={item.id}
             >
-              <div className="fn-chronology-stamp" aria-hidden="true">
-                <span>{String(itemIndex + 1).padStart(2, "0")}</span>
-                <span>Record</span>
+              <div className="fn-chronology-stamp" data-chronology-marker>
+                <span>Updated {session.updatedLabel}</span>
+                <span>Chapter {String(itemIndex + 1).padStart(2, "0")}</span>
               </div>
               <TranscriptContent
                 item={item}
