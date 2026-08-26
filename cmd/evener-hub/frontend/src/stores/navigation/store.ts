@@ -18,7 +18,6 @@ import type {
   NavigationSessionLocation,
 } from "../../protocol/types.gen";
 import { loadExpansion, saveExpansion } from "../../shell/rail/railExpansion";
-import { treeStore } from "../tree";
 import { type NavigationInvalidationWaiter, NavigationRevalidator } from "./revalidator";
 import { keyID, type NavigationRequest, type ResourceKey, type ResourceState } from "./types";
 
@@ -39,7 +38,7 @@ export interface NavigationStoreState {
   resources: ResourceMap;
   expanded: ReadonlyMap<string, boolean>;
   attention: { changed: AttentionChanged[]; summary: AttentionSummary | null };
-  mode: "unknown" | "legacy" | "v1" | "error";
+  mode: "unknown" | "v1" | "error";
   protocolError: Error | null;
   loadManifest(): Promise<ResourceState<NavigationManifest>>;
   loadSection(
@@ -111,23 +110,9 @@ let revalidator: NavigationRevalidator | null = null;
 let unsubs: Array<() => void> = [];
 let bootEpoch = 0;
 let bootStartedEpoch = -1;
-let legacyTreeUnsub: (() => void) | null = null;
 const PAGE_LIMIT = 50;
 const CATALOG_LIMIT = 100;
 const key = (k: ResourceKey) => Object.freeze(k);
-function enterLegacyMode(): void {
-  legacyTreeUnsub?.();
-  legacyTreeUnsub = treeStore.subscribe(() => {
-    navigationStore.setState((state) => ({ attention: { ...state.attention } }));
-  });
-  navigationStore.setState({
-    mode: "legacy",
-    capability: null,
-    clientGenerationID: "",
-    lastSequence: 0,
-    attention: initialAttention,
-  });
-}
 function setResource(state: ResourceState, client = activeClient, epoch = bootEpoch): void {
   if (client !== activeClient || epoch !== bootEpoch) return;
   if (state.key.kind === "manifest") navigationStore.setState({ manifest: state as ResourceState<NavigationManifest> });
@@ -569,11 +554,9 @@ export function initNavigation(
     const cap: NavigationCapability | undefined =
       info && "navigation" in info ? info.navigation : info && "version" in info ? info : undefined;
     if (!cap) {
-      enterLegacyMode();
+      navigationStore.setState({ mode: "error", protocolError: new Error("navigation capability not available") });
       return;
     }
-    legacyTreeUnsub?.();
-    legacyTreeUnsub = null;
     void boot(cap, epoch, ownedClient);
   };
   revalidator = new NavigationRevalidator();
@@ -615,7 +598,7 @@ export function initNavigation(
           if (ownedClient !== activeClient || epoch !== bootEpoch) return;
           const cap = i.navigation;
           if (!cap) {
-            enterLegacyMode();
+            navigationStore.setState({ mode: "error", protocolError: new Error("navigation capability not available") });
             return;
           }
           const same = cap.version === 1 && revalidator?.generationID === cap.generationId;
@@ -649,8 +632,6 @@ export function initNavigation(
       unsubs = [];
       revalidator?.dispose();
       revalidator = null;
-      legacyTreeUnsub?.();
-      legacyTreeUnsub = null;
       activeClient = null;
       bootStartedEpoch = -1;
     }
@@ -664,8 +645,6 @@ export function resetNavigationStoreForTests(): void {
   unsubs = [];
   revalidator?.dispose();
   revalidator = null;
-  legacyTreeUnsub?.();
-  legacyTreeUnsub = null;
   activeClient = null;
   bootStartedEpoch = -1;
   navigationStore.setState({ ...initial(), ...actions() });

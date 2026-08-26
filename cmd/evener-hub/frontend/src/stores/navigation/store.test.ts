@@ -100,7 +100,7 @@ afterEach(() => {
 });
 
 test.each([
-  ["absent", null, "legacy"],
+  ["absent", null, "error"],
   ["v1", capability(), "v1"],
   ["unsupported", capability(generation, 2), "error"],
 ] as const)("capability %s selects mode", async (_name, cap, mode) => {

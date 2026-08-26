@@ -2,7 +2,7 @@ import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { resetAskDockStoreForTests } from "../panes/session/composer/askDock/askDockStore";
 import { resetThreadsStoreForTests } from "../stores/threads";
-import { resetTreeStoreForTests } from "../stores/tree";
+import { resetNavigationStoreForTests } from "../stores/navigation/store";
 import { resetDisclosureStoreForTests } from "../widgets/disclosure/disclosureStore";
 import SurfaceGallery, { SURFACE_GALLERY_SECTIONS } from "./SurfaceGallery";
 
@@ -11,7 +11,7 @@ afterEach(() => {
   resetThreadsStoreForTests();
   resetAskDockStoreForTests();
   resetDisclosureStoreForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
 });
 
 test("renders without throwing, with the intro note", () => {

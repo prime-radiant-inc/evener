@@ -8,14 +8,13 @@
 // the only honest reproduction is a real browser measuring real boxes.
 //
 // Renders the REAL AppShell (rail + DockRegion + chrome) against a FakeClient
-// with /api/tree stubbed to a tree far taller than any viewport, the same
-// shape AppShell.test.tsx's own fixtures use. window.measureShell() returns
-// the document's scroll size beside the viewport, the rail body scroll
-// metrics, and the boxes (if any) whose bottoms escape the viewport - which
-// is the answer the fix has to be aimed at.
+// advertising a navigation capability, with /api/navigation/* stubbed to a
+// tree far taller than any viewport. window.measureShell() returns the
+// document's scroll size beside the viewport, the rail body scroll metrics,
+// and the boxes (if any) whose bottoms escape the viewport - which is the
+// answer the fix has to be aimed at.
 import { createRoot } from "react-dom/client";
 import { FakeClient } from "../protocol/testing/fakeClient";
-import { type TreeNode, type TreeProject, type TreeResponse, treeStore } from "../stores/tree";
 import "../styles/tokens.css";
 import "../styles/global.css";
 
@@ -28,26 +27,11 @@ window.addEventListener("unhandledrejection", (event) => {
   target.__shellGuardErrors = [...(target.__shellGuardErrors ?? []), event.reason?.stack ?? String(event.reason)];
 });
 
-function session(projectKey: string, projectName: string, index: number): TreeNode {
-  return {
-    row_id: `project:${projectKey}:local:s${index}`,
-    ref: `local:${projectKey}-s${index}`,
-    host_id: "local",
-    session_id: `${projectKey}-s${index}`,
-    title: `${projectName} session ${index}`,
-    project: projectName,
-    state: "idle",
-    kind: "session",
-    live: true,
-    children: [],
-  };
-}
-
 // 12 projects x 10 sessions, every project expanded by default: ~130 tree
 // rows, several times taller than the 900px viewport the guard measures at.
 const PROJECT_COUNT = 12;
 const SESSION_COUNT = 10;
-const projects: TreeProject[] = Array.from({ length: PROJECT_COUNT }, (_, p) => {
+const projectSummaries = Array.from({ length: PROJECT_COUNT }, (_, p) => {
   const key = `proj${p}`;
   const name = `project-${p}`;
   return {
@@ -55,29 +39,25 @@ const projects: TreeProject[] = Array.from({ length: PROJECT_COUNT }, (_, p) => 
     name,
     working_dir: `/home/user/${name}`,
     default_expanded: true,
-    sessions: Array.from({ length: SESSION_COUNT }, (_, s) => session(key, name, s)),
+    session_count: SESSION_COUNT,
   };
 });
+const navigationSessions = (projectKey: string, projectName: string) =>
+  Array.from({ length: SESSION_COUNT }, (_, s) => ({
+    ref: `local:${projectKey}-s${s}`,
+    host_id: "local",
+    session_id: `${projectKey}-s${s}`,
+    title: `${projectName} session ${s}`,
+    project: projectName,
+    state: "idle",
+    kind: "session",
+    live: false,
+    children: [],
+  }));
 
-const TALL_TREE: TreeResponse = {
-  generated_at: "2026-01-01T00:00:00Z",
-  sources: [],
-  live: [],
-  needs_you: [],
-  pin_sections: [],
-  projects,
-  archived_projects: [],
-  test_runs: [],
-  attentionSummary: { needsYou: 0, error: 0, working: 0 },
-};
-
-// treeStore reads /api/tree over plain fetch (not the appwire socket), so the
-// stub lives on window.fetch. Installed at module evaluation, before the
-// AppShell render below can fire its first refresh. The navigation store reads
-// /api/navigation/* the same way; stubbing those routes lets the harness
-// exercise the v1 bounded-resource path rather than falling back to legacy
-// /api/tree mode (store.ts: enterLegacyMode when the client reports no
-// navigation capability).
+// The navigation store reads /api/navigation/* over plain fetch (not the
+// appwire socket), so the stubs live on window.fetch. Installed at module
+// evaluation, before the AppShell render below can fire its first load.
 const NAVIGATION_MANIFEST = {
   generation_id: "shellguard-generation",
   revision: 1,
@@ -102,33 +82,49 @@ const EMPTY_PIN_CATALOG = {
 const EMPTY_PROJECT_CATALOG = {
   generation_id: "shellguard-generation",
   revision: 1,
-  projects: projects.map((p) => ({
-    key: p.key,
-    name: p.name,
-    working_dir: p.working_dir,
-    default_expanded: p.default_expanded,
-    session_count: SESSION_COUNT,
-  })),
+  projects: projectSummaries,
   remaining: 0,
 };
 
+function projectResource(key: string) {
+  const summary = projectSummaries.find((p) => p.key === key);
+  const sessions = summary ? navigationSessions(key, summary.name) : [];
+  const tier = { sessions, remaining: 0 };
+  return {
+    generation_id: "shellguard-generation",
+    revision: 1,
+    key,
+    current: tier,
+    recent: { sessions: [], remaining: 0 },
+    archived: { sessions: [], remaining: 0 },
+    truncated: false,
+  };
+}
+
 function navigationResponse(url: string): Response | null {
+  const projectMatch = url.match(/^\/api\/navigation\/projects\/([^?]+)/);
+  if (projectMatch && projectMatch[1]) {
+    return new Response(JSON.stringify(projectResource(decodeURIComponent(projectMatch[1]))), {
+      status: 200,
+      headers: { "content-type": "application/json", etag: '"shellguard-etag"' },
+    });
+  }
   if (url.startsWith("/api/navigation/catalogs/projects")) {
     return new Response(JSON.stringify(EMPTY_PROJECT_CATALOG), {
       status: 200,
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", etag: "\"shellguard-etag\"", "X-Evener-Navigation-Generation": "shellguard-generation", "X-Evener-Navigation-Revision": "1" },
     });
   }
   if (url.startsWith("/api/navigation/sections/live") || url.startsWith("/api/navigation/sections/needs-you")) {
     return new Response(JSON.stringify(EMPTY_SECTION), {
       status: 200,
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", etag: "\"shellguard-etag\"", "X-Evener-Navigation-Generation": "shellguard-generation", "X-Evener-Navigation-Revision": "1" },
     });
   }
   if (url.startsWith("/api/navigation/pin-sections")) {
     return new Response(JSON.stringify(EMPTY_PIN_CATALOG), {
       status: 200,
-      headers: { "content-type": "application/json" },
+      headers: { "content-type": "application/json", etag: "\"shellguard-etag\"", "X-Evener-Navigation-Generation": "shellguard-generation", "X-Evener-Navigation-Revision": "1" },
     });
   }
   if (url === "/api/navigation" || url === "/api/navigation/") {
@@ -145,14 +141,9 @@ window.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response>
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
   const nav = navigationResponse(url);
   if (nav) return Promise.resolve(nav);
-  if (url.startsWith("/api/tree")) {
-    return Promise.resolve(
-      new Response(JSON.stringify(TALL_TREE), { status: 200, headers: { "content-type": "application/json" } }),
-    );
-  }
   if (url.startsWith("/api/")) {
     return Promise.resolve(
-      new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json" } }),
+      new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json", etag: "\"shellguard-etag\"", "X-Evener-Navigation-Generation": "shellguard-generation", "X-Evener-Navigation-Revision": "1" } }),
     );
   }
   return realFetch(input, init);
@@ -170,6 +161,26 @@ window.history.replaceState({}, "", "/");
 async function boot(): Promise<void> {
   const { AppShell } = await import("../shell/AppShell");
   const fake = new FakeClient("ready");
+  fake.scriptConnect(() => ({
+    serverInfo: { name: "fake-evener-hub", version: "0.0.0" },
+    protocolVersion: "evener-appwire-v3",
+    sourceId: "fake",
+    features: {
+      threadList: true,
+      threadTurnsList: true,
+      turnStart: true,
+      turnSteer: true,
+      threadClear: true,
+      threadShutdown: true,
+      forkFromTurn: true,
+      tasks: true,
+      transcriptList: true,
+      modelList: true,
+      directoryComplete: true,
+      auth: true,
+    },
+    navigation: { version: 1, generationId: "shellguard-generation", sequence: 0 },
+  }));
   createRoot(root).render(<AppShell client={fake} />);
 }
 
@@ -346,11 +357,9 @@ target.settledShell = (async () => {
     const errors = (window as typeof window & { __shellGuardErrors?: string[] }).__shellGuardErrors;
     if (errors && errors.length > 0) throw new Error(`shell harness page errors: ${errors.join("\n")}`);
     if (performance.now() > deadline) {
-      const treeState = treeStore.getState();
       throw new Error(
         `shell harness: expected at least ${expectedRows} tree rows, found ${document.querySelectorAll('[role="treeitem"]').length} ` +
-          `(tree loaded: ${treeState.tree !== null}, error: ${treeState.error ?? "none"}, ` +
-          `rail settings button: ${document.querySelector("[data-testid='rail-settings']") !== null}, ` +
+          `(rail settings button: ${document.querySelector("[data-testid='rail-settings']") !== null}, ` +
           `body children: ${[...document.body.children].map((el) => el.tagName).join(",")}, ` +
           `root children: ${root.children.length}, pathname: ${window.location.pathname})`,
       );

@@ -1,5 +1,4 @@
 import type { NavigationProjectSummary, NavigationSessionSummary } from "../../protocol/types.gen";
-import { type TreeNode, treeStore } from "../tree";
 import { navigationStore } from "./store";
 import { keyID, type ResourceKey, type ResourceState } from "./types";
 export const selectAttentionSummary = (s: ReturnType<typeof navigationStore.getState>) => s.attention.summary;
@@ -13,50 +12,19 @@ export const selectProjectPage =
     s.resources.get(keyID({ kind: "project_page", projectKey, tier, offset, limit }));
 export const selectLocation = (ref: string) => (s: ReturnType<typeof navigationStore.getState>) =>
   s.resources.get(keyID({ kind: "location", ref }));
-function fromLegacy(node: TreeNode): NavigationSessionSummary {
-  return {
-    ref: node.ref,
-    host_id: node.host_id,
-    session_id: node.session_id,
-    title: node.title,
-    project: node.project,
-    state: node.state,
-    kind: node.kind,
-    branch: node.branch,
-    cluster_count: node.cluster_count,
-    favorite: node.favorite,
-    rename: node.rename,
-    live: node.live,
-    ask_pending: node.ask_pending,
-    dormant: node.dormant,
-    updated_at: node.updated_at,
-    more_subagents: node.more_subagents,
-    children: node.children.map(fromLegacy),
-  };
-}
-function legacyRows(section: "live" | "needs_you"): NavigationSessionSummary[] {
-  const tree = treeStore.getState().tree;
-  return tree?.[section].map(fromLegacy) ?? [];
-}
 export function selectSectionRows(
   section: "live" | "needs_you",
   state = navigationStore.getState(),
 ): NavigationSessionSummary[] {
-  if (state.mode === "legacy") {
-    const loaded = loadedSectionRows(state, (key) => key.kind === "section" && key.section === section);
-    return loaded.length > 0 ? loaded : legacyRows(section);
-  }
   return loadedSectionRows(state, (key) => key.kind === "section" && key.section === section);
 }
 export function selectNeedsYouRows(state = navigationStore.getState()): NavigationSessionSummary[] {
   return selectSectionRows("needs_you", state);
 }
 export function selectNeedsYouCount(state = navigationStore.getState()): number {
-  if (state.mode === "legacy") return selectNeedsYouRows(state).length;
   return state.manifest?.data?.sections.needs_you.count ?? selectNeedsYouRows(state).length;
 }
 export function selectSectionRemaining(section: "live" | "needs_you", state = navigationStore.getState()): number {
-  if (state.mode === "legacy") return 0;
   const pages = [...state.resources.values()].filter(
     (resource) => resource.key.kind === "section" && resource.key.section === section && resource.data !== null,
   );
@@ -158,25 +126,6 @@ export function selectProjectSummaries(state = navigationStore.getState()): Navi
 export const selectExpanded = (projectKey: string) => (s: ReturnType<typeof navigationStore.getState>) =>
   s.expanded.get(projectKey) ?? selectProjectSummaries(s).find((p) => p.key === projectKey)?.default_expanded ?? false;
 export function selectSessionSummary(ref: string, state = navigationStore.getState()): NavigationSessionSummary | null {
-  if (state.mode === "legacy") {
-    const walkLegacy = (rows: NavigationSessionSummary[]): NavigationSessionSummary | null => {
-      for (const row of rows) {
-        if (row.ref === ref) return row;
-        const nested = walkLegacy(row.children);
-        if (nested) return nested;
-      }
-      return null;
-    };
-    const tree = treeStore.getState().tree;
-    const groups = [
-      tree?.live ?? [],
-      tree?.needs_you ?? [],
-      ...(tree?.projects ?? []).map((p) => p.sessions),
-      ...(tree?.archived_projects ?? []).map((p) => p.sessions),
-      ...(tree?.test_runs ?? []).map((p) => p.sessions),
-    ];
-    return walkLegacy(groups.flat().map(fromLegacy));
-  }
   const walk = (xs: NavigationSessionSummary[]): NavigationSessionSummary | null => {
     for (const x of xs) {
       if (x.ref === ref) return x;

@@ -163,7 +163,7 @@ function routePlacementIsApplied(
   if (location === null) {
     const main = workspace.mainPane();
     return (
-      (navigationStore.getState().mode === "legacy" || locationTerminal) &&
+      locationTerminal &&
       main?.type === "session" &&
       sessionRefOf(main) === ref
     );
@@ -219,7 +219,7 @@ function openRouteAsPane(
     const ref = sessionRefFromRouteParams(route.params);
     if (ref === null) return;
 
-    if (location === null && !locationTerminal && navigationStore.getState().mode !== "legacy") {
+    if (location === null && !locationTerminal) {
       pendingSessionRef.current = ref;
       return;
     }

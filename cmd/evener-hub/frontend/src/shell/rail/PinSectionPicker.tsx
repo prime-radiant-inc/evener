@@ -1,14 +1,14 @@
 import { type ChangeEvent, useEffect, useId, useState } from "react";
 import { errorText } from "../../protocol/errors";
-import type { PinSectionSummary, TreeNode } from "../../stores/tree";
+import type { NavigationSessionSummary } from "../../protocol/types.gen";
 import { Button, Dialog, Input, Sheet } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useIsMobile } from "../useIsMobile";
-import { isRailRequestStatus, listPinSections } from "./actions";
+import { isRailRequestStatus, listPinSections, type PinSectionSummary } from "./actions";
 import styles from "./railDialog.module.css";
 
 export interface PinSectionPickerProps {
-  session: TreeNode;
+  session: NavigationSessionSummary;
   onAssign: (target: { section_id: string } | { section_name: string }, section?: PinSectionSummary) => Promise<void>;
   onClose: () => void;
 }

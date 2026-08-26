@@ -1,4 +1,4 @@
-import type { TreeNode as ApiTreeNode } from "../../stores/tree";
+import type { NavigationSessionSummary } from "../../protocol/types.gen";
 
 // Archive is a decision about a TOP-LEVEL row, so only a top-level row
 // offers it. hubcore's nodeKind (internal/hubcore/tree.go) names the kinds
@@ -11,6 +11,6 @@ import type { TreeNode as ApiTreeNode } from "../../stores/tree";
 // than silently losing it.
 const NESTED_KINDS: ReadonlySet<string> = new Set(["subagent", "fork", "cluster"]);
 
-export function isTopLevelSession(session: ApiTreeNode): boolean {
+export function isTopLevelSession(session: NavigationSessionSummary): boolean {
   return !NESTED_KINDS.has(session.kind);
 }

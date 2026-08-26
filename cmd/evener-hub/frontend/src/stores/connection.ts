@@ -108,7 +108,7 @@ export function useConnectionStore<T>(selector?: (state: ConnectionStoreState) =
   // overloads for useStore don't have a variant accepting a possibly-
   // undefined selector, which is the only reason this is two call sites
   // instead of one (see this same pattern + comment in stores/threads.ts,
-  // stores/tree.ts, shell/workspace.ts).
+  // stores/navigation/store.ts, shell/workspace.ts).
   // biome-ignore lint/correctness/useHookAtTopLevel: same hook both arms, JS default param not a real conditional - see above
   return selector ? useStore(connectionStore, selector) : useStore(connectionStore);
 }

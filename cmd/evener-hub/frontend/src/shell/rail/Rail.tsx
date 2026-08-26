@@ -12,7 +12,6 @@ import { selectAttentionSummary, selectPinSections } from "../../stores/navigati
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { keyID, type ResourceKey, type ResourceState } from "../../stores/navigation/types";
 import { threadsStore } from "../../stores/threads";
-import { type TreeNode, type TreeProject, type TreeResponse, treeStore, useTreeStore } from "../../stores/tree";
 import {
   Badge,
   Button,
@@ -99,22 +98,6 @@ interface RailSectionProps {
   onToggle: (node: RailNode) => void;
   onActivate: (node: RailNode) => void;
   actions: RailRowActions;
-}
-interface RailDataSource {
-  resources: RailResources;
-  loading: boolean;
-  error: string | null;
-  retry(): Promise<void>;
-  loadProject(key: string): Promise<unknown>;
-  loadPage(
-    projectKey: string,
-    tier: "current" | "recent" | "archived",
-    offset: number,
-    limit: number,
-  ): Promise<unknown>;
-  refresh(): Promise<void>;
-  archivedDetails?: ReadonlyMap<string, RailProject>;
-  needsYou?: number;
 }
 function renderRailRow(actions: RailRowActions) {
   return (node: RailNode, info: TreeRowInfo) => <RailRow node={node} info={info} actions={actions} />;
@@ -213,9 +196,6 @@ export interface RailProps {
   onWidthChange?: (width: number) => void;
   revealTarget?: string | null;
   onRevealConsumed?: () => void;
-}
-interface NavigationRailProps extends RailProps {
-  legacySource?: RailDataSource;
 }
 interface RevealRequestGuard {
   target: string;
@@ -439,37 +419,6 @@ function nonEmpty(resources: RailResources): boolean {
   );
 }
 
-function legacySession(node: TreeNode, scope: string, tier?: string, pinSectionID?: string): RailSession {
-  return {
-    ...node,
-    row_id: `legacy:${scope}:${node.ref}`,
-    tier: tier ?? node.tier,
-    pin_section_id: pinSectionID ?? node.pin_section_id,
-    children: node.children.map((child) => legacySession(child, scope, tier, pinSectionID)),
-  };
-}
-function legacyProject(project: TreeProject, scope: string): RailProject {
-  return { ...project, sessions: project.sessions.map((node) => legacySession(node, scope)) };
-}
-function legacyResources(tree: TreeResponse, projectDetails: ReadonlyMap<string, TreeProject>): RailResources {
-  return {
-    live: tree.live.map((node) => legacySession(node, "live")),
-    needsYou: tree.needs_you.map((node) => legacySession(node, "needs_you")),
-    pinSections: tree.pin_sections.map((section) => ({
-      id: section.id,
-      name: section.name,
-      member_count: section.sessions.length,
-      sessions: section.sessions.map((node) => legacySession(node, `pin:${section.id}`, undefined, section.id)),
-    })),
-    projects: tree.projects.map((project) => legacyProject(project, `project:${project.key}`)),
-    archivedProjects: tree.archived_projects.map((project) => {
-      const detail = projectDetails.get(project.key);
-      return legacyProject(detail ?? project, `project:${project.key}`);
-    }),
-    testRuns: tree.test_runs.map((project) => legacyProject(project, `project:${project.key}`)),
-  };
-}
-
 async function convergeMutation(result: unknown): Promise<void> {
   if (!isNavigationMutationReceipt(result)) return;
   await navigationStore.getState().applyNavigationMutation(result.navigation);
@@ -492,8 +441,7 @@ function NavigationRail({
   onWidthChange,
   revealTarget,
   onRevealConsumed,
-  legacySource,
-}: NavigationRailProps = {}) {
+}: RailProps = {}) {
   const navigationMode = useNavigationStore((state) => state.mode);
   const manifest = useNavigationStore((state) => state.manifest);
   const resourcesState = useNavigationStore((state) => state.resources);
@@ -522,8 +470,8 @@ function NavigationRail({
   const overflowPagesInFlight = useRef(new Set<string>());
   const state = { ...navigationStore.getState(), resources: resourcesState, expanded };
   const base = useMemo(
-    () => legacySource?.resources ?? railResources({ ...navigationStore.getState(), resources: resourcesState }),
-    [legacySource, resourcesState],
+    () => railResources({ ...navigationStore.getState(), resources: resourcesState }),
+    [resourcesState],
   );
   const resources = useMemo(
     () => applyPending(base, pending, { pinSources: buildPinSourceIndex(base) }),
@@ -603,11 +551,11 @@ function NavigationRail({
     (key: string) => {
       if (rootLoadsInFlight.current.has(key)) return;
       rootLoadsInFlight.current.add(key);
-      void Promise.resolve(legacySource?.loadProject(key) ?? navigationStore.getState().loadProject(key))
+      void Promise.resolve(navigationStore.getState().loadProject(key))
         .catch(() => undefined)
         .finally(() => rootLoadsInFlight.current.delete(key));
     },
-    [legacySource],
+    [],
   );
   useEffect(() => {
     if (navigationMode !== "v1") return;
@@ -645,11 +593,6 @@ function NavigationRail({
     );
     if (projectID && expandedOverrides.get(projectID) !== true) {
       setExpanded(projectID, true);
-      return;
-    }
-    if (legacySource) {
-      if (legacySource.loading) return;
-      consumeReveal();
       return;
     }
     const location = resourceData<{ project_key?: string; tier?: string; pin_section_id?: string; session?: unknown }>(
@@ -705,7 +648,7 @@ function NavigationRail({
     }
     const section = location.tier === "needs_you" ? "needs_you" : "live";
     requestRevealResource(revealTarget, `section:${section}`, () => navigationStore.getState().loadSection(section));
-  }, [revealTarget, resources, expandedOverrides, consumeReveal, setExpanded, legacySource, requestRevealResource]);
+  }, [revealTarget, resources, expandedOverrides, consumeReveal, setExpanded, requestRevealResource]);
 
   function handleToggle(node: RailNode) {
     if (node.kind === "loading") return;
@@ -749,15 +692,12 @@ function NavigationRail({
       await Promise.all(
         pages.map((page) =>
           page.projectKey && page.tier
-            ? (legacySource?.loadPage(page.projectKey, page.tier, page.offset, page.limit) ??
-              navigationStore.getState().loadProjectPage(page.projectKey, page.tier, page.offset, page.limit))
-            : legacySource
-              ? Promise.resolve()
-              : page.section
-                ? navigationStore.getState().loadSection(page.section, page.offset, page.limit)
-                : page.sectionId
-                  ? navigationStore.getState().loadPinSection(page.sectionId, page.offset, page.limit)
-                  : Promise.resolve(),
+            ? navigationStore.getState().loadProjectPage(page.projectKey, page.tier, page.offset, page.limit)
+            : page.section
+              ? navigationStore.getState().loadSection(page.section, page.offset, page.limit)
+              : page.sectionId
+                ? navigationStore.getState().loadPinSection(page.sectionId, page.offset, page.limit)
+                : Promise.resolve(),
         ),
       );
     } catch (error) {
@@ -785,8 +725,7 @@ function NavigationRail({
         installed = optimistic(result);
         setPending((ops) => [...ops, installed as PendingOp]);
       }
-      if (legacySource) await legacySource.refresh();
-      else await convergeMutation(result);
+      await convergeMutation(result);
       converged = true;
     } catch (error) {
       toasts.push("error", `${failure}: ${errorText(error)}`);
@@ -883,8 +822,7 @@ function NavigationRail({
       try {
         const result = await deleteSession(session.ref);
         mutationCompleted = true;
-        if (legacySource) await legacySource.refresh();
-        else await convergeMutation(result);
+        await convergeMutation(result);
         converged = true;
         closePanesForDeletedSessions(result.deleted);
         if (result.skipped.length)
@@ -928,8 +866,7 @@ function NavigationRail({
     try {
       const result = await deleteProject(target.key, target.working_dir ?? "");
       mutationCompleted = true;
-      if (legacySource) await legacySource.refresh();
-      else await convergeMutation(result);
+      await convergeMutation(result);
       converged = true;
       closePanesForDeletedSessions(result.deleted);
       if (result.skipped.length)
@@ -1030,12 +967,11 @@ function NavigationRail({
   const archivedNodes = [
     ...archivedProjectNodes(
       resources.archivedProjects,
-      legacySource?.archivedDetails ??
-        new Map(
-          resources.archivedProjects
-            .filter((p) => resourceData(state, { kind: "project", projectKey: p.key }))
-            .map((p) => [p.key, p]),
-        ),
+      new Map(
+        resources.archivedProjects
+          .filter((p) => resourceData(state, { kind: "project", projectKey: p.key }))
+          .map((p) => [p.key, p]),
+      ),
       isExpanded,
     ),
     ...archivedSessionGroups(unarchived, isExpanded),
@@ -1056,17 +992,15 @@ function NavigationRail({
   ];
   const resourceLoading = [...resourcesState.values()].some((resource) => resource.loading);
   const loading =
-    legacySource?.loading ??
-    (navigationMode === "unknown" || (navigationMode === "v1" && (!manifest || manifest.loading || resourceLoading)));
+    navigationMode === "unknown" || (navigationMode === "v1" && (!manifest || manifest.loading || resourceLoading));
   const manifestError = manifest?.error ? errorText(manifest.error) : null;
   const resourceError = [...resourcesState.values()].find((resource) => resource.error)?.error;
   const loadError =
-    legacySource?.error ??
     manifestError ??
     (resourceError ? errorText(resourceError) : null) ??
     (navigationMode === "error" ? "Navigation resources are unavailable" : null);
   const displayed = nonEmpty(resources);
-  const needsYou = legacySource?.needsYou ?? attention?.needsYou ?? manifest?.data?.attentionSummary.needsYou ?? 0;
+  const needsYou = attention?.needsYou ?? manifest?.data?.attentionSummary.needsYou ?? 0;
   return (
     <div
       className={CLASS.rail}
@@ -1115,14 +1049,14 @@ function NavigationRail({
             action={
               <Button
                 size="sm"
-                onClick={() => void (legacySource?.retry() ?? navigationStore.getState().loadManifest())}
+                onClick={() => void navigationStore.getState().loadManifest()}
               >
                 Retry
               </Button>
             }
           />
         )}
-        {!loading && !displayed && !loadError && (manifest || legacySource) && (
+        {!loading && !displayed && !loadError && manifest && (
           <EmptyState title="No sessions yet" hint="Start a session from the command line to see it here." />
         )}
         {displayed && (
@@ -1267,46 +1201,6 @@ function NavigationRail({
   );
 }
 
-function LegacyRail({ ...props }: RailProps) {
-  const tree = useTreeStore((state) => state.tree);
-  const loading = useTreeStore((state) => state.loading);
-  const error = useTreeStore((state) => state.error);
-  const projectDetails = useTreeStore((state) => state.projectDetails);
-  const projectDetailGenerations = useTreeStore((state) => state.projectDetailGenerations);
-  const treeGeneration = useTreeStore((state) => state.treeGeneration);
-  const currentDetails = useMemo(
-    () => new Map([...projectDetails].filter(([key]) => projectDetailGenerations.get(key) === treeGeneration)),
-    [projectDetails, projectDetailGenerations, treeGeneration],
-  );
-  const source = useMemo<RailDataSource>(
-    () => ({
-      resources: tree
-        ? legacyResources(tree, currentDetails)
-        : { live: [], needsYou: [], pinSections: [], projects: [], archivedProjects: [], testRuns: [] },
-      loading,
-      error,
-      needsYou: tree?.attentionSummary.needsYou ?? 0,
-      retry: async () => {
-        await treeStore.getState().refresh();
-      },
-      loadProject: (key) => treeStore.getState().loadProjectDetail(key),
-      loadPage: (key, tier, offset, limit) => treeStore.getState().loadProjectPage(key, tier, offset, limit),
-      refresh: async () => {
-        await treeStore.getState().refresh();
-      },
-      archivedDetails: new Map(
-        [...currentDetails].map(([key, project]) => [key, legacyProject(project, `project:${key}`)]),
-      ),
-    }),
-    [tree, loading, error, currentDetails],
-  );
-  useEffect(() => {
-    if (!tree) void treeStore.getState().ensureLoaded();
-  }, [tree]);
-  return <NavigationRail {...props} legacySource={source} />;
-}
-
 export function Rail(props: RailProps = {}) {
-  const mode = useNavigationStore((state) => state.mode);
-  return mode === "legacy" ? <LegacyRail {...props} /> : <NavigationRail {...props} />;
+  return <NavigationRail {...props} />;
 }

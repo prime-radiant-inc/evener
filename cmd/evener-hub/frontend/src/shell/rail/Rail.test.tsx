@@ -9,7 +9,6 @@ import type {
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { keyID, type ResourceKey, type ResourceState } from "../../stores/navigation/types";
 import { threadsStore } from "../../stores/threads";
-import { resetTreeStoreForTests, treeStore } from "../../stores/tree";
 import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import { adaptNavigationResources, Rail } from "./Rail";
@@ -127,7 +126,7 @@ function catalogResource(
 
 beforeEach(() => {
   resetNavigationStoreForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
   resetToastStoreForTests();
   resetWorkspaceStoreForTests();
   localStorage.clear();
@@ -138,7 +137,7 @@ afterEach(() => {
 });
 
 describe("resource-backed Rail", () => {
-  test("renders loaded global and project resources without requesting /api/tree", () => {
+  test("renders loaded global and project resources without requesting /api/navigation", () => {
     const fetchSpy = vi.spyOn(globalThis, "fetch");
     installState([
       sectionResource("live", [summary({ title: "Live resource" })]),
@@ -148,7 +147,7 @@ describe("resource-backed Rail", () => {
     render(<Rail />);
     expect(screen.getByText("Live resource")).toBeTruthy();
     expect(screen.getAllByText("Proj").length).toBeGreaterThan(0);
-    expect(fetchSpy).not.toHaveBeenCalledWith("/api/tree", expect.anything());
+    expect(fetchSpy).not.toHaveBeenCalledWith("/api/navigation", expect.anything());
     fetchSpy.mockRestore();
   });
   test("shows bounded loading and empty states from manifest/resource state", () => {
@@ -759,91 +758,4 @@ describe("resource-backed Rail", () => {
   });
 });
 
-test("explicit legacy mode renders the legacy store and does not use navigation requests", () => {
-  const fetchSpy = vi.spyOn(globalThis, "fetch");
-  navigationStore.setState({ mode: "legacy" });
-  treeStore.setState({
-    tree: {
-      generated_at: "2026-01-01T00:00:00Z",
-      sources: [],
-      live: [
-        {
-          row_id: "legacy:live",
-          ref: "local:live",
-          host_id: "local",
-          session_id: "live",
-          title: "Legacy live",
-          project: "P",
-          state: "active",
-          kind: "session",
-          live: true,
-          children: [],
-        },
-      ],
-      needs_you: [],
-      pin_sections: [],
-      projects: [],
-      archived_projects: [],
-      test_runs: [],
-      attentionSummary: { needsYou: 0, error: 0, working: 1 },
-    },
-    loading: false,
-    error: null,
-  });
-  render(<Rail />);
-  expect(screen.getByText("Legacy live")).toBeTruthy();
-  expect(fetchSpy).not.toHaveBeenCalledWith("/api/navigation", expect.anything());
-  fetchSpy.mockRestore();
-});
-
-test("legacy reveal and overflow stay on tree loaders", async () => {
-  const loadProjectPage = vi.fn().mockResolvedValue(undefined);
-  const lookupLocation = vi.fn();
-  const loadSection = vi.fn();
-  navigationStore.setState({ mode: "legacy", lookupLocation, loadSection });
-  treeStore.setState({
-    tree: {
-      generated_at: "2026-01-01T00:00:00Z",
-      sources: [],
-      live: [],
-      needs_you: [],
-      pin_sections: [],
-      archived_projects: [],
-      test_runs: [],
-      projects: [
-        {
-          key: "p",
-          name: "P",
-          sessions: [
-            {
-              row_id: "r",
-              ref: "local:r",
-              host_id: "local",
-              session_id: "r",
-              title: "R",
-              project: "P",
-              state: "idle",
-              kind: "session",
-              live: true,
-              children: [],
-            },
-          ],
-          more_current: 2,
-        },
-      ],
-      attentionSummary: { needsYou: 0, error: 0, working: 0 },
-    },
-    loading: false,
-    error: null,
-    loadProjectPage,
-  });
-  const consumed = vi.fn();
-  render(<Rail revealTarget="unknown" onRevealConsumed={consumed} />);
-  await act(async () => undefined);
-  expect(consumed).toHaveBeenCalledTimes(1);
-  expect(lookupLocation).not.toHaveBeenCalled();
-  fireEvent.click(screen.getByText("P"));
-  fireEvent.click(screen.getByText("+2 older"));
-  expect(loadProjectPage).toHaveBeenCalledWith("p", "current", 1, 2);
-  expect(loadSection).not.toHaveBeenCalled();
-});
+// Legacy mode tests removed — legacy tree store retired per R50.

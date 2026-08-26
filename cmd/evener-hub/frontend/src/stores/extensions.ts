@@ -287,7 +287,7 @@ export function useExtensionsStore<T>(selector?: (state: ExtensionsStoreState) =
 // waiting on each other. All three notifications' generated payload types
 // are empty ({}) in protocol/types.gen.ts, so there is nothing to apply
 // directly and a debounced re-fetch of the affected list is the only
-// option, exactly like evener/tree/changed's own "just refetch" contract.
+// option, exactly like evener/navigation/invalidated's own "just refetch" contract.
 // On the wire evener/marketplace/updated and evener/plugin/updated genuinely
 // send empty maps (notifyMarketplaceUpdated/notifyPluginUpdated,
 // cmd/evener-hub/app_rpc.go:657,663), while evener/launch/updated carries

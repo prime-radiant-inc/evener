@@ -1,6 +1,6 @@
 // The notifications engine: owns document.title's attention count, the
 // favicon badge, OS notifications, the alert sound, and single-tab (Web
-// Locks) leader election, all driven off treeStore + prefsStore +
+// Locks) leader election, all driven off navigationStore + prefsStore +
 // workspaceStore + connectionStore. AppShell calls initNotifications() once
 // at module evaluation, beside initPrefs().
 //
@@ -16,20 +16,16 @@ import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { prefsStore } from "../stores/prefs";
-import { treeStore } from "../stores/tree";
-import { type AttentionEntry, detectFires, snapshotFromTree } from "./attention";
+import { type AttentionEntry, detectFires } from "./attention";
 import { fireOsNotification, playTone } from "./channels";
 import { applyFavicon } from "./favicon";
 import { electLeader, isLeader } from "./leader";
 import { applyTitle } from "./title";
 
 let initialized = false;
-// null until the first treeStore snapshot establishes the baseline. Edge-fire
-// diffs each later snapshot against this; a page load therefore never
-// re-alerts on attention that was already present (floor §3.6).
-let prevSnapshot: Map<string, AttentionEntry> | null = null;
-// Set on reconnect so the next snapshot re-baselines silently (the gap may
-// have missed broadcasts; re-sync rather than replay them as fresh alerts).
+// Set on reconnect so the next attention snapshot re-baselines silently (the
+// gap may have missed broadcasts; re-sync rather than replay them as fresh
+// alerts).
 let rebaselinePending = false;
 // Whether we have already seen the connection reach "ready" once — so the
 // initial connect is distinguished from a reconnect.
@@ -38,9 +34,7 @@ let prevNavigationAttention: Map<string, AttentionEntry> | null = null;
 const subscriptions: Array<() => void> = [];
 
 function currentSummary() {
-  return navigationStore.getState().mode === "v1"
-    ? navigationStore.getState().attention.summary
-    : (treeStore.getState().tree?.attentionSummary ?? null);
+  return navigationStore.getState().attention.summary ?? null;
 }
 
 function onNavigationAttention(): void {
@@ -66,6 +60,11 @@ function onNavigationAttention(): void {
     prevNavigationAttention = next;
     return;
   }
+  if (rebaselinePending) {
+    prevNavigationAttention = next;
+    rebaselinePending = false;
+    return;
+  }
   const { notifications, notificationsLoudScope } = prefsStore.getState();
   const alerts = detectFires(prevNavigationAttention, next, notificationsLoudScope);
   prevNavigationAttention = next;
@@ -88,38 +87,6 @@ function applyCounts(): void {
   applyFavicon(notifications.favicon, currentSummary());
 }
 
-function onTreeChanged(): void {
-  if (navigationStore.getState().mode === "v1") return;
-  // Counts (title + favicon) apply unconditionally on every snapshot — even
-  // before a baseline, even focused, even on a non-leader tab (floor §3.6);
-  // only the OS/sound edge-fire below is gated.
-  applyCounts();
-
-  const next = snapshotFromTree(treeStore.getState().tree);
-
-  // The first snapshot IS the baseline; a reconnect re-baselines the same
-  // way. Neither fires.
-  if (prevSnapshot === null || rebaselinePending) {
-    prevSnapshot = next;
-    rebaselinePending = false;
-    return;
-  }
-
-  const { notifications, notificationsLoudScope } = prefsStore.getState();
-  const alerts = detectFires(prevSnapshot, next, notificationsLoudScope);
-  prevSnapshot = next;
-
-  // Edge-fire gates: only when unfocused AND this tab is the elected leader.
-  // os and sound are then checked independently — either, both, or neither.
-  if (alerts.length === 0) return;
-  if (document.hasFocus?.()) return;
-  if (!isLeader()) return;
-  for (const entry of alerts) {
-    if (notifications.os) fireOsNotification(entry);
-    if (notifications.sound) playTone();
-  }
-}
-
 export function initNotifications(): void {
   if (initialized) return;
   initialized = true;
@@ -128,7 +95,7 @@ export function initNotifications(): void {
 
   // Navigation is authoritative when the handshake advertises it. The
   // microtask lets AppShell wire its client during the same mount before the
-  // migration-only tree fallback is considered.
+  // navigation store is initialized.
   queueMicrotask(() => {
     const { client, state } = connectionStore.getState();
     if (client && state === "ready") initNavigation(client);
@@ -145,17 +112,6 @@ export function initNotifications(): void {
       if (state.attention !== prev.attention) onNavigationAttention();
       if (state.resources !== prev.resources) applyTitleNow();
       if (prev.mode === "v1" && state.mode !== "v1") prevNavigationAttention = null;
-      if (state.mode === "legacy" && prev.mode !== "legacy" && treeStore.getState().tree === null)
-        void treeStore.getState().ensureLoaded();
-    }),
-  );
-
-  // React to a tree snapshot only when the tree reference actually changes —
-  // never on a bare loading/error transition, whose null-tree snapshot would
-  // otherwise corrupt the baseline into "everything just appeared."
-  subscriptions.push(
-    treeStore.subscribe((state, prev) => {
-      if (state.tree !== prev.tree) onTreeChanged();
     }),
   );
 
@@ -170,15 +126,15 @@ export function initNotifications(): void {
   // The base title tracks the focused pane.
   subscriptions.push(workspaceStore.subscribe(applyTitleNow));
 
-  // Reconnect: on reaching "ready" AFTER a prior "ready", re-fetch the tree so
-  // counts re-sync and the next snapshot re-baselines silently.
+  // Reconnect: on reaching "ready" AFTER a prior "ready", re-baseline the
+  // attention snapshot so the next transition fires silently rather than
+  // replaying missed broadcasts as fresh alerts.
   //
   // Only a TRANSITION into "ready" is a connection event. Any other change to
   // this store republishes the same "ready" to every subscriber - AppShell
   // sets serverInfo through it the moment its own connect() promise resolves,
-  // on every single boot - and reading that as a reconnect cost a pointless
-  // extra GET /api/tree and a needless re-baseline of the attention snapshot
-  // (kata p5w9).
+  // on every single boot - and reading that as a reconnect cost a needless
+  // re-baseline (kata p5w9).
   sawReady = connectionStore.getState().state === "ready";
   subscriptions.push(
     connectionStore.subscribe((state, prev) => {
@@ -188,15 +144,9 @@ export function initNotifications(): void {
         return;
       }
       rebaselinePending = true;
-      const client = connectionStore.getState().client;
-      if (!client || navigationStore.getState().mode === "legacy") void treeStore.getState().refresh();
     }),
   );
 
-  // Seed the baseline from any already-loaded tree so the first post-init
-  // transition (not the first snapshot) is what fires.
-  const current = treeStore.getState().tree;
-  if (current !== null) prevSnapshot = snapshotFromTree(current);
   applyCounts();
 }
 
@@ -207,7 +157,6 @@ export function resetNotificationsForTests(): void {
   for (const unsub of subscriptions) unsub();
   subscriptions.length = 0;
   initialized = false;
-  prevSnapshot = null;
   rebaselinePending = false;
   sawReady = false;
   prevNavigationAttention = null;

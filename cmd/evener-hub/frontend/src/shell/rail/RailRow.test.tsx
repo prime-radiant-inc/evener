@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
-import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
+import type { RailProject, RailSession } from "./railNodes";
 import { Tree, type TreeRowInfo } from "../../widgets";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -82,7 +82,7 @@ beforeEach(() => {
 
 afterEach(cleanup);
 
-function apiNode(overrides: Partial<ApiTreeNode> = {}): ApiTreeNode {
+function apiNode(overrides: Partial<RailSession> = {}): RailSession {
   return {
     row_id: "project:p1:local:a",
     ref: "local:a",
@@ -98,15 +98,15 @@ function apiNode(overrides: Partial<ApiTreeNode> = {}): ApiTreeNode {
   };
 }
 
-function apiProject(overrides: Partial<ApiTreeProject> = {}): ApiTreeProject {
-  return { key: "p1", name: "Proj", sessions: [], ...overrides };
+function apiProject(overrides: Partial<RailProject> = {}): RailProject {
+  return { key: "p1", name: "Proj", sessions: [], more_current: 0, more_recent: 0, more_archived: 0, loaded: false, nextOffsets: {}, ...overrides };
 }
 
-function sessionRailNode(session: ApiTreeNode, overrides: Partial<SessionRailNode> = {}): SessionRailNode {
+function sessionRailNode(session: RailSession, overrides: Partial<SessionRailNode> = {}): SessionRailNode {
   return { id: session.row_id, kind: "session", session, expanded: false, children: [], ...overrides };
 }
 
-function projectRailNode(project: ApiTreeProject, children: ProjectRailNode["children"] = []): ProjectRailNode {
+function projectRailNode(project: RailProject, children: ProjectRailNode["children"] = []): ProjectRailNode {
   return { id: `projectnode:${project.key}`, kind: "project", project, expanded: false, children };
 }
 
@@ -145,7 +145,7 @@ function actions(overrides: Partial<RailRowActions> = {}): RailRowActions {
 // renderRow mounts a top-level local session row with the menu fully
 // populated (renameable, live, deletable), the way the rail's own tiers
 // would render it.
-function renderRow(sessionOverrides: Partial<ApiTreeNode> = {}, acts: RailRowActions = actions()) {
+function renderRow(sessionOverrides: Partial<RailSession> = {}, acts: RailRowActions = actions()) {
   const session = apiNode({ rename: true, ...sessionOverrides });
   render(<RailRow node={sessionRailNode(session)} info={info()} actions={acts} />);
   return session;

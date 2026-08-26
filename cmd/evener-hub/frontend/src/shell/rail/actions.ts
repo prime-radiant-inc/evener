@@ -6,7 +6,13 @@
 // optimistic UI: callers await the response's exact navigation targets before
 // removing their overlay.
 import type { NavigationMutation } from "../../protocol/types.gen";
-import type { PinSectionSummary } from "../../stores/tree";
+
+/** Wire shape of GET /api/pin-sections — { id, name, member_count }. */
+export interface PinSectionSummary {
+  id: string;
+  name: string;
+  member_count: number;
+}
 
 export interface NavigationMutationReceipt {
   navigation: NavigationMutation;

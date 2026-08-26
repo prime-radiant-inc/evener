@@ -1,7 +1,8 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterAll, afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { PinSectionSummary, TreeNode } from "../../stores/tree";
+import type { NavigationSessionSummary } from "../../protocol/types.gen";
+import type { PinSectionSummary } from "./actions";
 import sheetStyles from "../../widgets/sheet/sheet.module.css";
 import * as railActions from "./actions";
 import { RailRequestError } from "./actions";
@@ -25,9 +26,8 @@ import { PinSectionPicker, type PinSectionPickerProps } from "./PinSectionPicker
 // shell/palette/commands.test.ts's own comment on the same hazard).
 let mockedListPinSections = vi.spyOn(railActions, "listPinSections");
 
-function session(overrides: Partial<TreeNode> = {}): TreeNode {
+function session(overrides: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary {
   return {
-    row_id: "project:p1:local:s1",
     ref: "local:s1",
     host_id: "local",
     session_id: "s1",
