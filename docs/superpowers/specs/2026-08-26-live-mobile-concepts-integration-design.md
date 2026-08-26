@@ -150,9 +150,10 @@ Notification behavior is explicit:
 
 ### Real-time roster
 
-- Every `thread/list` request sends `limit: 100`.
-- Roster follows cursors to a client cap of 500 entries.
-- If another cursor remains, state exposes `hasMore: true`; the UI must not claim completeness.
+- Milestone one sends one bounded `thread/list` request with `limit: 501`.
+- The roster retains and displays at most 500 entries.
+- If a 501st row is returned, state exposes `hasMore: true`; the UI must not claim completeness.
+- The current Hub aggregate handler does not return a usable aggregate cursor, so milestone one does not issue a second roster page request. True paging is deferred backend work.
 - While Sessions is visible, `evener/tree/changed` and relevant attention/status signals schedule one debounced roster refresh.
 - Preserve the last successful roster on refresh failure.
 
@@ -200,6 +201,7 @@ interface LiveComposerView {
 ```ts
 type LiveConceptIntent =
   | { type: "switchConcept"; concept: ConceptId }
+  | { type: "openConceptSwitcher" }
   | { type: "refreshRoster" }
   | { type: "setRosterQuery"; value: string }
   | { type: "openConversation"; key: string }
@@ -228,6 +230,22 @@ interface LiveConceptRendererProps {
   dispatch(intent: LiveConceptIntent): void;
 }
 ```
+
+`LiveConceptHost` also has an executable RootShell callback contract:
+
+```ts
+interface LiveConceptHostProps {
+  runtime: LiveConceptRuntime;
+  surface: "sessions" | "conversation" | "work";
+  onOpenConceptSwitcher(): void;
+  onBack(): void;
+  onOpenNew(): void;
+  onOpenSettings(): void;
+  onOpenVoice(): void;
+}
+```
+
+`openConceptSwitcher` invokes the RootShell-owned portal through `onOpenConceptSwitcher`. The sheet dispatches `switchConcept` after selection. Back/New/Settings/Voice intents invoke the corresponding RootShell callback; in particular, Voice delegates to RootShell's local `showVoice` owner rather than assuming `NavigationStore` owns it.
 
 A static boundary test rejects these beneath `mobile/src/live-concepts/`:
 
@@ -373,8 +391,8 @@ The existing byte-exact ask-answer composition is private inside `AskComposer.ts
 
 ### Roster
 
-1. `RosterService.list()` calls paged, bounded `thread/list`.
-2. `RosterStore` follows cursors to its cap, groups attention/running/recent, and applies local filtering.
+1. `RosterService.list()` calls one bounded `thread/list` with `limit: 501`.
+2. `RosterStore` retains 500 rows, records whether a 501st exists, groups attention/running/recent, and applies local filtering.
 3. The live projection maps entries into display-safe concept rows.
 4. Explicit refresh and debounced tree/attention refresh use the same generation-aware effect.
 
@@ -425,7 +443,7 @@ Attachments are deferred. Milestone one projects an attachment as a metadata-onl
 On a physical iPhone against a real Hub:
 
 1. Existing pairing/profile selection succeeds without moving credentials into JS.
-2. Paged bounded `thread/list` returns, exposes `hasMore` honestly, and all three concepts show the same real grouped roster IDs.
+2. One bounded `thread/list` with `limit: 501` returns, retains 500 rows, exposes `hasMore` honestly when row 501 exists, and all three concepts show the same real grouped roster IDs.
 3. Visible Sessions refreshes after a real tree/attention event without manual pull.
 4. Switching concepts preserves selected profile, roster query, and scroll anchor.
 5. Opening a real thread renders the same thread ID and bounded transcript in all three concepts.
@@ -461,7 +479,7 @@ Reject forbidden prototype imports/symbols, direct transport calls, global unsco
 - send/steer/queue/interrupt method, capability, pending, and failure behavior;
 - exact draft restoration and stale-generation rejection;
 - sanitized activity projection and notification/reread behavior;
-- paged roster cap, hasMore, debounced tree refresh, and last-good retention;
+- single-request roster cap, 501st-row `hasMore`, debounced tree refresh, and last-good retention;
 - profile/conversation reconnect rehydration.
 
 ### Renderer contract
@@ -483,7 +501,7 @@ The smoke report records:
 - signed app bundle ID/version/hash;
 - Hub commit/version/protocol and redacted origin;
 - known thread ref held only in scratch evidence;
-- roster/read/page limits;
+- roster/read limits and the roster 501st-row completeness result;
 - expected request and notification sequence;
 - per-concept roster IDs and active thread ID;
 - draft sentinel before and after each switch;
@@ -525,7 +543,8 @@ If review shows any listed file contains unrelated changes, split or omit it rat
 - extract shared ask-answer composition;
 - audit and scope CSS;
 - add compile-only contract tests;
-- commit before parallel workers branch.
+- commit before parallel workers branch;
+- record this serialized foundation commit as the **foundation SHA**.
 
 ### Parallel lanes
 
@@ -568,7 +587,7 @@ One integration owner merges reviewed lane commits and exclusively owns:
 
 ### Review rules
 
-- Every writing lane uses an isolated worktree from the recorded baseline SHA.
+- Baseline B is the reviewed ancestor of foundation. Every parallel writing lane uses an isolated worktree branched from the recorded **foundation SHA**, not baseline B.
 - Every lane has a named path allowlist and TDD evidence.
 - Review each lane before integration.
 - Run one whole-branch review after integration.
