@@ -32,14 +32,55 @@ async function activePort(profile, child, stderr) {
     () => undefined,
     () => changed,
   );
-  await Promise.race([immediate, exited]);
-  controller.abort();
+  try {
+    await Promise.race([immediate, exited]);
+  } finally {
+    controller.abort();
+  }
   const [port, browserPath] = (await readFile(file, "utf8"))
     .trim()
     .split(/\r?\n/);
   if (!port || !browserPath)
     throw new Error(`Invalid DevToolsActivePort in ${profile}`);
   return { port: Number(port), browserPath };
+}
+
+function exitEvent(child) {
+  return child.exitCode === null
+    ? new Promise((resolve) => child.once("exit", resolve))
+    : Promise.resolve();
+}
+
+async function bounded(promise, milliseconds, label) {
+  let timer;
+  try {
+    return await Promise.race([
+      promise,
+      new Promise((_, reject) => {
+        timer = setTimeout(
+          () => reject(new Error(`${label} exceeded ${milliseconds}ms`)),
+          milliseconds,
+        );
+      }),
+    ]);
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+async function terminateOwned(child) {
+  if (child.exitCode !== null) return false;
+  const graceful = exitEvent(child);
+  child.kill("SIGTERM");
+  try {
+    await bounded(graceful, 3_000, "Chrome SIGTERM shutdown");
+    return false;
+  } catch {
+    const forced = exitEvent(child);
+    child.kill("SIGKILL");
+    await bounded(forced, 3_000, "Chrome SIGKILL shutdown");
+    return true;
+  }
 }
 
 export async function startChrome(options = {}) {
@@ -76,13 +117,21 @@ export async function startChrome(options = {}) {
   try {
     ({ port, browserPath } = await activePort(profile, child, () => errors));
   } catch (error) {
-    child.kill("SIGTERM");
+    await terminateOwned(child);
     throw new Error(
       `${error.message}\nOwned Chrome profile retained: ${profile}`,
     );
   }
   const httpBase = `http://127.0.0.1:${port}`;
-  const browser = await connectCdp(`ws://127.0.0.1:${port}${browserPath}`);
+  let browser;
+  try {
+    browser = await connectCdp(`ws://127.0.0.1:${port}${browserPath}`);
+  } catch (error) {
+    await terminateOwned(child);
+    throw new Error(
+      `${error.message}\nOwned Chrome profile retained: ${profile}`,
+    );
+  }
   let closed = false;
 
   return {
@@ -94,7 +143,15 @@ export async function startChrome(options = {}) {
       if (!response.ok)
         throw new Error(`Chrome target creation failed: ${response.status}`);
       const target = await response.json();
-      const page = await connectCdp(target.webSocketDebuggerUrl);
+      let page;
+      try {
+        page = await connectCdp(target.webSocketDebuggerUrl);
+      } catch (error) {
+        await browser
+          .send("Target.closeTarget", { targetId: target.id })
+          .catch(() => {});
+        throw error;
+      }
       return {
         ...page,
         async close() {
@@ -106,18 +163,15 @@ export async function startChrome(options = {}) {
     async close({ retainProfile = false } = {}) {
       if (closed) return;
       closed = true;
-      const exit =
-        child.exitCode === null
-          ? new Promise((resolve) => child.once("exit", resolve))
-          : Promise.resolve();
       let shutdownFailed = false;
       try {
+        const exit = exitEvent(child);
         await browser.send("Browser.close");
+        await bounded(exit, 3_000, "Chrome protocol shutdown");
       } catch {
-        child.kill("SIGTERM");
         shutdownFailed = true;
+        await terminateOwned(child);
       }
-      await exit;
       await browser.close().catch(() => {});
       if (retainProfile || shutdownFailed) {
         console.error(`Owned Chrome profile retained: ${profile}`);
