@@ -35,7 +35,7 @@ func ReadEventsWithDiagnostics(path string) ([]Event, ReadDiagnostics, error) {
 		return nil, ReadDiagnostics{}, fmt.Errorf("jobstore: read %s: %w", path, err)
 	}
 	trailingLineTerminated := len(data) > 0 && data[len(data)-1] == '\n'
-	diagnostics := ReadDiagnostics{TornTail: len(data) > 0 && !trailingLineTerminated}
+	diagnostics := ReadDiagnostics{}
 	lines := bytes.Split(data, []byte{'\n'})
 	// A trailing newline produces a final empty element; drop it so the last
 	// real line is correctly identified for partial-line tolerance.

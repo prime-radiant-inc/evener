@@ -801,7 +801,7 @@ func activityOwnedRecords(sessionID string, records []*jobstore.JobRecord) []*jo
 		if rec == nil {
 			continue
 		}
-		if rec.OwnerSessionID != "" && rec.OwnerSessionID != sessionID {
+		if rec.OwnerSessionID != "" && rec.OwnerSessionID != sessionID && rec.Authority != jobstore.AuthorityForwardedFallback && rec.Authority != jobstore.AuthorityLegacyUnknown {
 			continue
 		}
 		owned = append(owned, rec)

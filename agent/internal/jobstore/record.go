@@ -40,6 +40,15 @@ func (s Status) IsTerminal() bool {
 // NotifyState identifies terminal-notification delivery progress.
 type NotifyState string
 
+// Authority identifies which retained source justified a record.
+type Authority string
+
+const (
+	AuthorityOwner             Authority = "owner"
+	AuthorityForwardedFallback Authority = "forwarded_fallback"
+	AuthorityLegacyUnknown     Authority = "legacy_unknown"
+)
+
 const (
 	NotifyNotArmed  NotifyState = "not_armed"
 	NotifyPending   NotifyState = "pending"
@@ -209,6 +218,9 @@ type JobRecord struct {
 	StructuredResultReason string             `json:"structured_result_reason,omitempty"`
 	TerminalGen            string             `json:"terminal_generation,omitempty"`
 	NotifyState            NotifyState        `json:"terminal_notification_state"`
+	Authority              Authority          `json:"-"`
+	Incomplete             bool               `json:"-"`
+	IntegrityReasons       []string           `json:"-"`
 	Provenance             *provenance.Causal `json:"provenance,omitempty"`
 	NotificationProvenance *provenance.Causal `json:"notification_provenance,omitempty"`
 }

@@ -6,6 +6,7 @@ import (
 
 	"primeradiant.com/evener/agent/internal/jobstore"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/identifier"
 )
 
 const maxRetainedJobSources = 64
@@ -39,15 +40,23 @@ func loadRetainedJobHistory(stateDir, rootSessionID string) (map[string]*jobstor
 			if item.root {
 				return nil, jobstore.AuthorityDiagnostics{}, err
 			}
-			sources = append(sources, jobstore.JournalSource{SessionID: item.id, Root: false, Available: true, Diagnostics: jobstore.ReadDiagnostics{Corrupt: true}})
+			sources = append(sources, jobstore.JournalSource{SessionID: item.id, Root: false, Available: true, State: jobstore.SourceCorrupt, Diagnostics: jobstore.ReadDiagnostics{Corrupt: true}})
 			continue
 		}
 		available := events != nil
-		sources = append(sources, jobstore.JournalSource{SessionID: item.id, Root: item.root, Available: available, Events: events, Diagnostics: readDiag})
+		state := jobstore.SourceAvailable
+		if !available {
+			state = jobstore.SourceMissing
+		}
+		sources = append(sources, jobstore.JournalSource{SessionID: item.id, Root: item.root, Available: available, State: state, Events: events, Diagnostics: readDiag})
 		for _, event := range events {
-			if event.Kind == jobstore.EventJobStarted && event.OwnerSessionID != "" && event.OwnerSessionID != item.id {
-				if schema.ValidateSessionID(event.OwnerSessionID) == nil && !seen[event.OwnerSessionID] {
-					queue = append(queue, pending{event.OwnerSessionID, false})
+			if event.Kind == jobstore.EventJobStarted {
+				owner := event.OwnerSessionID
+				if owner == "" {
+					owner, _ = identifier.JobOwnerSessionID(event.JobID)
+				}
+				if schema.ValidateSessionID(owner) == nil && owner != item.id && !seen[owner] {
+					queue = append(queue, pending{owner, false})
 				}
 			}
 		}

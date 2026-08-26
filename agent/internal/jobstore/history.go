@@ -16,7 +16,17 @@ type JournalSource struct {
 	Available   bool
 	Events      []Event
 	Diagnostics ReadDiagnostics
+	State       SourceState
 }
+
+type SourceState string
+
+const (
+	SourceAvailable    SourceState = "available"
+	SourceMissing      SourceState = "missing"
+	SourceCorrupt      SourceState = "corrupt"
+	SourceInaccessible SourceState = "inaccessible"
+)
 
 type AuthorityDiagnostics struct {
 	Incomplete      bool
@@ -26,6 +36,7 @@ type AuthorityDiagnostics struct {
 	MissingOwners   []string
 	TornTails       []string
 	CorruptBranches []string
+	Compatibility   []string
 }
 
 var ErrRootCorruption = errors.New("jobstore: root journal corruption")
@@ -35,9 +46,11 @@ var ErrRootCorruption = errors.New("jobstore: root journal corruption")
 // only when no valid owner journal is available, and that result is incomplete.
 func MergeJournals(sources []JournalSource) (map[string]*JobRecord, AuthorityDiagnostics, error) {
 	type candidate struct {
-		rec    *JobRecord
-		source string
-		owner  bool
+		rec           *JobRecord
+		source        string
+		owner         bool
+		legacyUnknown bool
+		damaged       bool
 	}
 	var d AuthorityDiagnostics
 	candidates := make(map[string][]candidate)
@@ -59,19 +72,29 @@ func MergeJournals(sources []JournalSource) (map[string]*JobRecord, AuthorityDia
 		}
 		recs, lifecycle := FoldWithDiagnostics(src.Events)
 		d.LifecycleErrors = append(d.LifecycleErrors, lifecycle...)
+		invalid := lifecycleInvalidIDs(src.Events)
 		for id, rec := range recs {
 			if rec == nil || id == "" || rec.JobID != id {
 				continue
 			}
-			owner := rec.OwnerSessionID == "" || rec.OwnerSessionID == src.SessionID
-			if embedded, err := identifier.JobOwnerSessionID(id); err == nil && rec.OwnerSessionID != "" && embedded != rec.OwnerSessionID {
-				d.InvalidOwners = append(d.InvalidOwners, id)
-				continue
+			damaged := invalid[id] || (src.Diagnostics.TornTail && rec.Status == StatusRunning)
+			embedded, parseErr := identifier.JobOwnerSessionID(id)
+			ownerID := rec.OwnerSessionID
+			if ownerID == "" && parseErr == nil {
+				ownerID = embedded
+				d.Compatibility = append(d.Compatibility, id)
 			}
-			if rec.OwnerSessionID != "" && rec.OwnerSessionID != src.SessionID {
+			if rec.OwnerSessionID != "" && parseErr != nil {
+				d.Compatibility = append(d.Compatibility, id)
+			}
+			owner := ownerID == src.SessionID && !damaged
+			if rec.OwnerSessionID != "" && parseErr == nil && embedded != rec.OwnerSessionID {
 				d.InvalidOwners = append(d.InvalidOwners, id)
 			}
-			candidates[id] = append(candidates[id], candidate{rec: rec, source: src.SessionID, owner: owner})
+			if rec.OwnerSessionID == "" && parseErr != nil {
+				d.Incomplete = true
+			}
+			candidates[id] = append(candidates[id], candidate{rec: rec, source: src.SessionID, owner: owner, damaged: damaged, legacyUnknown: rec.OwnerSessionID == "" && parseErr != nil})
 		}
 	}
 	out := make(map[string]*JobRecord)
@@ -94,12 +117,31 @@ func MergeJournals(sources []JournalSource) (map[string]*JobRecord, AuthorityDia
 			for _, c := range forwarded {
 				if !sameRecord(chosen.rec, c.rec) {
 					d.Mismatches = append(d.Mismatches, id)
+					chosen.rec.IntegrityReasons = append(chosen.rec.IntegrityReasons, "forwarded_mismatch")
 				}
 			}
+			chosen.rec.Authority = AuthorityOwner
+			chosen.rec.Incomplete = len(d.LifecycleErrors) > 0
 			out[id] = chosen.rec
 			continue
 		}
 		if len(forwarded) > 0 {
+			sort.SliceStable(forwarded, func(i, j int) bool {
+				if forwarded[i].rec.Status.IsTerminal() != forwarded[j].rec.Status.IsTerminal() {
+					return forwarded[i].rec.Status.IsTerminal()
+				}
+				return forwarded[i].source < forwarded[j].source
+			})
+			if forwarded[0].legacyUnknown {
+				forwarded[0].rec.Authority = AuthorityLegacyUnknown
+			} else {
+				forwarded[0].rec.Authority = AuthorityForwardedFallback
+			}
+			forwarded[0].rec.Incomplete = true
+			if forwarded[0].damaged {
+				forwarded[0].rec.IntegrityReasons = append(forwarded[0].rec.IntegrityReasons, "lifecycle_invalid")
+			}
+			forwarded[0].rec.IntegrityReasons = append(forwarded[0].rec.IntegrityReasons, "owner_unavailable")
 			out[id] = forwarded[0].rec
 			d.Incomplete = true
 			d.MissingOwners = append(d.MissingOwners, id)
@@ -112,7 +154,34 @@ func MergeJournals(sources []JournalSource) (map[string]*JobRecord, AuthorityDia
 }
 
 func sameRecord(a, b *JobRecord) bool {
-	return a.JobID == b.JobID && a.Status == b.Status && a.Reason == b.Reason && a.TerminalGen == b.TerminalGen && a.OutputBytes == b.OutputBytes
+	if a.JobID != b.JobID || a.Type != b.Type || a.Status != b.Status || a.Reason != b.Reason || a.TerminalGen != b.TerminalGen || a.OutputBytes != b.OutputBytes {
+		return false
+	}
+	if a.ExitCode == nil || b.ExitCode == nil {
+		return a.ExitCode == nil && b.ExitCode == nil
+	}
+	return *a.ExitCode == *b.ExitCode
+}
+
+func lifecycleInvalidIDs(events []Event) map[string]bool {
+	bad := make(map[string]bool)
+	started := make(map[string]bool)
+	finished := make(map[string]bool)
+	for _, e := range events {
+		switch e.Kind {
+		case EventJobStarted:
+			if e.JobID == "" || e.Type != JobShell || e.StartedAt == nil || started[e.JobID] {
+				bad[e.JobID] = true
+			}
+			started[e.JobID] = true
+		case EventJobFinished:
+			if e.JobID == "" || !started[e.JobID] || finished[e.JobID] || e.Status == "" {
+				bad[e.JobID] = true
+			}
+			finished[e.JobID] = true
+		}
+	}
+	return bad
 }
 
 // FoldWithDiagnostics preserves Fold's tolerant projection while reporting
