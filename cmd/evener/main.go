@@ -185,6 +185,11 @@ func mainWithDeps(deps mainDeps) {
 		deps.exit(1)
 		return
 	}
+	if *flags.runTimeout < 0 {
+		_, _ = fmt.Fprintf(deps.stderr, "evener: invalid --timeout %s: must be non-negative\n", flags.runTimeout.String())
+		deps.exit(2)
+		return
+	}
 
 	ctx, cancel := deps.notify(context.Background(), os.Interrupt)
 	defer cancel()

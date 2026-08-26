@@ -11,7 +11,7 @@ func TestRetry_RateLimitDeadlineUsesRunBudget(t *testing.T) {
 	clk := newBudgetClock()
 	clk.now = time.Now()
 	policy := budgetPolicy(clk, 30*time.Minute)
-	ctx, cancel := context.WithDeadline(context.Background(), clk.now.Add(2*time.Minute))
+	ctx, cancel := context.WithDeadline(WithRunBudget(context.Background()), clk.now.Add(2*time.Minute))
 	defer cancel()
 	calls := 0
 	_, err := Retry(ctx, policy, clk.sleep, func() float64 { return .5 }, func() (Response, error) {
@@ -30,7 +30,7 @@ func TestRetryStream_RateLimitDeadlineUsesRunBudget(t *testing.T) {
 	clk := newBudgetClock()
 	clk.now = time.Now()
 	policy := budgetPolicy(clk, 30*time.Minute)
-	ctx, cancel := context.WithDeadline(context.Background(), clk.now.Add(2*time.Minute))
+	ctx, cancel := context.WithDeadline(WithRunBudget(context.Background()), clk.now.Add(2*time.Minute))
 	defer cancel()
 	calls := 0
 	err := RetryStream(ctx, RetryStreamOptions{Policy: policy, Sleep: clk.sleep}, func(context.Context) (AttemptReport, error) {
@@ -51,7 +51,7 @@ func TestRetry_RateLimitLongRunDeadlineOutlivesThirtyMinuteFallback(t *testing.T
 	policy := budgetPolicy(clk, 30*time.Minute)
 	policy.BaseDelay = time.Minute
 	policy.MaxDelay = time.Minute
-	ctx, cancel := context.WithDeadline(context.Background(), clk.now.Add(32*time.Minute))
+	ctx, cancel := context.WithDeadline(WithRunBudget(context.Background()), clk.now.Add(32*time.Minute))
 	defer cancel()
 	calls := 0
 	_, err := Retry(ctx, policy, clk.sleep, func() float64 { return .5 }, func() (Response, error) {

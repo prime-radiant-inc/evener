@@ -184,7 +184,11 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		ownsArtifactStore = true
 	}
 
-	sessCtx, sessCancel := context.WithCancel(context.Background())
+	owner := cfg.LifetimeContext
+	if owner == nil {
+		owner = context.Background()
+	}
+	sessCtx, sessCancel := context.WithCancel(owner)
 	initComplete := false
 	ownedSessionID := ""
 	defer func() {

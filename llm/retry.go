@@ -1,6 +1,32 @@
 package llm
 
-import "time"
+import (
+	"context"
+	"errors"
+	"time"
+)
+
+// ErrRunBudgetExhausted identifies retry exhaustion at an owned run's
+// shutdown reserve. It unwraps to context.DeadlineExceeded for callers.
+var ErrRunBudgetExhausted = errors.New("run budget exhausted")
+
+type runBudgetError struct{}
+
+func (runBudgetError) Error() string        { return ErrRunBudgetExhausted.Error() }
+func (runBudgetError) Unwrap() error        { return context.DeadlineExceeded }
+func (runBudgetError) Is(target error) bool { return target == ErrRunBudgetExhausted }
+
+type runBudgetContextKey struct{}
+
+// WithRunBudget marks ctx as the explicit one-shot run owner.
+func WithRunBudget(ctx context.Context) context.Context {
+	return context.WithValue(ctx, runBudgetContextKey{}, true)
+}
+
+func hasRunBudget(ctx context.Context) bool {
+	v, _ := ctx.Value(runBudgetContextKey{}).(bool)
+	return v
+}
 
 // RetryPolicy configures how retry attempts are spaced, including the maximum
 // number of retries, the exponential backoff delays, optional jitter, an

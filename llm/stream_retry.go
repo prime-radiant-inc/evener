@@ -86,6 +86,7 @@ func RetryStream(ctx context.Context, opts RetryStreamOptions, attempt StreamAtt
 	}
 	maxRetries := max(opts.Policy.MaxRetries, 0)
 	start := opts.Policy.now()
+	ownerBudget := ownedRunBudget(ctx)
 	// consumeStreak counts consecutive attempts whose Phase is PhaseConsume or
 	// PhaseSilentStall (the streak rule); capStreak counts the consecutive
 	// suffix of those that are also cap-shaped (the cap rule). PhaseOpen and
@@ -132,7 +133,7 @@ func RetryStream(ctx context.Context, opts RetryStreamOptions, attempt StreamAtt
 			return err
 		}
 		if opts.Policy.WallBudgetedRateLimit(err) {
-			if !rateLimitBudgetRemains(ctx, opts.Policy, err, start) {
+			if !rateLimitBudgetRemains(ctx, opts.Policy, err, start, ownerBudget) {
 				return rateLimitBudgetExhausted(ctx, err)
 			}
 		} else if n >= maxRetries {
@@ -143,7 +144,7 @@ func RetryStream(ctx context.Context, opts RetryStreamOptions, attempt StreamAtt
 			return err
 		}
 		if opts.Policy.WallBudgetedRateLimit(err) {
-			remaining := rateLimitRemaining(ctx, opts.Policy, start)
+			remaining := rateLimitRemaining(ctx, opts.Policy, start, ownerBudget)
 			if remaining <= 0 {
 				return rateLimitBudgetExhausted(ctx, err)
 			}
@@ -159,7 +160,7 @@ func RetryStream(ctx context.Context, opts RetryStreamOptions, attempt StreamAtt
 		if sleepErr := sleep(ctx, delay); sleepErr != nil {
 			return sleepErr
 		}
-		if opts.Policy.WallBudgetedRateLimit(err) && !rateLimitBudgetRemains(ctx, opts.Policy, err, start) {
+		if opts.Policy.WallBudgetedRateLimit(err) && !rateLimitBudgetRemains(ctx, opts.Policy, err, start, ownerBudget) {
 			return rateLimitBudgetExhausted(ctx, err)
 		}
 		// Discard partial output before re-running so the next attempt replaces

@@ -72,6 +72,7 @@ func Retry[T any](ctx context.Context, policy RetryPolicy, sleep SleepFunc, rand
 	}
 	maxRetries := max(policy.MaxRetries, 0)
 	start := policy.now()
+	ownerBudget := ownedRunBudget(ctx)
 
 	for attempt := 0; ; attempt++ {
 		v, err := fn()
@@ -85,7 +86,7 @@ func Retry[T any](ctx context.Context, policy RetryPolicy, sleep SleepFunc, rand
 			return zero, err
 		}
 		if policy.WallBudgetedRateLimit(err) {
-			if !rateLimitBudgetRemains(ctx, policy, err, start) {
+			if !rateLimitBudgetRemains(ctx, policy, err, start, ownerBudget) {
 				return zero, rateLimitBudgetExhausted(ctx, err)
 			}
 		} else if attempt >= maxRetries {
@@ -97,7 +98,7 @@ func Retry[T any](ctx context.Context, policy RetryPolicy, sleep SleepFunc, rand
 			return zero, err
 		}
 		if policy.WallBudgetedRateLimit(err) {
-			remaining := rateLimitRemaining(ctx, policy, start)
+			remaining := rateLimitRemaining(ctx, policy, start, ownerBudget)
 			if remaining <= 0 {
 				return zero, rateLimitBudgetExhausted(ctx, err)
 			}
@@ -114,7 +115,7 @@ func Retry[T any](ctx context.Context, policy RetryPolicy, sleep SleepFunc, rand
 		if err := sleep(ctx, delay); err != nil {
 			return zero, err
 		}
-		if policy.WallBudgetedRateLimit(err) && !rateLimitBudgetRemains(ctx, policy, err, start) {
+		if policy.WallBudgetedRateLimit(err) && !rateLimitBudgetRemains(ctx, policy, err, start, ownerBudget) {
 			return zero, rateLimitBudgetExhausted(ctx, err)
 		}
 	}
@@ -127,6 +128,9 @@ func rateLimitBudgetExhausted(ctx context.Context, original error) error {
 	if _, ok := ctx.Deadline(); !ok {
 		return original
 	}
+	if hasRunBudget(ctx) {
+		return runBudgetError{}
+	}
 	return context.DeadlineExceeded
 }
 
@@ -137,15 +141,29 @@ func rateLimitShutdownReserve(policy RetryPolicy) time.Duration {
 	return defaultRateLimitShutdownReserve
 }
 
-func rateLimitRemaining(ctx context.Context, policy RetryPolicy, start time.Time) time.Duration {
+func ownedRunBudget(ctx context.Context) time.Duration {
+	if !hasRunBudget(ctx) {
+		return 0
+	}
 	if deadline, ok := ctx.Deadline(); ok {
-		return deadline.Sub(policy.now()) - rateLimitShutdownReserve(policy)
+		return time.Until(deadline)
+	}
+	return 0
+}
+
+func rateLimitRemaining(ctx context.Context, policy RetryPolicy, start time.Time, ownerBudget time.Duration) time.Duration {
+	if hasRunBudget(ctx) {
+		if ownerBudget > 0 {
+			// Snapshot native duration at group start, then consume it using
+			// the policy clock; fake clocks may use another epoch.
+			return ownerBudget - policy.now().Sub(start) - rateLimitShutdownReserve(policy)
+		}
 	}
 	return policy.RateLimitWallBudget - policy.now().Sub(start)
 }
 
-func rateLimitBudgetRemains(ctx context.Context, policy RetryPolicy, err error, start time.Time) bool {
-	return policy.WallBudgetedRateLimit(err) && rateLimitRemaining(ctx, policy, start) > 0
+func rateLimitBudgetRemains(ctx context.Context, policy RetryPolicy, err error, start time.Time, ownerBudget time.Duration) bool {
+	return policy.WallBudgetedRateLimit(err) && rateLimitRemaining(ctx, policy, start, ownerBudget) > 0
 }
 
 func retryDelay(policy RetryPolicy, randFloat func() float64, err error, n int) (time.Duration, bool) {

@@ -1048,7 +1048,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	// child keeps running. Child cancellation is handled by subSess.Close(),
 	// including when the parent session closes. The per-run context lets
 	// parent stops interrupt this run without destroying the child session.
-	runCtx, runCancel := context.WithCancel(context.Background())
+	runCtx, runCancel := context.WithCancel(s.sessionCtx)
 	sub.mu.Lock()
 	sub.cancel = runCancel
 	sub.cancelRequested = false

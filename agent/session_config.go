@@ -31,7 +31,10 @@ import (
 // settings, and session persistence. Zero-valued fields are filled in by
 // applyDefaults where defaults apply.
 type SessionConfig struct {
-	artifactStore artifactStore
+	// LifetimeContext owns this session tree when supplied by a one-shot run.
+	// Nil preserves daemon/background ownership and is not persisted.
+	LifetimeContext context.Context `json:"-"`
+	artifactStore   artifactStore
 
 	// Project is the resolved canonical project identity for this launch. It is
 	// separate from the execution environment's active working directory, which

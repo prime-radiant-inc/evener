@@ -107,6 +107,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		ctx, cancel = context.WithTimeout(ctx, cfg.runTimeout)
 		defer cancel()
 	}
+	ctx = llm.WithRunBudget(ctx)
 	if cfg.stdout == nil {
 		cfg.stdout = os.Stdout
 	}
@@ -193,9 +194,15 @@ func run(ctx context.Context, cfg runConfig) error {
 		return err
 	}
 
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	client, provCfg, hasProvConfig, err := runLoadClient(llm.WithStateDir(stateDir))
 	if err != nil {
 		return fmt.Errorf("LLM client setup: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	reserveSession, closeAPILog, err := runAttachAPILogger(client, stateDir, cfg.stderr)
@@ -228,6 +235,7 @@ func run(ctx context.Context, cfg runConfig) error {
 
 	var sess *agent.Session
 	baseSessionCfg := agent.SessionConfig{
+		LifetimeContext:             ctx,
 		MaxToolRoundsPerInput:       cmdutil.MaxRoundsToConfig(cfg.maxRounds),
 		ShareTasksWithChildren:      cfg.shareTaskStore,
 		ResultToolName:              cfg.resultToolName,
