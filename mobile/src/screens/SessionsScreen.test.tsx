@@ -501,13 +501,14 @@ import { createRosterStore } from "../state/roster";
 
 class FakeRosterService implements RosterService {
   threads: RosterEntry[] = [];
+  hasMore = false;
   shouldReject: Error | null = null;
   listCalls = 0;
 
-  async list(): Promise<{ threads: RosterEntry[]; nextCursor?: string }> {
+  async list(): Promise<{ threads: RosterEntry[]; hasMore: boolean }> {
     this.listCalls += 1;
     if (this.shouldReject !== null) throw this.shouldReject;
-    return { threads: this.threads };
+    return { threads: this.threads, hasMore: this.hasMore };
   }
   async refresh(): Promise<void> {
     await this.list();
