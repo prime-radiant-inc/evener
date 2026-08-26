@@ -58,6 +58,13 @@ func LoadSessionJobActivityTree(stateDir, sessionID string, params appwire.JobsL
 	revision := activitySnapshotPersistedRevision(snapshot, rootRevisionID)
 	if strings.TrimSpace(params.Continuation) != "" {
 		revision = readRevision
+		// Older persisted roots may not have copied the shared tree revision into
+		// their own metadata. In that compatibility case, retain the bounded
+		// continuation branch's persisted revision rather than rejecting a valid
+		// cursor solely because the O(1) root generation is absent.
+		if revision == 0 {
+			revision = activitySnapshotPersistedRevision(snapshot, rootRevisionID)
+		}
 		cont, err := decodeActivityContinuation(params.Continuation, sessionID)
 		if err != nil {
 			return appwire.JobActivityTree{}, err
