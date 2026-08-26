@@ -1121,7 +1121,7 @@ git commit -m "feat(web): preview synced transcript defaults"
 - Consumes the complete feature.
 - Produces verified repository state and gate evidence. No new product behavior belongs in this task except root-cause fixes for discovered failures.
 
-- [ ] **Step 1: Format all touched frontend source files**
+- [x] **Step 1: Format all touched frontend source files**
 
 Run from `cmd/evener-hub/frontend` with the exact changed `src/` paths reported by `git diff --name-only`:
 
@@ -1131,7 +1131,7 @@ npx biome check --write src/transcriptDisplay src/stores/transcriptDisplay.ts sr
 
 Expected: exit 0. Review every formatter change.
 
-- [ ] **Step 2: Run the complete focused Go surface**
+- [x] **Step 2: Run the complete focused Go surface**
 
 ```bash
 go test ./appwire ./internal/appwiredoc ./internal/appwirets ./cmd/evener-hub/internal/hubcore ./cmd/evener-hub -run 'Test.*TranscriptDisplay|TestGeneratedFileCurrent|TestHubRPCRegistersExpectedHandlerSet' -count=1
@@ -1139,7 +1139,7 @@ go test ./appwire ./internal/appwiredoc ./internal/appwirets ./cmd/evener-hub/in
 
 Expected: PASS.
 
-- [ ] **Step 3: Run the complete focused frontend surface**
+- [x] **Step 3: Run the complete focused frontend surface**
 
 ```bash
 cd cmd/evener-hub/frontend
