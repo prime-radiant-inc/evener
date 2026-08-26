@@ -94,7 +94,7 @@ func TestLoadSessionJobActivityTree_PublicContinuationKeepsHistoricalGeneration(
 	rootID := "rootpage"
 	started := time.Unix(350, 0).UTC()
 	events := make([]jobstore.Event, 0, activityMaxWorkUnits+1)
-	for i := 0; i < activityMaxWorkUnits+1; i++ {
+	for i := range activityMaxWorkUnits + 1 {
 		events = append(events, jobstore.Event{
 			Kind: jobstore.EventJobStarted, TS: started.Add(time.Duration(i) * time.Millisecond),
 			JobID: fmt.Sprintf("job_%04d", i), Type: jobstore.JobShell,
