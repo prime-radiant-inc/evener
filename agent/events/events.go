@@ -33,6 +33,12 @@ const (
 	// call retried after streaming partial output emits this so the retry's
 	// output replaces, rather than appends to, the partial that was shown.
 	EventAssistantTextReset EventKind = "ASSISTANT_TEXT_RESET"
+	// EventCommunicatePreviewStart opens a call-scoped provisional communicate item.
+	EventCommunicatePreviewStart EventKind = "COMMUNICATE_PREVIEW_START"
+	// EventCommunicatePreviewDelta carries provisional communicate text.
+	EventCommunicatePreviewDelta EventKind = "COMMUNICATE_PREVIEW_DELTA"
+	// EventCommunicatePreviewReset discards a failed provisional communicate call.
+	EventCommunicatePreviewReset EventKind = "COMMUNICATE_PREVIEW_RESET"
 	// EventModelRetry reports that a model call failed with a retryable error
 	// and will be attempted again after a wait. It is the only signal a reader
 	// gets while a provider is rate-limiting: a rejection at stream open streams

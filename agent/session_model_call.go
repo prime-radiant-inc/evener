@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -823,6 +824,29 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 // order. It returns the (possibly fallback-updated) request actually used so
 // downstream logging reflects the model that answered.
 func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.Profile, req llm.Request, requestedEffort string, _ int) (sessionModelResponse, llm.Request, ModelAttemptMetadata, error) {
+	previewCalls := map[string]struct{}{}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			for callID := range previewCalls {
+				s.emit(events.EventCommunicatePreviewReset, events.CommunicatePreviewResetData{CallID: callID})
+			}
+			panic(recovered)
+		}
+	}()
+	rememberPreviews := func(resp sessionModelResponse) {
+		for _, callID := range resp.CommunicatePreviewCallIDs {
+			previewCalls[callID] = struct{}{}
+		}
+	}
+	withPreviews := func(resp sessionModelResponse) sessionModelResponse {
+		ids := make([]string, 0, len(previewCalls))
+		for callID := range previewCalls {
+			ids = append(ids, callID)
+		}
+		sort.Strings(ids)
+		resp.CommunicatePreviewCallIDs = ids
+		return resp
+	}
 	policy := llm.DefaultRetryPolicy()
 	if s.cfg.LLMRetryPolicy != nil {
 		policy = *s.cfg.LLMRetryPolicy
@@ -838,6 +862,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	recorder := s.roundSalvageRecorder()
 	var primaryRecord groupRecord
 	modelResp, err := s.callModel(callCtx, policy, profile, req, &primaryRecord)
+	rememberPreviews(modelResp)
 	recorder.Groups = append(recorder.Groups, primaryRecord)
 	if err != nil && shouldRetryResponsesContinuationAsFullHistory(req, err) {
 		s.disableResponsesContinuationForRequest(req, profile.SupportsStreaming())
@@ -853,6 +878,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		}
 		var recoveryRecord groupRecord
 		modelResp, err = s.callModel(callCtx, policy, profile, retryReq, &recoveryRecord)
+		rememberPreviews(modelResp)
 		recorder.Groups = append(recorder.Groups, recoveryRecord)
 		if err == nil {
 			req = retryReq
@@ -951,6 +977,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			}
 			var fallbackRecord groupRecord
 			modelResp, err = s.callModel(callCtx, policy, fbProfile, fbReq, &fallbackRecord)
+			rememberPreviews(modelResp)
 			recorder.Groups = append(recorder.Groups, fallbackRecord)
 			if err == nil {
 				// Reflect the model that actually answered in the
@@ -973,11 +1000,11 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	}
 	if err != nil {
 		group.SettleResult(callCtx, err)
-		return modelResp, req, attempt, err
+		return withPreviews(modelResp), req, attempt, err
 	}
 	attempt = completeAttemptMetadata(attempt, modelResp.Response)
 	group.SettleResult(callCtx, nil)
-	return modelResp, req, attempt, nil
+	return withPreviews(modelResp), req, attempt, nil
 }
 
 func shouldRetryResponsesContinuationAsFullHistory(req llm.Request, err error) bool {
