@@ -243,13 +243,28 @@ func (jm *jobManager) abortActivityEvent(publication *activityPublication) {
 // lifecycle changes. The root stays odd while the durable event, forwarded
 // copy, and live overlay are all updated.
 func (jm *jobManager) publishLifecycleEvent(event *jobstore.Event, appendEvent, forward, updateLive func() error) error {
-	publication, err := jm.beginActivityEvent(event)
+	return jm.publishLifecycleEvents([]*jobstore.Event{event}, appendEvent, forward, updateLive)
+}
+
+func (jm *jobManager) publishLifecycleEvents(events []*jobstore.Event, appendEvent, forward, updateLive func() error) error {
+	if len(events) == 0 || events[0] == nil {
+		return errors.New("missing lifecycle event")
+	}
+	publication, err := jm.beginActivityEvent(events[0])
 	if err != nil {
 		return err
 	}
-	if err := appendEvent(); err != nil {
-		jm.abortActivityEvent(publication)
-		return err
+	for _, event := range events[1:] {
+		if event != nil {
+			event.RootSessionID = events[0].RootSessionID
+			event.TreeRevision = events[0].TreeRevision
+		}
+	}
+	if appendEvent != nil {
+		if err := appendEvent(); err != nil {
+			jm.abortActivityEvent(publication)
+			return err
+		}
 	}
 	if forward != nil {
 		if err := forward(); err != nil {
@@ -958,45 +973,32 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		OutputPath:       rec.OutputPath,
 		Provenance:       provenance.Clone(jobProvenance),
 	}
-	publication, err := jm.beginActivityEvent(&started)
+	var forwardErr error
+	err = jm.publishLifecycleEvent(&started,
+		func() error { return jm.appendEvent(started) },
+		func() error {
+			if err := jm.forwardLocked(started); err != nil {
+				forwardErr = err
+				_ = output.Close()
+				if terminalErr := jm.appendStartForwardFailure(rec.JobID, output, rec.Provenance); terminalErr != nil {
+					return errors.Join(err, terminalErr)
+				}
+			}
+			return nil
+		}, nil)
 	if err != nil {
 		jm.mu.Unlock()
 		_ = output.Close()
 		_ = jobstore.RemoveOutputArtifacts(outputPath)
 		return nil, err
 	}
-	if err := jm.appendEvent(started); err != nil {
-		jm.abortActivityEvent(publication)
-		jm.mu.Unlock()
-		_ = output.Close()
-		_ = jobstore.RemoveOutputArtifacts(outputPath)
-		return nil, err
-	}
-	if err := jm.forwardLocked(started); err != nil {
-		_ = output.Close()
-		if terminalErr := jm.appendStartForwardFailure(rec.JobID, output, rec.Provenance); terminalErr != nil {
-			jm.abortActivityEvent(publication)
-			run.forwardDisabled = true
-			jm.running[jobID] = run
-			jm.mu.Unlock()
-			go jm.finalizeShellAsync(jobID, jobstore.StatusFailed, "forward_failed", nil)
-			return nil, errors.Join(err, terminalErr)
-		}
-		if err := jm.commitActivityEvent(publication); err != nil {
-			jm.mu.Unlock()
-			return nil, errors.Join(err, errDelayedShellStartForwardFailed)
-		}
-		jm.mu.Unlock()
-		return nil, errors.Join(errDelayedShellStartForwardFailed, err)
-	}
 	jm.running[jobID] = run
-	if err := jm.commitActivityEvent(publication); err != nil {
-		delete(jm.running, jobID)
-		jm.mu.Unlock()
-		_ = output.Close()
-		return nil, err
-	}
 	jm.mu.Unlock()
+	if forwardErr != nil {
+		run.forwardDisabled = true
+		go jm.finalizeShellAsync(jobID, jobstore.StatusFailed, "forward_failed", nil)
+		return nil, errors.Join(errDelayedShellStartForwardFailed, forwardErr)
+	}
 	jm.emitJobStarted(started, run)
 	return rec, nil
 }
@@ -1814,36 +1816,40 @@ func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, re
 		Provenance:             provenance.Clone(run.rec.Provenance),
 	}
 	terminal.finished = finished
-	publication, err := jm.beginActivityEvent(&finished)
+	forwarded := false
+	err := jm.publishLifecycleEvent(&finished,
+		func() error { return jm.appendEvent(finished) },
+		func() error {
+			if terminal == nil || terminal.finishedForwarded || jm.forwardDisabled(run) {
+				return nil
+			}
+			if err := jm.forwardSnapshot(finished); err != nil {
+				return err
+			}
+			forwarded = true
+			return nil
+		},
+		func() error {
+			jm.mu.Lock()
+			defer jm.mu.Unlock()
+			if jm.running[run.rec.JobID] == run {
+				run.terminal = terminal
+				run.rec.Status = terminal.status
+				run.rec.Reason = terminal.reason
+				run.rec.ExhaustionBudget = terminal.exhaustionBudget
+				run.rec.ExhaustionLimit = terminal.exhaustionLimit
+				run.rec.ExitCode = terminal.exitCode
+				run.rec.EndedAt = &terminal.endedAt
+				run.rec.OutputBytes = terminal.outputBytes
+				run.rec.StructuredResult = structured
+				run.rec.StructuredResultValid = structuredValid
+				run.rec.StructuredResultReason = structuredReason
+				run.rec.TerminalGen = terminal.generation
+				terminal.finishedForwarded = forwarded
+			}
+			return nil
+		})
 	if err != nil {
-		return nil, &terminalRecordPersistError{status: finished.Status, err: err}
-	}
-	if err := jm.appendEvent(finished); err != nil {
-		jm.abortActivityEvent(publication)
-		return nil, &terminalRecordPersistError{status: finished.Status, err: err}
-	}
-	jm.mu.Lock()
-	if jm.running[run.rec.JobID] == run {
-		run.terminal = terminal
-		run.rec.Status = terminal.status
-		run.rec.Reason = terminal.reason
-		run.rec.ExhaustionBudget = terminal.exhaustionBudget
-		run.rec.ExhaustionLimit = terminal.exhaustionLimit
-		run.rec.ExitCode = terminal.exitCode
-		run.rec.EndedAt = &terminal.endedAt
-		run.rec.OutputBytes = terminal.outputBytes
-		run.rec.StructuredResult = structured
-		run.rec.StructuredResultValid = structuredValid
-		run.rec.StructuredResultReason = structuredReason
-		run.rec.TerminalGen = terminal.generation
-	}
-	jm.mu.Unlock()
-
-	if err := jm.forwardFinishedJob(run, terminal); err != nil {
-		jm.abortActivityEvent(publication)
-		return nil, err
-	}
-	if err := jm.commitActivityEvent(publication); err != nil {
 		return nil, &terminalRecordPersistError{status: finished.Status, err: err}
 	}
 	jm.emitFinishedJob(run, terminal)

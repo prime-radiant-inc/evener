@@ -555,14 +555,6 @@ func (jm *jobManager) recoverForwardedTerminalEvents() error {
 			OutputPath:       rec.OutputPath,
 			Provenance:       provenance.Clone(rec.Provenance),
 		}
-		publication, err := jm.beginActivityEvent(&started)
-		if err != nil {
-			return err
-		}
-		if err := forward(started); err != nil {
-			jm.abortActivityEvent(publication)
-			return err
-		}
 		finishedAt := jm.recoveredEventTime(rec)
 		finished := jobstore.Event{
 			Kind:                   jobstore.EventJobFinished,
@@ -583,11 +575,12 @@ func (jm *jobManager) recoverForwardedTerminalEvents() error {
 		}
 		finished.RootSessionID = started.RootSessionID
 		finished.TreeRevision = started.TreeRevision
-		if err := forward(finished); err != nil {
-			jm.abortActivityEvent(publication)
-			return err
-		}
-		if err := jm.commitActivityEvent(publication); err != nil {
+		if err := jm.publishLifecycleEvents([]*jobstore.Event{&started, &finished}, nil, func() error {
+			if err := forward(started); err != nil {
+				return err
+			}
+			return forward(finished)
+		}, nil); err != nil {
 			return err
 		}
 	}

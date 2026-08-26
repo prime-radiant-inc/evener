@@ -615,46 +615,35 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 		WorkingDir:       rec.WorkingDir,
 		Provenance:       provenance.Clone(rec.Provenance),
 	}
-	publication, err := jm.beginActivityEvent(&started)
+	var forwardErr error
+	err := jm.publishLifecycleEvent(&started,
+		func() error { return jm.appendEvent(started) },
+		func() error {
+			if err := jm.forwardLocked(started); err != nil {
+				forwardErr = err
+				_ = run.output.Close()
+				if terminalErr := jm.appendStartForwardFailure(rec.JobID, run.output, rec.Provenance); terminalErr != nil {
+					return errors.Join(err, terminalErr)
+				}
+			}
+			return nil
+		}, nil)
 	if err != nil {
 		jm.mu.Unlock()
 		return err
 	}
-	if err := jm.appendEvent(started); err != nil {
-		jm.abortActivityEvent(publication)
-		jm.mu.Unlock()
-		return err
-	}
-	if err := jm.forwardLocked(started); err != nil {
-		_ = run.output.Close()
-		if terminalErr := jm.appendStartForwardFailure(rec.JobID, run.output, rec.Provenance); terminalErr != nil {
-			jm.abortActivityEvent(publication)
-			run.forwardDisabled = true
-			jm.mu.Unlock()
-			return errors.Join(errDelayedShellStartForwardTerminalFailed, err, terminalErr)
-		}
-		if terminalErr := jm.commitActivityEvent(publication); terminalErr != nil {
-			jm.mu.Unlock()
-			return errors.Join(err, terminalErr)
-		}
-		err = errors.Join(errDelayedShellStartForwardFailed, err)
-		if jm.running[run.rec.JobID] == run {
-			delete(jm.running, run.rec.JobID)
-		}
-		jm.mu.Unlock()
-		run.delegateShell.abort()
-		run.closeDone()
-		return err
-	}
-
 	if jm.running[run.rec.JobID] == run {
 		run.durableStarted = true
 	}
-	if err := jm.commitActivityEvent(publication); err != nil {
-		jm.mu.Unlock()
-		return err
+	if forwardErr != nil && jm.running[run.rec.JobID] == run {
+		delete(jm.running, run.rec.JobID)
 	}
 	jm.mu.Unlock()
+	if forwardErr != nil {
+		run.delegateShell.abort()
+		run.closeDone()
+		return errors.Join(errDelayedShellStartForwardFailed, forwardErr)
+	}
 	if err := run.delegateShell.commit(run.signal); err != nil {
 		return err
 	}
