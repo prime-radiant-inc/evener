@@ -195,6 +195,7 @@ test("renders the thread's turns through the shared VirtualList/TurnBlock engine
   );
 
   await waitFor(() => expect(screen.getByTestId("turn-block")).toBeTruthy());
+  expect(screen.getByTestId("transcript-virtual-list")).toBeTruthy();
   expect(screen.getByText("hi from the observed thread")).toBeTruthy();
   await waitFor(() => expect(screen.getByTestId("subagent-row")).toBeTruthy());
   expect(within(screen.getByTestId("subagent-row")).getByText("Status: done")).toBeTruthy();

@@ -8,17 +8,12 @@
 // get tool calls rendered correctly.
 import "./ToolCallItem";
 import "./tools";
-import { useMemo, useRef } from "react";
-import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
-import { usePrefsStore } from "../../../stores/prefs";
-import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
-import { projectThread } from "../../../transcriptDisplay/projector";
-import {
-  createTranscriptRenderContext,
-  TranscriptRenderProvider,
-  useOptionalTranscriptRenderContext,
-} from "../../../transcriptDisplay/renderContext";
+import type { ReactNode } from "react";
+import type { ItemModel, TurnModel } from "../../../protocol/model";
+import type { ProjectedEntry, ProjectedTurn } from "../../../transcriptDisplay/projector";
+import { expandDetailsByDefault, useTranscriptRenderContext } from "../../../transcriptDisplay/renderContext";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import transcriptStyles from "../session.module.css";
 import { SeenDivider } from "./flow/SeenDivider";
 import { rowRoleFor } from "./layoutRoles";
 import { TurnSeparator } from "./messages";
@@ -31,7 +26,7 @@ import { asTurnError } from "./turnFailure";
 import { itemRendererFor } from "./types";
 
 export interface TurnBlockProps {
-  turn: TurnModel;
+  turn: ProjectedTurn | TurnModel;
   // The owning session's ref, threaded from Session.tsx so the turn-failure
   // end-cap can wire its recovery action (re-issue the turn). Optional: the
   // diagnostic renders without it, only the recovery button is withheld until
@@ -47,11 +42,10 @@ export interface TurnBlockProps {
   // useSeenDivider.ts names as the boundary - defaults false so every
   // other turn is unaffected.
   showSeenDivider?: boolean;
-  // Session view switching anchors at item granularity even though
-  // VirtualList windows whole turns. The flattened source position is shared
-  // by every view; the row index remains the turn VirtualList can scroll to.
+  // VirtualList windows whole turns while scroll coordination anchors at
+  // projected-entry granularity. The projector supplies each entry's stable
+  // source index; this is the row index that contains it.
   viewAnchorIndex?: number;
-  viewAnchorSourceIndexes?: ReadonlyMap<string, number>;
 }
 
 const CLASS = {
@@ -75,6 +69,23 @@ export function isItemLive(item: ItemModel): boolean {
   return item.status === "inProgress";
 }
 
+function projectedForDirectTurn(turn: TurnModel): ProjectedTurn {
+  let sourceIndex = 0;
+  const entries = turn.items.map((item) => ({
+    kind: "item" as const,
+    id: item.id,
+    turnId: turn.id,
+    sourceIndex: sourceIndex++,
+    item,
+    isMessage: item.type === "userMessage" || item.type === "agentMessage",
+  }));
+  return { id: turn.id, source: turn, entries, visibleItems: turn.items };
+}
+
+function isProjectedTurn(turn: ProjectedTurn | TurnModel): turn is ProjectedTurn {
+  return "source" in turn && "entries" in turn && "visibleItems" in turn;
+}
+
 export function TurnBlock({
   turn,
   sessionRef,
@@ -82,153 +93,119 @@ export function TurnBlock({
   agentLabel,
   showSeenDivider = false,
   viewAnchorIndex,
-  viewAnchorSourceIndexes,
 }: TurnBlockProps) {
-  const inheritedContext = useOptionalTranscriptRenderContext();
+  const renderContext = useTranscriptRenderContext();
+  const { config } = renderContext;
+  const projectedTurn = isProjectedTurn(turn) ? turn : projectedForDirectTurn(turn);
+  const sourceTurn = projectedTurn.source;
   // A failed turn carries a TurnError (only genuine failures do - the projector
   // sets it alongside status "failed", never on a completed or user-cancelled
   // turn); its presence is the signal to close the turn with a diagnostic
   // end-cap, corroborated by the honest status "failed" the wire stamps.
-  const failure = asTurnError(turn.error);
-  // Settings -> Transcript's hook-exit and prompt-loaded toggles hide whole
-  // items. Apply them HERE, to the turn the renderers receive, rather than
-  // letting each renderer bow out: SystemNoticeItem computes its
-  // consecutive-run grouping from turn.items, so an item hidden any later
-  // would still be counted by the group it was meant to leave. Subscribing
-  // to each toggle individually keeps a flip in Settings re-rendering the
-  // transcript live, and leaves every unrelated pref change inert.
-  const roundTimings = usePrefsStore((s) => s.transcript.roundTimings);
-  const hookExitsAll = usePrefsStore((s) => s.transcript.hookExitsAll);
-  const hookExitsNormal = usePrefsStore((s) => s.transcript.hookExitsNormal);
-  const promptLoaded = usePrefsStore((s) => s.transcript.promptLoaded);
-  // Until Task 8 moves every caller to TranscriptBody, this is the one and
-  // only compatibility adapter from the legacy preference record. Children
-  // consume the resulting context and never read prefs themselves.
-  const legacyConfig = useMemo(
-    () =>
-      makeTranscriptDisplayConfig(
-        { kind: "preset", level: "activity" },
-        {
-          roundTimings,
-          tokenCounts: false,
-          estimatedCost: false,
-          systemEvents: true,
-          promptEvents: promptLoaded,
-          hookExits: hookExitsAll ? "all" : hookExitsNormal ? "successful" : "none",
-        },
-      ),
-    [hookExitsAll, hookExitsNormal, promptLoaded, roundTimings],
-  );
-  const config = inheritedContext?.config ?? legacyConfig;
-  const projection = useMemo(
-    // projectThread only reads `turns`; the cast keeps this transition adapter
-    // local until TranscriptBody supplies a complete ThreadModel in Task 8.
-    () => projectThread({ turns: [turn] } as unknown as ThreadModel, config),
-    [config, turn],
-  );
-  const projectedTurn = projection.turns[0];
-  const projectedVisible = projectedTurn?.visibleItems;
-  const shown =
-    projectedVisible === undefined || projectedVisible.length === turn.items.length
-      ? turn.items
-      : [...projectedVisible];
-  const eligibleKey = projection.eligibleDisclosureIds.join("\0");
-  const eligibleCache = useRef<{ key: string; ids: readonly string[] } | undefined>(undefined);
-  if (eligibleCache.current?.key !== eligibleKey) {
-    eligibleCache.current = { key: eligibleKey, ids: [...projection.eligibleDisclosureIds] };
-  }
-  const eligibleDisclosureIds = eligibleCache.current.ids;
-  const renderContext = useMemo(
-    () =>
-      inheritedContext ??
-      createTranscriptRenderContext({
-        config,
-        metadata: config.advanced,
-        eligibleDisclosureIds,
-        surface: "live",
-        disclosureScope: `live:${sessionRef ?? "default"}`,
-      }),
-    [config, eligibleDisclosureIds, inheritedContext, sessionRef],
-  );
-  // Reuse the turn object outright when nothing is hidden (the projector's
-  // identity-stable then), so the memoized renderers' `turn` prop churns no
-  // more than it already did.
-  const shownTurn = shown === turn.items ? turn : { ...turn, items: shown };
-  const viewAnchorFor = (item: ItemModel) => {
-    const sourceIndex = viewAnchorSourceIndexes?.get(item.id);
-    if (sourceIndex === undefined || viewAnchorIndex === undefined) return undefined;
+  const failure = asTurnError(sourceTurn.error);
+  const visibleItems = projectedTurn.visibleItems;
+  const allItemsVisible =
+    visibleItems.length === sourceTurn.items.length &&
+    visibleItems.every((item, index) => item === sourceTurn.items[index]);
+  const shownTurn: TurnModel = allItemsVisible ? sourceTurn : { ...sourceTurn, items: [...visibleItems] };
+  const viewAnchorFor = (entry: ProjectedEntry) => {
+    if (viewAnchorIndex === undefined) return undefined;
     return {
-      "data-view-anchor-id": item.id,
+      "data-view-anchor-id": entry.id,
       "data-view-anchor-index": viewAnchorIndex,
-      "data-view-anchor-source-index": sourceIndex,
-      "data-view-anchor-message": item.type === "userMessage" || item.type === "agentMessage",
+      "data-view-anchor-source-index": entry.sourceIndex,
+      "data-view-anchor-message": entry.kind === "item" && entry.isMessage,
     } as const;
   };
-  const contextChild = (
+  const renderIntentGroup = (entries: Extract<ProjectedEntry, { kind: "intent" }>[]) => (
+    <details
+      key={`intent-group:${entries[0]?.id}:${entries.at(-1)?.id}`}
+      className={transcriptStyles.intentGroup}
+      data-testid="intent-group"
+      open={expandDetailsByDefault(config)}
+    >
+      <summary className={transcriptStyles.intentGroupSummary}>
+        {entries.length} action{entries.length === 1 ? "" : "s"}
+      </summary>
+      <div className={transcriptStyles.intentGroupItems}>
+        {entries.map((entry) => (
+          <div key={entry.id} className={transcriptStyles.intent} {...viewAnchorFor(entry)}>
+            {entry.rationale}
+          </div>
+        ))}
+      </div>
+    </details>
+  );
+  const renderedEntries: ReactNode[] = [];
+  for (let index = 0; index < projectedTurn.entries.length; index += 1) {
+    const entry = projectedTurn.entries[index];
+    if (!entry) continue;
+    if (entry.kind === "intent") {
+      const group: Extract<ProjectedEntry, { kind: "intent" }>[] = [entry];
+      while (projectedTurn.entries[index + 1]?.kind === "intent") {
+        index += 1;
+        const next = projectedTurn.entries[index];
+        if (next?.kind === "intent") group.push(next);
+      }
+      renderedEntries.push(renderIntentGroup(group));
+      continue;
+    }
+    const item = entry.item;
+    const run =
+      entry.kind === "item" && item.type === "commandExecution" ? toolRunFor([...visibleItems], item.id) : undefined;
+    if (run && shouldGroup(run)) {
+      if (!run.isFirst) continue;
+      renderedEntries.push(
+        <div
+          key={itemScopeKey(sessionRef, item.id)}
+          className={CLASS.runContent}
+          data-testid="run-content"
+          {...viewAnchorFor(entry)}
+        >
+          <ToolCallCluster items={run.items} turn={shownTurn} sessionRef={sessionRef} />
+        </div>,
+      );
+      continue;
+    }
+    const ItemRenderer = itemRendererFor(item.type);
+    if (rowRoleFor(item, { opensExchange: exchangeOpeners?.has(item.id) }) === "speaker") {
+      renderedEntries.push(
+        <div key={entry.id} {...viewAnchorFor(entry)}>
+          <ItemRenderer
+            item={item}
+            turn={shownTurn}
+            live={isItemLive(item)}
+            sessionRef={sessionRef}
+            opensExchange={exchangeOpeners?.has(item.id)}
+            agentLabel={agentLabel}
+            renderContext={renderContext}
+          />
+        </div>,
+      );
+    } else {
+      renderedEntries.push(
+        <div key={entry.id} className={CLASS.runContent} data-testid="run-content" {...viewAnchorFor(entry)}>
+          <ItemRenderer
+            item={item}
+            turn={shownTurn}
+            live={isItemLive(item)}
+            sessionRef={sessionRef}
+            opensExchange={exchangeOpeners?.has(item.id)}
+            agentLabel={agentLabel}
+            renderContext={renderContext}
+          />
+        </div>,
+      );
+    }
+  }
+  return (
     <>
       {showSeenDivider && <SeenDivider />}
-      <div className={CLASS.turn} data-testid="turn-block" data-turn-id={turn.id}>
-        {shown.map((item) => {
-          const run = toolRunFor(shown, item.id);
-          if (run && shouldGroup(run)) {
-            if (!run.isFirst) return null;
-            // A ToolCallCluster renders a run of tool calls, so it is "run"
-            // content and takes the indent too. The key moves to the wrapper
-            // so the cluster's identity is unchanged.
-            return (
-              <div
-                key={itemScopeKey(sessionRef, item.id)}
-                className={CLASS.runContent}
-                data-testid="run-content"
-                {...viewAnchorFor(item)}
-              >
-                <ToolCallCluster items={run.items} turn={shownTurn} sessionRef={sessionRef} />
-              </div>
-            );
-          }
-          const ItemRenderer = itemRendererFor(item.type);
-          // Speaker rows (userMessage, exchange-opening agentMessage) render
-          // unwrapped, full width: their own speaker header is the avatar
-          // row, and the avatar belongs IN the gutter at the margin, not
-          // indented into the content column it heads. Everything else is a
-          // "run" row - including steering, system notices, and warnings,
-          // which indent with everything else (Jesse's consistency call) -
-          // and takes the gutter indent inside the wrapper. layoutRoles.ts
-          // owns this classification; there is no per-type exception set
-          // here.
-          if (rowRoleFor(item, { opensExchange: exchangeOpeners?.has(item.id) }) === "speaker") {
-            return (
-              <div key={item.id} {...viewAnchorFor(item)}>
-                <ItemRenderer
-                  item={item}
-                  turn={shownTurn}
-                  live={isItemLive(item)}
-                  sessionRef={sessionRef}
-                  opensExchange={exchangeOpeners?.has(item.id)}
-                  agentLabel={agentLabel}
-                  renderContext={renderContext}
-                />
-              </div>
-            );
-          }
-          return (
-            <div key={item.id} className={CLASS.runContent} data-testid="run-content" {...viewAnchorFor(item)}>
-              <ItemRenderer
-                item={item}
-                turn={shownTurn}
-                live={isItemLive(item)}
-                sessionRef={sessionRef}
-                opensExchange={exchangeOpeners?.has(item.id)}
-                agentLabel={agentLabel}
-                renderContext={renderContext}
-              />
-            </div>
-          );
-        })}
-        {failure && <TurnFailureEndCap error={failure} turn={turn} sessionRef={sessionRef} />}
-        <TurnSeparator turn={turn} />
+      <div className={CLASS.turn} data-testid="turn-block" data-turn-id={sourceTurn.id}>
+        {renderedEntries}
+        {failure && <TurnFailureEndCap error={failure} turn={sourceTurn} sessionRef={sessionRef} />}
+        <TurnSeparator turn={sourceTurn} />
       </div>
     </>
   );
-  return <TranscriptRenderProvider value={renderContext}>{contextChild}</TranscriptRenderProvider>;
 }
