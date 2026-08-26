@@ -658,15 +658,17 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	}
 
 	// runningSubagentState resolves a live in-process child's display state:
-	// the child's own projected status when its daemon carried one, else the
-	// historical "listed means working" fallback (old daemons, legacy job
-	// discovery). Liveness alone must not read as activity — a settled,
-	// resumable delegate stays listed while doing nothing.
+	// the child's own projected status when its daemon carried one, else "idle".
+	// Liveness alone must not read as activity — a settled, resumable delegate
+	// stays listed while doing nothing, and an old daemon that carried no state
+	// is no excuse to present a quiet child as working. Folding to idle keeps a
+	// no-state child in the rail's inactive list where it belongs, one click
+	// away — the conservative side, matching CURRENT_SUBAGENT_STATES' own logic.
 	runningSubagentState := func(id string) string {
 		if state, ok := runningSubagentStates[id]; ok {
 			return NormalizeState(state)
 		}
-		return "active"
+		return "idle"
 	}
 
 	// stateFor resolves the display state for a session ID.
@@ -705,18 +707,6 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	dormantFor := func(id string) bool {
 		m, ok := metaMap[id]
 		return ok && m.TurnCount == 0 && m.AcceptedInputTurns == 0
-	}
-
-	// runningChildIDs is deliberately built from the live entries supplied to
-	// this tree build. A child can be running in-process without having its own
-	// rendezvous/live entry, so the child row must not rely on liveMap alone.
-	runningChildIDs := make(map[string]struct{})
-	for _, le := range live {
-		for _, childID := range le.RunningSubagentIDs {
-			if childID != "" {
-				runningChildIDs[childID] = struct{}{}
-			}
-		}
 	}
 
 	// Group metas by canonical project identity while preserving each record's
@@ -853,11 +843,14 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		if parentDead {
 			state = "ended"
 			askPending = false
-		} else if kind == "subagent" {
-			if _, ok := runningChildIDs[m.ID]; ok {
-				state = runningSubagentState(m.ID)
-			}
 		}
+		// A subagent's state already resolved through stateFor above: its own
+		// live entry's status when it has one, else the parent's carried state
+		// (or idle when the daemon carried none — liveness is not activity).
+		// The previous override here was redundant for children without their
+		// own live entry (stateFor already calls runningSubagentState) and wrong
+		// for children WITH one (it overwrote the child's own daemon-reported
+		// status with the parent's projection).
 		node := TreeNode{
 			ID:         m.ID,
 			Title:      nodeTitle(m, kind),
