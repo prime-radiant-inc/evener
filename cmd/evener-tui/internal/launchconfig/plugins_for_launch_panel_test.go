@@ -2,6 +2,7 @@ package launchconfig
 
 import (
 	"errors"
+	"reflect"
 	"strings"
 	"testing"
 
@@ -111,6 +112,41 @@ func TestPluginsForLaunchPanel_RejectsErrorOnlyOnEnter(t *testing.T) {
 	p = updated.(PluginsForLaunchPanel)
 	if p.Done() || !strings.Contains(p.View(), "Couldn't inspect plugins") || !strings.Contains(p.View(), "Press Enter to retry") {
 		t.Fatalf("failure state: done=%v view=%q", p.Done(), p.View())
+	}
+}
+
+func TestPluginsForLaunchPanel_FailedRefreshCannotEditStaleSelection(t *testing.T) {
+	p := NewPluginsForLaunchPanel(appwire.PluginPreviewResponse{Plugins: []appwire.PluginLaunchCandidate{{Name: "stale", Selected: true}}}, nil, 80)
+	updated, _ := p.Update(PluginPreviewResultMsg{Err: errors.New("temporary failure")})
+	p = updated.(PluginsForLaunchPanel)
+	if !strings.Contains(p.View(), "enter retry") || strings.Contains(p.View(), "enter apply") {
+		t.Fatalf("failure footer = %q", p.View())
+	}
+	before := map[string]bool{"stale": true}
+	for _, msg := range []tea.Msg{
+		tea.KeyMsg{Type: tea.KeySpace},
+		tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}},
+		tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'n'}},
+		tea.KeyMsg{Type: tea.KeyDown},
+	} {
+		updated, _ = p.Update(msg)
+		p = updated.(PluginsForLaunchPanel)
+		if !reflect.DeepEqual(p.selected, before) || p.dirty {
+			t.Fatalf("failed refresh accepted edit %T: selected=%v dirty=%v", msg, p.selected, p.dirty)
+		}
+	}
+	updated, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p = updated.(PluginsForLaunchPanel)
+	if cmd == nil || cmd().(PluginsForLaunchResultMsg).Retry != true || p.Done() {
+		t.Fatalf("failed refresh Enter = done=%v cmd=%v", p.Done(), cmd != nil)
+	}
+	updated, _ = p.Update(PluginPreviewResultMsg{Response: appwire.PluginPreviewResponse{Plugins: []appwire.PluginLaunchCandidate{{Name: "fresh", Selected: true}}}})
+	p = updated.(PluginsForLaunchPanel)
+	updated, _ = p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	p = updated.(PluginsForLaunchPanel)
+	result := p.Result()
+	if result.EnabledPlugins == nil || !reflect.DeepEqual(*result.EnabledPlugins, []string{"fresh"}) {
+		t.Fatalf("retry result=%#v, want only fresh selection", result)
 	}
 }
 

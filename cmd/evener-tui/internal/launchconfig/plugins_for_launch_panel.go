@@ -89,6 +89,7 @@ func (p PluginsForLaunchPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			p.previewErr = v.Err
 			return p, nil
 		}
+		wasFailed := p.previewErr != nil
 		p.previewErr = nil
 		p.plugins = append([]appwire.PluginLaunchCandidate(nil), v.Response.Plugins...)
 		p.selectionErrors = map[string]string{}
@@ -101,7 +102,9 @@ func (p PluginsForLaunchPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				p.diagnostics = append(p.diagnostics, message)
 			}
 		}
-		if !p.initialProvided && !p.dirty {
+		if wasFailed {
+			p.resetSelectionFromResponse(v.Response)
+		} else if !p.initialProvided && !p.dirty {
 			p.selected = map[string]bool{}
 			p.selectionOrder = nil
 			for _, plugin := range p.plugins {
@@ -114,6 +117,18 @@ func (p PluginsForLaunchPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		p.cursor = min(p.cursor, max(len(p.filtered())-1, 0))
 		return p, nil
 	case tea.KeyMsg:
+		if p.previewErr != nil {
+			switch v.Type {
+			case tea.KeyEscape, tea.KeyCtrlC:
+				p.cancelled = true
+				p.done = true
+				return p, func() tea.Msg { return PluginsForLaunchResultMsg{Cancelled: true} }
+			case tea.KeyEnter:
+				return p, func() tea.Msg { return PluginsForLaunchResultMsg{Retry: true} }
+			default:
+				return p, nil
+			}
+		}
 		switch v.Type {
 		case tea.KeyEscape, tea.KeyCtrlC:
 			p.cancelled = true
@@ -228,6 +243,18 @@ func (p *PluginsForLaunchPanel) selectVisible() {
 	}
 }
 
+func (p *PluginsForLaunchPanel) resetSelectionFromResponse(response appwire.PluginPreviewResponse) {
+	p.selected = map[string]bool{}
+	p.selectionOrder = nil
+	p.dirty = false
+	for _, plugin := range response.Plugins {
+		if plugin.Selected {
+			p.selected[plugin.Name] = true
+			p.selectionOrder = append(p.selectionOrder, plugin.Name)
+		}
+	}
+}
+
 func (p PluginsForLaunchPanel) hasBlockingSelectionError() bool {
 	for name := range p.selected {
 		if p.selected[name] && strings.TrimSpace(p.selectionErrors[name]) != "" {
@@ -305,10 +332,13 @@ func (p PluginsForLaunchPanel) View() string {
 			body.WriteByte('\n')
 		}
 	}
-	footer := tuiprim.ActionBarForWidth(width,
-		tuiprim.KbdHint("↑↓", "navigate"), tuiprim.KbdHint("space", "toggle"),
+	footerKeys := []string{tuiprim.KbdHint("↑↓", "navigate"), tuiprim.KbdHint("space", "toggle"),
 		tuiprim.KbdHint("a", "all visible"), tuiprim.KbdHint("n", "none"),
-		tuiprim.KbdHint("enter", "apply"), tuiprim.KbdHint("esc", "cancel"))
+		tuiprim.KbdHint("enter", "apply"), tuiprim.KbdHint("esc", "cancel")}
+	if p.previewErr != nil {
+		footerKeys = []string{tuiprim.KbdHint("enter", "retry"), tuiprim.KbdHint("esc", "cancel")}
+	}
+	footer := tuiprim.ActionBarForWidth(width, footerKeys...)
 	return tuiprim.Overlay(tuiprim.OverlayOpts{Title: "Plugins for this session", Width: width, Body: body.String(), Footer: footer})
 }
 
