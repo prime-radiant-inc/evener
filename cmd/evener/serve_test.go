@@ -27,12 +27,62 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmdutil"
 	"primeradiant.com/evener/envvars"
+	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 	apilog "primeradiant.com/evener/llm/apilog"
 	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/rendezvous"
 	"primeradiant.com/evener/server"
 )
+
+func TestServePluginSelectionValidationPrecedesStartupHooks(t *testing.T) {
+	root := t.TempDir()
+	var order []string
+	deps := defaultServeDeps()
+	deps.resolvePlugins = func(dirs []string, selected *[]string) (plugins.LaunchPluginResolution, error) {
+		order = append(order, "resolve")
+		if !reflect.DeepEqual(dirs, []string{root}) || selected == nil || !reflect.DeepEqual(*selected, []string{"missing-plugin"}) {
+			t.Fatalf("resolver args = dirs %v selected %v", dirs, selected)
+		}
+		return plugins.LaunchPluginResolution{SelectionErrors: []plugins.PluginSelectionError{{Name: "missing-plugin", Reason: "no valid plugin candidate"}}}, nil
+	}
+	deps.ensureConfigDirs = func() error { order = append(order, "ensure-config"); return nil }
+	deps.seedMarketplaces = func() error { order = append(order, "seed-marketplaces"); return nil }
+
+	err := runServeWithDeps([]string{"--plugin-dir", root, "--enabled-plugins=missing-plugin"}, deps)
+	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable") {
+		t.Fatalf("serve error = %v, want strict selection error", err)
+	}
+	if !reflect.DeepEqual(order, []string{"resolve"}) {
+		t.Fatalf("startup order = %v, want resolver only", order)
+	}
+}
+
+func TestServePassesResolvedPluginDirsToSessionConfig(t *testing.T) {
+	installServeScriptedProvider(t, &scriptedProvider{name: "openai"})
+	selectedDir := t.TempDir()
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func() error { return nil }
+	deps.resolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+		return plugins.LaunchPluginResolution{SelectedDirs: []string{selectedDir}}, nil
+	}
+	var got []string
+	deps.provisionSandbox = func(_ *execenv.LocalExecutionEnvironment, cfg *agent.SessionConfig, _ string) error {
+		got = append([]string(nil), cfg.PluginDirs...)
+		return errors.New("stop after config")
+	}
+	err := runServeWithDeps([]string{
+		"--model", "openai/gpt-test", "--dir", t.TempDir(), "--state-dir", t.TempDir(),
+		"--enabled-plugins=alpha", "--plugin-dir", selectedDir,
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "stop after config") {
+		t.Fatalf("serve error = %v", err)
+	}
+	if !reflect.DeepEqual(got, []string{selectedDir}) {
+		t.Fatalf("session plugin dirs = %v, want %v", got, []string{selectedDir})
+	}
+}
 
 func TestAgentToServerDetailedStatus_DelegatesLossless(t *testing.T) {
 	valid, resumable := true, false

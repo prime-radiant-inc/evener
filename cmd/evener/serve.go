@@ -303,6 +303,23 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err := rejectPluginSelectionWithResume(enabledPlugins.Value(), *resume, *resumeLast); err != nil {
 		return err
 	}
+	resolvePlugins := deps.resolvePlugins
+	if resolvePlugins == nil {
+		resolvePlugins = func(explicit []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
+			return plugins.NewManager("").ResolveForLaunch(explicit, enabled)
+		}
+	}
+	resolvedPlugins, resolveErr := resolvePlugins([]string(pluginDirs), enabledPlugins.Value())
+	if resolveErr != nil && enabledPlugins.Value() != nil {
+		return fmt.Errorf("resolve plugins: %w", resolveErr)
+	}
+	if resolveErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: listing installed plugins: %v\n", resolveErr)
+	}
+	renderLaunchPluginDiagnostics(os.Stderr, resolvedPlugins.Diagnostics)
+	if err := resolvedPlugins.ValidateSelection(); err != nil {
+		return err
+	}
 	resolvedOpenAIResponsesContinuation := resolveOpenAIResponsesContinuation(*openAIResponsesContinuation, nil)
 
 	if *cpuProfile != "" {
@@ -350,24 +367,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return fmt.Errorf("resolve project state: %w", err)
 		}
 	}
-	resolvePlugins := deps.resolvePlugins
-	if resolvePlugins == nil {
-		resolvePlugins = func(explicit []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
-			return plugins.NewManager("").ResolveForLaunch(explicit, enabled)
-		}
-	}
-	resolvedPlugins, resolveErr := resolvePlugins([]string(pluginDirs), enabledPlugins.Value())
-	if resolveErr != nil && enabledPlugins.Value() != nil {
-		return fmt.Errorf("resolve plugins: %w", resolveErr)
-	}
-	if resolveErr != nil {
-		fmt.Fprintf(os.Stderr, "warning: listing installed plugins: %v\n", resolveErr)
-	}
-	renderLaunchPluginDiagnostics(os.Stderr, resolvedPlugins.Diagnostics)
-	if err := resolvedPlugins.ValidateSelection(); err != nil {
-		return err
-	}
-
 	resuming := *resume != "" || *resumeLast
 	var resumedMeta schema.SessionMeta
 	if resuming {

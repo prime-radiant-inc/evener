@@ -327,6 +327,7 @@ func renderEffectivePluginList(w io.Writer, resolution plugins.LaunchPluginResol
 
 	if len(resolution.Candidates) == 0 {
 		_, _ = fmt.Fprintln(w, "No effective plugins.")
+		renderLaunchPluginDiagnostics(w, resolution.Diagnostics)
 		return nil
 	}
 	tw := tabwriter.NewWriter(w, 0, 0, 2, ' ', 0)
@@ -343,6 +344,7 @@ func renderEffectivePluginList(w io.Writer, resolution plugins.LaunchPluginResol
 			candidate.SkillCount, candidate.AgentCount, candidate.CommandCount, candidate.HookCount, candidate.MCPCount)
 	}
 	_ = tw.Flush()
+	renderLaunchPluginDiagnostics(w, resolution.Diagnostics)
 	return nil
 }
 

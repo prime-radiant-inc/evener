@@ -103,3 +103,17 @@ func TestRenderEffectivePluginListJSON(t *testing.T) {
 		t.Fatalf("diagnostics = %+v", got.Diagnostics)
 	}
 }
+
+func TestRenderEffectivePluginListHumanIncludesDiagnostics(t *testing.T) {
+	resolution := plugins.LaunchPluginResolution{
+		Candidates:  []plugins.LaunchPluginCandidate{{Name: "alpha", Source: plugins.LaunchPluginSourceDirectory}},
+		Diagnostics: []plugins.LaunchPluginDiagnostic{{Name: "broken", Path: "/tmp/broken", Message: "invalid manifest"}},
+	}
+	var out bytes.Buffer
+	if err := renderEffectivePluginList(&out, resolution, false); err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out.String(), "alpha") || !strings.Contains(out.String(), "invalid manifest") {
+		t.Fatalf("human effective listing omitted candidate or diagnostic: %s", out.String())
+	}
+}

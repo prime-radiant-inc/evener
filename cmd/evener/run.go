@@ -120,6 +120,17 @@ func run(ctx context.Context, cfg runConfig) error {
 		}
 		cfg.workDir = wd
 	}
+	resolvedPlugins, err := runResolvePlugins(cfg.pluginDirs, cfg.enabledPlugins)
+	if err != nil && cfg.enabledPlugins != nil {
+		return fmt.Errorf("resolve plugins: %w", err)
+	}
+	if err != nil {
+		fmt.Fprintf(cfg.stderr, "warning: listing installed plugins: %v\n", err) //nolint:errcheck
+	}
+	renderLaunchPluginDiagnostics(cfg.stderr, resolvedPlugins.Diagnostics)
+	if err := resolvedPlugins.ValidateSelection(); err != nil {
+		return err
+	}
 	if err := runEnsureUserConfigDirs(); err != nil {
 		return err
 	}
@@ -150,18 +161,6 @@ func run(ctx context.Context, cfg runConfig) error {
 	// --list-sessions: print and exit.
 	if cfg.listSessions {
 		return listSessions(cfg, stateDir)
-	}
-
-	resolvedPlugins, err := runResolvePlugins(cfg.pluginDirs, cfg.enabledPlugins)
-	if err != nil && cfg.enabledPlugins != nil {
-		return fmt.Errorf("resolve plugins: %w", err)
-	}
-	if err != nil {
-		fmt.Fprintf(cfg.stderr, "warning: listing installed plugins: %v\n", err) //nolint:errcheck
-	}
-	renderLaunchPluginDiagnostics(cfg.stderr, resolvedPlugins.Diagnostics)
-	if err := resolvedPlugins.ValidateSelection(); err != nil {
-		return err
 	}
 
 	// Resolve resume target.

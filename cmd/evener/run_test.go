@@ -7,6 +7,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -17,8 +18,71 @@ import (
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/auth/openai/oaitest"
+	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 )
+
+func TestRunPluginSelectionValidationPrecedesStartupHooks(t *testing.T) {
+	selected := []string{"missing-plugin"}
+	var order []string
+	oldResolve := runResolvePlugins
+	oldEnsure := runEnsureUserConfigDirs
+	oldSeed := runSeedMarketplaces
+	t.Cleanup(func() {
+		runResolvePlugins = oldResolve
+		runEnsureUserConfigDirs = oldEnsure
+		runSeedMarketplaces = oldSeed
+	})
+	runResolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+		order = append(order, "resolve")
+		return plugins.LaunchPluginResolution{SelectionErrors: []plugins.PluginSelectionError{{Name: "missing-plugin", Reason: "no valid plugin candidate"}}}, nil
+	}
+	runEnsureUserConfigDirs = func() error {
+		order = append(order, "ensure-config")
+		return nil
+	}
+	runSeedMarketplaces = func() error {
+		order = append(order, "seed-marketplaces")
+		return nil
+	}
+
+	err := run(context.Background(), runConfig{
+		workDir: t.TempDir(), stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, enabledPlugins: &selected,
+	})
+	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable") {
+		t.Fatalf("run error = %v, want strict selection error", err)
+	}
+	if !reflect.DeepEqual(order, []string{"resolve"}) {
+		t.Fatalf("startup order = %v, want resolver only", order)
+	}
+}
+
+func TestRunPassesResolvedPluginDirsToSessionConfig(t *testing.T) {
+	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+	selectedDir := t.TempDir()
+	selected := []string{"alpha"}
+	oldResolve := runResolvePlugins
+	oldProvision := runProvisionSandbox
+	t.Cleanup(func() { runResolvePlugins = oldResolve; runProvisionSandbox = oldProvision })
+	runResolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+		return plugins.LaunchPluginResolution{SelectedDirs: []string{selectedDir}}, nil
+	}
+	var got []string
+	runProvisionSandbox = func(_ *execenv.LocalExecutionEnvironment, cfg *agent.SessionConfig, _ string) error {
+		got = append([]string(nil), cfg.PluginDirs...)
+		return errors.New("stop after config")
+	}
+	err := run(context.Background(), runConfig{
+		prompt: "prompt", model: "openai/gpt-test", workDir: t.TempDir(), stateDir: t.TempDir(),
+		noDefaultMarketplaces: true, enabledPlugins: &selected, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "stop after config") {
+		t.Fatalf("run error = %v", err)
+	}
+	if !reflect.DeepEqual(got, []string{selectedDir}) {
+		t.Fatalf("session plugin dirs = %v, want %v", got, []string{selectedDir})
+	}
+}
 
 // TestRunWithArgs verifies that the run function processes a prompt from CLI args
 // and produces output on stdout.
