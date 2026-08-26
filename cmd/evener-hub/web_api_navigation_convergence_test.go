@@ -130,27 +130,15 @@ func TestRESTNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
 	if len(published) != 1 || response.Navigation.GenerationID != published[0].GenerationID || !reflect.DeepEqual(responseTargets, published[0].Targets) {
 		t.Fatalf("unknown convergence response=%+v publication=%+v", response.Navigation, published)
 	}
-	hasWildcard := false
-	for _, target := range published[0].Targets {
-		if target.Kind == appwire.NavigationTargetAllLoadedProjects {
-			hasWildcard = true
-			break
-		}
+	if len(published[0].Targets) != 2 {
+		t.Fatalf("unknown session targets=%+v, want exactly project then wildcard", published[0].Targets)
 	}
-	if !hasWildcard || !hasNavigationTarget(published[0].Targets, appwire.NavigationTargetProject, "p1") {
-		t.Fatalf("unknown project targets=%+v", published[0].Targets)
+	projectTarget, wildcardTarget := published[0].Targets[0], published[0].Targets[1]
+	if projectTarget.Kind != appwire.NavigationTargetProject || projectTarget.ProjectKey != "p1" || projectTarget.Revision == 0 {
+		t.Fatalf("first unknown-session target=%+v, want p1 with nonzero revision", projectTarget)
 	}
-	for _, target := range published[0].Targets {
-		switch target.Kind {
-		case appwire.NavigationTargetProject:
-			if target.Revision == 0 {
-				t.Fatalf("scoped archive target has zero revision: %+v", target)
-			}
-		case appwire.NavigationTargetAllLoadedProjects:
-			if target.Revision != 0 {
-				t.Fatalf("wildcard archive target has revision %d", target.Revision)
-			}
-		}
+	if wildcardTarget.Kind != appwire.NavigationTargetAllLoadedProjects || wildcardTarget.Revision != 0 {
+		t.Fatalf("second unknown-session target=%+v, want all_loaded_projects revision 0", wildcardTarget)
 	}
 
 	// Repeating the same real handler request without another source change is
