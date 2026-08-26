@@ -108,16 +108,22 @@ merge-approval-gate:
 # parallelism just oversubscribes few-core CI and starves real per-test work past
 # its timeouts. WEB=0: -race is a Go-toolchain gate, and the frontend suite is
 # unaffected by it, so `make test` owns the web stream instead of paying it twice.
+RACE_SCOPE ?= all
+RACE_MODULES_all := $(GO_MODULES)
+RACE_MODULES_root := .
+RACE_MODULES_nonroot := $(filter-out .,$(GO_MODULES))
 ## The permanent -race gate across every non-fuzz module.
 ## proves: Data races in the non-fuzz modules surface; frontend is
 ##   intentionally not duplicated.
 ## trigger: Required CI; local diagnostic.
 ## requires: A race-capable Go toolchain and more CPU/memory; WEB=0,
 ##   AGENT_SHARDS=0, AGENT_PARALLEL= to avoid oversubscribing few-core CI
-##   under -race's ~10x slowdown.
+##   under -race's ~10x slowdown. RACE_SCOPE defaults to all; CI uses root
+##   and nonroot on separate runners, both derived from GO_MODULES.
 ## fails-when: Any race report, test failure, or setup failure is nonzero.
 test-race:
-	@MODULES="$(GO_MODULES)" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL= scripts/gate/run-module-tests.sh -race -short -count=1
+	@case "$(RACE_SCOPE)" in all|root|nonroot) ;; *) echo "make test-race: RACE_SCOPE must be all, root, or nonroot (got $(RACE_SCOPE))" >&2; exit 2;; esac; \
+		MODULES="$(RACE_MODULES_$(RACE_SCOPE))" WEB=0 AGENT_SHARDS=0 AGENT_PARALLEL= scripts/gate/run-module-tests.sh -race -short -count=1
 
 ## go vet across every non-fuzz workspace module.
 ## proves: go vet diagnostics for every module, independent of the tagged
