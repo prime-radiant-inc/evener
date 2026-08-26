@@ -1,5 +1,6 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
+import { EXPANSION_STORAGE_KEY } from "../../shell/rail/railExpansion";
 import {
   findSessionNode,
   selectExpanded,
@@ -253,4 +254,316 @@ test("selectors expose session rows, location, project/page resources and expans
   expect(selectProjectPage("p", "current")(state)).toBeUndefined();
   expect(selectExpanded("p")(state)).toBe(false);
   expect(findSessionNode("s", state)?.ref).toBe("s");
+});
+
+test("boot keeps one global four-request budget through pin sections, roots, and page remainders", async () => {
+  const projects = ["p1", "p2", "p3", "p4"].map((key) => ({
+    key,
+    default_expanded: true,
+    current: { sessions: [], remaining: 1 },
+    recent: { sessions: [], remaining: 1 },
+    archived: { sessions: [], remaining: 1 },
+  }));
+  const pinSections = Array.from({ length: 6 }, (_, i) => ({ id: `pin-${i}`, count: 1 }));
+  const m = emptyManifest({
+    sections: { live: { count: 1 }, needs_you: { count: 1 }, pin_sections: { count: 1 } },
+    catalogs: { projects: { count: 1 }, archived_projects: { count: 1 }, test_runs: { count: 1 } },
+  });
+  const calls: string[] = [];
+  const pending: Array<{ url: string; resolve: (value: Response) => void }> = [];
+  let active = 0;
+  let maximum = 0;
+  const release = () => {
+    const batch = pending.splice(0);
+    for (const request of batch) {
+      active--;
+      request.resolve(
+        request.url.includes("catalogs/projects")
+          ? json({ projects, remaining: 0 })
+          : request.url.includes("catalogs/")
+            ? json({ projects: [], remaining: 0 })
+            : request.url.includes("pin-sections?")
+              ? json({ pin_sections: pinSections, remaining: 0 })
+              : request.url.includes("/projects/") && !request.url.includes("?tier=")
+                ? json({
+                    key: request.url.split("/projects/")[1],
+                    current: { sessions: [], remaining: 1 },
+                    recent: { sessions: [], remaining: 1 },
+                    archived: { sessions: [], remaining: 1 },
+                  })
+                : json({ sessions: [], remaining: 0 }),
+      );
+    }
+  };
+  await init((url) => {
+    calls.push(url);
+    if (url === "/api/navigation") return json(m);
+    let resolve!: (value: Response) => void;
+    const promise = new Promise<Response>((r) => {
+      resolve = r;
+    });
+    pending.push({ url, resolve });
+    active++;
+    maximum = Math.max(maximum, active);
+    if (pending.length === 4) release();
+    return promise;
+  });
+  // Finish each short tail of a phase, allowing the next phase to start.
+  for (let i = 0; i < 128; i++) {
+    if (pending.length > 0) release();
+    await flush();
+    if (pending.length === 0 && active === 0 && calls.some((url) => url.includes("projects/p4?tier=archived"))) break;
+  }
+  expect(maximum).toBeLessThanOrEqual(4);
+  expect(calls.filter((url) => url.includes("pin-sections/pin-")).length).toBe(6);
+  expect(calls.filter((url) => url.includes("/projects/p") && !url.includes("?tier=")).length).toBe(4);
+  expect(calls.filter((url) => url.includes("?tier=")).length).toBe(12);
+  expect(active).toBe(0);
+});
+
+test("zero-count pin descriptors and collapsed projects do not issue requests", async () => {
+  const m = emptyManifest({
+    sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 1 } },
+    catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+  });
+  const calls: string[] = [];
+  await init((url) => {
+    calls.push(url);
+    if (url === "/api/navigation") return json(m);
+    if (url.includes("pin-sections?")) return json({ pin_sections: [{ id: "empty", count: 0 }], remaining: 0 });
+    return json({ projects: [{ key: "collapsed", default_expanded: false }], remaining: 0 });
+  });
+  expect(calls.some((url) => url.includes("pin-sections/empty"))).toBe(false);
+  expect(calls.some((url) => url.includes("/projects/collapsed"))).toBe(false);
+});
+
+test("404 project recovery refreshes its owning loaded catalog once and retries once", async () => {
+  let projectCalls = 0;
+  let catalogCalls = 0;
+  const project = {
+    key: "p",
+    current: { sessions: [], remaining: 0 },
+    recent: { sessions: [], remaining: 0 },
+    archived: { sessions: [], remaining: 0 },
+  };
+  const catalog = { projects: [project], remaining: 0 };
+  await init((url) => {
+    if (url === "/api/navigation")
+      return json(
+        emptyManifest({
+          catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+        }),
+      );
+    if (url.includes("catalogs/projects")) {
+      catalogCalls++;
+      return json(catalog, 200, catalogCalls === 1 ? '"catalog-1"' : '"catalog-2"', catalogCalls);
+    }
+    if (url.includes("/projects/p") && !url.includes("?tier=")) {
+      projectCalls++;
+      return projectCalls === 1 ? json({}, 404) : json(project);
+    }
+    return json({ sessions: [], remaining: 0 });
+  });
+  const result = await navigationStore.getState().loadProject("p");
+  expect(result.data).toEqual(project);
+  expect(projectCalls).toBe(2);
+  expect(catalogCalls).toBe(2);
+  const catalogRequest = (fetch as ReturnType<typeof vi.fn>).mock.calls
+    .filter(([url]) => String(url).includes("catalogs/projects"))
+    .at(-1);
+  expect(catalogRequest?.[1]?.headers).toEqual({ "If-None-Match": '"catalog-1"' });
+});
+
+test("uncertain project membership refreshes every loaded catalog before retry", async () => {
+  let projectCalls = 0;
+  const catalogs = new Map([
+    ["projects", 0],
+    ["archived-projects", 0],
+  ]);
+  const project = {
+    key: "p",
+    current: { sessions: [], remaining: 0 },
+    recent: { sessions: [], remaining: 0 },
+    archived: { sessions: [], remaining: 0 },
+  };
+  await init((url) => {
+    if (url === "/api/navigation")
+      return json(
+        emptyManifest({
+          catalogs: { projects: { count: 1 }, archived_projects: { count: 1 }, test_runs: { count: 0 } },
+        }),
+      );
+    if (url.includes("catalogs/projects")) {
+      catalogs.set("projects", catalogs.get("projects")! + 1);
+      return json({ projects: catalogs.get("projects") === 1 ? [] : [project], remaining: 0 });
+    }
+    if (url.includes("catalogs/archived-projects")) {
+      catalogs.set("archived-projects", catalogs.get("archived-projects")! + 1);
+      return json({ projects: [], remaining: 0 });
+    }
+    if (url.includes("/projects/p") && !url.includes("?tier=")) {
+      projectCalls++;
+      return projectCalls === 1 ? json({}, 404) : json(project);
+    }
+    return json({ sessions: [], remaining: 0 });
+  });
+  expect((await navigationStore.getState().loadProject("p")).data).toEqual(project);
+  expect(projectCalls).toBe(2);
+  expect(catalogs.get("projects")).toBe(2);
+  expect(catalogs.get("archived-projects")).toBe(2);
+});
+
+test("authoritative project absence preserves last-good project state without retry loops", async () => {
+  let projectCalls = 0;
+  let catalogCalls = 0;
+  const project = {
+    key: "p",
+    current: { sessions: [], remaining: 0 },
+    recent: { sessions: [], remaining: 0 },
+    archived: { sessions: [], remaining: 0 },
+  };
+  const client = await init((url) => {
+    if (url === "/api/navigation")
+      return json(
+        emptyManifest({
+          catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+        }),
+      );
+    if (url.includes("catalogs/projects")) {
+      catalogCalls++;
+      return catalogCalls === 1 ? json({ projects: [project], remaining: 0 }) : json({}, 503);
+    }
+    if (url.includes("/projects/p") && !url.includes("?tier=")) {
+      projectCalls++;
+      return projectCalls === 1 ? json(project) : json({}, 404);
+    }
+    return json({ sessions: [], remaining: 0 });
+  });
+  expect((await navigationStore.getState().loadProject("p")).data).toEqual(project);
+  client.emitNotification({
+    method: "evener/navigation/invalidated",
+    params: { generationId: generation, sequence: 1, targets: [{ kind: "project", projectKey: "p", revision: 2 }] },
+  } as never);
+  const result = await navigationStore.getState().loadProject("p");
+  expect(result.error).toMatchObject({ status: 404 });
+  expect(result.data).toEqual(project);
+  expect(projectCalls).toBe(2);
+  expect(catalogCalls).toBe(2);
+});
+
+test("catalog refresh failure preserves stale catalog and project data", async () => {
+  let projectCalls = 0;
+  let catalogCalls = 0;
+  const project = {
+    key: "p",
+    current: { sessions: [], remaining: 0 },
+    recent: { sessions: [], remaining: 0 },
+    archived: { sessions: [], remaining: 0 },
+  };
+  const client = await init((url) => {
+    if (url === "/api/navigation")
+      return json(
+        emptyManifest({
+          catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+        }),
+      );
+    if (url.includes("catalogs/projects")) {
+      catalogCalls++;
+      return catalogCalls === 1 ? json({ projects: [project], remaining: 0 }) : json({}, 503);
+    }
+    if (url.includes("/projects/p") && !url.includes("?tier=")) {
+      projectCalls++;
+      return projectCalls === 1 ? json(project) : json({}, 404);
+    }
+    return json({ sessions: [], remaining: 0 });
+  });
+  const first = await navigationStore.getState().loadProject("p");
+  expect(first.data).toEqual(project);
+  client.emitNotification({
+    method: "evener/navigation/invalidated",
+    params: { generationId: generation, sequence: 1, targets: [{ kind: "project", projectKey: "p", revision: 2 }] },
+  } as never);
+  const result = await navigationStore.getState().loadProject("p");
+  expect(result.data).toEqual(project);
+  expect(
+    [...navigationStore.getState().resources.values()].find((resource) => resource.key.kind === "catalog")?.data,
+  ).toEqual({ projects: [project], remaining: 0 });
+  expect(projectCalls).toBe(2);
+  expect(catalogCalls).toBe(2);
+});
+
+test("rail expansion persists through store reset, overrides defaults, and hydrates once", async () => {
+  localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify({ p: false }));
+  resetNavigationStoreForTests();
+  let projectCalls = 0;
+  await init((url) => {
+    if (url === "/api/navigation")
+      return json(
+        emptyManifest({
+          catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+        }),
+      );
+    if (url.includes("catalogs/projects"))
+      return json({ projects: [{ key: "p", default_expanded: true }], remaining: 0 });
+    if (url.includes("/projects/p") && !url.includes("?tier=")) {
+      projectCalls++;
+      return json({
+        key: "p",
+        current: { sessions: [], remaining: 0 },
+        recent: { sessions: [], remaining: 0 },
+        archived: { sessions: [], remaining: 0 },
+      });
+    }
+    return json({ sessions: [], remaining: 0 });
+  });
+  expect(selectExpanded("p")(navigationStore.getState())).toBe(false);
+  navigationStore.getState().setExpanded("p", true);
+  navigationStore.getState().setExpanded("p", true);
+  await flush();
+  expect(projectCalls).toBe(1);
+  resetNavigationStoreForTests();
+  expect(selectExpanded("p")(navigationStore.getState())).toBe(true);
+  localStorage.removeItem(EXPANSION_STORAGE_KEY);
+});
+
+test("targeted updates are immutable and preserve unrelated resource identity", async () => {
+  let sectionRevision = 1;
+  const client = await init((url) => {
+    if (url === "/api/navigation")
+      return json(
+        emptyManifest({
+          sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+          catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+        }),
+      );
+    if (url.includes("sections/live"))
+      return json(
+        { sessions: [{ ref: `s${sectionRevision}`, children: [] }], remaining: 0 },
+        200,
+        `"section-${sectionRevision}"`,
+        sectionRevision,
+      );
+    if (url.includes("catalogs/projects")) return json({ projects: [], remaining: 0 });
+    return json({ sessions: [], remaining: 0 });
+  });
+  await navigationStore.getState().loadSection("live");
+  await navigationStore.getState().loadCatalog("projects");
+  const before = navigationStore.getState();
+  const catalog = [...before.resources.values()].find((resource) => resource.key.kind === "catalog")!;
+  const section = [...before.resources.values()].find((resource) => resource.key.kind === "section")!;
+  sectionRevision = 2;
+  client.emitNotification({
+    method: "evener/navigation/invalidated",
+    params: { generationId: generation, sequence: 1, targets: [{ kind: "section", section: "live", revision: 2 }] },
+  } as never);
+  await flush();
+  const after = navigationStore.getState();
+  expect(after.resources).not.toBe(before.resources);
+  expect(after.resources.get(JSON.stringify({ kind: "catalog", catalog: "projects", limit: 100, offset: 0 }))).toBe(
+    catalog,
+  );
+  expect(after.resources.get(JSON.stringify({ kind: "section", limit: 50, offset: 0, section: "live" }))).not.toBe(
+    section,
+  );
+  expect(catalog.data).toEqual({ projects: [], remaining: 0 });
 });
