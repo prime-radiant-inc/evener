@@ -49,6 +49,18 @@ test("renders all five visible levels and gives Full its full accessible name", 
   expect(screen.getByText("Full")).toBeTruthy();
 });
 
+test("uses Full detail in the current readout while the visible stop stays Full", () => {
+  render(
+    <TranscriptDetailEditor
+      value={makeTranscriptDisplayConfig({ kind: "preset", level: "full" })}
+      onChange={() => {}}
+    />,
+  );
+
+  expect(screen.getByText("Full")).toBeTruthy();
+  expect(screen.getByText("Full detail")).toBeTruthy();
+});
+
 test("the five-level radio track keeps Arrow, Home, and End selection behavior", async () => {
   const user = userEvent.setup();
   render(<ControlledEditor initial={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })} />);
@@ -112,6 +124,19 @@ test("Advanced content changes show Custom and normalize exact preset vectors", 
   );
 });
 
+test("Advanced summary includes Custom content and independent extras", async () => {
+  const user = userEvent.setup();
+  const config = makeTranscriptDisplayConfig(
+    { kind: "custom", toolIntent: true, toolCalls: false, reasoning: true, expandByDefault: false },
+    { roundTimings: true, systemEvents: true },
+  );
+  render(<TranscriptDetailEditor value={config} onChange={() => {}} />);
+
+  await user.click(screen.getByRole("button", { name: /Advanced/ }));
+
+  expect(screen.getByRole("button", { name: /Advanced · Custom content · 2 extras/ })).toBeTruthy();
+});
+
 test("Metrics and Diagnostics toggles remain independent of content", async () => {
   const user = userEvent.setup();
   const onChange = vi.fn();
@@ -148,6 +173,46 @@ test("disabled editor exposes disabled controls and cannot change the value", as
   expect(onChange).not.toHaveBeenCalled();
 });
 
+test("Custom has no regular radio checked", () => {
+  render(
+    <TranscriptDetailEditor
+      value={makeTranscriptDisplayConfig({
+        kind: "custom",
+        toolIntent: true,
+        toolCalls: false,
+        reasoning: false,
+        expandByDefault: true,
+      })}
+      onChange={() => {}}
+    />,
+  );
+
+  for (const radio of screen.getAllByRole("radio")) {
+    expect(radio.getAttribute("aria-checked")).toBe("false");
+  }
+  expect(screen.getByText("Custom")).toBeTruthy();
+});
+
+test("disabled Advanced switches and select cannot change the value", async () => {
+  const user = userEvent.setup();
+  const onChange = vi.fn();
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  const { rerender } = render(<TranscriptDetailEditor value={config} onChange={onChange} />);
+
+  await user.click(screen.getByRole("button", { name: /Advanced/ }));
+  rerender(<TranscriptDetailEditor value={config} onChange={onChange} disabled />);
+
+  for (const control of screen.getAllByRole("switch")) {
+    expect((control as HTMLButtonElement).disabled).toBe(true);
+  }
+  const hookSelect = screen.getByRole("combobox", { name: "Hook exit messages" }) as HTMLSelectElement;
+  expect(hookSelect.disabled).toBe(true);
+  await user.click(screen.getByRole("switch", { name: "Tool calls" }));
+  await user.selectOptions(hookSelect, "all");
+  expect(onChange).not.toHaveBeenCalled();
+  expect(hookSelect.value).toBe("none");
+});
+
 test("explains that critical rows are locked and are not editor controls", () => {
   render(<TranscriptDetailEditor value={makeTranscriptDisplayConfig()} onChange={() => {}} />);
 
@@ -166,5 +231,8 @@ test("styles the five-stop track with non-color selection and 44px touch targets
 
   expect(css).toMatch(/grid-template-columns:\s*repeat\(5/);
   expect(css).toMatch(/button\[role="radio"\][^{]*\{[^}]*min-height:\s*44px/);
+  expect(css).not.toContain("overflow-x: auto");
+  expect(css).not.toContain("min-width: 440px");
   expect(css).toMatch(/aria-checked="true"/);
+  expect(css).toMatch(/\.advancedPanel[^{]*button\[role="switch"\][^{]*\{[^}]*min-height:\s*44px/);
 });
