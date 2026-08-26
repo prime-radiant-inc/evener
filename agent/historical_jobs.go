@@ -23,6 +23,9 @@ type HistoricalJobRecord struct {
 	OriginToolCallID string
 	OriginItemID     string
 	OutputBytes      int64
+	Authority        string
+	Incomplete       bool
+	IntegrityReasons []string
 }
 
 // HistoricalJobDiagnostics reports authority and integrity evidence.
@@ -69,7 +72,7 @@ func loadSessionHistoricalJobRecordsWithDiagnostics(stateDir, sessionID string) 
 		if rec == nil {
 			continue
 		}
-		out[jobID] = HistoricalJobRecord{JobID: rec.JobID, Type: string(rec.Type), Status: string(rec.Status), Reason: rec.Reason, Task: rec.Task, OriginTurnID: rec.OriginTurnID, OriginToolCallID: rec.OriginToolCallID, OriginItemID: rec.OriginItemID, OutputBytes: rec.OutputBytes}
+		out[jobID] = HistoricalJobRecord{JobID: rec.JobID, Type: string(rec.Type), Status: string(rec.Status), Reason: rec.Reason, Task: rec.Task, OriginTurnID: rec.OriginTurnID, OriginToolCallID: rec.OriginToolCallID, OriginItemID: rec.OriginItemID, OutputBytes: rec.OutputBytes, Authority: string(rec.Authority), Incomplete: rec.Incomplete, IntegrityReasons: append([]string(nil), rec.IntegrityReasons...)}
 	}
 	return out, diagnostics, nil
 }
