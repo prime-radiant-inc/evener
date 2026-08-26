@@ -57,6 +57,14 @@ function renderWithToasts() {
   );
 }
 
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
 test("renders Desktop then Mobile stacked cards with hub-sync and browser-local scope copy", () => {
   transcriptDisplayStore.setState({ hubSupport: "supported" });
   renderWithToasts();
@@ -92,7 +100,7 @@ test("keeps the preview on the draft until the hub acknowledges the canonical re
   const patchResult = {
     layout: "desktop" as const,
     revision: 2,
-    config: toWireConfig(confirmed),
+    config: toWireConfig(draft),
   };
   let releasePatch!: (value: typeof patchResult) => void;
   const pendingPatch = new Promise<typeof patchResult>((resolve) => {
@@ -154,4 +162,74 @@ test("reverts a failed hub mutation and retries the last draft", async () => {
   await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
   expect(await screen.findByText("Settings saved")).toBeTruthy();
   expect(patchCalls).toBe(2);
+});
+
+test("does not toast when a resolved PATCH is stale and preserves the newer draft", async () => {
+  const client = new FakeClient("ready");
+  const confirmed = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  const firstDraft = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
+  const newerDraft = makeTranscriptDisplayConfig({ kind: "preset", level: "activity" });
+  type PatchResult = { layout: "desktop"; revision: number; config: ReturnType<typeof toWireConfig> };
+  const responses: Array<ReturnType<typeof deferred<PatchResult>>> = [];
+  client.on("evener/settings/transcriptDisplay/get", () => ({
+    desktop: { revision: 1, config: toWireConfig(confirmed) },
+    mobile: { revision: 1, config: toWireConfig(shippedDefault("mobile").config) },
+  }));
+  client.on("evener/settings/transcriptDisplay/patch", () => {
+    const response = deferred<PatchResult>();
+    responses.push(response);
+    return response.promise;
+  });
+  connectionStore.getState().connect(client);
+  connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+  renderWithToasts();
+  await waitFor(() => expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(1));
+
+  await userEvent.setup().click(screen.getAllByRole("radio", { name: "Full detail" })[0]!);
+  await waitFor(() => expect(responses).toHaveLength(1));
+  const competingPatch = transcriptDisplayStore.getState().patchHubDefault("desktop", newerDraft);
+  await waitFor(() => expect(responses).toHaveLength(2));
+
+  responses[0]?.resolve({ layout: "desktop", revision: 2, config: toWireConfig(firstDraft) });
+  expect((await screen.findByRole("alert")).textContent).toContain("did not acknowledge");
+  expect(screen.queryByText("Settings saved")).toBeNull();
+  expect(transcriptDisplayStore.getState().drafts.desktop).toEqual(newerDraft);
+
+  responses[1]?.resolve({ layout: "desktop", revision: 3, config: toWireConfig(newerDraft) });
+  await competingPatch;
+  expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 3, config: newerDraft });
+  expect(screen.queryByText("Settings saved")).toBeNull();
+});
+
+test("allows only the newest overlapping Settings save to acknowledge and toast", async () => {
+  const client = new FakeClient("ready");
+  const confirmed = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  const firstDraft = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
+  const newestDraft = makeTranscriptDisplayConfig({ kind: "preset", level: "activity" });
+  type PatchResult = { layout: "desktop"; revision: number; config: ReturnType<typeof toWireConfig> };
+  const responses: Array<ReturnType<typeof deferred<PatchResult>>> = [];
+  client.on("evener/settings/transcriptDisplay/get", () => ({
+    desktop: { revision: 1, config: toWireConfig(confirmed) },
+    mobile: { revision: 1, config: toWireConfig(shippedDefault("mobile").config) },
+  }));
+  client.on("evener/settings/transcriptDisplay/patch", () => {
+    const response = deferred<PatchResult>();
+    responses.push(response);
+    return response.promise;
+  });
+  connectionStore.getState().connect(client);
+  connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+  renderWithToasts();
+  await waitFor(() => expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(1));
+
+  const user = userEvent.setup();
+  await user.click(screen.getAllByRole("radio", { name: "Full detail" })[0]!);
+  await user.click(screen.getAllByRole("radio", { name: "Activity" })[0]!);
+  await waitFor(() => expect(responses).toHaveLength(2));
+  responses[0]?.resolve({ layout: "desktop", revision: 2, config: toWireConfig(firstDraft) });
+  responses[1]?.resolve({ layout: "desktop", revision: 3, config: toWireConfig(newestDraft) });
+
+  expect(await screen.findAllByText("Settings saved")).toHaveLength(1);
+  expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
+  expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 3, config: newestDraft });
 });
