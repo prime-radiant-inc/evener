@@ -1277,7 +1277,7 @@ func (s webNavigationSource) Revision() navigationSourceRevision {
 		revision.Inputs = s.web.cfg.Inputs.Load()
 	}
 	if s.web.cfg.RemoteThreadCache != nil {
-		revision.Remote = s.web.cfg.RemoteThreadCache.Snapshot().Generation
+		revision.Remote = s.web.cfg.RemoteThreadCache.Generation()
 	}
 	return revision
 }

@@ -130,15 +130,15 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		id = "summary"
 	}
 	representation, err := s.navigation.LegacyRepresentation(r.Context(), id, func(inputs navigationBuildInputs) (any, error) {
-		resp, err := s.buildLegacyTreeResponse(inputs)
-		if err != nil {
-			return nil, err
-		}
 		if id == "summary" {
 			return struct {
 				GeneratedAt      time.Time               `json:"generated_at"`
 				AttentionSummary hubapi.AttentionSummary `json:"attentionSummary"`
-			}{hubNavigationNow(), resp.AttentionSummary}, nil
+			}{hubNavigationNow(), inputs.AttentionSummary}, nil
+		}
+		resp, err := s.buildLegacyTreeResponse(inputs)
+		if err != nil {
+			return nil, err
 		}
 		return resp, nil
 	})

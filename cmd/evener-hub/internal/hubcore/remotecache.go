@@ -106,6 +106,15 @@ func (c *RemoteThreadCache) Snapshot() RemoteThreadSnapshot {
 	return cloneRemoteThreadSnapshot(c.snapshot)
 }
 
+// Generation returns the revision marker without cloning the retained
+// snapshot. Callers that only need invalidation identity should use this
+// method rather than Snapshot.
+func (c *RemoteThreadCache) Generation() uint64 {
+	c.mu.RLock()
+	defer c.mu.RUnlock()
+	return c.snapshot.Generation
+}
+
 func inferRemoteSources(threads []appwire.Thread, complete bool) map[string]RemoteSourceSnapshot {
 	sources := make(map[string]RemoteSourceSnapshot)
 	for _, thread := range threads {

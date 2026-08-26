@@ -19,6 +19,14 @@ func TestRemoteThreadCacheEquivalentEmptyFormsAreNoOp(t *testing.T) {
 	}
 }
 
+func TestRemoteThreadCacheGenerationAvoidsSnapshotContract(t *testing.T) {
+	c := &RemoteThreadCache{}
+	c.Store([]appwire.Thread{{ID: "t1"}})
+	if got, want := c.Generation(), c.Snapshot().Generation; got != want {
+		t.Fatalf("generation=%d, snapshot generation=%d", got, want)
+	}
+}
+
 func fuzzScenarioRemoteThreadCacheReadReturnsLastStored(t *testing.T) {
 	c := &RemoteThreadCache{}
 	if got := c.Get(); got != nil {
