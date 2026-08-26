@@ -563,19 +563,24 @@ func TestNavigationServicePendingEpochSurvivesCommitBeforeClear(t *testing.T) {
 	})
 	source.changeTitle("first")
 	service.Invalidate(navigationChangeHint{Projects: []string{"p1"}})
-	go service.refreshPending(ctx)
+	firstDone := make(chan struct{})
+	go func() { service.refreshPending(ctx); close(firstDone) }()
 	waitNavigationSignal(t, commit, "first commit")
 	waitNavigationSignal(t, source.captured, "first forced refresh")
-	waitNavigationSignal(t, source.captured, "second forced refresh retained by raced epoch")
-	waitNavigationSignal(t, secondCommit, "second commit")
+	waitNavigationSignal(t, firstDone, "first refresh completion")
 	service.mu.Lock()
 	if !service.pendingInvalidation {
 		service.mu.Unlock()
 		t.Fatal("pending invalidation cleared before second commit completed")
 	}
 	service.mu.Unlock()
+	secondDone := make(chan struct{})
+	go func() { service.refreshPending(ctx); close(secondDone) }()
+	waitNavigationSignal(t, source.captured, "second forced refresh retained by raced epoch")
+	waitNavigationSignal(t, secondCommit, "second commit")
 	close(releaseSecond)
 	waitNavigationSignal(t, cleared, "second refresh pending clear")
+	waitNavigationSignal(t, secondDone, "second refresh completion")
 	if got := source.captureCount(); got != 3 {
 		t.Fatalf("captures = %d, want initial plus two forced refreshes", got)
 	}
@@ -653,12 +658,15 @@ func TestNavigationServiceCanceledJoinedCallerAtCommitCutoffDoesNotPoisonFlight(
 
 func TestNavigationServiceFailedRefreshPreservesNewerPendingEpoch(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
-	source.captured = make(chan struct{}, 4)
 	service := newTestNavigationService(t, source)
+	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		t.Fatal(err)
+	}
+	source.mu.Lock()
+	source.captured = make(chan struct{}, 4)
+	source.mu.Unlock()
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
-	go func() { service.Start(ctx); close(done) }()
-	waitNavigationSignal(t, source.captured, "initial scheduler snapshot")
 
 	attached := make(chan struct{}, 1)
 	previousAttached := navigationRefreshTicketAttached
@@ -679,7 +687,9 @@ func TestNavigationServiceFailedRefreshPreservesNewerPendingEpoch(t *testing.T) 
 	source.revision++
 	source.mu.Unlock()
 	service.Invalidate(navigationChangeHint{Projects: []string{"p1"}})
+	go func() { service.refreshPending(ctx); close(done) }()
 	waitNavigationSignal(t, attached, "failed refresh ticket")
+	waitNavigationSignal(t, done, "failed refresh completion")
 	service.mu.Lock()
 	pending := service.pendingInvalidation
 	hint := service.pendingHint
@@ -691,7 +701,6 @@ func TestNavigationServiceFailedRefreshPreservesNewerPendingEpoch(t *testing.T) 
 		t.Fatalf("failed refresh published %+v", got)
 	}
 	cancel()
-	waitNavigationSignal(t, done, "scheduler shutdown")
 }
 
 func TestNavigationServiceConcurrentAppendAndDrainKeepFIFOAndWakeAtomic(t *testing.T) {
