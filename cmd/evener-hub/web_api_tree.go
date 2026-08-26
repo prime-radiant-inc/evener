@@ -285,15 +285,27 @@ func (s *WebServer) buildLegacyTreeResponse(inputs navigationBuildInputs) (hubap
 }
 
 func legacyTreeNodeTier(inputs navigationBuildInputs, scope, projectKey, tier string, favs map[hubcore.ArchiveKey]bool, n hubcore.TreeNode) hubapi.TreeNode {
+	out := legacyTreeNode(inputs, scope, projectKey, n)
+	out.Tier = tier
+	out.Branch = n.Branch
+	out.ClusterCount = n.ClusterCount
+	out.Favorite = favs[hubcore.ArchiveKey{Kind: "session", ID: n.ID}]
+	out.Rename = inputs.Renameable[n.ID]
+	return out
+}
+
+// legacyTreeNode matches apiTreeNode: descendants intentionally receive only
+// the bare node fields, never the tier-row decorations.
+func legacyTreeNode(inputs navigationBuildInputs, scope, projectKey string, n hubcore.TreeNode) hubapi.TreeNode {
 	live := inputs.Live[n.ID] && treeNodeCanActLive(n)
 	ref := hubRefFromTreeNodeID(n.ID)
 	rowID := scope + ":" + ref.String()
 	if projectKey != "" {
 		rowID = scope + ":" + projectKey + ":" + ref.String()
 	}
-	out := hubapi.TreeNode{RowID: rowID, Ref: ref.String(), HostID: ref.HostID, SessionID: ref.SessionID, Title: n.Title, Project: n.Project, State: n.State, Kind: n.Kind, Live: live, UpdatedAt: n.UpdatedAt, Age: n.Age, AskPending: n.AskPending, Dormant: n.Dormant, MoreSubagents: n.MoreSubagents, Tier: tier, Branch: n.Branch, ClusterCount: n.ClusterCount, Favorite: favs[hubcore.ArchiveKey{Kind: "session", ID: n.ID}], Rename: inputs.Renameable[n.ID]}
+	out := hubapi.TreeNode{RowID: rowID, Ref: ref.String(), HostID: ref.HostID, SessionID: ref.SessionID, Title: n.Title, Project: n.Project, State: n.State, Kind: n.Kind, Live: live, UpdatedAt: n.UpdatedAt, Age: n.Age, AskPending: n.AskPending, Dormant: n.Dormant, MoreSubagents: n.MoreSubagents}
 	for _, child := range n.Children {
-		out.Children = append(out.Children, legacyTreeNodeTier(inputs, "project", projectKey, tier, favs, child))
+		out.Children = append(out.Children, legacyTreeNode(inputs, "project", projectKey, child))
 	}
 	for _, entry := range inputs.LiveEntries {
 		if entry.SessionID == n.ID {
@@ -624,10 +636,12 @@ func (s *WebServer) navigationSnapshot(ctx context.Context) navigationSnapshot {
 // Roster, or a decision store while walking a node tree.
 func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64, tree hubcore.Tree, sources []hubapi.Source, attention hubapi.AttentionSummary, live []hubcore.LiveEntry, sessionFavorites, projectFavorites map[hubcore.ArchiveKey]bool, pinSections []hubcore.PinSection, pinAssignments map[string]hubcore.SessionPin) navigationBuildInputs {
 	liveBySession := make(map[string]bool, len(live))
+	renameable := make(map[string]bool)
 	for _, entry := range live {
 		if entry.SessionID != "" {
 			for _, alias := range favoriteSessionAliases(entry.SessionID) {
 				liveBySession[alias] = true
+				renameable[alias] = isLocalRouteID(alias)
 			}
 		}
 	}
@@ -643,7 +657,6 @@ func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64,
 			projectFavoriteByID[key.ID] = true
 		}
 	}
-	renameable := make(map[string]bool)
 	var indexRenameable func([]hubcore.TreeNode)
 	indexRenameable = func(rows []hubcore.TreeNode) {
 		for _, row := range rows {
