@@ -7,7 +7,9 @@ import type {
   InitializeResponse,
   NavigationCapability,
   NavigationInvalidatedPayload,
+  NavigationInvalidationTarget,
   NavigationManifest,
+  NavigationMutation,
   NavigationPinSectionCatalog,
   NavigationProjectCatalog,
   NavigationProjectPage,
@@ -61,6 +63,9 @@ export interface NavigationStoreState {
   lookupLocation(ref: string): Promise<ResourceState<NavigationSessionLocation>>;
   setExpanded(projectKey: string, expanded: boolean): void;
   toggleExpanded(projectKey: string): void;
+  awaitNavigationTargets(targets: NavigationInvalidationTarget[], generationID?: string): Promise<void>;
+  awaitNavigationInvalidation(): Promise<NavigationInvalidatedPayload>;
+  applyNavigationMutation(mutation: NavigationMutation): Promise<void>;
 }
 
 const initialAttention = { changed: [], summary: null };
@@ -76,6 +81,9 @@ const initial = (): Omit<
   | "lookupLocation"
   | "setExpanded"
   | "toggleExpanded"
+  | "awaitNavigationTargets"
+  | "awaitNavigationInvalidation"
+  | "applyNavigationMutation"
 > => ({
   capability: null,
   mode: "unknown",
@@ -390,6 +398,23 @@ function actions() {
     loadProjectPage: (projectKey: string, tier: "current" | "recent" | "archived", offset = 0, limit = PAGE_LIMIT) =>
       load<NavigationProjectPage>({ kind: "project_page", projectKey, tier, offset, limit }),
     lookupLocation: (ref: string) => load<NavigationSessionLocation>({ kind: "location", ref }),
+    awaitNavigationTargets: (targets: NavigationInvalidationTarget[], generationID?: string) => {
+      if (!revalidator) return Promise.reject(new Error("navigation is not initialized"));
+      return revalidator.waitForTargets(targets, generationID);
+    },
+    awaitNavigationInvalidation: () => {
+      if (!revalidator) return Promise.reject(new Error("navigation is not initialized"));
+      return revalidator.waitForInvalidation();
+    },
+    applyNavigationMutation: (mutation: NavigationMutation) => {
+      if (!revalidator) return Promise.reject(new Error("navigation is not initialized"));
+      if (mutation.generation_id !== revalidator.generationID) {
+        revalidator.resetGeneration(mutation.generation_id);
+        navigationStore.setState({ clientGenerationID: mutation.generation_id, lastSequence: 0 });
+      }
+      for (const target of mutation.targets) revalidator.invalidate(target);
+      return revalidator.waitForTargets(mutation.targets, mutation.generation_id);
+    },
     setExpanded: (projectKey: string, expanded: boolean) => {
       const expandedMap = new Map(navigationStore.getState().expanded);
       expandedMap.set(projectKey, expanded);
@@ -555,6 +580,7 @@ export function initNavigation(
             revalidator?.invalidate(t);
           });
       }
+      revalidator?.notifyInvalidation(p);
     }),
   );
   unsubs.push(

@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { NavigationManifest, NavigationProjectResource, NavigationSessionSummary } from "../../protocol/types.gen";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { keyID, type ResourceKey, type ResourceState } from "../../stores/navigation/types";
+import { resetTreeStoreForTests, treeStore } from "../../stores/tree";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import { Rail } from "./Rail";
@@ -68,10 +69,10 @@ function installState(resources: ResourceState[] = [], m = manifest()) {
     toggleExpanded: vi.fn(),
   });
 }
-function sectionResource(section: "live" | "needs_you", rows: NavigationSessionSummary[]) {
+function sectionResource(section: "live" | "needs_you", rows: NavigationSessionSummary[], remaining = 0) {
   return resource(
     { kind: "section", section, offset: 0, limit: 50 },
-    { generation_id: "g1", revision: 1, sessions: rows, remaining: 0, truncated: false },
+    { generation_id: "g1", revision: 1, sessions: rows, remaining, truncated: false },
   );
 }
 function projectResource(
@@ -103,6 +104,7 @@ function catalogResource(
 
 beforeEach(() => {
   resetNavigationStoreForTests();
+  resetTreeStoreForTests();
   resetToastStoreForTests();
   resetWorkspaceStoreForTests();
   localStorage.clear();
@@ -155,6 +157,18 @@ describe("resource-backed Rail", () => {
     expect(loadProjectPage).toHaveBeenCalledTimes(1);
     expect(loadProjectPage).toHaveBeenCalledWith("p", "current", 1, 2);
   });
+  test("loads one global overflow page and deduplicates repeated activation", async () => {
+    const loadSection = vi.fn().mockResolvedValue(undefined);
+    installState([sectionResource("live", [summary({ title: "Live" })], 3)]);
+    navigationStore.setState({ loadSection });
+    render(<Rail />);
+    const older = screen.getByText("+3 older");
+    fireEvent.click(older);
+    fireEvent.click(older);
+    await act(async () => undefined);
+    expect(loadSection).toHaveBeenCalledTimes(1);
+    expect(loadSection).toHaveBeenCalledWith("live", 1, 50);
+  });
   test("uses location lookup to reveal an unloaded project rather than scanning a tree", async () => {
     const lookupLocation = vi.fn().mockResolvedValue(undefined);
     installState([
@@ -185,4 +199,41 @@ describe("resource-backed Rail", () => {
     fireEvent.click(screen.getByText("Proj"));
     expect(localStorage.getItem(EXPANSION_STORAGE_KEY)).toContain("projectnode:p");
   });
+});
+
+test("explicit legacy mode renders the legacy store and does not use navigation requests", () => {
+  const fetchSpy = vi.spyOn(globalThis, "fetch");
+  navigationStore.setState({ mode: "legacy" });
+  treeStore.setState({
+    tree: {
+      generated_at: "2026-01-01T00:00:00Z",
+      sources: [],
+      live: [
+        {
+          row_id: "legacy:live",
+          ref: "local:live",
+          host_id: "local",
+          session_id: "live",
+          title: "Legacy live",
+          project: "P",
+          state: "active",
+          kind: "session",
+          live: true,
+          children: [],
+        },
+      ],
+      needs_you: [],
+      pin_sections: [],
+      projects: [],
+      archived_projects: [],
+      test_runs: [],
+      attentionSummary: { needsYou: 0, error: 0, working: 1 },
+    },
+    loading: false,
+    error: null,
+  });
+  render(<Rail />);
+  expect(screen.getByText("Legacy live")).toBeTruthy();
+  expect(fetchSpy).not.toHaveBeenCalledWith("/api/navigation", expect.anything());
+  fetchSpy.mockRestore();
 });

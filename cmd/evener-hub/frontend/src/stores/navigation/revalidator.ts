@@ -18,6 +18,12 @@ interface Entry {
   rerun: boolean;
   epoch: number;
 }
+interface TargetWaiter {
+  targets: NavigationInvalidationTarget[];
+  generationID: string;
+  resolve: () => void;
+  reject: (reason?: unknown) => void;
+}
 const protocolError = (message: string) => new Error(`navigation protocol: ${message}`);
 const clone = <T>(value: T): T => {
   if (value === null || typeof value !== "object") return value;
@@ -46,6 +52,11 @@ export class NavigationRevalidator {
   private disposed = false;
   private readonly entries = new Map<string, Entry>();
   private readonly listeners = new Set<ResourceListener>();
+  private readonly targetWaiters = new Set<TargetWaiter>();
+  private readonly invalidationWaiters = new Set<{
+    resolve: (payload: NavigationInvalidatedPayload) => void;
+    reject: (reason?: unknown) => void;
+  }>();
   constructor(generationID = "") {
     this.generationIDValue = generationID;
   }
@@ -66,6 +77,10 @@ export class NavigationRevalidator {
     for (const e of this.entries.values()) e.controller?.abort();
     this.entries.clear();
     this.listeners.clear();
+    for (const waiter of this.targetWaiters) waiter.reject(protocolError("revalidator disposed"));
+    for (const waiter of this.invalidationWaiters) waiter.reject(protocolError("revalidator disposed"));
+    this.targetWaiters.clear();
+    this.invalidationWaiters.clear();
   }
   get<T = unknown>(key: ResourceKey): ResourceState<T> | undefined {
     return this.entries.get(keyID(key))?.state as ResourceState<T> | undefined;
@@ -78,6 +93,22 @@ export class NavigationRevalidator {
   // generation resets can retry them; unseen/collapsed keys never enter here.
   loadedKeys(): ResourceKey[] {
     return [...this.entries.values()].map((entry) => entry.state.key);
+  }
+  waitForTargets(targets: NavigationInvalidationTarget[], generationID = this.generationIDValue): Promise<void> {
+    if (generationID !== this.generationIDValue) return Promise.reject(protocolError("generation mismatch"));
+    if (this.targetsSatisfied(targets, generationID)) return Promise.resolve();
+    return new Promise<void>((resolve, reject) => {
+      this.targetWaiters.add({ targets, generationID, resolve, reject });
+      this.resolveTargetWaiters();
+    });
+  }
+  waitForInvalidation(): Promise<NavigationInvalidatedPayload> {
+    if (this.disposed) return Promise.reject(protocolError("revalidator disposed"));
+    return new Promise((resolve, reject) => this.invalidationWaiters.add({ resolve, reject }));
+  }
+  notifyInvalidation(payload: NavigationInvalidatedPayload): void {
+    for (const waiter of this.invalidationWaiters) waiter.resolve(payload);
+    this.invalidationWaiters.clear();
   }
   acceptSequence(sequence: number): boolean {
     const gap = sequence > this.lastSequence + 1;
@@ -107,6 +138,8 @@ export class NavigationRevalidator {
     // Retained callbacks are started immediately for the new epoch; their
     // result is exposed through state/listeners rather than that old promise.
     if (this.disposed || generationID === this.generationIDValue) return;
+    for (const waiter of this.targetWaiters) waiter.reject(protocolError("generation mismatch"));
+    this.targetWaiters.clear();
     this.generationIDValue = generationID;
     this.epoch++;
     this.lastSequence = 0;
@@ -239,6 +272,35 @@ export class NavigationRevalidator {
           /* observers cannot affect request lifecycle */
         }
       }
+    this.resolveTargetWaiters();
+  }
+  private targetsSatisfied(targets: NavigationInvalidationTarget[], generationID: string): boolean {
+    if (generationID !== this.generationIDValue) return false;
+    return targets.every((target) => {
+      const matching = [...this.entries.values()].filter((entry) => matchesTarget(entry.state.key, target));
+      const loaded = matching.filter((entry) => entry.state.data !== null || entry.state.loadedRevision !== null);
+      return loaded.every((entry) => {
+        const revision = target.revision;
+        return (
+          !entry.state.loading &&
+          !entry.state.stale &&
+          !entry.state.error &&
+          entry.state.loadedRevision !== null &&
+          (revision === undefined || entry.state.loadedRevision >= revision)
+        );
+      });
+    });
+  }
+  private resolveTargetWaiters(): void {
+    for (const waiter of [...this.targetWaiters]) {
+      if (waiter.generationID !== this.generationIDValue) {
+        waiter.reject(protocolError("generation mismatch"));
+        this.targetWaiters.delete(waiter);
+      } else if (this.targetsSatisfied(waiter.targets, waiter.generationID)) {
+        waiter.resolve();
+        this.targetWaiters.delete(waiter);
+      }
+    }
   }
 }
 function matchesBase(key: ResourceKey, base: Partial<ResourceKey>): boolean {
@@ -251,6 +313,11 @@ function matchesBase(key: ResourceKey, base: Partial<ResourceKey>): boolean {
   if (base.kind === "project" && (key.kind === "project" || key.kind === "project_page"))
     return key.projectKey === base.projectKey;
   return key.kind === base.kind;
+}
+function matchesTarget(key: ResourceKey, target: NavigationInvalidationTarget): boolean {
+  if (target.kind === "all_loaded_projects") return isProjectResource(key);
+  const base = targetBase(target);
+  return base ? matchesBase(key, base) : false;
 }
 function validate(response: NavigationResponse, generation: string, cachedETag: string | null): void {
   if (!response || (response.status !== 200 && response.status !== 304))

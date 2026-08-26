@@ -3,13 +3,22 @@
 // copied from its Go handler's own doc comment/body struct
 // (cmd/evener-hub/web_api_{favorite,rename,archive,project_delete}.go) - see
 // each function's own comment for exactly which handler it targets. No
-// optimistic UI: every caller is expected to refetch (treeStore.refresh())
-// on success and toast on rejection, per this task's scope.
+// optimistic UI: callers await the response's exact navigation targets before
+// removing their overlay.
+import type { NavigationMutation } from "../../protocol/types.gen";
 import type { PinSectionSummary } from "../../stores/tree";
+
+export interface NavigationMutationReceipt {
+  navigation: NavigationMutation;
+}
+export interface FavoriteMutationResponse extends NavigationMutationReceipt {
+  ok: true;
+}
 
 export interface ProjectDeleteResult {
   deleted: string[];
   skipped: { id: string; reason: string }[];
+  navigation: NavigationMutation;
 }
 
 async function parseErrorBody(res: Response): Promise<string> {
@@ -58,8 +67,8 @@ async function postJSON<T>(url: string, body: unknown): Promise<T> {
 }
 
 /** POST /api/favorite for project rows only. Body: {kind:"project", id, favorited}. */
-export async function setFavorite(kind: "project", id: string, favorited: boolean): Promise<void> {
-  await postJSON("/api/favorite", { kind, id, favorited });
+export async function setFavorite(kind: "project", id: string, favorited: boolean): Promise<FavoriteMutationResponse> {
+  return postJSON("/api/favorite", { kind, id, favorited });
 }
 
 export interface SessionPinAssignment {
@@ -71,6 +80,7 @@ export interface SessionPinMutationResponse {
   ok: true;
   changed: boolean;
   assignment: SessionPinAssignment;
+  navigation: NavigationMutation;
 }
 
 export async function listPinSections(): Promise<PinSectionSummary[]> {
@@ -88,26 +98,33 @@ export async function assignSessionPin(
   });
 }
 
-export async function unpinSession(ref: string): Promise<{ ok: true; changed: boolean }> {
+export async function unpinSession(ref: string): Promise<NavigationMutationReceipt & { ok: true; changed: boolean }> {
   const response = await requestJSON<SessionPinMutationResponse>(`/api/session-pin?ref=${encodeURIComponent(ref)}`, {
     method: "DELETE",
   });
-  return { ok: response.ok, changed: response.changed };
+  return { ok: response.ok, changed: response.changed, navigation: response.navigation };
 }
 
-export async function renamePinSection(id: string, name: string): Promise<PinSectionSummary> {
-  const response = await requestJSON<{ ok: true; changed: boolean; section: PinSectionSummary }>(
-    `/api/pin-sections/${encodeURIComponent(id)}`,
-    {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ name }),
-    },
-  );
-  return response.section;
+export async function renamePinSection(
+  id: string,
+  name: string,
+): Promise<NavigationMutationReceipt & { section: PinSectionSummary }> {
+  const response = await requestJSON<{
+    ok: true;
+    changed: boolean;
+    section: PinSectionSummary;
+    navigation: NavigationMutation;
+  }>(`/api/pin-sections/${encodeURIComponent(id)}`, {
+    method: "PATCH",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name }),
+  });
+  return { section: response.section, navigation: response.navigation };
 }
 
-export async function deletePinSection(id: string): Promise<{ ok: true; changed: boolean; member_count: number }> {
+export async function deletePinSection(
+  id: string,
+): Promise<NavigationMutationReceipt & { ok: true; changed: boolean; member_count: number }> {
   return requestJSON(`/api/pin-sections/${encodeURIComponent(id)}`, { method: "DELETE" });
 }
 
@@ -115,8 +132,8 @@ export async function deletePinSection(id: string): Promise<{ ok: true; changed:
  * dispatcher (handleAPISession) url.PathUnescape()s the first path segment
  * after /api/sessions/, which is how a ref containing "/" or ":" survives
  * routing intact. */
-export async function renameSession(ref: string, name: string): Promise<void> {
-  await postJSON(`/api/sessions/${encodeURIComponent(ref)}/rename`, { name });
+export async function renameSession(ref: string, name: string): Promise<NavigationMutationReceipt> {
+  return postJSON(`/api/sessions/${encodeURIComponent(ref)}/rename`, { name });
 }
 
 /** POST /api/archive. Body: {kind, id, archived, working_dir?}. working_dir
@@ -129,10 +146,10 @@ export async function setArchived(
   id: string,
   archived: boolean,
   workingDir?: string,
-): Promise<void> {
+): Promise<NavigationMutationReceipt> {
   const body: { kind: string; id: string; archived: boolean; working_dir?: string } = { kind, id, archived };
   if (workingDir !== undefined) body.working_dir = workingDir;
-  await postJSON("/api/archive", body);
+  return postJSON("/api/archive", body);
 }
 
 /** POST /api/project/delete. Body: {key, working_dir}. Destructive -

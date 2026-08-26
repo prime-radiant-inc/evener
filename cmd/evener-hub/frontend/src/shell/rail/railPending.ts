@@ -26,6 +26,8 @@ export interface RailResources {
   projects: readonly RailProject[];
   archivedProjects: readonly RailProject[];
   testRuns: readonly RailProject[];
+  liveOverflow?: { remaining: number; offset: number; limit: number };
+  needsYouOverflow?: { remaining: number; offset: number; limit: number };
 }
 
 export interface RenderedProjectRows {
@@ -63,6 +65,7 @@ function mapSessions(resources: RailResources, fn: (node: RailSession) => RailSe
   const projects = (items: readonly RailProject[]) =>
     items.map((project) => ({ ...project, sessions: mapNodes(project.sessions, fn) }));
   return {
+    ...resources,
     live: mapNodes(resources.live, fn),
     needsYou: mapNodes(resources.needsYou, fn),
     pinSections: resources.pinSections.map((section) => ({

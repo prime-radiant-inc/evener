@@ -1,4 +1,4 @@
-import { type ChangeEvent, type CSSProperties, useCallback, useEffect, useId, useRef, useState } from "react";
+import { type ChangeEvent, type CSSProperties, useCallback, useEffect, useId, useMemo, useRef, useState } from "react";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import { errorText } from "../../protocol/errors";
 import type {
@@ -8,10 +8,11 @@ import type {
   NavigationSessionSummary,
 } from "../../protocol/types.gen";
 import { useConnectionStore } from "../../stores/connection";
-import { selectAttentionSummary, selectPinSections } from "../../stores/navigation/selectors";
+import { selectAttentionSummary, selectGlobalRows, selectPinSections } from "../../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { keyID, type ResourceKey, type ResourceState } from "../../stores/navigation/types";
 import { threadsStore } from "../../stores/threads";
+import { type TreeNode, type TreeProject, type TreeResponse, treeStore, useTreeStore } from "../../stores/tree";
 import {
   Badge,
   Button,
@@ -37,6 +38,7 @@ import {
   deleteProject,
   deleteSession,
   listPinSections,
+  type NavigationMutationReceipt,
   renamePinSection,
   renameSession,
   setArchived,
@@ -55,12 +57,14 @@ import {
   type OverflowRailNode,
   overrideLookup,
   pinSectionDisclosureID,
+  pinSectionOverflowNode,
   projectNodeIdForSessionRef,
   projectNodes,
   type RailNode,
   type RailPinSection,
   type RailProject,
   type RailSession,
+  sectionOverflowNode,
   sessionNodes,
 } from "./railNodes";
 import { applyPending, buildPinSourceIndex, type PendingOp, type RailResources } from "./railPending";
@@ -95,6 +99,22 @@ interface RailSectionProps {
   onToggle: (node: RailNode) => void;
   onActivate: (node: RailNode) => void;
   actions: RailRowActions;
+}
+interface RailDataSource {
+  resources: RailResources;
+  loading: boolean;
+  error: string | null;
+  retry(): Promise<void>;
+  loadProject(key: string): Promise<unknown>;
+  loadPage(
+    projectKey: string,
+    tier: "current" | "recent" | "archived",
+    offset: number,
+    limit: number,
+  ): Promise<unknown>;
+  refresh(): Promise<void>;
+  archivedDetails?: ReadonlyMap<string, RailProject>;
+  needsYou?: number;
 }
 function renderRailRow(actions: RailRowActions) {
   return (node: RailNode, info: TreeRowInfo) => <RailRow node={node} info={info} actions={actions} />;
@@ -153,7 +173,16 @@ function PinnedRailSection({
       </div>
       {open && (
         <Tree
-          nodes={sessionNodes(section.sessions ?? [], isExpanded)}
+          nodes={[
+            ...sessionNodes(section.sessions ?? [], isExpanded),
+            ...pinSectionOverflowNode(
+              `pinsection:${section.id}`,
+              section.id,
+              section.remaining ?? 0,
+              section.offset ?? section.sessions.length,
+              section.limit ?? 50,
+            ),
+          ]}
           onToggle={onToggle}
           onActivate={onActivate}
           renderRow={renderRailRow(actions)}
@@ -185,6 +214,9 @@ export interface RailProps {
   revealTarget?: string | null;
   onRevealConsumed?: () => void;
 }
+interface NavigationRailProps extends RailProps {
+  legacySource?: RailDataSource;
+}
 
 function relativeAge(updatedAt?: string): string | undefined {
   if (!updatedAt) return undefined;
@@ -196,48 +228,96 @@ function relativeAge(updatedAt?: string): string | undefined {
   if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
   return `${Math.floor(seconds / 86400)}d`;
 }
-function summarySession(summary: NavigationSessionSummary, tier?: string, pinSectionID?: string): RailSession {
-  const children = summary.children.map((child) => summarySession(child, tier, pinSectionID));
+function summarySession(
+  summary: NavigationSessionSummary,
+  scope: string,
+  tier?: string,
+  pinSectionID?: string,
+): RailSession {
+  const children = summary.children.map((child) => summarySession(child, scope, tier, pinSectionID));
   return {
     ...summary,
-    row_id: `navigation:${summary.ref}`,
+    row_id: `navigation:${scope}:${summary.ref}`,
     tier,
     pin_section_id: pinSectionID,
     age: relativeAge(summary.updated_at),
     children,
   };
 }
-function sessions(summaries: readonly NavigationSessionSummary[], tier?: string, pinSectionID?: string): RailSession[] {
-  return summaries.map((summary) => summarySession(summary, tier, pinSectionID));
+function sessions(
+  summaries: readonly NavigationSessionSummary[],
+  scope: string,
+  tier?: string,
+  pinSectionID?: string,
+): RailSession[] {
+  return summaries.map((summary) => summarySession(summary, scope, tier, pinSectionID));
 }
 function resourceData<T>(state: ReturnType<typeof navigationStore.getState>, key: ResourceKey): T | null {
   return (state.resources.get(keyID(key))?.data as T | undefined) ?? null;
 }
+interface LoadedSection {
+  sessions: RailSession[];
+  remaining: number;
+  offset: number;
+  limit: number;
+}
 function loadedSection(
   state: ReturnType<typeof navigationStore.getState>,
   section: "live" | "needs_you",
-): RailSession[] {
-  return [...state.resources.values()]
+): LoadedSection {
+  const pages = [...state.resources.values()]
     .filter((resource) => resource.key.kind === "section" && resource.key.section === section && resource.data !== null)
-    .sort((a, b) => (a.key.kind === "section" && b.key.kind === "section" ? a.key.offset - b.key.offset : 0))
-    .flatMap((resource) => sessions((resource.data as { sessions: NavigationSessionSummary[] }).sessions));
+    .sort((a, b) =>
+      a.key.kind === "section" && b.key.kind === "section"
+        ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
+        : 0,
+    );
+  const wanted = new Map<string, number>();
+  for (const resource of pages) {
+    for (const summary of (resource.data as { sessions: NavigationSessionSummary[] }).sessions)
+      wanted.set(summary.ref, (wanted.get(summary.ref) ?? 0) + 1);
+  }
+  const rows = selectGlobalRows(state).flatMap((summary) => {
+    const count = wanted.get(summary.ref) ?? 0;
+    if (count === 0) return [];
+    wanted.set(summary.ref, count - 1);
+    return [summarySession(summary, section)];
+  });
+  const last = pages.at(-1);
+  const data = last?.data as { remaining?: number } | null;
+  const pageKey = last?.key.kind === "section" ? last.key : { offset: 0, limit: 50 };
+  const pageRows = (last?.data as { sessions?: unknown[] } | null)?.sessions?.length ?? rows.length;
+  return {
+    sessions: rows,
+    remaining: data?.remaining ?? 0,
+    offset: pageKey.offset + pageRows,
+    limit: pageKey.limit,
+  };
 }
 function projectFromSummary(
   summary: NavigationProjectSummary,
   root: NavigationProjectResource | null,
+  rootError: string | undefined,
   pages: ReadonlyMap<string, ResourceState>,
 ): RailProject {
   const all: RailSession[] = [];
   const more: Partial<Record<"current" | "recent" | "archived", number>> = {};
+  const nextOffsets: Partial<Record<"current" | "recent" | "archived", number>> = {};
   for (const tier of ["current", "recent", "archived"] as const) {
     const base = root?.[tier];
-    const pageStates = [...pages.values()].filter(
-      (state) =>
-        state.key.kind === "project_page" &&
-        state.key.projectKey === summary.key &&
-        state.key.tier === tier &&
-        state.data !== null,
-    );
+    const pageStates = [...pages.values()]
+      .filter(
+        (state) =>
+          state.key.kind === "project_page" &&
+          state.key.projectKey === summary.key &&
+          state.key.tier === tier &&
+          state.data !== null,
+      )
+      .sort((a, b) =>
+        a.key.kind === "project_page" && b.key.kind === "project_page"
+          ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
+          : 0,
+      );
     const rows = [...(base?.sessions ?? [])];
     let remaining = base?.remaining ?? summary[`more_${tier}`] ?? 0;
     for (const pageState of pageStates) {
@@ -245,12 +325,17 @@ function projectFromSummary(
       for (const row of page.sessions) if (!rows.some((existing) => existing.ref === row.ref)) rows.push(row);
       remaining = Math.min(remaining, page.remaining);
     }
-    all.push(...sessions(rows, tier));
+    const lastPage = pageStates.at(-1);
+    const lastPageRows = (lastPage?.data as { sessions?: unknown[] } | null)?.sessions?.length;
+    nextOffsets[tier] = lastPage?.key.kind === "project_page" ? lastPage.key.offset + (lastPageRows ?? 0) : rows.length;
+    all.push(...sessions(rows, `project:${summary.key}:${tier}`, tier));
     more[tier] = remaining;
   }
   return {
     ...summary,
     loaded: root !== null,
+    resourceError: rootError,
+    nextOffsets,
     sessions: all,
     more_current: more.current,
     more_recent: more.recent,
@@ -259,33 +344,76 @@ function projectFromSummary(
 }
 function projectsFor(state: ReturnType<typeof navigationStore.getState>, catalog: CatalogKind): RailProject[] {
   const output: RailProject[] = [];
-  for (const resource of state.resources.values()) {
-    if (resource.key.kind !== "catalog" || resource.key.catalog !== catalog || resource.data === null) continue;
+  const catalogResources = [...state.resources.values()]
+    .filter((resource) => resource.key.kind === "catalog" && resource.key.catalog === catalog && resource.data !== null)
+    .sort((a, b) =>
+      a.key.kind === "catalog" && b.key.kind === "catalog"
+        ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
+        : 0,
+    );
+  for (const resource of catalogResources) {
     const data = resource.data as { projects: NavigationProjectSummary[] };
     for (const summary of data.projects) {
       if (output.some((project) => project.key === summary.key)) continue;
-      const root = resourceData<NavigationProjectResource>(state, { kind: "project", projectKey: summary.key });
-      output.push(projectFromSummary(summary, root, state.resources));
+      const rootState = state.resources.get(keyID({ kind: "project", projectKey: summary.key }));
+      const root = (rootState?.data as NavigationProjectResource | null | undefined) ?? null;
+      output.push(
+        projectFromSummary(summary, root, rootState?.error ? errorText(rootState.error) : undefined, state.resources),
+      );
     }
   }
   return output;
 }
 function railResources(state: ReturnType<typeof navigationStore.getState>): RailResources {
-  const pinSections = selectPinSections(state).map((section) => ({
-    id: section.id,
-    name: section.name,
-    member_count: 0,
-    sessions: sessions(section.sessions, undefined, section.id),
-  }));
+  const live = loadedSection(state, "live");
+  const needsYou = loadedSection(state, "needs_you");
+  const pinCatalog = [...state.resources.values()]
+    .filter((resource) => resource.key.kind === "pin_catalog" && resource.data !== null)
+    .sort((a, b) => (a.key.kind === "pin_catalog" && b.key.kind === "pin_catalog" ? a.key.offset - b.key.offset : 0))
+    .flatMap(
+      (resource) =>
+        (resource.data as { pin_sections: Array<{ id: string; name: string; count: number }> }).pin_sections,
+    );
+  const pinCounts = new Map(pinCatalog.map((descriptor) => [descriptor.id, descriptor.count]));
+  const pinSections = selectPinSections(state)
+    .map((section) => {
+      const pages = [...state.resources.values()]
+        .filter(
+          (resource) =>
+            resource.key.kind === "pin_section" && resource.key.sectionId === section.id && resource.data !== null,
+        )
+        .sort((a, b) =>
+          a.key.kind === "pin_section" && b.key.kind === "pin_section"
+            ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
+            : 0,
+        );
+      const last = pages.at(-1);
+      const pageKey = last?.key.kind === "pin_section" ? last.key : { offset: 0, limit: 50 };
+      const remaining = (last?.data as { remaining?: number } | null)?.remaining ?? 0;
+      const pageRows = (last?.data as { sessions?: unknown[] } | null)?.sessions?.length ?? section.sessions.length;
+      return {
+        id: section.id,
+        name: section.name,
+        member_count: pinCounts.get(section.id) ?? section.sessions.length,
+        remaining,
+        offset: pageKey.offset + pageRows,
+        limit: pageKey.limit,
+        sessions: sessions(section.sessions, `pin:${section.id}`, undefined, section.id),
+      };
+    })
+    .filter((section) => section.member_count > 0 || section.sessions.length > 0);
   return {
-    live: loadedSection(state, "live"),
-    needsYou: loadedSection(state, "needs_you"),
+    live: live.sessions,
+    needsYou: needsYou.sessions,
+    liveOverflow: { remaining: live.remaining, offset: live.offset, limit: live.limit },
+    needsYouOverflow: { remaining: needsYou.remaining, offset: needsYou.offset, limit: needsYou.limit },
     pinSections,
     projects: projectsFor(state, "projects"),
     archivedProjects: projectsFor(state, "archived_projects").map((project) => ({ ...project, is_archived: true })),
     testRuns: projectsFor(state, "test_runs"),
   };
 }
+export const adaptNavigationResources = railResources;
 function nonEmpty(resources: RailResources): boolean {
   return (
     resources.live.length > 0 ||
@@ -297,38 +425,61 @@ function nonEmpty(resources: RailResources): boolean {
   );
 }
 
-async function loadKey(key: ResourceKey): Promise<unknown> {
-  const state = navigationStore.getState();
-  switch (key.kind) {
-    case "manifest":
-      return state.loadManifest();
-    case "section":
-      return state.loadSection(key.section, key.offset, key.limit);
-    case "pin_catalog":
-      return state.loadPinCatalog(key.offset, key.limit);
-    case "pin_section":
-      return state.loadPinSection(key.sectionId, key.offset, key.limit);
-    case "catalog":
-      return state.loadCatalog(key.catalog, key.offset, key.limit);
-    case "project":
-      return state.loadProject(key.projectKey);
-    case "project_page":
-      return state.loadProjectPage(key.projectKey, key.tier, key.offset, key.limit);
-    case "location":
-      return undefined;
-  }
+function legacySession(node: TreeNode, scope: string, tier?: string, pinSectionID?: string): RailSession {
+  return {
+    ...node,
+    row_id: `legacy:${scope}:${node.ref}`,
+    tier: tier ?? node.tier,
+    pin_section_id: pinSectionID ?? node.pin_section_id,
+    children: node.children.map((child) => legacySession(child, scope, tier, pinSectionID)),
+  };
 }
-/** Task 10 exposes loaders and invalidation, but no target-satisfaction API.
- * Reload only already-loaded non-location resources as the typed adapter
- * boundary; do not recreate revalidator state or issue a whole-tree request. */
-async function reloadLoadedNavigation(): Promise<void> {
-  const keys = [...navigationStore.getState().resources.values()]
-    .map((resource) => resource.key)
-    .filter((key) => key.kind !== "location");
-  await Promise.all(keys.map((key) => loadKey(key).catch(() => undefined)));
+function legacyProject(project: TreeProject, scope: string): RailProject {
+  return { ...project, sessions: project.sessions.map((node) => legacySession(node, scope)) };
+}
+function legacyResources(tree: TreeResponse, projectDetails: ReadonlyMap<string, TreeProject>): RailResources {
+  return {
+    live: tree.live.map((node) => legacySession(node, "live")),
+    needsYou: tree.needs_you.map((node) => legacySession(node, "needs_you")),
+    pinSections: tree.pin_sections.map((section) => ({
+      id: section.id,
+      name: section.name,
+      member_count: section.sessions.length,
+      sessions: section.sessions.map((node) => legacySession(node, `pin:${section.id}`, undefined, section.id)),
+    })),
+    projects: tree.projects.map((project) => legacyProject(project, `project:${project.key}`)),
+    archivedProjects: tree.archived_projects.map((project) => {
+      const detail = projectDetails.get(project.key);
+      return legacyProject(detail ?? project, `project:${project.key}`);
+    }),
+    testRuns: tree.test_runs.map((project) => legacyProject(project, `project:${project.key}`)),
+  };
 }
 
-export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsumed }: RailProps = {}) {
+async function convergeMutation(result: unknown): Promise<void> {
+  if (!isNavigationMutationReceipt(result)) return;
+  await navigationStore.getState().applyNavigationMutation(result.navigation);
+}
+function isNavigationMutationReceipt(result: unknown): result is NavigationMutationReceipt {
+  return (
+    !!result &&
+    typeof result === "object" &&
+    "navigation" in result &&
+    !!result.navigation &&
+    typeof result.navigation === "object" &&
+    "generation_id" in result.navigation &&
+    "targets" in result.navigation
+  );
+}
+
+function NavigationRail({
+  onHide,
+  width,
+  onWidthChange,
+  revealTarget,
+  onRevealConsumed,
+  legacySource,
+}: NavigationRailProps = {}) {
   const navigationMode = useNavigationStore((state) => state.mode);
   const manifest = useNavigationStore((state) => state.manifest);
   const resourcesState = useNavigationStore((state) => state.resources);
@@ -356,9 +507,17 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   const railRef = useRef<HTMLDivElement>(null);
   const overflowPagesInFlight = useRef(new Set<string>());
   const state = { ...navigationStore.getState(), resources: resourcesState, expanded };
-  const base = railResources(state);
-  const resources = applyPending(base, pending, { pinSources: buildPinSourceIndex(base) });
-  const isExpanded = overrideLookup(expandedOverrides);
+  const base = useMemo(
+    () => legacySource?.resources ?? railResources({ ...navigationStore.getState(), resources: resourcesState }),
+    [legacySource, resourcesState],
+  );
+  const resources = useMemo(
+    () => applyPending(base, pending, { pinSources: buildPinSourceIndex(base) }),
+    [base, pending],
+  );
+  const isExpanded = useMemo(() => overrideLookup(expandedOverrides), [expandedOverrides]);
+  const revealLookupInFlight = useRef<string | null>(null);
+  const revealResourceRequests = useRef(new Set<string>());
 
   useEffect(() => {
     if (navigationMode !== "v1") return;
@@ -387,21 +546,37 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     [expandedOverrides],
   );
   const rootLoadsInFlight = useRef(new Set<string>());
+  const rootGeneration = useRef("");
+  const loadProjectRoot = useCallback(
+    (key: string) => {
+      if (rootLoadsInFlight.current.has(key)) return;
+      rootLoadsInFlight.current.add(key);
+      void Promise.resolve(legacySource?.loadProject(key) ?? navigationStore.getState().loadProject(key))
+        .catch(() => undefined)
+        .finally(() => rootLoadsInFlight.current.delete(key));
+    },
+    [legacySource],
+  );
   useEffect(() => {
     if (navigationMode !== "v1") return;
+    const generation = navigationStore.getState().clientGenerationID;
+    if (generation !== rootGeneration.current) {
+      rootLoadsInFlight.current.clear();
+      rootGeneration.current = generation;
+    }
     for (const project of [...resources.projects, ...resources.archivedProjects, ...resources.testRuns]) {
       const expanded = isExpanded(`projectnode:${project.key}`, project.default_expanded ?? false);
       if (
         !expanded ||
         project.loaded === true ||
+        project.resourceError !== undefined ||
         (project.session_count ?? 0) === 0 ||
         rootLoadsInFlight.current.has(project.key)
       )
         continue;
-      rootLoadsInFlight.current.add(project.key);
-      void Promise.resolve(navigationStore.getState().loadProject(project.key)).catch(() => undefined);
+      loadProjectRoot(project.key);
     }
-  }, [navigationMode, resources, isExpanded]);
+  }, [navigationMode, resources, isExpanded, loadProjectRoot]);
   useEffect(() => {
     if (!revealTarget) return;
     const row = Array.from(bodyRef.current?.querySelectorAll<HTMLElement>("[data-session-ref]") ?? []).find(
@@ -412,7 +587,6 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       onRevealConsumed?.();
       return;
     }
-    if (!nonEmpty(resources)) return;
     const projectID = projectNodeIdForSessionRef(
       [...resources.projects, ...resources.testRuns, ...resources.archivedProjects],
       revealTarget,
@@ -421,12 +595,23 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       setExpanded(projectID, true);
       return;
     }
-    const location = resourceData<{ project_key?: string }>(navigationStore.getState(), {
-      kind: "location",
-      ref: revealTarget,
-    });
+    const location = resourceData<{ project_key?: string; tier?: string; pin_section_id?: string; session?: unknown }>(
+      navigationStore.getState(),
+      {
+        kind: "location",
+        ref: revealTarget,
+      },
+    );
     if (!location) {
-      void Promise.resolve(navigationStore.getState().lookupLocation(revealTarget)).catch(() => undefined);
+      if (revealLookupInFlight.current !== revealTarget) {
+        revealLookupInFlight.current = revealTarget;
+        void Promise.resolve(navigationStore.getState().lookupLocation(revealTarget)).catch(() => undefined);
+      }
+      return;
+    }
+    revealLookupInFlight.current = null;
+    if (!location.session) {
+      onRevealConsumed?.();
       return;
     }
     if (location.project_key) {
@@ -435,24 +620,42 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
         setExpanded(projectID, true);
         return;
       }
-      void Promise.resolve(navigationStore.getState().loadProject(location.project_key)).catch(() => undefined);
+      const catalog = location.tier === "archived" ? "archived_projects" : "projects";
+      if (!revealResourceRequests.current.has(`catalog:${catalog}`)) {
+        revealResourceRequests.current.add(`catalog:${catalog}`);
+        void Promise.resolve(navigationStore.getState().loadCatalog(catalog)).catch(() => undefined);
+      }
+      if (!revealResourceRequests.current.has(`project:${location.project_key}`)) {
+        revealResourceRequests.current.add(`project:${location.project_key}`);
+        void Promise.resolve(navigationStore.getState().loadProject(location.project_key)).catch(() => undefined);
+      }
       return;
     }
-    onRevealConsumed?.();
+    if (location.pin_section_id) {
+      if (!revealResourceRequests.current.has(`pin:${location.pin_section_id}`)) {
+        revealResourceRequests.current.add(`pin:${location.pin_section_id}`);
+        void Promise.resolve(navigationStore.getState().loadPinSection(location.pin_section_id)).catch(() => undefined);
+      }
+      return;
+    }
+    if (!revealResourceRequests.current.has("section:live")) {
+      revealResourceRequests.current.add("section:live");
+      void Promise.resolve(navigationStore.getState().loadSection("live")).catch(() => undefined);
+    }
   }, [revealTarget, resources, expandedOverrides, onRevealConsumed, setExpanded]);
 
   function handleToggle(node: RailNode) {
     if (node.kind === "loading") return;
     const value = !node.expanded;
     setExpanded(node.id, value);
+    if (!value && node.kind === "project") rootLoadsInFlight.current.delete(node.project.key);
     if (
       value &&
       node.kind === "project" &&
       !resourceData(state, { kind: "project", projectKey: node.project.key }) &&
       !rootLoadsInFlight.current.has(node.project.key)
     ) {
-      rootLoadsInFlight.current.add(node.project.key);
-      void Promise.resolve(navigationStore.getState().loadProject(node.project.key)).catch(() => undefined);
+      loadProjectRoot(node.project.key);
     }
   }
   function openSession(session: RailSession) {
@@ -473,8 +676,8 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     handleToggle(node);
   }
   async function revealOverflow(node: OverflowRailNode) {
-    const pages = node.pages.filter((page) => {
-      const key = `${page.projectKey}:${page.tier}:${page.offset}:${page.limit}`;
+    const pages = node.pages.slice(0, 1).filter((page) => {
+      const key = JSON.stringify(page);
       if (overflowPagesInFlight.current.has(key)) return false;
       overflowPagesInFlight.current.add(key);
       return true;
@@ -482,14 +685,21 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     try {
       await Promise.all(
         pages.map((page) =>
-          navigationStore.getState().loadProjectPage(page.projectKey, page.tier, page.offset, page.limit),
+          page.projectKey && page.tier
+            ? (legacySource?.loadPage(page.projectKey, page.tier, page.offset, page.limit) ??
+              navigationStore.getState().loadProjectPage(page.projectKey, page.tier, page.offset, page.limit))
+            : page.section
+              ? navigationStore.getState().loadSection(page.section, page.offset, page.limit)
+              : page.sectionId
+                ? navigationStore.getState().loadPinSection(page.sectionId, page.offset, page.limit)
+                : Promise.resolve(),
         ),
       );
     } catch (error) {
       toasts.push("error", `Couldn't load older sessions: ${errorText(error)}`);
     } finally {
       pages.forEach((page) => {
-        overflowPagesInFlight.current.delete(`${page.projectKey}:${page.tier}:${page.offset}:${page.limit}`);
+        overflowPagesInFlight.current.delete(JSON.stringify(page));
       });
     }
   }
@@ -500,19 +710,22 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     propagate = false,
   ) {
     let installed = typeof optimistic === "object" ? optimistic : undefined;
+    let mutationCompleted = false;
     if (installed) setPending((ops) => [...ops, installed as PendingOp]);
     try {
       const result = await fn();
+      mutationCompleted = true;
       if (typeof optimistic === "function") {
         installed = optimistic(result);
         setPending((ops) => [...ops, installed as PendingOp]);
       }
-      await reloadLoadedNavigation();
+      if (legacySource) await legacySource.refresh();
+      else await convergeMutation(result);
     } catch (error) {
       toasts.push("error", `${failure}: ${errorText(error)}`);
       if (propagate) throw error;
     } finally {
-      if (installed) setPending((ops) => ops.filter((op) => op !== installed));
+      if (installed && !mutationCompleted) setPending((ops) => ops.filter((op) => op !== installed));
     }
   }
   const rowActions: RailRowActions = {
@@ -528,8 +741,16 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
         { kind: "sessionTitle", ref: session.ref, title: name },
         true,
       ),
-    onShutdownSession: (session) =>
-      runAction(() => threadsStore.getState().shutdown(session.ref), "Couldn't shut down session", undefined, true),
+    onShutdownSession: async (session) => {
+      const invalidation = navigationMode === "v1" ? navigationStore.getState().awaitNavigationInvalidation() : null;
+      await runAction(
+        () => threadsStore.getState().shutdown(session.ref),
+        "Couldn't shut down session",
+        undefined,
+        true,
+      );
+      if (invalidation) await invalidation;
+    },
     onPinSession: (session, target, section) =>
       runAction(
         () => assignSessionPin(session.ref, target),
@@ -567,10 +788,13 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     },
     onDeleteSession: async (session) => {
       const optimistic: PendingOp = { kind: "hideSession", ref: session.ref };
+      let mutationCompleted = false;
       setPending((ops) => [...ops, optimistic]);
       try {
         const result = await deleteSession(session.ref);
-        await reloadLoadedNavigation();
+        mutationCompleted = true;
+        if (legacySource) await legacySource.refresh();
+        else await convergeMutation(result);
         closePanesForDeletedSessions(result.deleted);
         if (result.skipped.length)
           toasts.push("warning", `Couldn't delete "${session.title}": ${result.skipped[0]?.reason ?? "still in use"}`);
@@ -578,7 +802,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
         toasts.push("error", `Couldn't delete "${session.title}": ${errorText(error)}`);
         throw error;
       } finally {
-        setPending((ops) => ops.filter((op) => op !== optimistic));
+        if (!mutationCompleted) setPending((ops) => ops.filter((op) => op !== optimistic));
       }
     },
     onToggleFavoriteProject: (project) => {
@@ -607,10 +831,13 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     if (!target) return;
     closeDeleteDialog();
     const optimistic: PendingOp = { kind: "hideProject", key: target.key };
+    let mutationCompleted = false;
     setPending((ops) => [...ops, optimistic]);
     try {
       const result = await deleteProject(target.key, target.working_dir ?? "");
-      await reloadLoadedNavigation();
+      mutationCompleted = true;
+      if (legacySource) await legacySource.refresh();
+      else await convergeMutation(result);
       closePanesForDeletedSessions(result.deleted);
       if (result.skipped.length)
         toasts.push(
@@ -620,7 +847,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     } catch (error) {
       toasts.push("error", `Couldn't delete project: ${errorText(error)}`);
     } finally {
-      setPending((ops) => ops.filter((op) => op !== optimistic));
+      if (!mutationCompleted) setPending((ops) => ops.filter((op) => op !== optimistic));
     }
   }
   function openSectionRename(section: RailPinSection) {
@@ -660,7 +887,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       await runAction(
         () => renamePinSection(target.id, name),
         "Couldn't rename pin section",
-        (section) => ({ kind: "pinSectionRename", id: target.id, name: section.name }),
+        (section) => ({ kind: "pinSectionRename", id: target.id, name: section.section.name }),
         true,
       );
       if (sectionRenameSubmission.current !== submission) return;
@@ -703,25 +930,45 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id),
   );
   const unarchived = [...resources.projects, ...resources.testRuns];
+  const retryProject = (key: string) => {
+    rootLoadsInFlight.current.delete(key);
+    loadProjectRoot(key);
+  };
   const archivedNodes = [
     ...archivedProjectNodes(
       resources.archivedProjects,
-      new Map(
-        resources.archivedProjects
-          .filter((p) => resourceData(state, { kind: "project", projectKey: p.key }))
-          .map((p) => [p.key, p]),
-      ),
+      legacySource?.archivedDetails ??
+        new Map(
+          resources.archivedProjects
+            .filter((p) => resourceData(state, { kind: "project", projectKey: p.key }))
+            .map((p) => [p.key, p]),
+        ),
       isExpanded,
     ),
     ...archivedSessionGroups(unarchived, isExpanded),
+  ].map((node) => (node.resourceError ? { ...node, retry: () => retryProject(node.project.key) } : node));
+  const projectRailNodes = (projects: readonly RailProject[]) =>
+    projectNodes(projects, isExpanded).map((node) =>
+      node.resourceError ? { ...node, retry: () => retryProject(node.project.key) } : node,
+    );
+  const liveNodes = [
+    ...sessionNodes(resources.live, isExpanded),
+    ...sectionOverflowNode(
+      "section:live",
+      "live",
+      resources.liveOverflow?.remaining ?? 0,
+      resources.liveOverflow?.offset ?? 0,
+      resources.liveOverflow?.limit ?? 50,
+    ),
   ];
   const resourceLoading = [...resourcesState.values()].some((resource) => resource.loading);
-  const loading = navigationMode === "v1" && (!manifest || manifest.loading || resourceLoading);
+  const loading =
+    legacySource?.loading ?? (navigationMode === "v1" && (!manifest || manifest.loading || resourceLoading));
   const manifestError = manifest?.error ? errorText(manifest.error) : null;
   const resourceError = [...resourcesState.values()].find((resource) => resource.error)?.error;
-  const loadError = manifestError ?? (resourceError ? errorText(resourceError) : null);
+  const loadError = legacySource?.error ?? manifestError ?? (resourceError ? errorText(resourceError) : null);
   const displayed = nonEmpty(resources);
-  const needsYou = attention?.needsYou ?? manifest?.data?.attentionSummary.needsYou ?? 0;
+  const needsYou = legacySource?.needsYou ?? attention?.needsYou ?? manifest?.data?.attentionSummary.needsYou ?? 0;
   return (
     <div
       className={CLASS.rail}
@@ -768,20 +1015,23 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
             title="Couldn't load sessions"
             hint={loadError}
             action={
-              <Button size="sm" onClick={() => void navigationStore.getState().loadManifest()}>
+              <Button
+                size="sm"
+                onClick={() => void (legacySource?.retry() ?? navigationStore.getState().loadManifest())}
+              >
                 Retry
               </Button>
             }
           />
         )}
-        {!loading && !displayed && !loadError && manifest && (
+        {!loading && !displayed && !loadError && (manifest || legacySource) && (
           <EmptyState title="No sessions yet" hint="Start a session from the command line to see it here." />
         )}
         {displayed && (
           <>
             <RailSection
               title="Live"
-              nodes={sessionNodes(resources.live, isExpanded)}
+              nodes={liveNodes}
               onToggle={handleToggle}
               onActivate={handleActivate}
               actions={rowActions}
@@ -804,14 +1054,14 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
             ))}
             <RailSection
               title="Projects"
-              nodes={projectNodes(resources.projects, isExpanded)}
+              nodes={projectRailNodes(resources.projects)}
               onToggle={handleToggle}
               onActivate={handleActivate}
               actions={rowActions}
             />
             <RailSection
               title="Test runs"
-              nodes={projectNodes(resources.testRuns, isExpanded)}
+              nodes={projectRailNodes(resources.testRuns)}
               onToggle={handleToggle}
               onActivate={handleActivate}
               actions={rowActions}
@@ -917,4 +1167,48 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       )}
     </div>
   );
+}
+
+function LegacyRail({ ...props }: RailProps) {
+  const tree = useTreeStore((state) => state.tree);
+  const loading = useTreeStore((state) => state.loading);
+  const error = useTreeStore((state) => state.error);
+  const projectDetails = useTreeStore((state) => state.projectDetails);
+  const projectDetailGenerations = useTreeStore((state) => state.projectDetailGenerations);
+  const treeGeneration = useTreeStore((state) => state.treeGeneration);
+  const currentDetails = useMemo(
+    () => new Map([...projectDetails].filter(([key]) => projectDetailGenerations.get(key) === treeGeneration)),
+    [projectDetails, projectDetailGenerations, treeGeneration],
+  );
+  const source = useMemo<RailDataSource>(
+    () => ({
+      resources: tree
+        ? legacyResources(tree, currentDetails)
+        : { live: [], needsYou: [], pinSections: [], projects: [], archivedProjects: [], testRuns: [] },
+      loading,
+      error,
+      needsYou: tree?.attentionSummary.needsYou ?? 0,
+      retry: async () => {
+        await treeStore.getState().refresh();
+      },
+      loadProject: (key) => treeStore.getState().loadProjectDetail(key),
+      loadPage: (key, tier, offset, limit) => treeStore.getState().loadProjectPage(key, tier, offset, limit),
+      refresh: async () => {
+        await treeStore.getState().refresh();
+      },
+      archivedDetails: new Map(
+        [...currentDetails].map(([key, project]) => [key, legacyProject(project, `project:${key}`)]),
+      ),
+    }),
+    [tree, loading, error, currentDetails],
+  );
+  useEffect(() => {
+    if (!tree) void treeStore.getState().ensureLoaded();
+  }, [tree]);
+  return <NavigationRail {...props} legacySource={source} />;
+}
+
+export function Rail(props: RailProps = {}) {
+  const mode = useNavigationStore((state) => state.mode);
+  return mode === "legacy" ? <LegacyRail {...props} /> : <NavigationRail {...props} />;
 }

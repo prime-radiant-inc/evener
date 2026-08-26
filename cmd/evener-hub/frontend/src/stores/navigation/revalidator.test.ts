@@ -495,3 +495,98 @@ test("generation reset applies targets and a satisfying fresh response needs no 
     error: null,
   });
 });
+
+test("target waiter holds optimism through N-1 and resolves at N", async () => {
+  const first = d<NavigationResponse>();
+  const second = d<NavigationResponse>();
+  const r = new NavigationRevalidator("g");
+  let refresh = false;
+  let calls = 0;
+  const request = vi.fn(() => {
+    if (!refresh) return Promise.resolve({ status: 200, generationID: "g", revision: 1, etag: "seed", data: "old" });
+    return (++calls === 1 ? first : second).promise;
+  });
+  await r.load(key, request);
+  refresh = true;
+  r.invalidate({ kind: "project", projectKey: "p", revision: 2 });
+  let resolved = false;
+  const waiting = r.waitForTargets([{ kind: "project", projectKey: "p", revision: 2 }]).then(() => (resolved = true));
+  first.resolve({ status: 200, generationID: "g", revision: 1, etag: "a", data: "old" });
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  expect(resolved).toBe(false);
+  first.resolve({ status: 200, generationID: "g", revision: 1, etag: "a", data: "old-again" });
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  second.resolve({ status: 200, generationID: "g", revision: 2, etag: "b", data: "new" });
+  await waiting;
+  expect(resolved).toBe(true);
+});
+
+test("unloaded representations do not block an exact target waiter", async () => {
+  const r = new NavigationRevalidator("g");
+  await expect(r.waitForTargets([{ kind: "catalog", catalog: "projects", revision: 4 }])).resolves.toBeUndefined();
+});
+
+test("wildcard target waits for every loaded project root and page", async () => {
+  const root = d<NavigationResponse>();
+  const page = d<NavigationResponse>();
+  const r = new NavigationRevalidator("g");
+  const pageKey: ResourceKey = { kind: "project_page", projectKey: "p", tier: "current", offset: 0, limit: 10 };
+  let refresh = false;
+  let rootCall = false;
+  let pageCall = false;
+  const rootRequest = () => {
+    if (!refresh) return Promise.resolve({ status: 200, generationID: "g", revision: 1, etag: "root", data: "root" });
+    rootCall = true;
+    return root.promise;
+  };
+  const pageRequest = () => {
+    if (!refresh) return Promise.resolve({ status: 200, generationID: "g", revision: 1, etag: "page", data: "page" });
+    pageCall = true;
+    return page.promise;
+  };
+  await r.load(key, rootRequest);
+  await r.load(pageKey, pageRequest);
+  refresh = true;
+  r.invalidate({ kind: "all_loaded_projects" });
+  let resolved = false;
+  const waiting = r.waitForTargets([{ kind: "all_loaded_projects" }]).then(() => (resolved = true));
+  expect(rootCall).toBe(true);
+  expect(pageCall).toBe(true);
+  root.resolve({ status: 200, generationID: "g", revision: 2, etag: "root-2", data: "root-2" });
+  await Promise.resolve();
+  expect(resolved).toBe(false);
+  page.resolve({ status: 200, generationID: "g", revision: 2, etag: "page-2", data: "page-2" });
+  await waiting;
+  expect(resolved).toBe(true);
+});
+
+test("generation reset fails a waiter closed rather than accepting old authority", async () => {
+  const r = new NavigationRevalidator("old");
+  await r.load(key, async () => ({ status: 200, generationID: "old", revision: 1, etag: "a", data: "old" }));
+  const waiting = r.waitForTargets([{ kind: "project", projectKey: "p", revision: 2 }]);
+  r.resetGeneration("new");
+  await expect(waiting).rejects.toThrow(/generation mismatch/);
+});
+
+test("duplicate response and invalidation coalesce to one trailing revalidation", async () => {
+  const first = d<NavigationResponse>();
+  const second = d<NavigationResponse>();
+  const r = new NavigationRevalidator("g");
+  let calls = 0;
+  const request = vi.fn(() =>
+    ++calls === 1
+      ? Promise.resolve({ status: 200, generationID: "g", revision: 1, etag: "a", data: "old" })
+      : (calls === 2 ? first : second).promise,
+  );
+  await r.load(key, request);
+  r.invalidate({ kind: "project", projectKey: "p", revision: 2 });
+  applyNavigationInvalidation(r, {
+    generationId: "g",
+    sequence: 1,
+    targets: [{ kind: "project", projectKey: "p", revision: 2 }],
+  });
+  first.resolve({ status: 200, generationID: "g", revision: 1, etag: "a", data: "old" });
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  expect(calls).toBe(3);
+  second.resolve({ status: 200, generationID: "g", revision: 2, etag: "b", data: "new" });
+});

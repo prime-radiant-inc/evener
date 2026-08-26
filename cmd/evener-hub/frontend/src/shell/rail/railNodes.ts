@@ -36,6 +36,8 @@ export interface RailProject {
   session_count?: number;
   sessions: RailSession[];
   loaded?: boolean;
+  resourceError?: string;
+  nextOffsets?: Partial<Record<TreeTier, number>>;
 }
 
 export interface RailPinSection {
@@ -43,6 +45,9 @@ export interface RailPinSection {
   name: string;
   member_count?: number;
   sessions: RailSession[];
+  remaining?: number;
+  offset?: number;
+  limit?: number;
 }
 
 import type { TreeNode as WidgetTreeNode } from "../../widgets";
@@ -73,6 +78,8 @@ export interface ProjectRailNode extends WidgetTreeNode {
   // archivedProjectNodes) instead gets a single LoadingRailNode child so it
   // still renders a chevron before its real sessions have loaded.
   children: RailNode[];
+  resourceError?: string;
+  retry?: () => void;
 }
 
 export interface LoadingRailNode extends WidgetTreeNode {
@@ -90,8 +97,10 @@ export interface InactiveFoldRailNode extends WidgetTreeNode {
 }
 
 export interface OverflowPage {
-  projectKey: string;
-  tier: TreeTier;
+  projectKey?: string;
+  tier?: TreeTier;
+  section?: "live" | "needs_you";
+  sectionId?: string;
   offset: number;
   limit: number;
 }
@@ -104,6 +113,26 @@ export interface OverflowRailNode extends WidgetTreeNode {
   kind: "overflow";
   count: number;
   pages: OverflowPage[];
+}
+
+export function sectionOverflowNode(
+  id: string,
+  section: "live" | "needs_you",
+  remaining: number,
+  offset: number,
+  limit: number,
+): OverflowRailNode[] {
+  return overflowNode(id, remaining, [{ section, offset, limit }]);
+}
+
+export function pinSectionOverflowNode(
+  id: string,
+  sectionId: string,
+  remaining: number,
+  offset: number,
+  limit: number,
+): OverflowRailNode[] {
+  return overflowNode(id, remaining, [{ sectionId, offset, limit }]);
 }
 
 export type RailNode = SessionRailNode | ProjectRailNode | LoadingRailNode | InactiveFoldRailNode | OverflowRailNode;
@@ -127,7 +156,12 @@ function tierOverflowPages(p: RailProject, tiers: TreeTier[]): OverflowPage[] {
     const count = fields[tier] ?? 0;
     if (count <= 0) return [];
     return [
-      { projectKey: p.key, tier, offset: p.sessions.filter((n) => n.tier === tier).length, limit: Math.min(count, 50) },
+      {
+        projectKey: p.key,
+        tier,
+        offset: p.nextOffsets?.[tier] ?? p.sessions.filter((n) => n.tier === tier).length,
+        limit: Math.min(count, 50),
+      },
     ];
   });
 }
@@ -391,6 +425,7 @@ export function projectNodes(projects: readonly RailProject[], isExpanded: IsExp
       id,
       kind: "project",
       project: p,
+      resourceError: p.resourceError,
       displayName: labels.get(p.key),
       expanded: isExpanded(id, p.default_expanded ?? false),
       children:
@@ -441,6 +476,7 @@ export function archivedSessionGroups(projects: readonly RailProject[], isExpand
       id,
       kind: "project",
       project: p,
+      resourceError: p.resourceError,
       displayName: labels.get(p.key),
       expanded: isExpanded(id, false),
       children: [...archived.map((n) => toSessionNode(n, isExpanded)), ...projectOverflowNode(id, p, ["archived"])],
@@ -454,6 +490,7 @@ export function archivedSessionGroups(projects: readonly RailProject[], isExpand
  * inside active projects. A stub's session_count is authoritative; a
  * hydrated detail has capped rows plus pagination overflow to account for. */
 function archivedProjectSessionCount(p: RailProject): number {
+  if (p.sessions.length > 0) return p.sessions.length + tierOverflow(p, ["current", "recent", "archived"]);
   if (p.session_count !== undefined) return p.session_count;
   return p.sessions.length + tierOverflow(p, ["current", "recent", "archived"]);
 }

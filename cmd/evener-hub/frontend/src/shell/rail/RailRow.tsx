@@ -634,6 +634,17 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
           <span className={CLASS.label} onClick={info.activate}>
             {node.displayName ?? project.name}
           </span>
+          {node.resourceError && node.retry && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                node.retry?.();
+              }}
+            >
+              Retry
+            </button>
+          )}
           <TrailingChevron info={info} />
         </span>
       </span>
