@@ -51,9 +51,14 @@ export async function activePort(profile, child, stderr) {
 }
 
 function exitEvent(child) {
-  return child.exitCode === null
-    ? new Promise((resolve) => child.once("exit", resolve))
-    : Promise.resolve();
+  return child.exitCode === null && !child.signalCode
+    ? new Promise((resolve) =>
+        child.once("exit", (code, signal) => resolve({ code, signal })),
+      )
+    : Promise.resolve({
+        code: child.exitCode,
+        signal: child.signalCode ?? null,
+      });
 }
 
 export async function bounded(promise, milliseconds, label) {
@@ -125,12 +130,13 @@ async function terminateOwned(child) {
 export async function closeBrowserProcess(browser, child, timeout = 3_000) {
   try {
     const exit = exitEvent(child);
-    await bounded(
-      Promise.all([browser.send("Browser.close"), exit]),
+    const protocolClose = browser.send("Browser.close").catch(() => undefined);
+    const [, observedExit] = await bounded(
+      Promise.all([protocolClose, exit]),
       timeout,
       "Chrome protocol Browser.close and process exit",
     );
-    return false;
+    return observedExit.code !== 0 || observedExit.signal !== null;
   } catch {
     await terminateOwned(child);
     return true;

@@ -34,6 +34,41 @@ test("Chrome shutdown bounds the actual Browser.close request and escalates", as
   assert.deepEqual(child.signals, ["SIGTERM"]);
 });
 
+test("expected protocol disconnect plus observed child exit is a clean shutdown", async () => {
+  const child = new EventEmitter();
+  child.exitCode = null;
+  child.signals = [];
+  child.kill = (signal) => child.signals.push(signal);
+  const browser = {
+    async send(method) {
+      assert.equal(method, "Browser.close");
+      queueMicrotask(() => {
+        child.exitCode = 0;
+        child.emit("exit", 0, null);
+      });
+      throw new Error("CDP WebSocket closed");
+    },
+  };
+  assert.equal(await closeBrowserProcess(browser, child, 50), false);
+  assert.deepEqual(child.signals, []);
+});
+
+test("nonzero child exit after protocol close retains shutdown diagnostics", async () => {
+  const child = new EventEmitter();
+  child.exitCode = null;
+  child.kill = () => assert.fail("already observed exit must not be signaled");
+  const browser = {
+    async send() {
+      queueMicrotask(() => {
+        child.exitCode = 9;
+        child.emit("exit", 9, null);
+      });
+      throw new Error("CDP WebSocket closed");
+    },
+  };
+  assert.equal(await closeBrowserProcess(browser, child, 50), true);
+});
+
 test("readiness rejects child error instead of waiting for the port file", async () => {
   const profile = await mkdtemp(path.join(os.tmpdir(), "chrome-ready-test-"));
   const child = new EventEmitter();

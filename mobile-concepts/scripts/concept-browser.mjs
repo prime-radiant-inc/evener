@@ -3,8 +3,10 @@ import net from "node:net";
 import os from "node:os";
 import path from "node:path";
 import { preview } from "vite";
+import { classifyAuditedRequest } from "./browser/audit.mjs";
 import { evaluate, navigate } from "./browser/cdp.mjs";
 import { startChrome, withOwnedCleanup } from "./browser/chrome.mjs";
+import { writeResultsJson } from "./browser/evidence.mjs";
 import {
   analyzeDifferentialCapture,
   applyRenderedSamples,
@@ -482,17 +484,10 @@ async function runCase({
   const offOrigin = [];
   const requests = [];
   client.on("Network.requestWillBeSent", (event) => {
-    requests.push(event.request.url);
-    try {
-      const parsed = new URL(event.request.url);
-      if (
-        !["data:", "blob:"].includes(parsed.protocol) &&
-        parsed.origin !== origin
-      )
-        offOrigin.push(event.request.url);
-    } catch {
-      offOrigin.push(event.request.url);
-    }
+    const exactUrl = event.request.url;
+    const classified = classifyAuditedRequest(exactUrl, origin);
+    if (classified.offOrigin) offOrigin.push(exactUrl);
+    requests.push(classified.audit);
   });
   return withOwnedCleanup(async () => {
     await setupPage(client, origin, viewport, safeArea);
@@ -896,10 +891,7 @@ export async function runBrowserMatrix(options = {}) {
     }
     if (violations.length) failed = true;
     const evidence = path.join(outputDirectory, "results.json");
-    await writeFile(
-      evidence,
-      `${JSON.stringify({ origin, results, csp }, null, 2)}\n`,
-    );
+    await writeResultsJson(evidence, { origin, results, csp });
     console.log(`Browser evidence: ${outputDirectory}`);
     console.log(
       `Cases: ${results.length}; screenshots: ${results.filter((result) => result.screenshot).length}; violations: ${violations.length}; capability failures: ${capabilityFailures.length}; case errors: ${results.filter((result) => result.error).length}`,
