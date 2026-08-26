@@ -561,9 +561,9 @@ func TestNavigationServicePendingEpochSurvivesCommitBeforeClear(t *testing.T) {
 		navigationPublicationCommittedLocked = previous
 		navigationPendingCleared = previousCleared
 	})
-	go service.Start(ctx)
 	source.changeTitle("first")
 	service.Invalidate(navigationChangeHint{Projects: []string{"p1"}})
+	go service.refreshPending(ctx)
 	waitNavigationSignal(t, commit, "first commit")
 	waitNavigationSignal(t, source.captured, "first forced refresh")
 	waitNavigationSignal(t, source.captured, "second forced refresh retained by raced epoch")
