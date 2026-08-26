@@ -1150,13 +1150,13 @@ npm run lint
 
 Expected: PASS.
 
-- [ ] **Step 4: Add/adjust a real-browser overflow case and mutation-test it**
+- [x] **Step 4: Add/adjust a real-browser overflow case and mutation-test it**
 
 Exercise 390px Mobile, 899px Mobile, 900px narrow desktop host, and a narrow dock pane. Assert the Detail trigger is reachable, the stepped control/sheet has no horizontal scroll, Settings cards stack, previews create no inner scroll, and 44px Mobile targets hold.
 
 Before accepting the guard, make one path-scoped temporary mutation that removes the relevant width/overflow rule, prove the guard fails on the named element, restore only that mutation with the documented path-scoped stash procedure, and rerun green.
 
-- [ ] **Step 5: Run canonical frontend gates**
+- [x] **Step 5: Run canonical frontend gates**
 
 From repository root:
 
@@ -1167,7 +1167,7 @@ make test-web-browser
 
 Expected: both exit 0. A missing Chrome/dependency is an incomplete gate, not a pass.
 
-- [ ] **Step 6: Run repository lint and static analysis**
+- [x] **Step 6: Run repository lint and static analysis**
 
 ```bash
 make lint
@@ -1176,7 +1176,7 @@ make vet
 
 Expected: both exit 0. `make lint` must confirm generated outputs are current.
 
-- [ ] **Step 7: Run the full deterministic test gate**
+- [x] **Step 7: Run the full deterministic test gate**
 
 ```bash
 make test
@@ -1184,7 +1184,7 @@ make test
 
 Expected: exit 0. Read every warning, skip, and retained-log path.
 
-- [ ] **Step 8: Run final status and diff checks**
+- [x] **Step 8: Run final status and diff checks**
 
 ```bash
 git diff --check
@@ -1194,7 +1194,7 @@ git log --oneline --decorate -15
 
 Expected: no unstaged implementation changes, no unexpected untracked files, and one reviewed commit per accepted task.
 
-- [ ] **Step 9: Commit only root-cause fixes or browser-guard changes from verification**
+- [x] **Step 9: Commit only root-cause fixes or browser-guard changes from verification**
 
 Stage the exact changed guard/test/fix paths and commit:
 
