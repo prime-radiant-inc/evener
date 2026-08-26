@@ -292,6 +292,31 @@ func TestProducerAcceptanceArchiveNoopAndOneChange(t *testing.T) {
 	}
 }
 
+func TestProducerAcceptanceArchiveDecidedAtTracksContentOnly(t *testing.T) {
+	store := NewArchiveStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := store.Set("session", "timestamp", true, time.Unix(10, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set("session", "timestamp", true, time.Unix(99, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set("session", "timestamp", false, time.Unix(20, 0)); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	var archived, decidedAt int64
+	if err := db.QueryRow("SELECT archived, decided_at FROM archive WHERE kind = 'session' AND id = 'timestamp'").Scan(&archived, &decidedAt); err != nil {
+		t.Fatal(err)
+	}
+	if archived != 0 || decidedAt != 20 {
+		t.Fatalf("archive changed row = value %d timestamp %d, want 0/20 (equivalent 99 must not persist)", archived, decidedAt)
+	}
+}
+
 func TestProducerAcceptanceFavoriteNoopAndOneChange(t *testing.T) {
 	store := NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
 	var calls atomic.Int32
@@ -323,6 +348,31 @@ func TestProducerAcceptanceFavoriteNoopAndOneChange(t *testing.T) {
 	}
 }
 
+func TestProducerAcceptanceFavoriteDecidedAtTracksContentOnly(t *testing.T) {
+	store := NewFavoriteStore(filepath.Join(t.TempDir(), "index.db"))
+	if err := store.Set("session", "timestamp", true, time.Unix(10, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set("session", "timestamp", true, time.Unix(99, 0)); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Set("session", "timestamp", false, time.Unix(20, 0)); err != nil {
+		t.Fatal(err)
+	}
+	db, err := store.open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = db.Close() }()
+	var favorited, decidedAt int64
+	if err := db.QueryRow("SELECT favorited, decided_at FROM favorite WHERE kind = 'session' AND id = 'timestamp'").Scan(&favorited, &decidedAt); err != nil {
+		t.Fatal(err)
+	}
+	if favorited != 0 || decidedAt != 20 {
+		t.Fatalf("favorite changed row = value %d timestamp %d, want 0/20 (equivalent 99 must not persist)", favorited, decidedAt)
+	}
+}
+
 func TestProducerAcceptanceRemoteSourceMapChangeIsFingerprinted(t *testing.T) {
 	cache := &RemoteThreadCache{}
 	thread := appwire.Thread{ID: "remote-1", Source: "source-a"}
@@ -332,5 +382,42 @@ func TestProducerAcceptanceRemoteSourceMapChangeIsFingerprinted(t *testing.T) {
 	got := cache.Snapshot()
 	if len(got.Sources["source-a"].Threads) != 1 || got.Sources["source-a"].Threads[0].ID != thread.ID {
 		t.Fatalf("inferred remote source = %+v", got.Sources)
+	}
+}
+
+func TestProducerAcceptanceRemoteAuthoritativeSourcesMatrix(t *testing.T) {
+	cache := &RemoteThreadCache{}
+	var calls atomic.Int32
+	cache.SetOnChange(func() {
+		calls.Add(1)
+		_ = cache.Snapshot() // callback must be outside the cache lock.
+	})
+	thread := appwire.Thread{ID: "remote-1", Source: "source-a"}
+	base := RemoteThreadSnapshot{
+		Threads:  []appwire.Thread{thread},
+		Complete: true,
+		Sources: map[string]RemoteSourceSnapshot{
+			"source-a": {Threads: []appwire.Thread{thread}, Complete: true},
+		},
+	}
+	cache.StoreSnapshotData(base)
+	firstGeneration := cache.Snapshot().Generation
+	cache.StoreSnapshotData(RemoteThreadSnapshot{
+		Threads:  []appwire.Thread{thread},
+		Complete: true,
+		Sources: map[string]RemoteSourceSnapshot{
+			"source-a": {Threads: []appwire.Thread{thread}, Complete: true},
+		},
+	})
+	if cache.Snapshot().Generation != firstGeneration || calls.Load() != 1 {
+		t.Fatalf("deep-equivalent source map changed generation=%d callbacks=%d", cache.Snapshot().Generation, calls.Load())
+	}
+	changed := base
+	changed.Sources = map[string]RemoteSourceSnapshot{
+		"source-a": {Threads: []appwire.Thread{thread}, Complete: false, IncompleteIDs: []string{"remote-bad"}},
+	}
+	cache.StoreSnapshotData(changed)
+	if cache.Snapshot().Generation != firstGeneration+1 || calls.Load() != 2 {
+		t.Fatalf("source-map content change generation=%d callbacks=%d, want %d/2", cache.Snapshot().Generation, calls.Load(), firstGeneration+1)
 	}
 }
