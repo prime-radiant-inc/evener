@@ -13,13 +13,27 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
-func writePreviewFixturePlugin(t *testing.T, dir, marker string) {
+func writePreviewFixturePlugin(t *testing.T, dir, name, marker string) {
 	t.Helper()
 	if err := os.MkdirAll(filepath.Join(dir, ".claude-plugin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	manifest := `{"name":"preview-fixture","version":"1.2.3","description":"preview only","hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"touch ` + marker + `"}]}]},"mcpServers":{"marker":{"command":"touch","args":["` + marker + `"]}}}`
+	manifest := `{"name":"` + name + `","version":"1.2.3","description":"preview only","hooks":{"PreToolUse":[{"hooks":[{"type":"command","command":"touch ` + marker + `"}]}]},"mcpServers":{"marker":{"command":"touch","args":["` + marker + `"]}}}`
 	if err := os.WriteFile(filepath.Join(dir, ".claude-plugin", "plugin.json"), []byte(manifest), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for _, componentDir := range []string{filepath.Join(dir, "commands"), filepath.Join(dir, "agents"), filepath.Join(dir, "skills", "one")} {
+		if err := os.MkdirAll(componentDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "commands", "hello.md"), []byte("hello command"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "agents", "reviewer.md"), []byte("---\nname: reviewer\ndescription: review\n---\nReview"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "skills", "one", "SKILL.md"), []byte("---\nname: one\ndescription: skill\n---\nSkill"), 0o644); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -28,7 +42,7 @@ func TestPluginPreviewIsSideEffectFree(t *testing.T) {
 	pluginDir := t.TempDir()
 	launchRoot := t.TempDir()
 	marker := filepath.Join(t.TempDir(), "marker")
-	writePreviewFixturePlugin(t, pluginDir, marker)
+	writePreviewFixturePlugin(t, pluginDir, "preview-fixture", marker)
 	cwd := t.TempDir()
 	ctl := newHubPluginsController(t.TempDir(), launchRoot)
 	selected := []string{"preview-fixture"}
@@ -42,7 +56,7 @@ func TestPluginPreviewIsSideEffectFree(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Preview: %v", err)
 	}
-	if len(resp.Plugins) != 1 || !resp.Plugins[0].Selected || resp.Plugins[0].HookCount != 1 || resp.Plugins[0].MCPCount != 1 {
+	if len(resp.Plugins) != 1 || !resp.Plugins[0].Selected || resp.Plugins[0].SkillCount != 1 || resp.Plugins[0].AgentCount != 1 || resp.Plugins[0].CommandCount != 1 || resp.Plugins[0].HookCount != 1 || resp.Plugins[0].MCPCount != 1 {
 		t.Fatalf("Preview plugins = %+v", resp.Plugins)
 	}
 	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
@@ -55,7 +69,7 @@ func TestPluginPreviewIsSideEffectFree(t *testing.T) {
 
 func TestPluginSelectionBeforeSpawn(t *testing.T) {
 	pluginDir := t.TempDir()
-	writePreviewFixturePlugin(t, pluginDir, filepath.Join(t.TempDir(), "marker"))
+	writePreviewFixturePlugin(t, pluginDir, "preview-fixture", filepath.Join(t.TempDir(), "marker"))
 	launchRoot := t.TempDir()
 	pluginRoot := t.TempDir()
 	spawner := &recordingSpawner{}
