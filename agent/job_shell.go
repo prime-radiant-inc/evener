@@ -615,16 +615,27 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 		WorkingDir:       rec.WorkingDir,
 		Provenance:       provenance.Clone(rec.Provenance),
 	}
+	publication, err := jm.beginActivityEvent(&started)
+	if err != nil {
+		jm.mu.Unlock()
+		return err
+	}
 	if err := jm.appendEvent(started); err != nil {
+		jm.abortActivityEvent(publication)
 		jm.mu.Unlock()
 		return err
 	}
 	if err := jm.forwardLocked(started); err != nil {
 		_ = run.output.Close()
 		if terminalErr := jm.appendStartForwardFailure(rec.JobID, run.output, rec.Provenance); terminalErr != nil {
+			jm.abortActivityEvent(publication)
 			run.forwardDisabled = true
 			jm.mu.Unlock()
 			return errors.Join(errDelayedShellStartForwardTerminalFailed, err, terminalErr)
+		}
+		if terminalErr := jm.commitActivityEvent(publication); terminalErr != nil {
+			jm.mu.Unlock()
+			return errors.Join(err, terminalErr)
 		}
 		err = errors.Join(errDelayedShellStartForwardFailed, err)
 		if jm.running[run.rec.JobID] == run {
@@ -638,6 +649,10 @@ func (jm *jobManager) commitDelayedShell(run *runningJob) error {
 
 	if jm.running[run.rec.JobID] == run {
 		run.durableStarted = true
+	}
+	if err := jm.commitActivityEvent(publication); err != nil {
+		jm.mu.Unlock()
+		return err
 	}
 	jm.mu.Unlock()
 	if err := run.delegateShell.commit(run.signal); err != nil {

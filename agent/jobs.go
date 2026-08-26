@@ -239,6 +239,33 @@ func (jm *jobManager) abortActivityEvent(publication *activityPublication) {
 	}
 }
 
+// publishLifecycleEvent is the sole ordering boundary for projection-visible
+// lifecycle changes. The root stays odd while the durable event, forwarded
+// copy, and live overlay are all updated.
+func (jm *jobManager) publishLifecycleEvent(event *jobstore.Event, appendEvent, forward, updateLive func() error) error {
+	publication, err := jm.beginActivityEvent(event)
+	if err != nil {
+		return err
+	}
+	if err := appendEvent(); err != nil {
+		jm.abortActivityEvent(publication)
+		return err
+	}
+	if forward != nil {
+		if err := forward(); err != nil {
+			jm.abortActivityEvent(publication)
+			return err
+		}
+	}
+	if updateLive != nil {
+		if err := updateLive(); err != nil {
+			jm.abortActivityEvent(publication)
+			return err
+		}
+	}
+	return jm.commitActivityEvent(publication)
+}
+
 // defaultCloseGrace is the graceful-shutdown window closeRuntimeState gives a
 // still-running job to finalize before abandoning it. Tests override it to keep
 // teardown of jobs that never naturally terminate from costing real seconds.
@@ -945,24 +972,30 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		_ = jobstore.RemoveOutputArtifacts(outputPath)
 		return nil, err
 	}
-	if err := jm.commitActivityEvent(publication); err != nil {
-		jm.mu.Unlock()
-		_ = output.Close()
-		return nil, err
-	}
 	if err := jm.forwardLocked(started); err != nil {
 		_ = output.Close()
 		if terminalErr := jm.appendStartForwardFailure(rec.JobID, output, rec.Provenance); terminalErr != nil {
+			jm.abortActivityEvent(publication)
 			run.forwardDisabled = true
 			jm.running[jobID] = run
 			jm.mu.Unlock()
 			go jm.finalizeShellAsync(jobID, jobstore.StatusFailed, "forward_failed", nil)
 			return nil, errors.Join(err, terminalErr)
 		}
+		if err := jm.commitActivityEvent(publication); err != nil {
+			jm.mu.Unlock()
+			return nil, errors.Join(err, errDelayedShellStartForwardFailed)
+		}
 		jm.mu.Unlock()
 		return nil, errors.Join(errDelayedShellStartForwardFailed, err)
 	}
 	jm.running[jobID] = run
+	if err := jm.commitActivityEvent(publication); err != nil {
+		delete(jm.running, jobID)
+		jm.mu.Unlock()
+		_ = output.Close()
+		return nil, err
+	}
 	jm.mu.Unlock()
 	jm.emitJobStarted(started, run)
 	return rec, nil
@@ -1789,10 +1822,6 @@ func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, re
 		jm.abortActivityEvent(publication)
 		return nil, &terminalRecordPersistError{status: finished.Status, err: err}
 	}
-	if err := jm.commitActivityEvent(publication); err != nil {
-		return nil, &terminalRecordPersistError{status: finished.Status, err: err}
-	}
-
 	jm.mu.Lock()
 	if jm.running[run.rec.JobID] == run {
 		run.terminal = terminal
@@ -1811,7 +1840,11 @@ func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, re
 	jm.mu.Unlock()
 
 	if err := jm.forwardFinishedJob(run, terminal); err != nil {
+		jm.abortActivityEvent(publication)
 		return nil, err
+	}
+	if err := jm.commitActivityEvent(publication); err != nil {
+		return nil, &terminalRecordPersistError{status: finished.Status, err: err}
 	}
 	jm.emitFinishedJob(run, terminal)
 	return terminal, nil
