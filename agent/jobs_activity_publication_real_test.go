@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"context"
+	"errors"
 	"testing"
 	"time"
 
@@ -103,5 +105,114 @@ func TestRealFinishEntryPublishesLiveOverlayBeforeEven(t *testing.T) {
 		if got := <-steps; got != expected {
 			t.Fatalf("finish step = %q, want %q", got, expected)
 		}
+	}
+}
+
+func TestRealDelayedShellEntryPublishesBeforeEven(t *testing.T) {
+	jm := newTestJM(t)
+	steps := make(chan string, 8)
+	jm.beginActivityPublication = func() (*activityPublication, error) {
+		steps <- "odd"
+		return &activityPublication{RootID: "root", Revision: 7}, nil
+	}
+	jm.commitActivityPublication = func(*activityPublication) error { steps <- "even"; return nil }
+	appendEvent := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error { steps <- "append"; return appendEvent(e) }
+	jm.forward = func(jobstore.Event) error { steps <- "copy"; return nil }
+	jm.parentJobID = "parent"
+	res := runShell(context.Background(), jm, s1cov_instantExitExecutor{}, shellArgs{Command: "true"})
+	if res.settle == nil {
+		t.Fatal("runShell did not return settle callback")
+	}
+	res.settle(true)
+	for _, expected := range []string{"odd", "append", "copy", "even"} {
+		if got := <-steps; got != expected {
+			t.Fatalf("delayed start step = %q, want %q", got, expected)
+		}
+	}
+}
+
+func TestRealForwardFailureSyntheticFinishStaysInTransaction(t *testing.T) {
+	jm := newTestJM(t)
+	jm.parentJobID = "parent"
+	jm.finalizeShellAsync = func(string, jobstore.Status, string, *int) {}
+	steps := make(chan string, 8)
+	jm.beginActivityPublication = func() (*activityPublication, error) {
+		steps <- "odd"
+		return &activityPublication{RootID: "root", Revision: 9}, nil
+	}
+	jm.commitActivityPublication = func(*activityPublication) error { steps <- "even"; return nil }
+	appendEvent := jm.appendEvent
+	jm.appendEvent = func(e jobstore.Event) error {
+		if e.Kind == jobstore.EventJobFinished {
+			steps <- "synthetic-finish"
+		} else {
+			steps <- "append"
+		}
+		return appendEvent(e)
+	}
+	jm.forward = func(jobstore.Event) error { steps <- "copy-failure"; return errors.New("copy failed") }
+	if _, err := jm.createShell(createShellOpts{Command: "true"}); err == nil {
+		t.Fatal("createShell succeeded despite forward failure")
+	}
+	for _, expected := range []string{"odd", "append", "copy-failure", "synthetic-finish", "even"} {
+		if got := <-steps; got != expected {
+			t.Fatalf("forward-failure step = %q, want %q", got, expected)
+		}
+	}
+}
+
+func TestRealLifecycleTransactionsSerializeRootAndDescendant(t *testing.T) {
+	clock := newJobActivityClock("root")
+	makeManager := func(name string) *jobManager {
+		jm := &jobManager{}
+		jm.beginActivityPublication = func() (*activityPublication, error) {
+			if !clock.tryBeginPublication() {
+				return nil, errors.New("publication unavailable")
+			}
+			_, revision, _ := clock.nextRevision()
+			return &activityPublication{RootID: "root", Revision: revision}, nil
+		}
+		jm.commitActivityPublication = func(*activityPublication) error { clock.endPublication(); return nil }
+		jm.abortActivityPublication = func(*activityPublication) { clock.endPublication() }
+		_ = name
+		return jm
+	}
+	root, child := makeManager("root"), makeManager("child")
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	rootDone := make(chan error, 1)
+	go func() {
+		rootDone <- root.publishLifecycleEvent(&jobstore.Event{Kind: jobstore.EventJobStarted}, func() error {
+			close(entered)
+			<-release
+			return nil
+		}, nil, nil)
+	}()
+	<-entered
+	childAttempt := make(chan struct{})
+	childBegin := child.beginActivityPublication
+	child.beginActivityPublication = func() (*activityPublication, error) {
+		close(childAttempt)
+		return childBegin()
+	}
+	childDone := make(chan error, 1)
+	go func() {
+		childDone <- child.publishLifecycleEvent(&jobstore.Event{Kind: jobstore.EventJobStarted}, nil, nil, nil)
+	}()
+	<-childAttempt
+	select {
+	case err := <-childDone:
+		if err == nil {
+			t.Fatal("descendant published while root transaction was active")
+		}
+	default:
+	}
+	close(release)
+	if err := <-rootDone; err != nil {
+		t.Fatal(err)
+	}
+	if err := <-childDone; err != nil {
+		t.Fatal(err)
 	}
 }
