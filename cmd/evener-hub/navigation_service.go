@@ -340,6 +340,47 @@ func (s *NavigationService) Representation(ctx context.Context, key navigationRe
 	return representation, err
 }
 
+// LegacyRepresentation binds the compatibility surface to the same immutable
+// core as the structured navigation API. The builder is called only on a cache
+// miss and must return a detached legacy object.
+func (s *NavigationService) LegacyRepresentation(ctx context.Context, id string, build func(navigationBuildInputs) (any, error)) (navigationRepresentation, error) {
+	if build == nil {
+		return navigationRepresentation{}, errors.New("legacy navigation builder is nil")
+	}
+	_, err := s.ensureSnapshot(ctx, false, nil)
+	if err != nil {
+		return navigationRepresentation{}, err
+	}
+	s.mu.Lock()
+	if s.core == nil {
+		s.mu.Unlock()
+		return navigationRepresentation{}, errors.New("navigation core unavailable")
+	}
+	state, ok := s.resources[navigationResourceKey{Kind: navigationResourceManifest}]
+	if !ok || !state.Present {
+		s.mu.Unlock()
+		return navigationRepresentation{}, errors.New("navigation manifest unavailable")
+	}
+	key := navigationResourceKey{Kind: navigationResourceLegacy, ID: id, Generation: s.generation, Revision: state.Revision}
+	inputs := cloneNavigationInputs(s.core.projection.inputs)
+	s.mu.Unlock()
+	return s.cache.Get(ctx, key, func(context.Context) (navigationRepresentation, error) {
+		object, err := build(inputs)
+		if err != nil {
+			return navigationRepresentation{}, err
+		}
+		encoded, err := json.Marshal(object)
+		if err != nil {
+			return navigationRepresentation{}, fmt.Errorf("encode legacy navigation representation: %w", err)
+		}
+		compressed, err := gzipNavigation(encoded)
+		if err != nil {
+			return navigationRepresentation{}, err
+		}
+		return navigationRepresentation{Object: object, JSON: encoded, Gzip: compressed, Generation: key.Generation, Revision: key.Revision, SizeEstimate: int64(len(encoded) + len(compressed))}, nil
+	})
+}
+
 func gzipNavigation(input []byte) ([]byte, error) {
 	var buffer bytes.Buffer
 	writer := gzip.NewWriter(&buffer)

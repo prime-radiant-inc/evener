@@ -124,49 +124,65 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
 		return
 	}
-	// summary=1: badge counts only. Notification clients poll this on init and
-	// reconnect; serializing the full tree (megabytes on large hubs) just to
-	// read attentionSummary was the single biggest avoidable transfer.
+	// The compatibility response is built from the service-owned immutable projection.
+	id := "full"
 	if r.URL.Query().Get("summary") == "1" {
-		_, attentionSummary := s.memoTree(r.Context())
-		writeAPIJSON(w, http.StatusOK, struct {
-			GeneratedAt      time.Time               `json:"generated_at"`
-			AttentionSummary hubapi.AttentionSummary `json:"attentionSummary"` //nolint:tagliatelle // camelCase: see hubapi.AttentionSummary's doc
-		}{hubNavigationNow(), hubAttentionSummaryFromCore(attentionSummary)})
-		return
+		id = "summary"
 	}
-	tree, attentionSummary, live, authority := s.memoTreeWithAuthority(r.Context())
-	decisions, err := s.favoriteDecisions()
+	representation, err := s.navigation.LegacyRepresentation(r.Context(), id, func(inputs navigationBuildInputs) (any, error) {
+		resp, err := s.buildLegacyTreeResponse(inputs)
+		if err != nil {
+			return nil, err
+		}
+		if id == "summary" {
+			return struct {
+				GeneratedAt      time.Time               `json:"generated_at"`
+				AttentionSummary hubapi.AttentionSummary `json:"attentionSummary"`
+			}{hubNavigationNow(), resp.AttentionSummary}, nil
+		}
+		return resp, nil
+	})
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "favorite store error: "+err.Error())
+		writeAPIError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	revalidation := hubcore.ClassifyFavoriteDecisions(decisions, authority)
-	assignments, err := s.pinSectionAssignments()
-	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "pin section store error: "+err.Error())
-		return
+	writeAPIJSON(w, http.StatusOK, representation.Object)
+}
+
+func (s *WebServer) buildLegacyTreeResponse(inputs navigationBuildInputs) (hubapi.TreeResponse, error) {
+	tree := inputs.Tree
+	live := inputs.LiveEntries
+	attentionSummary := inputs.AttentionSummary
+	sessionFavs := make(map[hubcore.ArchiveKey]bool, len(inputs.SessionFavorite))
+	for id, favorite := range inputs.SessionFavorite {
+		sessionFavs[hubcore.ArchiveKey{Kind: "session", ID: id}] = favorite
 	}
-	sections, err := s.pinSections()
-	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "pin section store error: "+err.Error())
-		return
+	projectFavs := make(map[hubcore.ArchiveKey]bool, len(inputs.ProjectFavorite))
+	for id, favorite := range inputs.ProjectFavorite {
+		projectFavs[hubcore.ArchiveKey{Kind: "project", ID: id}] = favorite
 	}
-	pinRevalidation := classifySessionPins(assignments, authority)
-	assignments = canonicalPinAssignments(assignments, pinRevalidation)
-	bySession := pinSectionAssignmentLookup(assignments, pinRevalidation.Presentation)
-	sessionFavs := revalidation.Presentation
-	projectFavs := projectFavoritePresentation(sessionFavs)
+	assignments := inputs.PinAssignments
+	sections := inputs.PinSections
+	visible := make(map[hubcore.ArchiveKey]bool, len(sessionFavs))
+	for key, favorite := range sessionFavs {
+		if favorite {
+			visible[key] = true
+		}
+	}
+	for id := range assignments {
+		visible[hubcore.ArchiveKey{Kind: "session", ID: id}] = true
+	}
+	bySession := pinSectionAssignmentLookup(assignments, visible)
 	resp := hubapi.TreeResponse{
 		GeneratedAt:      hubNavigationNow(),
-		Sources:          s.apiTreeSources(),
+		Sources:          append([]hubapi.Source(nil), inputs.Sources...),
 		AttentionSummary: hubAttentionSummaryFromCore(attentionSummary),
 	}
 	for _, n := range tree.Live {
 		if !treeNodeCanActLive(n) {
 			continue
 		}
-		resp.Live = append(resp.Live, s.apiTreeNodeTier("live", "", "live", sessionFavs, n))
+		resp.Live = append(resp.Live, legacyTreeNodeTier(inputs, "live", "", "live", sessionFavs, n))
 	}
 	seenProjectRefs := map[string]bool{}
 	projectIndexes := map[string]int{}
@@ -182,7 +198,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		for _, n := range projectSessions(p) {
 			markTreeNodeIDs(seenProjectRefs, n)
 		}
-		resp.TestRuns = append(resp.TestRuns, s.apiTreeProject("project", projectFavs, p))
+		resp.TestRuns = append(resp.TestRuns, legacyTreeProject(inputs, "project", projectFavs, p))
 	}
 	for _, p := range buckets.archived {
 		for _, n := range projectSessions(p) {
@@ -192,21 +208,21 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		// sessions never ride in the snapshot. Sessions stays nil (wire:
 		// null) and SessionCount carries the row count; the sidebar
 		// lazy-loads the full project from /api/tree/project?key= on expand.
-		stub := s.apiTreeProject("project", projectFavs, p)
+		stub := legacyTreeProject(inputs, "project", projectFavs, p)
 		stub.SessionCount = p.TotalSessionCount()
 		stub.Sessions = nil
 		resp.ArchivedProjects = append(resp.ArchivedProjects, stub)
 	}
 	for _, p := range buckets.active {
 		projectIndexes[p.Key] = len(resp.Projects)
-		ap := s.apiTreeProject("project", projectFavs, p)
+		ap := legacyTreeProject(inputs, "project", projectFavs, p)
 		for _, n := range projectSessions(p) {
 			markTreeNodeIDs(seenProjectRefs, n)
 		}
 		resp.Projects = append(resp.Projects, ap)
 	}
 	for _, n := range tree.NeedsYou {
-		resp.NeedsYou = append(resp.NeedsYou, s.apiTreeNodeTier("needsyou", "", "needsyou", sessionFavs, n))
+		resp.NeedsYou = append(resp.NeedsYou, legacyTreeNodeTier(inputs, "needsyou", "", "needsyou", sessionFavs, n))
 	}
 	for _, le := range live {
 		if le.SessionID == "" || seenProjectRefs[le.SessionID] {
@@ -230,7 +246,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 			UpdatedAt: le.StartedAt,
 			Age:       hubcore.AgeString(le.StartedAt),
 		}
-		apiNode := s.apiTreeNodeTier("project", key, "live", sessionFavs, node)
+		apiNode := legacyTreeNodeTier(inputs, "project", key, "live", sessionFavs, node)
 		if idx, ok := projectIndexes[key]; ok {
 			p := &resp.Projects[idx]
 			p.Sessions = append(p.Sessions, apiNode)
@@ -257,13 +273,47 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		if n.Kind != "session" {
 			continue
 		}
-		node := s.apiTreeNodeTier("pinned", "", "pinned", sessionFavs, n)
+		node := legacyTreeNodeTier(inputs, "pinned", "", "pinned", sessionFavs, n)
 		indexPinSectionNode(nodes, n.ID, node)
 	}
-	resp.PinSections = pinSectionTrees(sections, assignments, pinRevalidation.Presentation, nodes)
+	resp.PinSections = pinSectionTrees(sections, assignments, visible, nodes)
 	annotateTreeResponsePinSections(&resp, bySession)
 
-	writeAPIJSON(w, http.StatusOK, resp)
+	return resp, nil
+}
+
+func legacyTreeNodeTier(inputs navigationBuildInputs, scope, projectKey, tier string, favs map[hubcore.ArchiveKey]bool, n hubcore.TreeNode) hubapi.TreeNode {
+	live := inputs.Live[n.ID] && treeNodeCanActLive(n)
+	ref := hubRefFromTreeNodeID(n.ID)
+	rowID := scope + ":" + ref.String()
+	if projectKey != "" {
+		rowID = scope + ":" + projectKey + ":" + ref.String()
+	}
+	out := hubapi.TreeNode{RowID: rowID, Ref: ref.String(), HostID: ref.HostID, SessionID: ref.SessionID, Title: n.Title, Project: n.Project, State: n.State, Kind: n.Kind, Live: live, UpdatedAt: n.UpdatedAt, Age: n.Age, AskPending: n.AskPending, Dormant: n.Dormant, MoreSubagents: n.MoreSubagents, Tier: tier, Branch: n.Branch, ClusterCount: n.ClusterCount, Favorite: favs[hubcore.ArchiveKey{Kind: "session", ID: n.ID}], Rename: inputs.Renameable[n.ID]}
+	for _, child := range n.Children {
+		out.Children = append(out.Children, legacyTreeNodeTier(inputs, "project", projectKey, tier, favs, child))
+	}
+	for _, entry := range inputs.LiveEntries {
+		if entry.SessionID == n.ID {
+			out.Model = entry.Model
+			break
+		}
+	}
+	return out
+}
+
+func legacyTreeProject(inputs navigationBuildInputs, scope string, favs map[hubcore.ArchiveKey]bool, p hubcore.TreeProject) hubapi.TreeProject {
+	out := hubapi.TreeProject{Key: p.Key, Name: p.Name, WorkingDir: p.WorkingDir, RollupState: p.RollupState, RollupLive: p.RollupLive, RollupAttn: p.RollupAttn, DefaultExpanded: p.Expanded, MoreCurrent: p.MoreCurrent, MoreRecent: p.MoreRecent, MoreArchived: p.MoreArchived, Worktrees: p.Worktrees, IsArchived: p.IsArchived, Favorite: favs[hubcore.ArchiveKey{Kind: "project", ID: p.Key}]}
+	for _, n := range p.Current {
+		out.Sessions = append(out.Sessions, legacyTreeNodeTier(inputs, scope, p.Key, "current", favs, n))
+	}
+	for _, n := range p.Recent {
+		out.Sessions = append(out.Sessions, legacyTreeNodeTier(inputs, scope, p.Key, "recent", favs, n))
+	}
+	for _, n := range p.Archived {
+		out.Sessions = append(out.Sessions, legacyTreeNodeTier(inputs, scope, p.Key, "archived", favs, n))
+	}
+	return out
 }
 
 func (s *WebServer) pinSectionAssignments() (map[string]hubcore.SessionPin, error) {
@@ -611,6 +661,7 @@ func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64,
 		GenerationID:     generationID,
 		Revision:         revision,
 		Tree:             tree,
+		LiveEntries:      append([]hubcore.LiveEntry(nil), live...),
 		Sources:          sources,
 		AttentionSummary: attention,
 		Live:             liveBySession,

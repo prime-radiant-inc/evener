@@ -63,6 +63,7 @@ const (
 	navigationResourceProject          navigationResourceKind = "project"
 	navigationResourceProjectPage      navigationResourceKind = "project_page"
 	navigationResourceLocation         navigationResourceKind = "location"
+	navigationResourceLegacy           navigationResourceKind = "legacy"
 )
 
 // navigationResourceKey describes one immutable navigation representation. It
@@ -91,6 +92,7 @@ type navigationBuildInputs struct {
 	GenerationID     string
 	Revision         uint64
 	Tree             hubcore.Tree
+	LiveEntries      []hubcore.LiveEntry
 	Sources          []hubapi.Source
 	AttentionSummary hubapi.AttentionSummary
 
@@ -206,6 +208,7 @@ func cloneNavigationInputsContext(ctx context.Context, in navigationBuildInputs)
 	}
 	out := in
 	out.Sources = append([]hubapi.Source(nil), in.Sources...)
+	out.LiveEntries = append([]hubcore.LiveEntry(nil), in.LiveEntries...)
 	cloneBool := func(values map[string]bool) (map[string]bool, error) {
 		result := make(map[string]bool, len(values))
 		for key, value := range values {
@@ -254,6 +257,7 @@ func cloneNavigationInputsContext(ctx context.Context, in navigationBuildInputs)
 func cloneNavigationInputs(in navigationBuildInputs) navigationBuildInputs {
 	out := in
 	out.Sources = append([]hubapi.Source(nil), in.Sources...)
+	out.LiveEntries = append([]hubcore.LiveEntry(nil), in.LiveEntries...)
 	out.Live = cloneNavigationBoolMap(in.Live)
 	out.Renameable = cloneNavigationBoolMap(in.Renameable)
 	out.SessionFavorite = cloneNavigationBoolMap(in.SessionFavorite)
