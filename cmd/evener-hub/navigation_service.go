@@ -1284,8 +1284,10 @@ func (s webNavigationSource) Capture(ctx context.Context, generation string, now
 	}
 	snapshot := s.web.navigationSnapshot(ctx)
 	decisions := s.web.archiveDecisions()
-	tree := hubcore.BuildTreeAtWithProjects(snapshot.metas, snapshot.live, decisions, now, snapshot.projects)
-	_, attention := hubcore.DeriveAttention(snapshot.metas, snapshot.live, decisions)
+	// Keep the legacy adapter on the exact same seam as the established endpoint;
+	// in particular, test and compatibility fixtures replace these functions.
+	tree := hubBuildNavigationTree(snapshot.metas, snapshot.live, decisions, snapshot.projects)
+	_, attention := hubDeriveNavigationAttention(snapshot.metas, snapshot.live, decisions)
 	authority := favoriteAuthorityForNavigation(snapshot, tree)
 	favorites, err := s.web.favoriteDecisions()
 	if err != nil {
