@@ -10,6 +10,7 @@ import (
 
 var historicalJobsStat = os.Stat
 
+// HistoricalJobRecord is a read-only projection of a retained job.
 type HistoricalJobRecord struct {
 	JobID            string
 	Type             string
@@ -24,6 +25,7 @@ type HistoricalJobRecord struct {
 	OutputBytes      int64
 }
 
+// HistoricalJobDiagnostics reports authority and integrity evidence.
 type HistoricalJobDiagnostics struct {
 	Incomplete      bool
 	Mismatches      []string
@@ -34,11 +36,13 @@ type HistoricalJobDiagnostics struct {
 	CorruptBranches []string
 }
 
+// LoadSessionHistoricalJobRecordsWithDiagnostics loads retained jobs and evidence.
 func LoadSessionHistoricalJobRecordsWithDiagnostics(stateDir, sessionID string) (map[string]HistoricalJobRecord, HistoricalJobDiagnostics, error) {
 	out, d, err := loadSessionHistoricalJobRecordsWithDiagnostics(stateDir, sessionID)
 	return out, HistoricalJobDiagnostics{Incomplete: d.Incomplete, Mismatches: d.Mismatches, InvalidOwners: d.InvalidOwners, LifecycleErrors: d.LifecycleErrors, MissingOwners: d.MissingOwners, TornTails: d.TornTails, CorruptBranches: d.CorruptBranches}, err
 }
 
+// LoadSessionHistoricalJobRecords loads one session's retained jobs.
 func LoadSessionHistoricalJobRecords(stateDir, sessionID string) (map[string]HistoricalJobRecord, error) {
 	out, _, err := loadSessionHistoricalJobRecordsWithDiagnostics(stateDir, sessionID)
 	return out, err

@@ -1,7 +1,7 @@
 package agent
 
 import (
-	"fmt"
+	"errors"
 	"path/filepath"
 
 	"primeradiant.com/evener/agent/internal/jobstore"
@@ -53,7 +53,7 @@ func loadRetainedJobHistory(stateDir, rootSessionID string) (map[string]*jobstor
 		}
 	}
 	if len(queue) > 0 {
-		return nil, jobstore.AuthorityDiagnostics{}, fmt.Errorf("retained job history source limit exceeded")
+		return nil, jobstore.AuthorityDiagnostics{}, errors.New("retained job history source limit exceeded")
 	}
 	return jobstore.MergeJournals(sources)
 }
