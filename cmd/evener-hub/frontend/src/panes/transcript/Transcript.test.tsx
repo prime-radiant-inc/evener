@@ -1,4 +1,5 @@
 import { cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
@@ -199,6 +200,34 @@ test("renders the thread's turns through the shared VirtualList/TurnBlock engine
   expect(screen.getByText("hi from the observed thread")).toBeTruthy();
   await waitFor(() => expect(screen.getByTestId("subagent-row")).toBeTruthy());
   expect(within(screen.getByTestId("subagent-row")).getByText("Status: done")).toBeTruthy();
+});
+
+test("keeps the read-only Detail control reachable above the transcript", async () => {
+  const fake = connectFakeClient();
+  fake.on("thread/read", () =>
+    readResponse("ref_a", {
+      turns: [
+        {
+          id: "turn_1",
+          status: "completed",
+          itemsView: "full",
+          items: [{ id: "item_1", turnId: "turn_1", type: "userMessage", text: "read me", status: "completed" }],
+        },
+      ],
+    }),
+  );
+  const user = userEvent.setup();
+
+  render(
+    <ClientProvider client={fake}>
+      <Transcript params={{ ref: "ref_a" }} paneId="p1" focused={false} />
+    </ClientProvider>,
+  );
+
+  const trigger = await screen.findByRole("button", { name: /^Detail:/ });
+  expect(trigger.closest('[data-testid="transcript-virtual-list"]')).toBeNull();
+  await user.click(trigger);
+  expect(screen.getByRole("radio", { name: "Tools" })).toBeTruthy();
 });
 
 test("is read-only: renders no composer and no session-chrome footer, even for a fully capable thread", async () => {

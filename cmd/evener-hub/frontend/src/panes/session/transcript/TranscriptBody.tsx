@@ -220,6 +220,7 @@ export interface TranscriptBodyProps {
   listRef?: RefObject<VirtualListHandle | null>;
   onMeasurementsChange?: () => void;
   trailingContent?: ReactNode;
+  toolbar?: ReactNode;
   /** Stable pane identity for host-remount scroll state; optional for callers. */
   viewId?: string;
   /** Optional focus target supplied by the live Detail control. */
@@ -240,6 +241,7 @@ export function TranscriptBody({
   listRef,
   onMeasurementsChange,
   trailingContent,
+  toolbar,
   viewId,
   detailTriggerRef,
   onFocusDetailTrigger,
@@ -342,6 +344,7 @@ export function TranscriptBody({
         {surface === "live" ? (
           <FlowOverlay top={loadOlderRow} pill={liveOverlay}>
             <div className={styles.transcriptContent}>
+              {toolbar}
               {list}
               {trailingContent}
             </div>
@@ -350,6 +353,7 @@ export function TranscriptBody({
           <>
             {loadOlderRow}
             <div className={styles.transcriptContent}>
+              {toolbar}
               {list}
               {trailingContent}
             </div>
