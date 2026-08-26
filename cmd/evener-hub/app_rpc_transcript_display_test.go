@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -304,7 +305,7 @@ func TestHubRPCTranscriptDisplayMalformedStateUsesFallbackAndRemainsReadOnly(t *
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(unchanged) != string(malformed) {
+	if !bytes.Equal(unchanged, malformed) {
 		t.Fatalf("malformed state was overwritten: %q", unchanged)
 	}
 }

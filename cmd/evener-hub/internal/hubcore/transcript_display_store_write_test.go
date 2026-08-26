@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"bytes"
 	"errors"
 	"path/filepath"
 	"reflect"
@@ -60,7 +61,7 @@ func TestTranscriptDisplayStorePreRenameFailurePreservesOldState(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(after) != string(before) {
+	if !bytes.Equal(after, before) {
 		t.Fatalf("pre-rename disk changed: before=%q after=%q", before, after)
 	}
 }
@@ -164,7 +165,7 @@ func TestTranscriptDisplayStoreReadFailureFallsBackAndBlocksPatches(t *testing.T
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(after) != string(evidence) {
+	if !bytes.Equal(after, evidence) {
 		t.Fatalf("read-fault evidence changed: before=%q after=%q", evidence, after)
 	}
 }

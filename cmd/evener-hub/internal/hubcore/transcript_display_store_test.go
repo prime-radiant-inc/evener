@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"math"
@@ -102,7 +103,7 @@ func TestTranscriptDisplayStoreNoOpDoesNotIncrementRevision(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(after) != string(before) {
+	if !bytes.Equal(after, before) {
 		t.Fatalf("no-op rewrote durable state: before=%q after=%q", before, after)
 	}
 }
@@ -163,13 +164,11 @@ func TestTranscriptDisplayStoreConcurrentDifferentLayoutsBothSucceed(t *testing.
 	results := make(chan error, 2)
 	var wg sync.WaitGroup
 	for _, layout := range []appwire.TranscriptViewportClass{appwire.TranscriptViewportDesktop, appwire.TranscriptViewportMobile} {
-		layout, config := layout, configs[layout]
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		config := configs[layout]
+		wg.Go(func() {
 			_, err := store.Patch(appwire.TranscriptDisplayDefaultsPatchParams{Layout: layout, Config: config})
 			results <- err
-		}()
+		})
 	}
 	wg.Wait()
 	close(results)
@@ -194,12 +193,10 @@ func TestTranscriptDisplayStoreConcurrentSameLayoutConflicts(t *testing.T) {
 	results := make(chan error, 2)
 	var wg sync.WaitGroup
 	for range 2 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			_, err := store.Patch(appwire.TranscriptDisplayDefaultsPatchParams{Layout: appwire.TranscriptViewportDesktop, Config: config})
 			results <- err
-		}()
+		})
 	}
 	wg.Wait()
 	close(results)
@@ -246,7 +243,7 @@ func TestTranscriptDisplayStoreMalformedSnapshotFallsBackAndBlocksPatches(t *tes
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(after) != string(before) {
+	if !bytes.Equal(after, before) {
 		t.Fatalf("malformed evidence changed: before=%q after=%q", before, after)
 	}
 }
@@ -383,7 +380,7 @@ func TestTranscriptDisplayStoreStrictSnapshotRequiredFields(t *testing.T) {
 			if err != nil {
 				t.Fatal(err)
 			}
-			if string(after) != string(before) {
+			if !bytes.Equal(after, before) {
 				t.Fatalf("malformed evidence changed: before=%q after=%q", before, after)
 			}
 		})

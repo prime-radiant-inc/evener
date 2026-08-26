@@ -241,7 +241,7 @@ func TestTranscriptDisplayCatalog(t *testing.T) {
 	if changed == nil {
 		t.Fatalf("notification catalog missing %s", NotifyEvenerSettingsTranscriptDisplayChanged)
 	}
-	if reflect.TypeOf(changed.Payload) != reflect.TypeOf(TranscriptDisplayChangedParams{}) {
+	if reflect.TypeOf(changed.Payload) != reflect.TypeFor[TranscriptDisplayChangedParams]() {
 		t.Fatalf("changed payload type = %T, want %T", changed.Payload, TranscriptDisplayChangedParams{})
 	}
 }
