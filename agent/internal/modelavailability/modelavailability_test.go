@@ -72,8 +72,8 @@ func TestPageReturnsBoundedEnvelopeAndProgressesOversizedOrEmptySnapshots(t *tes
 	if err != nil || !p.Terminal || len(p.Oversized) != 1 {
 		t.Fatalf("oversized page=%#v err=%v", p, err)
 	}
-	if got := p.SerializedBytes(); got > 1024 {
-		t.Fatalf("serialized bytes=%d", got)
+	if got := p.SerializedBytes(); got > 256 {
+		t.Fatalf("serialized bytes=%d, want at most 256", got)
 	}
 	empty := testSnapshot("v2", false)
 	p, err = empty.Page("", 1, 1024)

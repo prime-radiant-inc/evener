@@ -205,37 +205,49 @@ func (s *Snapshot) Page(token string, maxCount, maxBytes int) (Page, error) {
 	}
 	p := Page{Version: s.Version, Complete: s.Complete, Status: status, Provenance: "startup-frozen"}
 	if off >= len(s.Choices) {
-		p.Terminal = true
+		p = s.pageAtOffset(p, off, maxCount, maxBytes)
 		if p.SerializedBytes() > maxBytes {
 			return Page{}, errors.New("page envelope budget too small")
 		}
 		return p, nil
 	}
 	for off < len(s.Choices) && len(p.Choices)+len(p.Oversized) < maxCount {
-		candidate := s.Choices[off]
-		p.Choices = append(p.Choices, candidate)
-		if p.SerializedBytes() > maxBytes {
-			p.Choices = p.Choices[:len(p.Choices)-1]
-			p.Oversized = append(p.Oversized, off)
+		trial := p
+		trial.Choices = append(append([]string(nil), p.Choices...), s.Choices[off])
+		trial = s.pageAtOffset(trial, off+1, maxCount, maxBytes)
+		if trial.SerializedBytes() <= maxBytes {
+			p = trial
+			off++
+			continue
 		}
-		off++
-		if p.SerializedBytes() > maxBytes {
-			p.Oversized = p.Oversized[:len(p.Oversized)-1]
+		if len(p.Choices)+len(p.Oversized) > 0 {
 			break
 		}
+		trial = p
+		trial.Oversized = append(append([]int(nil), p.Oversized...), off)
+		trial = s.pageAtOffset(trial, off+1, maxCount, maxBytes)
+		if trial.SerializedBytes() > maxBytes {
+			return Page{}, errors.New("page envelope budget too small")
+		}
+		p = trial
+		off++
 	}
 	if len(p.Choices) == 0 && len(p.Oversized) == 0 {
 		return Page{}, errors.New("page envelope budget too small")
-	}
-	if off < len(s.Choices) {
-		p.Next = s.token(cursor{"model-list-v1", "root", s.Version, off, maxCount, maxBytes})
-	}
-	if off >= len(s.Choices) {
-		p.Terminal = true
 	}
 	if p.SerializedBytes() > maxBytes {
 		return Page{}, errors.New("page envelope budget too small")
 	}
 	return p, nil
 }
+
+func (s *Snapshot) pageAtOffset(p Page, off, maxCount, maxBytes int) Page {
+	p.Next = ""
+	p.Terminal = off >= len(s.Choices)
+	if !p.Terminal {
+		p.Next = s.token(cursor{"model-list-v1", "root", s.Version, off, maxCount, maxBytes})
+	}
+	return p
+}
+
 func (p Page) SerializedBytes() int { b, _ := json.Marshal(p); return len(b) }
