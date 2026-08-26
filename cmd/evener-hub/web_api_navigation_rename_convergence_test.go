@@ -48,7 +48,7 @@ func TestRESTNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 		defer func() { isLiveForRename = oldLive }()
 
 		rr := postJSON(t, web.Handler(), "/api/sessions/local:live-rename/rename", `{"name":"renamed-live"}`)
-		assertRenameNavigation(t, rr, web, 1)
+		assertRenameNavigation(t, rr, web, 1, []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetProject, ProjectKey: "p1"}, {Kind: appwire.NavigationTargetAllLoadedProjects}})
 		if live.got.Ref != "local:live-rename" || live.got.Name != "renamed-live" {
 			t.Fatalf("SetThreadName params=%+v", live.got)
 		}
@@ -57,7 +57,7 @@ func TestRESTNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 		}
 
 		rr = postJSON(t, web.Handler(), "/api/sessions/local:live-rename/rename", `{"name":"renamed-live"}`)
-		assertRenameNavigation(t, rr, web, 0)
+		assertRenameNavigation(t, rr, web, 0, nil)
 	})
 
 	t.Run("ended changed and repeat no-op", func(t *testing.T) {
@@ -72,6 +72,10 @@ func TestRESTNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 			t.Fatal(err)
 		}
 		source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+		projectKey := filepath.Base(stateDir)
+		source.inputs.Tree.Projects[0].Key = projectKey
+		source.inputs.Tree.Projects[0].Name = projectKey
+		source.inputs.Tree.Projects[0].Current[0].Project = projectKey
 		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
 		web.navigation = newTestNavigationService(t, source)
 		if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
@@ -85,7 +89,7 @@ func TestRESTNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 		defer func() { saveSessionMetaForRename = oldSave }()
 
 		rr := postJSON(t, web.Handler(), "/api/sessions/local:"+original.ID+"/rename", `{"name":"renamed-ended"}`)
-		assertRenameNavigation(t, rr, web, 1)
+		assertRenameNavigation(t, rr, web, 1, []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetProject, ProjectKey: projectKey}})
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status=%d, want 200", rr.Code)
 		}
@@ -98,11 +102,11 @@ func TestRESTNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 		}
 
 		rr = postJSON(t, web.Handler(), "/api/sessions/local:"+original.ID+"/rename", `{"name":"renamed-ended"}`)
-		assertRenameNavigation(t, rr, web, 0)
+		assertRenameNavigation(t, rr, web, 0, nil)
 	})
 }
 
-func assertRenameNavigation(t *testing.T, rr *httptest.ResponseRecorder, web *WebServer, wantEvents int) {
+func assertRenameNavigation(t *testing.T, rr *httptest.ResponseRecorder, web *WebServer, wantEvents int, wantTargets []appwire.NavigationInvalidationTarget) {
 	t.Helper()
 	var response renameMutationResponse
 	if rr.Code != http.StatusOK {
@@ -116,7 +120,7 @@ func assertRenameNavigation(t *testing.T, rr *httptest.ResponseRecorder, web *We
 		t.Fatalf("typed events=%d, want %d: %+v", len(events), wantEvents, events)
 	}
 	if wantEvents == 0 {
-		if len(response.Navigation.Targets) != 0 {
+		if response.Navigation.GenerationID == "" || len(response.Navigation.Targets) != 0 {
 			t.Fatalf("no-op navigation=%+v", response.Navigation)
 		}
 		return
@@ -125,13 +129,8 @@ func assertRenameNavigation(t *testing.T, rr *httptest.ResponseRecorder, web *We
 	if response.Navigation.GenerationID != events[0].GenerationID || !reflect.DeepEqual(responseTargets, events[0].Targets) {
 		t.Fatalf("response navigation=%+v publication=%+v", response.Navigation, events[0])
 	}
-	hasProject, hasWildcard := false, false
-	for _, target := range events[0].Targets {
-		hasProject = hasProject || target.Kind == appwire.NavigationTargetProject
-		hasWildcard = hasWildcard || target.Kind == appwire.NavigationTargetAllLoadedProjects
-	}
-	if !hasProject && !hasWildcard {
-		t.Fatalf("rename targets=%+v", events[0].Targets)
+	if !reflect.DeepEqual(events[0].Targets, wantTargets) {
+		t.Fatalf("rename targets=%+v, want exactly %+v", events[0].Targets, wantTargets)
 	}
 	if replay := web.navigation.DrainPublications(); len(replay) != 0 {
 		t.Fatalf("second typed event=%+v", replay)
