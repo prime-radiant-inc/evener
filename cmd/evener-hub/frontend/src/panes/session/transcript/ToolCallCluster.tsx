@@ -1,6 +1,17 @@
-import { useId, useState } from "react";
+import { useId } from "react";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
 import { useThreadsStore } from "../../../stores/threads";
+import {
+  disclosureScopeForSession,
+  expandDetailsByDefault,
+  useTranscriptRenderContext,
+} from "../../../transcriptDisplay/renderContext";
+import {
+  disclosureDefault,
+  isDisclosureOpen,
+  scopedDisclosureId,
+  toggleDisclosure,
+} from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ToolCallItem } from "./ToolCallItem";
 import { ToolRow } from "./ToolRow";
@@ -51,14 +62,20 @@ function clusterHeader(
 // div (not a native <details>): ToolRow renders the real disclosure button
 // with aria-expanded, and the body below is a sibling rendered on `open`.
 export function ToolCallCluster({ items, turn, sessionRef }: ToolCallClusterProps) {
-  const [open, setOpen] = useState(false);
   const bodyId = useId();
+  const context = useTranscriptRenderContext();
+  const { config } = context;
+  const disclosureScope = disclosureScopeForSession(context, sessionRef);
   // Same by-ref selector ToolCallItem.tsx's own summaryCwd/openBesideCwd use
   // (copied from fileOpenBeside.tsx) - snapshot-only ThreadModel state, so a
   // shell-led folded cluster's header strips its redundant "cd <cwd> && "
   // prefix exactly like the per-call row does.
   const cwd = useThreadsStore((s) => (sessionRef !== undefined ? s.threads.get(sessionRef)?.cwd : undefined));
   const header = clusterHeader(items, cwd);
+  const clusterId = leadItem(items).id;
+  const disclosureKey = scopedDisclosureId(disclosureScope, clusterId);
+  const disclosureFallback = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, clusterId, false);
+  const open = isDisclosureOpen(disclosureKey, disclosureFallback);
   return (
     <div className={CLASS.cluster} data-testid="tool-call-cluster">
       <ToolRow
@@ -67,7 +84,7 @@ export function ToolCallCluster({ items, turn, sessionRef }: ToolCallClusterProp
         failed={false}
         expandable
         expanded={open}
-        onToggle={() => setOpen((current) => !current)}
+        onToggle={() => toggleDisclosure(disclosureKey, disclosureFallback)}
         bodyId={bodyId}
       />
       {open && (

@@ -9,8 +9,18 @@ import type { ItemModel } from "../../../protocol/model";
 import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
 import type { EvenerDelegateInfo } from "../../../protocol/types.gen";
 import { useThreadsStore } from "../../../stores/threads";
+import {
+  disclosureScopeForSession,
+  expandDetailsByDefault,
+  useTranscriptRenderContext,
+} from "../../../transcriptDisplay/renderContext";
 import { type CadenceState, StatusDot } from "../../../widgets";
-import { isDisclosureOpen, toggleDisclosure } from "../../../widgets/disclosure/disclosureStore";
+import {
+  disclosureDefault,
+  isDisclosureOpen,
+  scopedDisclosureId,
+  toggleDisclosure,
+} from "../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { FileOpenBesideButton, fileDocParams } from "./fileOpenBeside";
 import { ImageGallery } from "./flow/ImageGallery";
@@ -24,7 +34,6 @@ import { rowFromDelegateItem } from "./tools/subagentModule";
 import {
   classifyJobStatus,
   effectiveRowKind,
-  itemScopeKey,
   removeSubagentRow,
   rowKeyForDelegateItem,
   type SubagentRow,
@@ -93,6 +102,9 @@ function delegateStatusForOutput(
 // streaming delta targeting a DIFFERENT item must not re-render an
 // already-settled tool call.
 export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef }: ItemRenderProps) {
+  const context = useTranscriptRenderContext();
+  const { config } = context;
+  const disclosureScope = disclosureScopeForSession(context, sessionRef);
   const descriptor = toolRendererFor(item.toolName ?? "");
   const Body = descriptor.body;
   const isDelegate = item.toolName === "delegate";
@@ -250,9 +262,11 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   const superseded = useThreadsStore((s) =>
     supersededBySuccess(item, sessionRef !== undefined ? s.threads.get(sessionRef) : undefined),
   );
-  const disclosureKey = itemScopeKey(sessionRef, item.id);
+  const disclosureKey = scopedDisclosureId(disclosureScope, item.id);
   const bodyId = useId();
-  const expanded = isDisclosureOpen(disclosureKey, autoDefault && !superseded);
+  const configDefault = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false);
+  const disclosureFallback = configDefault || (autoDefault && !superseded);
+  const expanded = isDisclosureOpen(disclosureKey, disclosureFallback);
 
   // A descriptor may suppress its whole row (task_list `action:"view"` and
   // malformed non-mutations - the legacy "no card, no divider, no tool-call
@@ -322,7 +336,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
         // toggleDisclosure writes an explicit store entry against this
         // session-scoped item key, so the user's own choice wins over
         // autoDefault (the fallback) from here on and survives a remount.
-        onToggle={() => toggleDisclosure(disclosureKey, autoDefault && !superseded)}
+        onToggle={() => toggleDisclosure(disclosureKey, disclosureFallback)}
         trailing={trailingControls}
         trailingAfter={trailingAfter}
         title={detail}

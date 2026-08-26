@@ -10,11 +10,11 @@
 // (Settings -> Transcript's "Round timings"/"Token counts", Settings ->
 // Display's "Show estimated cost"), all default off - so the transcript
 // carries prose and tool calls by default and this row only appears for
-// someone who asked for it. Read through usePrefsStore selectors so
-// flipping a toggle in Settings re-renders the transcript live.
+// someone who asked for it. Read through the shared render context so a
+// configuration change re-renders the transcript live.
 import { Fragment, type ReactNode } from "react";
 import type { TurnModel } from "../../../../protocol/model";
-import { usePrefsStore } from "../../../../stores/prefs";
+import { useTranscriptRenderContext } from "../../../../transcriptDisplay/renderContext";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { turnMetaParts } from "./turnMeta";
 import styles from "./turnseparator.module.css";
@@ -47,9 +47,10 @@ export interface TurnSeparatorProps {
 }
 
 export function TurnSeparator({ turn }: TurnSeparatorProps) {
-  const showTimings = usePrefsStore((s) => s.transcript.roundTimings);
-  const showTokens = usePrefsStore((s) => s.transcript.tokenCounts);
-  const showCost = usePrefsStore((s) => s.showCost);
+  const { metadata } = useTranscriptRenderContext();
+  const showTimings = metadata.roundTimings;
+  const showTokens = metadata.tokenCounts;
+  const showCost = metadata.estimatedCost;
   const parts = turnMetaParts(turn);
   const segments: { key: string; node: ReactNode }[] = [];
   if (showTimings && parts.duration) {

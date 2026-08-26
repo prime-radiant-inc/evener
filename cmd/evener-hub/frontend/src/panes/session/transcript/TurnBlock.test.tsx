@@ -323,13 +323,14 @@ function hookItem(id: string, exitCode: number): ItemModel {
   return systemItem(id, { eventKind: "hook_completed", text: `hook ${id} exit ${exitCode}`, exitCode });
 }
 
-test("with both hook toggles off (the default), a hook exit line is not rendered", () => {
+test("with both hook toggles off, only a non-zero hook survives as a compact critical row", () => {
   render(<TurnBlock turn={turn([hookItem("h", 0), hookItem("i", 1)])} />);
   expect(screen.queryByText(/hook h exit 0/)).toBeNull();
-  expect(screen.queryByText(/hook i exit 1/)).toBeNull();
+  expect(screen.getByText(/hook i exit 1/)).toBeTruthy();
+  expect(screen.getByTestId("system-notice-failure")).toBeTruthy();
 });
 
-test("hookExitsAll renders hook exits of every code; hookExitsNormal renders only exit 0", () => {
+test("hookExitsAll renders full hook rows; hookExitsNormal keeps success rows plus a compact failure", () => {
   const items = [hookItem("clean", 0), hookItem("failed", 1)];
   const { rerender } = render(<TurnBlock turn={turn(items)} />);
 
@@ -344,7 +345,8 @@ test("hookExitsAll renders hook exits of every code; hookExitsNormal renders onl
   });
   rerender(<TurnBlock turn={turn(items)} />);
   expect(screen.getByText(/hook clean exit 0/)).toBeTruthy();
-  expect(screen.queryByText(/hook failed exit 1/)).toBeNull();
+  expect(screen.getByText(/hook failed exit 1/)).toBeTruthy();
+  expect(screen.getByTestId("system-notice-failure")).toBeTruthy();
 });
 
 test("flipping a toggle re-renders the transcript live, without a new turn object", () => {

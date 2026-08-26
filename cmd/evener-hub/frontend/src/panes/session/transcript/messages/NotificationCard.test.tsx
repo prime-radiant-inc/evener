@@ -5,6 +5,7 @@ import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, expect, test } from "vitest";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../../../shell/workspace";
+import { resetDisclosureStoreForTests } from "../../../../widgets/disclosure/disclosureStore";
 import { NotificationCard } from "./NotificationCard";
 import type { ParsedNotification } from "./steeringClassify";
 
@@ -15,6 +16,7 @@ beforeAll(async () => {
 afterEach(() => {
   cleanup();
   resetWorkspaceStoreForTests();
+  resetDisclosureStoreForTests();
 });
 
 function notif(overrides: Partial<ParsedNotification> = {}): ParsedNotification {
@@ -80,6 +82,17 @@ test("collapses to a single row by default; card chrome appears on expand", () =
   expect(screen.getByTestId("notification-raw-disclosure")).not.toBeNull();
   fireEvent.click(row);
   expect(screen.queryByTestId("notification-card-root")).toBeNull();
+});
+
+test("an expanded notification card stays open across a remount through the scoped store", () => {
+  const notification = notif({ title: "remount me" });
+  const { unmount } = render(<NotificationCard notification={notification} sessionRef="session_a" />);
+  fireEvent.click(screen.getByTestId("notification-card"));
+  expect((screen.getByTestId("notification-card").closest("details") as HTMLDetailsElement).open).toBe(true);
+
+  unmount();
+  render(<NotificationCard notification={notification} sessionRef="session_a" />);
+  expect((screen.getByTestId("notification-card").closest("details") as HTMLDetailsElement).open).toBe(true);
 });
 
 test("warning tone chip is visible even when collapsed", () => {
