@@ -91,8 +91,6 @@ test-short:
 ## then the dev-tooling selftest wave.
 ## proves: make lint, make build, ROOT_FULL=1 make test, then
 ##   make test-dev-tooling all pass, in that order.
-# The former merge-approval-gate shell selftest faked toolchain binaries and
-# was removed; make_contract_test.go covers this real-Make wiring instead.
 ## trigger: Local pre-merge/post-merge; CI keeps equivalent checks in
 ##   separate named jobs.
 ## requires: Does not run fuzz search, race testing, provider calls, or
