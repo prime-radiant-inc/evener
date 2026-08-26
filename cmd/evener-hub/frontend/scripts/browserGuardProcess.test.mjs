@@ -530,6 +530,7 @@ test("discovers only the Crashpad helper for the exact canonical private profile
     `  511   301 /Applications/Google Chrome/chrome_crashpad_handler --database=${crashpadDir}-neighbor --url=`,
     `  512   302 /Applications/Google Chrome/chrome_crashpad_handler --database=${crashpadDir}/nested --url=`,
     `  513   303 /usr/bin/unrelated ${exactDatabase} --url=`,
+    `  514   304 /usr/bin/tool /tmp/chrome_crashpad_handler ${exactDatabase}`,
   ].join("\n");
 
   assert.deepEqual(
@@ -541,10 +542,60 @@ test("discovers only the Crashpad helper for the exact canonical private profile
   );
 });
 
+test("streams a process-heavy external ps fixture while preserving full-argv candidates", (context) => {
+  const profileDir = mkdtempSync(path.join(tmpdir(), "browser-helper-stream-test-"));
+  context.after(() => rmSync(profileDir, { recursive: true, force: true }));
+  const exactDatabase = `--database=${path.join(realpathSync(profileDir), "Crashpad")}`;
+  const processTableOverOneMiB = "  1   1 /usr/bin/unrelated --noise\n".repeat(70_000);
+  const processTable = `${processTableOverOneMiB}
+  510   300 /Applications/Google Chrome/chrome_crashpad_handler ${exactDatabase}
+  511   301 /Applications/Google Chrome/chrome_crashpad_h ${exactDatabase}
+  512   302 /usr/bin/tool --arg=/chrome_crashpad_handler ${exactDatabase}
+  513   303 /usr/bin/tool /tmp/chrome_crashpad_handler ${exactDatabase}`;
+  assert.ok(processTable.length > 1_048_576);
+  const psFixture = path.join(profileDir, "ps-fixture.mjs");
+  writeFileSync(psFixture, `process.stdout.write(${JSON.stringify(processTable)});\n`);
+  const candidates = browserGuardProcess.listSystemProcesses({
+    // This is the production bash/pipefail/awk boundary with a deterministic
+    // external producer. A synchronous full-table ps capture cannot pass it.
+    processCommand: [process.execPath, psFixture],
+  });
+  assert.match(candidates, /\b510\s+300\s+.*chrome_crashpad_handler/);
+  assert.doesNotMatch(candidates, /\b511\s+301\s+/);
+  assert.match(candidates, /\b512\s+302\s+.*--arg=/);
+  assert.doesNotMatch(candidates, /\b513\s+303\s+/);
+  assert.deepEqual(
+    browserGuardProcess.findMacOSProfileProcesses(profileDir, {
+      platform: "darwin",
+      listProcesses: () => candidates,
+    }),
+    [{ pid: 510, pgid: 300, databaseArg: exactDatabase }],
+  );
+});
+
+test("propagates an external ps failure through pipefail", (context) => {
+  const profileDir = mkdtempSync(path.join(tmpdir(), "browser-helper-ps-error-test-"));
+  context.after(() => rmSync(profileDir, { recursive: true, force: true }));
+  const psFixture = path.join(profileDir, "ps-error-fixture.mjs");
+  writeFileSync(
+    psFixture,
+    "process.stdout.write('  510   300 /usr/bin/chrome_crashpad_handler --database=/tmp/profile/Crashpad\\n'); process.exitCode = 23;\n",
+  );
+
+  assert.throws(
+    () =>
+      browserGuardProcess.listSystemProcesses({
+        processCommand: [process.execPath, psFixture],
+      }),
+    (error) => error.status !== 0 && /510\s+300/.test(error.stdout),
+  );
+});
+
 test("does not treat an unrelated process that reused a captured Crashpad PID as owned", () => {
   assert.equal(typeof browserGuardProcess.profileProcessIdentityRunning, "function");
   const identity = {
     pid: 510,
+    pgid: 300,
     databaseArg: "--database=/private/tmp/browser-profile/Crashpad",
   };
   const reusedProcess =
@@ -555,6 +606,40 @@ test("does not treat an unrelated process that reused a captured Crashpad PID as
   };
 
   assert.equal(browserGuardProcess.profileProcessIdentityRunning(identity, options), false);
+});
+
+test("does not signal a same-PID same-argv helper in a reused process group", async (context) => {
+  const profileDir = mkdtempSync(path.join(tmpdir(), "browser-helper-reused-group-test-"));
+  context.after(() => rmSync(profileDir, { recursive: true, force: true }));
+  const identity = {
+    pid: 510,
+    pgid: 300,
+    databaseArg: "--database=/private/tmp/browser-profile/Crashpad",
+  };
+  const reusedGroup =
+    "  510   777 /usr/bin/chrome_crashpad_handler --database=/private/tmp/browser-profile/Crashpad";
+
+  const signals = [];
+  const lifecycle = browserGuardProcess.createBrowserProcessCleanup({
+    profileDir,
+    findProfileProcesses: () => [identity],
+    profileProcessRunning: (candidate) =>
+      browserGuardProcess.profileProcessIdentityRunning(candidate, {
+        platform: "darwin",
+        listProcesses: () => reusedGroup,
+      }),
+    signalProfileProcess: (candidate, signal) => signals.push([candidate.pgid, signal]),
+  });
+
+  await lifecycle.cleanup();
+  assert.deepEqual(signals, []);
+  assert.equal(
+    browserGuardProcess.profileProcessIdentityRunning(identity, {
+      platform: "darwin",
+      listProcesses: () => reusedGroup,
+    }),
+    false,
+  );
 });
 
 test("targets a lingering browser process group with TERM then KILL", async () => {

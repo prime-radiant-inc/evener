@@ -216,8 +216,45 @@ function reportCleanupFailure(error) {
   console.error(error instanceof Error ? error.message : String(error));
 }
 
-function listSystemProcesses() {
-  return execFileSync("/bin/ps", ["-axo", "pid=,pgid=,command="], { encoding: "utf8" });
+export function filterCrashpadProcessTable(processList) {
+  return processList
+    .split("\n")
+    .filter((line) => {
+      const match = line.match(/^\s*\d+\s+\d+\s+(.+)$/);
+      return match && /(?:^|\/)chrome_crashpad_handler(?:\s|$)/.test(match[1]);
+    })
+    .join("\n");
+}
+
+export function listSystemProcesses({ processTable, processCommand = ["/bin/ps"] } = {}) {
+  if (processTable !== undefined) return filterCrashpadProcessTable(processTable);
+  // Stream the complete table through awk and retain only full-argv Crashpad
+  // candidates. Capturing the unfiltered table exceeds execFileSync's 1 MiB
+  // maxBuffer on a process-heavy host. Filtering the command column, rather
+  // than pgrep's comm name, also works on Linux where comm is truncated to 15
+  // bytes and would miss chrome_crashpad_handler.
+  const filter =
+    "{ line=$0; sub(/^[[:space:]]*[0-9]+[[:space:]]+[0-9]+[[:space:]]+/, \"\", line); " +
+    // Keep the filter narrow, but leave argv0 validation to the JS parser. The
+    // second condition rejects an absolute path appearing after an unrelated
+    // argv0 while still allowing the spaces in a normal macOS Chrome path.
+    "if (line ~ /^.*\\/chrome_crashpad_handler([[:space:]]|$)/ && " +
+    "line !~ /^\\/[^[:space:]]+[[:space:]]+\\/.*\\/chrome_crashpad_handler([[:space:]]|$)/) print $0 }";
+  if (!Array.isArray(processCommand) || processCommand.length === 0) {
+    throw new TypeError("processCommand must contain an executable");
+  }
+  return execFileSync(
+    "/bin/bash",
+    [
+      "-o",
+      "pipefail",
+      "-c",
+      `"$@" -axo pid=,pgid=,command= | /usr/bin/awk '${filter}'`,
+      "browser-guard-ps",
+      ...processCommand,
+    ],
+    { encoding: "utf8" },
+  );
 }
 
 function listSystemProcess(pid) {
@@ -238,7 +275,16 @@ function parseProcesses(processList) {
 }
 
 function commandMatchesProfileProcess(command, databaseArg) {
-  if (!/(?:^|\/)chrome_crashpad_handler(?:\s|$)/.test(command)) return false;
+  // ps exposes argv0 and the remaining argv as one string. Anchor the helper
+  // to argv0: a handler-looking positional argument must never own a profile.
+  // macOS app/framework paths contain spaces, so do not split on whitespace;
+  // instead reject a second absolute path before the helper and require a
+  // Chrome/Chromium path when the executable path itself contains spaces.
+  const handler = command.match(/^(.*\/)?chrome_crashpad_handler(?=\s|$)/);
+  if (!handler || (handler[1] && !command.startsWith("/"))) return false;
+  const executablePath = handler[1] ?? "";
+  if (/\s+\//.test(executablePath)) return false;
+  if (/\s/.test(executablePath) && !/(?:chrome|chromium)/i.test(executablePath)) return false;
   return command.includes(`${databaseArg} `) || command.endsWith(databaseArg);
 }
 
@@ -257,12 +303,13 @@ export function findMacOSProfileProcesses(
 }
 
 export function profileProcessIdentityRunning(
-  { pid, databaseArg },
+  { pid, pgid, databaseArg },
   { platform = process.platform, listProcesses = listSystemProcess } = {},
 ) {
-  if (platform !== "darwin") return false;
+  if (platform !== "darwin" || !Number.isInteger(pid) || !Number.isInteger(pgid) || pgid <= 0) return false;
   return parseProcesses(listProcesses(pid)).some(
-    (candidate) => candidate.pid === pid && commandMatchesProfileProcess(candidate.command, databaseArg),
+    (candidate) =>
+      candidate.pid === pid && candidate.pgid === pgid && commandMatchesProfileProcess(candidate.command, databaseArg),
   );
 }
 
@@ -556,7 +603,7 @@ export function createBrowserProcessCleanup({
         const profileProcesses = [
           ...new Map(
             [...profileProcessesBeforeClose, ...findProfileProcesses(profileDir)].map((processIdentity) => [
-              `${processIdentity.pid}\0${processIdentity.databaseArg ?? ""}`,
+              `${processIdentity.pid}\0${processIdentity.pgid ?? ""}\0${processIdentity.databaseArg ?? ""}`,
               processIdentity,
             ]),
           ).values(),
