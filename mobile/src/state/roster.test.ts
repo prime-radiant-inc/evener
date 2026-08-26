@@ -465,4 +465,88 @@ describe("RosterStore — event refresh", () => {
     expect(store.getState().entries[0]?.ref).toBe("ok");
     expect(store.getState().loading).toBe(false);
   });
+
+  // --- fix round 1: generation cancels pending scheduled callbacks -----------
+  //
+  // A scheduled event-refresh callback captures the generation at scheduling
+  // time. If the generation changed (profile switch / reset) before the
+  // callback fires, the callback must be a no-op: it must NOT call the old
+  // service and must NOT mutate store state.
+
+  it("pending scheduled callback is cancelled by generation bump", async () => {
+    const scheduler = new FakeScheduler();
+    let notify: (n: AnyNotification) => void = () => {};
+    const subscribe = (h: (n: AnyNotification) => void): (() => void) => {
+      notify = h;
+      return () => {};
+    };
+
+    const oldService = new FakeRosterService();
+    oldService.threads = [makeEntry({ ref: "old-profile-entry" })];
+
+    const store = createRosterStore({ scheduler, subscribe });
+    store.getState().setSessionsVisible(true);
+    await store.getState().refresh(oldService);
+    expect(oldService.listCalls).toBe(1);
+
+    // Schedule a refresh via an event notification (captures old generation).
+    notify?.(treeChanged());
+    expect(scheduler.scheduleCalls).toHaveLength(1);
+    const scheduledKey = scheduler.scheduleCalls[0]?.key;
+    expect(scheduledKey).toBeDefined();
+
+    // Simulate a profile switch: bump generation.
+    store.getState().bumpGeneration();
+    const genAfter = store.getState().generation;
+    expect(genAfter).toBe(1);
+
+    // Snapshot state before executing the stale callback.
+    const entriesBefore = store.getState().entries;
+    const loadingBefore = store.getState().loading;
+
+    // Execute the pending callback — it must be a no-op.
+    if (scheduledKey !== undefined) scheduler.flush(scheduledKey);
+    await Promise.resolve();
+
+    // The old service must NOT have been called again.
+    expect(oldService.listCalls).toBe(1);
+    // Store state must not have changed.
+    expect(store.getState().entries).toBe(entriesBefore);
+    expect(store.getState().loading).toBe(loadingBefore);
+  });
+
+  it("reset bumps generation to invalidate pending callbacks", async () => {
+    const scheduler = new FakeScheduler();
+    let notify: (n: AnyNotification) => void = () => {};
+    const subscribe = (h: (n: AnyNotification) => void): (() => void) => {
+      notify = h;
+      return () => {};
+    };
+
+    const oldService = new FakeRosterService();
+    oldService.threads = [makeEntry({ ref: "old-entry" })];
+
+    const store = createRosterStore({ scheduler, subscribe });
+    store.getState().setSessionsVisible(true);
+    await store.getState().refresh(oldService);
+
+    const genBefore = store.getState().generation;
+
+    // Schedule a refresh via event.
+    notify?.(treeChanged());
+    const scheduledKey = scheduler.scheduleCalls[0]?.key;
+    expect(scheduledKey).toBeDefined();
+
+    // Reset must bump the generation so pending callbacks are invalidated.
+    store.getState().reset();
+    const genAfter = store.getState().generation;
+    expect(genAfter).toBeGreaterThan(genBefore);
+
+    // Execute the pending callback — must be a no-op.
+    if (scheduledKey !== undefined) scheduler.flush(scheduledKey);
+    await Promise.resolve();
+
+    expect(oldService.listCalls).toBe(1);
+    expect(store.getState().entries).toEqual([]);
+  });
 });
