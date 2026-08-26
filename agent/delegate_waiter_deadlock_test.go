@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/llm"
 )
 
@@ -125,5 +126,84 @@ func TestCanceledToolResultPersistenceAbortsClaimedInlineDelivery(t *testing.T) 
 	replay := controller.ReplayDeliveries()
 	if len(replay) != 1 || replay[0].deliveryID != plan.deliveryID || replay[0].waiter != nil {
 		t.Fatalf("replay after canceled persistence = %#v, want one ordinary delivery", replay)
+	}
+}
+
+func TestCanceledAfterTakingInlineCommitAbortsBeforeDurableToolResult(t *testing.T) {
+	controller, _ := newDelegateControllerTestHarness(t, 1, 1)
+	root := &Session{id: "root-session", state: SessionProcessing, delegateController: controller}
+	controller.rootRuntime = root
+	path := transcriptPath(controller.stateDir, root.ID())
+	writer, err := transcript.NewWriter(path, transcript.Header{SessionID: root.ID()})
+	if err != nil {
+		t.Fatalf("create root transcript: %v", err)
+	}
+	root.attachTranscript(writer)
+	t.Cleanup(func() { _ = writer.Close() })
+
+	seedDelegateControllerIdle(t, controller, "dlg_target", "")
+	lease, waiter := startDelegateDeliveryGeneration(t, controller, "dlg_target", true)
+	plan := finishDelegateDeliveryGeneration(t, controller, lease, "finished inline").deliveries[0]
+	if _, err := deliverDelegatePacket(plan, root); err != nil {
+		t.Fatalf("deliverDelegatePacket: %v", err)
+	}
+	resolution := <-waiter.resolution
+	if resolution.commit == nil {
+		t.Fatalf("inline resolution = %#v, want a delivery commit", resolution)
+	}
+	t.Cleanup(func() { _, _ = resolution.commit.Complete(false) })
+	root.queueDelegateDeliveryCommit("send-call", resolution.commit)
+
+	controller.mu.Lock()
+	beforeEvidence := controller.evidenceVersion
+	controller.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	hookCalls := 0
+	root.cfg.testOnly.delegateDeliveryCommitsTaken = func() {
+		hookCalls++
+		cancel()
+	}
+	call := llm.ToolCallData{ID: "send-call", Name: "delegate_send", Type: "function"}
+	result := tool.ExecResult{ToolName: call.Name, CallID: call.ID, Output: "finished inline", FullOutput: "finished inline"}
+	part := llm.ContentPart{
+		Kind: llm.ContentToolResult,
+		ToolResult: &llm.ToolResultData{
+			ToolCallID: call.ID,
+			Name:       call.Name,
+			Content:    result.Output,
+		},
+	}
+	appendErr := root.appendToolResults(ctx, []llm.ToolCallData{call}, []tool.ExecResult{result}, []llm.ContentPart{part})
+	if !errors.Is(appendErr, context.Canceled) {
+		t.Errorf("appendToolResults error = %v, want context canceled", appendErr)
+	}
+	if hookCalls != 1 {
+		t.Errorf("post-take hook calls = %d, want 1", hookCalls)
+	}
+
+	controller.mu.Lock()
+	evidenceDelta := controller.evidenceVersion - beforeEvidence
+	admissions := len(controller.deliveries)
+	pending := len(controller.durable["dlg_target"].PendingDeliveries)
+	controller.mu.Unlock()
+	if evidenceDelta != 1 {
+		t.Errorf("controller evidence delta = %d, want one exact abort", evidenceDelta)
+	}
+	if admissions != 0 {
+		t.Errorf("delivery admissions after cancellation = %d, want none", admissions)
+	}
+	if pending != 1 {
+		t.Errorf("durable pending deliveries = %d, want delivery retained", pending)
+	}
+	fold, err := readDelegateAttentionFold(path, root.ID())
+	if err != nil {
+		t.Fatalf("read root transcript fold: %v", err)
+	}
+	if callID := fold.deliveryCommits[plan.deliveryID]; callID != "" {
+		t.Errorf("persisted delivery commit = %q for %q, want none", callID, plan.deliveryID)
+	}
+	replay := controller.ReplayDeliveries()
+	if len(replay) != 1 || replay[0].deliveryID != plan.deliveryID || replay[0].waiter != nil {
+		t.Errorf("replay after post-take cancellation = %#v, want one ordinary delivery", replay)
 	}
 }
