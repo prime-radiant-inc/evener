@@ -208,7 +208,7 @@ func cloneNavigationInputsContext(ctx context.Context, in navigationBuildInputs)
 	}
 	out := in
 	out.Sources = append([]hubapi.Source(nil), in.Sources...)
-	out.LiveEntries = append([]hubcore.LiveEntry(nil), in.LiveEntries...)
+	out.LiveEntries = cloneNavigationLiveEntries(in.LiveEntries)
 	cloneBool := func(values map[string]bool) (map[string]bool, error) {
 		result := make(map[string]bool, len(values))
 		for key, value := range values {
@@ -257,7 +257,7 @@ func cloneNavigationInputsContext(ctx context.Context, in navigationBuildInputs)
 func cloneNavigationInputs(in navigationBuildInputs) navigationBuildInputs {
 	out := in
 	out.Sources = append([]hubapi.Source(nil), in.Sources...)
-	out.LiveEntries = append([]hubcore.LiveEntry(nil), in.LiveEntries...)
+	out.LiveEntries = cloneNavigationLiveEntries(in.LiveEntries)
 	out.Live = cloneNavigationBoolMap(in.Live)
 	out.Renameable = cloneNavigationBoolMap(in.Renameable)
 	out.SessionFavorite = cloneNavigationBoolMap(in.SessionFavorite)
@@ -267,6 +267,24 @@ func cloneNavigationInputs(in navigationBuildInputs) navigationBuildInputs {
 	out.PinAssignments = make(map[string]hubcore.SessionPin, len(in.PinAssignments))
 	for id, assignment := range in.PinAssignments {
 		out.PinAssignments[id] = assignment
+	}
+	return out
+}
+
+func cloneNavigationLiveEntries(in []hubcore.LiveEntry) []hubcore.LiveEntry {
+	if in == nil {
+		return nil
+	}
+	out := make([]hubcore.LiveEntry, len(in))
+	for i, entry := range in {
+		out[i] = entry
+		out[i].RunningSubagentIDs = append([]string(nil), entry.RunningSubagentIDs...)
+		if entry.RunningSubagentStates != nil {
+			out[i].RunningSubagentStates = make(map[string]string, len(entry.RunningSubagentStates))
+			for key, value := range entry.RunningSubagentStates {
+				out[i].RunningSubagentStates[key] = value
+			}
+		}
 	}
 	return out
 }

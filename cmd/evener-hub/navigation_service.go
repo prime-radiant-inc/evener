@@ -356,16 +356,14 @@ func (s *NavigationService) LegacyRepresentation(ctx context.Context, id string,
 		s.mu.Unlock()
 		return navigationRepresentation{}, errors.New("navigation core unavailable")
 	}
-	state, ok := s.resources[navigationResourceKey{Kind: navigationResourceManifest}]
-	if !ok || !state.Present {
-		s.mu.Unlock()
-		return navigationRepresentation{}, errors.New("navigation manifest unavailable")
-	}
-	key := navigationResourceKey{Kind: navigationResourceLegacy, ID: id, Generation: s.generation, Revision: state.Revision}
-	inputs := cloneNavigationInputs(s.core.projection.inputs)
+	// Legacy output spans the whole immutable core. Its identity must therefore
+	// follow the completed core build, not the manifest resource revision (which
+	// intentionally ignores row/model/pin-only changes).
+	key := navigationResourceKey{Kind: navigationResourceLegacy, ID: id, Generation: s.generation, Revision: s.buildID}
+	inputs := s.core.projection.inputs
 	s.mu.Unlock()
 	return s.cache.Get(ctx, key, func(context.Context) (navigationRepresentation, error) {
-		object, err := build(inputs)
+		object, err := build(cloneNavigationInputs(inputs))
 		if err != nil {
 			return navigationRepresentation{}, err
 		}

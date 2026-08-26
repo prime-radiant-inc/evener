@@ -146,7 +146,9 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, err.Error())
 		return
 	}
-	writeAPIJSON(w, http.StatusOK, representation.Object)
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write(representation.JSON)
 }
 
 func (s *WebServer) buildLegacyTreeResponse(inputs navigationBuildInputs) (hubapi.TreeResponse, error) {
@@ -176,7 +178,7 @@ func (s *WebServer) buildLegacyTreeResponse(inputs navigationBuildInputs) (hubap
 	resp := hubapi.TreeResponse{
 		GeneratedAt:      hubNavigationNow(),
 		Sources:          append([]hubapi.Source(nil), inputs.Sources...),
-		AttentionSummary: hubAttentionSummaryFromCore(attentionSummary),
+		AttentionSummary: attentionSummary,
 	}
 	for _, n := range tree.Live {
 		if !treeNodeCanActLive(n) {
