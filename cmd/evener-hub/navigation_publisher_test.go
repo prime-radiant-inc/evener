@@ -60,18 +60,17 @@ func TestNavigationPublisherLifecycleCoalescesReadinessAndBroadcastsFIFOOnce(t *
 		entered: make(chan struct{}, 1),
 		release: make(chan struct{}),
 	}
+	source.changeTitle("one")
+	first, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
 	go func() {
 		runNavigationPublisher(ctx, service, recorder)
 		close(done)
 	}()
-
-	source.changeTitle("one")
-	first, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
-	if err != nil {
-		t.Fatal(err)
-	}
 	waitNavigationSignal(t, recorder.entered, "first BroadcastAll") // blocked
 	source.changeTitle("two")
 	second, err := service.Refresh(t.Context(), navigationChangeHint{AllLoadedProjects: true})

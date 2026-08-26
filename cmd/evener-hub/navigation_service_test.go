@@ -528,9 +528,6 @@ func TestNavigationServicePendingEpochSurvivesCommitBeforeClear(t *testing.T) {
 	service := newTestNavigationService(t, source)
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
-	go service.Start(ctx)
-	waitNavigationSignal(t, source.captured, "initial scheduler snapshot")
-
 	previous := navigationPublicationCommittedLocked
 	previousCleared := navigationPendingCleared
 	commit := make(chan struct{}, 1)
@@ -559,6 +556,8 @@ func TestNavigationServicePendingEpochSurvivesCommitBeforeClear(t *testing.T) {
 		navigationPublicationCommittedLocked = previous
 		navigationPendingCleared = previousCleared
 	})
+	go service.Start(ctx)
+	waitNavigationSignal(t, source.captured, "initial scheduler snapshot")
 	source.changeTitle("first")
 	service.Invalidate(navigationChangeHint{Projects: []string{"p1"}})
 	waitNavigationSignal(t, commit, "first commit")
