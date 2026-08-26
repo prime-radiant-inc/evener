@@ -11,8 +11,8 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/appsource"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
