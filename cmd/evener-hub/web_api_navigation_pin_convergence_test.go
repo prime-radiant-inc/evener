@@ -33,7 +33,7 @@ func newPinNavigationRESTWeb(t *testing.T, withSection bool) (*WebServer, *hubco
 	return web, nil
 }
 
-func assertPinNavigationPublication(t *testing.T, web *WebServer, generation string, targets []appwire.NavigationInvalidationTarget, wantKinds map[appwire.NavigationTargetKind]string) {
+func assertPinNavigationPublication(t *testing.T, web *WebServer, generation string, targets, expected []appwire.NavigationInvalidationTarget) {
 	t.Helper()
 	published := web.navigation.DrainPublications()
 	if len(published) != 1 {
@@ -45,32 +45,13 @@ func assertPinNavigationPublication(t *testing.T, web *WebServer, generation str
 	if !reflect.DeepEqual(targets, published[0].Targets) {
 		t.Fatalf("response targets=%+v publication targets=%+v", targets, published[0].Targets)
 	}
-	found := make(map[appwire.NavigationTargetKind]bool, len(targets))
-	for _, target := range targets {
-		wantID, ok := wantKinds[target.Kind]
-		if !ok {
-			switch target.Kind {
-			case appwire.NavigationTargetManifest:
-			case appwire.NavigationTargetProject:
-				if target.ProjectKey != "no-project" {
-					t.Fatalf("unexpected project target=%+v", target)
-				}
-			default:
-				t.Fatalf("unexpected target kind/id: %q/%q", target.Kind, target.SectionID)
-			}
-			continue
-		}
-		found[target.Kind] = true
-		if target.Kind == appwire.NavigationTargetPinSection && target.SectionID != wantID {
-			t.Fatalf("pin target section_id=%q, want %q", target.SectionID, wantID)
-		}
-		if target.Kind == appwire.NavigationTargetPinCatalog && wantID != "" {
-			t.Fatalf("pin catalog target id=%q, want empty", wantID)
-		}
+	if len(targets) != len(expected) {
+		t.Fatalf("targets=%+v, want exact targets=%+v", targets, expected)
 	}
-	for kind := range wantKinds {
-		if !found[kind] {
-			t.Fatalf("targets=%+v, missing required kind=%q", targets, kind)
+	for index, target := range targets {
+		want := expected[index]
+		if target.Kind != want.Kind || target.Section != want.Section || target.SectionID != want.SectionID || target.Catalog != want.Catalog || target.ProjectKey != want.ProjectKey {
+			t.Fatalf("target[%d]=%+v, want exact identity=%+v", index, target, want)
 		}
 	}
 	if replay := web.navigation.DrainPublications(); len(replay) != 0 {
@@ -99,7 +80,7 @@ func TestRESTNavigationPinSectionRenameDeleteConverges(t *testing.T) {
 		if !response.OK || !response.Changed || response.Section.ID != section.ID || response.Section.Name != "RESEARCH" || response.Section.MemberCount != 1 {
 			t.Fatalf("rename response=%+v", response)
 		}
-		assertPinNavigationPublication(t, web, response.Navigation.GenerationID, response.Navigation.Targets, map[appwire.NavigationTargetKind]string{appwire.NavigationTargetPinCatalog: ""})
+		assertPinNavigationPublication(t, web, response.Navigation.GenerationID, response.Navigation.Targets, []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetPinCatalog}})
 
 		repeat := patchJSON(t, web.Handler(), "/api/pin-sections/"+section.ID, `{"name":"RESEARCH"}`)
 		if repeat.Code != http.StatusOK {
@@ -122,7 +103,7 @@ func TestRESTNavigationPinSectionRenameDeleteConverges(t *testing.T) {
 		if !response.OK || !response.Changed || response.MemberCount != 1 {
 			t.Fatalf("delete response=%+v", response)
 		}
-		assertPinNavigationPublication(t, web, response.Navigation.GenerationID, response.Navigation.Targets, map[appwire.NavigationTargetKind]string{appwire.NavigationTargetPinCatalog: "", appwire.NavigationTargetPinSection: section.ID})
+		assertPinNavigationPublication(t, web, response.Navigation.GenerationID, response.Navigation.Targets, []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetManifest}, {Kind: appwire.NavigationTargetPinCatalog}, {Kind: appwire.NavigationTargetPinSection, SectionID: section.ID}, {Kind: appwire.NavigationTargetProject, ProjectKey: "no-project"}})
 
 		absent := deleteURL(t, web.Handler(), "/api/pin-sections/"+section.ID)
 		if absent.Code != http.StatusNotFound {
@@ -145,7 +126,7 @@ func TestRESTNavigationSessionPinAssignUnpinConverges(t *testing.T) {
 		t.Fatalf("assign response=%+v", assignResponse)
 	}
 	sectionID := assignResponse.Assignment.Section.ID
-	assertPinNavigationPublication(t, web, assignResponse.Navigation.GenerationID, assignResponse.Navigation.Targets, map[appwire.NavigationTargetKind]string{appwire.NavigationTargetPinCatalog: "", appwire.NavigationTargetPinSection: sectionID})
+	assertPinNavigationPublication(t, web, assignResponse.Navigation.GenerationID, assignResponse.Navigation.Targets, []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetManifest}, {Kind: appwire.NavigationTargetPinCatalog}, {Kind: appwire.NavigationTargetPinSection, SectionID: sectionID}, {Kind: appwire.NavigationTargetProject, ProjectKey: "no-project"}})
 
 	repeat := postJSON(t, web.Handler(), "/api/session-pin", `{"session_ref":"local:session-a","section_name":" research "}`)
 	if repeat.Code != http.StatusOK {
@@ -165,7 +146,7 @@ func TestRESTNavigationSessionPinAssignUnpinConverges(t *testing.T) {
 	if !unpinResponse.OK || !unpinResponse.Changed || unpinResponse.Assignment.SessionRef != "local:session-a" || unpinResponse.Assignment.Section.ID != "" {
 		t.Fatalf("unpin response=%+v", unpinResponse)
 	}
-	assertPinNavigationPublication(t, web, unpinResponse.Navigation.GenerationID, unpinResponse.Navigation.Targets, map[appwire.NavigationTargetKind]string{appwire.NavigationTargetPinCatalog: "", appwire.NavigationTargetPinSection: sectionID})
+	assertPinNavigationPublication(t, web, unpinResponse.Navigation.GenerationID, unpinResponse.Navigation.Targets, []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetManifest}, {Kind: appwire.NavigationTargetPinCatalog}, {Kind: appwire.NavigationTargetPinSection, SectionID: sectionID}, {Kind: appwire.NavigationTargetProject, ProjectKey: "no-project"}})
 
 	repeatUnpin := deleteURL(t, web.Handler(), "/api/session-pin?ref=local%3Asession-a")
 	if repeatUnpin.Code != http.StatusOK {
