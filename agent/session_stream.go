@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -116,6 +117,30 @@ func (s *Session) emitModelRetry(policy llm.RetryPolicy, req llm.Request, group 
 // callModel runs one retry group against req's model and records what every
 // attempt did into group, which the caller owns (one group per invocation).
 func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile *provider.Profile, req llm.Request, group *groupRecord) (sessionModelResponse, error) {
+	previewCalls := map[string]struct{}{}
+	rememberPreviewCalls := func(ids []string) {
+		for _, id := range ids {
+			if id != "" {
+				previewCalls[id] = struct{}{}
+			}
+		}
+	}
+	withPreviewCalls := func(resp sessionModelResponse) sessionModelResponse {
+		resp.CommunicatePreviewCallIDs = make([]string, 0, len(previewCalls))
+		for id := range previewCalls {
+			resp.CommunicatePreviewCallIDs = append(resp.CommunicatePreviewCallIDs, id)
+		}
+		sort.Strings(resp.CommunicatePreviewCallIDs)
+		return resp
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			for id := range previewCalls {
+				s.emit(events.EventCommunicatePreviewReset, events.CommunicatePreviewResetData{CallID: id})
+			}
+			panic(recovered)
+		}
+	}()
 	group.Model = req.Model
 	group.Provider = req.Provider
 	// Announce every retry before its backoff sleep. Both paths below share this
@@ -166,6 +191,7 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 			var obs attemptObservation
 			var consumeErr error
 			result, obs, consumeErr = s.consumeModelStream(ctx, req, st)
+			rememberPreviewCalls(result.CommunicatePreviewCallIDs)
 			// Recorded inside the closure, so the group keeps this attempt's
 			// partial before OnReset discards it ahead of the next one.
 			group.observe(attemptRecord{
@@ -189,7 +215,7 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 			}, consumeErr
 		})
 		if !streamUnavailableForProfile {
-			return result, err
+			return withPreviewCalls(result), err
 		}
 		// Streaming unsupported by this provider/runtime — fall through to the
 		// non-streaming Complete path.

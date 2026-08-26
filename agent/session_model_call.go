@@ -825,6 +825,14 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 // downstream logging reflects the model that answered.
 func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.Profile, req llm.Request, requestedEffort string, _ int) (sessionModelResponse, llm.Request, ModelAttemptMetadata, error) {
 	previewCalls := map[string]struct{}{}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			for callID := range previewCalls {
+				s.emit(events.EventCommunicatePreviewReset, events.CommunicatePreviewResetData{CallID: callID})
+			}
+			panic(recovered)
+		}
+	}()
 	rememberPreviews := func(resp sessionModelResponse) {
 		for _, callID := range resp.CommunicatePreviewCallIDs {
 			previewCalls[callID] = struct{}{}

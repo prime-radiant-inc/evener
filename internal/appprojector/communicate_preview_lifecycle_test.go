@@ -60,6 +60,47 @@ func TestCommunicatePreviewCommitsOnceOnMatchingSuccess(t *testing.T) {
 	}
 }
 
+func TestCommunicatePreviewRealOrderPreservesItemIdentity(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	started := p.Project(events.SessionEvent{Kind: events.EventCommunicatePreviewStart, Data: events.CommunicatePreviewStartData{CallID: "call-real"}})
+	p.Project(events.SessionEvent{Kind: events.EventCommunicatePreviewDelta, Data: events.CommunicatePreviewDeltaData{CallID: "call-real", Delta: "preview"}})
+	start := p.Project(events.SessionEvent{Kind: events.EventToolCallStart, Data: events.ToolCallStartData{ToolName: "communicate", CallID: "call-real"}})
+	completed := p.Project(events.SessionEvent{Kind: events.EventCommunicate, Data: events.CommunicateData{CallID: "call-real", Message: "final"}})
+	_ = p.Project(events.SessionEvent{Kind: events.EventToolCallEnd, Data: events.ToolCallEndData{ToolName: "communicate", CallID: "call-real"}})
+	var startedID, completedID string
+	for _, n := range append(started, start...) {
+		if n.Method == appwire.NotifyItemStarted {
+			startedID = n.Params.(appwire.ItemLifecycleParams).Item.ID
+		}
+	}
+	for _, n := range completed {
+		if n.Method == appwire.NotifyItemCompleted {
+			completedID = n.Params.(appwire.ItemLifecycleParams).Item.ID
+		}
+	}
+	if startedID == "" || completedID != startedID {
+		t.Fatalf("real-order identity started=%q completed=%q start=%+v completed=%+v", startedID, completedID, start, completed)
+	}
+}
+
+func TestCommunicatePreviewTurnCloseResetsLiveItems(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	p.Project(events.SessionEvent{Kind: events.EventCommunicatePreviewStart, Data: events.CommunicatePreviewStartData{CallID: "live"}})
+	out := p.Project(events.SessionEvent{Kind: events.EventUserInput, Data: events.UserInputData{Text: "next"}})
+	resets := 0
+	for _, n := range out {
+		if n.Method == appwire.NotifyAgentMessageReset {
+			resets++
+			if n.Params.(appwire.AgentMessageResetParams).TurnID == "" {
+				t.Fatal("turn-close reset omitted turn ID")
+			}
+		}
+	}
+	if resets != 1 {
+		t.Fatalf("turn close reset notifications = %d, want 1: %+v", resets, out)
+	}
+}
+
 func TestCommunicateReplayCommitsWithoutLivePreview(t *testing.T) {
 	p := NewAppEventProjector("th_1", "local:th_1")
 	out := p.Project(events.SessionEvent{Kind: events.EventCommunicate, Data: events.CommunicateData{
