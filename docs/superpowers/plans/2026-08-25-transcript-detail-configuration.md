@@ -102,7 +102,7 @@
 - Produces `FeatureSet.TranscriptDisplaySettings`.
 - Produces strict `DecodeTranscriptDisplayDefaultsPatchParams(json.RawMessage)` and `ValidateTranscriptDisplayConfig(TranscriptDisplayConfig) error` for Tasks 2 and 3.
 
-- [ ] **Step 1: Add failing protocol-domain tests**
+- [x] **Step 1: Add failing protocol-domain tests**
 
 Create tests that pin the method/notification catalogs, feature JSON field, shipped defaults, exact preset/custom validation, unknown-field rejection, missing Custom boolean rejection, invalid enum/version rejection, and trailing-JSON rejection.
 
@@ -125,7 +125,7 @@ func TestDecodeTranscriptDisplayPatchRejectsIncompleteCustom(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the focused tests and confirm the contract is absent**
+- [x] **Step 2: Run the focused tests and confirm the contract is absent**
 
 Run:
 
@@ -135,7 +135,7 @@ go test ./appwire -run 'TestTranscriptDisplay' -count=1
 
 Expected: compile failure because the transcript-display types and functions do not exist.
 
-- [ ] **Step 3: Define wire constants and payload types**
+- [x] **Step 3: Define wire constants and payload types**
 
 Add named layout, level, hook-detail, config, default, response, patch, changed-notification, and conflict-data types. Use camelCase JSON tags and non-omitempty Custom booleans.
 
@@ -174,15 +174,15 @@ type TranscriptDisplayContent struct {
 }
 ```
 
-- [ ] **Step 4: Implement strict decoding and validation**
+- [x] **Step 4: Implement strict decoding and validation**
 
 Use `json.Decoder.DisallowUnknownFields`, detect trailing values, inspect the raw nested Custom object for all four required boolean keys, and require exactly one content representation. Return `appwire.InvalidParams` at the RPC boundary; keep the validator itself as an ordinary error for store load validation.
 
-- [ ] **Step 5: Catalog the methods, global notification, and capability field**
+- [x] **Step 5: Catalog the methods, global notification, and capability field**
 
 Add ScopeHub method specs and the global notification spec. Add `TranscriptDisplaySettings bool` to `FeatureSet`, but leave existing servers' zero value false. Task 3 advertises it only after both handlers are registered, so no intermediate commit claims support that does not exist.
 
-- [ ] **Step 6: Regenerate committed protocol outputs**
+- [x] **Step 6: Regenerate committed protocol outputs**
 
 Run:
 
@@ -192,7 +192,7 @@ go generate ./appwire
 
 Expected: updates only `docs/appwire-protocol.md` and `cmd/evener-hub/frontend/src/protocol/types.gen.ts` for this contract.
 
-- [ ] **Step 7: Run protocol and generated-output tests**
+- [x] **Step 7: Run protocol and generated-output tests**
 
 Run:
 
@@ -202,7 +202,7 @@ go test ./appwire ./internal/appwiredoc ./internal/appwirets -run 'TestTranscrip
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit the contract**
+- [x] **Step 8: Commit the contract**
 
 ```bash
 git add appwire/types.go appwire/protocol.go appwire/protocol_test.go appwire/transcript_display.go appwire/transcript_display_test.go docs/appwire-protocol.md cmd/evener-hub/frontend/src/protocol/types.gen.ts
@@ -222,7 +222,7 @@ git commit -m "feat(appwire): define transcript display settings"
 - Consumes Task 1's `appwire.TranscriptDisplayDefaultsResponse`, patch params/response, validator, shipped defaults, and conflict data.
 - Produces `NewTranscriptDisplayStore`, `Snapshot`, and `Patch` for Task 3.
 
-- [ ] **Step 1: Add failing store tests**
+- [x] **Step 1: Add failing store tests**
 
 Cover missing-root defaults, restart persistence, independent revisions, no-op patch behavior, stale same-layout conflict with canonical data, cross-layout concurrency, same-layout concurrency, malformed snapshot fallback/read-only error state, overflow, and strict snapshot decoding.
 
@@ -242,7 +242,7 @@ func TestTranscriptDisplayStorePatchesLayoutsIndependently(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the store tests and confirm the store is absent**
+- [x] **Step 2: Run the store tests and confirm the store is absent**
 
 ```bash
 go test ./cmd/evener-hub/internal/hubcore -run 'TestTranscriptDisplayStore' -count=1
@@ -250,7 +250,7 @@ go test ./cmd/evener-hub/internal/hubcore -run 'TestTranscriptDisplayStore' -cou
 
 Expected: compile failure because `NewTranscriptDisplayStore` does not exist.
 
-- [ ] **Step 3: Implement the in-memory state and validation**
+- [x] **Step 3: Implement the in-memory state and validation**
 
 Use one mutex and a snapshot with independent Desktop/Mobile records. `Snapshot` returns a deep value copy. `Patch` validates before locking, checks the selected revision under lock, rejects overflow, writes only the selected record, and increments only that revision.
 
@@ -267,15 +267,15 @@ type TranscriptDisplayStore struct {
 
 A malformed durable file sets `loadErr`, serves shipped defaults, and rejects patches until repaired; it must not silently overwrite evidence. `NewTranscriptDisplayStore` returns the usable fallback store together with the load error, and callers must retain the non-nil store while reporting the error. Clean and missing snapshots return the store with a nil error.
 
-- [ ] **Step 4: Implement strict atomic persistence**
+- [x] **Step 4: Implement strict atomic persistence**
 
 Store `transcript-display/state.json` under `HubStateRoot`. Follow the deletion-store sequence: validate, marshal, mkdir `0700`, create a sibling temp file, write, `Sync`, close, rename, then sync the directory. Publish the in-memory state after rename even when post-rename directory sync reports an error.
 
-- [ ] **Step 5: Add pre/post-rename fault tests**
+- [x] **Step 5: Add pre/post-rename fault tests**
 
 Use afero plus `BeforeRename` and `AfterRename` hooks. Prove pre-rename failure preserves old memory/disk, while post-rename failure retains the new canonical memory value and reloads it from disk.
 
-- [ ] **Step 6: Run focused store tests including race detection**
+- [x] **Step 6: Run focused store tests including race detection**
 
 ```bash
 go test -race ./cmd/evener-hub/internal/hubcore -run 'TestTranscriptDisplayStore' -count=1
@@ -283,7 +283,7 @@ go test -race ./cmd/evener-hub/internal/hubcore -run 'TestTranscriptDisplayStore
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit the store**
+- [x] **Step 7: Commit the store**
 
 ```bash
 git add cmd/evener-hub/internal/hubcore/transcript_display_store.go cmd/evener-hub/internal/hubcore/transcript_display_store_test.go cmd/evener-hub/internal/hubcore/transcript_display_store_write_test.go
@@ -307,7 +307,7 @@ git commit -m "feat(hub): persist transcript display defaults"
 - Consumes Task 2's store and Task 1's strict raw decoder.
 - Produces live RPC methods and notification behavior consumed by the frontend store in Task 6.
 
-- [ ] **Step 1: Add failing RPC and registration tests**
+- [x] **Step 1: Add failing RPC and registration tests**
 
 Use a real in-process AppWire server/client boundary. Cover GET defaults, PATCH persistence, raw unknown fields, stale conflict data, two-client BroadcastAll delivery, no notification on no-op/validation/conflict/durable failure, and the exact handler set.
 
@@ -346,7 +346,7 @@ func TestHubRPCTranscriptDisplayPatchBroadcastsCanonicalValue(t *testing.T) {
 }
 ```
 
-- [ ] **Step 2: Run the focused hub tests and confirm methods are unregistered**
+- [x] **Step 2: Run the focused hub tests and confirm methods are unregistered**
 
 ```bash
 go test ./cmd/evener-hub -run 'TestHubRPC.*TranscriptDisplay|TestHubRPCRegistersExpectedHandlerSet' -count=1
@@ -354,11 +354,11 @@ go test ./cmd/evener-hub -run 'TestHubRPC.*TranscriptDisplay|TestHubRPCRegisters
 
 Expected: FAIL with method-not-found or handler-set mismatch.
 
-- [ ] **Step 3: Wire the store into `WebConfig` and startup**
+- [x] **Step 3: Wire the store into `WebConfig` and startup**
 
 Add `TranscriptDisplayStore *TranscriptDisplayStore` to `hubcore.WebConfig`. Production constructs it from `HubStateRoot` before `NewWebServer`; direct-test servers construct a store when none is injected. Retain a non-nil fallback store while surfacing load errors instead of silently discarding malformed state. In the same commit, set `FeatureSet.TranscriptDisplaySettings` true in the hub's `ServerConfig.Features`; older hubs and daemon servers keep the false zero value.
 
-- [ ] **Step 4: Register strict GET and PATCH handlers**
+- [x] **Step 4: Register strict GET and PATCH handlers**
 
 Register GET with `HandleTyped`. Register PATCH with `Router.Handle` so Task 1's strict raw decoder runs before the store.
 
@@ -383,7 +383,7 @@ func registerTranscriptDisplayHandlers(server *appserver.Server, store *hubcore.
 }
 ```
 
-- [ ] **Step 5: Run hub RPC and restart tests**
+- [x] **Step 5: Run hub RPC and restart tests**
 
 ```bash
 go test ./cmd/evener-hub -run 'TestHubRPC.*TranscriptDisplay|TestHubRPCRegistersExpectedHandlerSet' -count=1
@@ -391,7 +391,7 @@ go test ./cmd/evener-hub -run 'TestHubRPC.*TranscriptDisplay|TestHubRPCRegisters
 
 Expected: PASS.
 
-- [ ] **Step 6: Run hub package race tests for the new surface**
+- [x] **Step 6: Run hub package race tests for the new surface**
 
 ```bash
 go test -race ./cmd/evener-hub/... -run 'Test.*TranscriptDisplay' -count=1
@@ -399,7 +399,7 @@ go test -race ./cmd/evener-hub/... -run 'Test.*TranscriptDisplay' -count=1
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit the RPC surface**
+- [x] **Step 7: Commit the RPC surface**
 
 ```bash
 git add cmd/evener-hub/app_rpc_transcript_display.go cmd/evener-hub/app_rpc_transcript_display_test.go cmd/evener-hub/internal/hubcore/config.go cmd/evener-hub/main.go cmd/evener-hub/web.go cmd/evener-hub/app_rpc.go cmd/evener-hub/app_rpc_test.go
@@ -419,7 +419,7 @@ git commit -m "feat(hub): sync transcript display defaults"
 **Interfaces:**
 - Produces `TranscriptDisplayConfigV1`, preset helpers, strict local codec, wire conversion, precedence, summary, fingerprint, and legacy migration/dual-write helpers for every later frontend task.
 
-- [ ] **Step 1: Add failing preset, codec, and migration tests**
+- [x] **Step 1: Add failing preset, codec, and migration tests**
 
 Pin all five exact vectors, cumulative ordering, Custom normalization, stable fingerprint/property order, malformed-as-absent local decoding, wire round trips, local → hub → shipped precedence, shipped defaults, Advanced counts, visible/hidden inventory, migration truth table, and exact legacy `1`/`0` writes.
 
@@ -433,7 +433,7 @@ it("expands the five cumulative content presets", () => {
 });
 ```
 
-- [ ] **Step 2: Run the pure tests and confirm the module is absent**
+- [x] **Step 2: Run the pure tests and confirm the module is absent**
 
 ```bash
 cd cmd/evener-hub/frontend
@@ -442,7 +442,7 @@ npx vitest run src/transcriptDisplay/config.test.ts
 
 Expected: module-not-found failure.
 
-- [ ] **Step 3: Implement the domain unions and preset helpers**
+- [x] **Step 3: Implement the domain unions and preset helpers**
 
 Use the approved frontend shape:
 
@@ -472,19 +472,19 @@ export interface HubTranscriptDisplayDefault {
 
 Export `presetContent`, `normalizeContent`, `normalizeConfig`, `resolveEffectiveConfig`, `configFingerprint`, `configSummary`, `advancedEnabledCount`, and `visibleCategoryInventory`.
 
-- [ ] **Step 4: Implement strict local and wire codecs**
+- [x] **Step 4: Implement strict local and wire codecs**
 
 Parse local JSON from `unknown`; require exact version, discriminators, enums, booleans, and complete Custom shape. Encode normalized objects in stable property order. Map the generated AppWire interfaces to/from the frontend union without trusting optional generated fields.
 
-- [ ] **Step 5: Export guarded legacy adapters**
+- [x] **Step 5: Export guarded legacy adapters**
 
 Keep existing key names and bool encoding unchanged. Export narrow helpers from `prefs.ts` for reading key presence/value and writing/removing exact `1`/`0` values; do not expose unrestricted localStorage access.
 
-- [ ] **Step 6: Implement migration and dual-write helpers**
+- [x] **Step 6: Implement migration and dual-write helpers**
 
 Migrate only when neither new per-layout key exists and at least one legacy key is present. Inspect the exact legacy keys `evener.prefs.transcriptRoundTimings`, `evener.prefs.transcriptTokenCounts`, `evener.prefs.transcriptHookExitsAll`, `evener.prefs.transcriptHookExitsNormal`, `evener.prefs.transcriptPromptLoaded`, and `evener.prefs.showCost`. Produce Activity plus `systemEvents: true`; use fallbacks timings on, tokens off, prompt events on, cost off, and hooks off. Map normal-only to `successful` and any all-on value to `all`. Write the same migration to Desktop and Mobile. Do not delete old keys.
 
-- [ ] **Step 7: Run focused config and prefs tests**
+- [x] **Step 7: Run focused config and prefs tests**
 
 ```bash
 npx vitest run src/transcriptDisplay/config.test.ts src/stores/prefs.test.ts
@@ -492,7 +492,7 @@ npx vitest run src/transcriptDisplay/config.test.ts src/stores/prefs.test.ts
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit the frontend domain**
+- [x] **Step 8: Commit the frontend domain**
 
 ```bash
 git add cmd/evener-hub/frontend/src/transcriptDisplay/config.ts cmd/evener-hub/frontend/src/transcriptDisplay/config.test.ts cmd/evener-hub/frontend/src/stores/prefs.ts cmd/evener-hub/frontend/src/stores/prefs.test.ts
@@ -513,7 +513,7 @@ git commit -m "feat(web): model transcript display configuration"
 - Consumes Task 4's normalized config/content vector.
 - Produces `projectThread(model, config): TranscriptProjection` for `TranscriptBody`, scroll anchors, render context, and preview inventory.
 
-- [ ] **Step 1: Add failing projector matrix tests**
+- [x] **Step 1: Add failing projector matrix tests**
 
 Cover every current `ItemModel.type` and relevant `eventKind`, all five levels, representative Custom vectors, blank tool purposes, failed tools, non-zero hooks, asks, approvals, steering, warnings, active rows, interrupted/failed turns, prompts, raw timings, unknown future kinds, order, stable IDs, source indexes, input immutability, and filter-before-grouping.
 
@@ -529,7 +529,7 @@ it("uses an intent proxy until the real tool row supersedes it", () => {
 });
 ```
 
-- [ ] **Step 2: Run the projector tests and confirm the module is absent**
+- [x] **Step 2: Run the projector tests and confirm the module is absent**
 
 ```bash
 cd cmd/evener-hub/frontend
@@ -538,7 +538,7 @@ npx vitest run src/transcriptDisplay/projector.test.ts
 
 Expected: module-not-found failure.
 
-- [ ] **Step 3: Define stable projected unions**
+- [x] **Step 3: Define stable projected unions**
 
 ```ts
 export type ProjectedEntry =
@@ -576,15 +576,15 @@ export interface TranscriptProjection {
 }
 ```
 
-- [ ] **Step 4: Implement typed classification and critical invariants**
+- [x] **Step 4: Implement typed classification and critical invariants**
 
 Classify with `item.type`, `eventKind`, structured exit/status fields, and turn status. Never parse English message text. Unknown kinds produce item entries. A blank tool description produces the fixed neutral summary contract.
 
-- [ ] **Step 5: Implement projection, grouping input, and metadata**
+- [x] **Step 5: Implement projection, grouping input, and metadata**
 
 Filter before building tool/system groups. Preserve each source turn and provide a projected item array for renderers that count neighboring items. Emit anchors with source indexes, not projected indexes. Return metadata flags directly from config.
 
-- [ ] **Step 6: Run focused projector tests**
+- [x] **Step 6: Run focused projector tests**
 
 ```bash
 npx vitest run src/transcriptDisplay/projector.test.ts
@@ -592,7 +592,7 @@ npx vitest run src/transcriptDisplay/projector.test.ts
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit the projector**
+- [x] **Step 7: Commit the projector**
 
 ```bash
 git add cmd/evener-hub/frontend/src/transcriptDisplay/projector.ts cmd/evener-hub/frontend/src/transcriptDisplay/projector.test.ts
@@ -619,7 +619,7 @@ git commit -m "feat(web): project transcript detail levels"
 - Consumes Task 1's generated methods/notification/feature bit and Task 4's codec/migration.
 - Produces `useEffectiveTranscriptDisplay`, local setters/reset, confirmed/draft hub setters, reconnect refresh, and unsupported/error state for UI tasks.
 
-- [ ] **Step 1: Add failing store tests**
+- [x] **Step 1: Add failing store tests**
 
 Cover shipped fallback, local-over-hub precedence, independent layouts, local restart, same-tab subscribers, BroadcastChannel, storage fallback, malformed channel/storage payloads, blocked/full storage warning, migration-once, exact dual-write, hub refresh, stale notification ignore, follower-only hub changes, local override stability, draft immediate preview, acknowledged commit, failed/conflict reversion, reconnect, replaced-client fencing, and older-hub unsupported state.
 
@@ -632,7 +632,7 @@ it("keeps a local Desktop view while a newer hub default updates followers", () 
 });
 ```
 
-- [ ] **Step 2: Run the focused store tests and confirm the store is absent**
+- [x] **Step 2: Run the focused store tests and confirm the store is absent**
 
 ```bash
 cd cmd/evener-hub/frontend
@@ -641,11 +641,11 @@ npx vitest run src/stores/transcriptDisplay.test.ts src/stores/connection.test.t
 
 Expected: module-not-found or missing-feature-state failure.
 
-- [ ] **Step 3: Retain handshake features in the connection store**
+- [x] **Step 3: Retain handshake features in the connection store**
 
 Extend connection state with `features?: FeatureSet`. Every handshake-driving caller sets `serverInfo` and `features` from one `InitializeResponse`. Clear stale features when replacing/closing a client. The transcript store remains `hubSupport: "unknown"` until a handshake completes, becomes `"supported"` only when `transcriptDisplaySettings === true`, and otherwise becomes `"unsupported"`. Tests must prove an older response with no field leaves the synced-default UI unsupported instead of issuing method-not-found requests.
 
-- [ ] **Step 4: Implement the Zustand store and effective selector**
+- [x] **Step 4: Implement the Zustand store and effective selector**
 
 Use this stable state boundary:
 
@@ -667,23 +667,23 @@ interface TranscriptDisplayStoreState {
 }
 ```
 
-- [ ] **Step 5: Implement per-layout persistence and same-origin sync**
+- [x] **Step 5: Implement per-layout persistence and same-origin sync**
 
 Use keys `evener.prefs.transcriptDisplay.desktop` and `.mobile`, plus `BroadcastChannel("evener.transcript-display.v1")`. Include a random per-tab source id, encoded config or null, and fingerprint. Listen to storage events as fallback. The origin tab updates Zustand directly. Never place hub values on this channel.
 
-- [ ] **Step 6: Implement legacy migration and dual-write**
+- [x] **Step 6: Implement legacy migration and dual-write**
 
 Run migration before loading local values. Set a visible storage warning when a write fails but preserve the in-memory value. Document and test that the most recently edited layout wins the lossy legacy global Advanced flags.
 
-- [ ] **Step 7: Implement hub refresh, patch, notifications, and reconnect fencing**
+- [x] **Step 7: Implement hub refresh, patch, notifications, and reconnect fencing**
 
 Rewire the active AppWire client like `threads.ts`: detach the old notification/ready handlers, fetch immediately when already ready, refresh on every future ready generation, ignore stale async responses from replaced clients, and apply only newer revisions. Keep a confirmed hub record separate from a draft. Parse conflict error data narrowly and restore the canonical response.
 
-- [ ] **Step 8: Initialize the store before pane rendering**
+- [x] **Step 8: Initialize the store before pane rendering**
 
 Call `initTranscriptDisplay()` in `AppShell` beside `initPrefs()`. Subscribe once to the existing mobile query and update the store's layout class before host swap whenever possible.
 
-- [ ] **Step 9: Run focused store/shell tests**
+- [x] **Step 9: Run focused store/shell tests**
 
 ```bash
 npx vitest run src/stores/transcriptDisplay.test.ts src/stores/connection.test.ts src/shell/useIsMobile.test.ts src/shell/AppShell.test.tsx src/shell/ConnectionBanner.test.tsx
@@ -691,7 +691,7 @@ npx vitest run src/stores/transcriptDisplay.test.ts src/stores/connection.test.t
 
 Expected: PASS.
 
-- [ ] **Step 10: Commit frontend state**
+- [x] **Step 10: Commit frontend state**
 
 ```bash
 git add cmd/evener-hub/frontend/src/stores/transcriptDisplay.ts cmd/evener-hub/frontend/src/stores/transcriptDisplay.test.ts cmd/evener-hub/frontend/src/stores/connection.ts cmd/evener-hub/frontend/src/stores/connection.test.ts cmd/evener-hub/frontend/src/shell/AppShell.tsx cmd/evener-hub/frontend/src/shell/AppShell.test.tsx cmd/evener-hub/frontend/src/shell/ConnectionBanner.tsx cmd/evener-hub/frontend/src/shell/ConnectionBanner.test.tsx cmd/evener-hub/frontend/src/shell/useIsMobile.ts cmd/evener-hub/frontend/src/shell/useIsMobile.test.ts
@@ -727,11 +727,11 @@ git commit -m "feat(web): resolve local and hub transcript views"
 - Produces configuration-aware renderer behavior that `TranscriptBody` can share without leaf `prefsStore` reads.
 - Keeps `TurnBlock`'s existing `TurnModel` call shape working through one temporary legacy-config adapter; Task 8 removes that adapter when every production caller supplies the shared provider.
 
-- [ ] **Step 1: Add failing disclosure-baseline tests**
+- [x] **Step 1: Add failing disclosure-baseline tests**
 
 Prove Activity defaults eligible entries closed, entering Full clears prior closed overrides and opens current eligible ids once, a later manual collapse wins, new eligible ids default open in Full, returning to Full creates a new baseline, and preview scopes never collide with live scopes.
 
-- [ ] **Step 2: Run disclosure and renderer tests to confirm missing behavior**
+- [x] **Step 2: Run disclosure and renderer tests to confirm missing behavior**
 
 ```bash
 cd cmd/evener-hub/frontend
@@ -740,7 +740,7 @@ npx vitest run src/widgets/disclosure/disclosureStore.test.ts src/panes/session/
 
 Expected: failures showing local cluster state and always-collapsed defaults.
 
-- [ ] **Step 3: Separate explicit choices from baseline defaults**
+- [x] **Step 3: Separate explicit choices from baseline defaults**
 
 Extend the disclosure store with scoped baseline operations while preserving existing APIs:
 
@@ -752,19 +752,19 @@ export function clearDisclosureScope(scope: string): void;
 
 The baseline operation may clear explicit values only when entering Full, never on ordinary rerenders.
 
-- [ ] **Step 4: Add render context**
+- [x] **Step 4: Add render context**
 
 Provide normalized config, projected metadata, surface (`live | readOnly | preview`), disclosure scope, and full-baseline generation. Existing memoized renderers must either consume context or include new props in their comparator; no renderer may remain stale after config changes. Give the context a test-only/transition default, and let `TurnBlock` construct one temporary compatibility value from the existing prefs when no provider is present. This keeps the current Session and read-only callers green until Task 8 moves both to `TranscriptBody`.
 
-- [ ] **Step 5: Convert tool, reasoning, system, notification, and metadata renderers**
+- [x] **Step 5: Convert tool, reasoning, system, notification, and metadata renderers**
 
 Remove direct `prefsStore` reads from leaf renderers and `TurnSeparator`. Convert `ToolCallCluster` and `NotificationCard` local disclosure state to scoped disclosure state. Preserve failed-tool auto-open as a fallback and preserve explicit user choices. Keep the temporary prefs-to-config adapter at the `TurnBlock` boundary only; no child renderer may read the old store.
 
-- [ ] **Step 6: Keep critical failures under hidden routine diagnostics**
+- [x] **Step 6: Keep critical failures under hidden routine diagnostics**
 
 When hook diagnostics are `none`, render non-zero hooks through the compact critical projection. When full diagnostic rows are visible, avoid a duplicate critical row. Keep prompts/system events controlled only by Advanced fields.
 
-- [ ] **Step 7: Run focused renderer tests**
+- [x] **Step 7: Run focused renderer tests**
 
 ```bash
 npx vitest run src/widgets/disclosure/disclosureStore.test.ts src/panes/session/transcript/TurnBlock.test.tsx src/panes/session/transcript/ToolCallItem.test.tsx src/panes/session/transcript/ToolCallCluster.test.tsx src/panes/session/transcript/messages/ThinkBlock.test.tsx src/panes/session/transcript/messages/SystemNoticeItem.test.tsx src/panes/session/transcript/messages/NotificationCard.test.tsx src/panes/session/transcript/messages/TurnSeparator.test.tsx
@@ -772,7 +772,7 @@ npx vitest run src/widgets/disclosure/disclosureStore.test.ts src/panes/session/
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit renderer state changes**
+- [x] **Step 8: Commit renderer state changes**
 
 ```bash
 git add cmd/evener-hub/frontend/src/transcriptDisplay/renderContext.tsx cmd/evener-hub/frontend/src/widgets/disclosure/disclosureStore.ts cmd/evener-hub/frontend/src/widgets/disclosure/disclosureStore.test.ts cmd/evener-hub/frontend/src/panes/session/transcript/types.ts cmd/evener-hub/frontend/src/panes/session/transcript/TurnBlock.tsx cmd/evener-hub/frontend/src/panes/session/transcript/TurnBlock.test.tsx cmd/evener-hub/frontend/src/panes/session/transcript/ToolCallItem.tsx cmd/evener-hub/frontend/src/panes/session/transcript/ToolCallItem.test.tsx cmd/evener-hub/frontend/src/panes/session/transcript/ToolCallCluster.tsx cmd/evener-hub/frontend/src/panes/session/transcript/ToolCallCluster.test.tsx cmd/evener-hub/frontend/src/panes/session/transcript/messages/ThinkBlock.tsx cmd/evener-hub/frontend/src/panes/session/transcript/messages/ThinkBlock.test.tsx cmd/evener-hub/frontend/src/panes/session/transcript/messages/SystemNoticeItem.tsx cmd/evener-hub/frontend/src/panes/session/transcript/messages/SystemNoticeItem.test.tsx cmd/evener-hub/frontend/src/panes/session/transcript/messages/NotificationCard.tsx cmd/evener-hub/frontend/src/panes/session/transcript/messages/NotificationCard.test.tsx cmd/evener-hub/frontend/src/panes/session/transcript/messages/TurnSeparator.tsx cmd/evener-hub/frontend/src/panes/session/transcript/messages/TurnSeparator.test.tsx
@@ -800,7 +800,7 @@ git commit -m "refactor(web): render transcript from display context"
 - Consumes Task 5 projector, Task 6 effective store, and Task 7 render context.
 - Produces one rendering path for Task 9 scroll coordination, Task 10 live controls, and Task 11 previews.
 
-- [ ] **Step 1: Add failing shared-body parity tests**
+- [x] **Step 1: Add failing shared-body parity tests**
 
 Render one fabricated model through live, read-only, and preview surfaces. Assert equivalent projected content, no Intent/Tools purpose duplication, no preview virtual scroller, no read-only composer, and preserved `job:` dispatch.
 
@@ -812,7 +812,7 @@ it("renders Intent through one body without raw tool rows", () => {
 });
 ```
 
-- [ ] **Step 2: Run body/session/transcript tests and confirm missing component**
+- [x] **Step 2: Run body/session/transcript tests and confirm missing component**
 
 ```bash
 cd cmd/evener-hub/frontend
@@ -821,7 +821,7 @@ npx vitest run src/panes/session/transcript/TranscriptBody.test.tsx src/panes/se
 
 Expected: module-not-found failure.
 
-- [ ] **Step 3: Implement `TranscriptBody`**
+- [x] **Step 3: Implement `TranscriptBody`**
 
 Use props that keep common rendering central and surface-specific chrome injectable:
 
@@ -842,19 +842,19 @@ export interface TranscriptBodyProps {
 
 Live/read-only use the common projected VirtualList; preview maps projected turns in normal page flow. Import renderer-registration barrels at this boundary. Update `TurnBlock` to accept the projected turn/entries and remove Task 7's temporary prefs-to-config adapter now that every production caller supplies `TranscriptRenderProvider`.
 
-- [ ] **Step 4: Replace Session's two render trees**
+- [x] **Step 4: Replace Session's two render trees**
 
 Remove `viewMode`, `focusedEntries`, `viewRows`, the focused branch, and the header RadioGroup. Keep cold start, deleted state, flow overlay, seen divider, composer, liveness, pending chips, and escalation rail unchanged. Resolve the effective config from Task 6 and pass its fingerprint to scroll flow.
 
-- [ ] **Step 5: Replace read-only Transcript duplication**
+- [x] **Step 5: Replace read-only Transcript duplication**
 
 Keep `job:` dispatch, hydration, pane title, no-composer behavior, and older loading. Render thread content through `TranscriptBody surface="readOnly"`.
 
-- [ ] **Step 6: Retire old view modes**
+- [x] **Step 6: Retire old view modes**
 
 Delete `viewModes.ts` and its tests after every retained assertion exists in projector/body tests. Search for and remove all imports and CSS selectors used only by the old focused tree.
 
-- [ ] **Step 7: Run shared-body integration tests**
+- [x] **Step 7: Run shared-body integration tests**
 
 ```bash
 npx vitest run src/transcriptDisplay/projector.test.ts src/panes/session/transcript/TranscriptBody.test.tsx src/panes/session/Session.test.tsx src/panes/transcript/Transcript.test.tsx
@@ -862,7 +862,7 @@ npx vitest run src/transcriptDisplay/projector.test.ts src/panes/session/transcr
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit the shared body**
+- [x] **Step 8: Commit the shared body**
 
 ```bash
 git add cmd/evener-hub/frontend/src/panes/session/transcript/TranscriptBody.tsx cmd/evener-hub/frontend/src/panes/session/transcript/TranscriptBody.test.tsx cmd/evener-hub/frontend/src/panes/session/transcript/TurnBlock.tsx cmd/evener-hub/frontend/src/panes/session/transcript/TurnBlock.test.tsx cmd/evener-hub/frontend/src/panes/session/Session.tsx cmd/evener-hub/frontend/src/panes/session/Session.test.tsx cmd/evener-hub/frontend/src/panes/session/session.module.css cmd/evener-hub/frontend/src/panes/transcript/Transcript.tsx cmd/evener-hub/frontend/src/panes/transcript/Transcript.test.tsx
@@ -887,11 +887,11 @@ git commit -m "refactor(web): share transcript projection body"
 - Produces registry registration and `transitionTranscriptViews(change)` used before local, tab, hub-follower, and layout changes.
 - Extends scroll flow to restore focus or focus the Detail trigger when the focused entry disappears.
 
-- [ ] **Step 1: Add failing multi-pane transition tests**
+- [x] **Step 1: Add failing multi-pane transition tests**
 
 Cover two mounted panes, capture-before-store-publish ordering, same-entry restore, nearest surviving message, normalized fallback, bottom follow, focused-entry survival, focused-entry removal, unregister, and breakpoint host-remount cache.
 
-- [ ] **Step 2: Run registry/scroll tests and confirm external transitions are unsupported**
+- [x] **Step 2: Run registry/scroll tests and confirm external transitions are unsupported**
 
 ```bash
 cd cmd/evener-hub/frontend
@@ -900,7 +900,7 @@ npx vitest run src/panes/session/transcript/flow/transcriptViewRegistry.test.ts 
 
 Expected: failures showing only click-local capture exists.
 
-- [ ] **Step 3: Implement the registry and transition order**
+- [x] **Step 3: Implement the registry and transition order**
 
 ```ts
 export interface CapturedTranscriptView {
@@ -927,15 +927,15 @@ export function transitionTranscriptViews(publish: () => void, summary: string):
 
 Every effective-change path captures all mounted views, publishes the state, then schedules restore after measurement. Coalesce concurrent identical fingerprints; do not capture/announce on unrelated hub-default changes hidden by a local override.
 
-- [ ] **Step 4: Extend scroll anchors with focus and remount state**
+- [x] **Step 4: Extend scroll anchors with focus and remount state**
 
 Use stable projected entry IDs and source indexes. Preserve the current exact/nearest/proportion algorithm. Cache the captured state briefly across the desktop/mobile host remount and consume it once; use no wall-clock sleeps.
 
-- [ ] **Step 5: Connect all store transition sources**
+- [x] **Step 5: Connect all store transition sources**
 
 Route local set/reset, BroadcastChannel, storage, applicable hub notification, and viewport change through one transition function. Hub drafts in Settings preview do not change live followers until acknowledged.
 
-- [ ] **Step 6: Run focused flow/store tests**
+- [x] **Step 6: Run focused flow/store tests**
 
 ```bash
 npx vitest run src/panes/session/transcript/flow/transcriptViewRegistry.test.ts src/panes/session/transcript/flow/useTranscriptScroll.test.ts src/stores/transcriptDisplay.test.ts src/panes/session/transcript/TranscriptBody.test.tsx
@@ -943,7 +943,7 @@ npx vitest run src/panes/session/transcript/flow/transcriptViewRegistry.test.ts 
 
 Expected: PASS.
 
-- [ ] **Step 7: Commit view preservation**
+- [x] **Step 7: Commit view preservation**
 
 ```bash
 git add cmd/evener-hub/frontend/src/panes/session/transcript/flow/transcriptViewRegistry.ts cmd/evener-hub/frontend/src/panes/session/transcript/flow/transcriptViewRegistry.test.ts cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.ts cmd/evener-hub/frontend/src/panes/session/transcript/flow/useTranscriptScroll.test.ts cmd/evener-hub/frontend/src/panes/session/transcript/TranscriptBody.tsx cmd/evener-hub/frontend/src/stores/transcriptDisplay.ts cmd/evener-hub/frontend/src/stores/transcriptDisplay.test.ts
@@ -984,11 +984,11 @@ export interface TranscriptDetailControlProps {
 }
 ```
 
-- [ ] **Step 1: Add failing accessibility and scope tests**
+- [x] **Step 1: Add failing accessibility and scope tests**
 
 Cover five visible labels, `Full` visible with `Full detail` accessible name, Arrow/Home/End behavior, Custom with no false preset, Advanced fieldsets, `Tools · 2 advanced`, local Desktop/Mobile scope, Use hub default, Edit hub defaults, explicit unsupported copy for older hubs, Desktop Popover, Mobile bottom Sheet, Escape/Close/focus return, and 44px control classes.
 
-- [ ] **Step 2: Run control/radio tests and confirm the control is absent**
+- [x] **Step 2: Run control/radio tests and confirm the control is absent**
 
 ```bash
 cd cmd/evener-hub/frontend
@@ -997,23 +997,23 @@ npx vitest run src/panes/session/transcript/TranscriptDetailControl.test.tsx src
 
 Expected: module-not-found or missing accessible-label support.
 
-- [ ] **Step 3: Add visible/accessibility label support to RadioGroup**
+- [x] **Step 3: Add visible/accessibility label support to RadioGroup**
 
 Extend `RadioGroupOption` with `accessibleLabel?: string`. Render the visible label unchanged and apply the accessible label to the radio option. Preserve existing roving focus and disabled behavior.
 
-- [ ] **Step 4: Implement the shared editor**
+- [x] **Step 4: Implement the shared editor**
 
 The stepped track changes regular content only and preserves metrics/diagnostics. Advanced Content changes normalize to a preset or Custom. Advanced Metrics/Diagnostics remain independent. Critical rows render as locked-on explanatory fields, not writable values.
 
-- [ ] **Step 5: Implement Popover and Sheet wrappers**
+- [x] **Step 5: Implement Popover and Sheet wrappers**
 
 Use the existing `Popover` at Desktop and `Sheet side="bottom"` at Mobile. The trigger sits in transcript-local toolbar chrome above the scroller, not `PaneScaffold.actions`. Register its ref with Task 9 for focus fallback.
 
-- [ ] **Step 6: Add responsive and reduced-motion CSS**
+- [x] **Step 6: Add responsive and reduced-motion CSS**
 
 Use a container query for compact narrow desktop panes. Keep all stop labels visible, minimum 44px Mobile targets, non-color selected state, no horizontal scrolling, and reduced-motion rules.
 
-- [ ] **Step 7: Run focused control/body/session tests**
+- [x] **Step 7: Run focused control/body/session tests**
 
 ```bash
 npx vitest run src/panes/session/transcript/TranscriptDetailControl.test.tsx src/widgets/radiogroup/radiogroup.test.tsx src/panes/session/transcript/TranscriptBody.test.tsx src/panes/session/Session.test.tsx src/panes/transcript/Transcript.test.tsx
@@ -1021,7 +1021,7 @@ npx vitest run src/panes/session/transcript/TranscriptDetailControl.test.tsx src
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit the live control**
+- [x] **Step 8: Commit the live control**
 
 ```bash
 git add cmd/evener-hub/frontend/src/panes/session/transcript/TranscriptDetailControl.tsx cmd/evener-hub/frontend/src/panes/session/transcript/TranscriptDetailControl.test.tsx cmd/evener-hub/frontend/src/panes/session/transcript/transcriptDisplay.module.css cmd/evener-hub/frontend/src/widgets/radiogroup/index.tsx cmd/evener-hub/frontend/src/widgets/radiogroup/radiogroup.test.tsx cmd/evener-hub/frontend/src/panes/session/transcript/TranscriptBody.tsx cmd/evener-hub/frontend/src/panes/session/Session.tsx cmd/evener-hub/frontend/src/panes/transcript/Transcript.tsx
@@ -1064,11 +1064,11 @@ export interface TranscriptDisplayCardProps {
 }
 ```
 
-- [ ] **Step 1: Add failing Settings and preview tests**
+- [x] **Step 1: Add failing Settings and preview tests**
 
 Cover two stacked cards in Desktop-then-Mobile order, controls above examples, shared fixed scenario, `Example only—not your data`, visible/hidden inventory, no `threadsStore` or request on preview render, draft update before RPC completion, acknowledged save, failed/conflict reversion, retry, unsupported older-hub copy, local-override explanation, one Advanced disclosure row, and no success toast before confirmation.
 
-- [ ] **Step 2: Run Settings/display tests and confirm the old switch UI remains**
+- [x] **Step 2: Run Settings/display tests and confirm the old switch UI remains**
 
 ```bash
 cd cmd/evener-hub/frontend
@@ -1077,23 +1077,23 @@ npx vitest run src/panes/settings/sections/TranscriptDisplayCard.test.tsx src/pa
 
 Expected: failures because cards/fixture do not exist and estimated cost remains under Display.
 
-- [ ] **Step 3: Extract the deterministic preview fixture**
+- [x] **Step 3: Extract the deterministic preview fixture**
 
 Build one `ThreadModel` with user/agent messages, purpose-bearing successful tool and body, failed critical tool, reasoning, timing/token/cost, low-level system, prompt, and hook items. Use fixed timestamps only. Update the dev transcript surface to consume this fixture and production `TranscriptBody surface="preview"`.
 
-- [ ] **Step 4: Implement one default card**
+- [x] **Step 4: Implement one default card**
 
 Each card renders device/current value, five-stop editor, one Advanced opener/summary, example below controls, textual inventory, confirmed/draft/error state, retry, and local-override explanation. Use an isolated preview disclosure scope.
 
-- [ ] **Step 5: Replace the Transcript settings section**
+- [x] **Step 5: Replace the Transcript settings section**
 
 Render Desktop then Mobile cards. Keep route id `transcript`; change visible label/heading to `Transcript display`. Explain hub sync and browser-local live overrides.
 
-- [ ] **Step 6: Move estimated cost and preserve compatibility**
+- [x] **Step 6: Move estimated cost and preserve compatibility**
 
 Remove only the estimated-cost row from Display; retain Enter-sends behavior. Advanced Metrics now owns cost. Keep legacy `showCost` adapters and dual-write tests.
 
-- [ ] **Step 7: Run Settings, preview, and dev-surface tests**
+- [x] **Step 7: Run Settings, preview, and dev-surface tests**
 
 ```bash
 npx vitest run src/panes/settings/sections/TranscriptDisplayCard.test.tsx src/panes/settings/sections/transcript.test.tsx src/panes/settings/sections/display.test.tsx src/panes/settings/sections.test.ts src/panes/session/transcript/TranscriptBody.test.tsx src/dev/surface-sections/transcript.test.tsx
@@ -1101,7 +1101,7 @@ npx vitest run src/panes/settings/sections/TranscriptDisplayCard.test.tsx src/pa
 
 Expected: PASS.
 
-- [ ] **Step 8: Commit Settings and preview UI**
+- [x] **Step 8: Commit Settings and preview UI**
 
 ```bash
 git add cmd/evener-hub/frontend/src/transcriptDisplay/previewFixture.ts cmd/evener-hub/frontend/src/panes/settings/sections/TranscriptDisplayCard.tsx cmd/evener-hub/frontend/src/panes/settings/sections/TranscriptDisplayCard.test.tsx cmd/evener-hub/frontend/src/panes/settings/sections/transcriptDisplayCard.module.css cmd/evener-hub/frontend/src/panes/settings/sections/transcript.tsx cmd/evener-hub/frontend/src/panes/settings/sections/transcript.module.css cmd/evener-hub/frontend/src/panes/settings/sections/transcript.test.tsx cmd/evener-hub/frontend/src/panes/settings/sections/display.tsx cmd/evener-hub/frontend/src/panes/settings/sections/display.test.tsx cmd/evener-hub/frontend/src/panes/settings/sections.ts cmd/evener-hub/frontend/src/panes/settings/sections.test.ts cmd/evener-hub/frontend/src/dev/surface-sections/transcript.tsx cmd/evener-hub/frontend/src/dev/surface-sections/transcript.test.tsx
