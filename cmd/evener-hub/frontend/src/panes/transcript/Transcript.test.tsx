@@ -237,6 +237,16 @@ test("keeps the read-only Detail control reachable above the transcript", async 
   await waitFor(() =>
     expect(screen.getByTestId("transcript-view-announcement").textContent).toContain("Transcript detail: Activity"),
   );
+  const status = screen.getByTestId("transcript-view-announcement");
+  transcriptDisplayStore
+    .getState()
+    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }, { roundTimings: true }));
+  await waitFor(() => expect(status.textContent).toContain("Transcript detail: Activity · 1 advanced"));
+  transcriptDisplayStore
+    .getState()
+    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }, { tokenCounts: true }));
+  await waitFor(() => expect(status.textContent).toContain("Transcript detail: Activity · 1 advanced"));
+  expect(screen.getByTestId("transcript-view-announcement")).toBe(status);
 });
 
 test("is read-only: renders no composer and no session-chrome footer, even for a fully capable thread", async () => {

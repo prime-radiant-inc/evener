@@ -33,6 +33,7 @@ import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { configFingerprint, resolveEffectiveConfig } from "../../transcriptDisplay/config";
 import { projectThread } from "../../transcriptDisplay/projector";
 import { Button, Cadence, EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
+import { VisuallyHidden } from "../../widgets/visuallyHidden";
 import { ColdStartSkeleton, useColdStartSkeleton } from "./coldStart";
 import { Composer } from "./composer/Composer";
 import { requestQuoteInsert } from "./composer/quoteInsert";
@@ -323,8 +324,8 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
         onMeasurementsChange={flow.restoreViewAnchorAfterMeasurement}
         trailingContent={showColdStartSkeleton && <ColdStartSkeleton />}
       />
-      <div key={viewAnnouncement.key} role="status" aria-live="polite" data-testid="transcript-view-announcement">
-        {viewAnnouncement.text}
+      <div role="status" aria-live="polite" data-testid="transcript-view-announcement">
+        <VisuallyHidden key={viewAnnouncement.key}>{viewAnnouncement.text}</VisuallyHidden>
       </div>
     </div>
   );

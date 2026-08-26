@@ -6,7 +6,7 @@
 // steering/system/reasoning), T1 itself registers ONLY "commandExecution"
 // (ToolCallItem, which dispatches into toolRenderers.ts).
 import type { ComponentType } from "react";
-import type { ItemModel, TurnModel } from "../../../protocol/model";
+import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
 import type { TranscriptRenderContextValue } from "../../../transcriptDisplay/renderContext";
 import { RawItemView } from "./RawItemView";
 
@@ -28,6 +28,9 @@ export interface ItemRenderProps {
   // A projector-owned compact summary for a critical entry. When present,
   // renderers must not reconstruct a routine summary from raw tool fields.
   projectedSummary?: string;
+  /** Snapshot inputs relevant to this item; stable when an unrelated delta lands. */
+  threadFingerprint?: string;
+  thread?: ThreadModel;
 }
 
 const registry = new Map<string, ComponentType<ItemRenderProps>>();
@@ -73,6 +76,29 @@ export function ignoringTurn(prev: ItemRenderProps, next: ItemRenderProps): bool
     prev.opensExchange === next.opensExchange &&
     prev.agentLabel === next.agentLabel &&
     prev.projectedSummary === next.projectedSummary &&
-    prev.renderContext === next.renderContext
+    prev.renderContext === next.renderContext &&
+    prev.threadFingerprint === next.threadFingerprint
   );
+}
+
+export function threadFingerprintForItem(item: ItemModel, thread: ThreadModel | undefined): string {
+  if (thread === undefined) return "";
+  let after = false;
+  const laterSameTool: Array<[string, string | undefined, boolean | undefined]> = [];
+  for (const turn of thread.turns) {
+    for (const candidate of turn.items) {
+      if (candidate.id === item.id) {
+        after = true;
+        continue;
+      }
+      if (after && candidate.toolName === item.toolName) {
+        laterSameTool.push([candidate.id, candidate.error, candidate.prevalOnly]);
+      }
+    }
+  }
+  return JSON.stringify({
+    cwd: thread.cwd,
+    delegates: thread.delegates?.map((delegate) => [delegate.delegateId, delegate.status, delegate.latestActivityAt]),
+    laterSameTool,
+  });
 }

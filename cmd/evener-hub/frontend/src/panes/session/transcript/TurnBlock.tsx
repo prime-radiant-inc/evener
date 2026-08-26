@@ -9,11 +9,12 @@
 import "./ToolCallItem";
 import "./tools";
 import type { ReactNode } from "react";
-import type { ItemModel, TurnModel } from "../../../protocol/model";
+import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
 import type { ProjectedEntry, ProjectedTurn } from "../../../transcriptDisplay/projector";
 import {
   disclosureScopeForSession,
   expandDetailsByDefault,
+  type TranscriptRenderContextValue,
   useTranscriptRenderContext,
 } from "../../../transcriptDisplay/renderContext";
 import {
@@ -33,7 +34,7 @@ import { shouldGroup, toolRunFor } from "./toolGrouping";
 import { itemScopeKey } from "./tools/subagentModuleStore";
 import styles from "./turnblock.module.css";
 import { asTurnError } from "./turnFailure";
-import { itemRendererFor } from "./types";
+import { itemRendererFor, threadFingerprintForItem } from "./types";
 
 export interface TurnBlockProps {
   turn: ProjectedTurn | TurnModel;
@@ -58,6 +59,8 @@ export interface TurnBlockProps {
   viewAnchorIndex?: number;
   /** Suppressed on a fragment that precedes a cross-turn intent group. */
   showTurnSeparator?: boolean;
+  renderContext?: TranscriptRenderContextValue;
+  thread?: ThreadModel;
 }
 
 const CLASS = {
@@ -123,9 +126,15 @@ export function ProjectedIntentGroup({
         data-transcript-row-id={rowId}
         data-transcript-source-turn-ids={sourceTurnIds.join(",") || undefined}
         open={open}
-        onToggle={() => toggleDisclosure(disclosureKey, fallback)}
       >
-        <summary className={transcriptStyles.intentGroupSummary}>
+        {/* biome-ignore lint/a11y/noStaticElementInteractions: summary is natively keyboard-operable */}
+        <summary
+          className={transcriptStyles.intentGroupSummary}
+          onClick={(event) => {
+            event.preventDefault();
+            toggleDisclosure(disclosureKey, fallback);
+          }}
+        >
           {entries.length} action{entries.length === 1 ? "" : "s"}
         </summary>
         <div className={transcriptStyles.intentGroupItems}>
@@ -165,8 +174,11 @@ export function TurnBlock({
   showSeenDivider = false,
   viewAnchorIndex,
   showTurnSeparator = true,
+  renderContext,
+  thread,
 }: TurnBlockProps) {
-  const renderContext = useTranscriptRenderContext();
+  const providerContext = useTranscriptRenderContext();
+  const itemRenderContext = renderContext ?? providerContext;
   const projectedTurn = isProjectedTurn(turn) ? turn : projectedForDirectTurn(turn);
   const sourceTurn = projectedTurn.source;
   // A failed turn carries a TurnError (only genuine failures do - the projector
@@ -212,7 +224,13 @@ export function TurnBlock({
           data-testid="run-content"
           {...viewAnchorFor(entry)}
         >
-          <ToolCallCluster items={run.items} turn={shownTurn} sessionRef={sessionRef} />
+          <ToolCallCluster
+            items={run.items}
+            turn={shownTurn}
+            sessionRef={sessionRef}
+            renderContext={itemRenderContext}
+            thread={thread}
+          />
         </div>,
       );
       continue;
@@ -229,7 +247,9 @@ export function TurnBlock({
             opensExchange={exchangeOpeners?.has(item.id)}
             agentLabel={agentLabel}
             projectedSummary={entry.kind === "critical" ? entry.summary : undefined}
-            renderContext={renderContext}
+            renderContext={itemRenderContext}
+            thread={thread}
+            threadFingerprint={threadFingerprintForItem(item, thread)}
           />
         </div>,
       );

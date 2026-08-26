@@ -1,10 +1,10 @@
 import { useId } from "react";
-import type { ItemModel, TurnModel } from "../../../protocol/model";
+import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
 import { useThreadsStore } from "../../../stores/threads";
 import {
   disclosureScopeForSession,
   expandDetailsByDefault,
-  useOptionalTranscriptRenderContext,
+  type TranscriptRenderContextValue,
   useTranscriptRenderContext,
 } from "../../../transcriptDisplay/renderContext";
 import {
@@ -19,11 +19,14 @@ import { ToolRow } from "./ToolRow";
 import { toolRendererFor } from "./toolRenderers";
 import { consequenceRank } from "./tools/consequenceRank";
 import styles from "./turnblock.module.css";
+import { threadFingerprintForItem } from "./types";
 
 interface ToolCallClusterProps {
   items: ItemModel[];
   turn: TurnModel;
   sessionRef?: string;
+  renderContext?: TranscriptRenderContextValue;
+  thread?: ThreadModel;
 }
 
 const CLASS = {
@@ -62,24 +65,24 @@ function clusterHeader(
 // viewport or scroll state belongs in this component. The wrapper is a plain
 // div (not a native <details>): ToolRow renders the real disclosure button
 // with aria-expanded, and the body below is a sibling rendered on `open`.
-export function ToolCallCluster({ items, turn, sessionRef }: ToolCallClusterProps) {
+function ToolCallClusterBody({
+  items,
+  turn,
+  sessionRef,
+  legacyCwd,
+  renderContext,
+  thread,
+}: ToolCallClusterProps & { legacyCwd?: string }) {
   const bodyId = useId();
-  const context = useTranscriptRenderContext();
-  const optionalContext = useOptionalTranscriptRenderContext();
-  // Direct cluster tests render this leaf without TranscriptBody. Production
-  // clusters are always provider-backed, including isolated previews.
-  const legacyCwd =
-    optionalContext === null
-      ? // biome-ignore lint/correctness/useHookAtTopLevel: compatibility fallback is fixed for a mounted leaf
-        useThreadsStore((state) => (sessionRef === undefined ? undefined : state.threads.get(sessionRef)?.cwd))
-      : undefined;
+  const providerContext = useTranscriptRenderContext();
+  const context = renderContext ?? providerContext;
   const { config } = context;
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
   // Same by-ref selector ToolCallItem.tsx's own summaryCwd/openBesideCwd use
   // (copied from fileOpenBeside.tsx) - snapshot-only ThreadModel state, so a
   // shell-led folded cluster's header strips its redundant "cd <cwd> && "
   // prefix exactly like the per-call row does.
-  const cwd = context.thread?.cwd ?? legacyCwd;
+  const cwd = thread?.cwd ?? context.thread?.cwd ?? legacyCwd;
   const header = clusterHeader(items, cwd);
   const clusterId = leadItem(items).id;
   const disclosureKey = scopedDisclosureId(disclosureScope, clusterId);
@@ -105,10 +108,24 @@ export function ToolCallCluster({ items, turn, sessionRef }: ToolCallClusterProp
               turn={turn}
               live={item.status === "inProgress"}
               sessionRef={sessionRef}
+              renderContext={context}
+              thread={thread}
+              threadFingerprint={threadFingerprintForItem(item, thread)}
             />
           ))}
         </div>
       )}
     </div>
   );
+}
+
+function LegacyToolCallCluster(props: ToolCallClusterProps) {
+  const legacyCwd = useThreadsStore((state) =>
+    props.sessionRef === undefined ? undefined : state.threads.get(props.sessionRef)?.cwd,
+  );
+  return <ToolCallClusterBody {...props} legacyCwd={legacyCwd} />;
+}
+
+export function ToolCallCluster(props: ToolCallClusterProps) {
+  return props.renderContext === undefined ? <LegacyToolCallCluster {...props} /> : <ToolCallClusterBody {...props} />;
 }

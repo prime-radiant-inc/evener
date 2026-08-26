@@ -10,7 +10,7 @@ import {
   projectThread,
   type TranscriptProjection,
 } from "../../../transcriptDisplay/projector";
-import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
+import { createTranscriptRenderContext, TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
 import { VirtualList, type VirtualListHandle } from "../../../widgets";
 import { modelLabel } from "../chrome/statusFormat";
 import { exchangeOpenersFor } from "./exchangeOpeners";
@@ -251,6 +251,26 @@ export function TranscriptBody({
   const rows = useMemo(() => transcriptRowsForProjection(projection), [projection]);
   const openers = useMemo(() => exchangeOpenersFor(model.turns), [model.turns]);
   const agentLabel = modelLabel(model.modelProvider, model.model);
+  const itemRenderFingerprint = [
+    configFingerprint(config),
+    JSON.stringify(projection.metadata),
+    projection.eligibleDisclosureIds.join("\0"),
+    surface,
+    sessionRef,
+    disclosureScope,
+  ].join("\0");
+  // biome-ignore lint/correctness/useExhaustiveDependencies: itemRenderFingerprint covers projection semantics; retaining its identity avoids settled-row rerenders for unrelated stream deltas
+  const itemRenderContext = useMemo(
+    () =>
+      createTranscriptRenderContext({
+        config,
+        projection,
+        surface,
+        sessionRef,
+        disclosureScope,
+      }),
+    [itemRenderFingerprint],
+  );
   const displayViewport = useStore(transcriptDisplayStore, (state) => state.viewport);
   const viewRegistration = useTranscriptViewRegistration({
     enabled: surface !== "preview",
@@ -300,6 +320,8 @@ export function TranscriptBody({
           agentLabel={agentLabel}
           viewAnchorIndex={index}
           showTurnSeparator={row.showTurnSeparator}
+          renderContext={itemRenderContext}
+          thread={model}
         />
       </div>
     );

@@ -1,5 +1,6 @@
 import { act, cleanup, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, expect, test } from "vitest";
+import type { ThreadModel } from "../protocol/model";
 import {
   disclosureDefault,
   isDisclosureOpen,
@@ -34,6 +35,8 @@ function ContextProbe() {
       data-testid="context-probe"
       data-config={context.config.content.kind === "preset" ? context.config.content.level : "custom"}
       data-eligible={context.eligibleDisclosureIds.join(",")}
+      data-cwd={context.thread?.cwd ?? ""}
+      data-delegates={String(context.thread?.delegates?.length ?? 0)}
     />
   );
 }
@@ -144,4 +147,42 @@ test("clears a stale pre-baseline close when a row becomes eligible", () => {
     </TranscriptRenderProvider>,
   );
   expect(screen.getByTestId("disclosure-new").getAttribute("data-open")).toBe("true");
+});
+
+test("refreshes snapshot-derived renderer inputs when only ThreadModel identity changes", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  const firstThread = { cwd: "/first", delegates: [{ delegateId: "delegate-1" }] } as unknown as ThreadModel;
+  const secondThread = {
+    cwd: "/second",
+    delegates: [{ delegateId: "delegate-1" }, { delegateId: "delegate-2" }],
+  } as unknown as ThreadModel;
+  const projection = { metadata: { ...metadata }, eligibleDisclosureIds: ["tool"] };
+  const { rerender } = render(
+    <TranscriptRenderProvider
+      config={config}
+      projection={projection}
+      surface="live"
+      disclosureScope="live:snapshot"
+      thread={firstThread}
+    >
+      <ContextProbe />
+    </TranscriptRenderProvider>,
+  );
+  const firstContextValue = observedContext;
+  expect(screen.getByTestId("context-probe").getAttribute("data-cwd")).toBe("/first");
+  expect(screen.getByTestId("context-probe").getAttribute("data-delegates")).toBe("1");
+  rerender(
+    <TranscriptRenderProvider
+      config={{ ...config, advanced: { ...config.advanced } }}
+      projection={{ metadata: { ...metadata }, eligibleDisclosureIds: ["tool"] }}
+      surface="live"
+      disclosureScope="live:snapshot"
+      thread={secondThread}
+    >
+      <ContextProbe />
+    </TranscriptRenderProvider>,
+  );
+  expect(observedContext).not.toBe(firstContextValue);
+  expect(screen.getByTestId("context-probe").getAttribute("data-cwd")).toBe("/second");
+  expect(screen.getByTestId("context-probe").getAttribute("data-delegates")).toBe("2");
 });
