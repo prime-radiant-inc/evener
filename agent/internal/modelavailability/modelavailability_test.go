@@ -6,10 +6,10 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"slices"
 	"strings"
-	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,22 +17,40 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-func TestCaptureUsesOneDeadlineAndKeepsSuccessfulPartialChoices(t *testing.T) {
-	started := make(chan struct{}, 2)
-	fetch := func(ctx context.Context, name string) ([]llm.ModelInfo, error) {
-		started <- struct{}{}
-		if name == "slow" {
-			<-ctx.Done()
-			return nil, ctx.Err()
+func TestCaptureKeepsSuccessfulChoicesWhenAnotherProviderFails(t *testing.T) {
+	fetch := func(_ context.Context, name string) ([]llm.ModelInfo, error) {
+		if name == "failed" {
+			return nil, errors.New("unavailable")
 		}
 		return []llm.ModelInfo{{ID: "z"}, {ID: "a"}, {ID: "a"}}, nil
 	}
-	s := Capture(context.Background(), []string{"slow", "good"}, fetch, nil, 30*time.Millisecond)
+	s := Capture(context.Background(), []string{"failed", "good"}, fetch, nil, time.Hour)
 	if s.Complete || len(s.Choices) != 2 || s.Choices[0] != "good/a" || s.Choices[1] != "good/z" {
 		t.Fatalf("snapshot = %#v", s)
 	}
-	if s.Status["slow"].Kind != StatusTimeout || s.Status["good"].Kind != StatusSuccess {
+	if s.Status["failed"].Kind != StatusFailure || s.Status["good"].Kind != StatusSuccess {
 		t.Fatalf("status = %#v", s.Status)
+	}
+}
+
+func TestCaptureStopsAtOneDeterministicDeadline(t *testing.T) {
+	parent := &deadlineBarrierContext{done: make(chan struct{})}
+	started := make(chan struct{}, 2)
+	done := make(chan Snapshot, 1)
+	go func() {
+		done <- Capture(parent, []string{"first", "second"}, func(ctx context.Context, _ string) ([]llm.ModelInfo, error) {
+			started <- struct{}{}
+			<-ctx.Done()
+			return nil, ctx.Err()
+		}, nil, time.Hour)
+	}()
+	<-started
+	<-started
+	close(parent.done)
+
+	s := <-done
+	if s.Complete || s.Status["first"].Kind != StatusTimeout || s.Status["second"].Kind != StatusTimeout {
+		t.Fatalf("deadline snapshot = %#v", s)
 	}
 }
 
@@ -148,6 +166,20 @@ func TestCursorIsOpaqueSnapshotBoundAndPagesByBytesAndCount(t *testing.T) {
 	}
 }
 
+func TestCursorRejectsChangedPageBounds(t *testing.T) {
+	s := testSnapshot("v1", true, "p/a", "p/b")
+	page, err := s.Page("", 1, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Page(page.Next, 2, 1024); err == nil {
+		t.Fatal("cursor accepted a changed count bound")
+	}
+	if _, err := s.Page(page.Next, 1, 512); err == nil {
+		t.Fatal("cursor accepted a changed byte bound")
+	}
+}
+
 func TestPageReturnsBoundedEnvelopeAndProgressesOversizedOrEmptySnapshots(t *testing.T) {
 	s := testSnapshot("v1", false, strings.Repeat("x", 1000))
 	p, err := s.Page("", 1, 256)
@@ -211,5 +243,21 @@ func TestCursorRejectsAuthenticatedUnknownAndTrailingFields(t *testing.T) {
 }
 
 func testSnapshot(version string, complete bool, choices ...string) Snapshot {
-	return Snapshot{Version: version, Complete: complete, Choices: choices, key: []byte("test-key"), mu: &sync.Mutex{}}
+	return Snapshot{Version: version, Complete: complete, Choices: choices, key: []byte("test-key")}
 }
+
+type deadlineBarrierContext struct {
+	done chan struct{}
+}
+
+func (*deadlineBarrierContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *deadlineBarrierContext) Done() <-chan struct{}     { return c.done }
+func (c *deadlineBarrierContext) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+func (*deadlineBarrierContext) Value(any) any { return nil }

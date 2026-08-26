@@ -12,7 +12,6 @@ import (
 	"slices"
 	"sort"
 	"strings"
-	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
@@ -40,7 +39,6 @@ type Snapshot struct {
 	Choices  []string
 	Status   map[string]ProviderStatus
 	key      []byte
-	mu       *sync.Mutex
 }
 type Page struct {
 	Choices    []string                  `json:"choices,omitempty"`
@@ -192,7 +190,7 @@ func Capture(parent context.Context, providers []string, fetch func(context.Cont
 		h.Write([]byte{0})
 	}
 	version := hex.EncodeToString(h.Sum(nil)[:12])
-	return Snapshot{Version: version, Complete: complete, Choices: choices, Status: status, key: key, mu: &sync.Mutex{}}
+	return Snapshot{Version: version, Complete: complete, Choices: choices, Status: status, key: key}
 }
 
 func boundedProviders(providers []string) ([]string, bool) {
@@ -290,7 +288,7 @@ func (s *Snapshot) decode(token string) (cursor, error) {
 	return c, nil
 }
 func (s *Snapshot) Page(token string, maxCount, maxBytes int) (Page, error) {
-	if s == nil || s.mu == nil || maxCount <= 0 || maxCount > DefaultPageMaxCount || maxBytes <= 0 || maxBytes > DefaultPageMaxBytes {
+	if s == nil || len(s.key) == 0 || maxCount <= 0 || maxCount > DefaultPageMaxCount || maxBytes <= 0 || maxBytes > DefaultPageMaxBytes {
 		return Page{}, errors.New("invalid page bounds")
 	}
 	off := 0
@@ -298,6 +296,9 @@ func (s *Snapshot) Page(token string, maxCount, maxBytes int) (Page, error) {
 		c, e := s.decode(token)
 		if e != nil {
 			return Page{}, e
+		}
+		if c.Count != maxCount || c.Bytes != maxBytes {
+			return Page{}, errors.New("stale cursor")
 		}
 		off = c.Offset
 	}
