@@ -11,17 +11,12 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
-func newPinNavigationRESTWeb(t *testing.T, withSection bool) (*WebServer, *testNavigationSource, *hubcore.PinSection) {
+func newPinNavigationRESTWeb(t *testing.T, withSection bool) (*WebServer, *hubcore.PinSection) {
 	t.Helper()
 	past := hubcore.NewPastIndex("")
-	past.SeedForTest([]schema.SessionMeta{topLevelMeta("session-a")})
 	store := hubcore.NewPinSectionStore(t.TempDir() + "/pins.db")
 	web := NewWebServer(hubcore.WebConfig{Past: past, PinSections: store})
-	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
-	source.mu.Lock()
-	source.inputs.Tree.Projects[0].Current[0].ID = "session-a"
-	source.mu.Unlock()
-	web.navigation = newTestNavigationService(t, source)
+	web.injectMetasForTest([]schema.SessionMeta{topLevelMeta("session-a")})
 	if withSection {
 		section, _, err := store.CreateOrReuseAndAssign("Research", "session-a", time.Unix(1_700_000_000, 0).UTC())
 		if err != nil {
@@ -30,12 +25,12 @@ func newPinNavigationRESTWeb(t *testing.T, withSection bool) (*WebServer, *testN
 		if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
 			t.Fatal(err)
 		}
-		return web, source, &section
+		return web, &section
 	}
 	if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
 		t.Fatal(err)
 	}
-	return web, source, nil
+	return web, nil
 }
 
 func assertPinNavigationPublication(t *testing.T, web *WebServer, generation string, targets []appwire.NavigationInvalidationTarget, wantKinds map[appwire.NavigationTargetKind]string) {
@@ -82,7 +77,7 @@ func assertPinNoNavigation(t *testing.T, web *WebServer, targets []appwire.Navig
 
 func TestRESTNavigationPinSectionRenameDeleteConverges(t *testing.T) {
 	t.Run("rename changed and repeat no-op", func(t *testing.T) {
-		web, _, section := newPinNavigationRESTWeb(t, true)
+		web, section := newPinNavigationRESTWeb(t, true)
 		rr := patchJSON(t, web.Handler(), "/api/pin-sections/"+section.ID, `{"name":"RESEARCH"}`)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("rename status=%d body=%s", rr.Code, rr.Body.String())
@@ -105,7 +100,7 @@ func TestRESTNavigationPinSectionRenameDeleteConverges(t *testing.T) {
 	})
 
 	t.Run("delete changed and absent", func(t *testing.T) {
-		web, _, section := newPinNavigationRESTWeb(t, true)
+		web, section := newPinNavigationRESTWeb(t, true)
 		rr := deleteURL(t, web.Handler(), "/api/pin-sections/"+section.ID)
 		if rr.Code != http.StatusOK {
 			t.Fatalf("delete status=%d body=%s", rr.Code, rr.Body.String())
@@ -127,7 +122,7 @@ func TestRESTNavigationPinSectionRenameDeleteConverges(t *testing.T) {
 }
 
 func TestRESTNavigationSessionPinAssignUnpinConverges(t *testing.T) {
-	web, _, _ := newPinNavigationRESTWeb(t, false)
+	web, _ := newPinNavigationRESTWeb(t, false)
 	assigned := postJSON(t, web.Handler(), "/api/session-pin", `{"session_ref":"local:session-a","section_name":"Research"}`)
 	if assigned.Code != http.StatusOK {
 		t.Fatalf("assign status=%d body=%s", assigned.Code, assigned.Body.String())
@@ -171,7 +166,7 @@ func TestRESTNavigationSessionPinAssignUnpinConverges(t *testing.T) {
 }
 
 func TestRESTNavigationSessionPinAbsentAssignHasNoEvent(t *testing.T) {
-	web, _, _ := newPinNavigationRESTWeb(t, false)
+	web, _ := newPinNavigationRESTWeb(t, false)
 	absent := postJSON(t, web.Handler(), "/api/session-pin", `{"session_ref":"local:session-a","section_id":"missing"}`)
 	if absent.Code != http.StatusNotFound {
 		t.Fatalf("absent assign status=%d body=%s", absent.Code, absent.Body.String())
