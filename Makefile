@@ -25,14 +25,15 @@ GOLANGCI_LINT_CACHE ?= $(shell scripts/lib/golangci-lint-cache.sh)
 DEV_TOOLING_TEST_SCRIPTS := lib/private-go-home ops/setup-gocache web/web-preflight lib/live-eval-isolation fuzz/fuzz-bisect fuzz/fuzz-oracle-audit coverage/coverage-gaps gate/test-timing-budget lib/scratch-lib gate/lint-tagged-goos lib/golangci-lint-cache
 
 define run_quiet_lint
-	@set -u; log="$$(mktemp "$${TMPDIR:-/tmp}/evener-lint-check.XXXXXX")" || exit 1; \
+	@set -u; start="$$(date +%s)"; log="$$(mktemp "$${TMPDIR:-/tmp}/evener-lint-check.XXXXXX")" || exit 1; \
 	trap 'rm -f "$$log"' EXIT HUP INT TERM; \
 	if ( $(1) ) >"$$log" 2>&1; then \
 		if [ "$(2)" = preserve-gitleaks-warning ]; then \
 			grep -F 'warning: gitleaks not installed; skipping repo secret scan' "$$log" >&2 || :; \
 		fi; \
+		elapsed="$$(($$(date +%s) - $$start))"; printf 'PASS %s (%ss)\n' "$@" "$$elapsed"; \
 	else \
-		status=$$?; cat "$$log"; exit $$status; \
+		status=$$?; cat "$$log"; elapsed="$$(($$(date +%s) - $$start))"; printf 'FAIL %s (%ss)\n' "$@" "$$elapsed" >&2; exit $$status; \
 	fi
 endef
 
