@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"slices"
@@ -31,6 +32,16 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.launchOverridesModal = &p
 		if p.Done() {
 			m.launchOverridesModal = nil
+		}
+		return m, cmd
+	}
+
+	if m.spawnPluginsPanel != nil {
+		updated, cmd := m.spawnPluginsPanel.Update(msg)
+		panel := updated.(launchconfig.PluginsForLaunchPanel)
+		m.spawnPluginsPanel = &panel
+		if panel.Done() {
+			m.spawnPluginsPanel = nil
 		}
 		return m, cmd
 	}
@@ -82,11 +93,9 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		m.advanceSpawnFocus(1)
-		return m, nil
+		return m, m.advanceSpawnFocus(1)
 	case "shift+tab":
-		m.advanceSpawnFocus(-1)
-		return m, nil
+		return m, m.advanceSpawnFocus(-1)
 	case "enter":
 		switch m.spawnFocus {
 		case hubSpawnFieldHarness:
@@ -95,8 +104,14 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case hubSpawnFieldModel:
 			return m.activateSpawnModelField()
 		case hubSpawnFieldDir:
+			// Enter advances as a form action. Tab additionally returns the
+			// transition refresh command; keeping Enter command-free preserves the
+			// existing synchronous form-submit tests and the field remains ready
+			// for the next preview-triggering transition.
 			m.advanceSpawnFocus(1)
 			return m, nil
+		case hubSpawnFieldPlugins:
+			return m.activateSpawnPluginsField()
 		default:
 			return m.submitSpawnForm()
 		}
@@ -107,6 +122,9 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		if m.spawnFocus == hubSpawnFieldModel {
 			return m.activateSpawnModelField()
+		}
+		if m.spawnFocus == hubSpawnFieldPlugins {
+			return m.activateSpawnPluginsField()
 		}
 	}
 
@@ -157,6 +175,79 @@ func (m hubModel) activateSpawnModelField() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m hubModel) activateSpawnPluginsField() (tea.Model, tea.Cmd) {
+	if !m.spawnPluginPreviewLoaded || m.spawnPluginPreviewLoading || m.spawnPluginPreviewErr != nil {
+		if m.client != nil {
+			return m, m.requestSpawnPluginPreview()
+		}
+		return m, nil
+	}
+	var initial *[]string
+	if m.spawnLaunchOverrides != nil && m.spawnLaunchOverrides.EnabledPlugins != nil {
+		values := append([]string(nil), (*m.spawnLaunchOverrides.EnabledPlugins)...)
+		initial = &values
+	}
+	panel := launchconfig.NewPluginsForLaunchPanel(m.spawnPluginPreview, initial, m.width)
+	m.spawnPluginsPanel = &panel
+	m.err = nil
+	return m, nil
+}
+
+func (m hubModel) spawnPluginSelectionBlocked() bool {
+	if m.spawnLaunchOverrides == nil || m.spawnLaunchOverrides.EnabledPlugins == nil {
+		return false
+	}
+	bad := map[string]bool{}
+	for _, failure := range m.spawnPluginPreview.SelectionErrors {
+		bad[failure.Name] = true
+	}
+	for _, name := range *m.spawnLaunchOverrides.EnabledPlugins {
+		if bad[name] {
+			return true
+		}
+	}
+	return false
+}
+
+func (m *hubModel) requestSpawnPluginPreview() tea.Cmd {
+	m.spawnPluginPreviewRevision++
+	if m.client == nil {
+		return nil
+	}
+	params := appwire.PluginPreviewParams{CWD: strings.TrimSpace(m.spawnDir)}
+	if m.spawnLaunchOverrides != nil {
+		cp := *m.spawnLaunchOverrides
+		if cp.EnabledPlugins != nil {
+			values := append([]string(nil), (*cp.EnabledPlugins)...)
+			cp.EnabledPlugins = &values
+		}
+		params.LaunchOverrides = &cp
+	}
+	raw, _ := json.Marshal(params)
+	m.spawnPluginPreviewParamsDigest = string(raw)
+	key := fmt.Sprintf("%d:%s", m.spawnPluginPreviewRevision, raw)
+	m.spawnPluginPreviewRequestKey = key
+	m.spawnPluginPreviewLoading = true
+	return func() tea.Msg { return launchconfig.PluginPreviewRequestMsg{Params: params, Key: key} }
+}
+
+func (m *hubModel) requestSpawnPluginPreviewIfChanged() tea.Cmd {
+	params := appwire.PluginPreviewParams{CWD: strings.TrimSpace(m.spawnDir)}
+	if m.spawnLaunchOverrides != nil {
+		cp := *m.spawnLaunchOverrides
+		if cp.EnabledPlugins != nil {
+			values := append([]string(nil), (*cp.EnabledPlugins)...)
+			cp.EnabledPlugins = &values
+		}
+		params.LaunchOverrides = &cp
+	}
+	raw, _ := json.Marshal(params)
+	if m.spawnPluginPreviewLoaded && string(raw) == m.spawnPluginPreviewParamsDigest {
+		return nil
+	}
+	return m.requestSpawnPluginPreview()
+}
+
 func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 	if m.client == nil || m.spawnSubmitting {
 		return m, nil
@@ -177,6 +268,10 @@ func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 		m.err = errors.New("choose a model before starting")
 		return m, nil
 	}
+	if m.spawnPluginSelectionBlocked() {
+		m.err = errors.New("selected plugins are not available; adjust Plugins before starting")
+		return m, nil
+	}
 	if reason := m.spawnModelDisabledReason(strings.TrimSpace(m.spawnModel)); reason != "" {
 		m.err = fmt.Errorf("%s", noticePanel{
 			Title:      "Start unavailable",
@@ -195,12 +290,11 @@ func (m hubModel) submitSpawnForm() (tea.Model, tea.Cmd) {
 	}
 	m.err = nil
 	m.spawnSubmitting = true
-	m.spawnLaunchOverrides = nil // one-shot: clear after use
 	return m, sendHubSpawn(m.client, req)
 }
 
 func (m *hubModel) setSpawnFocus(field hubSpawnField) {
-	if field < hubSpawnFieldPrompt || field > hubSpawnFieldDir {
+	if field < hubSpawnFieldHarness || field > hubSpawnFieldPrompt {
 		field = hubSpawnFieldPrompt
 	}
 	m.spawnFocus = field
@@ -220,14 +314,26 @@ func (m *hubModel) setSpawnFocus(field hubSpawnField) {
 	m.spawnDirInput.Blur()
 }
 
-func (m *hubModel) advanceSpawnFocus(delta int) {
+func (m *hubModel) advanceSpawnFocus(delta int) tea.Cmd {
+	previous := m.spawnFocus
 	next := int(m.spawnFocus) + delta
-	count := int(hubSpawnFieldDir) + 1
+	count := int(hubSpawnFieldPrompt) + 1
 	for next < 0 {
 		next += count
 	}
 	next %= count
+	for hubSpawnField(next) == hubSpawnFieldPlugins && !m.spawnPluginPreviewLoaded && m.spawnPluginPreviewErr == nil {
+		next += delta
+		if next < 0 {
+			next += count
+		}
+		next %= count
+	}
 	m.setSpawnFocus(hubSpawnField(next))
+	if previous == hubSpawnFieldDir && m.spawnFocus != hubSpawnFieldDir && m.spawnPluginPreviewLoaded {
+		return m.requestSpawnPluginPreviewIfChanged()
+	}
+	return nil
 }
 
 func (m *hubModel) resizeSpawnInput() {
@@ -299,9 +405,34 @@ func (m hubModel) spawnFieldHint() string {
 		return "enter: choose model"
 	case hubSpawnFieldDir:
 		return "type path  tab: recent/complete  enter: next  ctrl+u clear"
+	case hubSpawnFieldPlugins:
+		return "enter/space: choose plugins"
 	default:
 		return "enter: start  ctrl+j: newline"
 	}
+}
+
+func (m hubModel) spawnPluginsSummary() string {
+	if !m.spawnPluginPreviewLoaded {
+		if m.spawnPluginPreviewErr != nil {
+			return "unavailable (retry)"
+		}
+		return "loading..."
+	}
+	selected := 0
+	for _, plugin := range m.spawnPluginPreview.Plugins {
+		if plugin.Selected {
+			selected++
+		}
+	}
+	if m.spawnLaunchOverrides != nil && m.spawnLaunchOverrides.EnabledPlugins != nil {
+		selected = len(*m.spawnLaunchOverrides.EnabledPlugins)
+	}
+	suffix := ""
+	if m.spawnPluginPreviewErr != nil {
+		suffix = " (refresh failed)"
+	}
+	return fmt.Sprintf("%d/%d enabled%s", selected, len(m.spawnPluginPreview.Plugins), suffix)
 }
 
 func (m *hubModel) openSpawnForm() {
@@ -337,6 +468,14 @@ func (m *hubModel) resetSpawnForm() {
 	m.spawnModels = nil
 	m.spawnHarnessModels = nil
 	m.spawnModelPicker = nil
+	m.spawnPluginsPanel = nil
+	m.spawnPluginPreview = appwire.PluginPreviewResponse{}
+	m.spawnPluginPreviewLoaded = false
+	m.spawnPluginPreviewLoading = false
+	m.spawnPluginPreviewErr = nil
+	m.spawnPluginPreviewRevision = 0
+	m.spawnPluginPreviewRequestKey = ""
+	m.spawnPluginPreviewParamsDigest = ""
 	m.spawnSubmitting = false
 	m.spawnFocus = hubSpawnFieldPrompt
 	m.spawnRecentDirs = nil
@@ -507,6 +646,9 @@ func (m hubModel) spawnView() string {
 	if m.spawnModelPicker != nil {
 		overlay = m.spawnModelPicker.View()
 	}
+	if m.spawnPluginsPanel != nil {
+		overlay = m.spawnPluginsPanel.View()
+	}
 	if m.launchOverridesModal != nil {
 		overlay = m.launchOverridesModal.View()
 	}
@@ -541,6 +683,7 @@ func (m hubModel) spawnView() string {
 			fmt.Fprintf(&b, "%s%s\n", prefix, dir)
 		}
 	}
+	fmt.Fprintf(&b, "%s Plugins:  %s\n", m.spawnFieldPrefix(hubSpawnFieldPlugins), m.spawnPluginsSummary())
 	fmt.Fprintf(&b, "%s Prompt (optional):\n", m.spawnFieldPrefix(hubSpawnFieldPrompt))
 	for line := range strings.SplitSeq(strings.TrimSuffix(renderComposerDraft(m.session.input.Value(), m.width-2, 0), "\n"), "\n") {
 		b.WriteString("  ")

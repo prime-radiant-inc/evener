@@ -86,6 +86,17 @@ func pluginCommandCases() []pluginCommandCase {
 			wantSuccess:     PluginListResultMsg{List: pluginList},
 		},
 		{
+			name: "plugin preview", wantMethod: appwire.MethodEvenerPluginPreview,
+			wantParams: `{"cwd":"/tmp/project","launchOverrides":{"enabledPlugins":["fmt"]}}`,
+			run: func(c *appwire.Client) any {
+				values := []string{"fmt"}
+				return CmdPluginPreview(c, appwire.PluginPreviewParams{CWD: "/tmp/project", LaunchOverrides: &appwire.LaunchConfigLayer{EnabledPlugins: &values}}, "preview-1")()
+			},
+			errOf:           func(m any) error { return m.(PluginPreviewResultMsg).Err },
+			successResponse: appwire.PluginPreviewResponse{Plugins: []appwire.PluginLaunchCandidate{{Name: "fmt", Selected: true}}},
+			wantSuccess:     PluginPreviewResultMsg{Response: appwire.PluginPreviewResponse{Plugins: []appwire.PluginLaunchCandidate{{Name: "fmt", Selected: true}}}, Key: "preview-1"},
+		},
+		{
 			name: "plugin install", wantMethod: appwire.MethodEvenerPluginInstall, wantParams: `{"plugin":"fmt","marketplace":"acme"}`,
 			run:             func(c *appwire.Client) any { return CmdPluginInstall(c, "fmt", "acme")() },
 			errOf:           func(m any) error { return m.(PluginMutateResultMsg).Err },

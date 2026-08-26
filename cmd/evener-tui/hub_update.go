@@ -437,6 +437,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.err = fmt.Errorf("start returned invalid ref: %s", msg.resp.Ref)
 			return m, nil
 		}
+		m.spawnLaunchOverrides = nil // one-shot overrides are consumed only after success
 		return m, fetchHubSession(m.frames, m.client, ref)
 	case hubModelsMsg:
 		if msg.err != nil {
@@ -556,6 +557,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.modelErr != nil && m.spawnHarnessUsesEvenerModels() {
 				m.err = fmt.Errorf("models failed: %w", msg.modelErr)
 			}
+			return m, m.requestSpawnPluginPreview()
 		}
 		return m, nil
 	case hubAuthStatusMsg:
@@ -587,6 +589,15 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handleLaunchOverridesOpen(msg)
 	case launchconfig.LaunchOverridesResultMsg:
 		return m.handleLaunchOverridesResult(msg)
+	case launchconfig.PluginPreviewRequestMsg:
+		if m.client != nil {
+			return m, launchconfig.CmdPluginPreview(m.client, msg.Params, msg.Key)
+		}
+		return m, nil
+	case launchconfig.PluginPreviewResultMsg:
+		return m.handlePluginPreviewResult(msg)
+	case launchconfig.PluginsForLaunchResultMsg:
+		return m.handlePluginsForLaunchResult(msg)
 	case launchconfig.LaunchSettingsEditRequestMsg:
 		return m.handleLaunchSettingsEditRequest(msg)
 	case tuipick.TextInputResultMsg:

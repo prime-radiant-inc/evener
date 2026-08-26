@@ -39,6 +39,16 @@ func TestSchemaRows_OverrideFiltersPerLaunch(t *testing.T) {
 	}
 }
 
+func TestSchemaRows_ExcludesDedicatedPluginSelection(t *testing.T) {
+	rows := launchSchemaRows([]appwire.LaunchOption{
+		{Field: "agent", Label: "Agent", DefaultableLayers: []string{"global"}, PerLaunch: true},
+		{Field: "enabled_plugins", Label: "Plugins", Kind: "pluginSelection", DefaultableLayers: []string{"global"}, PerLaunch: true},
+	}, appwire.LaunchConfigLayer{}, launchLayerLaunch, launchSchemaRowsOverride)
+	if fields := rowFields(rows); !reflect.DeepEqual(fields, []string{"agent"}) {
+		t.Fatalf("fields=%v, want only generic agent row", fields)
+	}
+}
+
 func TestSchemaRows_PathFieldsRequestCompletion(t *testing.T) {
 	schema := []appwire.LaunchOption{
 		{Field: "system_prompt_file", Label: "System prompt file", Kind: "path", PathKind: "file", DefaultableLayers: []string{"global"}, PerLaunch: true},

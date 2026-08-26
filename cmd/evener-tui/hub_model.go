@@ -24,10 +24,11 @@ const (
 type hubSpawnField int
 
 const (
-	hubSpawnFieldPrompt hubSpawnField = iota
-	hubSpawnFieldHarness
+	hubSpawnFieldHarness hubSpawnField = iota
 	hubSpawnFieldModel
 	hubSpawnFieldDir
+	hubSpawnFieldPlugins
+	hubSpawnFieldPrompt
 )
 
 type hubRowKind int
@@ -99,32 +100,40 @@ type hubModel struct {
 	dashboardSelectedOnce  bool
 	commandPalette         *commandPalette
 
-	browseSelected          int
-	watchedChildRefs        map[string]bool // child transcript refs subscribed for live rail activity
-	forkDraft               *hubForkDraft
-	sessionThemePicker      *tuipick.ThemePicker
-	sessionModelPicker      *tuipick.ModelPicker
-	sessionEffortPicker     *tuipick.ModelPicker
-	sessionTranscriptPicker *tuipick.ModelPicker
-	sessionPanel            *hubSessionPanel
-	sessionDetailsRequested bool
-	transcriptTargets       []appwire.ThreadTranscriptTarget
-	transcriptView          *hubTranscriptViewState
-	spawnReturnMode         hubMode
-	spawnDir                string
-	spawnProject            string
-	spawnHarness            string
-	spawnHarnesses          []string
-	spawnHarnessKinds       map[string]string
-	spawnEmptyTaskReasons   map[string]string
-	spawnEmptyTaskNext      map[string]string
-	spawnModel              string
-	spawnModels             []tuipick.ModelPickerItem
-	spawnHarnessModels      map[string][]tuipick.ModelPickerItem
-	spawnModelPicker        *tuipick.ModelPicker
-	spawnDirInput           textinput.Model
-	spawnSubmitting         bool
-	spawnFocus              hubSpawnField
+	browseSelected                 int
+	watchedChildRefs               map[string]bool // child transcript refs subscribed for live rail activity
+	forkDraft                      *hubForkDraft
+	sessionThemePicker             *tuipick.ThemePicker
+	sessionModelPicker             *tuipick.ModelPicker
+	sessionEffortPicker            *tuipick.ModelPicker
+	sessionTranscriptPicker        *tuipick.ModelPicker
+	sessionPanel                   *hubSessionPanel
+	sessionDetailsRequested        bool
+	transcriptTargets              []appwire.ThreadTranscriptTarget
+	transcriptView                 *hubTranscriptViewState
+	spawnReturnMode                hubMode
+	spawnDir                       string
+	spawnProject                   string
+	spawnHarness                   string
+	spawnHarnesses                 []string
+	spawnHarnessKinds              map[string]string
+	spawnEmptyTaskReasons          map[string]string
+	spawnEmptyTaskNext             map[string]string
+	spawnModel                     string
+	spawnModels                    []tuipick.ModelPickerItem
+	spawnHarnessModels             map[string][]tuipick.ModelPickerItem
+	spawnModelPicker               *tuipick.ModelPicker
+	spawnDirInput                  textinput.Model
+	spawnPluginsPanel              *launchconfig.PluginsForLaunchPanel
+	spawnPluginPreview             appwire.PluginPreviewResponse
+	spawnPluginPreviewLoaded       bool
+	spawnPluginPreviewLoading      bool
+	spawnPluginPreviewErr          error
+	spawnPluginPreviewRevision     uint64
+	spawnPluginPreviewRequestKey   string
+	spawnPluginPreviewParamsDigest string
+	spawnSubmitting                bool
+	spawnFocus                     hubSpawnField
 	// spawnRecentDirs holds the hub's most recently used project dirs (the
 	// Dir field's prepopulated dropdown options, issue #35), fetched with the
 	// spawn options. spawnRecentIdx tracks the tab-cycle position: the index
