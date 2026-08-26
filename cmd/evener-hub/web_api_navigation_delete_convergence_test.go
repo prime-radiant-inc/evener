@@ -15,6 +15,7 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/rendezvous"
 )
 
 func assertDeleteNavigation(t *testing.T, web *WebServer, body []byte, kind appwire.NavigationTargetKind, projectKey string) {
@@ -97,11 +98,16 @@ func TestRESTDeleteNavigationConvergence(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
+		stateDir := filepath.Join(root, "projects", project.ID)
+		writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
 		past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 		if _, err := past.Rebuild(); err != nil {
 			t.Fatal(err)
 		}
-		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
+		roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+			Entry: rendezvous.Entry{PID: 1, WorkingDir: project.CanonicalPath, StateDir: stateDir}, SessionID: webTestSessionID,
+		})
+		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster})
 		source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 		source.mu.Lock()
 		source.inputs.Tree.Projects[0].Key = project.ID
@@ -120,7 +126,7 @@ func TestRESTDeleteNavigationConvergence(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &noop); err != nil {
 			t.Fatal(err)
 		}
-		if len(noop.Deleted) != 0 || len(noop.Skipped) != 0 || len(noop.Navigation.Targets) != 0 || len(web.navigation.DrainPublications()) != 0 {
+		if len(noop.Deleted) != 0 || len(noop.Skipped) != 1 || noop.Skipped[0].ID != webTestSessionID || len(noop.Navigation.Targets) != 0 || len(web.navigation.DrainPublications()) != 0 {
 			t.Fatalf("no-op response/events=%+v", noop)
 		}
 	})
@@ -212,14 +218,19 @@ func TestRESTDeleteNavigationConvergence(t *testing.T) {
 		if first.Code != http.StatusOK {
 			t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
 		}
-		assertDeleteNavigation(t, web, first.Body.Bytes(), appwire.NavigationTargetProject, project.ID)
+		var firstResponse projectDeleteResponse
+		if err := json.Unmarshal(first.Body.Bytes(), &firstResponse); err != nil {
+			t.Fatal(err)
+		}
+		if len(firstResponse.Deleted) != 0 || len(firstResponse.Navigation.Targets) != 0 || len(web.navigation.DrainPublications()) != 0 {
+			t.Fatalf("first resumed response/events=%+v", firstResponse)
+		}
 		removeProjectSessionDir = oldRemoveDir
 		if _, err := past.Rebuild(); err != nil {
 			t.Fatal(err)
 		}
-		// The resumed request only completes durable directory cleanup. The
-		// handler reports no newly deleted session, so it must be a navigation
-		// no-op even when the source has changed independently.
+		// The resumed request completes durable directory cleanup and reports the
+		// session as newly deleted, so it publishes the converged project target.
 		source.changeTitle("resume-second")
 		second := httptest.NewRecorder()
 		web.Handler().ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body)))
@@ -230,9 +241,10 @@ func TestRESTDeleteNavigationConvergence(t *testing.T) {
 		if err := json.Unmarshal(second.Body.Bytes(), &resumed); err != nil {
 			t.Fatal(err)
 		}
-		if len(resumed.Deleted) != 0 || len(resumed.Navigation.Targets) != 0 || len(web.navigation.DrainPublications()) != 0 {
+		if len(resumed.Deleted) != 1 {
 			t.Fatalf("resumed response/events=%+v", resumed)
 		}
+		assertDeleteNavigation(t, web, second.Body.Bytes(), appwire.NavigationTargetProject, project.ID)
 	})
 
 	t.Run("session changed repeated and no-op", func(t *testing.T) {
