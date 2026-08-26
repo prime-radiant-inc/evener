@@ -177,22 +177,39 @@ not merely measurements:
   checked-in digest. The fixture also has 201 metadata sessions `s001`–`s201`
   in `alpha`, with the known query “archived orchid” only in `s001` and the
   newest 200 ordered by updated time; this is the scan-bound fixture.
-- The checked-in query cases are `q1=“rotate database credentials”` in each
-  mode with relevant IDs `[a01,a02,b01]` and nonrelevant `[a03,a04,x01]`,
-  `q2=“deploy health”` with relevant `[a04]`, and `q3=“archived orchid”`
-  with relevant `[s001]`. Results are filtered to caller project `alpha`, so
-  `b01` is expected to be absent from every authorized result. For every mode,
-  equal scores are ordered by the stable key `(project_id, session_id,
-  turn_seq, offset, fixture_id)`, yielding exact expected result IDs:
-  `q1 => [a01,a02]`, `q2 => [a04]`, and `q3 => [s001]` (the semantic mode must
-  use the same expected lists, not an unspecified model-dependent order).
-  Checked-in row labels and expected lists are the oracle; changing them is a
+- The checked-in query cases are `q1=“rotate database credentials”`,
+  `q2=“deploy health”`, and `q3=“archived orchid”`, each run in lexical,
+  semantic, and hybrid mode. Qrels are authorization-aware: for an `alpha`
+  caller, `q1` has relevant IDs `[a01,a02]` and nonrelevant IDs
+  `[a03,a04,x01]`; `b01` is an unauthorized-disclosure sentinel and is
+  excluded from both the relevant set and every metric denominator. `q2` has
+  relevant `[a04]` and nonrelevant `[a01,a02,a03,x01]`; `q3` has relevant
+  `[s001]` and nonrelevant `[s002,s003,s004,s005]`. Results are filtered to the
+  caller's `alpha` project, so `b01` must be absent from every authorized list.
+  The full deterministic top-five lists, including nonrelevant rows, are:
+  `q1 => [a01,a02,a04,x01,a03]`, `q2 => [a04,a01,a02,a03,x01]`, and
+  `q3 => [s001,s002,s003,s004,s005]`. Equal scores are ordered by the stable
+  key `(project_id, session_id, turn_seq, offset, fixture_id)`; every mode must
+  produce these same lists, not an unspecified model-dependent order. Checked-in
+  row labels, qrels, and expected lists are the oracle; changing them is a
   corpus-version change requiring review.
+- Metrics use standard definitions with `k=5`: `precision@5` is relevant
+  authorized results in the first five divided by 5; `recall@5` is relevant
+  authorized results in the first five divided by the number of relevant
+  authorized qrels; `MRR` is the reciprocal rank of the first relevant
+  authorized result (zero if none); and `nDCG@5` is DCG using binary qrels,
+  divided by ideal DCG for that query's authorized qrels. Macro scores are the
+  arithmetic mean of the three per-query scores; the unauthorized `b01` is
+  counted in none of these denominators.
 - On the labeled `episodic-v1` corpus, each supported mode (lexical, semantic,
-  and hybrid) must achieve recall@5 >= 0.80, precision@5 >= 0.70, MRR >= 0.70,
-  and nDCG@5 >= 0.70; hybrid must not score below lexical by more than 0.05 on
-  any of these four metrics. Ties use the specified stable key, and the fixture
-  rankings must match the exact expected IDs above.
+  and hybrid) must match the exact lists above and meet these standard-metric
+  thresholds: per-query `recall@5 >= 1.00`, `MRR >= 1.00`, and `nDCG@5 >= 1.00`;
+  per-query `precision@5` thresholds are `q1 >= 0.40`, `q2 >= 0.20`, and
+  `q3 >= 0.20`; macro precision must be >= 0.26, macro recall >= 1.00, macro
+  MRR >= 1.00, and macro nDCG >= 1.00. These are the defensible scores of the
+  exact full top-five lists (precision scores 0.40/0.20/0.20); hybrid must not
+  score below lexical by more than 0.05 on any metric. Ties use the specified
+  stable key, and the fixture rankings must match the exact expected IDs above.
 - Quote fidelity is 100% for `exact` fixtures and every `redacted` fixture must
   contain no forbidden token while retaining its expected digest/policy version.
   Unauthorized-disclosure and deletion-leakage rates must both be exactly zero.
