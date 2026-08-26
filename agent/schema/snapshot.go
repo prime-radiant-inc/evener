@@ -321,6 +321,33 @@ func SaveSessionMetaWithFS(fs afero.Fs, dir string, meta SessionMeta) error {
 	return saveSessionMetaLocked(fs, dir, meta)
 }
 
+// UpdateSessionMetaWithFS atomically reads, mutates, and writes one session's
+// metadata under the same per-session lock used by SaveSessionMeta. The
+// callback must only change fields owned by the caller; unrelated fields from a
+// concurrent autosave are retained by the locked read.
+func UpdateSessionMetaWithFS(fs afero.Fs, dir, id string, update func(*SessionMeta)) error {
+	if err := ValidateSessionID(id); err != nil {
+		return err
+	}
+	lock := sessionMetaWriteLock(id)
+	lock.Lock()
+	defer lock.Unlock()
+	meta, err := loadSessionMetaFS(fs, dir, id)
+	if err != nil {
+		return err
+	}
+	if update != nil {
+		update(&meta)
+	}
+	return saveSessionMetaLocked(fs, dir, meta)
+}
+
+// UpdateSessionMeta atomically updates one session's metadata on the real
+// filesystem.
+func UpdateSessionMeta(dir, id string, update func(*SessionMeta)) error {
+	return UpdateSessionMetaWithFS(sessionMetaFS, dir, id, update)
+}
+
 // AppendSessionObservedBy records a deduplicated observer UI relationship
 // without changing other persisted session metadata.
 func AppendSessionObservedBy(dir, workerSessionID, observerSessionID string) error {

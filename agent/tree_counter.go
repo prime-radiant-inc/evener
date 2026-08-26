@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"sync/atomic"
 )
 
@@ -14,6 +15,8 @@ type jobActivityClock struct {
 	rootSessionID string
 	revision      atomic.Uint64
 	publication   atomic.Uint64
+	publicationMu sync.Mutex
+	poisoned      atomic.Bool
 }
 
 func newJobActivityClock(rootSessionID string) *jobActivityClock {
@@ -46,19 +49,37 @@ func (c *jobActivityClock) ensureAtLeast(revision uint64) uint64 {
 }
 
 func (c *jobActivityClock) beginPublication() {
-	if c != nil {
-		c.publication.Add(1)
-	}
+	_ = c.tryBeginPublication()
 }
 
 func (c *jobActivityClock) endPublication() {
 	if c != nil {
 		c.publication.Add(1)
+		c.publicationMu.Unlock()
 	}
 }
 
+func (c *jobActivityClock) tryBeginPublication() bool {
+	if c == nil || c.poisoned.Load() {
+		return false
+	}
+	c.publicationMu.Lock()
+	if c.poisoned.Load() {
+		c.publicationMu.Unlock()
+		return false
+	}
+	c.publication.Add(1)
+	return true
+}
+
 func (c *jobActivityClock) publicationStable() bool {
-	return c != nil && c.publication.Load()%2 == 0
+	return c != nil && !c.poisoned.Load() && c.publication.Load()%2 == 0
+}
+
+func (c *jobActivityClock) poisonPublication() {
+	if c != nil {
+		c.poisoned.Store(true)
+	}
 }
 
 // defaultMaxConcurrentDelegateTurns is the default tree-wide cap on

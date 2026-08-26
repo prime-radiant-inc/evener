@@ -137,6 +137,27 @@ func TestLoadSessionJobActivityTree_RejectsContinuationWithoutAuthoritativeMetad
 	}
 }
 
+func TestHistoricalActivityRevisionUsesRootAuthorityForDescendants(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	savePastActivityMetaWithTreeRevision(t, stateDir, "rootauthority", "Root", "", 7)
+	savePastActivityMetaWithTreeRevision(t, stateDir, "childauthority", "Child", "rootauthority", 5)
+	got, err := historicalActivityRevision(stateDir, "childauthority", true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Revision != 7 || got.Publication != 2 {
+		t.Fatalf("child generation = %+v, want root revision 7 stable publication", got)
+	}
+	// A child copy can be newer or stale independently; it must never become the
+	// authority for a continuation rooted in rootauthority.
+	savePastActivityMetaWithTreeRevision(t, stateDir, "childauthority", "Child", "rootauthority", 99)
+	got, err = historicalActivityRevision(stateDir, "childauthority", true)
+	if err != nil || got.Revision != 7 {
+		t.Fatalf("after child-only mutation generation = %+v, err=%v; want root authority", got, err)
+	}
+}
+
 func TestLoadSessionJobActivityTree_RejectsOutOfStateDirChild(t *testing.T) {
 	stateDir := t.TempDir()
 	rootID := "rootboundary"

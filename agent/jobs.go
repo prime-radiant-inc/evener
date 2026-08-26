@@ -110,19 +110,22 @@ type jobManager struct {
 	// ended (clearUnrestoredActiveWatches), owed a callback-cancellation or send
 	// end notice by noticeUnrestoredWatchEnds. Written once at construction, read
 	// once in the restore sequence, both before the manager is shared.
-	watchesLostAtRestore   []*jobstore.WatchRecord
-	closing                bool
-	appendEvent            func(jobstore.Event) error
-	appendEvents           func([]jobstore.Event) error
-	createOutput           outputStoreOpener
-	newJobID               func(string) (string, error)
-	appendObservedBy       func(string, string, string) error
-	scheduleObserverLink   func(func())
-	appendAbandonSnapshots func([]watchSendTerminalSnapshot) ([]watchSendTerminalSnapshot, error)
-	appendTeardown         func([]watchSendTerminalSnapshot, []watchConfigTerminalSnapshot) error
-	appendRegistry         func([]jobstore.Event) error
-	finalizeShellAsync     func(string, jobstore.Status, string, *int)
-	emit                   func(events.EventKind, events.EventData, *provenance.Causal)
+	watchesLostAtRestore      []*jobstore.WatchRecord
+	closing                   bool
+	appendEvent               func(jobstore.Event) error
+	appendEvents              func([]jobstore.Event) error
+	createOutput              outputStoreOpener
+	newJobID                  func(string) (string, error)
+	appendObservedBy          func(string, string, string) error
+	scheduleObserverLink      func(func())
+	appendAbandonSnapshots    func([]watchSendTerminalSnapshot) ([]watchSendTerminalSnapshot, error)
+	appendTeardown            func([]watchSendTerminalSnapshot, []watchConfigTerminalSnapshot) error
+	appendRegistry            func([]jobstore.Event) error
+	finalizeShellAsync        func(string, jobstore.Status, string, *int)
+	emit                      func(events.EventKind, events.EventData, *provenance.Causal)
+	beginActivityPublication  func() (*activityPublication, error)
+	commitActivityPublication func(*activityPublication) error
+	abortActivityPublication  func(*activityPublication)
 
 	forward          func(jobstore.Event) error
 	parentJobID      string
@@ -208,6 +211,32 @@ type jobManager struct {
 	// process-only settlement batch. Other drains must wait for that batch before
 	// visiting current cursors so one source acknowledgement is charged once.
 	stableWatchSettlementRetrying bool
+}
+
+func (jm *jobManager) beginActivityEvent(event *jobstore.Event) (*activityPublication, error) {
+	if jm == nil || jm.beginActivityPublication == nil || event == nil {
+		return nil, nil
+	}
+	publication, err := jm.beginActivityPublication()
+	if err != nil || publication == nil {
+		return publication, err
+	}
+	event.RootSessionID = publication.RootID
+	event.TreeRevision = publication.Revision
+	return publication, nil
+}
+
+func (jm *jobManager) commitActivityEvent(publication *activityPublication) error {
+	if jm == nil || jm.commitActivityPublication == nil {
+		return nil
+	}
+	return jm.commitActivityPublication(publication)
+}
+
+func (jm *jobManager) abortActivityEvent(publication *activityPublication) {
+	if jm != nil && jm.abortActivityPublication != nil {
+		jm.abortActivityPublication(publication)
+	}
 }
 
 // defaultCloseGrace is the graceful-shutdown window closeRuntimeState gives a
@@ -902,10 +931,23 @@ func (jm *jobManager) createShell(opts createShellOpts) (*jobstore.JobRecord, er
 		OutputPath:       rec.OutputPath,
 		Provenance:       provenance.Clone(jobProvenance),
 	}
-	if err := jm.appendEvent(started); err != nil {
+	publication, err := jm.beginActivityEvent(&started)
+	if err != nil {
 		jm.mu.Unlock()
 		_ = output.Close()
 		_ = jobstore.RemoveOutputArtifacts(outputPath)
+		return nil, err
+	}
+	if err := jm.appendEvent(started); err != nil {
+		jm.abortActivityEvent(publication)
+		jm.mu.Unlock()
+		_ = output.Close()
+		_ = jobstore.RemoveOutputArtifacts(outputPath)
+		return nil, err
+	}
+	if err := jm.commitActivityEvent(publication); err != nil {
+		jm.mu.Unlock()
+		_ = output.Close()
 		return nil, err
 	}
 	if err := jm.forwardLocked(started); err != nil {
@@ -1067,6 +1109,8 @@ func (jm *jobManager) emitJobStarted(e jobstore.Event, run *runningJob) {
 		TranscriptRef:    shellTranscriptRef(e.JobID),
 		OriginTurnID:     originTurnID,
 		OriginToolCallID: originToolCallID,
+		RootSessionID:    e.RootSessionID,
+		TreeRevision:     e.TreeRevision,
 		OriginItemID:     originItemID,
 	}, e.Provenance)
 }
@@ -1123,6 +1167,8 @@ func (jm *jobManager) emitJobFinished(e jobstore.Event, run *runningJob) {
 		Task:             task,
 		OriginTurnID:     originTurnID,
 		OriginToolCallID: originToolCallID,
+		RootSessionID:    e.RootSessionID,
+		TreeRevision:     e.TreeRevision,
 		OriginItemID:     originItemID,
 	}, e.Provenance)
 }
@@ -1735,7 +1781,15 @@ func (jm *jobManager) writeFinishJob(run *runningJob, status jobstore.Status, re
 		Provenance:             provenance.Clone(run.rec.Provenance),
 	}
 	terminal.finished = finished
+	publication, err := jm.beginActivityEvent(&finished)
+	if err != nil {
+		return nil, &terminalRecordPersistError{status: finished.Status, err: err}
+	}
 	if err := jm.appendEvent(finished); err != nil {
+		jm.abortActivityEvent(publication)
+		return nil, &terminalRecordPersistError{status: finished.Status, err: err}
+	}
+	if err := jm.commitActivityEvent(publication); err != nil {
 		return nil, &terminalRecordPersistError{status: finished.Status, err: err}
 	}
 

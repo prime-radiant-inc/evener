@@ -139,6 +139,9 @@ func (s *Session) Meta() schema.SessionMeta {
 		}
 		jobTreeRevision = s.jobActivityClock.revision.Load()
 		jobTreePublication = s.jobActivityClock.publication.Load()
+		if s.jobActivityClock.poisoned.Load() && jobTreePublication%2 == 0 {
+			jobTreePublication++
+		}
 	}
 	return schema.SessionMeta{
 		ID:                       s.id,

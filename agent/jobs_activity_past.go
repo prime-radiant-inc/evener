@@ -90,6 +90,26 @@ func historicalActivityRevision(stateDir, sessionID string, required bool) (acti
 		}
 		return activityHistoricalGeneration{}, err
 	}
+	rootID := strings.TrimSpace(meta.JobTreeRootSessionID)
+	if rootID == "" {
+		if required && meta.IsSubagent {
+			return activityHistoricalGeneration{}, activityContinuationRestartError("descendant root authority is unavailable")
+		}
+		rootID = sessionID
+	}
+	if rootID != sessionID {
+		rootMeta, rootErr := schema.LoadSessionMeta(stateDir, rootID)
+		if rootErr != nil {
+			if required {
+				return activityHistoricalGeneration{}, activityContinuationRestartError("authoritative historical root is unavailable")
+			}
+			return activityHistoricalGeneration{}, rootErr
+		}
+		if declared := strings.TrimSpace(rootMeta.JobTreeRootSessionID); declared != "" && declared != rootID {
+			return activityHistoricalGeneration{}, activityContinuationRestartError("historical root identity is inconsistent")
+		}
+		meta = rootMeta
+	}
 	if required && (meta.JobTreePublication == 0 || meta.JobTreePublication%2 != 0) {
 		return activityHistoricalGeneration{}, activityContinuationRestartError("authoritative historical publication is unavailable")
 	}

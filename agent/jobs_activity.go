@@ -441,7 +441,7 @@ func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bo
 func buildActivityContinuationSnapshot(loc activitySessionLocator, cont activityContinuation, visited map[string]bool, required bool) (*activitySessionSnapshot, error) {
 	if len(cont.Path) == 0 {
 		if loc.sessionID != cont.SessionID {
-			return nil, fmt.Errorf("continuation session %q does not match root %q", cont.SessionID, loc.sessionID)
+			return nil, activityContinuationRestartError("continuation session no longer matches the root")
 		}
 		return buildActivityFullSnapshot(loc, visited, required)
 	}
@@ -451,7 +451,7 @@ func buildActivityContinuationSnapshot(loc activitySessionLocator, cont activity
 func buildActivityContinuationAt(loc activitySessionLocator, cont activityContinuation, hop int, visited map[string]bool, required bool) (*activitySessionSnapshot, error) {
 	if hop == len(cont.Path) {
 		if loc.sessionID != cont.SessionID {
-			return nil, fmt.Errorf("continuation session %q does not match resolved path %q", cont.SessionID, loc.sessionID)
+			return nil, activityContinuationRestartError("continuation session no longer matches the resolved path")
 		}
 		return buildActivityFullSnapshot(loc, visited, required)
 	}
@@ -466,7 +466,7 @@ func buildActivityContinuationAt(loc activitySessionLocator, cont activityContin
 			return nil, err
 		}
 		if visited[childID] {
-			return nil, errors.New("cycle detected")
+			return nil, activityContinuationRestartError("continuation child cycle detected")
 		}
 		childLoc, err := resolveActivityChildByID(loc, loaded, childID)
 		if err != nil {
@@ -481,7 +481,7 @@ func buildActivityContinuationAt(loc activitySessionLocator, cont activityContin
 		filtered := activityFilterSnapshotToDelegate(loaded.snapshot, delegateID, child)
 		return &filtered, nil
 	}
-	return nil, fmt.Errorf("continuation path hop %q not found", delegateID)
+	return nil, activityContinuationRestartError("continuation path hop no longer exists")
 }
 
 func loadActivityBase(loc activitySessionLocator, required bool) (activityLoadedBase, error) {

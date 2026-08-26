@@ -307,6 +307,9 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	jm.notifySystem = s.routeSystemNotification
 	jm.wake = s.notify
 	jm.emit = s.emitWithJobTreeRevision
+	jm.beginActivityPublication = s.beginActivityPublication
+	jm.commitActivityPublication = s.commitActivityPublication
+	jm.abortActivityPublication = s.abortActivityPublication
 	jm.currentProvenance = s.activeCausalProvenance
 	jm.clock = s.clock
 	jm.now = s.clock.Now
@@ -695,6 +698,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	}
 	if jobClock != nil {
 		jobClock.ensureAtLeast(meta.JobTreeRevision)
+		if meta.JobTreePublication%2 != 0 {
+			jobClock.publication.Store(meta.JobTreePublication)
+			jobClock.poisonPublication()
+		} else if meta.JobTreePublication != 0 {
+			jobClock.publication.Store(meta.JobTreePublication)
+		}
 	}
 	cfg.spawn.jobActivityClock = jobClock
 	s := &Session{
@@ -781,6 +790,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	jm.notifySystem = s.routeSystemNotification
 	jm.wake = s.notify
 	jm.emit = s.emitWithJobTreeRevision
+	jm.beginActivityPublication = s.beginActivityPublication
+	jm.commitActivityPublication = s.commitActivityPublication
+	jm.abortActivityPublication = s.abortActivityPublication
 	jm.currentProvenance = s.activeCausalProvenance
 	jm.clock = s.clock
 	jm.now = s.clock.Now

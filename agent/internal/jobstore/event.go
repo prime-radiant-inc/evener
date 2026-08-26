@@ -43,6 +43,8 @@ type Event struct {
 	ParentSessionID  string     `json:"parent_session_id,omitempty"`
 	OwnerSessionID   string     `json:"owner_session_id,omitempty"`
 	VisibleToSession string     `json:"visible_to_session_id,omitempty"`
+	RootSessionID    string     `json:"root_session_id,omitempty"`
+	TreeRevision     uint64     `json:"tree_revision,omitempty"`
 	ParentJobID      string     `json:"parent_job_id,omitempty"`
 	ParentDelegateID string     `json:"parent_delegate_id,omitempty"`
 	OriginTurnID     string     `json:"origin_turn_id,omitempty"`
