@@ -58,10 +58,10 @@ const (
 	DefaultPageMaxCount   = 128
 	// Capture bounds keep startup catalog work finite even when a provider
 	// returns an unexpectedly large or malformed model list.
-	captureMaxProviders   = 64
+	captureMaxProviders   = 16
 	captureMaxModels      = 4096
 	captureMaxBytes       = 256 * 1024
-	captureMaxProviderLen = 128
+	captureMaxProviderLen = 64
 	captureMaxModelIDLen  = 256
 )
 
@@ -220,7 +220,11 @@ func boundedProviders(providers []string) ([]string, bool) {
 }
 
 func safeProviderName(name string) bool {
-	return name == strings.TrimSpace(name) && safeIdentifier(name, captureMaxProviderLen)
+	if name != strings.TrimSpace(name) || !safeIdentifier(name, captureMaxProviderLen) {
+		return false
+	}
+	encoded, _ := json.Marshal(name)
+	return len(encoded) == len(name)+2
 }
 
 func safeModelID(id string) (string, bool) {

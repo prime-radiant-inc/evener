@@ -77,6 +77,22 @@ func TestCaptureRejectsUnsafeModelIdentifiers(t *testing.T) {
 	}
 }
 
+func TestCaptureRejectsProviderNamesThatCouldExpandThePageEnvelope(t *testing.T) {
+	providers := []string{"safe", "bad&name", `bad"name`, strings.Repeat("x", 65)}
+	var calls atomic.Int32
+	snapshot := Capture(context.Background(), providers, func(context.Context, string) ([]llm.ModelInfo, error) {
+		calls.Add(1)
+		return []llm.ModelInfo{{ID: "model"}}, nil
+	}, nil, time.Second)
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("provider fetches = %d, want only the safe provider", got)
+	}
+	if snapshot.Complete || !slices.Equal(snapshot.Choices, []string{"safe/model"}) {
+		t.Fatalf("provider-sanitized snapshot = %#v", snapshot)
+	}
+}
+
 func TestCaptureEnforcesProviderModelAndByteBounds(t *testing.T) {
 	t.Run("providers", func(t *testing.T) {
 		providers := make([]string, 65)
@@ -88,14 +104,14 @@ func TestCaptureEnforcesProviderModelAndByteBounds(t *testing.T) {
 			calls.Add(1)
 			return []llm.ModelInfo{{ID: "model"}}, nil
 		}, nil, time.Second)
-		if got := calls.Load(); got != 64 {
-			t.Fatalf("provider fetches = %d, want bounded at 64", got)
+		if got := calls.Load(); got != 16 {
+			t.Fatalf("provider fetches = %d, want bounded at 16", got)
 		}
-		if snapshot.Complete || len(snapshot.Choices) != 64 {
+		if snapshot.Complete || len(snapshot.Choices) != 16 {
 			t.Fatalf("provider-bounded snapshot = %#v", snapshot)
 		}
-		if snapshot.Choices[0] != "provider-00/model" || snapshot.Choices[63] != "provider-63/model" {
-			t.Fatalf("provider bound was not deterministic: first=%q last=%q", snapshot.Choices[0], snapshot.Choices[63])
+		if snapshot.Choices[0] != "provider-00/model" || snapshot.Choices[15] != "provider-15/model" {
+			t.Fatalf("provider bound was not deterministic: first=%q last=%q", snapshot.Choices[0], snapshot.Choices[15])
 		}
 	})
 
@@ -131,6 +147,24 @@ func TestCaptureEnforcesProviderModelAndByteBounds(t *testing.T) {
 			t.Fatalf("byte truncation was not reported as incomplete: %#v", snapshot.Status)
 		}
 	})
+}
+
+func TestCaptureProviderBoundKeepsPublicPageEnvelopeUsable(t *testing.T) {
+	providers := make([]string, 65)
+	for i := range providers {
+		providers[i] = fmt.Sprintf("provider-%02d-%s", i, strings.Repeat("x", 52))
+	}
+	snapshot := Capture(context.Background(), providers, func(context.Context, string) ([]llm.ModelInfo, error) {
+		return []llm.ModelInfo{{ID: "model"}}, nil
+	}, nil, time.Second)
+
+	page, err := snapshot.Page("", DefaultPageMaxCount, DefaultPageMaxBytes)
+	if err != nil {
+		t.Fatalf("bounded capture produced an unusable page envelope: %v", err)
+	}
+	if got := page.SerializedBytes(); got > DefaultPageMaxBytes {
+		t.Fatalf("page envelope = %d bytes, exceeds %d", got, DefaultPageMaxBytes)
+	}
 }
 
 func TestRenderInlineRequiresCompleteCountAndUTF8ByteBounds(t *testing.T) {
