@@ -6,10 +6,14 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"hash"
+	"math"
+	"reflect"
 	"sort"
 	"sync"
 	"time"
@@ -35,6 +39,19 @@ const (
 // buildNavigationServiceProjectionContext is a narrow test seam proving
 // resource misses reuse the retained core projection rather than rebuilding it.
 var buildNavigationServiceProjectionContext = buildNavigationProjectionContext
+
+// These narrow seams make cancellation at the publication linearization point
+// and during a large string fingerprint deterministic in tests. Production
+// behavior is only the context check shown here.
+var navigationBeforeSnapshotCommit = func(context.Context) {}
+
+var navigationFingerprintStringChunkContext = func(ctx context.Context, _ string) error {
+	return ctx.Err()
+}
+
+var navigationPublicationCommittedLocked = func(*NavigationService) {}
+
+var navigationBeforePublicationDrainLock = func() {}
 
 type navigationSourceRevision struct {
 	Inputs uint64
@@ -337,6 +354,7 @@ func (s *NavigationService) PublicationReady() <-chan struct{} {
 // DrainPublications transfers publication authority to Task 7 without starting
 // a build. Every committed payload is returned FIFO exactly once.
 func (s *NavigationService) DrainPublications() []appwire.NavigationInvalidatedPayload {
+	navigationBeforePublicationDrainLock()
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	out := append([]appwire.NavigationInvalidatedPayload(nil), s.publications...)
@@ -497,10 +515,23 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 			expected = after
 			continue
 		}
-		changes, states, err := navigationNextStates(s.resources, fingerprints, dependencies)
+		changes, states, err := navigationNextStatesContext(ctx, s.resources, fingerprints, dependencies)
 		if err != nil {
 			s.mu.Unlock()
-			flight.err = err
+			if ctx.Err() != nil {
+				flight.err = navigationUnavailable(ctx.Err())
+			} else {
+				flight.err = err
+			}
+			return
+		}
+		navigationBeforeSnapshotCommit(ctx)
+		// This is the publication linearization point. State transition work
+		// above is detached; after this check every resources/core/sequence/FIFO
+		// mutation occurs atomically under s.mu.
+		if err := ctx.Err(); err != nil {
+			s.mu.Unlock()
+			flight.err = navigationUnavailable(err)
 			return
 		}
 		s.resources = states
@@ -509,7 +540,6 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 		flight.changes = changes
 		s.core = &navigationCoreSnapshot{projection: projection, source: after, epoch: epoch, nextBoundary: snapshot.NextBoundary}
 		s.coreBuilds++
-		published := false
 		if flight.mutated {
 			flight.mutation, err = s.commitTargetsLocked(changes, flight.hint)
 			if err != nil {
@@ -523,18 +553,19 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 					Sequence:     s.sequence,
 					Targets:      append([]appwire.NavigationInvalidationTarget(nil), flight.mutation.Targets...),
 				})
-				published = true
+				// publicationReady is a nonblocking level token. Installing it in
+				// the same critical section as the FIFO append prevents a drain
+				// from observing the payload between append and token creation.
+				select {
+				case s.publicationReady <- struct{}{}:
+				default:
+				}
+				navigationPublicationCommittedLocked(s)
 			}
 		}
 		flight.finalized = true
 		woke := flight.mutated
 		s.mu.Unlock()
-		if published {
-			select {
-			case s.publicationReady <- struct{}{}:
-			default:
-			}
-		}
 		// Commit owns the scheduler wake, including canceled-waiter builds.
 		if woke {
 			select {
@@ -547,16 +578,32 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 }
 
 func navigationNextStates(previous map[navigationResourceKey]navigationResourceState, fingerprints map[navigationResourceKey]navigationFingerprint, dependencies map[navigationResourceKey][]navigationResourceKey) (map[navigationResourceKey]bool, map[navigationResourceKey]navigationResourceState, error) {
+	return navigationNextStatesContext(context.Background(), previous, fingerprints, dependencies)
+}
+
+func navigationNextStatesContext(ctx context.Context, previous map[navigationResourceKey]navigationResourceState, fingerprints map[navigationResourceKey]navigationFingerprint, dependencies map[navigationResourceKey][]navigationResourceKey) (map[navigationResourceKey]bool, map[navigationResourceKey]navigationResourceState, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, nil, err
+	}
 	next := make(map[navigationResourceKey]navigationResourceState, len(previous)+len(fingerprints))
 	changes := make(map[navigationResourceKey]bool)
 	keys := make(map[navigationResourceKey]bool, len(previous)+len(fingerprints))
 	for key := range previous {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		keys[key] = true
 	}
 	for key := range fingerprints {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		keys[key] = true
 	}
 	for key := range keys {
+		if err := ctx.Err(); err != nil {
+			return nil, nil, err
+		}
 		old, existed := previous[key]
 		fingerprint, present := fingerprints[key]
 		if !existed {
@@ -600,7 +647,7 @@ func navigationLogicalFingerprintsWithContext(ctx context.Context, projection na
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		fingerprint, err := navigationLogicalFingerprint(value)
+		fingerprint, err := navigationLogicalFingerprintContext(ctx, value)
 		if err != nil {
 			return err
 		}
@@ -764,11 +811,157 @@ func navigationLogicalNodeContext(ctx context.Context, projection navigationProj
 }
 
 func navigationLogicalFingerprint(value any) (navigationFingerprint, error) {
-	encoded, err := json.Marshal(value)
-	if err != nil {
+	return navigationLogicalFingerprintContext(context.Background(), value)
+}
+
+const navigationFingerprintStringChunkSize = 4 << 10
+
+var navigationTimeType = reflect.TypeFor[time.Time]()
+
+func navigationLogicalFingerprintContext(ctx context.Context, value any) (navigationFingerprint, error) {
+	digest := sha256.New()
+	if err := writeNavigationFingerprintValue(ctx, digest, reflect.ValueOf(value)); err != nil {
 		return navigationFingerprint{}, err
 	}
-	return sha256.Sum256(encoded), nil
+	var fingerprint navigationFingerprint
+	copy(fingerprint[:], digest.Sum(nil))
+	return fingerprint, nil
+}
+
+// writeNavigationFingerprintValue is a deterministic structural encoding used
+// only for logical equality. It checks cancellation at every scalar, collection
+// element, struct field, pointer recursion, and bounded string chunk; no whole
+// resource is ever marshaled into an intermediate byte slice.
+func writeNavigationFingerprintValue(ctx context.Context, digest hash.Hash, value reflect.Value) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if !value.IsValid() {
+		writeNavigationFingerprintByte(digest, '0')
+		return nil
+	}
+	if value.Type() == navigationTimeType {
+		writeNavigationFingerprintByte(digest, 't')
+		text, err := value.Interface().(time.Time).AppendText(nil)
+		if err != nil {
+			return fmt.Errorf("fingerprint navigation time: %w", err)
+		}
+		return writeNavigationFingerprintString(ctx, digest, string(text))
+	}
+
+	switch value.Kind() {
+	case reflect.Interface:
+		writeNavigationFingerprintByte(digest, 'i')
+		if value.IsNil() {
+			writeNavigationFingerprintByte(digest, '0')
+			return nil
+		}
+		return writeNavigationFingerprintValue(ctx, digest, value.Elem())
+	case reflect.Pointer:
+		writeNavigationFingerprintByte(digest, 'p')
+		if value.IsNil() {
+			writeNavigationFingerprintByte(digest, '0')
+			return nil
+		}
+		writeNavigationFingerprintByte(digest, '1')
+		return writeNavigationFingerprintValue(ctx, digest, value.Elem())
+	case reflect.Struct:
+		writeNavigationFingerprintByte(digest, 's')
+		writeNavigationFingerprintUint(digest, uint64(value.NumField()))
+		for index := range value.NumField() {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := writeNavigationFingerprintValue(ctx, digest, value.Field(index)); err != nil {
+				return err
+			}
+		}
+		return nil
+	case reflect.Slice, reflect.Array:
+		writeNavigationFingerprintByte(digest, 'a')
+		writeNavigationFingerprintUint(digest, uint64(value.Len()))
+		for index := range value.Len() {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := writeNavigationFingerprintValue(ctx, digest, value.Index(index)); err != nil {
+				return err
+			}
+		}
+		return nil
+	case reflect.Map:
+		if value.Type().Key().Kind() != reflect.String {
+			return fmt.Errorf("fingerprint navigation value: unsupported map key %s", value.Type().Key())
+		}
+		writeNavigationFingerprintByte(digest, 'm')
+		keys := value.MapKeys()
+		sort.Slice(keys, func(i, j int) bool { return keys[i].String() < keys[j].String() })
+		writeNavigationFingerprintUint(digest, uint64(len(keys)))
+		for _, key := range keys {
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+			if err := writeNavigationFingerprintString(ctx, digest, key.String()); err != nil {
+				return err
+			}
+			if err := writeNavigationFingerprintValue(ctx, digest, value.MapIndex(key)); err != nil {
+				return err
+			}
+		}
+		return nil
+	case reflect.String:
+		writeNavigationFingerprintByte(digest, 'q')
+		return writeNavigationFingerprintString(ctx, digest, value.String())
+	case reflect.Bool:
+		writeNavigationFingerprintByte(digest, 'b')
+		if value.Bool() {
+			writeNavigationFingerprintByte(digest, '1')
+		} else {
+			writeNavigationFingerprintByte(digest, '0')
+		}
+		return nil
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		writeNavigationFingerprintByte(digest, 'n')
+		writeNavigationFingerprintUint(digest, uint64(value.Int()))
+		return nil
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64, reflect.Uintptr:
+		writeNavigationFingerprintByte(digest, 'u')
+		writeNavigationFingerprintUint(digest, value.Uint())
+		return nil
+	case reflect.Float32:
+		writeNavigationFingerprintByte(digest, 'f')
+		writeNavigationFingerprintUint(digest, uint64(math.Float32bits(float32(value.Float()))))
+		return nil
+	case reflect.Float64:
+		writeNavigationFingerprintByte(digest, 'd')
+		writeNavigationFingerprintUint(digest, math.Float64bits(value.Float()))
+		return nil
+	default:
+		return fmt.Errorf("fingerprint navigation value: unsupported %s", value.Kind())
+	}
+}
+
+func writeNavigationFingerprintString(ctx context.Context, digest hash.Hash, value string) error {
+	writeNavigationFingerprintUint(digest, uint64(len(value)))
+	for offset := 0; offset < len(value); offset += navigationFingerprintStringChunkSize {
+		end := min(offset+navigationFingerprintStringChunkSize, len(value))
+		chunk := value[offset:end]
+		if err := navigationFingerprintStringChunkContext(ctx, chunk); err != nil {
+			return err
+		}
+		_, _ = digest.Write([]byte(chunk))
+	}
+	return ctx.Err()
+}
+
+func writeNavigationFingerprintByte(digest hash.Hash, value byte) {
+	_, _ = digest.Write([]byte{value})
+}
+
+func writeNavigationFingerprintUint(digest hash.Hash, value uint64) {
+	var encoded [10]byte
+	length := binary.PutUvarint(encoded[:], value)
+	_, _ = digest.Write(encoded[:length])
 }
 
 // commitFlightTargets makes a shared capture one logical mutation. Joined

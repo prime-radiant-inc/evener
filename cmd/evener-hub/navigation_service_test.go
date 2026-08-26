@@ -5,7 +5,9 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"reflect"
 	"regexp"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -407,6 +409,63 @@ func TestNavigationServicePublicationFIFOHasExactSequencesAndRefreshNeverConsume
 	}
 }
 
+func TestNavigationServiceConcurrentAppendAndDrainKeepFIFOAndWakeAtomic(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	service := newTestNavigationService(t, source)
+	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		t.Fatal(err)
+	}
+
+	previousCommitHook := navigationPublicationCommittedLocked
+	previousDrainHook := navigationBeforePublicationDrainLock
+	commitState := make(chan [2]int, 1)
+	releaseCommit := make(chan struct{})
+	drainAttempted := make(chan struct{})
+	var drainOnce sync.Once
+	navigationPublicationCommittedLocked = func(locked *NavigationService) {
+		commitState <- [2]int{len(locked.publications), len(locked.publicationReady)}
+		<-releaseCommit
+	}
+	navigationBeforePublicationDrainLock = func() {
+		drainOnce.Do(func() { close(drainAttempted) })
+	}
+	t.Cleanup(func() {
+		navigationPublicationCommittedLocked = previousCommitHook
+		navigationBeforePublicationDrainLock = previousDrainHook
+	})
+
+	source.changeTitle("atomic-publication")
+	refreshDone := make(chan error, 1)
+	go func() {
+		_, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
+		refreshDone <- err
+	}()
+	if state := <-commitState; state != [2]int{1, 1} {
+		t.Fatalf("locked publication state = %v, want one FIFO payload and one level token", state)
+	}
+	drained := make(chan []appwire.NavigationInvalidatedPayload, 1)
+	go func() { drained <- service.DrainPublications() }()
+	<-drainAttempted
+	select {
+	case got := <-drained:
+		t.Fatalf("drain crossed the append/token critical section: %+v", got)
+	default:
+	}
+	close(releaseCommit)
+	if err := <-refreshDone; err != nil {
+		t.Fatal(err)
+	}
+	publications := <-drained
+	if len(publications) != 1 || publications[0].Sequence != 1 {
+		t.Fatalf("concurrent drain = %+v, want committed sequence 1", publications)
+	}
+	select {
+	case <-service.PublicationReady():
+		t.Fatal("empty FIFO retained a stale publication wake")
+	default:
+	}
+}
+
 func TestNavigationServiceConcurrentRefreshCoalescesCoreBuild(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
@@ -573,6 +632,191 @@ func TestNavigationServiceBuildDeadlineInterruptsProjectionWithoutCommitOrPublic
 	}
 }
 
+func TestNavigationServiceDeadlineAtCommitRevisesAndPublishesNothing(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	service := newTestNavigationService(t, source)
+	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		t.Fatal(err)
+	}
+	service.buildTimeout = 20 * time.Millisecond
+	projectKey := (navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}).Semantic()
+	beforeRevision := service.CurrentRevision(projectKey)
+	beforeStats := service.Stats()
+	beforeCapability := *service.Capability()
+	service.mu.Lock()
+	beforeCore := service.core
+	beforeResources := make(map[navigationResourceKey]navigationResourceState, len(service.resources))
+	for key, state := range service.resources {
+		state.Dependencies = cloneNavigationDependencies(state.Dependencies)
+		beforeResources[key] = state
+	}
+	service.mu.Unlock()
+
+	previous := navigationBeforeSnapshotCommit
+	entered := make(chan struct{})
+	var once sync.Once
+	navigationBeforeSnapshotCommit = func(ctx context.Context) {
+		once.Do(func() { close(entered) })
+		<-ctx.Done()
+	}
+	t.Cleanup(func() { navigationBeforeSnapshotCommit = previous })
+	source.changeTitle("deadline-at-commit")
+	_, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
+	<-entered
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want commit deadline", err)
+	}
+	var status interface{ StatusCode() int }
+	if !errors.As(err, &status) || status.StatusCode() != 503 {
+		t.Fatalf("error = %T %v, want typed 503", err, err)
+	}
+	service.mu.Lock()
+	afterCore := service.core
+	afterResources := service.resources
+	service.mu.Unlock()
+	if afterCore != beforeCore || !reflect.DeepEqual(afterResources, beforeResources) {
+		t.Fatal("expired commit changed retained core or resource states")
+	}
+	if got := service.CurrentRevision(projectKey); got != beforeRevision {
+		t.Fatalf("expired commit revision = %d, want %d", got, beforeRevision)
+	}
+	if got := service.Stats(); !reflect.DeepEqual(got, beforeStats) {
+		t.Fatalf("expired commit changed build/cache stats: before=%+v after=%+v", beforeStats, got)
+	}
+	if got := service.Capability(); got == nil || *got != beforeCapability {
+		t.Fatalf("expired commit changed capability: before=%+v after=%+v", beforeCapability, got)
+	}
+	if publications := service.DrainPublications(); len(publications) != 0 {
+		t.Fatalf("expired commit published: %+v", publications)
+	}
+}
+
+func TestNavigationLogicalStructuralFingerprintIsStableAndValueSensitive(t *testing.T) {
+	now := time.Unix(1_700_000_000, 123_000_000).UTC()
+	value := hubapi.NavigationSessionSummary{
+		Ref:       "local:root",
+		SessionID: navigationTestSessionID,
+		Title:     "root",
+		Live:      true,
+		UpdatedAt: &now,
+		Children: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{
+			{Ref: "local:child", SessionID: "01ARZ3NDEKTSV4RRFFQ69G5FAW", Title: "child"},
+		},
+	}
+	first, err := navigationLogicalFingerprintContext(t.Context(), value)
+	if err != nil {
+		t.Fatal(err)
+	}
+	equal := value
+	equal.Children = append(hubapi.NavigationArray[hubapi.NavigationSessionSummary](nil), value.Children...)
+	second, err := navigationLogicalFingerprintContext(t.Context(), equal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first != second {
+		t.Fatalf("equal logical values produced unequal fingerprints: %x != %x", first, second)
+	}
+	equal.Children[0].Title = "changed"
+	changed, err := navigationLogicalFingerprintContext(t.Context(), equal)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if changed == first {
+		t.Fatalf("changed nested scalar retained fingerprint %x", changed)
+	}
+}
+
+func TestNavigationLogicalFingerprintCancellationInterruptsLargeStringChunks(t *testing.T) {
+	previous := navigationFingerprintStringChunkContext
+	ctx, cancel := context.WithCancel(t.Context())
+	var chunks atomic.Int32
+	navigationFingerprintStringChunkContext = func(ctx context.Context, _ string) error {
+		if chunks.Add(1) == 2 {
+			cancel()
+		}
+		return ctx.Err()
+	}
+	t.Cleanup(func() { navigationFingerprintStringChunkContext = previous })
+	_, err := navigationLogicalFingerprintContext(ctx, strings.Repeat("large-value-", navigationFingerprintStringChunkSize))
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("large string fingerprint error = %v, want cancellation", err)
+	}
+	if got := chunks.Load(); got != 2 {
+		t.Fatalf("large string fingerprint continued after cancellation: %d chunks", got)
+	}
+}
+
+func TestNavigationServiceDeadlineInterruptsMidFingerprintWithoutPublication(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0).UTC()
+	source := newTestNavigationSource(now)
+	const rowCount = 500
+	rows := make([]hubcore.TreeNode, rowCount)
+	for index := range rows {
+		rows[index] = hubcore.TreeNode{
+			ID:        fmt.Sprintf("%026d", index+1),
+			Title:     "before",
+			Project:   "p1",
+			Kind:      "session",
+			State:     "idle",
+			UpdatedAt: now,
+		}
+	}
+	source.inputs.Tree.Projects[0].Current = rows
+	service := newTestNavigationService(t, source)
+	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		t.Fatal(err)
+	}
+	service.buildTimeout = 30 * time.Millisecond
+	projectKey := (navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}).Semantic()
+	beforeRevision := service.CurrentRevision(projectKey)
+	beforeStats := service.Stats()
+	beforeCapability := *service.Capability()
+
+	source.mu.Lock()
+	for index := range source.inputs.Tree.Projects[0].Current {
+		source.inputs.Tree.Projects[0].Current[index].Title = strings.Repeat("x", maxNavigationTitleRunes)
+	}
+	source.revision++
+	source.mu.Unlock()
+	previous := navigationFingerprintStringChunkContext
+	entered := make(chan struct{})
+	var matchingChunks atomic.Int32
+	var once sync.Once
+	navigationFingerprintStringChunkContext = func(ctx context.Context, chunk string) error {
+		if len(chunk) == maxNavigationTitleRunes && chunk[0] == 'x' && matchingChunks.Add(1) == rowCount/2 {
+			once.Do(func() { close(entered) })
+			<-ctx.Done()
+		}
+		return ctx.Err()
+	}
+	t.Cleanup(func() { navigationFingerprintStringChunkContext = previous })
+
+	_, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
+	<-entered
+	if !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("error = %v, want hashing deadline", err)
+	}
+	var status interface{ StatusCode() int }
+	if !errors.As(err, &status) || status.StatusCode() != 503 {
+		t.Fatalf("error = %T %v, want typed 503", err, err)
+	}
+	if got := matchingChunks.Load(); got != rowCount/2 {
+		t.Fatalf("fingerprinting continued after cancellation: %d chunks", got)
+	}
+	if got := service.CurrentRevision(projectKey); got != beforeRevision {
+		t.Fatalf("canceled fingerprint revision = %d, want %d", got, beforeRevision)
+	}
+	if got := service.Stats(); !reflect.DeepEqual(got, beforeStats) {
+		t.Fatalf("canceled fingerprint changed build/cache stats: before=%+v after=%+v", beforeStats, got)
+	}
+	if got := service.Capability(); got == nil || *got != beforeCapability {
+		t.Fatalf("canceled fingerprint changed capability: before=%+v after=%+v", beforeCapability, got)
+	}
+	if publications := service.DrainPublications(); len(publications) != 0 {
+		t.Fatalf("canceled fingerprint published: %+v", publications)
+	}
+}
+
 type cancelAfterChecksContext struct {
 	context.Context
 	checks atomic.Int32
@@ -584,6 +828,27 @@ func (c *cancelAfterChecksContext) Err() error {
 		return context.Canceled
 	}
 	return nil
+}
+
+func TestNavigationNextStatesChecksContextWhileCreatingTombstones(t *testing.T) {
+	previous := make(map[navigationResourceKey]navigationResourceState, 100)
+	for index := range 100 {
+		key := navigationResourceKey{Kind: navigationResourceLocation, ID: fmt.Sprintf("local:%026d", index)}
+		previous[key] = navigationResourceState{Revision: 1, Present: true}
+	}
+	// One entry check plus all 100 previous-key union checks means this expires
+	// inside the final per-key transition loop that creates tombstones.
+	ctx := &cancelAfterChecksContext{Context: context.Background(), limit: 150}
+	changes, next, err := navigationNextStatesContext(ctx, previous, nil, nil)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("transition error = %v, want cancellation", err)
+	}
+	if changes != nil || next != nil {
+		t.Fatalf("canceled transition returned partial state: changes=%d next=%d", len(changes), len(next))
+	}
+	if got := ctx.checks.Load(); got > ctx.limit+1 {
+		t.Fatalf("state transition continued after cancellation: %d checks", got)
+	}
 }
 
 func TestNavigationProjectionAndLogicalFingerprintTraversalCheckContextInternally(t *testing.T) {
