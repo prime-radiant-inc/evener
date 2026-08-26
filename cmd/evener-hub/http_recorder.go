@@ -22,10 +22,9 @@ var (
 	httpRecorderMarshal  = json.Marshal
 )
 
-// recordedHTTPRequest is one JSONL line in hub-http.jsonl. It is the raw,
-// unscrubbed inbound request; sanitization happens later in evener-fuzz-harvest,
-// which for the http fuzz surface reverse-maps only Method+Path (headers and
-// body never reach a committed seed). The file is never committed.
+// recordedHTTPRequest is one JSONL line in hub-http.jsonl. Navigation requests
+// are redacted at creation because this recorder precedes authentication; every
+// other request preserves the existing raw corpus-harvesting behavior.
 type recordedHTTPRequest struct {
 	Method  string              `json:"method"`
 	Path    string              `json:"path"`
@@ -67,6 +66,17 @@ func newHTTPRequestRecorder(stateRoot string) func(http.Handler) http.Handler {
 				Path:    r.URL.Path,
 				Query:   r.URL.RawQuery,
 				Headers: r.Header,
+			}
+			if isNavigationRequestPath(r) {
+				// Do not copy inbound headers: in particular Authorization and Cookie
+				// may authenticate a request whose dynamic path is private. The route
+				// class is fixed and never contains a raw or decoded identity.
+				rec.Path = "navigation/" + navigationRouteClass(r)
+				rec.Query = ""
+				rec.Headers = nil
+				write(rec)
+				next.ServeHTTP(w, r)
+				return
 			}
 			if r.Body != nil {
 				// Read a capped copy for the recording, then restore the body so the

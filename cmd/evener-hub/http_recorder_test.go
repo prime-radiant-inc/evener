@@ -105,6 +105,37 @@ func TestHTTPRecorderRecordsAndPreservesBody(t *testing.T) {
 	}
 }
 
+func TestHTTPRequestRecorderRedactsNavigationAtCreation(t *testing.T) {
+	t.Setenv(envvars.EVENERRecordHTTP.Name, "1")
+	root := t.TempDir()
+	secret := "private-key%252Fname"
+	handler := newHTTPRequestRecorder(root)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}))
+	req := httptest.NewRequest(http.MethodPost, "/api/navigation/projects/"+secret+"?token=query-secret", strings.NewReader("body-secret"))
+	req.Header.Set("Authorization", "Bearer header-secret")
+	req.Header.Set("Cookie", "session=cookie-secret")
+	handler.ServeHTTP(httptest.NewRecorder(), req)
+
+	records := readHTTPRecordings(t, filepath.Join(root, "hub-http.jsonl"))
+	if len(records) != 1 {
+		t.Fatalf("records=%d", len(records))
+	}
+	got := records[0]
+	if got.Path != "navigation/project" || got.Query != "" || got.Body != "" || len(got.Headers) != 0 {
+		t.Fatalf("navigation record was not redacted: %+v", got)
+	}
+	encoded, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, forbidden := range []string{"private-key", "query-secret", "body-secret", "header-secret", "cookie-secret", "%252F"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("redacted recording contains %q: %s", forbidden, encoded)
+		}
+	}
+}
+
 // Oversized bodies are capped, not buffered without bound, and the downstream
 // handler still sees the full body.
 func TestHTTPRecorderCapsBody(t *testing.T) {
