@@ -190,7 +190,7 @@ lint-generated:
 lint-fuzz-registry:
 	$(call run_quiet_lint,scripts/fuzz/fuzz-registry-check.sh)
 
-LINT_READONLY_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-fuzz-registry secret-scan
+LINT_TARGETS := lint-naming lint-gofmt lint-evenerfuzz lint-eval lint-internal lint-golangci lint-generated lint-fuzz-registry secret-scan
 LINT_FAMILY_PARALLEL ?= 3
 
 ## Go lint, formatting, tagged floors, generated outputs, and secrets. Runs
@@ -202,7 +202,6 @@ LINT_FAMILY_PARALLEL ?= 3
 ##   and the repo secret scan.
 ## trigger: Required CI; local pre-merge.
 ## requires: golangci-lint, gitleaks.
-## fails-when: Generated-output freshness or any member of
-##   LINT_READONLY_TARGETS exits nonzero.
+## fails-when: Any member of LINT_TARGETS exits nonzero.
 lint: lint-generated
-	+@$(MAKE) --no-print-directory -j$(LINT_FAMILY_PARALLEL) $(LINT_READONLY_TARGETS)
+	+@$(MAKE) --no-print-directory -j$(LINT_FAMILY_PARALLEL) $(filter-out lint-generated,$(LINT_TARGETS))
