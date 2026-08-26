@@ -6,7 +6,12 @@ import { capability } from "./testing";
 const json = (data: unknown, generation = "generation_test") =>
   new Response(JSON.stringify(data), {
     status: 200,
-    headers: { "content-type": "application/json", "x-generation-id": generation, "x-revision": "1", etag: '"one"' },
+    headers: {
+      "content-type": "application/json",
+      "X-Evener-Navigation-Generation": generation,
+      "X-Evener-Navigation-Revision": "1",
+      etag: '"one"',
+    },
   });
 
 afterEach(() => {

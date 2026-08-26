@@ -15,6 +15,7 @@ import type {
   NavigationSectionResource,
   NavigationSessionLocation,
 } from "../../protocol/types.gen";
+import { loadExpansion, saveExpansion } from "../../shell/rail/railExpansion";
 import { NavigationRevalidator } from "./revalidator";
 import { keyID, type NavigationRequest, type ResourceKey, type ResourceState } from "./types";
 
@@ -84,7 +85,7 @@ const initial = (): Omit<
   lastSequence: 0,
   manifest: null,
   resources: new Map(),
-  expanded: new Map(),
+  expanded: loadExpansion(),
   attention: initialAttention,
   protocolError: null,
 });
@@ -115,14 +116,27 @@ function requestFor<T>(k: ResourceKey): NavigationRequest<T> {
     const url = urlFor(k);
     const headers: HeadersInit = etag ? { "If-None-Match": etag } : {};
     const response = await fetch(url, { credentials: "same-origin", headers, signal });
-    const generationID = response.headers.get("x-generation-id") ?? response.headers.get("generation-id") ?? "";
-    const revisionText = response.headers.get("x-revision") ?? response.headers.get("revision") ?? "";
+    if (response.status !== 200 && response.status !== 304)
+      throw new NavigationHTTPError(response.status, "unexpected status");
+    const contentType = response.headers.get("content-type") ?? "";
+    if (response.status === 200 && !/^application\/json(?:\s*;|$)/i.test(contentType))
+      throw new NavigationHTTPError(response.status, "missing JSON content type");
+    const generationID = response.headers.get("X-Evener-Navigation-Generation") ?? "";
+    const revisionText = response.headers.get("X-Evener-Navigation-Revision") ?? "";
     const responseEtag = response.headers.get("etag") ?? "";
+    if (!responseEtag) throw new NavigationHTTPError(response.status, "missing ETag");
     const revision = Number(revisionText);
     let data: unknown;
     if (response.status === 200) data = await response.json();
     return { status: response.status, generationID, revision, etag: responseEtag, data: data as T };
   };
+}
+export class NavigationHTTPError extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(`navigation HTTP ${status}: ${message}`);
+    this.status = status;
+  }
 }
 function urlFor(k: ResourceKey): string {
   const q = (offset: number, limit: number) => `?offset=${offset}&limit=${limit}`;
@@ -142,12 +156,17 @@ function urlFor(k: ResourceKey): string {
     case "project_page":
       return `/api/navigation/projects/${encodeURIComponent(k.projectKey)}?tier=${k.tier}&offset=${k.offset}&limit=${k.limit}`;
     case "location":
-      return `/api/navigation/location/${encodeURIComponent(k.ref)}`;
+      return `/api/navigation/sessions/${encodeURIComponent(k.ref)}`;
   }
 }
 function load<T>(k: ResourceKey): Promise<ResourceState<T>> {
   if (!revalidator) return Promise.reject(new Error("navigation is not initialized"));
+  const requestClient = activeClient;
+  const requestEpoch = bootEpoch;
+  const requestGeneration = revalidator.generationID;
   return revalidator.load<T>(key(k), requestFor<T>(k)).then((s) => {
+    if (requestClient !== activeClient || requestEpoch !== bootEpoch || requestGeneration !== revalidator?.generationID)
+      return s as ResourceState<T>;
     setResource(s);
     return s as ResourceState<T>;
   });
@@ -167,11 +186,16 @@ function actions() {
     loadProjectPage: (projectKey: string, tier: "current" | "recent" | "archived", offset = 0, limit = LIMIT) =>
       load<NavigationProjectPage>({ kind: "project_page", projectKey, tier, offset, limit }),
     lookupLocation: (ref: string) => load<NavigationSessionLocation>({ kind: "location", ref }),
-    setExpanded: (projectKey: string, expanded: boolean) =>
-      navigationStore.setState({ expanded: new Map(navigationStore.getState().expanded).set(projectKey, expanded) }),
+    setExpanded: (projectKey: string, expanded: boolean) => {
+      const expandedMap = new Map(navigationStore.getState().expanded);
+      expandedMap.set(projectKey, expanded);
+      saveExpansion(expandedMap);
+      navigationStore.setState({ expanded: expandedMap });
+    },
     toggleExpanded: (projectKey: string) => {
       const m = new Map(navigationStore.getState().expanded);
       m.set(projectKey, !(m.get(projectKey) ?? false));
+      saveExpansion(m);
       navigationStore.setState({ expanded: m });
     },
   };
@@ -191,10 +215,9 @@ async function boot(cap: NavigationCapability, epoch: number): Promise<void> {
   if (!manifest || epoch !== bootEpoch) return;
   const m = manifest.data;
   if (!m) return;
-  const jobs: Promise<unknown>[] = [
-    navigationStore.getState().loadSection("live"),
-    navigationStore.getState().loadSection("needs_you"),
-  ];
+  const jobs: Promise<unknown>[] = [];
+  if (m.sections.live.count > 0) jobs.push(navigationStore.getState().loadSection("live"));
+  if (m.sections.needs_you.count > 0) jobs.push(navigationStore.getState().loadSection("needs_you"));
   if (m.sections.pin_sections.count > 0) jobs.push(navigationStore.getState().loadPinCatalog());
   for (const c of ["projects", "archived_projects", "test_runs"] as const)
     if (m.catalogs[c].count > 0) jobs.push(navigationStore.getState().loadCatalog(c));
@@ -271,6 +294,7 @@ export function initNavigation(
   );
   unsubs.push(
     client.onReady(() => {
+      revalidator?.force(revalidator.loadedKeys().filter((k) => k.kind !== "location"));
       void client
         .connect()
         .then((i) => start(i))
