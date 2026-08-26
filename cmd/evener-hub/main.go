@@ -84,6 +84,29 @@ type hubShutdowner interface {
 	Shutdown(context.Context) error
 }
 
+type navigationPublisher interface {
+	BroadcastAll(string, any)
+}
+
+func runNavigationPublisher(ctx context.Context, navigation *NavigationService, publisher navigationPublisher) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-navigation.PublicationReady():
+			for {
+				payloads := navigation.DrainPublications()
+				if len(payloads) == 0 {
+					break
+				}
+				for _, payload := range payloads {
+					publisher.BroadcastAll(appwire.NotifyEvenerNavigationInvalidated, payload)
+				}
+			}
+		}
+	}
+}
+
 type hubOptions struct {
 	configPath   string
 	addr         string
@@ -429,24 +452,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// NavigationService is the sole typed-event authority. Drain its FIFO from
 	// one lifecycle-owned publisher so readiness coalescing cannot duplicate or
 	// reorder invalidations.
-	startBackground(func() {
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			case <-web.navigation.PublicationReady():
-				for {
-					payloads := web.navigation.DrainPublications()
-					if len(payloads) == 0 {
-						break
-					}
-					for _, payload := range payloads {
-						web.appRPC.BroadcastAll(appwire.NotifyEvenerNavigationInvalidated, payload)
-					}
-				}
-			}
-		}
-	})
+	startBackground(func() { runNavigationPublisher(ctx, web.navigation, web.appRPC) })
 	startBackground(func() { watchHubRoster(ctx, roster) })
 
 	startBackground(func() {

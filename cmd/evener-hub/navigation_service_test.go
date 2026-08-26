@@ -522,6 +522,45 @@ func TestNavigationServiceBuildErrorCompletesEveryAttachedTicket(t *testing.T) {
 	}
 }
 
+func TestNavigationServicePendingEpochSurvivesCommitBeforeClear(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	source.captured = make(chan struct{}, 8)
+	service := newTestNavigationService(t, source)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	go service.Start(ctx)
+	<-source.captured // initial non-forced scheduler snapshot
+
+	previous := navigationPublicationCommittedLocked
+	commit := make(chan struct{}, 1)
+	navigationPublicationCommittedLocked = func(locked *NavigationService) {
+		// This hook runs at the commit cutoff while the service lock is held.
+		// Model an identical producer event without attempting to reacquire it.
+		if len(commit) == 0 {
+			locked.epoch++
+			locked.pendingHint = mergeNavigationChangeHints(locked.pendingHint, navigationChangeHint{Projects: []string{"p1"}})
+			locked.pendingInvalidation = true
+			locked.pendingEpoch++
+		}
+		commit <- struct{}{}
+	}
+	t.Cleanup(func() { navigationPublicationCommittedLocked = previous })
+	source.changeTitle("first")
+	service.Invalidate(navigationChangeHint{Projects: []string{"p1"}})
+	<-commit
+	<-source.captured // first forced refresh
+	<-source.captured // second forced refresh retained by the raced epoch
+	if got := source.captureCount(); got != 3 {
+		t.Fatalf("captures = %d, want initial plus two forced refreshes", got)
+	}
+	service.mu.Lock()
+	pending := service.pendingInvalidation
+	service.mu.Unlock()
+	if pending {
+		t.Fatal("same-hint pending epoch was cleared by the first commit")
+	}
+}
+
 func TestNavigationServiceConcurrentAppendAndDrainKeepFIFOAndWakeAtomic(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)
