@@ -550,7 +550,7 @@ If review shows any listed file contains unrelated changes, split or omit it rat
 
 1. **Roster projection and live refresh**
    - owns `project-roster.ts` and roster service/store changes;
-   - paged cap, hasMore, tree refresh, last-good tests.
+   - single `limit: 501` request, 500-row cap, 501st-row `hasMore`, tree refresh, and last-good tests.
 
 2. **Conversation wire completeness plus activity boundary**
    - one combined owner for conversation service/store and activity read projection;
