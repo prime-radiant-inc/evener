@@ -6,7 +6,7 @@ import { keyID, type ResourceKey, type ResourceState } from "../../stores/naviga
 import { resetTreeStoreForTests, treeStore } from "../../stores/tree";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
 import { resetWorkspaceStoreForTests } from "../workspace";
-import { Rail } from "./Rail";
+import { adaptNavigationResources, Rail } from "./Rail";
 import { EXPANSION_STORAGE_KEY } from "./railExpansion";
 
 function summary(overrides: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary {
@@ -169,6 +169,36 @@ describe("resource-backed Rail", () => {
     expect(loadSection).toHaveBeenCalledTimes(1);
     expect(loadSection).toHaveBeenCalledWith("live", 1, 50);
   });
+  test("deduplicates overlapping pin pages and keeps the first descriptor count", () => {
+    const duplicate = summary({ ref: "pin", title: "first" });
+    const later = summary({ ref: "pin", title: "later" });
+    installState([
+      resource(
+        { kind: "pin_catalog", offset: 0, limit: 100 },
+        {
+          generation_id: "g1",
+          revision: 1,
+          pin_sections: [
+            { id: "p", name: "Pins", count: 4 },
+            { id: "p", name: "Later", count: 9 },
+          ],
+          remaining: 0,
+        },
+      ),
+      resource(
+        { kind: "pin_section", sectionId: "p", offset: 0, limit: 1 },
+        { generation_id: "g1", revision: 1, sessions: [duplicate], remaining: 1, truncated: true },
+      ),
+      resource(
+        { kind: "pin_section", sectionId: "p", offset: 1, limit: 1 },
+        { generation_id: "g1", revision: 1, sessions: [later], remaining: 0, truncated: false },
+      ),
+    ]);
+    const pins = adaptNavigationResources(navigationStore.getState()).pinSections;
+    expect(pins).toHaveLength(1);
+    expect(pins[0]).toMatchObject({ id: "p", name: "Pins", member_count: 4 });
+    expect(pins[0]?.sessions.map((row) => row.title)).toEqual(["first"]);
+  });
   test("uses location lookup to reveal an unloaded project rather than scanning a tree", async () => {
     const lookupLocation = vi.fn().mockResolvedValue(undefined);
     installState([
@@ -181,6 +211,73 @@ describe("resource-backed Rail", () => {
     await act(async () => undefined);
     expect(lookupLocation).toHaveBeenCalledWith("deep-ref");
     expect(consumed).not.toHaveBeenCalled();
+  });
+  test("routes empty-model location reveals to pin catalog/section and needs-you resources", async () => {
+    const loadPinCatalog = vi.fn().mockResolvedValue(undefined);
+    const loadPinSection = vi.fn().mockResolvedValue(undefined);
+    const loadSection = vi.fn().mockResolvedValue(undefined);
+    const pinLocation = resource(
+      { kind: "location", ref: "pin-ref" },
+      {
+        generation_id: "g1",
+        revision: 1,
+        ref: "pin-ref",
+        top_level_ref: "pin-ref",
+        top_level: true,
+        pin_section_id: "pins",
+        session: summary({ ref: "pin-ref" }),
+      },
+    );
+    installState([pinLocation]);
+    navigationStore.setState({ loadPinCatalog, loadPinSection, loadSection });
+    render(<Rail revealTarget="pin-ref" />);
+    await act(async () => undefined);
+    expect(loadPinCatalog).toHaveBeenCalledTimes(1);
+    expect(loadPinSection).toHaveBeenCalledWith("pins");
+    expect(loadSection).not.toHaveBeenCalled();
+  });
+  test("routes a global location to needs-you instead of always loading Live", async () => {
+    const loadSection = vi.fn().mockResolvedValue(undefined);
+    const location = resource(
+      { kind: "location", ref: "needs-ref" },
+      {
+        generation_id: "g1",
+        revision: 1,
+        ref: "needs-ref",
+        top_level_ref: "needs-ref",
+        top_level: true,
+        tier: "needs_you",
+        session: summary({ ref: "needs-ref" }),
+      },
+    );
+    installState([location]);
+    navigationStore.setState({ loadSection });
+    render(<Rail revealTarget="needs-ref" />);
+    await act(async () => undefined);
+    expect(loadSection).toHaveBeenCalledWith("needs_you");
+  });
+  test("loads a project catalog and root from an empty-model project location", async () => {
+    const loadCatalog = vi.fn().mockResolvedValue(undefined);
+    const loadProject = vi.fn().mockResolvedValue(undefined);
+    const location = resource(
+      { kind: "location", ref: "project-ref" },
+      {
+        generation_id: "g1",
+        revision: 1,
+        ref: "project-ref",
+        top_level_ref: "project-ref",
+        top_level: true,
+        project_key: "p",
+        tier: "current",
+        session: summary({ ref: "project-ref" }),
+      },
+    );
+    installState([location]);
+    navigationStore.setState({ loadCatalog, loadProject });
+    render(<Rail revealTarget="project-ref" />);
+    await act(async () => undefined);
+    expect(loadCatalog).toHaveBeenCalledWith("projects");
+    expect(loadProject).toHaveBeenCalledWith("p");
   });
   test("preserves last-good rows when a project resource is stale with an error", () => {
     const loaded = {
@@ -236,4 +333,56 @@ test("explicit legacy mode renders the legacy store and does not use navigation 
   expect(screen.getByText("Legacy live")).toBeTruthy();
   expect(fetchSpy).not.toHaveBeenCalledWith("/api/navigation", expect.anything());
   fetchSpy.mockRestore();
+});
+
+test("legacy reveal and overflow stay on tree loaders", async () => {
+  const loadProjectPage = vi.fn().mockResolvedValue(undefined);
+  const lookupLocation = vi.fn();
+  const loadSection = vi.fn();
+  navigationStore.setState({ mode: "legacy", lookupLocation, loadSection });
+  treeStore.setState({
+    tree: {
+      generated_at: "2026-01-01T00:00:00Z",
+      sources: [],
+      live: [],
+      needs_you: [],
+      pin_sections: [],
+      archived_projects: [],
+      test_runs: [],
+      projects: [
+        {
+          key: "p",
+          name: "P",
+          sessions: [
+            {
+              row_id: "r",
+              ref: "local:r",
+              host_id: "local",
+              session_id: "r",
+              title: "R",
+              project: "P",
+              state: "idle",
+              kind: "session",
+              live: true,
+              children: [],
+            },
+          ],
+          more_current: 2,
+        },
+      ],
+      attentionSummary: { needsYou: 0, error: 0, working: 0 },
+    },
+    loading: false,
+    error: null,
+    loadProjectPage,
+  });
+  const consumed = vi.fn();
+  render(<Rail revealTarget="unknown" onRevealConsumed={consumed} />);
+  await act(async () => undefined);
+  expect(consumed).toHaveBeenCalledTimes(1);
+  expect(lookupLocation).not.toHaveBeenCalled();
+  fireEvent.click(screen.getByText("P"));
+  fireEvent.click(screen.getByText("+2 older"));
+  expect(loadProjectPage).toHaveBeenCalledWith("p", "current", 1, 2);
+  expect(loadSection).not.toHaveBeenCalled();
 });

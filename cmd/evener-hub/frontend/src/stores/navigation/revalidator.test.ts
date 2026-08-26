@@ -590,3 +590,38 @@ test("duplicate response and invalidation coalesce to one trailing revalidation"
   expect(calls).toBe(3);
   second.resolve({ status: 200, generationID: "g", revision: 2, etag: "b", data: "new" });
 });
+
+test("initially loading registered target blocks until the trailing target revision", async () => {
+  const initial = d<NavigationResponse>();
+  const target = d<NavigationResponse>();
+  const r = new NavigationRevalidator("g");
+  let calls = 0;
+  const request = vi.fn(() => (++calls === 1 ? initial : target).promise);
+  const loading = r.load(key, request);
+  let resolved = false;
+  const waiting = r.waitForTargets([{ kind: "project", projectKey: "p", revision: 2 }]).then(() => (resolved = true));
+  r.invalidate({ kind: "project", projectKey: "p", revision: 2 });
+  initial.resolve({ status: 200, generationID: "g", revision: 1, etag: "a", data: "old" });
+  await loading;
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  expect(resolved).toBe(false);
+  target.resolve({ status: 200, generationID: "g", revision: 2, etag: "b", data: "new" });
+  await waiting;
+  expect(resolved).toBe(true);
+});
+
+test("invalidation waiter is cancellable and ignores unrelated typed events", async () => {
+  const r = new NavigationRevalidator("g");
+  const waiter = r.waitForInvalidation((payload) => payload.targets.some((target) => target.kind === "project"));
+  let resolved = false;
+  const pending = waiter.promise.then(
+    () => (resolved = true),
+    () => undefined,
+  );
+  r.notifyInvalidation({ generationId: "g", sequence: 1, targets: [{ kind: "manifest" }] });
+  await Promise.resolve();
+  expect(resolved).toBe(false);
+  waiter.cancel();
+  await pending;
+  expect(resolved).toBe(false);
+});

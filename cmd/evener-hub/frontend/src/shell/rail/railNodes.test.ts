@@ -119,6 +119,10 @@ describe("resource projection semantics", () => {
     ]);
     expect(archivedSessionGroups([a], closed)[0]?.children[0]).toMatchObject({ id: "navigation:old-a" });
   });
+  test("counts archived rows plus archived remainder in active and test projects", () => {
+    const active = project({ sessions: [session({ tier: "archived" })], more_archived: 4 });
+    expect(archivedCount([], [active])).toBe(5);
+  });
   test("keeps archived stubs visible with a loading child and hydrated roots projectable", () => {
     const stub = project({ key: "archived", is_archived: true, session_count: 3 });
     expect(archivedProjectNodes([stub], new Map(), closed)[0]?.children[0]).toMatchObject({ kind: "loading" });

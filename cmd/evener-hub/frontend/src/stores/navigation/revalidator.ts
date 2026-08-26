@@ -24,6 +24,10 @@ interface TargetWaiter {
   resolve: () => void;
   reject: (reason?: unknown) => void;
 }
+export interface NavigationInvalidationWaiter {
+  promise: Promise<NavigationInvalidatedPayload>;
+  cancel(): void;
+}
 const protocolError = (message: string) => new Error(`navigation protocol: ${message}`);
 const clone = <T>(value: T): T => {
   if (value === null || typeof value !== "object") return value;
@@ -54,6 +58,7 @@ export class NavigationRevalidator {
   private readonly listeners = new Set<ResourceListener>();
   private readonly targetWaiters = new Set<TargetWaiter>();
   private readonly invalidationWaiters = new Set<{
+    predicate: (payload: NavigationInvalidatedPayload) => boolean;
     resolve: (payload: NavigationInvalidatedPayload) => void;
     reject: (reason?: unknown) => void;
   }>();
@@ -102,13 +107,34 @@ export class NavigationRevalidator {
       this.resolveTargetWaiters();
     });
   }
-  waitForInvalidation(): Promise<NavigationInvalidatedPayload> {
-    if (this.disposed) return Promise.reject(protocolError("revalidator disposed"));
-    return new Promise((resolve, reject) => this.invalidationWaiters.add({ resolve, reject }));
+  waitForInvalidation(
+    predicate: (payload: NavigationInvalidatedPayload) => boolean = () => true,
+  ): NavigationInvalidationWaiter {
+    if (this.disposed) return { promise: Promise.reject(protocolError("revalidator disposed")), cancel: () => {} };
+    let waiter: {
+      predicate: (payload: NavigationInvalidatedPayload) => boolean;
+      resolve: (payload: NavigationInvalidatedPayload) => void;
+      reject: (reason?: unknown) => void;
+    };
+    const promise = new Promise<NavigationInvalidatedPayload>((resolve, reject) => {
+      waiter = { predicate, resolve, reject };
+      this.invalidationWaiters.add(waiter);
+    });
+    return {
+      promise,
+      cancel: () => {
+        if (!waiter) return;
+        this.invalidationWaiters.delete(waiter);
+        waiter.reject(protocolError("invalidation waiter cancelled"));
+      },
+    };
   }
   notifyInvalidation(payload: NavigationInvalidatedPayload): void {
-    for (const waiter of this.invalidationWaiters) waiter.resolve(payload);
-    this.invalidationWaiters.clear();
+    for (const waiter of [...this.invalidationWaiters]) {
+      if (!waiter.predicate(payload)) continue;
+      waiter.resolve(payload);
+      this.invalidationWaiters.delete(waiter);
+    }
   }
   acceptSequence(sequence: number): boolean {
     const gap = sequence > this.lastSequence + 1;
@@ -278,8 +304,8 @@ export class NavigationRevalidator {
     if (generationID !== this.generationIDValue) return false;
     return targets.every((target) => {
       const matching = [...this.entries.values()].filter((entry) => matchesTarget(entry.state.key, target));
-      const loaded = matching.filter((entry) => entry.state.data !== null || entry.state.loadedRevision !== null);
-      return loaded.every((entry) => {
+      if (matching.length === 0) return true;
+      return matching.every((entry) => {
         const revision = target.revision;
         return (
           !entry.state.loading &&
@@ -296,11 +322,21 @@ export class NavigationRevalidator {
       if (waiter.generationID !== this.generationIDValue) {
         waiter.reject(protocolError("generation mismatch"));
         this.targetWaiters.delete(waiter);
+      } else if (this.targetFailed(waiter.targets)) {
+        waiter.reject(protocolError("target convergence failed"));
+        this.targetWaiters.delete(waiter);
       } else if (this.targetsSatisfied(waiter.targets, waiter.generationID)) {
         waiter.resolve();
         this.targetWaiters.delete(waiter);
       }
     }
+  }
+  private targetFailed(targets: NavigationInvalidationTarget[]): boolean {
+    return targets.some((target) =>
+      [...this.entries.values()].some(
+        (entry) => matchesTarget(entry.state.key, target) && entry.state.error !== null && !entry.rerun,
+      ),
+    );
   }
 }
 function matchesBase(key: ResourceKey, base: Partial<ResourceKey>): boolean {

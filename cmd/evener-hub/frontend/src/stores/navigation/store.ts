@@ -18,7 +18,7 @@ import type {
   NavigationSessionLocation,
 } from "../../protocol/types.gen";
 import { loadExpansion, saveExpansion } from "../../shell/rail/railExpansion";
-import { NavigationRevalidator } from "./revalidator";
+import { type NavigationInvalidationWaiter, NavigationRevalidator } from "./revalidator";
 import { keyID, type NavigationRequest, type ResourceKey, type ResourceState } from "./types";
 
 export type NavigationValue =
@@ -64,7 +64,9 @@ export interface NavigationStoreState {
   setExpanded(projectKey: string, expanded: boolean): void;
   toggleExpanded(projectKey: string): void;
   awaitNavigationTargets(targets: NavigationInvalidationTarget[], generationID?: string): Promise<void>;
-  awaitNavigationInvalidation(): Promise<NavigationInvalidatedPayload>;
+  awaitNavigationInvalidation(
+    predicate?: (payload: NavigationInvalidatedPayload) => boolean,
+  ): NavigationInvalidationWaiter;
   applyNavigationMutation(mutation: NavigationMutation): Promise<void>;
 }
 
@@ -402,9 +404,13 @@ function actions() {
       if (!revalidator) return Promise.reject(new Error("navigation is not initialized"));
       return revalidator.waitForTargets(targets, generationID);
     },
-    awaitNavigationInvalidation: () => {
-      if (!revalidator) return Promise.reject(new Error("navigation is not initialized"));
-      return revalidator.waitForInvalidation();
+    awaitNavigationInvalidation: (predicate?: (payload: NavigationInvalidatedPayload) => boolean) => {
+      if (!revalidator)
+        return {
+          promise: Promise.reject(new Error("navigation is not initialized")),
+          cancel: () => {},
+        };
+      return revalidator.waitForInvalidation(predicate);
     },
     applyNavigationMutation: (mutation: NavigationMutation) => {
       if (!revalidator) return Promise.reject(new Error("navigation is not initialized"));

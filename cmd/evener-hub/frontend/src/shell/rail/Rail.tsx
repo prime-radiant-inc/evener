@@ -8,7 +8,7 @@ import type {
   NavigationSessionSummary,
 } from "../../protocol/types.gen";
 import { useConnectionStore } from "../../stores/connection";
-import { selectAttentionSummary, selectGlobalRows, selectPinSections } from "../../stores/navigation/selectors";
+import { selectAttentionSummary, selectPinSections } from "../../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { keyID, type ResourceKey, type ResourceState } from "../../stores/navigation/types";
 import { threadsStore } from "../../stores/threads";
@@ -233,13 +233,15 @@ function summarySession(
   scope: string,
   tier?: string,
   pinSectionID?: string,
+  projectKey?: string,
 ): RailSession {
-  const children = summary.children.map((child) => summarySession(child, scope, tier, pinSectionID));
+  const children = summary.children.map((child) => summarySession(child, scope, tier, pinSectionID, projectKey));
   return {
     ...summary,
     row_id: `navigation:${scope}:${summary.ref}`,
     tier,
     pin_section_id: pinSectionID,
+    project_key: projectKey,
     age: relativeAge(summary.updated_at),
     children,
   };
@@ -249,8 +251,17 @@ function sessions(
   scope: string,
   tier?: string,
   pinSectionID?: string,
+  projectKey?: string,
 ): RailSession[] {
-  return summaries.map((summary) => summarySession(summary, scope, tier, pinSectionID));
+  return summaries.map((summary) => summarySession(summary, scope, tier, pinSectionID, projectKey));
+}
+function dedupeSessions(rows: readonly RailSession[]): RailSession[] {
+  const seen = new Set<string>();
+  return rows.filter((row) => {
+    if (seen.has(row.ref)) return false;
+    seen.add(row.ref);
+    return true;
+  });
 }
 function resourceData<T>(state: ReturnType<typeof navigationStore.getState>, key: ResourceKey): T | null {
   return (state.resources.get(keyID(key))?.data as T | undefined) ?? null;
@@ -272,17 +283,14 @@ function loadedSection(
         ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
         : 0,
     );
-  const wanted = new Map<string, number>();
-  for (const resource of pages) {
-    for (const summary of (resource.data as { sessions: NavigationSessionSummary[] }).sessions)
-      wanted.set(summary.ref, (wanted.get(summary.ref) ?? 0) + 1);
-  }
-  const rows = selectGlobalRows(state).flatMap((summary) => {
-    const count = wanted.get(summary.ref) ?? 0;
-    if (count === 0) return [];
-    wanted.set(summary.ref, count - 1);
-    return [summarySession(summary, section)];
-  });
+  const seen = new Set<string>();
+  const rows = pages.flatMap((resource) =>
+    (resource.data as { sessions: NavigationSessionSummary[] }).sessions.flatMap((summary) => {
+      if (seen.has(summary.ref)) return [];
+      seen.add(summary.ref);
+      return [summarySession(summary, section)];
+    }),
+  );
   const last = pages.at(-1);
   const data = last?.data as { remaining?: number } | null;
   const pageKey = last?.key.kind === "section" ? last.key : { offset: 0, limit: 50 };
@@ -328,7 +336,7 @@ function projectFromSummary(
     const lastPage = pageStates.at(-1);
     const lastPageRows = (lastPage?.data as { sessions?: unknown[] } | null)?.sessions?.length;
     nextOffsets[tier] = lastPage?.key.kind === "project_page" ? lastPage.key.offset + (lastPageRows ?? 0) : rows.length;
-    all.push(...sessions(rows, `project:${summary.key}:${tier}`, tier));
+    all.push(...sessions(rows, `project:${summary.key}:${tier}`, tier, undefined, summary.key));
     more[tier] = remaining;
   }
   return {
@@ -374,7 +382,9 @@ function railResources(state: ReturnType<typeof navigationStore.getState>): Rail
       (resource) =>
         (resource.data as { pin_sections: Array<{ id: string; name: string; count: number }> }).pin_sections,
     );
-  const pinCounts = new Map(pinCatalog.map((descriptor) => [descriptor.id, descriptor.count]));
+  const pinCounts = new Map<string, number>();
+  for (const descriptor of pinCatalog)
+    if (!pinCounts.has(descriptor.id)) pinCounts.set(descriptor.id, descriptor.count);
   const pinSections = selectPinSections(state)
     .map((section) => {
       const pages = [...state.resources.values()]
@@ -398,7 +408,7 @@ function railResources(state: ReturnType<typeof navigationStore.getState>): Rail
         remaining,
         offset: pageKey.offset + pageRows,
         limit: pageKey.limit,
-        sessions: sessions(section.sessions, `pin:${section.id}`, undefined, section.id),
+        sessions: dedupeSessions(sessions(section.sessions, `pin:${section.id}`, undefined, section.id)),
       };
     })
     .filter((section) => section.member_count > 0 || section.sessions.length > 0);
@@ -595,6 +605,11 @@ function NavigationRail({
       setExpanded(projectID, true);
       return;
     }
+    if (legacySource) {
+      if (legacySource.loading) return;
+      onRevealConsumed?.();
+      return;
+    }
     const location = resourceData<{ project_key?: string; tier?: string; pin_section_id?: string; session?: unknown }>(
       navigationStore.getState(),
       {
@@ -632,17 +647,22 @@ function NavigationRail({
       return;
     }
     if (location.pin_section_id) {
+      if (!revealResourceRequests.current.has("pin_catalog")) {
+        revealResourceRequests.current.add("pin_catalog");
+        void Promise.resolve(navigationStore.getState().loadPinCatalog()).catch(() => undefined);
+      }
       if (!revealResourceRequests.current.has(`pin:${location.pin_section_id}`)) {
         revealResourceRequests.current.add(`pin:${location.pin_section_id}`);
         void Promise.resolve(navigationStore.getState().loadPinSection(location.pin_section_id)).catch(() => undefined);
       }
       return;
     }
-    if (!revealResourceRequests.current.has("section:live")) {
-      revealResourceRequests.current.add("section:live");
-      void Promise.resolve(navigationStore.getState().loadSection("live")).catch(() => undefined);
+    const section = location.tier === "needs_you" ? "needs_you" : "live";
+    if (!revealResourceRequests.current.has(`section:${section}`)) {
+      revealResourceRequests.current.add(`section:${section}`);
+      void Promise.resolve(navigationStore.getState().loadSection(section)).catch(() => undefined);
     }
-  }, [revealTarget, resources, expandedOverrides, onRevealConsumed, setExpanded]);
+  }, [revealTarget, resources, expandedOverrides, onRevealConsumed, setExpanded, legacySource]);
 
   function handleToggle(node: RailNode) {
     if (node.kind === "loading") return;
@@ -688,11 +708,13 @@ function NavigationRail({
           page.projectKey && page.tier
             ? (legacySource?.loadPage(page.projectKey, page.tier, page.offset, page.limit) ??
               navigationStore.getState().loadProjectPage(page.projectKey, page.tier, page.offset, page.limit))
-            : page.section
-              ? navigationStore.getState().loadSection(page.section, page.offset, page.limit)
-              : page.sectionId
-                ? navigationStore.getState().loadPinSection(page.sectionId, page.offset, page.limit)
-                : Promise.resolve(),
+            : legacySource
+              ? Promise.resolve()
+              : page.section
+                ? navigationStore.getState().loadSection(page.section, page.offset, page.limit)
+                : page.sectionId
+                  ? navigationStore.getState().loadPinSection(page.sectionId, page.offset, page.limit)
+                  : Promise.resolve(),
         ),
       );
     } catch (error) {
@@ -711,6 +733,7 @@ function NavigationRail({
   ) {
     let installed = typeof optimistic === "object" ? optimistic : undefined;
     let mutationCompleted = false;
+    let converged = false;
     if (installed) setPending((ops) => [...ops, installed as PendingOp]);
     try {
       const result = await fn();
@@ -721,11 +744,12 @@ function NavigationRail({
       }
       if (legacySource) await legacySource.refresh();
       else await convergeMutation(result);
+      converged = true;
     } catch (error) {
       toasts.push("error", `${failure}: ${errorText(error)}`);
       if (propagate) throw error;
     } finally {
-      if (installed && !mutationCompleted) setPending((ops) => ops.filter((op) => op !== installed));
+      if (installed && (!mutationCompleted || converged)) setPending((ops) => ops.filter((op) => op !== installed));
     }
   }
   const rowActions: RailRowActions = {
@@ -742,14 +766,36 @@ function NavigationRail({
         true,
       ),
     onShutdownSession: async (session) => {
-      const invalidation = navigationMode === "v1" ? navigationStore.getState().awaitNavigationInvalidation() : null;
-      await runAction(
-        () => threadsStore.getState().shutdown(session.ref),
-        "Couldn't shut down session",
-        undefined,
-        true,
-      );
-      if (invalidation) await invalidation;
+      const invalidation =
+        navigationMode === "v1"
+          ? navigationStore
+              .getState()
+              .awaitNavigationInvalidation((payload) =>
+                payload.targets.some(
+                  (target) =>
+                    target.kind === "all_loaded_projects" ||
+                    (target.kind === "section" && (target.section === "live" || target.section === "needs_you")) ||
+                    (target.kind === "pin_section" && target.sectionId === session.pin_section_id) ||
+                    (target.kind === "project" && target.projectKey === session.project_key),
+                ),
+              )
+          : null;
+      void invalidation?.promise.catch(() => undefined);
+      try {
+        await runAction(
+          () => threadsStore.getState().shutdown(session.ref),
+          "Couldn't shut down session",
+          undefined,
+          true,
+        );
+        if (invalidation) {
+          const payload = await invalidation.promise;
+          await navigationStore.getState().awaitNavigationTargets(payload.targets, payload.generationId);
+        }
+      } catch (error) {
+        invalidation?.cancel();
+        throw error;
+      }
     },
     onPinSession: (session, target, section) =>
       runAction(
@@ -789,12 +835,14 @@ function NavigationRail({
     onDeleteSession: async (session) => {
       const optimistic: PendingOp = { kind: "hideSession", ref: session.ref };
       let mutationCompleted = false;
+      let converged = false;
       setPending((ops) => [...ops, optimistic]);
       try {
         const result = await deleteSession(session.ref);
         mutationCompleted = true;
         if (legacySource) await legacySource.refresh();
         else await convergeMutation(result);
+        converged = true;
         closePanesForDeletedSessions(result.deleted);
         if (result.skipped.length)
           toasts.push("warning", `Couldn't delete "${session.title}": ${result.skipped[0]?.reason ?? "still in use"}`);
@@ -802,7 +850,7 @@ function NavigationRail({
         toasts.push("error", `Couldn't delete "${session.title}": ${errorText(error)}`);
         throw error;
       } finally {
-        if (!mutationCompleted) setPending((ops) => ops.filter((op) => op !== optimistic));
+        if (!mutationCompleted || converged) setPending((ops) => ops.filter((op) => op !== optimistic));
       }
     },
     onToggleFavoriteProject: (project) => {
@@ -832,12 +880,14 @@ function NavigationRail({
     closeDeleteDialog();
     const optimistic: PendingOp = { kind: "hideProject", key: target.key };
     let mutationCompleted = false;
+    let converged = false;
     setPending((ops) => [...ops, optimistic]);
     try {
       const result = await deleteProject(target.key, target.working_dir ?? "");
       mutationCompleted = true;
       if (legacySource) await legacySource.refresh();
       else await convergeMutation(result);
+      converged = true;
       closePanesForDeletedSessions(result.deleted);
       if (result.skipped.length)
         toasts.push(
@@ -847,7 +897,7 @@ function NavigationRail({
     } catch (error) {
       toasts.push("error", `Couldn't delete project: ${errorText(error)}`);
     } finally {
-      if (!mutationCompleted) setPending((ops) => ops.filter((op) => op !== optimistic));
+      if (!mutationCompleted || converged) setPending((ops) => ops.filter((op) => op !== optimistic));
     }
   }
   function openSectionRename(section: RailPinSection) {

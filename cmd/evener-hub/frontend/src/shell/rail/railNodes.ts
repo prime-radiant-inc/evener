@@ -17,6 +17,7 @@ export interface RailSession extends NavigationSessionSummary {
   age?: string;
   model?: string;
   children: RailSession[];
+  project_key?: string;
 }
 
 export interface RailProject {
@@ -159,7 +160,7 @@ function tierOverflowPages(p: RailProject, tiers: TreeTier[]): OverflowPage[] {
       {
         projectKey: p.key,
         tier,
-        offset: p.nextOffsets?.[tier] ?? p.sessions.filter((n) => n.tier === tier).length,
+        offset: p.nextOffsets?.[tier] ?? p.sessions.filter((n) => (n.tier ?? "current") === tier).length,
         limit: Math.min(count, 50),
       },
     ];
@@ -497,7 +498,10 @@ function archivedProjectSessionCount(p: RailProject): number {
 
 export function archivedCount(archivedProjects: readonly RailProject[], otherProjects: readonly RailProject[]): number {
   const whole = archivedProjects.reduce((sum, p) => sum + archivedProjectSessionCount(p), 0);
-  return otherProjects.reduce((sum, p) => sum + p.sessions.filter(isArchivedTier).length, whole);
+  return otherProjects.reduce(
+    (sum, p) => sum + p.sessions.filter(isArchivedTier).length + (p.more_archived ?? 0),
+    whole,
+  );
 }
 
 /** Builds rail nodes for the Archived tier. An archived project's sessions
