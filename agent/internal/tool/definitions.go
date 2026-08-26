@@ -203,6 +203,9 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 		},
 	}
 	props := def.Parameters["properties"].(map[string]any)
+	if sandboxSchema.ModelDescription != "" {
+		props["model"].(map[string]any)["description"] = strings.TrimSpace(props["model"].(map[string]any)["description"].(string) + " " + sandboxSchema.ModelDescription)
+	}
 	if !sandboxSchema.Available {
 		delete(props, "sandbox")
 		delete(props, "sandbox_net")
@@ -245,9 +248,6 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 	}
 	if sandboxSchema.SandboxNetDescription != "" {
 		props["sandbox_net"].(map[string]any)["description"] = strings.TrimSpace(props["sandbox_net"].(map[string]any)["description"].(string) + " " + sandboxSchema.SandboxNetDescription)
-	}
-	if sandboxSchema.ModelDescription != "" {
-		props["model"].(map[string]any)["description"] = strings.TrimSpace(props["model"].(map[string]any)["description"].(string) + " " + sandboxSchema.ModelDescription)
 	}
 	return def
 }
