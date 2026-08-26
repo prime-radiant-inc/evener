@@ -169,3 +169,34 @@ test("reset ignores abort-resistant old response and starts one fresh generation
   expect(r.get(key)?.data).toBe("fresh");
   expect(calls).toHaveLength(2);
 });
+
+test("loadedKeys includes failed and inflight callbacks, but force never creates unseen entries", async () => {
+  const r = new NavigationRevalidator("g");
+  const inflight = d<any>();
+  void r.load(key, () => inflight.promise);
+  const failed: ResourceKey = { kind: "manifest" };
+  await r.load(failed, async () => {
+    throw new Error("offline");
+  });
+  expect(r.loadedKeys()).toEqual(expect.arrayContaining([key, failed]));
+  r.force([{ kind: "catalog", catalog: "projects", offset: 0, limit: 10 }]);
+  expect(r.loadedKeys()).toHaveLength(2);
+  inflight.resolve({ status: 200, generationID: "g", revision: 1, etag: "a", data: "ok" });
+});
+
+test.each([
+  { status: 201, generationID: "g", revision: 1, etag: "a", data: "x" },
+  { status: 200, generationID: "wrong", revision: 1, etag: "a", data: "x" },
+  { status: 200, generationID: "g", revision: -1, etag: "a", data: "x" },
+  { status: 200, generationID: "g", revision: 1.5, etag: "a", data: "x" },
+  { status: 200, generationID: "g", revision: 1, etag: "", data: "x" },
+  { status: 200, generationID: "g", revision: 1, etag: "a" },
+  { status: 304, generationID: "g", revision: 1, etag: "a", data: "x" },
+] as const)("rejects invalid protocol response %#", async (response) => {
+  const r = new NavigationRevalidator("g");
+  await r.load(key, async () => ({ status: 200, generationID: "g", revision: 0, etag: "seed", data: "good" }));
+  r.invalidate({ kind: "project", projectKey: "p", revision: 1 });
+  await r.load(key, async () => response);
+  expect(r.get(key)?.stale).toBe(true);
+  expect(r.get(key)?.data).toBe("good");
+});

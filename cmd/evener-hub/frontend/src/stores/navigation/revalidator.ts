@@ -73,6 +73,9 @@ export class NavigationRevalidator {
   states(): ReadonlyMap<string, ResourceState> {
     return new Map([...this.entries].map(([id, e]) => [id, e.state]));
   }
+  // A key is loaded once a caller has registered a request callback. This
+  // deliberately includes in-flight and failed entries so sequence gaps and
+  // generation resets can retry them; unseen/collapsed keys never enter here.
   loadedKeys(): ResourceKey[] {
     return [...this.entries.values()].map((entry) => entry.state.key);
   }
@@ -100,6 +103,9 @@ export class NavigationRevalidator {
     }
   }
   resetGeneration(generationID: string): void {
+    // The promise returned by an earlier load belongs to that old request.
+    // Retained callbacks are started immediately for the new epoch; their
+    // result is exposed through state/listeners rather than that old promise.
     if (this.disposed || generationID === this.generationIDValue) return;
     this.generationIDValue = generationID;
     this.epoch++;
