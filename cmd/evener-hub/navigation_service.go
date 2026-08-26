@@ -141,7 +141,7 @@ type NavigationService struct {
 	lifecycleCancel  context.CancelFunc
 	lifecycleWG      sync.WaitGroup
 	lifecycleStopped bool
-	pendingMutation  *hubapi.NavigationMutation
+	pendingMutations []hubapi.NavigationMutation
 }
 
 func newNavigationService(cfg navigationServiceConfig) *NavigationService {
@@ -340,16 +340,22 @@ func (s *NavigationService) Refresh(ctx context.Context, hint navigationChangeHi
 	}
 	s.mu.Lock()
 	mutation := flight.mutation
-	if s.pendingMutation != nil {
-		mutation = *s.pendingMutation
-		s.pendingMutation = nil
-	}
 	s.mu.Unlock()
 	select {
 	case s.wake <- struct{}{}:
 	default:
 	}
 	return mutation, nil
+}
+
+// ConsumePendingInvalidations drains committed mutations that had no successful
+// caller to publish them. It never starts a source capture.
+func (s *NavigationService) ConsumePendingInvalidations() []hubapi.NavigationMutation {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := append([]hubapi.NavigationMutation(nil), s.pendingMutations...)
+	s.pendingMutations = nil
+	return out
 }
 
 func (s *NavigationService) sequenceAtSafeLimit() bool {
@@ -514,12 +520,19 @@ func (s *NavigationService) buildSnapshot(ctx context.Context, expected navigati
 				return
 			}
 			if len(flight.mutation.Targets) != 0 {
-				pending := flight.mutation
-				s.pendingMutation = &pending
+				s.pendingMutations = append(s.pendingMutations, flight.mutation)
 			}
 		}
 		flight.finalized = true
+		woke := flight.mutated
 		s.mu.Unlock()
+		// Commit owns the scheduler wake, including canceled-waiter builds.
+		if woke {
+			select {
+			case s.wake <- struct{}{}:
+			default:
+			}
+		}
 		return
 	}
 }

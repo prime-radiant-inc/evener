@@ -341,12 +341,9 @@ func TestNavigationServiceCommitsCanceledRefreshForLaterPublication(t *testing.T
 	if capability := service.Capability(); capability.Sequence != 1 {
 		t.Fatalf("sequence = %d, want committed change", capability.Sequence)
 	}
-	mutation, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !hasNavigationTarget(mutation.Targets, appwire.NavigationTargetProject, "p1") {
-		t.Fatalf("pending mutation = %+v", mutation.Targets)
+	pending := service.ConsumePendingInvalidations()
+	if len(pending) != 1 || !hasNavigationTarget(pending[0].Targets, appwire.NavigationTargetProject, "p1") {
+		t.Fatalf("pending mutations = %+v", pending)
 	}
 }
 
