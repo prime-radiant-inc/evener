@@ -127,6 +127,140 @@ func TestProducerAcceptancePinOneCallbackPerChangedPath(t *testing.T) {
 	}
 }
 
+func TestProducerAcceptanceArchiveConcurrentSetsSerializeAndRetainTimestamp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.db")
+	store := NewArchiveStore(path)
+	var calls atomic.Int32
+	store.SetOnChange(func() {
+		calls.Add(1)
+		_, _ = store.Decisions() // reentrant DB read must not deadlock.
+	})
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() { <-start; errs <- store.Set("session", "same", true, time.Unix(10, 0)) }()
+	}
+	close(start)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("equal concurrent archive sets callbacks = %d, want 1", got)
+	}
+	check, err := store.open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var flag, decidedAt int64
+	if err := check.QueryRow("SELECT archived, decided_at FROM archive WHERE kind = 'session' AND id = 'same'").Scan(&flag, &decidedAt); err != nil {
+		t.Fatal(err)
+	}
+	_ = check.Close()
+	if flag != 1 || decidedAt != 10 {
+		t.Fatalf("archive equal-set row = flag %d timestamp %d, want 1/10", flag, decidedAt)
+	}
+
+	calls.Store(0)
+	start = make(chan struct{})
+	errs = make(chan error, 2)
+	for _, tc := range []struct {
+		value bool
+		now   time.Time
+	}{{false, time.Unix(20, 0)}, {true, time.Unix(30, 0)}} {
+		tc := tc
+		go func() { <-start; errs <- store.Set("session", "competing", tc.value, tc.now) }()
+	}
+	close(start)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("competing concurrent archive sets callbacks = %d, want 2", got)
+	}
+	check, err = store.open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := check.QueryRow("SELECT archived, decided_at FROM archive WHERE kind = 'session' AND id = 'competing'").Scan(&flag, &decidedAt); err != nil {
+		t.Fatal(err)
+	}
+	_ = check.Close()
+	if (flag != 0 && flag != 1) || (decidedAt != 20 && decidedAt != 30) {
+		t.Fatalf("archive competing row = flag %d timestamp %d, want one committed value", flag, decidedAt)
+	}
+}
+
+func TestProducerAcceptanceFavoriteConcurrentSetsSerializeAndRetainTimestamp(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "index.db")
+	store := NewFavoriteStore(path)
+	var calls atomic.Int32
+	store.SetOnChange(func() {
+		calls.Add(1)
+		_, _ = store.Favorites() // reentrant DB read must not deadlock.
+	})
+	start := make(chan struct{})
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() { <-start; errs <- store.Set("session", "same", true, time.Unix(10, 0)) }()
+	}
+	close(start)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("equal concurrent favorite sets callbacks = %d, want 1", got)
+	}
+	check, err := store.open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var flag, decidedAt int64
+	if err := check.QueryRow("SELECT favorited, decided_at FROM favorite WHERE kind = 'session' AND id = 'same'").Scan(&flag, &decidedAt); err != nil {
+		t.Fatal(err)
+	}
+	_ = check.Close()
+	if flag != 1 || decidedAt != 10 {
+		t.Fatalf("favorite equal-set row = flag %d timestamp %d, want 1/10", flag, decidedAt)
+	}
+
+	calls.Store(0)
+	start = make(chan struct{})
+	errs = make(chan error, 2)
+	for _, tc := range []struct {
+		value bool
+		now   time.Time
+	}{{false, time.Unix(20, 0)}, {true, time.Unix(30, 0)}} {
+		tc := tc
+		go func() { <-start; errs <- store.Set("session", "competing", tc.value, tc.now) }()
+	}
+	close(start)
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if got := calls.Load(); got != 2 {
+		t.Fatalf("competing concurrent favorite sets callbacks = %d, want 2", got)
+	}
+	check, err = store.open()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := check.QueryRow("SELECT favorited, decided_at FROM favorite WHERE kind = 'session' AND id = 'competing'").Scan(&flag, &decidedAt); err != nil {
+		t.Fatal(err)
+	}
+	_ = check.Close()
+	if (flag != 0 && flag != 1) || (decidedAt != 20 && decidedAt != 30) {
+		t.Fatalf("favorite competing row = flag %d timestamp %d, want one committed value", flag, decidedAt)
+	}
+}
+
 func TestProducerAcceptanceArchiveNoopAndOneChange(t *testing.T) {
 	store := NewArchiveStore(filepath.Join(t.TempDir(), "index.db"))
 	var calls atomic.Int32
