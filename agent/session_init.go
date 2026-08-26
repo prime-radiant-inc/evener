@@ -274,25 +274,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 		ownsArtifactStore:             ownsArtifactStore,
 		subscriberCountFn:             cfg.spawn.subscriberCount,
 	}
-	// Capture model availability once, before tool schemas are projected. The
-	// snapshot is startup-bound and never refreshed silently; failed providers
-	// remain visible as unverified rather than being mistaken for empty lists.
-	if names := client.ProviderNames(); len(names) > 0 {
-		snapshot := modelavailability.Capture(s.sessionCtx, names, func(ctx context.Context, name string) ([]llm.ModelInfo, error) {
-			if name == profile.ID() {
-				return append([]llm.ModelInfo(nil), selectedModels.models...), selectedModels.err
-			}
-			return client.ListModels(ctx, name)
-		}, 2*time.Second)
-		s.modelSnapshot = &snapshot
-		if text, ok := inlineModelSnapshot(snapshot); ok {
-			s.delegateModelDescription = text
-		} else if len(snapshot.Choices) > 0 {
-			s.delegateModelDescription = fmt.Sprintf("Startup model snapshot %s is incomplete or too large; use the model-list read tool to browse verified choices.", snapshot.Version)
-		} else {
-			s.delegateModelDescription = fmt.Sprintf("Startup model snapshot %s has no verified choices; provider availability is unverified.", snapshot.Version)
-		}
-	}
+	s.captureModelAvailability(selectedModels)
 	s.createdAt = s.sclock().Now().UTC()
 	s.initEnvContext(nil)
 	if err := s.bootstrapDelegateResources(); err != nil {
@@ -485,6 +467,33 @@ func inlineModelSnapshot(snapshot modelavailability.Snapshot) (string, bool) {
 		modelavailability.DefaultInlineMaxCount,
 		tool.DelegateModelDescriptionAdditionBudget(modelavailability.DefaultInlineMaxBytes),
 	)
+}
+
+// captureModelAvailability records the startup-bound catalog used by delegate
+// model selection before tool schemas are projected. Leaf sessions cannot
+// delegate, so they do not enumerate providers or register the browsing tool.
+func (s *Session) captureModelAvailability(selectedModels liveModelEnumeration) {
+	if s.delegationAllowance <= 0 {
+		return
+	}
+	names := s.client.ProviderNames()
+	if len(names) == 0 {
+		return
+	}
+	snapshot := modelavailability.Capture(s.sessionCtx, names, func(ctx context.Context, name string) ([]llm.ModelInfo, error) {
+		if name == s.profile.ID() {
+			return append([]llm.ModelInfo(nil), selectedModels.models...), selectedModels.err
+		}
+		return s.client.ListModels(ctx, name)
+	}, liveModelMetadataTimeout)
+	s.modelSnapshot = &snapshot
+	if text, ok := inlineModelSnapshot(snapshot); ok {
+		s.delegateModelDescription = text
+	} else if len(snapshot.Choices) > 0 {
+		s.delegateModelDescription = fmt.Sprintf("Startup model snapshot %s is incomplete or too large; use the model-list read tool to browse verified choices.", snapshot.Version)
+	} else {
+		s.delegateModelDescription = fmt.Sprintf("Startup model snapshot %s has no verified choices; provider availability is unverified.", snapshot.Version)
+	}
 }
 
 // RestoreSessionConfig carries runtime-only settings needed when restoring a
@@ -789,8 +798,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	// Delegate reconciliation is durable, local startup work. Complete it before
 	// any provider metadata access so caller-delivery crash replay cannot depend
 	// on provider availability or latency.
-	profile = resolveLiveModelProfileWithTimeout(client, profile)
+	profile, selectedModels := resolveLiveModelProfileWithEnumerationTimeout(client, profile)
 	s.profile = profile
+	s.captureModelAvailability(selectedModels)
 	closeDelegateStoreOnError := true
 	defer func() {
 		if closeDelegateStoreOnError {

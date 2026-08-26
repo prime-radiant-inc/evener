@@ -10,8 +10,11 @@ import (
 	"sync/atomic"
 	"testing"
 
+	"github.com/oklog/ulid/v2"
+
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/modelavailability"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -91,6 +94,152 @@ func TestNewSessionEnumeratesOtherProvidersUnderLifetimeContext(t *testing.T) {
 	if !inheritedOwner.Load() {
 		t.Fatal("other-provider model enumeration did not inherit the session lifetime context")
 	}
+}
+
+func TestRestoreSessionReusesSelectedModelsAndAdvertisesSnapshot(t *testing.T) {
+	type ownerContextKey struct{}
+	const ownerMarker = "restored-run"
+
+	selected := &modelAvailabilityAdapter{models: []llm.ModelInfo{{ID: "gpt-5.5"}}}
+	selected.name = "openai"
+	var inheritedOwner atomic.Bool
+	other := &modelAvailabilityAdapter{
+		models: []llm.ModelInfo{{ID: "claude-opus-4-6"}},
+		observe: func(ctx context.Context) {
+			inheritedOwner.Store(ctx.Value(ownerContextKey{}) == ownerMarker)
+		},
+	}
+	other.name = "anthropic"
+	client := llm.NewClient()
+	client.Register(selected)
+	client.Register(other)
+	owner := context.WithValue(context.Background(), ownerContextKey{}, ownerMarker)
+	stateDir := t.TempDir()
+	meta := schema.SessionMeta{
+		ID:        ulid.Make().String(),
+		ProfileID: "openai",
+		Model:     "gpt-5.5",
+		Config:    (SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true}).toSnapshot(),
+	}
+
+	sess, err := RestoreSessionFromMetaWithConfig(
+		client,
+		NewOpenAIProfile("gpt-5.5"),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		meta,
+		RestoreSessionConfig{
+			LifetimeContext: owner,
+			StateDir:        stateDir,
+			testOnly: testConfig{
+				skipGitSnapshot:     true,
+				minimalSystemPrompt: true,
+				noSyncJobStore:      true,
+			},
+		},
+	)
+	if err != nil {
+		t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+	}
+	defer sess.Close()
+
+	if got := selected.calls.Load(); got != 1 {
+		t.Fatalf("selected provider ListModels calls = %d, want one metadata fetch reused by restored snapshot", got)
+	}
+	if got := other.calls.Load(); got != 1 {
+		t.Fatalf("other provider ListModels calls = %d, want one restored snapshot fetch", got)
+	}
+	if !inheritedOwner.Load() {
+		t.Fatal("other-provider model enumeration did not inherit the restored session lifetime context")
+	}
+	wantChoices := []string{"anthropic/claude-opus-4-6", "openai/gpt-5.5"}
+	if sess.modelSnapshot == nil || !slices.Equal(sess.modelSnapshot.Choices, wantChoices) {
+		t.Fatalf("restored model snapshot choices = %#v, want %q", sess.modelSnapshot, wantChoices)
+	}
+	properties := sess.delegateToolDefinition().Parameters["properties"].(map[string]any)
+	modelDescription := properties["model"].(map[string]any)["description"].(string)
+	if sess.delegateModelDescription == "" || !strings.HasSuffix(modelDescription, sess.delegateModelDescription) {
+		t.Fatal("restored delegate schema does not advertise its captured model snapshot")
+	}
+}
+
+func TestLeafSessionsSkipModelAvailabilityCapture(t *testing.T) {
+	newClient := func() (*llm.Client, *modelAvailabilityAdapter, *modelAvailabilityAdapter) {
+		selected := &modelAvailabilityAdapter{models: []llm.ModelInfo{{ID: "gpt-5.5"}}}
+		selected.name = "openai"
+		other := &modelAvailabilityAdapter{models: []llm.ModelInfo{{ID: "claude-opus-4-6"}}}
+		other.name = "anthropic"
+		client := llm.NewClient()
+		client.Register(selected)
+		client.Register(other)
+		return client, selected, other
+	}
+	assertLeaf := func(t *testing.T, sess *Session, selected, other *modelAvailabilityAdapter) {
+		t.Helper()
+		if got := selected.calls.Load(); got != 1 {
+			t.Fatalf("selected provider ListModels calls = %d, want one live metadata fetch", got)
+		}
+		if got := other.calls.Load(); got != 0 {
+			t.Fatalf("other provider ListModels calls = %d, want none for a leaf session", got)
+		}
+		if sess.modelSnapshot != nil {
+			t.Fatalf("leaf model snapshot = %#v, want nil", sess.modelSnapshot)
+		}
+		if sess.reg.Get("model_list") != nil {
+			t.Fatal("leaf registry contains model_list")
+		}
+		if sess.reg.Get("delegate") != nil {
+			t.Fatal("leaf registry contains delegate")
+		}
+	}
+
+	t.Run("fresh", func(t *testing.T) {
+		client, selected, other := newClient()
+		cfg := SessionConfig{NoProjectPrompts: true}
+		cfg.spawn.depth = 1
+		cfg.spawn.parentSessionID = "parent-session"
+		cfg.spawn.delegationAllowance = 0
+		cfg.testOnly = testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true}
+		sess, err := NewSession(client, NewOpenAIProfile("gpt-5.5"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+		if err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		defer sess.Close()
+		assertLeaf(t, sess, selected, other)
+	})
+
+	t.Run("restored", func(t *testing.T) {
+		client, selected, other := newClient()
+		meta := schema.SessionMeta{
+			ID:         ulid.Make().String(),
+			ProfileID:  "openai",
+			Model:      "gpt-5.5",
+			IsSubagent: true,
+			Config:     (SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true}).toSnapshot(),
+		}
+		restoreCfg := RestoreSessionConfig{
+			StateDir: t.TempDir(),
+			testOnly: testConfig{
+				skipGitSnapshot:     true,
+				minimalSystemPrompt: true,
+				noSyncJobStore:      true,
+			},
+		}
+		restoreCfg.spawn.depth = 1
+		restoreCfg.spawn.parentSessionID = "parent-session"
+		restoreCfg.spawn.delegationAllowance = 0
+		sess, err := RestoreSessionFromMetaWithConfig(
+			client,
+			NewOpenAIProfile("gpt-5.5"),
+			execenv.NewLocalExecutionEnvironment(t.TempDir()),
+			meta,
+			restoreCfg,
+		)
+		if err != nil {
+			t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+		}
+		defer sess.Close()
+		assertLeaf(t, sess, selected, other)
+	})
 }
 
 func TestModelListToolReturnsEveryChoiceExactlyOnceWithinPageBound(t *testing.T) {

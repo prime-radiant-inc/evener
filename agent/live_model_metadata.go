@@ -17,18 +17,18 @@ type liveModelEnumeration struct {
 	err    error
 }
 
-func resolveLiveModelProfileWithTimeout(client *llm.Client, profile *provider.Profile) *provider.Profile {
+func resolveLiveModelProfileWithEnumerationTimeout(client *llm.Client, profile *provider.Profile) (*provider.Profile, liveModelEnumeration) {
 	ctx, cancel := context.WithTimeout(context.Background(), liveModelMetadataTimeout)
 	defer cancel()
-	return resolveLiveModelProfile(ctx, client, profile)
+	return fillLiveModelMetadata(ctx, client, profile)
 }
 
 // resolveLiveModelProfile fills profile's live model metadata (context window,
 // reasoning support, etc.) from client's live model list when available.
 // Fails open (returns profile unchanged) on a nil client/profile or any
-// enumeration error — used by Restore and by tests that don't need the
-// enumerated list or the fetch's success flag; resolveLiveModelProfileValidated
-// is the membership-checking counterpart used by NewSession.
+// enumeration error — used by callers that don't need the enumerated list or
+// fetch result; resolveLiveModelProfileValidated is the membership-checking
+// counterpart used by NewSession.
 func resolveLiveModelProfile(ctx context.Context, client *llm.Client, profile *provider.Profile) *provider.Profile {
 	filled, _ := fillLiveModelMetadata(ctx, client, profile)
 	return filled
@@ -68,9 +68,7 @@ func fillLiveModelMetadata(ctx context.Context, client *llm.Client, profile *pro
 // modulo any metadata fill) on any enumeration failure, matching NewSession's
 // prior unvalidated behavior in that case.
 func resolveLiveModelProfileValidated(client *llm.Client, profile *provider.Profile) (*provider.Profile, liveModelEnumeration, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), liveModelMetadataTimeout)
-	defer cancel()
-	filled, enumeration := fillLiveModelMetadata(ctx, client, profile)
+	filled, enumeration := resolveLiveModelProfileWithEnumerationTimeout(client, profile)
 	if enumeration.err != nil {
 		return filled, enumeration, nil
 	}
