@@ -1,36 +1,17 @@
-// Rail is the workspace shell's sidebar: a header row (needs-you Badge,
-// search and hide icon buttons - no wordmark; the footer's daemon identity
-// is the rail's only branding) over a "+ New session" button,
-// session tree over stores/tree.ts, and the pinned identity/settings footer.
-// It renders the SAME full chrome everywhere it appears — docked on desktop
-// (always; collapsed mode was removed 2026-07-24 at Jesse's direction) and
-// inside StackHost's mobile TreeDrawer sheet (which passes it as children).
-// Rail owns per-branch expand state, the reveal (railController /project),
-// and the pin-section rename/delete + delete-project confirmation dialogs
-// (the session-level dialogs - rename / pin / delete - are owned by the
-// shared SessionMenu each row renders; Rail supplies only the mutation
-// callbacks behind rowActions). Every mutation goes through actions.ts,
-// showing optimistically (railPending) while the request is in flight,
-// refetching the tree on success and toasting on failure.
 import { type ChangeEvent, type CSSProperties, useCallback, useEffect, useId, useRef, useState } from "react";
-// Importing sessionPanelPaneType from this module also runs its registerPane
-// side effects for the three session panel pane types - required, since the
-// rail can now be the FIRST place a sessionDetails/sessionTasks/
-// sessionActivity pane is opened (the unified menu's pane items), before any
-// session pane's own chrome has mounted.
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import { errorText } from "../../protocol/errors";
+import type {
+  NavigationProjectPage,
+  NavigationProjectResource,
+  NavigationProjectSummary,
+  NavigationSessionSummary,
+} from "../../protocol/types.gen";
 import { useConnectionStore } from "../../stores/connection";
-import { useNavigationStore } from "../../stores/navigation/store";
+import { selectAttentionSummary, selectPinSections } from "../../stores/navigation/selectors";
+import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
+import { keyID, type ResourceKey, type ResourceState } from "../../stores/navigation/types";
 import { threadsStore } from "../../stores/threads";
-import {
-  type TreeNode as ApiTreeNode,
-  type TreeProject as ApiTreeProject,
-  type PinSectionTree,
-  type TreeResponse,
-  treeStore,
-  useTreeStore,
-} from "../../stores/tree";
 import {
   Badge,
   Button,
@@ -77,9 +58,12 @@ import {
   projectNodeIdForSessionRef,
   projectNodes,
   type RailNode,
+  type RailPinSection,
+  type RailProject,
+  type RailSession,
   sessionNodes,
 } from "./railNodes";
-import { applyPending, buildPinSourceIndex, type PendingOp } from "./railPending";
+import { applyPending, buildPinSourceIndex, type PendingOp, type RailResources } from "./railPending";
 
 const CLASS = {
   rail: requireClass(styles.rail, "Rail.module.css", "rail"),
@@ -101,22 +85,9 @@ const CLASS = {
   srOnly: requireClass(styles.srOnly, "Rail.module.css", "srOnly"),
 };
 
-// The Archived section's key in the same expand-override map every row uses.
-// Namespaced apart from the id schemes railNodes assigns (row_ids, and its
-// own "projectnode:"/"archivedgroup:"/"inactive:" prefixes) so it can never
-// collide with a real row.
 const ARCHIVED_SECTION_KEY = "section:archived";
-
-function isEmptyTree(tree: TreeResponse): boolean {
-  return (
-    tree.needs_you.length === 0 &&
-    tree.live.length === 0 &&
-    tree.pin_sections.length === 0 &&
-    tree.projects.length === 0 &&
-    tree.archived_projects.length === 0 &&
-    tree.test_runs.length === 0
-  );
-}
+const catalogKinds = ["projects", "archived_projects", "test_runs"] as const;
+type CatalogKind = (typeof catalogKinds)[number];
 
 interface RailSectionProps {
   title: string;
@@ -125,11 +96,9 @@ interface RailSectionProps {
   onActivate: (node: RailNode) => void;
   actions: RailRowActions;
 }
-
 function renderRailRow(actions: RailRowActions) {
   return (node: RailNode, info: TreeRowInfo) => <RailRow node={node} info={info} actions={actions} />;
 }
-
 function RailSection({ title, nodes, onToggle, onActivate, actions }: RailSectionProps) {
   if (nodes.length === 0) return null;
   return (
@@ -139,16 +108,14 @@ function RailSection({ title, nodes, onToggle, onActivate, actions }: RailSectio
     </section>
   );
 }
-
 interface PinnedRailSectionProps extends Omit<RailSectionProps, "title" | "nodes"> {
-  section: PinSectionTree;
+  section: RailPinSection;
   open: boolean;
   onToggleOpen: () => void;
   onRename: () => void;
   onDelete: () => void;
   isExpanded: ReturnType<typeof overrideLookup>;
 }
-
 function PinnedRailSection({
   section,
   open,
@@ -186,7 +153,7 @@ function PinnedRailSection({
       </div>
       {open && (
         <Tree
-          nodes={sessionNodes(section.sessions, isExpanded)}
+          nodes={sessionNodes(section.sessions ?? [], isExpanded)}
           onToggle={onToggle}
           onActivate={onActivate}
           renderRow={renderRailRow(actions)}
@@ -195,18 +162,11 @@ function PinnedRailSection({
     </section>
   );
 }
-
 interface ArchivedSectionProps extends Omit<RailSectionProps, "title"> {
   count: number;
   open: boolean;
   onToggleOpen: () => void;
 }
-
-// The one bottom disclosure holding everything archived hub-wide
-// (parity-m3-sidebar-tree.md §8): whole archived projects, plus a sub-branch
-// per active/test-run project for the archived sessions diverted out of it.
-// Collapsed by default - it is the least likely thing you opened the rail for,
-// which is also why it sits last.
 function ArchivedSection({ count, open, onToggleOpen, nodes, onToggle, onActivate, actions }: ArchivedSectionProps) {
   return (
     <section className={CLASS.section}>
@@ -219,103 +179,195 @@ function ArchivedSection({ count, open, onToggleOpen, nodes, onToggle, onActivat
 }
 
 export interface RailProps {
-  // Renders the header's ☰ "Hide sidebar" button when provided (the desktop
-  // case; RailHost wires it to the persisted sidebarHidden boolean) - the
-  // same ☰ glyph RailHost's hidden-state chip uses to dock it back, so one
-  // icon owns the toggle in both directions. The mobile drawer instance
-  // passes none — the drawer is its own show/hide.
   onHide?: () => void;
-  // Renders the right-edge drag-to-resize handle at this width when provided
-  // (the desktop case; RailHost passes the persisted evener.prefs.sidebarWidth).
-  // The mobile drawer instance passes none: the Rail fills the sheet there
-  // (Rail.module.css's <=899px block) and has no resizable edge.
   width?: number;
   onWidthChange?: (width: number) => void;
-  // The session ref the palette's /project command wants revealed. Rail expands
-  // its project section and scrolls its row into view, then calls
-  // onRevealConsumed so the caller can clear it. See railController (PIN-A).
   revealTarget?: string | null;
   onRevealConsumed?: () => void;
 }
 
+function relativeAge(updatedAt?: string): string | undefined {
+  if (!updatedAt) return undefined;
+  const timestamp = Date.parse(updatedAt);
+  if (!Number.isFinite(timestamp)) return undefined;
+  const seconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+  if (seconds < 60) return "now";
+  if (seconds < 3600) return `${Math.floor(seconds / 60)}m`;
+  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h`;
+  return `${Math.floor(seconds / 86400)}d`;
+}
+function summarySession(summary: NavigationSessionSummary, tier?: string, pinSectionID?: string): RailSession {
+  const children = summary.children.map((child) => summarySession(child, tier, pinSectionID));
+  return {
+    ...summary,
+    row_id: `navigation:${summary.ref}`,
+    tier,
+    pin_section_id: pinSectionID,
+    age: relativeAge(summary.updated_at),
+    children,
+  };
+}
+function sessions(summaries: readonly NavigationSessionSummary[], tier?: string, pinSectionID?: string): RailSession[] {
+  return summaries.map((summary) => summarySession(summary, tier, pinSectionID));
+}
+function resourceData<T>(state: ReturnType<typeof navigationStore.getState>, key: ResourceKey): T | null {
+  return (state.resources.get(keyID(key))?.data as T | undefined) ?? null;
+}
+function loadedSection(
+  state: ReturnType<typeof navigationStore.getState>,
+  section: "live" | "needs_you",
+): RailSession[] {
+  return [...state.resources.values()]
+    .filter((resource) => resource.key.kind === "section" && resource.key.section === section && resource.data !== null)
+    .sort((a, b) => (a.key.kind === "section" && b.key.kind === "section" ? a.key.offset - b.key.offset : 0))
+    .flatMap((resource) => sessions((resource.data as { sessions: NavigationSessionSummary[] }).sessions));
+}
+function projectFromSummary(
+  summary: NavigationProjectSummary,
+  root: NavigationProjectResource | null,
+  pages: ReadonlyMap<string, ResourceState>,
+): RailProject {
+  const all: RailSession[] = [];
+  const more: Partial<Record<"current" | "recent" | "archived", number>> = {};
+  for (const tier of ["current", "recent", "archived"] as const) {
+    const base = root?.[tier];
+    const pageStates = [...pages.values()].filter(
+      (state) =>
+        state.key.kind === "project_page" &&
+        state.key.projectKey === summary.key &&
+        state.key.tier === tier &&
+        state.data !== null,
+    );
+    const rows = [...(base?.sessions ?? [])];
+    let remaining = base?.remaining ?? summary[`more_${tier}`] ?? 0;
+    for (const pageState of pageStates) {
+      const page = pageState.data as NavigationProjectPage;
+      for (const row of page.sessions) if (!rows.some((existing) => existing.ref === row.ref)) rows.push(row);
+      remaining = Math.min(remaining, page.remaining);
+    }
+    all.push(...sessions(rows, tier));
+    more[tier] = remaining;
+  }
+  return {
+    ...summary,
+    loaded: root !== null,
+    sessions: all,
+    more_current: more.current,
+    more_recent: more.recent,
+    more_archived: more.archived,
+  };
+}
+function projectsFor(state: ReturnType<typeof navigationStore.getState>, catalog: CatalogKind): RailProject[] {
+  const output: RailProject[] = [];
+  for (const resource of state.resources.values()) {
+    if (resource.key.kind !== "catalog" || resource.key.catalog !== catalog || resource.data === null) continue;
+    const data = resource.data as { projects: NavigationProjectSummary[] };
+    for (const summary of data.projects) {
+      if (output.some((project) => project.key === summary.key)) continue;
+      const root = resourceData<NavigationProjectResource>(state, { kind: "project", projectKey: summary.key });
+      output.push(projectFromSummary(summary, root, state.resources));
+    }
+  }
+  return output;
+}
+function railResources(state: ReturnType<typeof navigationStore.getState>): RailResources {
+  const pinSections = selectPinSections(state).map((section) => ({
+    id: section.id,
+    name: section.name,
+    member_count: 0,
+    sessions: sessions(section.sessions, undefined, section.id),
+  }));
+  return {
+    live: loadedSection(state, "live"),
+    needsYou: loadedSection(state, "needs_you"),
+    pinSections,
+    projects: projectsFor(state, "projects"),
+    archivedProjects: projectsFor(state, "archived_projects").map((project) => ({ ...project, is_archived: true })),
+    testRuns: projectsFor(state, "test_runs"),
+  };
+}
+function nonEmpty(resources: RailResources): boolean {
+  return (
+    resources.live.length > 0 ||
+    resources.needsYou.length > 0 ||
+    resources.pinSections.length > 0 ||
+    resources.projects.length > 0 ||
+    resources.archivedProjects.length > 0 ||
+    resources.testRuns.length > 0
+  );
+}
+
+async function loadKey(key: ResourceKey): Promise<unknown> {
+  const state = navigationStore.getState();
+  switch (key.kind) {
+    case "manifest":
+      return state.loadManifest();
+    case "section":
+      return state.loadSection(key.section, key.offset, key.limit);
+    case "pin_catalog":
+      return state.loadPinCatalog(key.offset, key.limit);
+    case "pin_section":
+      return state.loadPinSection(key.sectionId, key.offset, key.limit);
+    case "catalog":
+      return state.loadCatalog(key.catalog, key.offset, key.limit);
+    case "project":
+      return state.loadProject(key.projectKey);
+    case "project_page":
+      return state.loadProjectPage(key.projectKey, key.tier, key.offset, key.limit);
+    case "location":
+      return undefined;
+  }
+}
+/** Task 10 exposes loaders and invalidation, but no target-satisfaction API.
+ * Reload only already-loaded non-location resources as the typed adapter
+ * boundary; do not recreate revalidator state or issue a whole-tree request. */
+async function reloadLoadedNavigation(): Promise<void> {
+  const keys = [...navigationStore.getState().resources.values()]
+    .map((resource) => resource.key)
+    .filter((key) => key.kind !== "location");
+  await Promise.all(keys.map((key) => loadKey(key).catch(() => undefined)));
+}
+
 export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsumed }: RailProps = {}) {
   const navigationMode = useNavigationStore((state) => state.mode);
-  const fetchedTree = useTreeStore((s) => s.tree);
-  const loading = useTreeStore((s) => s.loading);
-  const error = useTreeStore((s) => s.error);
-  const treeGeneration = useTreeStore((s) => s.treeGeneration);
-  const projectDetails = useTreeStore((s) => s.projectDetails);
-  const projectDetailGenerations = useTreeStore((s) => s.projectDetailGenerations);
-  // Footer identity: the connected daemon's own name (never a fabricated user
-  // handle). Falls back to the "evener" brand string before a handshake has
-  // populated serverInfo.
-  const serverInfo = useConnectionStore((s) => s.serverInfo);
-  // UX fix: the docked rail carries the same needs-you count RailHost's own
-  // hidden-rail ☰ chip already shows (its Badge(needsYou)), so the count is
-  // visible whether the rail is docked or hidden.
-  const needsYou = useTreeStore((s) => s.tree?.attentionSummary.needsYou ?? 0);
+  const manifest = useNavigationStore((state) => state.manifest);
+  const resourcesState = useNavigationStore((state) => state.resources);
+  const expanded = useNavigationStore((state) => state.expanded);
+  const attention = useNavigationStore((state) => selectAttentionSummary(state));
+  const serverInfo = useConnectionStore((state) => state.serverInfo);
   const toasts = useToasts();
-
-  // Seeded from localStorage on first render (railExpansion), so a rail you
-  // arranged comes back arranged. The lazy initializer means the read happens
-  // once per mount, not on every render.
   const [expandedOverrides, setExpandedOverrides] = useState<ReadonlyMap<string, boolean>>(loadExpansion);
-  const [sectionRenameTarget, setSectionRenameTarget] = useState<PinSectionTree | null>(null);
+  const [sectionRenameTarget, setSectionRenameTarget] = useState<RailPinSection | null>(null);
   const [sectionRenameValue, setSectionRenameValue] = useState("");
   const [sectionRenameError, setSectionRenameError] = useState("");
   const [sectionRenameSubmitting, setSectionRenameSubmitting] = useState(false);
   const sectionRenameInputID = useId();
   const sectionRenameErrorID = useId();
-  // State updates do not become visible until React renders. This ref is the
-  // synchronous lock that rejects a second click/Enter in that gap; the token
-  // also prevents an obsolete async completion from changing a later dialog.
   const sectionRenameSubmission = useRef<{ token: number; sectionID: string } | null>(null);
   const sectionRenameToken = useRef(0);
   const sectionDeleteRequestToken = useRef(0);
   const [sectionDeleteTarget, setSectionDeleteTarget] = useState<{
-    section: PinSectionTree;
+    section: RailPinSection;
     memberCount: number;
   } | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<ApiTreeProject | null>(null);
-  // Mutations currently in flight. Everything below renders from the tree with
-  // these projected on (railPending), so a click shows before its round trip
-  // resolves; runAction adds and removes them.
+  const [deleteTarget, setDeleteTarget] = useState<RailProject | null>(null);
   const [pending, setPending] = useState<readonly PendingOp[]>([]);
   const bodyRef = useRef<HTMLDivElement>(null);
   const railRef = useRef<HTMLDivElement>(null);
   const overflowPagesInFlight = useRef(new Set<string>());
+  const state = { ...navigationStore.getState(), resources: resourcesState, expanded };
+  const base = railResources(state);
+  const resources = applyPending(base, pending, { pinSources: buildPinSourceIndex(base) });
+  const isExpanded = overrideLookup(expandedOverrides);
 
-  // applyPending returns the same object when nothing is pending, so the
-  // common case allocates nothing and every downstream memo stays stable.
-  const currentProjectDetails = new Map(
-    Array.from(projectDetails).filter(([key]) => projectDetailGenerations.get(key) === treeGeneration),
-  );
-  const tree =
-    fetchedTree === null
-      ? null
-      : applyPending(fetchedTree, pending, {
-          pinSources: buildPinSourceIndex(fetchedTree, {
-            treeGeneration,
-            projectDetails: Array.from(currentProjectDetails, ([projectKey, detail]) => ({
-              projectKey,
-              treeGeneration,
-              rows: detail.sessions,
-            })),
-          }),
-        });
-
-  // ensureLoaded, not refresh: the duty here is "the rail has data", and the
-  // tree it renders is kept current by evener/tree/changed pushes, so a mount
-  // with one already loaded has nothing to go and get. Sharing the store's
-  // in-flight request is what collapses a desktop boot's two identical GET
-  // /api/tree - this and initNotifications()'s baseline, fired milliseconds
-  // apart - into one, and stops every mobile drawer OPEN (which remounts this
-  // component, since TreeDrawer's sheet renders null while closed) from
-  // re-fetching (kata p5w9).
   useEffect(() => {
-    if (navigationMode === "legacy") void treeStore.getState().ensureLoaded();
-  }, [navigationMode]);
-
+    if (navigationMode !== "v1") return;
+    if (!manifest)
+      void navigationStore
+        .getState()
+        .loadManifest()
+        .catch(() => undefined);
+  }, [navigationMode, manifest]);
   useEffect(
     () => () => {
       sectionRenameToken.current += 1;
@@ -325,18 +377,6 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     [],
   );
 
-  // Every disclosure in the rail funnels through here - project rows, subagent
-  // folds, the Archived section - so persisting on this one path covers all of
-  // them, row by row. The new map is built OUTSIDE the state updater: a
-  // setState updater must stay pure (React runs it twice under StrictMode),
-  // and a localStorage write is not. Reading expandedOverrides from the
-  // closure is safe because every caller is a discrete user action - one
-  // toggle per tick.
-  //
-  // useCallback, and declared above the reveal effect below, because that
-  // effect calls it and so must list it as a dependency: it changes identity
-  // exactly when expandedOverrides does, which that effect already depends on,
-  // so this adds no extra runs of its own.
   const setExpanded = useCallback(
     (id: string, value: boolean) => {
       const next = new Map(expandedOverrides);
@@ -346,78 +386,79 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     },
     [expandedOverrides],
   );
-
-  // A successful tree refresh invalidates every archived detail's generation.
-  // Rehydrate projects which are still visibly expanded without requiring a
-  // collapse/re-expand gesture. loadProjectDetail dedupes by project+generation
-  // and rejects stale responses at the store authority boundary.
+  const rootLoadsInFlight = useRef(new Set<string>());
   useEffect(() => {
-    if (!fetchedTree || expandedOverrides.get(ARCHIVED_SECTION_KEY) !== true) return;
-    for (const project of fetchedTree.archived_projects) {
+    if (navigationMode !== "v1") return;
+    for (const project of [...resources.projects, ...resources.archivedProjects, ...resources.testRuns]) {
+      const expanded = isExpanded(`projectnode:${project.key}`, project.default_expanded ?? false);
       if (
-        expandedOverrides.get(`projectnode:${project.key}`) === true &&
-        projectDetailGenerations.get(project.key) !== treeGeneration
-      ) {
-        void treeStore.getState().loadProjectDetail(project.key);
-      }
+        !expanded ||
+        project.loaded === true ||
+        (project.session_count ?? 0) === 0 ||
+        rootLoadsInFlight.current.has(project.key)
+      )
+        continue;
+      rootLoadsInFlight.current.add(project.key);
+      void Promise.resolve(navigationStore.getState().loadProject(project.key)).catch(() => undefined);
     }
-  }, [fetchedTree, treeGeneration, projectDetailGenerations, expandedOverrides]);
-
-  // Reveal a session's row for the palette's /project command (railController).
-  // If the row is already rendered, scroll it into view (block:"center"). If
-  // it's hidden inside a collapsed project, un-collapse that project instead
-  // and return: setting the override changes expandedOverrides, which re-runs
-  // this effect, and the now-rendered row scrolls on that pass. The Tree
-  // renders every expanded row (no virtualization), so a project-bearing ref
-  // always resolves after its one expand; the `!== true` guard makes the
-  // expand happen at most once, so an unknown ref just falls through to consume
-  // rather than looping. Consuming (onRevealConsumed) lets the caller clear the
-  // target.
+  }, [navigationMode, resources, isExpanded]);
   useEffect(() => {
     if (!revealTarget) return;
-    const rows = bodyRef.current?.querySelectorAll<HTMLElement>("[data-session-ref]");
-    const row = rows ? Array.from(rows).find((el) => el.dataset.sessionRef === revealTarget) : undefined;
+    const row = Array.from(bodyRef.current?.querySelectorAll<HTMLElement>("[data-session-ref]") ?? []).find(
+      (element) => element.dataset.sessionRef === revealTarget,
+    );
     if (row) {
       row.scrollIntoView({ block: "center", behavior: "smooth" });
       onRevealConsumed?.();
       return;
     }
-    if (!tree) return; // tree still loading - wait for it (tree is in deps), don't give up early
-    const projectId = projectNodeIdForSessionRef([...tree.projects, ...tree.test_runs], revealTarget);
-    if (projectId && expandedOverrides.get(projectId) !== true) {
-      // Through setExpanded, so a project the reveal opened is remembered the
-      // same way one you opened by hand is - it is the same expand state.
-      setExpanded(projectId, true);
+    if (!nonEmpty(resources)) return;
+    const projectID = projectNodeIdForSessionRef(
+      [...resources.projects, ...resources.testRuns, ...resources.archivedProjects],
+      revealTarget,
+    );
+    if (projectID && expandedOverrides.get(projectID) !== true) {
+      setExpanded(projectID, true);
+      return;
+    }
+    const location = resourceData<{ project_key?: string }>(navigationStore.getState(), {
+      kind: "location",
+      ref: revealTarget,
+    });
+    if (!location) {
+      void Promise.resolve(navigationStore.getState().lookupLocation(revealTarget)).catch(() => undefined);
+      return;
+    }
+    if (location.project_key) {
+      const projectID = `projectnode:${location.project_key}`;
+      if (expandedOverrides.get(projectID) !== true) {
+        setExpanded(projectID, true);
+        return;
+      }
+      void Promise.resolve(navigationStore.getState().loadProject(location.project_key)).catch(() => undefined);
       return;
     }
     onRevealConsumed?.();
-  }, [revealTarget, tree, expandedOverrides, onRevealConsumed, setExpanded]);
+  }, [revealTarget, resources, expandedOverrides, onRevealConsumed, setExpanded]);
 
   function handleToggle(node: RailNode) {
     if (node.kind === "loading") return;
-    const willExpand = !node.expanded;
-    setExpanded(node.id, willExpand);
-    // Archived projects ship as session_count-only stubs (see
-    // cmd/evener-hub/web_api_tree.go's apiTreeProject doc comment); the first
-    // expand is what triggers the lazy load. Already-loaded / already
-    // in-flight/current-generation detail is naturally deduped by its
-    // provenance marker. A retained cache entry from an older tree generation
-    // is deliberately re-fetched: it is neither rendered nor pin-eligible.
+    const value = !node.expanded;
+    setExpanded(node.id, value);
     if (
-      willExpand &&
+      value &&
       node.kind === "project" &&
-      node.project.is_archived === true &&
-      projectDetailGenerations.get(node.project.key) !== treeGeneration
+      !resourceData(state, { kind: "project", projectKey: node.project.key }) &&
+      !rootLoadsInFlight.current.has(node.project.key)
     ) {
-      void treeStore.getState().loadProjectDetail(node.project.key);
+      rootLoadsInFlight.current.add(node.project.key);
+      void Promise.resolve(navigationStore.getState().loadProject(node.project.key)).catch(() => undefined);
     }
   }
-
-  function openSession(session: ApiTreeNode): void {
+  function openSession(session: RailSession) {
     const url = paneToURL("session", { ref: session.ref });
-    if (url !== null) navigate(url);
+    if (url) navigate(url);
   }
-
   function handleActivate(node: RailNode) {
     if (node.kind === "loading") return;
     if (node.kind === "overflow") {
@@ -425,121 +466,89 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       return;
     }
     if (node.kind === "session") {
-      // A cluster row is a repeated-title FOLD, not a session: its ref is a
-      // synthetic "cluster:<hex>" naming no session, so opening a pane for it
-      // loads a transcript that never arrives. It toggles, like every other
-      // disclosure in the rail.
-      if (node.session.kind === "cluster") {
-        handleToggle(node);
-        return;
-      }
-      openSession(node.session);
+      if (node.session.kind === "cluster") handleToggle(node);
+      else openSession(node.session);
       return;
     }
-    if (node.kind === "inactiveFold") {
-      handleToggle(node);
-      return;
-    }
-    handleToggle(node); // a project row has nowhere to "open" - Enter/click toggles it, same as its chevron
+    handleToggle(node);
   }
-
-  async function revealOverflow(node: OverflowRailNode): Promise<void> {
+  async function revealOverflow(node: OverflowRailNode) {
     const pages = node.pages.filter((page) => {
       const key = `${page.projectKey}:${page.tier}:${page.offset}:${page.limit}`;
       if (overflowPagesInFlight.current.has(key)) return false;
       overflowPagesInFlight.current.add(key);
       return true;
     });
-    if (pages.length === 0) return;
     try {
       await Promise.all(
-        pages.map((page) => treeStore.getState().loadProjectPage(page.projectKey, page.tier, page.offset, page.limit)),
+        pages.map((page) =>
+          navigationStore.getState().loadProjectPage(page.projectKey, page.tier, page.offset, page.limit),
+        ),
       );
-    } catch (err) {
-      toasts.push("error", `Couldn't load older sessions: ${errorText(err)}`);
+    } catch (error) {
+      toasts.push("error", `Couldn't load older sessions: ${errorText(error)}`);
     } finally {
-      for (const page of pages) {
+      pages.forEach((page) => {
         overflowPagesInFlight.current.delete(`${page.projectKey}:${page.tier}:${page.offset}:${page.limit}`);
-      }
+      });
     }
   }
-
-  // runAction is the one path every rail mutation takes. `optimistic` is what
-  // the row should look like while the request is in flight; it is projected
-  // onto the rendered tree (railPending) from before the POST until the
-  // follow-up refresh has settled, then dropped. On failure it is dropped too,
-  // so a rejected mutation restores exactly what was on screen before - the
-  // overlay is a guess, and a refused guess must not outlive its request.
-  //
-  // The refresh is AWAITED (it never rejects - see stores/tree.ts) rather than
-  // fired and forgotten, because its completion is precisely the moment the
-  // real tree carries the change and the overlay stops being needed. Dropping
-  // the op any earlier would flash the pre-mutation row back for one render.
   async function runAction<T>(
     fn: () => Promise<T>,
-    failureMessage: string,
+    failure: string,
     optimistic?: PendingOp | ((result: T) => PendingOp),
-    propagateFailure = false,
-  ): Promise<void> {
+    propagate = false,
+  ) {
     let installed = typeof optimistic === "object" ? optimistic : undefined;
-    if (installed) {
-      const initial = installed;
-      setPending((ops) => [...ops, initial]);
-    }
+    if (installed) setPending((ops) => [...ops, installed as PendingOp]);
     try {
       const result = await fn();
       if (typeof optimistic === "function") {
-        const next = optimistic(result);
-        installed = next;
-        setPending((ops) => [...ops, next]);
+        installed = optimistic(result);
+        setPending((ops) => [...ops, installed as PendingOp]);
       }
-      await treeStore.getState().refresh();
-    } catch (err) {
-      toasts.push("error", `${failureMessage}: ${errorText(err)}`);
-      if (propagateFailure) throw err;
+      await reloadLoadedNavigation();
+    } catch (error) {
+      toasts.push("error", `${failure}: ${errorText(error)}`);
+      if (propagate) throw error;
     } finally {
       if (installed) setPending((ops) => ops.filter((op) => op !== installed));
     }
   }
-
   const rowActions: RailRowActions = {
     onOpenSessionPane: (session, pane) => {
       const workspace = workspaceStore.getState();
       workspace.openPane("session", { ref: session.ref });
       workspace.openPane(sessionPanelPaneType(pane), { ref: session.ref });
     },
-    // Every session-mutation callback below passes propagateFailure=true:
-    // runAction toasts the failure AND rethrows, so the rejection reaches
-    // SessionMenu's confirm helper and its dialog stays open (the failure
-    // convention in SessionMenu.tsx's header comment - one owner per
-    // dialog, and SessionMenu owns these now).
-    onRenameSession: async (session, name) => {
-      await runAction(
+    onRenameSession: (session, name) =>
+      runAction(
         () => renameSession(session.ref, name),
         "Couldn't rename session",
         { kind: "sessionTitle", ref: session.ref, title: name },
         true,
-      );
-    },
-    onShutdownSession: async (session) => {
-      await runAction(
-        () => threadsStore.getState().shutdown(session.ref),
-        "Couldn't shut down session",
-        undefined,
+      ),
+    onShutdownSession: (session) =>
+      runAction(() => threadsStore.getState().shutdown(session.ref), "Couldn't shut down session", undefined, true),
+    onPinSession: (session, target, section) =>
+      runAction(
+        () => assignSessionPin(session.ref, target),
+        "Couldn't assign pinned session",
+        section
+          ? {
+              kind: "sessionPin",
+              ref: session.ref,
+              source: session,
+              section: { ...section, member_count: section.member_count },
+            }
+          : (result) => ({
+              kind: "sessionPin",
+              ref: session.ref,
+              source: session,
+              section: { ...result.assignment.section },
+            }),
         true,
-      );
-    },
-    onPinSession: async (session, target, section) => {
-      const optimistic = section
-        ? ({ kind: "sessionPin", ref: session.ref, source: session, section } as const)
-        : (result: Awaited<ReturnType<typeof assignSessionPin>>): PendingOp => ({
-            kind: "sessionPin",
-            ref: session.ref,
-            source: session,
-            section: result.assignment.section,
-          });
-      await runAction(() => assignSessionPin(session.ref, target), "Couldn't assign pinned session", optimistic, true);
-    },
+      ),
     onUnpinRequest: (session) =>
       runAction(
         () => unpinSession(session.ref),
@@ -552,9 +561,6 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       return runAction(
         () => setArchived("session", session.session_id, archiving),
         "Couldn't update archive state",
-        // Only the archiving direction hides anything: unarchiving lands the
-        // row in whichever tier the server classifies it into, which this
-        // layer cannot predict (railPending's own comment).
         archiving ? { kind: "hideSession", ref: session.ref } : undefined,
         true,
       );
@@ -564,21 +570,13 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       setPending((ops) => [...ops, optimistic]);
       try {
         const result = await deleteSession(session.ref);
-        await treeStore.getState().refresh();
-        // The session is actually gone: close every open pane still showing
-        // it instead of leaving a phantom tab open (see
-        // closePanesForDeletedSessions).
+        await reloadLoadedNavigation();
         closePanesForDeletedSessions(result.deleted);
-        if (result.skipped.length > 0) {
-          const reason = result.skipped[0]?.reason ?? "still in use";
-          toasts.push("warning", `Couldn't delete "${session.title}": ${reason}`);
-        }
-      } catch (err) {
-        // Toast here, then rethrow so SessionMenu's delete dialog stays open
-        // (same propagateFailure convention as runAction above; this path
-        // can't use runAction because it owns its own pending op).
-        toasts.push("error", `Couldn't delete "${session.title}": ${errorText(err)}`);
-        throw err;
+        if (result.skipped.length)
+          toasts.push("warning", `Couldn't delete "${session.title}": ${result.skipped[0]?.reason ?? "still in use"}`);
+      } catch (error) {
+        toasts.push("error", `Couldn't delete "${session.title}": ${errorText(error)}`);
+        throw error;
       } finally {
         setPending((ops) => ops.filter((op) => op !== optimistic));
       }
@@ -592,22 +590,18 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       });
     },
     onToggleArchiveProject: (project) => {
-      const archiving = !(project.is_archived ?? false);
+      const value = !(project.is_archived ?? false);
       void runAction(
-        () => setArchived("project", project.key, archiving, project.working_dir),
+        () => setArchived("project", project.key, value, project.working_dir),
         "Couldn't update archive state",
-        archiving ? { kind: "hideProject", key: project.key } : undefined,
+        value ? { kind: "hideProject", key: project.key } : undefined,
       );
     },
-    onDeleteProjectRequest: (project) => {
-      setDeleteTarget(project);
-    },
+    onDeleteProjectRequest: (project) => setDeleteTarget(project),
   };
-
   function closeDeleteDialog() {
     setDeleteTarget(null);
   }
-
   async function confirmDelete() {
     const target = deleteTarget;
     if (!target) return;
@@ -616,36 +610,20 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     setPending((ops) => [...ops, optimistic]);
     try {
       const result = await deleteProject(target.key, target.working_dir ?? "");
-      // The response may contain both deleted and skipped sessions when a
-      // session resumes during the destructive pass. Awaiting this refresh
-      // while the optimistic project hide is still active makes the next
-      // render authoritative: deleted rows stay gone, while skipped live
-      // rows/projects return from the rebuilt index honestly.
-      await treeStore.getState().refresh();
-      // Refresh is best effort. The delete response is authoritative for the
-      // identities it processed, so reconcile it even when the follow-up GET
-      // failed and would otherwise leave hydrated stale detail visible.
-      treeStore.getState().reconcileProjectDelete(
-        target.key,
-        result.deleted,
-        result.skipped.map((session) => session.id),
-      );
-      // The rail row is gone; the panes routed at its sessions have to go too.
+      await reloadLoadedNavigation();
       closePanesForDeletedSessions(result.deleted);
-      if (result.skipped.length > 0) {
+      if (result.skipped.length)
         toasts.push(
           "warning",
           `Deleted ${result.deleted.length} session(s); ${result.skipped.length} could not be removed`,
         );
-      }
-    } catch (err) {
-      toasts.push("error", `Couldn't delete project: ${errorText(err)}`);
+    } catch (error) {
+      toasts.push("error", `Couldn't delete project: ${errorText(error)}`);
     } finally {
       setPending((ops) => ops.filter((op) => op !== optimistic));
     }
   }
-
-  function openSectionRename(section: PinSectionTree): void {
+  function openSectionRename(section: RailPinSection) {
     sectionRenameToken.current += 1;
     sectionRenameSubmission.current = null;
     setSectionRenameTarget(section);
@@ -653,8 +631,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     setSectionRenameError("");
     setSectionRenameSubmitting(false);
   }
-
-  function closeSectionRename(): void {
+  function closeSectionRename() {
     if (sectionRenameSubmission.current) return;
     sectionRenameToken.current += 1;
     setSectionRenameTarget(null);
@@ -662,22 +639,19 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     setSectionRenameError("");
     setSectionRenameSubmitting(false);
   }
-
-  async function confirmSectionRename(): Promise<void> {
+  async function confirmSectionRename() {
     if (sectionRenameSubmission.current) return;
     const target = sectionRenameTarget;
     const name = sectionRenameValue.trim();
     if (!target) return;
-    const count = Array.from(name).length;
-    if (count === 0) {
+    if (!name) {
       setSectionRenameError("Section name is required");
       return;
     }
-    if (count > 80) {
+    if ([...name].length > 80) {
       setSectionRenameError("Section names must be 80 characters or fewer");
       return;
     }
-    setSectionRenameError("");
     const submission = { token: sectionRenameToken.current + 1, sectionID: target.id };
     sectionRenameToken.current = submission.token;
     sectionRenameSubmission.current = submission;
@@ -686,39 +660,35 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       await runAction(
         () => renamePinSection(target.id, name),
         "Couldn't rename pin section",
-        (section): PendingOp => ({ kind: "pinSectionRename", id: target.id, name: section.name }),
+        (section) => ({ kind: "pinSectionRename", id: target.id, name: section.name }),
         true,
       );
-      if (sectionRenameSubmission.current !== submission || sectionRenameToken.current !== submission.token) return;
+      if (sectionRenameSubmission.current !== submission) return;
       sectionRenameSubmission.current = null;
       setSectionRenameTarget(null);
       setSectionRenameValue("");
-      setSectionRenameError("");
       setSectionRenameSubmitting(false);
-    } catch (err) {
-      if (sectionRenameSubmission.current !== submission || sectionRenameToken.current !== submission.token) return;
+    } catch (error) {
+      if (sectionRenameSubmission.current !== submission) return;
       sectionRenameSubmission.current = null;
-      setSectionRenameError(errorText(err));
+      setSectionRenameError(errorText(error));
       setSectionRenameSubmitting(false);
     }
   }
-
-  async function requestSectionDelete(section: PinSectionTree): Promise<void> {
-    const requestToken = sectionDeleteRequestToken.current + 1;
-    sectionDeleteRequestToken.current = requestToken;
+  async function requestSectionDelete(section: RailPinSection) {
+    const token = ++sectionDeleteRequestToken.current;
     try {
       const summaries = await listPinSections();
-      if (sectionDeleteRequestToken.current !== requestToken) return;
-      const durable = summaries.find((summary) => summary.id === section.id);
+      if (token !== sectionDeleteRequestToken.current) return;
+      const durable = summaries.find((candidate) => candidate.id === section.id);
       if (!durable) throw new Error("pin section not found");
       setSectionDeleteTarget({ section, memberCount: durable.member_count });
-    } catch (err) {
-      if (sectionDeleteRequestToken.current !== requestToken) return;
-      toasts.push("error", `Couldn't load pin section details: ${errorText(err)}`);
+    } catch (error) {
+      if (token === sectionDeleteRequestToken.current)
+        toasts.push("error", `Couldn't load pin section details: ${errorText(error)}`);
     }
   }
-
-  async function confirmSectionDelete(): Promise<void> {
+  async function confirmSectionDelete() {
     const target = sectionDeleteTarget;
     if (!target) return;
     setSectionDeleteTarget(null);
@@ -728,35 +698,31 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
     });
   }
 
-  const isExpanded = overrideLookup(expandedOverrides);
-  // The Archived section is a disclosure like any other, so it lives in the
-  // same override map rather than in a useState of its own - one expand
-  // mechanism for the whole rail, and it persists for free.
   const archivedOpen = isExpanded(ARCHIVED_SECTION_KEY, false);
-  const pinSections = tree
-    ? [...tree.pin_sections].sort(
-        (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id),
-      )
-    : [];
-
-  // Everything the bottom Archived-sessions disclosure holds: whole archived
-  // projects (stubs until their own first expand), then one sub-branch per
-  // still-active project for the archived sessions projectNodes diverted out
-  // of it. Test runs are treated like any other project here - the htmx UI
-  // special-cased them out of this divert, and one rule for every project
-  // beats carrying that split forward.
-  const unarchivedProjects = tree ? [...tree.projects, ...tree.test_runs] : [];
-  const archivedNodes = tree
-    ? [
-        ...archivedProjectNodes(tree.archived_projects, currentProjectDetails, isExpanded),
-        ...archivedSessionGroups(unarchivedProjects, isExpanded),
-      ]
-    : [];
-
+  const pinSections = [...resources.pinSections].sort(
+    (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.id.localeCompare(b.id),
+  );
+  const unarchived = [...resources.projects, ...resources.testRuns];
+  const archivedNodes = [
+    ...archivedProjectNodes(
+      resources.archivedProjects,
+      new Map(
+        resources.archivedProjects
+          .filter((p) => resourceData(state, { kind: "project", projectKey: p.key }))
+          .map((p) => [p.key, p]),
+      ),
+      isExpanded,
+    ),
+    ...archivedSessionGroups(unarchived, isExpanded),
+  ];
+  const resourceLoading = [...resourcesState.values()].some((resource) => resource.loading);
+  const loading = navigationMode === "v1" && (!manifest || manifest.loading || resourceLoading);
+  const manifestError = manifest?.error ? errorText(manifest.error) : null;
+  const resourceError = [...resourcesState.values()].find((resource) => resource.error)?.error;
+  const loadError = manifestError ?? (resourceError ? errorText(resourceError) : null);
+  const displayed = nonEmpty(resources);
+  const needsYou = attention?.needsYou ?? manifest?.data?.attentionSummary.needsYou ?? 0;
   return (
-    // --rail-width is what Rail.module.css's own `.rail` width resolves; the
-    // resizable (desktop) instance sets it from the persisted pref, the mobile
-    // drawer instance sets nothing and takes the stylesheet's 100% instead.
     <div
       className={CLASS.rail}
       ref={railRef}
@@ -767,48 +733,28 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
       )}
       <div className={CLASS.header}>
         <div data-testid="rail-brand" className={CLASS.brand}>
-          {/* No wordmark here: the footer's daemon identity is the rail's
-              only branding. This row is status + actions - the needs-you
-              Badge at the leading edge, search/hide as md icon buttons (the
-              widget's standard 32px tap target, not the dense sm) at the
-              trailing edge, split by the spacer. */}
           {needsYou > 0 && <Badge count={needsYou} tone="attention" />}
           <span className={CLASS.brandSpacer} />
-          {/* Search is a palette opener, never a text input, so it rides in
-              the brand row as an icon button instead of claiming a row of the
-              sidebar's vertical space for itself. data-search-trigger is what
-              AppShell's global click handler listens for; the ⌘K / Ctrl-K
-              chord that also opens it is taught by the palette's own help
-              rows. The tooltip says what the palette actually searches, since
-              the icon and the accessible name can only afford one word each:
-              widgets/tooltip shifts its bubble away from the viewport edge and
-              portals it clear of the rail, so a label this long no longer
-              clips at the right edge of a 280px rail or inside the mobile
-              drawer (measured both). */}
           <Tooltip label="Search sessions and commands">
             <IconButton
               data-testid="rail-search"
               data-search-trigger="true"
               label="Search"
-              icon={<span aria-hidden="true">{"⌕"}</span>}
+              icon={<span aria-hidden="true">⌕</span>}
               variant="quiet"
               size="md"
             />
           </Tooltip>
           {onHide && (
-            // The same ☰ glyph RailHost's hidden-state chip uses to bring the
-            // rail back: ONE icon owns the sidebar toggle in both directions.
             <IconButton
               label="Hide sidebar"
-              icon={<span aria-hidden="true">{"☰"}</span>}
+              icon={<span aria-hidden="true">☰</span>}
               variant="quiet"
               size="md"
               onClick={onHide}
             />
           )}
         </div>
-        {/* Grid wrapper stretches the primary Button to the rail's full
-            width without reaching into the widget's own computed className. */}
         <div className={CLASS.newSession}>
           <Button variant="primary" onClick={() => navigate("/new")}>
             + New session
@@ -816,76 +762,63 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
         </div>
       </div>
       <div className={CLASS.body} ref={bodyRef}>
-        {loading && !tree && <Skeleton lines={6} />}
-        {!loading && !tree && error && (
+        {loading && !displayed && <Skeleton lines={6} />}
+        {!loading && !displayed && loadError && (
           <EmptyState
             title="Couldn't load sessions"
-            hint={error}
+            hint={loadError}
             action={
-              <Button size="sm" onClick={() => void treeStore.getState().refresh()}>
+              <Button size="sm" onClick={() => void navigationStore.getState().loadManifest()}>
                 Retry
               </Button>
             }
           />
         )}
-        {tree && isEmptyTree(tree) && (
+        {!loading && !displayed && !loadError && manifest && (
           <EmptyState title="No sessions yet" hint="Start a session from the command line to see it here." />
         )}
-        {tree && !isEmptyTree(tree) && (
+        {displayed && (
           <>
-            {/* The auto-grouped "Needs you" tier is deliberately NOT rendered
-                here (vbh8, §2.2): it duplicated a session already listed
-                under its own project/tier. Attention now surfaces inline -
-                the session's own Cadence dot (cadenceStateFor already maps
-                awaiting/warning to "needs-you") plus RailRow's derived
-                needs-you-descendant Badge - rather than as a second listing.
-                tree.needs_you itself is untouched (RailHost's ☰ chip badge
-                and attentionSummary.needsYou still read the underlying tiers)
-                - only this one RailSection is gone. Per Jesse's decision,
-                Live/named pin sections/Projects/Archived/Test runs are all
-                retained, including Live's own residual overlap with Projects. */}
             <RailSection
               title="Live"
-              nodes={sessionNodes(tree.live, isExpanded)}
+              nodes={sessionNodes(resources.live, isExpanded)}
               onToggle={handleToggle}
               onActivate={handleActivate}
               actions={rowActions}
             />
-            {pinSections.map((section) => {
-              const disclosureID = pinSectionDisclosureID(section.id);
-              const open = isExpanded(disclosureID, true);
-              return (
-                <PinnedRailSection
-                  key={section.id}
-                  section={section}
-                  open={open}
-                  onToggleOpen={() => setExpanded(disclosureID, !open)}
-                  onRename={() => openSectionRename(section)}
-                  onDelete={() => void requestSectionDelete(section)}
-                  isExpanded={isExpanded}
-                  onToggle={handleToggle}
-                  onActivate={handleActivate}
-                  actions={rowActions}
-                />
-              );
-            })}
+            {pinSections.map((section) => (
+              <PinnedRailSection
+                key={section.id}
+                section={section}
+                open={isExpanded(pinSectionDisclosureID(section.id), true)}
+                onToggleOpen={() =>
+                  setExpanded(pinSectionDisclosureID(section.id), !isExpanded(pinSectionDisclosureID(section.id), true))
+                }
+                onRename={() => openSectionRename(section)}
+                onDelete={() => void requestSectionDelete(section)}
+                isExpanded={isExpanded}
+                onToggle={handleToggle}
+                onActivate={handleActivate}
+                actions={rowActions}
+              />
+            ))}
             <RailSection
               title="Projects"
-              nodes={projectNodes(tree.projects, isExpanded)}
+              nodes={projectNodes(resources.projects, isExpanded)}
               onToggle={handleToggle}
               onActivate={handleActivate}
               actions={rowActions}
             />
             <RailSection
               title="Test runs"
-              nodes={projectNodes(tree.test_runs, isExpanded)}
+              nodes={projectNodes(resources.testRuns, isExpanded)}
               onToggle={handleToggle}
               onActivate={handleActivate}
               actions={rowActions}
             />
             {archivedNodes.length > 0 && (
               <ArchivedSection
-                count={archivedCount(tree.archived_projects, unarchivedProjects)}
+                count={archivedCount(resources.archivedProjects, unarchived)}
                 open={archivedOpen}
                 onToggleOpen={() => setExpanded(ARCHIVED_SECTION_KEY, !archivedOpen)}
                 nodes={archivedNodes}
@@ -897,19 +830,17 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
           </>
         )}
       </div>
-
       <div className={CLASS.footer}>
         <span className={CLASS.footerIdentity}>{serverInfo?.name ?? "evener"}</span>
         <IconButton
           data-testid="rail-settings"
           label="Settings"
-          icon={<span aria-hidden="true">{"⚙"}</span>}
+          icon={<span aria-hidden="true">⚙</span>}
           variant="quiet"
           size="md"
           onClick={() => navigate("/settings")}
         />
       </div>
-
       {sectionRenameTarget && (
         <Dialog
           open
@@ -946,7 +877,6 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
           )}
         </Dialog>
       )}
-
       {sectionDeleteTarget && (
         <Dialog
           open
@@ -966,7 +896,6 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
           <p>{`Delete “${sectionDeleteTarget.section.name}”? This will unpin ${sectionDeleteTarget.memberCount} session${sectionDeleteTarget.memberCount === 1 ? "" : "s"}.`}</p>
         </Dialog>
       )}
-
       {deleteTarget && (
         <Dialog
           open
@@ -983,10 +912,7 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
             </div>
           }
         >
-          <p>
-            Permanently delete every session in "{deleteTarget.name}"? This removes their transcripts and cannot be
-            undone.
-          </p>
+          <p>{`Permanently delete every session in "${deleteTarget.name}"? This removes their transcripts and cannot be undone.`}</p>
         </Dialog>
       )}
     </div>
