@@ -245,6 +245,34 @@ func TestNavigationRepresentationHeaderMatrix(t *testing.T) {
 	}
 }
 
+func TestNavigationWriterWritesExactCachedBytes(t *testing.T) {
+	representation := navigationRepresentation{
+		JSON:       []byte(`{"cached":"identity"}`),
+		Gzip:       []byte("cached-gzip-bytes"),
+		ETag:       `W/"nav-exact"`,
+		Generation: "00112233445566778899aabbccddeeff",
+		Revision:   23,
+	}
+	for _, test := range []struct {
+		accept, encoding string
+		body             []byte
+	}{
+		{"", "", representation.JSON},
+		{"gzip", "gzip", representation.Gzip},
+	} {
+		req := httptest.NewRequest(http.MethodGet, "/api/navigation", nil)
+		req.Header.Set("Accept-Encoding", test.accept)
+		response := httptest.NewRecorder()
+		status, err := writeNavigationRepresentation(response, req, representation)
+		if err != nil || status != http.StatusOK || !bytes.Equal(response.Body.Bytes(), test.body) {
+			t.Fatalf("accept=%q status=%d err=%v body=%q", test.accept, status, err, response.Body.Bytes())
+		}
+		if response.Header().Get("Content-Encoding") != test.encoding || response.Header().Get("Content-Length") != strconv.Itoa(len(test.body)) {
+			t.Fatalf("accept=%q headers=%v", test.accept, response.Header())
+		}
+	}
+}
+
 func TestNavigationAuthIsolationHTTP(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	web := &WebServer{navigation: newTestNavigationService(t, source)}
@@ -287,8 +315,12 @@ func TestNavigationTwoServerAuthIsolationHTTP(t *testing.T) {
 }
 
 func TestNavigationTwoServerCookieAuthIsolationHTTP(t *testing.T) {
-	webA := newNavigationHTTPTestServer(t)
-	webB := newNavigationHTTPTestServer(t)
+	sourceA := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	sourceB := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	serviceA := newTestNavigationService(t, sourceA)
+	serviceB := newTestNavigationService(t, sourceB)
+	webA := &WebServer{navigation: serviceA}
+	webB := &WebServer{navigation: serviceB}
 	webA.cfg.AuthToken, webB.cfg.AuthToken = "token-a", "token-b"
 	bootstrap := httptest.NewRequest(http.MethodGet, "/auth?token=token-a", nil)
 	bootstrapResponse := httptest.NewRecorder()
@@ -301,13 +333,14 @@ func TestNavigationTwoServerCookieAuthIsolationHTTP(t *testing.T) {
 	request.AddCookie(cookies[0])
 	response := httptest.NewRecorder()
 	webA.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusOK {
-		t.Fatalf("server A cookie status=%d", response.Code)
+	if response.Code != http.StatusOK || sourceA.captureCount() != 1 || serviceA.Stats().CoreBuilds != 1 {
+		t.Fatalf("server A cookie status=%d source=%d stats=%+v", response.Code, sourceA.captureCount(), serviceA.Stats())
 	}
 	response = httptest.NewRecorder()
 	webB.Handler().ServeHTTP(response, request)
-	if response.Code != http.StatusUnauthorized {
-		t.Fatalf("server B accepted server A cookie: %d", response.Code)
+	statsB := serviceB.Stats()
+	if response.Code != http.StatusUnauthorized || sourceB.captureCount() != 0 || statsB.CoreBuilds != 0 || statsB.Cache.Entries != 0 {
+		t.Fatalf("server B accepted server A cookie=%d source=%d stats=%+v", response.Code, sourceB.captureCount(), statsB)
 	}
 }
 
@@ -360,6 +393,16 @@ func TestNavigationHandlerQueryValidationAndBoundedResources(t *testing.T) {
 			t.Fatalf("target=%q status=%d location=%q", test.target, response.Code, response.Header().Get("Location"))
 		}
 	}
+	knownRef := "local:session-000"
+	if response := requestNavigation(t, web, "/api/navigation/sessions/"+knownRef, "", ""); response.Code != http.StatusOK {
+		t.Fatalf("known location status=%d body=%q", response.Code, response.Body.String())
+	}
+	for _, query := range []string{"offset=0", "limit=1", "tier=current", "unknown=1"} {
+		response := requestNavigation(t, web, "/api/navigation/sessions/"+knownRef+"?"+query, "", "")
+		if response.Code != http.StatusBadRequest || response.Header().Get("Location") != "" || strings.Contains(response.Body.String(), "session-000") {
+			t.Fatalf("location query=%q status=%d location=%q body=%q", query, response.Code, response.Header().Get("Location"), response.Body.String())
+		}
+	}
 	for _, test := range []struct {
 		target string
 		field  string
@@ -386,6 +429,17 @@ func TestNavigationHandlerQueryValidationAndBoundedResources(t *testing.T) {
 		var remaining int
 		if err := json.Unmarshal(payload["remaining"], &remaining); err != nil || remaining != test.remain {
 			t.Fatalf("target=%q remaining=%d err=%v", test.target, remaining, err)
+		}
+	}
+	for _, paths := range [][2]string{
+		{"/api/navigation/sections/live", "/api/navigation/sections/live?limit=50"},
+		{"/api/navigation/catalogs/projects", "/api/navigation/catalogs/projects?limit=100"},
+		{"/api/navigation/projects/p000?tier=current", "/api/navigation/projects/p000?tier=current&limit=50"},
+	} {
+		defaultResponse := requestNavigation(t, web, paths[0], "", "")
+		explicitResponse := requestNavigation(t, web, paths[1], "", "")
+		if defaultResponse.Code != http.StatusOK || explicitResponse.Code != http.StatusOK || !bytes.Equal(defaultResponse.Body.Bytes(), explicitResponse.Body.Bytes()) {
+			t.Fatalf("default=%q explicit=%q statuses=(%d,%d)", paths[0], paths[1], defaultResponse.Code, explicitResponse.Code)
 		}
 	}
 }
@@ -639,12 +693,21 @@ func TestNavigationLastGoodAfterSourceFailureHTTP(t *testing.T) {
 	if first.Code != http.StatusOK {
 		t.Fatalf("initial status=%d", first.Code)
 	}
+	initialStats := service.Stats()
+	if initialStats.Cache.Entries != 1 {
+		t.Fatalf("initial cache=%+v", initialStats.Cache)
+	}
 	source.mu.Lock()
 	source.err = errors.New("source unavailable")
 	source.mu.Unlock()
 	service.Invalidate(navigationChangeHint{})
-	if failed := requestNavigation(t, web, "/api/navigation", "", ""); failed.Code != http.StatusInternalServerError {
-		t.Fatalf("source failure status=%d", failed.Code)
+	failed := requestNavigation(t, web, "/api/navigation", "", "")
+	if failed.Code != http.StatusInternalServerError || failed.Header().Get("ETag") != "" || failed.Header().Get("X-Evener-Navigation-Generation") != "" {
+		t.Fatalf("source failure status=%d headers=%v", failed.Code, failed.Header())
+	}
+	afterFailure := service.Stats()
+	if afterFailure.Cache.Entries != initialStats.Cache.Entries || afterFailure.Cache.Bytes != initialStats.Cache.Bytes || afterFailure.Cache.Evictions != initialStats.Cache.Evictions {
+		t.Fatalf("failure changed last-good cache: before=%+v after=%+v", initialStats.Cache, afterFailure.Cache)
 	}
 	source.mu.Lock()
 	source.err = nil
@@ -652,6 +715,9 @@ func TestNavigationLastGoodAfterSourceFailureHTTP(t *testing.T) {
 	recovered := requestNavigation(t, web, "/api/navigation", "", "")
 	if recovered.Code != http.StatusOK || !bytes.Equal(recovered.Body.Bytes(), first.Body.Bytes()) {
 		t.Fatalf("recovery status=%d equal=%t", recovered.Code, bytes.Equal(recovered.Body.Bytes(), first.Body.Bytes()))
+	}
+	if afterRecovery := service.Stats(); afterRecovery.Cache.Hits <= afterFailure.Cache.Hits || afterRecovery.Cache.Entries != initialStats.Cache.Entries {
+		t.Fatalf("recovery did not reuse last-good cache: failure=%+v recovery=%+v", afterFailure.Cache, afterRecovery.Cache)
 	}
 }
 
@@ -661,38 +727,82 @@ func TestNavigationStandardServer304HTTP(t *testing.T) {
 		t.Skipf("network listener unavailable: %v", err)
 	}
 	web := newNavigationHTTPTestServer(t)
+	representation, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest})
+	if err != nil {
+		t.Fatal(err)
+	}
 	server := &http.Server{Handler: web.Handler()}
 	go func() { _ = server.Serve(listener) }()
 	defer server.Close()
 	client := &http.Client{Transport: &http.Transport{DisableCompression: true}}
-	request, err := http.NewRequest(http.MethodGet, "http://"+listener.Addr().String()+"/api/navigation", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set("Accept-Encoding", "gzip")
-	first, err := client.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	etag := first.Header.Get("ETag")
-	_ = first.Body.Close()
-	request, err = http.NewRequest(http.MethodGet, "http://"+listener.Addr().String()+"/api/navigation", nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	request.Header.Set("Accept-Encoding", "gzip")
-	request.Header.Set("If-None-Match", etag)
-	second, err := client.Do(request)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer second.Body.Close()
-	if second.StatusCode != http.StatusNotModified || second.Header.Get("Content-Type") != "" || second.Header.Get("Content-Length") != "" {
-		t.Fatalf("standard 304 status=%d headers=%v", second.StatusCode, second.Header)
-	}
-	for _, header := range []string{"Cache-Control", "Vary", "ETag", "X-Evener-Navigation-Generation", "X-Evener-Navigation-Revision", "Content-Encoding"} {
-		if second.Header.Get(header) == "" {
-			t.Fatalf("standard 304 omitted %s: %v", header, second.Header)
+	base := "http://" + listener.Addr().String() + "/api/navigation"
+	for _, test := range []struct {
+		accept, encoding string
+		body             []byte
+	}{
+		{"", "", representation.JSON},
+		{"gzip", "gzip", representation.Gzip},
+	} {
+		request, err := http.NewRequest(http.MethodGet, base, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Accept-Encoding", test.accept)
+		first, err := client.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, readErr := io.ReadAll(first.Body)
+		_ = first.Body.Close()
+		if readErr != nil || first.StatusCode != http.StatusOK || !bytes.Equal(body, test.body) {
+			t.Fatalf("200 accept=%q status=%d read=%v body=%d", test.accept, first.StatusCode, readErr, len(body))
+		}
+		for header, want := range map[string]string{
+			"Cache-Control":                  "private, no-cache",
+			"Vary":                           "Accept-Encoding",
+			"ETag":                           representation.ETag,
+			"X-Evener-Navigation-Generation": representation.Generation,
+			"X-Evener-Navigation-Revision":   strconv.FormatUint(representation.Revision, 10),
+			"Content-Type":                   "application/json",
+			"Content-Encoding":               test.encoding,
+			"Content-Length":                 strconv.Itoa(len(test.body)),
+		} {
+			if got := first.Header.Get(header); got != want {
+				t.Fatalf("200 accept=%q %s=%q want=%q", test.accept, header, got, want)
+			}
+		}
+		if first.Header.Get("X-Evener-Navigation-Sequence") != "" {
+			t.Fatalf("200 sequence=%q", first.Header.Get("X-Evener-Navigation-Sequence"))
+		}
+		request, err = http.NewRequest(http.MethodGet, base, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		request.Header.Set("Accept-Encoding", test.accept)
+		request.Header.Set("If-None-Match", representation.ETag)
+		second, err := client.Do(request)
+		if err != nil {
+			t.Fatal(err)
+		}
+		body, readErr = io.ReadAll(second.Body)
+		_ = second.Body.Close()
+		if readErr != nil || second.StatusCode != http.StatusNotModified || len(body) != 0 || second.Header.Get("Content-Type") != "" || second.Header.Get("Content-Length") != "" {
+			t.Fatalf("304 accept=%q status=%d read=%v headers=%v bytes=%d", test.accept, second.StatusCode, readErr, second.Header, len(body))
+		}
+		for header, want := range map[string]string{
+			"Cache-Control":                  "private, no-cache",
+			"Vary":                           "Accept-Encoding",
+			"ETag":                           representation.ETag,
+			"X-Evener-Navigation-Generation": representation.Generation,
+			"X-Evener-Navigation-Revision":   strconv.FormatUint(representation.Revision, 10),
+			"Content-Encoding":               test.encoding,
+		} {
+			if got := second.Header.Get(header); got != want {
+				t.Fatalf("304 accept=%q %s=%q want=%q", test.accept, header, got, want)
+			}
+		}
+		if second.Header.Get("X-Evener-Navigation-Sequence") != "" {
+			t.Fatalf("304 sequence=%q", second.Header.Get("X-Evener-Navigation-Sequence"))
 		}
 	}
 }
