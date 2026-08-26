@@ -172,7 +172,6 @@ export class NavigationRevalidator {
     const epoch = this.epoch;
     e.epoch = epoch;
     const generation = this.generationIDValue;
-    const requestedRevision = e.state.targetRevision;
     const requestedForce = e.state.forceToken;
     const controller = new AbortController();
     e.controller = controller;
@@ -269,6 +268,7 @@ export function applyNavigationInvalidation(
   if (payload.generationId !== revalidator.generationID) {
     revalidator.resetGeneration(payload.generationId);
   }
-  if (revalidator.acceptSequence(payload.sequence)) revalidator.force(revalidator.loadedKeys());
+  if (revalidator.acceptSequence(payload.sequence))
+    revalidator.force(revalidator.loadedKeys().filter((key) => isProjectResource(key)));
   for (const target of payload.targets) revalidator.invalidate(target);
 }

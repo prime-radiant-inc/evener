@@ -298,3 +298,171 @@ test("rejects 304 without cache", async () => {
   await noCache.load(key, async () => ({ status: 304, generationID: "g", revision: 1, etag: "a" }));
   expect(noCache.get(key)?.error).toBeTruthy();
 });
+
+test("concurrent loads share one promise and one request", async () => {
+  const pending = d<any>();
+  const request = vi.fn(() => pending.promise);
+  const r = new NavigationRevalidator("g");
+  const first = r.load(key, request);
+  const second = r.load(key, request);
+  expect(second).toBe(first);
+  expect(request).toHaveBeenCalledTimes(1);
+  pending.resolve({ status: 200, generationID: "g", revision: 1, etag: "a", data: "ok" });
+  await expect(first).resolves.toMatchObject({ data: "ok" });
+});
+
+test("idle invalidation starts exactly one request", async () => {
+  const r = new NavigationRevalidator("g");
+  const request = vi.fn(async () => ({ status: 200, generationID: "g", revision: 1, etag: "a", data: "ok" }));
+  await r.load(key, request);
+  r.invalidate({ kind: "project", projectKey: "p", revision: 1 });
+  await Promise.resolve();
+  expect(request).toHaveBeenCalledTimes(2);
+});
+
+test("newer response does not create a trailing request", async () => {
+  const pending = d<any>();
+  const request = vi.fn(() => pending.promise);
+  const r = new NavigationRevalidator("g");
+  const load = r.load(key, request);
+  r.invalidate({ kind: "project", projectKey: "p", revision: 2 });
+  pending.resolve({ status: 200, generationID: "g", revision: 3, etag: "c", data: "new" });
+  await load;
+  for (let i = 0; i < 4; i++) await Promise.resolve();
+  expect(request).toHaveBeenCalledTimes(1);
+  expect(r.get(key)).toMatchObject({ loadedRevision: 3, targetRevision: 3, stale: false });
+});
+
+test("three or more midflight invalidations create one trailing request", async () => {
+  const first = d<any>();
+  const second = d<any>();
+  const request = vi.fn((_: AbortSignal) => (request.mock.calls.length === 1 ? first : second).promise);
+  const r = new NavigationRevalidator("g");
+  const load = r.load(key, request);
+  r.invalidate({ kind: "project", projectKey: "p", revision: 2 });
+  r.invalidate({ kind: "project", projectKey: "p", revision: 3 });
+  r.invalidate({ kind: "project", projectKey: "p", revision: 4 });
+  first.resolve({ status: 200, generationID: "g", revision: 1, etag: "a", data: "old" });
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  expect(request).toHaveBeenCalledTimes(2);
+  second.resolve({ status: 200, generationID: "g", revision: 4, etag: "d", data: "new" });
+  await load;
+  expect(request).toHaveBeenCalledTimes(2);
+});
+
+test("reset aborts old signal once and keeps fresh loading/error/ETag ownership", async () => {
+  const old = d<any>();
+  const fresh = d<any>();
+  const signals: AbortSignal[] = [];
+  const aborts: number[] = [];
+  const r = new NavigationRevalidator("old");
+  const request = vi.fn((signal: AbortSignal) => {
+    signals.push(signal);
+    signal.addEventListener("abort", () => aborts.push(1));
+    return (signals.length === 1 ? old : fresh).promise;
+  });
+  const oldLoad = r.load(key, request);
+  r.resetGeneration("fresh");
+  expect(signals).toHaveLength(2);
+  expect(signals[0]?.aborted).toBe(true);
+  expect(aborts).toHaveLength(1);
+  expect(r.get(key)).toMatchObject({ generationID: "fresh", loading: true, error: null, etag: null });
+  old.resolve({ status: 200, generationID: "old", revision: 99, etag: "old", data: "old" });
+  await Promise.resolve();
+  expect(r.get(key)).toMatchObject({ generationID: "fresh", loading: true, error: null, etag: null });
+  fresh.resolve({ status: 200, generationID: "fresh", revision: 1, etag: "fresh", data: "fresh" });
+  await oldLoad;
+  for (let i = 0; i < 4; i++) await Promise.resolve();
+  expect(r.get(key)).toMatchObject({ data: "fresh", loading: false, error: null, etag: "fresh" });
+});
+
+test("valid 304 sends stored validator and retains last-good state", async () => {
+  const etags: (string | null)[] = [];
+  const data = { value: 1 };
+  const r = new NavigationRevalidator("g");
+  await r.load(key, async () => ({ status: 200, generationID: "g", revision: 1, etag: "a", data }));
+  const retained = r.get(key)?.data;
+  r.invalidate({ kind: "project", projectKey: "p", revision: 2 });
+  await r.load(key, async (_, etag) => {
+    etags.push(etag);
+    return { status: 304, generationID: "g", revision: 2, etag: "a" };
+  });
+  expect(etags).toEqual(["a"]);
+  expect(r.get(key)).toMatchObject({ data: retained, loadedRevision: 2, targetRevision: 2, etag: "a", error: null, stale: false });
+});
+
+test("late below-target response preserves last-good data and trailing ownership", async () => {
+  const first = d<any>();
+  const trailing = d<any>();
+  const r = new NavigationRevalidator("g");
+  await r.load(key, async () => ({ status: 200, generationID: "g", revision: 1, etag: "a", data: "good" }));
+  const request = vi.fn(() => (request.mock.calls.length === 1 ? first : trailing).promise);
+  const load = r.load(key, request);
+  r.invalidate({ kind: "project", projectKey: "p", revision: 3 });
+  first.resolve({ status: 200, generationID: "g", revision: 2, etag: "b", data: "bad" });
+  for (let i = 0; i < 5; i++) await Promise.resolve();
+  expect(request).toHaveBeenCalledTimes(2);
+  expect(r.get(key)).toMatchObject({ data: "good", loadedRevision: 1, targetRevision: 3, loading: true, stale: true });
+  trailing.resolve({ status: 200, generationID: "g", revision: 3, etag: "c", data: "best" });
+  await load;
+  expect(r.get(key)).toMatchObject({ data: "best", loadedRevision: 3, etag: "c", error: null, loading: false, stale: false });
+});
+
+test("wildcard and sequence gaps request only loaded project roots/pages with conditional ETags", async () => {
+  const page: ResourceKey = { kind: "project_page", projectKey: "p", tier: "current", offset: 0, limit: 10 };
+  const section: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 10 };
+  const catalog: ResourceKey = { kind: "catalog", catalog: "projects", offset: 0, limit: 10 };
+  const location: ResourceKey = { kind: "location", ref: "here" };
+  const calls: { key: ResourceKey; etag: string | null }[] = [];
+  const r = new NavigationRevalidator("g");
+  for (const loaded of [key, page, section, catalog, location]) {
+    await r.load(loaded, async (_, etag) => {
+      calls.push({ key: loaded, etag });
+      return { status: 200, generationID: "g", revision: calls.length, etag: keyID(loaded), data: loaded.kind };
+    });
+  }
+  const initial = calls.length;
+  applyNavigationInvalidation(r, { generationId: "g", sequence: 1, targets: [{ kind: "all_loaded_projects" }] });
+  applyNavigationInvalidation(r, { generationId: "g", sequence: 3, targets: [] });
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  expect(calls).toHaveLength(initial + 4);
+  expect(calls.slice(initial).map(({ key: loaded, etag }) => [loaded.kind, etag])).toEqual([
+    ["project", keyID(key)],
+    ["project_page", keyID(page)],
+    ["project", keyID(key)],
+    ["project_page", keyID(page)],
+  ]);
+  expect(r.get(section)?.stale).toBe(false);
+  expect(r.get(catalog)?.stale).toBe(false);
+  expect(r.get(location)?.stale).toBe(false);
+  expect(r.get({ kind: "manifest" })).toBeUndefined();
+});
+
+test("generation reset applies targets with one fresh request and at most one trailing target read", async () => {
+  const old = d<any>();
+  const fresh = d<any>();
+  const trailing = d<any>();
+  const etags: (string | null)[] = [];
+  const r = new NavigationRevalidator("old");
+  const request = vi.fn((_: AbortSignal, etag: string | null) => {
+    etags.push(etag);
+    return (etags.length === 1 ? old : etags.length === 2 ? fresh : trailing).promise;
+  });
+  const oldLoad = r.load(key, request);
+  applyNavigationInvalidation(r, {
+    generationId: "new",
+    sequence: 1,
+    targets: [{ kind: "project", projectKey: "p", revision: 5 }],
+  });
+  expect(request).toHaveBeenCalledTimes(2);
+  expect(etags).toEqual([null, null]);
+  fresh.resolve({ status: 200, generationID: "new", revision: 5, etag: "fresh", data: "fresh" });
+  old.resolve({ status: 200, generationID: "old", revision: 99, etag: "old", data: "old" });
+  for (let i = 0; i < 7; i++) await Promise.resolve();
+  expect(request).toHaveBeenCalledTimes(3);
+  expect(etags).toEqual([null, null, "fresh"]);
+  trailing.resolve({ status: 304, generationID: "new", revision: 5, etag: "fresh" });
+  await oldLoad;
+  for (let i = 0; i < 4; i++) await Promise.resolve();
+  expect(r.get(key)).toMatchObject({ generationID: "new", data: "fresh", loadedRevision: 5, targetRevision: 5, etag: "fresh", loading: false, error: null });
+});
