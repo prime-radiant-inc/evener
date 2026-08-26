@@ -21,6 +21,7 @@
 // openBeside through the module object, the reliable vitest seam.
 import * as paneActions from "../../../shell/paneActions";
 import { useThreadsStore } from "../../../stores/threads";
+import { useOptionalTranscriptRenderContext } from "../../../transcriptDisplay/renderContext";
 import { OpenButton } from "../../../widgets";
 import type { DocParams } from "../../doc/openDoc";
 
@@ -62,11 +63,7 @@ export function fileDocParams(
   return { session: sessionRef, path: rel, kind: IMAGE_EXT_RE.test(rel) ? "image" : "file" };
 }
 
-export function FileOpenBesideButton({ absPath, sessionRef }: { absPath: string; sessionRef: string }) {
-  // cwd is snapshot-only ThreadModel state (DECISION B), stable for the pane's
-  // life, so this selector returns a stable string - no re-renders from the
-  // session's frequent streaming updates.
-  const cwd = useThreadsStore((s) => s.threads.get(sessionRef)?.cwd);
+function FileOpenBesideButtonBody({ absPath, sessionRef, cwd }: { absPath: string; sessionRef: string; cwd?: string }) {
   const params = fileDocParams(absPath, sessionRef, cwd);
   if (params === undefined) return null; // out-of-cwd / not hydrated yet → no affordance
   const docParams = params;
@@ -82,5 +79,27 @@ export function FileOpenBesideButton({ absPath, sessionRef }: { absPath: string;
       label={name}
       onClick={() => paneActions.openBeside({ type: "doc", params: docParams })}
     />
+  );
+}
+
+function LegacyFileOpenBesideButton({ absPath, sessionRef }: { absPath: string; sessionRef: string }) {
+  const cwd = useThreadsStore((state) => state.threads.get(sessionRef)?.cwd);
+  return <FileOpenBesideButtonBody absPath={absPath} sessionRef={sessionRef} cwd={cwd} />;
+}
+
+export function FileOpenBesideButton({
+  absPath,
+  sessionRef,
+  cwd,
+}: {
+  absPath: string;
+  sessionRef: string;
+  cwd?: string;
+}) {
+  const context = useOptionalTranscriptRenderContext();
+  return context === null ? (
+    <LegacyFileOpenBesideButton absPath={absPath} sessionRef={sessionRef} />
+  ) : (
+    <FileOpenBesideButtonBody absPath={absPath} sessionRef={sessionRef} cwd={cwd ?? context.thread?.cwd} />
   );
 }

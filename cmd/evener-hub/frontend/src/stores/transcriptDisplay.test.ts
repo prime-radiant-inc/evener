@@ -340,6 +340,56 @@ describe("effective transcript display state", () => {
     expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: preset("full") });
   });
 
+  test("never lets a fenced revision hint authorize a later active jump", async () => {
+    const client = new FakeClient("ready");
+    const confirmed = preset("tools");
+    const firstDraft = preset("activity");
+    const newestDraft = preset("full");
+    const responses: Array<ReturnType<typeof deferred<TranscriptDisplayPatchResponse>>> = [];
+    client.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 1, config: toWireConfig(confirmed) },
+      mobile: { revision: 1, config: toWireConfig(shippedMobileConfig) },
+    }));
+    client.on("evener/settings/transcriptDisplay/patch", () => {
+      const response = deferred<TranscriptDisplayPatchResponse>();
+      responses.push(response);
+      return response.promise;
+    });
+    connectionStore.getState().connect(client);
+    connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+    const fenced = transcriptDisplayStore.getState().patchHubDefault("desktop", firstDraft);
+    const active = transcriptDisplayStore.getState().patchHubDefault("desktop", newestDraft);
+    await expect.poll(() => responses).toHaveLength(2);
+    responses[0]?.resolve({ layout: "desktop", revision: 1000, config: toWireConfig(firstDraft) });
+    await fenced;
+    responses[1]?.resolve({ layout: "desktop", revision: 1001, config: toWireConfig(newestDraft) });
+    await expect(active).rejects.toThrow("malformed");
+    expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 1, config: confirmed });
+    expect(transcriptDisplayStore.getState().drafts.desktop).toEqual(newestDraft);
+  });
+
+  test("rejects an advancing response whose canonical config differs from the request", async () => {
+    const client = new FakeClient("ready");
+    const confirmed = preset("tools");
+    const requested = preset("full");
+    client.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 1, config: toWireConfig(confirmed) },
+      mobile: { revision: 1, config: toWireConfig(shippedMobileConfig) },
+    }));
+    client.on("evener/settings/transcriptDisplay/patch", () => ({
+      layout: "desktop",
+      revision: 2,
+      config: toWireConfig(preset("activity")),
+    }));
+    connectionStore.getState().connect(client);
+    connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+    await expect(transcriptDisplayStore.getState().patchHubDefault("desktop", requested)).rejects.toThrow("malformed");
+    expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 1, config: confirmed });
+    expect(transcriptDisplayStore.getState().drafts.desktop).toEqual(requested);
+  });
+
   test.each(["desktop-first", "mobile-first"] as const)(
     "keeps cross-layout acknowledgements independent when %s settles",
     async (order) => {

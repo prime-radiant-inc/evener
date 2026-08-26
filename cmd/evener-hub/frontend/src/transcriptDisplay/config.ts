@@ -507,6 +507,19 @@ export function configSummary(config: TranscriptDisplayConfigV1): string {
   return `${contentSummary(config.content)} · ${count} advanced`;
 }
 
+/** Concise status text for assistive announcements, not the narrow visual track. */
+export function accessibleConfigSummary(config: TranscriptDisplayConfigV1): string {
+  const normalized = normalizeConfig(config);
+  const content =
+    normalized.content.kind === "preset" && normalized.content.level === "full"
+      ? "Full detail"
+      : normalized.content.kind === "custom"
+        ? "Custom content"
+        : contentSummary(normalized.content);
+  const count = advancedEnabledCount(normalized);
+  return count === 0 ? content : `${content} · ${count} advanced`;
+}
+
 export type TranscriptDisplayCategory =
   | "userMessages"
   | "agentMessages"

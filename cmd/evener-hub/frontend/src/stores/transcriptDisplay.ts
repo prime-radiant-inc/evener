@@ -6,8 +6,8 @@ import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import type { AnyNotification } from "../protocol/types.gen";
 import { isMobileViewport, subscribeMobileViewport } from "../shell/useIsMobile";
 import {
+  accessibleConfigSummary,
   configFingerprint,
-  configSummary,
   decodeLocalConfig,
   encodeLocalConfig,
   fromWireConfig,
@@ -109,7 +109,6 @@ let activeReadyEpoch = -1;
 let refreshSerial = 0;
 let patchSerial = 0;
 const patchTokens = new Map<ViewportClass, number>();
-const patchRevisionHints = new Map<ViewportClass, number>();
 
 class InvalidPatchResponseError extends Error {}
 
@@ -137,7 +136,7 @@ function publishEffectiveTransition(
     publish();
     return;
   }
-  transitionTranscriptViews(publish, configSummary(afterConfig), {
+  transitionTranscriptViews(publish, accessibleConfigSummary(afterConfig), {
     fingerprint: configFingerprint(afterConfig),
     targetLayout,
     force,
@@ -548,7 +547,6 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
       const confirmed = state.hub[layout] ?? shippedDefault(layout);
       const token = ++patchSerial;
       patchTokens.set(layout, token);
-      patchRevisionHints.delete(layout);
       transcriptDisplayStore.setState({
         drafts: { ...state.drafts, [layout]: config },
         hubErrors: { ...state.hubErrors, [layout]: undefined },
@@ -560,7 +558,6 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
           config: toWireConfig(config),
         });
         if (patchTokens.get(layout) !== token || !isCurrentReady(client, generation)) {
-          rememberFencedRevision(layout, result);
           return transcriptDisplayStore.getState().hub[layout] ?? confirmed;
         }
         const resultRecord =
@@ -581,22 +578,18 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
           Object.hasOwn(resultRecord, "config");
         const requestedFingerprint = configFingerprint(config);
         const canonicalFingerprint = canonicalConfig === undefined ? undefined : configFingerprint(canonicalConfig);
-        const hintedRevision = patchRevisionHints.get(layout);
+        const confirmedFingerprint = configFingerprint(confirmed.config);
         const revisionIsValid =
           typeof revision === "number" &&
           Number.isSafeInteger(revision) &&
           revision >= current.revision &&
-          (revision === confirmed.revision ||
-            revision === confirmed.revision + 1 ||
-            (hintedRevision !== undefined && revision === hintedRevision + 1));
-        const advancingRevisionValid =
-          typeof revision === "number" &&
-          revision > confirmed.revision &&
-          (revision === confirmed.revision + 1 || (hintedRevision !== undefined && revision === hintedRevision + 1));
+          (revision === confirmed.revision || revision === confirmed.revision + 1);
         const canonicalSemanticsValid =
           canonicalConfig !== undefined &&
-          ((revision === confirmed.revision && canonicalFingerprint === requestedFingerprint) ||
-            advancingRevisionValid);
+          canonicalFingerprint === requestedFingerprint &&
+          (revision === confirmed.revision
+            ? requestedFingerprint === confirmedFingerprint
+            : revision === confirmed.revision + 1);
         if (
           !exactResponse ||
           responseLayout !== layout ||
@@ -614,14 +607,13 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
           hubError: null,
           hubErrors: { ...transcriptDisplayStore.getState().hubErrors, [layout]: undefined },
         });
-        patchRevisionHints.delete(layout);
         return canonical;
       } catch (error) {
-        if (patchTokens.get(layout) !== token || !isCurrentReady(client, generation)) {
-          rememberFencedRevision(layout, undefined);
-          return transcriptDisplayStore.getState().hub[layout] ?? confirmed;
-        }
         const canonical = conflictCurrent(error, layout);
+        if (patchTokens.get(layout) !== token || !isCurrentReady(client, generation)) {
+          if (canonical !== undefined) applyHubDefault(layout, canonical);
+          return transcriptDisplayStore.getState().hub[layout] ?? canonical ?? confirmed;
+        }
         if (canonical !== undefined) applyHubDefault(layout, canonical);
         if (error instanceof InvalidPatchResponseError) {
           const message = error.message;
@@ -653,22 +645,6 @@ function conflictCurrent(error: unknown, layout: ViewportClass): HubTranscriptDi
   const data = error.data as Record<string, unknown>;
   if (data.evenerErrorInfo !== "conflict" || data.layout !== layout) return undefined;
   return fromWireDefault(data.current);
-}
-
-function rememberFencedRevision(layout: ViewportClass, result: unknown): void {
-  if (typeof result !== "object" || result === null || Array.isArray(result)) return;
-  const candidate = result as Record<string, unknown>;
-  if (
-    Object.keys(candidate).length !== 3 ||
-    candidate.layout !== layout ||
-    typeof candidate.revision !== "number" ||
-    !Number.isSafeInteger(candidate.revision) ||
-    candidate.revision < 0 ||
-    fromWireConfig(candidate.config) === undefined
-  )
-    return;
-  const current = patchRevisionHints.get(layout) ?? -1;
-  if (candidate.revision > current) patchRevisionHints.set(layout, candidate.revision);
 }
 
 connectionStore.subscribe(onConnectionChange);
@@ -716,7 +692,6 @@ export function resetTranscriptDisplayStoreForTests(): void {
   wiredClient = null;
   refreshSerial += 1;
   patchTokens.clear();
-  patchRevisionHints.clear();
   transcriptDisplayStore.setState({ ...initialState() });
   setSupportFromConnection();
 }

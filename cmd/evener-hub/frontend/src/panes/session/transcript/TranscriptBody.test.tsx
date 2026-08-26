@@ -1,9 +1,13 @@
 import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { ThreadModel } from "../../../protocol/model";
+import type { ItemModel, ThreadModel } from "../../../protocol/model";
+import { FakeClient } from "../../../protocol/testing/fakeClient";
 import { threadsStore } from "../../../stores/threads";
 import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
+import { createTranscriptRenderContext, TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
+import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import { captureTranscriptViews, resetTranscriptViewRegistryForTests } from "./flow/transcriptViewRegistry";
+import { ToolCallCluster } from "./ToolCallCluster";
 import { TranscriptBody } from "./TranscriptBody";
 
 function preset(level: "chat" | "intent" | "tools" | "activity" | "full") {
@@ -42,6 +46,43 @@ const fixture = {
           status: "completed",
         },
         { id: "agent_1", turnId: "turn_1", type: "agentMessage", text: "The tree is ready", status: "completed" },
+      ],
+    },
+  ],
+} as unknown as ThreadModel;
+
+const previewClusterFixture = {
+  ...fixture,
+  turns: [
+    {
+      ...fixture.turns[0],
+      items: [
+        fixture.turns[0]?.items[0],
+        {
+          id: "cluster_1",
+          turnId: "turn_1",
+          type: "commandExecution",
+          toolName: "shell",
+          argumentsJSON: '{"command":"pwd"}',
+          status: "completed",
+        },
+        {
+          id: "cluster_2",
+          turnId: "turn_1",
+          type: "commandExecution",
+          toolName: "shell",
+          argumentsJSON: '{"command":"ls"}',
+          status: "completed",
+        },
+        {
+          id: "cluster_3",
+          turnId: "turn_1",
+          type: "commandExecution",
+          toolName: "shell",
+          argumentsJSON: '{"command":"git status"}',
+          status: "completed",
+        },
+        fixture.turns[0]?.items.at(-1),
       ],
     },
   ],
@@ -219,6 +260,8 @@ const mixedBoundaryFixture = {
 afterEach(() => {
   cleanup();
   resetTranscriptViewRegistryForTests();
+  resetDisclosureStoreForTests();
+  vi.restoreAllMocks();
 });
 
 let offsetHeightDescriptor: PropertyDescriptor | undefined;
@@ -317,26 +360,117 @@ describe("TranscriptBody", () => {
     expect(screen.queryByRole("button", { name: "Detail: Tools" })).toBeNull();
   });
 
-  test("preview rendering and disclosure interactions never read or subscribe to threadsStore", () => {
+  test("Tools/Full previews mount item and cluster renderers without threadsStore or RPC access", () => {
     const getState = vi.spyOn(threadsStore, "getState");
     const subscribe = vi.spyOn(threadsStore, "subscribe");
+    const getInitialState = vi.spyOn(threadsStore, "getInitialState");
+    const fake = new FakeClient("ready");
+    const request = vi.spyOn(fake, "request");
+    const previewTurn = previewClusterFixture.turns[0];
+    if (previewTurn === undefined) throw new Error("preview cluster turn did not render");
+    const clusterItems = previewTurn.items.slice(1, 4) as ItemModel[];
     render(
       <>
-        <TranscriptBody model={fixture} config={preset("intent")} surface="preview" disclosureScope="preview:one" />
-        <TranscriptBody model={fixture} config={preset("intent")} surface="preview" disclosureScope="preview:two" />
+        <TranscriptBody
+          model={previewClusterFixture}
+          config={preset("tools")}
+          surface="preview"
+          disclosureScope="preview:one"
+        />
+        <TranscriptBody
+          model={previewClusterFixture}
+          config={preset("full")}
+          surface="preview"
+          disclosureScope="preview:two"
+        />
+        <TranscriptRenderProvider
+          config={preset("tools")}
+          surface="preview"
+          disclosureScope="preview:explicit-cluster"
+          thread={previewClusterFixture}
+        >
+          <ToolCallCluster
+            items={clusterItems}
+            turn={previewTurn}
+            sessionRef="preview:explicit-cluster"
+            renderContext={createTranscriptRenderContext({
+              config: preset("tools"),
+              surface: "preview",
+              disclosureScope: "preview:explicit-cluster",
+              thread: previewClusterFixture,
+            })}
+          />
+        </TranscriptRenderProvider>
       </>,
     );
-    const groups = screen.getAllByTestId("intent-group");
-    expect(groups).toHaveLength(2);
-    expect(groups[0]?.hasAttribute("open")).toBe(false);
-    expect(groups[1]?.hasAttribute("open")).toBe(false);
-    const firstSummary = groups[0]?.querySelector("summary");
-    if (!(firstSummary instanceof HTMLElement)) throw new Error("preview intent summary did not render");
-    fireEvent.click(firstSummary);
-    expect(groups[0]?.hasAttribute("open")).toBe(true);
-    expect(groups[1]?.hasAttribute("open")).toBe(false);
+    expect(screen.getAllByTestId("tool-call-item").length).toBeGreaterThan(0);
+    expect(screen.getAllByTestId("tool-call-cluster")).toHaveLength(1);
+    const cluster = screen.getByTestId("tool-call-cluster");
+    const clusterTrigger = cluster.querySelector('[data-testid="tool-row-trigger"]');
+    if (!(clusterTrigger instanceof HTMLElement)) throw new Error("preview cluster trigger did not render");
+    fireEvent.click(clusterTrigger);
+    expect(clusterTrigger.getAttribute("aria-expanded")).toBe("true");
+    expect(cluster.querySelector('[data-testid="tool-call-cluster-body"]')).toBeTruthy();
     expect(getState).not.toHaveBeenCalled();
     expect(subscribe).not.toHaveBeenCalled();
+    expect(getInitialState).not.toHaveBeenCalled();
+    expect(request).not.toHaveBeenCalled();
+  });
+
+  test("intent-group defaults are not user choices, while summary activation persists by stable scope", () => {
+    const intentOpen = makeTranscriptDisplayConfig({
+      kind: "custom",
+      toolIntent: true,
+      toolCalls: false,
+      reasoning: false,
+      expandByDefault: true,
+    });
+    const intentClosed = makeTranscriptDisplayConfig({
+      kind: "custom",
+      toolIntent: true,
+      toolCalls: false,
+      reasoning: false,
+      expandByDefault: false,
+    });
+    const { rerender } = render(
+      <TranscriptBody model={fixture} config={intentOpen} surface="preview" disclosureScope="preview:single" />,
+    );
+    const single = screen.getAllByTestId("intent-group")[0];
+    if (single === undefined) throw new Error("single-turn intent group did not render");
+    expect(single).toBeTruthy();
+    expect(single.hasAttribute("open")).toBe(true);
+
+    rerender(
+      <TranscriptBody model={fixture} config={intentClosed} surface="preview" disclosureScope="preview:single" />,
+    );
+    expect(single.hasAttribute("open")).toBe(false);
+    const singleSummary = single.querySelector("summary");
+    if (singleSummary === null) throw new Error("single-turn intent summary did not render");
+    fireEvent.click(singleSummary);
+    expect(single.hasAttribute("open")).toBe(true);
+
+    rerender(
+      <TranscriptBody model={fixture} config={intentClosed} surface="preview" disclosureScope="preview:single" />,
+    );
+    expect(single.hasAttribute("open")).toBe(true);
+
+    render(
+      <TranscriptBody
+        model={crossTurnFixture}
+        config={preset("intent")}
+        surface="preview"
+        disclosureScope="preview:cross"
+      />,
+    );
+    const crossGroup = screen.getAllByTestId("intent-group").at(-1);
+    if (crossGroup === undefined) throw new Error("cross-turn intent group did not render");
+    expect(crossGroup?.getAttribute("data-transcript-row-id")).toBe("intent-group:intent:tool_a:intent:tool_c");
+    expect(crossGroup?.hasAttribute("open")).toBe(false);
+    const crossSummary = crossGroup.querySelector("summary");
+    if (crossSummary === null) throw new Error("cross-turn intent summary did not render");
+    fireEvent.click(crossSummary);
+    expect(crossGroup?.hasAttribute("open")).toBe(true);
+    expect(single.hasAttribute("open")).toBe(true);
   });
 
   test("coalesces purpose-only intents across adjacent turns into one stable virtual row", () => {

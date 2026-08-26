@@ -23,6 +23,7 @@ import { threadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { resolveEffectiveConfig } from "../../transcriptDisplay/config";
 import { EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
+import { VisuallyHidden } from "../../widgets/visuallyHidden";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "../session/liveness";
 import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
 import { TranscriptBody } from "../session/transcript/TranscriptBody";
@@ -157,8 +158,8 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
           listRef={listRef}
         />
       )}
-      <div key={viewAnnouncement.key} role="status" aria-live="polite" data-testid="transcript-view-announcement">
-        {viewAnnouncement.text}
+      <div role="status" aria-live="polite" data-testid="transcript-view-announcement">
+        <VisuallyHidden key={viewAnnouncement.key}>{viewAnnouncement.text}</VisuallyHidden>
       </div>
     </PaneScaffold>
   );

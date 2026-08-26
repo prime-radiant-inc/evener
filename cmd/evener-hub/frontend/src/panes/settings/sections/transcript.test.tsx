@@ -1,6 +1,7 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import { WireError } from "../../../protocol/errors";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import { connectionStore } from "../../../stores/connection";
 import {
@@ -57,12 +58,14 @@ function renderWithToasts() {
   );
 }
 
-function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
+function deferred<T>(): { promise: Promise<T>; resolve(value: T): void; reject(error: unknown): void } {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((next) => {
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((next, fail) => {
     resolve = next;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, resolve, reject };
 }
 
 test("renders Desktop then Mobile stacked cards with hub-sync and browser-local scope copy", () => {
@@ -164,7 +167,7 @@ test("reverts a failed hub mutation and retries the last draft", async () => {
   expect(patchCalls).toBe(2);
 });
 
-test("does not toast when a resolved PATCH is stale and preserves the newer draft", async () => {
+test("does not toast when an overlapping PATCH conflicts with the committed winner", async () => {
   const client = new FakeClient("ready");
   const confirmed = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   const firstDraft = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
@@ -195,17 +198,23 @@ test("does not toast when a resolved PATCH is stale and preserves the newer draf
   expect(screen.queryByText("Settings saved")).toBeNull();
   expect(transcriptDisplayStore.getState().drafts.desktop).toEqual(newerDraft);
 
-  responses[1]?.resolve({ layout: "desktop", revision: 3, config: toWireConfig(newerDraft) });
-  await competingPatch;
-  expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 3, config: newerDraft });
+  responses[1]?.reject(
+    new WireError("revision conflict", -32013, {
+      evenerErrorInfo: "conflict",
+      layout: "desktop",
+      current: { revision: 2, config: toWireConfig(firstDraft) },
+    }),
+  );
+  await expect(competingPatch).rejects.toThrow("revision conflict");
+  expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: firstDraft });
+  expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
   expect(screen.queryByText("Settings saved")).toBeNull();
 });
 
-test("allows only the newest overlapping Settings save to acknowledge and toast", async () => {
+test("reports a conflict instead of acknowledging two patches with one expected revision", async () => {
   const client = new FakeClient("ready");
   const confirmed = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   const firstDraft = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
-  const newestDraft = makeTranscriptDisplayConfig({ kind: "preset", level: "activity" });
   type PatchResult = { layout: "desktop"; revision: number; config: ReturnType<typeof toWireConfig> };
   const responses: Array<ReturnType<typeof deferred<PatchResult>>> = [];
   client.on("evener/settings/transcriptDisplay/get", () => ({
@@ -227,9 +236,17 @@ test("allows only the newest overlapping Settings save to acknowledge and toast"
   await user.click(screen.getAllByRole("radio", { name: "Activity" })[0]!);
   await waitFor(() => expect(responses).toHaveLength(2));
   responses[0]?.resolve({ layout: "desktop", revision: 2, config: toWireConfig(firstDraft) });
-  responses[1]?.resolve({ layout: "desktop", revision: 3, config: toWireConfig(newestDraft) });
+  responses[1]?.reject(
+    new WireError("revision conflict", -32013, {
+      evenerErrorInfo: "conflict",
+      layout: "desktop",
+      current: { revision: 2, config: toWireConfig(firstDraft) },
+    }),
+  );
 
-  expect(await screen.findAllByText("Settings saved")).toHaveLength(1);
+  expect((await screen.findByRole("alert")).textContent).toContain("revision conflict");
+  expect(screen.queryByText("Settings saved")).toBeNull();
   expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
-  expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 3, config: newestDraft });
+  expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: firstDraft });
+  expect(screen.getAllByRole("button", { name: "Retry" }).length).toBeGreaterThan(0);
 });

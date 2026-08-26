@@ -167,14 +167,15 @@ export function TranscriptRenderProvider({
     semanticSurface,
     semanticScope,
     semanticGeneration,
-    thread,
   ].join("\0");
-  const semanticContextRef = useRef<{ key: string; context: TranscriptRenderContextValue } | undefined>(undefined);
+  const semanticContextRef = useRef<
+    { key: string; thread: ThreadModel | undefined; context: TranscriptRenderContextValue } | undefined
+  >(undefined);
   // biome-ignore lint/correctness/useExhaustiveDependencies: semanticKey covers semantic display values; thread identity refreshes snapshot-derived summaries
   const context = useMemo(() => {
     if (value !== undefined) return value;
     const previous = semanticContextRef.current;
-    if (previous?.key === semanticKey) return previous.context;
+    if (previous?.key === semanticKey && previous.thread === thread) return previous.context;
     const next = createTranscriptRenderContext({
       config: semanticConfig,
       metadata: semanticMetadata,
@@ -184,7 +185,7 @@ export function TranscriptRenderProvider({
       fullBaselineGeneration: semanticGeneration,
       thread,
     });
-    semanticContextRef.current = { key: semanticKey, context: next };
+    semanticContextRef.current = { key: semanticKey, thread, context: next };
     return next;
   }, [semanticKey, thread, value]);
   const full = isFullConfig(context.config);

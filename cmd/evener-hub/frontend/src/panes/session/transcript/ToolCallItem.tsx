@@ -5,14 +5,14 @@
 // descriptor (toolRenderers.ts's DEFAULT_DESCRIPTOR) with the real per-tool
 // descriptors registered under tools/.
 import { memo, useId, useLayoutEffect, useState } from "react";
-import type { ItemModel } from "../../../protocol/model";
+import type { ItemModel, ThreadModel } from "../../../protocol/model";
 import { stableDelegateDisplayStatus } from "../../../protocol/stableDelegate";
 import type { EvenerDelegateInfo } from "../../../protocol/types.gen";
 import { useThreadsStore } from "../../../stores/threads";
 import {
   disclosureScopeForSession,
   expandDetailsByDefault,
-  useOptionalTranscriptRenderContext,
+  type TranscriptRenderContextValue,
   useTranscriptRenderContext,
 } from "../../../transcriptDisplay/renderContext";
 import { type CadenceState, StatusDot } from "../../../widgets";
@@ -102,18 +102,13 @@ function delegateStatusForOutput(
 // toolRenderers.ts's ToolRenderProps), so a fresh turn object on every
 // streaming delta targeting a DIFFERENT item must not re-render an
 // already-settled tool call.
-export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef, projectedSummary }: ItemRenderProps) {
-  const context = useTranscriptRenderContext();
-  const optionalContext = useOptionalTranscriptRenderContext();
-  // Direct leaf tests predate the shared provider. Keep that compatibility
-  // seam, but production TranscriptBody (including previews) always supplies a
-  // context and therefore never subscribes to threadsStore.
-  const legacyThread =
-    optionalContext === null
-      ? // biome-ignore lint/correctness/useHookAtTopLevel: compatibility fallback is fixed for a mounted leaf; production bodies always provide context
-        useThreadsStore((state) => state.threads.get(sessionRef ?? ""))
-      : undefined;
-  const thread = context.thread ?? legacyThread;
+interface ToolCallItemBodyProps extends ItemRenderProps {
+  renderContext: TranscriptRenderContextValue;
+  thread?: ThreadModel;
+}
+
+function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderContext, thread }: ToolCallItemBodyProps) {
+  const context = renderContext;
   const { config } = context;
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
   const descriptor = toolRendererFor(item.toolName ?? "");
@@ -165,7 +160,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef,
   // so the button's absPath needs no cast.
   const openBesideButton =
     canOpenBeside && openBesidePath !== undefined && sessionRef !== undefined ? (
-      <FileOpenBesideButton absPath={openBesidePath} sessionRef={sessionRef} />
+      <FileOpenBesideButton absPath={openBesidePath} sessionRef={sessionRef} cwd={thread?.cwd} />
     ) : null;
   // read_file (openBesideInline) quotes its path verbatim inside the summary,
   // so the control rides INLINE between the file name and the line range
@@ -371,12 +366,28 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef,
               below. Echoing detail() here too duplicated that fact on screen
               (kata wksf) instead of adding a second way to reach it. */}
           {hasErrorText && <div className={CLASS.error}>{item.error}</div>}
-          {Body && <Body item={item} live={live} sessionRef={sessionRef} />}
+          {Body && <Body item={item} live={live} sessionRef={sessionRef} cwd={thread?.cwd} />}
           <ImageGallery images={item.outputImages} size={descriptor.outputImageSize} />
         </div>
       )}
     </div>
   );
+}
+
+function ProviderToolCallItem(props: ItemRenderProps) {
+  const context = props.renderContext;
+  if (context === undefined) throw new Error("provider-backed ToolCallItem requires render context");
+  return <ToolCallItemBody {...props} renderContext={context} thread={props.thread} />;
+}
+
+function LegacyToolCallItem(props: ItemRenderProps) {
+  const context = useTranscriptRenderContext();
+  const thread = useThreadsStore((state) => state.threads.get(props.sessionRef ?? ""));
+  return <ToolCallItemBody {...props} renderContext={context} thread={thread} />;
+}
+
+export const ToolCallItem = memo(function ToolCallItem(props: ItemRenderProps) {
+  return props.renderContext === undefined ? <LegacyToolCallItem {...props} /> : <ProviderToolCallItem {...props} />;
 }, ignoringTurn);
 
 registerItemRenderer("commandExecution", ToolCallItem);

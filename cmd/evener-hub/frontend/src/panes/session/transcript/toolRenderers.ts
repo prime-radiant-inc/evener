@@ -22,6 +22,8 @@ export interface ToolRenderProps {
   // session, and the pane it opens must be able to say so and offer a way
   // back, not just leave the reader to remember it).
   sessionRef?: string;
+  /** Snapshot cwd supplied by the owning transcript render context. */
+  cwd?: string;
 }
 
 // ToolSummaryContext carries render-path facts a descriptor's summary() may

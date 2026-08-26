@@ -338,8 +338,18 @@ test("keeps the live Detail control reachable above the transcript", async () =>
   transcriptDisplayStore.setState({ viewport: "desktop" });
   transcriptDisplayStore.getState().setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }));
   await waitFor(() =>
-    expect(screen.getByTestId("transcript-view-announcement").textContent).toContain("Transcript detail: Full"),
+    expect(screen.getByTestId("transcript-view-announcement").textContent).toContain("Transcript detail: Full detail"),
   );
+  const status = screen.getByTestId("transcript-view-announcement");
+  transcriptDisplayStore
+    .getState()
+    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { roundTimings: true }));
+  await waitFor(() => expect(status.textContent).toContain("Transcript detail: Full detail · 1 advanced"));
+  transcriptDisplayStore
+    .getState()
+    .setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { tokenCounts: true }));
+  await waitFor(() => expect(status.textContent).toContain("Transcript detail: Full detail · 1 advanced"));
+  expect(screen.getByTestId("transcript-view-announcement")).toBe(status);
 });
 
 test("falls back to the raw ref as the title when the thread has no name yet", async () => {

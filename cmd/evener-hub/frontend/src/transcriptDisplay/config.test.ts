@@ -1,5 +1,6 @@
 import { describe, expect, test } from "vitest";
 import {
+  accessibleConfigSummary,
   advancedEnabledCount,
   type ContentSelection,
   configFingerprint,
@@ -161,6 +162,7 @@ describe("transcript display config", () => {
     );
     expect(advancedEnabledCount(config)).toBe(3);
     expect(configSummary(config)).toBe("Tools · 3 advanced");
+    expect(accessibleConfigSummary(makeTranscriptDisplayConfig({ kind: "preset", level: "full" }))).toBe("Full detail");
     expect(visibleCategoryInventory(config)).toEqual({
       visible: [
         "userMessages",
