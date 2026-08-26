@@ -53,7 +53,7 @@ policy `C` (`W ⪯ C`) only when every dimension below is no broader than `C`:
 | Dimension | `W ⪯ C` rule |
 |---|---|
 | Filesystem roots | Canonical, symlink-resolved read/write root set of `W` is a subset of `C`; path aliases are removed before comparison. |
-| Writes | `deny` is narrower than `allow`; a denied write cannot satisfy an allowed-write request. |
+| Writes | `deny` is narrower than `allow`; `W=deny` satisfies `C=allow`, while `W=allow` does not satisfy `C=deny`. |
 | Network | `deny` is narrower than an allowlist, which is narrower than unrestricted; an allowlist must be a subset of `C`'s allowlist. |
 | Secret masks | `W` masks a superset of `C`'s masked paths/patterns, after canonicalization. |
 | Tools/capabilities | The callable tool and capability set of `W` is a subset of `C`; unknown names are not ignored. |
@@ -103,9 +103,15 @@ is absent, expired, exceeds `Dmax`, or cannot be established from its own
 trusted wall clock. At acceptance, the worker checks the authenticated grant
 wall-time interval against its own trusted wall clock with a configured maximum
 clock-error bound `E`; if the interval is expired, outside `E`, or the worker
-cannot establish that bound, it fails closed. The worker then computes a local
-monotonic deadline as `monotonic_now + min(requested_ttl, Dmax)`, persists that
-deadline together with the fence, and enforces it locally. The controller also
+cannot establish that bound, it fails closed. The worker computes the
+authenticated remaining grant validity conservatively as
+`grant_remainder = not_after - (worker_wall_now + E)`. It fails closed when
+`grant_remainder <= 0` or when that subtraction is uncertain; otherwise the
+initial local monotonic deadline is
+`monotonic_now + min(requested_ttl, Dmax, grant_remainder)`. This clamps the
+initial lease to all three limits, so a disconnected worker cannot run past
+the grant's `not_after`. The worker persists that deadline together with the
+fence and enforces it locally. The controller also
 enforces its own absolute deadline and sends renewal before both parties'
 deadlines; renewal carries a fresh bounded TTL and may only shorten the grant's
 remaining validity. Neither side treats the other's clock as its own.
