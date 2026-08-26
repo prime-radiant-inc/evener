@@ -540,6 +540,29 @@ describe("cross-concept behavioral parity", () => {
         expandedToolIds: [...beforeSwitch.expandedToolIds],
         expandedWorkIds: [...beforeSwitch.expandedWorkIds],
       });
+      const switchedToolDisclosure = within(main("conversation")).getByRole(
+        "button",
+        { name: tool.label },
+      );
+      expect(switchedToolDisclosure).toHaveAttribute("aria-expanded", "true");
+      const switchedToolRegionIds =
+        switchedToolDisclosure
+          .getAttribute("aria-controls")
+          ?.trim()
+          .split(/\s+/) ?? [];
+      expect(switchedToolRegionIds).toHaveLength(1);
+      const switchedToolRegion = document.getElementById(
+        switchedToolRegionIds[0] ?? "missing-switched-tool-region",
+      );
+      expect(switchedToolRegion).toBeVisible();
+      expect(switchedToolRegion).toHaveAttribute(
+        "aria-labelledby",
+        switchedToolDisclosure.id,
+      );
+      expect(switchedToolRegion).toHaveTextContent(tool.arguments);
+      const switchedToolOutput = switchedToolRegion?.querySelector("pre");
+      expect(switchedToolOutput).toBeInstanceOf(HTMLPreElement);
+      expect(switchedToolOutput?.textContent).toBe(tool.output);
       expect(
         document.querySelector(
           `[data-transcript-item-id="${tool.id}"][data-focused="true"]`,
