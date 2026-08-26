@@ -699,6 +699,9 @@ _(no fields)_
 | `transcriptRef` | `string` | yes |  |
 | `type` | `string` |  |  |
 | `status` | `string` |  |  |
+| `authority` | `string` | yes |  |
+| `incomplete` | `bool` | yes |  |
+| `integrityReasons` | `[]string` | yes |  |
 | `outcome` | `string` | yes |  |
 | `terminal` | `bool` |  |  |
 | `background` | `bool` |  |  |
