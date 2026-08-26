@@ -94,10 +94,6 @@ interface HelpRow {
   desc: string;
 }
 
-type ThreadDiagnosticsModel = {
-  diagnostics?: { plugins?: { name: string }[] } | null;
-};
-
 // UX fix: rebuilt from a stale, hand-rolled §2.8 list (search.js:697-705,
 // palette-only, whose Enter/Shift+Enter/Mod+Enter row was never accurate for
 // THIS composer's real keydown routing) into an app-wide shortcut legend,
@@ -252,7 +248,7 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
   );
   const activePluginNames = useMemo<ReadonlySet<string> | null | undefined>(() => {
     if (ctx.sessionRef === null) return undefined;
-    const diagnostics = (activeThread as ThreadDiagnosticsModel | undefined)?.diagnostics;
+    const diagnostics = activeThread?.diagnostics;
     if (!diagnostics?.plugins) return null;
     return new Set(diagnostics.plugins.map((plugin) => plugin.name));
   }, [activeThread, ctx.sessionRef]);

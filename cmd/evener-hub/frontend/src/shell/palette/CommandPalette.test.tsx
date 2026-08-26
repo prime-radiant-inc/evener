@@ -57,10 +57,7 @@ const CAPS: ThreadCapabilities = {
   rename: true,
 };
 
-type ThreadDiagnostics = { plugins?: { name: string }[] } | null;
-type ThreadFixtureOverrides = Partial<ThreadModel> & { diagnostics?: ThreadDiagnostics };
-
-function testModel(overrides: ThreadFixtureOverrides = {}): ThreadModel {
+function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
   const { jobsTreeRevision = null, ...rest } = overrides;
   return {
     ref: "ref_a",
@@ -98,7 +95,7 @@ function turn(items: ItemModel[]): TurnModel {
   return { id: "t1", status: "completed", items };
 }
 
-function focusSession(ref: string, overrides: ThreadFixtureOverrides = {}): void {
+function focusSession(ref: string, overrides: Partial<ThreadModel> = {}): void {
   workspaceStore.setState({
     panes: [{ id: "p1", type: "session", params: { ref }, slot: "main" }],
     focusedPaneId: "p1",
@@ -280,7 +277,7 @@ test("the palette scopes catalog commands to active diagnostics without mutating
   expect(screen.getByRole("option", { name: /Continue in the composer/ })).toBeTruthy();
 
   threadsStore.setState({
-    threads: new Map([["ref_a", testModel({ ref: "ref_a", diagnostics: null })]]),
+    threads: new Map([["ref_a", testModel({ ref: "ref_a" })]]),
   });
   await waitFor(() => expect(screen.getByRole("option", { name: /Continue in the composer/ })).toBeTruthy());
   await user.clear(screen.getByRole("combobox"));
