@@ -207,7 +207,7 @@ func TestRelPathUnderManagedDir(t *testing.T) {
 		if err := os.MkdirAll(sub, 0755); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
-		rel, ok := relPathUnderManagedDir(sub, dir)
+		rel, ok := relPathUnderManagedDir(canonicalOrClean(sub), dir)
 		if !ok || rel != "subdir" {
 			t.Fatalf("rel=%q ok=%v", rel, ok)
 		}
@@ -240,7 +240,7 @@ func TestIsUnderManagedDir(t *testing.T) {
 		if err := os.MkdirAll(sub, 0755); err != nil {
 			t.Fatalf("mkdir: %v", err)
 		}
-		if !isUnderManagedDir(sub, dir) {
+		if !isUnderManagedDir(canonicalOrClean(sub), dir) {
 			t.Fatalf("expected true for path under dir")
 		}
 	})
