@@ -323,3 +323,49 @@ test("the exact analyzer serialized into concept-browser is self-contained", () 
   );
   assert.ok(result.ratio > 20);
 });
+
+for (const [name, analyzer] of [
+  ["module", analyzeDifferentialCapture],
+  [
+    "serialized browser",
+    Function(`"use strict";return (${analyzeDifferentialCapture.toString()})`)(),
+  ],
+]) {
+  test(`${name} analyzer bounds a dense mask without argument expansion`, () => {
+    const size = 400;
+    const result = analyzer(
+      candidate({
+        geometry: {
+          left: 0,
+          top: 0,
+          right: size,
+          bottom: size,
+          width: size,
+          height: size,
+        },
+      }),
+      capture({
+        width: size,
+        height: size,
+        original: rgba(255, 255, 255),
+        hidden: rgba(0, 0, 0),
+        black: rgba(0, 0, 0),
+        white: rgba(255, 255, 255),
+      }),
+    );
+    assert.equal(result.mask.pixelCount, size * size);
+    assert.deepEqual(result.mask.bounds, {
+      left: 0,
+      top: 0,
+      right: size,
+      bottom: size,
+    });
+  });
+}
+
+test("serialized analyzer contains no array-to-call argument expansion", () => {
+  assert.doesNotMatch(
+    analyzeDifferentialCapture.toString(),
+    /\w+\(\s*\.\.\./,
+  );
+});
