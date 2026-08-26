@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024" role="img" aria-label="Evener Concepts icon">
+  <rect width="1024" height="1024" rx="224" fill="#F3EEE4"/>
+  <rect x="96" y="96" width="832" height="832" rx="176" fill="#173F36"/>
+  <rect x="154" y="214" width="716" height="596" rx="112" fill="#F8F3E9"/>
+
+  <path d="M236 648V386c0-36 29-65 65-65h78" fill="none" stroke="#214F43" stroke-width="52" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M236 516h126" fill="none" stroke="#214F43" stroke-width="52" stroke-linecap="round"/>
+
+  <circle cx="512" cy="512" r="116" fill="#C9FFE7" opacity="0.45"/>
+  <circle cx="512" cy="512" r="72" fill="#78E8B8"/>
+  <circle cx="486" cy="486" r="20" fill="#E7FFF5"/>
+
+  <path d="M654 360h96c22 0 40 18 40 40v248c0 22-18 40-40 40h-96" fill="none" stroke="#A34E35" stroke-width="48" stroke-linecap="round" stroke-linejoin="round"/>
+  <path d="M674 468h92M674 568h92" fill="none" stroke="#A34E35" stroke-width="34" stroke-linecap="round"/>
+</svg>

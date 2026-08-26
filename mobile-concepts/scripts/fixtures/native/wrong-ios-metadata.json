@@ -1,0 +1,29 @@
+{
+  "identifier": "com.primeradiant.evener",
+  "displayName": "Evener",
+  "info": {
+    "NSMicrophoneUsageDescription": "Record voice"
+  },
+  "signatureStatus": "signed",
+  "exportMethod": "debugging",
+  "entitlements": {
+    "application-identifier": "TEAM123456.com.primeradiant.evener.concepts",
+    "com.apple.developer.team-identifier": "TEAM123456",
+    "get-task-allow": true,
+    "keychain-access-groups": [
+      "TEAM123456.com.primeradiant.evener.concepts"
+    ]
+  },
+  "provisioning": {
+    "ApplicationIdentifierPrefix": ["TEAM123456"],
+    "TeamIdentifier": ["TEAM123456"],
+    "Entitlements": {
+      "application-identifier": "TEAM123456.com.primeradiant.evener.concepts",
+      "com.apple.developer.team-identifier": "TEAM123456",
+      "get-task-allow": true,
+      "keychain-access-groups": [
+        "TEAM123456.com.primeradiant.evener.concepts"
+      ]
+    }
+  }
+}

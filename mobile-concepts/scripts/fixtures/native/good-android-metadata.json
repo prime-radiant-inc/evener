@@ -1,0 +1,6 @@
+{
+  "identifier": "com.primeradiant.evener.concepts",
+  "displayName": "Evener Concepts",
+  "permissions": ["android.permission.INTERNET"],
+  "signatureStatus": "signed"
+}
