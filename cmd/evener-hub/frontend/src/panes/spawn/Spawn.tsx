@@ -40,6 +40,7 @@ import {
   useToasts,
 } from "../../widgets";
 import { CloseIcon } from "../../widgets/dialog/CloseIcon";
+import { Disclosure } from "../../widgets/disclosure";
 import { requireClass } from "../../widgets/internal/requireClass";
 import type { ModelCatalog, ModelCatalogEntry } from "../../widgets/modelCatalog";
 import { fetchModelCatalog } from "../../widgets/modelCatalog/catalogClient";
@@ -55,6 +56,8 @@ import { resolveHeadBranch } from "./branch";
 import { harnessUsesEvenerModels } from "./harnessModels";
 import { MobileSettingRows } from "./MobileSettingRows";
 import { ModelField } from "./ModelField";
+import { PluginSelectionPanel } from "./PluginSelectionPanel";
+import pluginSelectionStyles from "./pluginSelection.module.css";
 import { type PluginSelectionState, reconcilePluginSelection, withPluginSelection } from "./pluginSelectionState";
 import { createDir, preflightDir } from "./preflight";
 import { perLaunchEvenerOptions, resolveScalars } from "./schema";
@@ -124,6 +127,9 @@ const CLASS = {
   fieldLabel: requireClass(styles.fieldLabel, "spawn.module.css", "fieldLabel"),
   modelNote: requireClass(styles.modelNote, "spawn.module.css", "modelNote"),
   submitLabel: requireClass(styles.submitLabel, "spawn.module.css", "submitLabel"),
+  pluginDesktop: requireClass(pluginSelectionStyles.desktopSurface, "pluginSelection.module.css", "desktopSurface"),
+  pluginStatus: requireClass(pluginSelectionStyles.status, "pluginSelection.module.css", "status"),
+  pluginSummary: requireClass(pluginSelectionStyles.summary, "pluginSelection.module.css", "summary"),
 };
 
 // kata xgk8: the empty-value label Model shows when the hub has confirmed it
@@ -296,6 +302,13 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     if (state.status !== "ready") return;
     setPluginSelection((previous) => reconcilePluginSelection(previous, state.response));
   }, [pluginPreview.state]);
+
+  const previewResponse = pluginPreview.state.status === "ready" ? pluginPreview.state.response : null;
+  const selectedPluginCount =
+    previewResponse?.plugins.filter((plugin) =>
+      pluginSelection.mode === "explicit" ? pluginSelection.names.includes(plugin.name) : plugin.selected,
+    ).length ?? 0;
+  const selectionErrors = previewResponse?.selectionErrors ?? [];
 
   // Mount: URL prefill + sticky defaults (synchronous), then the async catalogs
   // (harnesses, advanced schema) and the stale-model sweep.
@@ -834,7 +847,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                   aria-label="Start"
                   icon={busy ? undefined : <SendIcon />}
                   onClick={() => void handleSpawn()}
-                  disabled={busy || modelRequired}
+                  disabled={busy || modelRequired || selectionErrors.length > 0}
                 >
                   {busy ? (
                     <Loader label="Starting" startedAt={busyStartedAt ?? now} now={now} />
@@ -938,6 +951,43 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           </FormRow>
         </div>
 
+        <div className={CLASS.pluginDesktop} data-testid="spawn-plugin-desktop">
+          {pluginPreview.state.status === "loading" && (
+            <div className={CLASS.pluginStatus} role="status">
+              Inspecting plugins…
+            </div>
+          )}
+          {pluginPreview.state.status === "error" && (
+            <div className={CLASS.pluginStatus} role="status">
+              <span>Couldn't inspect plugins</span>
+              <Button variant="secondary" size="xs" type="button" onClick={pluginPreview.retry}>
+                Retry
+              </Button>
+            </div>
+          )}
+          {previewResponse !== null && (
+            <Disclosure
+              id="spawn-plugin-selection"
+              data-testid="spawn-plugin-disclosure"
+              summary={
+                <div className={CLASS.pluginSummary} data-testid="spawn-plugin-summary">
+                  <strong>Plugins for this session</strong>
+                  <span>
+                    {selectedPluginCount} of {previewResponse.plugins.length} will load · session only
+                  </span>
+                </div>
+              }
+            >
+              <PluginSelectionPanel
+                preview={previewResponse}
+                selection={pluginSelection}
+                onSelectionChange={setPluginSelection}
+                onRetry={pluginPreview.retry}
+              />
+            </Disclosure>
+          )}
+        </div>
+
         <div className={CLASS.mobileConfig} data-testid="spawn-mobile-config">
           <MobileSettingRows
             harness={harness || "evener"}
@@ -957,6 +1007,10 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             accessMode={accessMode}
             accessOptions={[{ value: "", label: "(default)" }, ...ACCESS_MODE_OPTIONS]}
             onAccessChange={setAccessMode}
+            pluginPreview={pluginPreview.state}
+            pluginSelection={pluginSelection}
+            onPluginSelectionChange={setPluginSelection}
+            onPluginRetry={pluginPreview.retry}
           />
         </div>
 

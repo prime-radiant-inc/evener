@@ -28,6 +28,32 @@ fake.on("model/list", () => ({
 fake.on("evener/projects/recent", () => ({ data: [] }));
 fake.on("evener/paths/complete", () => ({ data: [] }));
 fake.on("evener/path/validate", () => ({ path: "", valid: true }));
+fake.on("evener/plugin/preview", () => ({
+  plugins: [
+    {
+      name: "spawnguard-plugin",
+      source: "installed",
+      marketplace: "spawnguard",
+      selected: true,
+      skillCount: 1,
+      agentCount: 1,
+      commandCount: 1,
+      hookCount: 0,
+      mcpCount: 0,
+    },
+    {
+      name: "spawnguard-directory",
+      source: "directory",
+      path: "/tmp/spawnguard-plugin",
+      selected: true,
+      skillCount: 0,
+      agentCount: 0,
+      commandCount: 0,
+      hookCount: 1,
+      mcpCount: 1,
+    },
+  ],
+}));
 
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("spawnguard.html is missing #root");
@@ -249,6 +275,11 @@ function measureSpawn() {
 
   const heading = document.querySelector<HTMLElement>("[data-testid='spawn-mobile-prompt-intro'] h3");
   const subtitle = document.querySelector<HTMLElement>("[data-testid='spawn-mobile-prompt-intro'] p");
+  const pluginSummary = document.querySelector<HTMLElement>('[data-testid="spawn-plugin-summary"]');
+  const pluginRow = document.querySelector<HTMLElement>('[data-label="Plugins"]');
+  const pluginSheet = document.querySelector<HTMLElement>('[role="dialog"][aria-labelledby] h2')?.parentElement
+    ?.parentElement;
+  const start = document.querySelector<HTMLElement>('[data-testid="spawn-submit"]');
 
   return {
     viewport: { width: window.innerWidth, height: window.innerHeight },
@@ -270,22 +301,43 @@ function measureSpawn() {
       headingHiddenFromAT: heading?.getAttribute("aria-hidden") === "true",
       subtitleHiddenFromAT: subtitle?.getAttribute("aria-hidden") === "true",
     },
+    plugins: {
+      summary: pluginSummary ? boxOf(pluginSummary) : null,
+      row: pluginRow ? boxOf(pluginRow) : null,
+      sheet: pluginSheet ? boxOf(pluginSheet) : null,
+      start: start ? boxOf(start) : null,
+    },
     overflow: scanHorizontalOverflow(),
   };
 }
 
-const settled = new Promise<true>((resolve) => {
-  requestAnimationFrame(() => requestAnimationFrame(() => setTimeout(() => resolve(true), 0)));
-});
+async function settleSpawn(): Promise<true> {
+  const deadline = performance.now() + 10_000;
+  for (;;) {
+    await new Promise((resolve) => requestAnimationFrame(resolve));
+    if (document.querySelector('[data-testid="spawn-plugin-disclosure"]')) return true;
+    if (performance.now() > deadline) throw new Error("Spawn plugin preview did not settle within 10s");
+  }
+}
+
+function openSpawnPlugins(): void {
+  const row = document.querySelector<HTMLButtonElement>('[data-label="Plugins"] button');
+  if (!row) throw new Error("Spawn Plugins row is not available");
+  row.click();
+}
+
+const settled = settleSpawn();
 
 declare global {
   interface Window {
     measureSpawn: typeof measureSpawn;
     settledSpawn: Promise<true>;
     stageSpawnAttachments: typeof stageSpawnAttachments;
+    openSpawnPlugins: typeof openSpawnPlugins;
   }
 }
 
 window.measureSpawn = measureSpawn;
 window.settledSpawn = settled;
 window.stageSpawnAttachments = stageSpawnAttachments;
+window.openSpawnPlugins = openSpawnPlugins;

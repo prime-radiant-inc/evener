@@ -60,6 +60,9 @@ async function measureAt(cdpEndpoint, vitePort, width) {
     // before staging settles the fonts of a page that has not asked for them
     // yet and measureSpawn still runs mid-swap.
     await waitForFonts(send);
+    if (width <= 899) {
+      await evaluate(send, "window.openSpawnPlugins()\nnew Promise((resolve) => requestAnimationFrame(resolve))");
+    }
     return JSON.parse(await evaluate(send, "JSON.stringify(window.measureSpawn())"));
   } finally {
     await clearViewportOverride(send);
@@ -162,8 +165,8 @@ function assertResult(result, expectedWidth) {
     if (card.attach !== null && card.attach.width < TAP_MIN_PX - 0.5) {
       failures.push(`the attach button is ${card.attach.width}px wide, below the ${TAP_MIN_PX}px touch floor`);
     }
-    // Model left this list for the card (issue #198), so five rows, not six.
-    if (result.rows.length !== 5) failures.push(`expected 5 mobile setting rows, found ${result.rows.length}`);
+    // Model lives in the prompt card (issue #198); Plugins is the sixth row.
+    if (result.rows.length !== 6) failures.push(`expected 6 mobile setting rows, found ${result.rows.length}`);
     if (result.rows.some((row) => row.label === "Model")) {
       failures.push("the mobile setting rows still carry a Model row - the prompt card owns that setting now");
     }
@@ -228,6 +231,25 @@ function assertResult(result, expectedWidth) {
   }
 
   if (result.overflow.length > 0) failures.push(`horizontal overflow: ${result.overflow.join("; ")}`);
+
+  const pluginSurface = mobile ? result.plugins.row : result.plugins.summary;
+  if (pluginSurface === null || pluginSurface.width <= 1 || pluginSurface.height <= 1) {
+    failures.push(`plugin ${mobile ? "row" : "summary"} is not visible at ${expectedWidth}px`);
+  }
+  if (mobile && result.plugins.row !== null && result.plugins.row.height < TAP_MIN_PX - 0.5) {
+    failures.push(`plugin row is ${result.plugins.row.height}px tall, below the ${TAP_MIN_PX}px touch floor`);
+  }
+  if (mobile && result.plugins.sheet === null) {
+    failures.push("plugin sheet did not open on the phone surface");
+  } else if (mobile && result.plugins.sheet !== null) {
+    if (result.plugins.sheet.width > expectedWidth + 1 || result.plugins.sheet.left < -1) {
+      failures.push(`plugin sheet escapes the viewport: ${JSON.stringify(result.plugins.sheet)}`);
+    }
+    if (result.plugins.sheet.height < 120) failures.push(`plugin sheet is too short to be usable: ${JSON.stringify(result.plugins.sheet)}`);
+  }
+  if (pluginSurface !== null && result.plugins.start !== null && pluginSurface.top < result.plugins.start.bottom - 1) {
+    failures.push(`plugin surface overlaps the prompt Start action: ${JSON.stringify({ pluginSurface, start: result.plugins.start })}`);
+  }
   return failures;
 }
 

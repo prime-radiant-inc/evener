@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, expect, test, vi } from "vitest";
+import type { PluginPreviewResponse } from "../../protocol/types.gen";
 import { MobileSettingRows, type MobileSettingRowsProps } from "./MobileSettingRows";
 import { GLOBAL_LAST_WORKING_DIR_KEY, setGlobalLastWorkingDir } from "./spawnDefaults";
 
@@ -37,6 +38,10 @@ function props(overrides: Partial<MobileSettingRowsProps> = {}): MobileSettingRo
       { value: "workspace-write", label: "workspace write" },
     ],
     onAccessChange: vi.fn(),
+    pluginPreview: { status: "ready", response: { plugins: [] } as PluginPreviewResponse },
+    pluginSelection: { mode: "default" },
+    onPluginSelectionChange: vi.fn(),
+    onPluginRetry: vi.fn(),
     ...overrides,
   };
 }
@@ -55,6 +60,7 @@ test("renders all Treatment A rows in order with full-row controls", () => {
     "Branch",
     "Reasoning effort",
     "Access mode",
+    "Plugins",
   ]);
   expect(within(rows[0]!).getByRole("button", { name: /harness/i })).toBeTruthy();
   // Branch is a read-only readout, not a picker.
@@ -158,6 +164,67 @@ test("a disabled reasoning row is read-only and exposes no picker affordance", (
   expect(within(row).queryByRole("button")).toBeNull();
   expect(row.querySelector('[aria-haspopup="dialog"]')).toBeNull();
   expect(row.textContent).not.toContain("›");
+});
+
+test("plugin sheet stays open across toggles, Done applies, and Cancel restores focus", async () => {
+  const user = userEvent.setup();
+  const onPluginSelectionChange = vi.fn();
+  const pluginPreview: PluginPreviewResponse = {
+    plugins: [
+      {
+        name: "alpha",
+        source: "installed",
+        selected: true,
+        skillCount: 1,
+        agentCount: 0,
+        commandCount: 0,
+        hookCount: 0,
+        mcpCount: 0,
+      },
+      {
+        name: "beta",
+        source: "directory",
+        path: "/tmp/beta",
+        selected: true,
+        skillCount: 0,
+        agentCount: 0,
+        commandCount: 1,
+        hookCount: 0,
+        mcpCount: 0,
+      },
+    ],
+  };
+  renderRows({ pluginPreview: { status: "ready", response: pluginPreview }, onPluginSelectionChange });
+
+  const rowButton = screen.getByRole("button", { name: "Plugins: 2 of 2" });
+  await user.click(rowButton);
+  const dialog = await screen.findByRole("dialog", { name: "Plugins for this session" });
+  const alpha = within(dialog).getByRole("switch", { name: "alpha" });
+  await user.click(alpha);
+  expect(screen.getByRole("dialog", { name: "Plugins for this session" })).toBeTruthy();
+  await user.click(within(dialog).getByRole("button", { name: "Done" }));
+  expect(onPluginSelectionChange).toHaveBeenCalledWith({ mode: "explicit", names: ["beta"] });
+  expect(document.activeElement).toBe(rowButton);
+
+  await user.click(rowButton);
+  const secondDialog = await screen.findByRole("dialog", { name: "Plugins for this session" });
+  await user.click(within(secondDialog).getByRole("switch", { name: "beta" }));
+  await user.click(within(secondDialog).getByRole("button", { name: "Cancel" }));
+  expect(onPluginSelectionChange).toHaveBeenCalledTimes(1);
+  expect(document.activeElement).toBe(rowButton);
+});
+
+test("plugin preview error keeps the row honest and exposes retry", async () => {
+  const user = userEvent.setup();
+  const onPluginRetry = vi.fn();
+  renderRows({ pluginPreview: { status: "error", message: "offline" }, onPluginRetry });
+
+  const pluginRow = screen.getByTestId("mobile-spawn-config").querySelector('[data-label="Plugins"]') as HTMLElement;
+  expect(pluginRow.textContent).toContain("Couldn't inspect plugins");
+  expect(within(pluginRow).queryByRole("button")).toBeNull();
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  expect(onPluginRetry).toHaveBeenCalledOnce();
+  expect(screen.queryByText("0 of 0")).toBeNull();
 });
 
 test("mobile setting rows keep the approved 48px body-text baseline", () => {
