@@ -17,6 +17,7 @@ import { createRoot } from "react-dom/client";
 import { isElementVisible } from "./guardVisibility";
 import "../panes/session";
 import Session from "../panes/session/Session";
+import Settings from "../panes/settings/Settings";
 import "../panes/sessionPanels";
 import { hydrateThread } from "../protocol/reducer";
 import { FakeClient } from "../protocol/testing/fakeClient";
@@ -25,6 +26,7 @@ import { DockHost } from "../shell/DockHost";
 import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { threadsStore } from "../stores/threads";
+import { initTranscriptDisplay } from "../stores/transcriptDisplay";
 import "../styles/tokens.css";
 import "../styles/global.css";
 
@@ -39,6 +41,7 @@ window.addEventListener("unhandledrejection", (event) => {
 });
 const width = Number(params.get("w") ?? "1400");
 const theme = params.get("theme");
+const settingsMode = params.get("settings") === "1";
 if (theme === "light" || theme === "dark") document.documentElement.dataset.theme = theme;
 
 const REF = "overflowharness";
@@ -209,6 +212,7 @@ connectionStore.getState().connect(fake);
 threadsStore.setState((s) => ({
   threads: new Map(s.threads).set(REF, hydrateThread(snapshot, REF, 1000)),
 }));
+initTranscriptDisplay();
 
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("overflowharness.html is missing #root");
@@ -216,7 +220,13 @@ if (!rootEl) throw new Error("overflowharness.html is missing #root");
 document.body.style.margin = "0";
 document.body.style.background = "var(--surface-0)";
 
-if (params.get("panels") === "1") {
+if (settingsMode) {
+  createRoot(rootEl).render(
+    <div id="oh-pane" style={{ width, height: 900, padding: 8 }}>
+      <Settings params={{ section: "transcript" }} paneId="oh-settings" focused />
+    </div>,
+  );
+} else if (params.get("panels") === "1") {
   workspaceStore.getState().openPane("session", { ref: REF });
   createRoot(rootEl).render(
     <div id="oh-pane" style={{ width, height: 900, padding: 8 }}>
@@ -269,6 +279,178 @@ interface DisclosureTarget {
   originalOpen: boolean;
 }
 
+interface DetailGeometry {
+  found: boolean;
+  mobile: boolean;
+  triggerReachable: boolean;
+  trigger: { left: number; right: number; top: number; bottom: number; width: number; height: number } | null;
+  open: boolean;
+  portalContained: boolean;
+  panel: { left: number; right: number; top: number; bottom: number; width: number; height: number } | null;
+  horizontalOverflowCount: number;
+  targetHeights: number[];
+  fieldsetStacked: boolean;
+}
+
+interface SettingsGeometry {
+  mode: "settings";
+  cardsFound: number;
+  cardsStacked: boolean;
+  cardOverflowCount: number;
+  previewOverflowCount: number;
+  previewInnerScrollCount: number;
+}
+
+function geometryOf(element: Element) {
+  const box = element.getBoundingClientRect();
+  return {
+    left: box.left,
+    right: box.right,
+    top: box.top,
+    bottom: box.bottom,
+    width: box.width,
+    height: box.height,
+  };
+}
+
+function scrollOverflowCount(root: Element): number {
+  return [root, ...Array.from(root.querySelectorAll<HTMLElement>("*"))].filter((element) => {
+    if (!(element instanceof HTMLElement) || element.clientWidth <= 1) return false;
+    const style = getComputedStyle(element);
+    if (style.overflowX === "hidden" || style.overflowX === "clip") return false;
+    return element.scrollWidth > element.clientWidth + 1;
+  }).length;
+}
+
+function measureSettings(): SettingsGeometry {
+  const content = document.querySelector<HTMLElement>('[data-testid="settings-content"]');
+  if (!content) {
+    return {
+      mode: "settings",
+      cardsFound: 0,
+      cardsStacked: false,
+      cardOverflowCount: 0,
+      previewOverflowCount: 0,
+      previewInnerScrollCount: 0,
+    };
+  }
+  const cards = Array.from(content.querySelectorAll<HTMLElement>('[data-testid^="transcript-display-card-"]'));
+  const previews = cards.flatMap((card) =>
+    Array.from(card.querySelectorAll<HTMLElement>('[data-testid^="transcript-display-preview-"]')),
+  );
+  const cardBoxes = cards.map(geometryOf);
+  const firstCard = cardBoxes[0];
+  const secondCard = cardBoxes[1];
+  const cardsStacked =
+    cards.length === 2 &&
+    firstCard !== undefined &&
+    secondCard !== undefined &&
+    secondCard.top >= firstCard.bottom - 1 &&
+    cards.every((card) => card.getBoundingClientRect().width > 0);
+  return {
+    mode: "settings",
+    cardsFound: cards.length,
+    cardsStacked,
+    cardOverflowCount: cards.reduce((count, card) => count + scrollOverflowCount(card), 0),
+    previewOverflowCount: previews.reduce((count, preview) => count + scrollOverflowCount(preview), 0),
+    // A preview's production TranscriptBody is normal flow. Count only
+    // descendants other than the preview root here so the assertion names an
+    // accidental nested scroller instead of the card's own containing box.
+    previewInnerScrollCount: previews.reduce(
+      (count, preview) =>
+        count +
+        Array.from(preview.querySelectorAll<HTMLElement>("*")).filter(
+          (element) => element.clientWidth > 1 && element.scrollWidth > element.clientWidth + 1,
+        ).length,
+      0,
+    ),
+  };
+}
+
+async function inspectDetail(): Promise<DetailGeometry> {
+  const pane = document.getElementById("oh-pane");
+  const trigger = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+    button.textContent?.trim().startsWith("Detail:"),
+  );
+  if (!pane || !trigger) {
+    return {
+      found: trigger !== undefined,
+      mobile: window.matchMedia("(max-width: 899px)").matches,
+      triggerReachable: false,
+      trigger: null,
+      open: false,
+      portalContained: false,
+      panel: null,
+      horizontalOverflowCount: 0,
+      targetHeights: [],
+      fieldsetStacked: false,
+    };
+  }
+  const mobile = window.matchMedia("(max-width: 899px)").matches;
+  const paneBox = pane.getBoundingClientRect();
+  const triggerBox = geometryOf(trigger);
+  const triggerReachable =
+    !trigger.disabled &&
+    triggerBox.width > 0 &&
+    triggerBox.height > 0 &&
+    triggerBox.left >= paneBox.left - 1 &&
+    triggerBox.right <= paneBox.right + 1 &&
+    triggerBox.top >= paneBox.top - 1;
+  trigger.click();
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  const finite = document
+    .getAnimations()
+    .filter((animation) => animation.effect?.getTiming().iterations !== Number.POSITIVE_INFINITY);
+  await Promise.all(finite.map((animation) => animation.finished.catch(() => undefined)));
+
+  const panel = mobile
+    ? document.querySelector<HTMLElement>('[role="dialog"][aria-modal="true"]')
+    : document.querySelector<HTMLElement>('[data-testid="transcript-detail-popover"]');
+  if (!panel) {
+    return {
+      found: true,
+      mobile,
+      triggerReachable,
+      trigger: triggerBox,
+      open: false,
+      portalContained: false,
+      panel: null,
+      horizontalOverflowCount: 0,
+      targetHeights: [],
+      fieldsetStacked: false,
+    };
+  }
+  const panelBox = geometryOf(panel);
+  const targetHeights = Array.from(panel.querySelectorAll<HTMLElement>("button, select")).map(
+    (element) => element.getBoundingClientRect().height,
+  );
+  const fieldsets = Array.from(panel.querySelectorAll<HTMLElement>("fieldset"));
+  const fieldsetBoxes = fieldsets.map(geometryOf);
+  const fieldsetStacked =
+    !mobile ||
+    (fieldsets.length === 3 &&
+      fieldsetBoxes.every((box, index) => {
+        const previous = fieldsetBoxes[index - 1];
+        return index === 0 || (previous !== undefined && box.top >= previous.bottom - 1);
+      }));
+  return {
+    found: true,
+    mobile,
+    triggerReachable,
+    trigger: triggerBox,
+    open: true,
+    portalContained:
+      panelBox.left >= -1 &&
+      panelBox.right <= window.innerWidth + 1 &&
+      panelBox.top >= -1 &&
+      panelBox.bottom <= window.innerHeight + 1,
+    panel: panelBox,
+    horizontalOverflowCount: scrollOverflowCount(panel),
+    targetHeights,
+    fieldsetStacked,
+  };
+}
+
 // A scroll container is horizontally overflowing when its content is wider
 // than its own content box. Reporting the container alone is not actionable,
 // so each one also names the deepest descendants whose right edge is past its
@@ -317,16 +499,6 @@ function disclosureContract(target: DisclosureTarget): DisclosureContract | null
     expectedWidth,
   };
   return result;
-}
-
-interface FooterContract {
-  effortVisible: boolean;
-  contextVisible: boolean;
-  queueVisible: boolean;
-  queueLabel: string | null;
-  statusClientWidth: number;
-  statusScrollWidth: number;
-  modelClientWidth: number;
 }
 
 // Whether a required footer fact (effort, context, queue) is on the screen.
@@ -413,15 +585,8 @@ function visibilityProbe(): VisibilityProbe {
   }
 }
 
-function measure(): {
-  width: number;
-  scrollers: Scroller[];
-  ignored: string[];
-  disclosures: DisclosureContract[];
-  footer: FooterContract;
-  visibility: VisibilityProbe;
-  subagentCard: { found: boolean; contained: boolean; quoteWrapped: boolean; statsContained: boolean };
-} {
+function measure() {
+  if (settingsMode) return measureSettings();
   const pane = document.getElementById("oh-pane");
   if (!pane) throw new Error("harness pane never mounted");
   const scrollers: Scroller[] = [];
@@ -611,9 +776,11 @@ declare global {
   interface Window {
     measure: typeof measure;
     dump: typeof dump;
+    inspectDetail: typeof inspectDetail;
     settled: Promise<true>;
   }
 }
 window.measure = measure;
 window.dump = dump;
+window.inspectDetail = inspectDetail;
 window.settled = settled;

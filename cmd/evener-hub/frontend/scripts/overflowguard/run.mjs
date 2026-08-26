@@ -38,7 +38,17 @@
 // launch (~10s).
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { connectPage, createStartupDeadline, devtoolsHttpURL, evaluate, navigateTo, waitForFonts, waitForHttp } from "../browserGuardCdp.mjs";
+import {
+  applyViewport,
+  clearViewportOverride,
+  connectPage,
+  createStartupDeadline,
+  devtoolsHttpURL,
+  evaluate,
+  navigateTo,
+  waitForFonts,
+  waitForHttp,
+} from "../browserGuardCdp.mjs";
 import { describeBrowserStartupFailure, startBrowserGuard } from "../browserGuardProcess.mjs";
 
 const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
@@ -49,10 +59,11 @@ const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 // would have missed the original bug entirely.
 const DEFAULT_WIDTHS = [390, 700, 1024, 1400];
 
-async function measureAt(cdpEndpoint, url) {
+async function measureAt(cdpEndpoint, url, width) {
   const page = await connectPage(cdpEndpoint);
   const { send } = page;
   try {
+    await applyViewport(send, { width, height: 900, mobile: width < 900 });
     await navigateTo(page, url);
 
     const host = await evaluate(send, "location.host");
@@ -94,9 +105,11 @@ async function measureAt(cdpEndpoint, url) {
       })()`,
     );
 
+    const detail = url.includes("settings=1") ? null : await evaluate(send, "window.inspectDetail()\n");
     const measured = await evaluate(send, "JSON.stringify(window.measure())");
-    return { ...JSON.parse(measured), exceptionSafety };
+    return { ...JSON.parse(measured), exceptionSafety, detail };
   } finally {
+    await clearViewportOverride(send);
     page.close();
   }
 }
@@ -112,6 +125,7 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
   const page = await connectPage(cdpEndpoint);
   const { send } = page;
   try {
+    await applyViewport(send, { width: 1024, height: 900 });
     await navigateTo(page, url);
     await waitForFonts(page.send);
     const runtimeState = await send("Runtime.evaluate", {
@@ -143,6 +157,7 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
           'inline session chrome',
         );
         await until(() => chrome.clientWidth > 0 && chrome.clientWidth < 640, 'narrowed chrome');
+        const detail = await window.inspectDetail();
         const actionsAgain = actionsTrigger();
         if (!actionsAgain) throw new Error('session actions trigger missing');
         actionsAgain.click();
@@ -158,6 +173,7 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
           panelVisible: panel.getBoundingClientRect().width > 0,
           checkedText: checked.textContent,
           horizontalOverflowCount: horizontallyOverflowing.length,
+          detail,
         };
       })()`,
       awaitPromise: true,
@@ -170,8 +186,38 @@ async function verifyPanelCollapse(cdpEndpoint, url) {
     }
     return out.result.result.value;
   } finally {
+    await clearViewportOverride(send);
     page.close();
   }
+}
+
+function assertDetail(result, width) {
+  const failures = [];
+  const detail = result.detail;
+  if (!detail?.found || !detail.triggerReachable) failures.push("Detail trigger is not reachable inside the pane");
+  if (!detail?.open) failures.push("Detail trigger did not open its production portal/sheet");
+  if (!detail?.portalContained) failures.push(`Detail portal/sheet escapes the viewport: ${JSON.stringify(detail?.panel)}`);
+  if ((detail?.horizontalOverflowCount ?? 1) !== 0) {
+    failures.push(`Detail control has ${detail?.horizontalOverflowCount ?? "unknown"} horizontal overflow element(s)`);
+  }
+  if (width < 900 && !detail?.fieldsetStacked) failures.push("Mobile Detail fieldsets are not stacked");
+  if (width < 900) {
+    const undersized = (detail?.targetHeights ?? []).filter((height) => height < 44 - 0.5);
+    if (undersized.length > 0) failures.push(`Mobile Detail target(s) are below 44px: ${undersized.join(", ")}`);
+  }
+  return failures;
+}
+
+function assertSettings(result) {
+  const failures = [];
+  if (result.cardsFound !== 2) failures.push(`expected two production Settings cards, found ${result.cardsFound}`);
+  if (!result.cardsStacked) failures.push("Settings Desktop/Mobile cards are not stacked");
+  if (result.cardOverflowCount !== 0) failures.push(`Settings card overflow count is ${result.cardOverflowCount}`);
+  if (result.previewOverflowCount !== 0) failures.push(`Settings preview overflow count is ${result.previewOverflowCount}`);
+  if (result.previewInnerScrollCount !== 0) {
+    failures.push(`Settings previews contain ${result.previewInnerScrollCount} inner scroll element(s)`);
+  }
+  return failures;
 }
 
 async function main() {
@@ -239,18 +285,27 @@ async function main() {
       panelCollapse.mainWidth >= 640 ||
       !panelCollapse.panelVisible ||
       panelCollapse.checkedText !== "Tasks ✓" ||
-      panelCollapse.horizontalOverflowCount !== 0
+      panelCollapse.horizontalOverflowCount !== 0 ||
+      !panelCollapse.detail?.triggerReachable ||
+      !panelCollapse.detail?.open ||
+      panelCollapse.detail.horizontalOverflowCount !== 0 ||
+      !panelCollapse.detail.portalContained
     ) {
       failed++;
       console.log(`panel collapse ... FAIL - ${JSON.stringify(panelCollapse)}`);
     } else {
       console.log(
-        `panel collapse ... PASS - ${panelCollapse.mainWidth}px main pane, checked Tasks adornment visible, no horizontal overflow`,
+        `panel collapse ... PASS - ${panelCollapse.mainWidth}px main pane, checked Tasks adornment visible, ` +
+          `reachable Detail popover, no horizontal overflow`,
       );
     }
 
     for (const width of sweep) {
-      const result = await measureAt(cdpEndpoint, `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`);
+      const result = await measureAt(
+        cdpEndpoint,
+        `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}`,
+        width,
+      );
       let widthFailed = false;
       if (
         result.exceptionSafety.found !== 2 ||
@@ -391,6 +446,30 @@ async function main() {
         }
       }
       if (widthFailed) failed++;
+
+      const settings = await measureAt(
+        cdpEndpoint,
+        `http://127.0.0.1:${vitePort}/overflowharness.html?w=${width}&settings=1`,
+        width,
+      );
+      const settingsFailures = assertSettings(settings);
+      if (settingsFailures.length > 0) {
+        failed++;
+        console.log(`${width}px Settings ... FAIL - ${settingsFailures.join("; ")}`);
+      } else {
+        console.log(`${width}px Settings ... PASS - cards stack and previews have no inner scroll`);
+      }
+
+      const detailFailures = assertDetail(result, width);
+      if (detailFailures.length > 0) {
+        failed++;
+        console.log(`${width}px Detail ... FAIL - ${detailFailures.join("; ")}`);
+      } else {
+        console.log(
+          `${width}px Detail ... PASS - trigger reachable, ${result.detail.mobile ? "sheet" : "popover"} contained, ` +
+            `no horizontal scroll${result.detail.mobile ? ", 44px targets" : ""}`,
+        );
+      }
     }
   } finally {
     // A rejecting teardown is a FAILING RUN, not a warning: cleanup only
