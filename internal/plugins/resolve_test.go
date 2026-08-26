@@ -153,18 +153,28 @@ func TestResolveForLaunch_Contract(t *testing.T) {
 			name: "metadata and component counts",
 			check: func(t *testing.T, root string, m *Manager) {
 				dir := filepath.Join(root, "counted")
+				installedDir := filepath.Join(root, "installed")
 				writeCountedPlugin(t, dir)
+				writePlugin(t, installedDir, "installed", nil)
+				saveTestRegistry(t, m, map[string][]InstallEntry{
+					"installed@market": {{InstallPath: installedDir, Version: "9.9.9", Enabled: true}},
+				})
 				got, err := m.ResolveForLaunch([]string{dir}, nil)
 				if err != nil {
 					t.Fatal(err)
 				}
-				if len(got.Candidates) != 1 {
+				if len(got.Candidates) != 2 {
 					t.Fatalf("candidates = %+v", got.Candidates)
 				}
 				c := got.Candidates[0]
 				want := LaunchPluginCandidate{Name: "counted", Version: "2.3.4", Description: "description", Source: LaunchPluginSourceDirectory, Path: dir, Selected: true, SkillCount: 1, AgentCount: 1, CommandCount: 1, HookCount: 2, MCPCount: 1}
 				if !reflect.DeepEqual(c, want) {
 					t.Fatalf("candidate = %+v, want %+v", c, want)
+				}
+				installed := got.Candidates[1]
+				wantInstalled := LaunchPluginCandidate{Name: "installed", Version: "9.9.9", Source: LaunchPluginSourceInstalled, Marketplace: "market", Path: installedDir, Selected: true}
+				if !reflect.DeepEqual(installed, wantInstalled) {
+					t.Fatalf("installed candidate = %+v, want %+v", installed, wantInstalled)
 				}
 			},
 		},
