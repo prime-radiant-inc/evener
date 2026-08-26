@@ -418,7 +418,7 @@ func awaitWaiterInterruptSignal(ctx context.Context, t *testing.T, signal <-chan
 func waiterInterruptTurnStatuses(turns []appwire.Turn) []string {
 	statuses := make([]string, 0, len(turns))
 	for _, turn := range turns {
-		statuses = append(statuses, turn.ID+"="+string(turn.Status))
+		statuses = append(statuses, turn.ID+"="+turn.Status)
 	}
 	return statuses
 }
