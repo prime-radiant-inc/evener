@@ -7,7 +7,7 @@
 // produce the smallest payload the catalog actually permits, in one place,
 // rather than a Thread literal copy-pasted into every poke site.
 
-import type { AnyNotification, Thread } from "../types.gen";
+import type { AnyNotification, NavigationInvalidationTarget, Thread } from "../types.gen";
 
 const CAPABILITIES = {
   send: true,
@@ -68,5 +68,16 @@ export function attentionChangedNotification(ref = "ref_test"): AnyNotification 
       ],
       summary: { needsYou: 1, error: 0, working: 0 },
     },
+  };
+}
+
+export function navigationInvalidatedNotification(
+  targets: NavigationInvalidationTarget[],
+  generationId = "generation_test",
+  sequence = 1,
+): AnyNotification {
+  return {
+    method: "evener/navigation/invalidated",
+    params: { generationId, sequence, targets },
   };
 }
