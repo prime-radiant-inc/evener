@@ -2,6 +2,7 @@ import { createContext, type ReactNode, useContext, useLayoutEffect, useMemo, us
 import { beginDisclosureBaseline } from "../widgets/disclosure/disclosureStore";
 import {
   type ContentVector,
+  configFingerprint,
   makeTranscriptDisplayConfig,
   normalizeConfig,
   presetContent,
@@ -85,6 +86,23 @@ function metadataFor(
   return metadata === undefined ? { ...config.advanced } : { ...metadata };
 }
 
+function metadataFingerprint(metadata: TranscriptMetadataVisibility): string {
+  return [
+    metadata.roundTimings,
+    metadata.tokenCounts,
+    metadata.estimatedCost,
+    metadata.systemEvents,
+    metadata.promptEvents,
+    metadata.hookExits,
+  ]
+    .map(String)
+    .join("\0");
+}
+
+function eligibleDisclosureFingerprint(ids: readonly string[]): string {
+  return ids.map((id) => `${id.length}:${id}`).join("\0");
+}
+
 export function createTranscriptRenderContext(input: TranscriptRenderContextInput): TranscriptRenderContextValue {
   const config = normalizeConfig(input.config);
   const metadata = metadataFor(config, input.metadata ?? input.projectedMetadata ?? input.projection?.metadata);
@@ -129,33 +147,37 @@ export function TranscriptRenderProvider({
   eligibleDisclosureIds,
   fullBaselineGeneration,
 }: TranscriptRenderProviderProps) {
-  const context = useMemo(
-    () =>
-      value ??
-      createTranscriptRenderContext({
-        config: config ?? DEFAULT_CONFIG,
-        metadata,
-        projectedMetadata,
-        projection,
-        surface,
-        disclosureScope,
-        sessionRef,
-        eligibleDisclosureIds,
-        fullBaselineGeneration,
-      }),
-    [
-      value,
-      config,
-      metadata,
-      projectedMetadata,
-      projection,
-      surface,
-      disclosureScope,
-      sessionRef,
-      eligibleDisclosureIds,
-      fullBaselineGeneration,
-    ],
-  );
+  const semanticConfig = normalizeConfig(config ?? DEFAULT_CONFIG);
+  const semanticMetadata = metadataFor(semanticConfig, metadata ?? projectedMetadata ?? projection?.metadata);
+  const semanticEligibleDisclosureIds = [...(eligibleDisclosureIds ?? projection?.eligibleDisclosureIds ?? [])];
+  const semanticSurface = surface ?? "readOnly";
+  const semanticScope = disclosureScope ?? defaultDisclosureScope(semanticSurface, sessionRef);
+  const semanticGeneration = fullBaselineGeneration ?? 0;
+  const semanticKey = [
+    configFingerprint(semanticConfig),
+    metadataFingerprint(semanticMetadata),
+    eligibleDisclosureFingerprint(semanticEligibleDisclosureIds),
+    semanticSurface,
+    semanticScope,
+    semanticGeneration,
+  ].join("\0");
+  const semanticContextRef = useRef<{ key: string; context: TranscriptRenderContextValue } | undefined>(undefined);
+  // biome-ignore lint/correctness/useExhaustiveDependencies: semanticKey covers every value used to construct the retained context
+  const context = useMemo(() => {
+    if (value !== undefined) return value;
+    const previous = semanticContextRef.current;
+    if (previous?.key === semanticKey) return previous.context;
+    const next = createTranscriptRenderContext({
+      config: semanticConfig,
+      metadata: semanticMetadata,
+      eligibleDisclosureIds: semanticEligibleDisclosureIds,
+      surface: semanticSurface,
+      disclosureScope: semanticScope,
+      fullBaselineGeneration: semanticGeneration,
+    });
+    semanticContextRef.current = { key: semanticKey, context: next };
+    return next;
+  }, [semanticKey, value]);
   const full = isFullConfig(context.config);
   const previous = useRef<{ scope: string; full: boolean; generation: number } | undefined>(undefined);
 

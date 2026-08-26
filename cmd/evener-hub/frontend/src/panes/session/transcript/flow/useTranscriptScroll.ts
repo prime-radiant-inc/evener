@@ -51,6 +51,10 @@ export interface UseTranscriptScrollOptions {
   measureAnchors?: (el: HTMLElement) => ViewAnchorPosition[];
   /** All entries in the active representation, including those in virtualized-out rows. */
   anchorEntries?: readonly Omit<ViewAnchorPosition, "offset" | "height">[];
+  /** Number of rows in the active transformed representation. */
+  renderedRowCount?: number;
+  /** Source turn id to active transformed-row index. */
+  sourceTurnRowIndexes?: ReadonlyMap<string, number>;
 }
 
 export interface ViewAnchorPosition {
@@ -224,6 +228,8 @@ export function useTranscriptScroll({
   viewKey = "everything",
   measureAnchors = readAnchorPositions,
   anchorEntries,
+  renderedRowCount: renderedRowCountInput,
+  sourceTurnRowIndexes,
 }: UseTranscriptScrollOptions): UseTranscriptScrollResult {
   const [pillCount, setPillCount] = useState(0);
   // The first failed turn's index, while the reader hasn't seen it yet
@@ -276,16 +282,18 @@ export function useTranscriptScroll({
   // failedTurnCount's own comment for the trigger half of that fix). IDs
   // are also prepend-safe for free: unlike errorAnchorIndex (a position,
   // shifted explicitly below), a turn's identity doesn't change when
-  // older turns are prepended in front of it.
+  // older turns are prepended in front of it. The active target's row index is
+  // resolved from its source turn id on every transformed-row update.
   const resolvedFailedTurnIdsRef = useRef<Set<string>>(new Set());
   // Latest-ref mirror of errorAnchorIndex (state) for the same reason
-  // itemCountRef/turnsLengthRef/modelRef exist: handleScroll is a
+  // itemCountRef/renderedRowCountRef/modelRef exist: handleScroll is a
   // long-lived closure (attached once per mount/hasContent transition, not
   // every render - see that effect's own comment) and the content-changed
   // effect's dependency array deliberately excludes it, so both must read
   // the CURRENT value through a ref rather than close over a stale one.
   const errorAnchorIndexRef = useRef<number | null>(null);
   errorAnchorIndexRef.current = errorAnchorIndex;
+  const errorAnchorTurnIdRef = useRef<string | undefined>(undefined);
 
   // "Latest" ref so the scroll listener - attached far less often than every
   // render - never invokes a stale loadOlder closure. Necessary specifically
@@ -297,6 +305,7 @@ export function useTranscriptScroll({
 
   const itemCount = totalItemCount(model);
   const turnsLength = model?.turns.length ?? 0;
+  const renderedRowCount = renderedRowCountInput ?? turnsLength;
   const firstTurnId = model?.turns[0]?.id;
   // Content-changed effect trigger (see that effect's own dependency-array
   // comment for why itemCount/firstTurnId alone can't reach a bare-stamp
@@ -329,8 +338,10 @@ export function useTranscriptScroll({
   // re-created on every render (see the effects below).
   const itemCountRef = useRef(itemCount);
   itemCountRef.current = itemCount;
-  const turnsLengthRef = useRef(turnsLength);
-  turnsLengthRef.current = turnsLength;
+  const renderedRowCountRef = useRef(renderedRowCount);
+  renderedRowCountRef.current = renderedRowCount;
+  const sourceTurnRowIndexesRef = useRef(sourceTurnRowIndexes);
+  sourceTurnRowIndexesRef.current = sourceTurnRowIndexes;
   // Latest ref for model itself: the content-changed effect below needs the
   // full turns array (to size a detected prepend), but must NOT re-run on
   // every streaming delta just because `model` is a fresh object reference -
@@ -340,6 +351,11 @@ export function useTranscriptScroll({
   // constraint in spirit even though this hook's own work is cheap either way.
   const modelRef = useRef(model);
   modelRef.current = model;
+
+  const rowIndexForTurn = useCallback((turnId: string, sourceIndex: number): number => {
+    const mapped = sourceTurnRowIndexesRef.current?.get(turnId) ?? sourceIndex;
+    return Math.max(0, Math.min(mapped, Math.max(0, renderedRowCountRef.current - 1)));
+  }, []);
 
   const clearPill = useCallback(() => {
     setPillCount(0);
@@ -354,6 +370,7 @@ export function useTranscriptScroll({
     // the cleared value without waiting for the next render.
     setErrorAnchorIndex(null);
     errorAnchorIndexRef.current = null;
+    errorAnchorTurnIdRef.current = undefined;
   }, []);
 
   const jumpToBottom = useCallback(() => {
@@ -366,7 +383,7 @@ export function useTranscriptScroll({
       listRef.current?.scrollToIndex(anchor, { align: "start" });
       wasAtBottomRef.current = false;
     } else {
-      const count = turnsLengthRef.current;
+      const count = renderedRowCountRef.current;
       if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
       wasAtBottomRef.current = true;
     }
@@ -455,6 +472,7 @@ export function useTranscriptScroll({
       resolvedFailedTurnIdsRef.current = new Set();
       setErrorAnchorIndex(null);
       errorAnchorIndexRef.current = null;
+      errorAnchorTurnIdRef.current = undefined;
       setPillCount(0);
     }
     prevHasContentRef.current = hasContent;
@@ -468,7 +486,7 @@ export function useTranscriptScroll({
       // replaced the earlier per-ref restore of a stored scroll offset — the
       // whole persistence (threads.ts scrollPositions + the debounced writer
       // that lived below) was removed with it, not just bypassed.
-      const count = turnsLengthRef.current;
+      const count = renderedRowCountRef.current;
       if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
       const m = measure(el);
       wasAtBottomRef.current = isAtBottom(m);
@@ -507,6 +525,7 @@ export function useTranscriptScroll({
       if (anchor !== null) {
         if (range && anchor >= range.startIndex && anchor <= range.endIndex) {
           setErrorAnchorIndex(null);
+          errorAnchorTurnIdRef.current = undefined;
         }
         // Update arrow direction: point up if anchor is above the visible
         // range, down otherwise. When no range is yet available (before
@@ -592,18 +611,19 @@ export function useTranscriptScroll({
         baselineItemCountRef.current = itemCount;
         resolvedFailedTurnIdsRef.current = new Set();
         setErrorAnchorIndex(null);
+        errorAnchorTurnIdRef.current = undefined;
       } else {
         const prependedCount = currentModel.turns.slice(0, prevIndex).reduce((sum, t) => sum + t.items.length, 0);
         // Prepended history is backfill, not "new" - advance the baseline by
         // exactly what loadOlder added so the pill count stays unaffected.
         baselineItemCountRef.current += prependedCount;
-        // prevIndex IS the count of turns just prepended (it's where the
-        // old first turn now sits) - an active anchor's INDEX shifts by
-        // that same amount, or it'd silently point at the wrong turn from
-        // here on (resolvedFailedTurnIdsRef needs no such shift - it's
-        // keyed by turn ID, not position).
-        if (errorAnchorIndexRef.current !== null) {
-          setErrorAnchorIndex(errorAnchorIndexRef.current + prevIndex);
+        // The active error target is keyed by source turn id. Re-resolve its
+        // transformed row below instead of adding the source prepend count;
+        // several source turns may occupy one rendered row.
+        const activeTurnId = errorAnchorTurnIdRef.current;
+        if (activeTurnId !== undefined) {
+          const activeSourceIndex = currentModel.turns.findIndex((turn) => turn.id === activeTurnId);
+          if (activeSourceIndex >= 0) setErrorAnchorIndex(rowIndexForTurn(activeTurnId, activeSourceIndex));
         }
         // Prepended (historical) turns are backfill, not new - same
         // "backfill, not new" reasoning as baselineItemCountRef just above,
@@ -645,7 +665,8 @@ export function useTranscriptScroll({
           );
           if (firstUnresolved) {
             resolvedFailedTurnIdsRef.current.add(firstUnresolved.id);
-            setErrorAnchorIndex(currentModel.turns.indexOf(firstUnresolved));
+            errorAnchorTurnIdRef.current = firstUnresolved.id;
+            setErrorAnchorIndex(rowIndexForTurn(firstUnresolved.id, currentModel.turns.indexOf(firstUnresolved)));
           }
         }
       }
@@ -653,7 +674,7 @@ export function useTranscriptScroll({
       const unseen = itemCount - baselineItemCountRef.current;
       if (unseen > 0) {
         if (wasAtBottomRef.current) {
-          const count = turnsLengthRef.current;
+          const count = renderedRowCountRef.current;
           if (count > 0) listRef.current?.scrollToIndex(count - 1, { align: "end" });
           wasAtBottomRef.current = true;
           baselineItemCountRef.current = itemCount;
@@ -671,7 +692,21 @@ export function useTranscriptScroll({
     // failure can flip with NEITHER itemCount NOR firstTurnId changing (the
     // bare-stamp settle above), so without it this whole failed-turn branch
     // would silently never run for that real wire shape.
-  }, [itemCount, firstTurnId, failedTurns, listRef, measure]);
+  }, [itemCount, firstTurnId, failedTurns, listRef, measure, renderedRowCount, sourceTurnRowIndexes, rowIndexForTurn]);
+
+  // A transformed row set can change without changing the source turn/item
+  // shape (for example, an Intent run coalescing three turns into one row).
+  // Keep an active failure target coupled to its source turn id, not its old
+  // source-turn index.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: row count/map are deliberate trigger dependencies for ref-backed target remapping
+  useLayoutEffect(() => {
+    const turnId = errorAnchorTurnIdRef.current;
+    if (turnId === undefined || modelRef.current === undefined) return;
+    const sourceIndex = modelRef.current.turns.findIndex((turn) => turn.id === turnId);
+    if (sourceIndex < 0) return;
+    const rowIndex = rowIndexForTurn(turnId, sourceIndex);
+    if (errorAnchorIndexRef.current !== rowIndex) setErrorAnchorIndex(rowIndex);
+  }, [renderedRowCount, sourceTurnRowIndexes, rowIndexForTurn]);
 
   return {
     pillCount,
