@@ -162,6 +162,58 @@ const boundaryFixture = {
   ],
 } as unknown as ThreadModel;
 
+const mixedBoundaryFixture = {
+  ...fixture,
+  turns: [
+    {
+      id: "turn_mixed_a",
+      status: "completed",
+      items: [
+        {
+          id: "local_intent",
+          turnId: "turn_mixed_a",
+          type: "commandExecution",
+          text: "",
+          description: "Local intent",
+          toolName: "read_file",
+          status: "completed",
+        },
+        {
+          id: "local_critical",
+          turnId: "turn_mixed_a",
+          type: "warning",
+          text: "critical boundary",
+          status: "completed",
+        },
+        {
+          id: "cross_a",
+          turnId: "turn_mixed_a",
+          type: "commandExecution",
+          text: "",
+          description: "Cross A",
+          toolName: "read_file",
+          status: "completed",
+        },
+      ],
+    },
+    {
+      id: "turn_mixed_b",
+      status: "completed",
+      items: [
+        {
+          id: "cross_b",
+          turnId: "turn_mixed_b",
+          type: "commandExecution",
+          text: "",
+          description: "Cross B",
+          toolName: "grep_files",
+          status: "completed",
+        },
+      ],
+    },
+  ],
+} as unknown as ThreadModel;
+
 afterEach(cleanup);
 
 let offsetHeightDescriptor: PropertyDescriptor | undefined;
@@ -261,5 +313,29 @@ describe("TranscriptBody", () => {
       expect.arrayContaining(["1 actionSolo", "1 actionAfter message", "1 actionAfter critical"]),
     );
     expect(screen.getByTestId("warning-item")).toBeTruthy();
+  });
+
+  test("preserves a local intent before a critical boundary while coalescing only the suffix across turns", () => {
+    render(
+      <TranscriptBody
+        model={mixedBoundaryFixture}
+        config={preset("intent")}
+        surface="preview"
+        disclosureScope="preview:mixed-boundary"
+      />,
+    );
+
+    const groups = screen.getAllByTestId("intent-group");
+    expect(groups).toHaveLength(2);
+    expect(groups[0]?.textContent).toContain("Local intent");
+    expect(groups[1]?.textContent).toContain("2 actions");
+    expect(groups[1]?.textContent).toContain("Cross A");
+    expect(groups[1]?.textContent).toContain("Cross B");
+    expect(screen.getByTestId("warning-item")).toBeTruthy();
+
+    const bodyText = screen.getByTestId("transcript-preview-flow").textContent ?? "";
+    expect(bodyText.indexOf("Local intent")).toBeLessThan(bodyText.indexOf("critical boundary"));
+    expect(bodyText.indexOf("critical boundary")).toBeLessThan(bodyText.indexOf("Cross A"));
+    expect(screen.queryAllByTestId("intent-group")).toHaveLength(2);
   });
 });

@@ -137,6 +137,28 @@ afterEach(() => {
 });
 
 describe("stick-to-bottom vs. the new-content pill", () => {
+  test("initial end targeting uses the transformed row count", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(AT_BOTTOM);
+    renderHook(() =>
+      useTranscriptScroll({
+        ref: "ref_a",
+        model: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"])]),
+        listRef: ref,
+        loadOlder: vi.fn(),
+        measure,
+        renderedRowCount: 1,
+        sourceTurnRowIndexes: new Map([
+          ["t1", 0],
+          ["t2", 0],
+          ["t3", 0],
+        ]),
+      }),
+    );
+
+    expect(scrollToIndex).toHaveBeenCalledWith(0, { align: "end" });
+  });
+
   test("at the bottom before a mutation: the viewport sticks to the newly-last turn, no pill", () => {
     const { ref, scrollToIndex } = makeListHandle();
     const { measure } = makeMeasure(AT_BOTTOM);
@@ -150,6 +172,48 @@ describe("stick-to-bottom vs. the new-content pill", () => {
 
     expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "end" });
     expect(result.current.pillCount).toBe(0);
+  });
+
+  test("append-follow targets the final transformed row after three source turns coalesce", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(AT_BOTTOM);
+    const { rerender } = renderHook(
+      ({ m, rowCount, rowIndexes }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          renderedRowCount: rowCount,
+          sourceTurnRowIndexes: rowIndexes,
+        }),
+      {
+        initialProps: {
+          m: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"])]),
+          rowCount: 1,
+          rowIndexes: new Map([
+            ["t1", 0],
+            ["t2", 0],
+            ["t3", 0],
+          ]),
+        },
+      },
+    );
+    scrollToIndex.mockClear();
+
+    rerender({
+      m: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"]), turn("t4", ["i4"])]),
+      rowCount: 2,
+      rowIndexes: new Map([
+        ["t1", 0],
+        ["t2", 0],
+        ["t3", 0],
+        ["t4", 1],
+      ]),
+    });
+
+    expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "end" });
   });
 
   test("scrolled away before a mutation: the viewport does not move, and the pill counts the newly-added items", () => {
@@ -241,6 +305,48 @@ describe("clearing the pill", () => {
 // tone rendering this state drives (precedence: error > needs-you > plain
 // count, resolved there, not here - the hook exposes independent booleans).
 describe("the error anchor (failed turn)", () => {
+  test("a failed source turn targets its transformed row, not its source-turn index", () => {
+    const { ref, scrollToIndex } = makeListHandle();
+    const { measure } = makeMeasure(SCROLLED_AWAY);
+    const { result, rerender } = renderHook(
+      ({ m, rowCount, rowIndexes }) =>
+        useTranscriptScroll({
+          ref: "ref_a",
+          model: m,
+          listRef: ref,
+          loadOlder: vi.fn(),
+          measure,
+          renderedRowCount: rowCount,
+          sourceTurnRowIndexes: rowIndexes,
+        }),
+      {
+        initialProps: {
+          m: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"])]),
+          rowCount: 1,
+          rowIndexes: new Map([
+            ["t1", 0],
+            ["t2", 0],
+            ["t3", 0],
+          ]),
+        },
+      },
+    );
+
+    rerender({
+      m: model([turn("t1", ["i1"]), turn("t2", ["i2"]), turn("t3", ["i3"], { status: "failed" })]),
+      rowCount: 2,
+      rowIndexes: new Map([
+        ["t1", 0],
+        ["t2", 0],
+        ["t3", 1],
+      ]),
+    });
+
+    expect(result.current.pillError).toBe(true);
+    act(() => result.current.jumpToBottom());
+    expect(scrollToIndex).toHaveBeenCalledWith(1, { align: "start" });
+  });
+
   test("a failed turn appended while scrolled away becomes the error anchor", () => {
     const { ref } = makeListHandle();
     const { measure } = makeMeasure(SCROLLED_AWAY);
@@ -1042,6 +1148,29 @@ describe("same-ref remount (model undefined -> defined on the same ref)", () => 
 });
 
 describe("view-mode anchor preservation", () => {
+  test("exact and nearest restoration stay within transformed row indexes", () => {
+    const transformedAnchors: ViewAnchorPosition[] = [
+      { id: "tool-1", sourceIndex: 1, index: 0, offset: 0, isMessage: false },
+      { id: "agent-2", sourceIndex: 2, index: 0, offset: 0, isMessage: true },
+      { id: "agent-4", sourceIndex: 4, index: 1, offset: 0, isMessage: true },
+    ];
+    const firstAnchor = transformedAnchors[0];
+    if (!firstAnchor) throw new Error("missing transformed test anchor");
+
+    expect(restoreTopAnchor(captureTopAnchor(firstAnchor), transformedAnchors)).toEqual({
+      id: "tool-1",
+      index: 0,
+      offset: 0,
+    });
+    expect(
+      restoreTopAnchor(
+        captureTopAnchor({ id: "hidden", sourceIndex: 3, index: 0, offset: 18, isMessage: false }),
+        transformedAnchors,
+      ),
+    ).toEqual({ id: "agent-2", index: 0, offset: 18 });
+    expect(transformedAnchors.every((anchor) => anchor.index >= 0 && anchor.index < 2)).toBe(true);
+  });
+
   test("captures and restores the same stable entry and viewport offset", () => {
     const anchor = captureTopAnchor({ id: "turn-4", sourceIndex: 4, index: 4, offset: 18, isMessage: true });
 

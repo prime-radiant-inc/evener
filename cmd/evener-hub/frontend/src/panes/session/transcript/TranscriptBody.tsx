@@ -20,7 +20,6 @@ import styles from "../session.module.css";
 
 const ESTIMATED_TURN_HEIGHT = 96;
 type IntentEntry = Extract<ProjectedEntry, { kind: "intent" }>;
-type NonIntentEntry = Exclude<ProjectedEntry, { kind: "intent" }>;
 
 export interface TranscriptTurnRow {
   readonly kind: "turn";
@@ -63,8 +62,8 @@ function entryKey(turnIndex: number, entry: ProjectedEntry): string {
   return `${turnIndex}\0${entry.id}`;
 }
 
-function fragmentTurn(turn: ProjectedTurn, entries: readonly NonIntentEntry[]): ProjectedTurn {
-  const visibleIds = new Set(entries.map((entry) => entry.item.id));
+function fragmentTurn(turn: ProjectedTurn, entries: readonly ProjectedEntry[]): ProjectedTurn {
+  const visibleIds = new Set(entries.map((entry) => (entry.kind === "intent" ? entry.sourceItemId : entry.item.id)));
   return {
     id: turn.id,
     source: turn.source,
@@ -76,7 +75,7 @@ function fragmentTurn(turn: ProjectedTurn, entries: readonly NonIntentEntry[]): 
 function turnRow(
   turn: ProjectedTurn,
   sourceTurnIndex: number,
-  entries: readonly NonIntentEntry[],
+  entries: readonly ProjectedEntry[],
   segment: number,
   showTurnSeparator: boolean,
 ): TranscriptTurnRow {
@@ -152,9 +151,7 @@ export function transcriptRowsForProjection(projection: TranscriptProjection): r
       }
       hadCrossRun = true;
       if (cursor > segmentStart) {
-        const entries = projectedTurn.entries
-          .slice(segmentStart, cursor)
-          .filter((item): item is NonIntentEntry => item.kind !== "intent");
+        const entries = projectedTurn.entries.slice(segmentStart, cursor);
         rows.push(turnRow(projectedTurn, sourceTurnIndex, entries, segment++, false));
       }
       if (!emittedRuns.has(run)) {
@@ -177,9 +174,7 @@ export function transcriptRowsForProjection(projection: TranscriptProjection): r
     if (!hadCrossRun) {
       rows.push({ kind: "turn", id: projectedTurn.id, turn: projectedTurn, sourceTurnIndex, showTurnSeparator: true });
     } else if (segmentStart < projectedTurn.entries.length) {
-      const entries = projectedTurn.entries
-        .slice(segmentStart)
-        .filter((item): item is NonIntentEntry => item.kind !== "intent");
+      const entries = projectedTurn.entries.slice(segmentStart);
       rows.push(turnRow(projectedTurn, sourceTurnIndex, entries, segment++, true));
     }
   }
@@ -196,6 +191,18 @@ export function transcriptAnchorEntriesForRows(rows: readonly TranscriptBodyRow[
       isMessage: entry.kind === "item" && entry.isMessage,
     }));
   });
+}
+
+export function transcriptSourceTurnRowIndexesForRows(rows: readonly TranscriptBodyRow[]): ReadonlyMap<string, number> {
+  const indexes = new Map<string, number>();
+  for (const [index, row] of rows.entries()) {
+    if (row.kind === "intentGroup") {
+      for (const turnId of row.sourceTurnIds) indexes.set(turnId, index);
+    } else {
+      indexes.set(row.turn.source.id, index);
+    }
+  }
+  return indexes;
 }
 
 export interface TranscriptBodyProps {

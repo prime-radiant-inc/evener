@@ -51,6 +51,7 @@ import {
   TranscriptBody,
   transcriptAnchorEntriesForRows,
   transcriptRowsForProjection,
+  transcriptSourceTurnRowIndexesForRows,
 } from "./transcript/TranscriptBody";
 import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
 import { isDormantTranscript } from "./transcript/transcriptVisibility";
@@ -178,6 +179,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   const projection = useMemo(() => (model ? projectThread(model, displayConfig) : undefined), [model, displayConfig]);
   const renderRows = useMemo(() => (projection ? transcriptRowsForProjection(projection) : []), [projection]);
   const anchorEntries = useMemo(() => transcriptAnchorEntriesForRows(renderRows), [renderRows]);
+  const sourceTurnRowIndexes = useMemo(() => transcriptSourceTurnRowIndexesForRows(renderRows), [renderRows]);
 
   // VirtualList's own imperative handle (getScrollElement/scrollToIndex) is
   // the seam useTranscriptScroll needs for every scroll-behavior concern
@@ -202,6 +204,8 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     loadOlder,
     viewKey: configFingerprint(displayConfig),
     anchorEntries,
+    renderedRowCount: renderRows.length,
+    sourceTurnRowIndexes,
   });
   const showColdStartSkeleton = useColdStartSkeleton(ref, model);
   // kata g2ez: names the one turn (if any) that starts what's arrived since
