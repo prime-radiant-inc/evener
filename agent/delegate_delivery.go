@@ -807,11 +807,17 @@ func (s *Session) acceptDelegateDeliveryPlan(plan delegateDeliveryPlan) (delegat
 	}
 	s.delegateDeliveryMu.Lock()
 	s.mu.Lock()
-	processing := s.state == SessionProcessing
+	// goalInTurn remains true across a terminal communicate's Idle transition
+	// until the enclosing ProcessInput drain has made its delivery cut.
+	processing := s.state == SessionProcessing || s.goalInTurn
 	s.mu.Unlock()
 	// A waiter-bearing plan completes a tool executing in this processing turn.
 	// Deferring it behind that turn would make the turn wait on its own queue.
-	if processing && plan.waiter == nil {
+	deferred := processing && plan.waiter == nil
+	if hook := s.cfg.testOnly.delegateDeliveryClassified; hook != nil {
+		hook(s, deferred)
+	}
+	if deferred {
 		s.pendingDelegateDeliveries = append(s.pendingDelegateDeliveries, plan)
 		shouldWake := !s.delegateDeliveryWake && !s.delegateDeliveryRetry.active
 		if shouldWake {
