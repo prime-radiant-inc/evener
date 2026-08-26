@@ -2,6 +2,7 @@ package hubcore
 
 import (
 	"database/sql"
+	"fmt"
 	"os"
 	"path/filepath"
 	"time"
@@ -66,54 +67,70 @@ func (s *FavoriteStore) Set(kind, id string, favorited bool, now time.Time) erro
 	if s.dbPath == "" {
 		return nil
 	}
-	db, err := s.open()
-	if err != nil {
-		return err
-	}
-	defer func() { _ = db.Close() }()
 	flag := 0
 	if favorited {
 		flag = 1
 	}
-	result, err := db.Exec(`INSERT INTO favorite (kind, id, favorited, decided_at) VALUES (?, ?, ?, ?)
-		ON CONFLICT(kind, id) DO UPDATE SET favorited = excluded.favorited, decided_at = excluded.decided_at
-		WHERE favorite.favorited IS NOT excluded.favorited`, kind, id, flag, now.Unix())
-	if err != nil {
-		return err
+	for attempt := range 8 {
+		db, err := s.open()
+		if err != nil {
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return err
+		}
+		result, err := db.Exec(`INSERT INTO favorite (kind, id, favorited, decided_at) VALUES (?, ?, ?, ?)
+			ON CONFLICT(kind, id) DO UPDATE SET favorited = excluded.favorited, decided_at = excluded.decided_at
+			WHERE favorite.favorited IS NOT excluded.favorited`, kind, id, flag, now.Unix())
+		_ = db.Close()
+		if err != nil {
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return err
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if changed != 0 {
+			s.fireChange()
+		}
+		return nil
 	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	// The single UPSERT is SQLite's serialization point: concurrent first
-	// inserts and competing value changes cannot observe a stale read snapshot.
-	if changed != 0 {
-		s.fireChange()
-	}
-	return nil
+	return fmt.Errorf("set favorite %s/%s: retry limit reached", kind, id)
 }
 
 func (s *FavoriteStore) Delete(kind, id string) error {
 	if s.dbPath == "" {
 		return nil
 	}
-	db, err := s.open()
-	if err != nil {
-		return err
+	for attempt := range 8 {
+		db, err := s.open()
+		if err != nil {
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return err
+		}
+		result, err := db.Exec(`DELETE FROM favorite WHERE kind = ? AND id = ?`, kind, id)
+		_ = db.Close()
+		if err != nil {
+			if isSQLiteRetryable(err) {
+				continue
+			}
+			return err
+		}
+		changed, err := result.RowsAffected()
+		if err != nil {
+			return err
+		}
+		if changed != 0 {
+			s.fireChange()
+		}
+		return nil
 	}
-	defer func() { _ = db.Close() }()
-	result, err := db.Exec(`DELETE FROM favorite WHERE kind = ? AND id = ?`, kind, id)
-	if err != nil {
-		return err
-	}
-	changed, err := result.RowsAffected()
-	if err != nil {
-		return err
-	}
-	if changed != 0 {
-		s.fireChange()
-	}
-	return nil
+	return fmt.Errorf("delete favorite %s/%s: retry limit reached", kind, id)
 }
 
 // Favorites returns every favorited=true decision. Empty when no DB / no table.
