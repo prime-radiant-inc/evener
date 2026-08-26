@@ -42,6 +42,13 @@ async function buildTempTree() {
     "utf8",
   );
 
+  // Accepted: .live-concept- scoped CSS inside live-concepts
+  await writeFile(
+    join(liveConcepts, "good-live-scoped.css"),
+    ".live-concept-switcher .live-concept-switcher__dialog {}\n",
+    "utf8",
+  );
+
   // Accepted: production type-only import outside live-concepts (would be
   // forbidden-import if it were inside live-concepts, but the boundary only
   // governs live-concepts files).
@@ -87,6 +94,11 @@ describe("checkLiveConceptBoundary", () => {
         violations.find((v) => v.file.includes("good-scoped.css")),
         undefined,
         "scoped .concept-* CSS should not be flagged",
+      );
+      assert.equal(
+        violations.find((v) => v.file.includes("good-live-scoped.css")),
+        undefined,
+        "scoped .live-concept-* CSS should not be flagged",
       );
     } finally {
       await rm(root, { recursive: true, force: true });
