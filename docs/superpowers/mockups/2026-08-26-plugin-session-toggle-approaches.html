@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plugin Session Toggle — Approaches</title>
+<style>
+:root { color-scheme: light dark; --border:#d0d5dd; --card-bg:#fff; --text-muted:#667085; }
+* { box-sizing:border-box; }
+body { margin:0; padding:32px; background:#f4f6f8; color:#182230; font:15px Inter,ui-sans-serif,system-ui,sans-serif; }
+main { max-width:1440px; margin:0 auto; }
+h2 { margin:0 0 8px; font-size:28px; }
+.subtitle { margin:0; color:var(--text-muted); line-height:1.5; }
+code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+@media (prefers-color-scheme:dark) {
+  :root { --border:#3b4149; --card-bg:#202329; --text-muted:#aab0b9; }
+  body { background:#15171a; color:#eff1f4; }
+}
+</style>
+<script>function toggleSelect(el){document.querySelectorAll('[data-choice]').forEach(x=>x.classList.remove('selected'));el.classList.add('selected')}</script>
+</head>
+<body><main>
+<style>
+  .choice-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin-top:24px}.direction{cursor:pointer;border:2px solid var(--border,#d8dee8);border-radius:14px;overflow:hidden;background:var(--card-bg,#fff);transition:.15s ease}.direction:hover{transform:translateY(-2px);box-shadow:0 10px 28px rgba(15,23,42,.12)}.direction.selected{border-color:#4098ff;box-shadow:0 0 0 3px rgba(64,152,255,.18)}.direction-copy{padding:16px}.direction-copy h3{margin:0 0 6px}.direction-copy p{margin:0;color:var(--text-muted,#667085);font-size:14px;line-height:1.45}.badge{display:inline-block;margin-bottom:10px;padding:3px 8px;border-radius:999px;background:#dcecff;color:#1567bd;font-size:11px;font-weight:700;letter-spacing:.04em;text-transform:uppercase}.app{height:410px;background:#1f2125;color:#f2f3f5;font:12px Inter,system-ui,sans-serif;padding:12px;box-sizing:border-box}.bar{font-size:10px;letter-spacing:.12em;color:#aeb2b9;border-bottom:1px solid #34373d;padding:0 0 9px;margin-bottom:12px}.prompt{height:88px;border:1px solid #3a3e45;border-radius:7px;padding:10px;color:#838890;position:relative}.start{position:absolute;right:8px;bottom:8px;background:#4098ff;color:#071523;border-radius:6px;padding:5px 9px;font-weight:700}.fields{display:grid;grid-template-columns:1.6fr 1fr .7fr;gap:9px;margin:11px 0}.field label{display:block;font-weight:700;margin-bottom:5px}.control{height:30px;border:1px solid #34373d;background:#25282d;border-radius:6px;padding:7px;color:#bfc3ca;box-sizing:border-box}.plugin-summary{display:flex;align-items:center;justify-content:space-between;border-top:1px solid #34373d;border-bottom:1px solid #34373d;padding:10px 2px}.plugin-summary strong{font-size:13px}.muted{color:#9ba0a8}.panel{margin-top:8px;border:1px solid #34373d;border-radius:7px;background:#24272b;padding:9px}.panel-head{display:flex;justify-content:space-between;margin-bottom:7px}.row{display:flex;align-items:center;gap:7px;padding:7px 4px;border-top:1px solid #34373d}.switch{width:24px;height:14px;border-radius:99px;background:#4098ff;position:relative;flex:none}.switch:after{content:'';position:absolute;width:10px;height:10px;background:#fff;border-radius:50%;right:2px;top:2px}.advanced{margin-top:11px;color:#aeb2b9}.preflight{height:100%;display:flex;align-items:center;justify-content:center}.dialog{width:88%;background:#272a2f;border:1px solid #42464d;border-radius:10px;padding:14px;box-shadow:0 20px 45px rgba(0,0,0,.45)}.dialog h4{font-size:15px;margin:0 0 5px}.dialog-actions{text-align:right;margin-top:14px}.quiet{padding:5px 8px;margin-right:5px}.primary{padding:6px 10px;border-radius:6px;background:#4098ff;color:#08111c;font-weight:700}.proscons{font-size:13px;margin-top:12px;padding-top:10px;border-top:1px solid var(--border,#e5e7eb)}.proscons strong{display:block;margin-bottom:3px}.proscons .down{color:#9b3b3b;margin-top:6px}@media(max-width:1000px){.choice-grid{grid-template-columns:1fr}.app{height:360px}}
+</style>
+
+<h2>Where should session plugin controls live?</h2>
+<p class="subtitle">All three preserve the existing global plugin manager. They differ only in how a one-session exclusion is exposed at startup. Click a direction if one feels right.</p>
+
+<div class="choice-grid">
+  <div class="direction" data-choice="summary-disclosure" onclick="toggleSelect(this)">
+    <div class="app">
+      <div class="bar">START AN AGENT</div>
+      <div class="prompt">What should the agent work on?<span class="start">Start</span></div>
+      <div class="fields"><div class="field"><label>Working directory</label><div class="control">~/code/evener</div></div><div class="field"><label>Model</label><div class="control">(default)</div></div><div class="field"><label>Effort</label><div class="control">high</div></div></div>
+      <div class="plugin-summary"><div><strong>Plugins for this session</strong><div class="muted">5 of 6 will load</div></div><span>⌄</span></div>
+      <div class="panel"><div class="panel-head"><strong>Load plugins</strong><span class="muted">All · None</span></div><div class="row"><span class="switch"></span><span><strong>superpowers</strong><br><span class="muted">skills · agents · commands</span></span></div><div class="row"><span class="switch"></span><span><strong>doctoring-evener</strong><br><span class="muted">agent · skill</span></span></div></div>
+      <div class="advanced">Advanced options</div>
+    </div>
+    <div class="direction-copy"><span class="badge">Recommended</span><h3>A. Summary + disclosure</h3><p>Always shows the effective count, but keeps individual switches collapsed until needed. On mobile, the row opens a full-width sheet.</p><div class="proscons"><strong>Best balance</strong>Visible security/capability choice without crowding the prompt-first launcher.<div class="down">Cost: one purpose-built control outside the generic schema renderer.</div></div></div>
+  </div>
+
+  <div class="direction" data-choice="advanced-only" onclick="toggleSelect(this)">
+    <div class="app">
+      <div class="bar">START AN AGENT</div>
+      <div class="prompt">What should the agent work on?<span class="start">Start</span></div>
+      <div class="fields"><div class="field"><label>Working directory</label><div class="control">~/code/evener</div></div><div class="field"><label>Model</label><div class="control">(default)</div></div><div class="field"><label>Effort</label><div class="control">high</div></div></div>
+      <div class="advanced">Advanced options ⌃</div>
+      <div class="panel"><div class="row"><strong>Harness</strong><span class="muted" style="margin-left:auto">evener</span></div><div class="row"><strong>Access mode</strong><span class="muted" style="margin-left:auto">default</span></div><div class="row"><strong>Plugins</strong><span class="muted" style="margin-left:auto">5 of 6 ›</span></div><div class="row"><strong>Agent</strong><span class="muted" style="margin-left:auto">default</span></div></div>
+    </div>
+    <div class="direction-copy"><h3>B. Advanced options only</h3><p>Adds Plugins to the existing schema-driven advanced panel and TUI launch-overrides modal.</p><div class="proscons"><strong>Lowest UI surface area</strong>Reuses existing advanced-options machinery.<div class="down">Weakness: the current advanced panel is already long; users may never notice what will execute.</div></div></div>
+  </div>
+
+  <div class="direction" data-choice="preflight-dialog" onclick="toggleSelect(this)">
+    <div class="app">
+      <div class="bar">START AN AGENT</div>
+      <div class="prompt">What should the agent work on?<span class="start">Start</span></div>
+      <div class="preflight"><div class="dialog"><h4>Review plugins</h4><div class="muted">6 plugins are ready to load for this session.</div><div class="row"><span class="switch"></span><strong>superpowers</strong></div><div class="row"><span class="switch"></span><strong>doctoring-evener</strong></div><div class="dialog-actions"><span class="quiet">Cancel</span><span class="primary">Start with 6</span></div></div></div>
+    </div>
+    <div class="direction-copy"><h3>C. Start-time preflight</h3><p>Pressing Start always opens a final plugin checklist before the session is created.</p><div class="proscons"><strong>Maximum visibility</strong>Nobody can miss the plugin set.<div class="down">Weakness: adds friction to every launch, even when defaults are correct.</div></div></div>
+  </div>
+</div>
+
+<div class="section" style="margin-top:24px"><h3>Architecture common to all three</h3><p class="subtitle">A new launch-preview RPC resolves layered <code>pluginDirs</code> plus globally enabled registry entries, validates and deduplicates by manifest name, and returns the exact candidate set. Once the user edits that set, the UI sends the selected manifest names as a one-session allow-list. The server filters before sandbox roots and before skills, agents, commands, hooks, and MCP initialize. Global enable/disable state never changes.</p></div>
+
+</main></body>
+</html>
