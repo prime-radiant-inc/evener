@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -61,9 +62,49 @@ func TestNavigationConditionalGET(t *testing.T) {
 	}
 }
 
+func TestNavigationRoutesAndBasePrefix(t *testing.T) {
+	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() != "/hub/api/navigation/pin-sections/p%2F+%252F" {
+			t.Errorf("path: got %q", r.URL.EscapedPath())
+		}
+		_ = json.NewEncoder(w).Encode(hubapi.NavigationSectionResource{Sessions: hubapi.NavigationArray[hubapi.NavigationSessionSummary]{}})
+	})
+	defer srv.Close()
+	// Recreate with a path prefix to ensure navigation joining does not drop it.
+	client, err := hubapi.NewClient(srv.URL+"/hub", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := client.NavigationPinSection(context.Background(), "p/+%2F", 0, 0, "")
+	if err != nil || got.Value.Sessions == nil {
+		t.Fatalf("result=%+v err=%v", got, err)
+	}
+}
+
+func TestNavigationLimitValidation(t *testing.T) {
+	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) { t.Error("request should not be sent") })
+	defer srv.Close()
+	if _, err := client.NavigationSection(context.Background(), "live", 0, 51, ""); err == nil {
+		t.Fatal("expected section limit rejection")
+	}
+	if _, err := client.NavigationPinSections(context.Background(), 0, 101, ""); err == nil {
+		t.Fatal("expected catalog limit rejection")
+	}
+}
+
+func TestNavigationOversizeResponse(t *testing.T) {
+	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		_, _ = fmt.Fprintf(w, `{"generation_id":"%s"}`, strings.Repeat("x", 2<<20))
+	})
+	defer srv.Close()
+	_, err := client.NavigationManifest(context.Background(), "")
+	if err == nil || !strings.Contains(err.Error(), "exceeds") {
+		t.Fatalf("error=%v, want bounded response error", err)
+	}
+}
+
 func TestNavigationConditionalGETNotModifiedIsBodyless(t *testing.T) {
 	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("ETag", `"same"`)
 		w.WriteHeader(http.StatusNotModified)
 	})
 	defer srv.Close()
@@ -80,12 +121,13 @@ func TestNavigationConditionalGETNotModifiedIsBodyless(t *testing.T) {
 func TestNavigationHTTPErrorIsTyped(t *testing.T) {
 	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		w.WriteHeader(http.StatusNotFound)
+		_, _ = fmt.Fprint(w, `{"error":"missing","code":404}`)
 	})
 	defer srv.Close()
 
 	_, err := client.NavigationSessionLocation(context.Background(), "local:missing", "")
 	var httpErr *hubapi.HTTPError
-	if !errors.As(err, &httpErr) || httpErr.Status != http.StatusNotFound {
+	if !errors.As(err, &httpErr) || httpErr.Status != http.StatusNotFound || httpErr.Response.Error != "missing" {
 		t.Fatalf("error = %v, want typed 404", err)
 	}
 }
