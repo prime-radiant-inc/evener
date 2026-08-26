@@ -1405,12 +1405,15 @@ func TestSession_StreamsCommunicateToolArgumentsAsAssistantDeltas(t *testing.T) 
 
 	var deltas []string
 	for _, ev := range evs {
-		if ev.Kind != events.EventAssistantTextDelta {
+		if ev.Kind != events.EventCommunicatePreviewDelta {
 			continue
 		}
-		data, ok := ev.Data.(events.AssistantTextDeltaData)
+		data, ok := ev.Data.(events.CommunicatePreviewDeltaData)
 		if !ok {
-			t.Fatalf("ASSISTANT_TEXT_DELTA data type = %T", ev.Data)
+			t.Fatalf("COMMUNICATE_PREVIEW_DELTA data type = %T", ev.Data)
+		}
+		if data.CallID != "c1" {
+			t.Fatalf("preview call id = %q, want c1", data.CallID)
 		}
 		deltas = append(deltas, data.Delta)
 	}

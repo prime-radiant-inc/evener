@@ -66,6 +66,9 @@ type AppEventProjector struct {
 	midSessionAnnouncementTurnID string
 	assistantItem                string
 	assistantText                string
+	provisionalCommunicateItems  map[string]string
+	provisionalCommunicateText   map[string]string
+	communicateCommittedCalls    map[string]struct{}
 	reasoningItem                string
 	toolItemsByKey               map[string]string
 	toolArgsByKey                map[string]string
@@ -110,14 +113,17 @@ type AppEventProjector struct {
 
 func NewAppEventProjector(threadID, ref string) *AppEventProjector {
 	return &AppEventProjector{
-		threadID:             threadID,
-		ref:                  ref,
-		toolItemsByKey:       map[string]string{},
-		toolArgsByKey:        map[string]string{},
-		toolStartByKey:       map[string]time.Time{},
-		suppressedTools:      map[string]struct{}{},
-		heldToolResultImages: map[string]appwire.ThreadItem{},
-		delegates:            map[string]appwire.EvenerDelegateInfo{},
+		threadID:                    threadID,
+		ref:                         ref,
+		toolItemsByKey:              map[string]string{},
+		toolArgsByKey:               map[string]string{},
+		toolStartByKey:              map[string]time.Time{},
+		suppressedTools:             map[string]struct{}{},
+		heldToolResultImages:        map[string]appwire.ThreadItem{},
+		delegates:                   map[string]appwire.EvenerDelegateInfo{},
+		provisionalCommunicateItems: map[string]string{},
+		provisionalCommunicateText:  map[string]string{},
+		communicateCommittedCalls:   map[string]struct{}{},
 	}
 }
 
@@ -404,6 +410,40 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			GroupElapsedMS: data.GroupElapsedMS,
 			AttemptCap:     data.AttemptCap,
 		})}
+	case events.EventCommunicatePreviewStart:
+		data := eventData[events.CommunicatePreviewStartData](event.Data)
+		if data.CallID == "" || p.provisionalCommunicateItems[data.CallID] != "" {
+			return nil
+		}
+		out := p.ensureTurn(event.Timestamp)
+		itemID := p.nextItemID("communicate_preview")
+		p.provisionalCommunicateItems[data.CallID] = itemID
+		p.provisionalCommunicateText[data.CallID] = ""
+		return append(out, p.notification(appwire.NotifyItemStarted, appwire.ItemLifecycleParams{
+			ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID,
+			Item: appwire.ThreadItem{Type: "agentMessage", ID: itemID, TurnID: p.activeTurnID, Status: appwire.TurnStatusInProgress},
+		}))
+	case events.EventCommunicatePreviewDelta:
+		data := eventData[events.CommunicatePreviewDeltaData](event.Data)
+		itemID := p.provisionalCommunicateItems[data.CallID]
+		if itemID == "" || data.Delta == "" {
+			return nil
+		}
+		p.provisionalCommunicateText[data.CallID] += data.Delta
+		return []AppNotification{p.notification(appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+			ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, ItemID: itemID, Delta: data.Delta,
+		})}
+	case events.EventCommunicatePreviewReset:
+		data := eventData[events.CommunicatePreviewResetData](event.Data)
+		itemID := p.provisionalCommunicateItems[data.CallID]
+		if itemID == "" {
+			return nil
+		}
+		delete(p.provisionalCommunicateItems, data.CallID)
+		delete(p.provisionalCommunicateText, data.CallID)
+		return []AppNotification{p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
+			ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, ItemID: itemID,
+		})}
 	case events.EventCommunicate:
 		p.skillCandidate = skillActivationCandidate{}
 		data := eventData[events.CommunicateData](event.Data)
@@ -412,6 +452,26 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			return nil
 		}
 		out := p.ensureTurn(event.Timestamp)
+		if data.CallID != "" {
+			if _, committed := p.communicateCommittedCalls[data.CallID]; committed {
+				return out
+			}
+			p.communicateCommittedCalls[data.CallID] = struct{}{}
+			if itemID := p.provisionalCommunicateItems[data.CallID]; itemID != "" {
+				delete(p.provisionalCommunicateItems, data.CallID)
+				delete(p.provisionalCommunicateText, data.CallID)
+				p.recordAssistantMessage(p.activeTurnID, text)
+				return append(out, p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+					ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID,
+					Item: appwire.ThreadItem{Type: "agentMessage", ID: itemID, TurnID: p.activeTurnID, Text: text, Status: appwire.TurnStatusCompleted},
+				}))
+			}
+			item := appwire.ThreadItem{Type: "agentMessage", ID: p.nextItemID("assistant"), TurnID: p.activeTurnID, Text: text, Status: appwire.TurnStatusCompleted}
+			p.recordAssistantMessage(p.activeTurnID, text)
+			return append(out, p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+				ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, Item: item,
+			}))
+		}
 		if p.matchesLastAssistantMessage(p.activeTurnID, text) {
 			return out
 		}
@@ -491,9 +551,19 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		})}
 	case events.EventToolCallEnd:
 		data := eventData[events.ToolCallEndData](event.Data)
+		var out []AppNotification
+		if data.Error != "" {
+			if itemID := p.provisionalCommunicateItems[data.CallID]; itemID != "" {
+				delete(p.provisionalCommunicateItems, data.CallID)
+				delete(p.provisionalCommunicateText, data.CallID)
+				out = append(out, p.notification(appwire.NotifyAgentMessageReset, appwire.AgentMessageResetParams{
+					ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, ItemID: itemID,
+				}))
+			}
+		}
 		if _, ok := p.suppressedTools[data.CallID]; ok {
 			delete(p.suppressedTools, data.CallID)
-			return nil
+			return out
 		}
 		raw := data.ToolState
 		if p.skillCandidate.valid && p.skillCandidate.callID == data.CallID && p.skillCandidate.activationName != "" {
@@ -563,12 +633,12 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		delete(p.toolItemsByKey, data.CallID)
 		delete(p.toolArgsByKey, data.CallID)
 		p.holdUnfetchableToolResultImages(&item)
-		return []AppNotification{p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+		return append(out, p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
 			TurnID:   p.activeTurnID,
 			Item:     item,
-		})}
+		}))
 	case events.EventToolResultImagesPersisted:
 		// The bytes behind the descriptors held above have reached the
 		// transcript, so the promise they make is now one a server can keep.

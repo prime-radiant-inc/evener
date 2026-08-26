@@ -84,6 +84,23 @@ type AssistantTextDeltaData struct {
 // assistant message, which consumers already track.
 type AssistantTextResetData struct{}
 
+// CommunicatePreviewStartData opens a provisional communicate item scoped to a
+// single tool call. It is only committed by the matching successful call.
+type CommunicatePreviewStartData struct {
+	CallID string `json:"call_id"`
+}
+
+// CommunicatePreviewDeltaData carries text for a provisional communicate item.
+type CommunicatePreviewDeltaData struct {
+	CallID string `json:"call_id"`
+	Delta  string `json:"delta"`
+}
+
+// CommunicatePreviewResetData discards a failed provisional communicate item.
+type CommunicatePreviewResetData struct {
+	CallID string `json:"call_id"`
+}
+
 // ModelRetryData is the payload for an EventModelRetry event: a model call
 // failed with a retryable error and will be tried again after DelayMS.
 //
@@ -462,6 +479,7 @@ type LoopDetectionData struct {
 
 // CommunicateData is the payload for an EventCommunicate event.
 type CommunicateData struct {
+	CallID  string `json:"call_id,omitempty"`
 	EndTurn bool   `json:"end_turn"`
 	Message string `json:"message"`
 }

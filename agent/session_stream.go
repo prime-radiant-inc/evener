@@ -241,9 +241,18 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 	toolArgs := map[string]*strings.Builder{}
 	toolNames := map[string]string{}
 	communicateText := map[string]string{}
+	communicatePreviewStarted := map[string]bool{}
 	streamedAssistant := false
 	assistantStarted := false
 	finished := false
+	defer func() {
+		if finished {
+			return
+		}
+		for callID := range communicatePreviewStarted {
+			s.emit(events.EventCommunicatePreviewReset, events.CommunicatePreviewResetData{CallID: callID})
+		}
+	}()
 
 	// firstContent/lastContent bound the content-event window — text, tool-arg
 	// (delta or end), and reasoning content only, never wall-clock attempt
@@ -326,7 +335,11 @@ func (s *Session) consumeModelStream(ctx context.Context, req llm.Request, st ll
 			return
 		}
 		communicateText[callID] = message
-		emitAssistantDelta(message[len(prev):])
+		if !communicatePreviewStarted[callID] {
+			s.emit(events.EventCommunicatePreviewStart, events.CommunicatePreviewStartData{CallID: callID})
+			communicatePreviewStarted[callID] = true
+		}
+		s.emit(events.EventCommunicatePreviewDelta, events.CommunicatePreviewDeltaData{CallID: callID, Delta: message[len(prev):]})
 	}
 
 	for ev := range st.Events() {
