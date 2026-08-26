@@ -59,6 +59,7 @@ export function NewSessionView({ state, dispatch }: NewSessionViewProps) {
               <button
                 type="button"
                 aria-pressed={state.newSession.project === project.path}
+                disabled={starting}
                 onClick={() =>
                   dispatch({
                     type: "selectRecentProject",

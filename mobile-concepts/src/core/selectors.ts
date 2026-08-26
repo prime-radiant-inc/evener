@@ -1,4 +1,9 @@
-import type { SearchDocument, SessionRecord, VoiceStep } from "./model";
+import type {
+  SearchDocument,
+  SessionRecord,
+  VoiceStep,
+  WorkNode,
+} from "./model";
 import type { PrototypeState, QuestionAnswerState } from "./state";
 
 export function selectCanMutate(state: PrototypeState): boolean {
@@ -110,6 +115,64 @@ export function selectNewSessionValidity(state: PrototypeState): boolean {
     fixture.models.some(({ id }) => id === state.newSession.modelId) &&
     fixture.efforts.includes(state.newSession.effort)
   );
+}
+
+export interface WorkHierarchyItem {
+  node: WorkNode;
+  depth: number;
+  parentTitle: string | null;
+  children: readonly WorkHierarchyItem[];
+}
+
+export function buildWorkHierarchy(
+  nodes: readonly WorkNode[],
+): readonly WorkHierarchyItem[] {
+  const byId = new Map(nodes.map((node) => [node.id, node]));
+  const childrenByParent = new Map<string, WorkNode[]>();
+  const roots: WorkNode[] = [];
+  for (const node of nodes) {
+    if (
+      node.parentId === null ||
+      node.parentId === node.id ||
+      !byId.has(node.parentId)
+    ) {
+      roots.push(node);
+      continue;
+    }
+    const children = childrenByParent.get(node.parentId) ?? [];
+    children.push(node);
+    childrenByParent.set(node.parentId, children);
+  }
+
+  const visited = new Set<string>();
+  const buildItem = (
+    node: WorkNode,
+    depth: number,
+    ancestors: ReadonlySet<string>,
+  ): WorkHierarchyItem => {
+    visited.add(node.id);
+    const nextAncestors = new Set(ancestors);
+    nextAncestors.add(node.id);
+    const children = (childrenByParent.get(node.id) ?? [])
+      .filter((child) => !nextAncestors.has(child.id) && !visited.has(child.id))
+      .map((child) => buildItem(child, depth + 1, nextAncestors));
+    return {
+      node,
+      depth,
+      parentTitle: node.parentId
+        ? (byId.get(node.parentId)?.title ?? null)
+        : null,
+      children,
+    };
+  };
+
+  const hierarchy = roots.map((node) => buildItem(node, 0, new Set()));
+  for (const node of nodes) {
+    if (!visited.has(node.id)) {
+      hierarchy.push(buildItem(node, 0, new Set()));
+    }
+  }
+  return hierarchy;
 }
 
 export function selectCurrentVoiceStep(

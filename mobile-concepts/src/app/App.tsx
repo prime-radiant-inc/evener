@@ -153,7 +153,7 @@ function FoundationApp({
   }, [dispatch]);
 
   return (
-    <main
+    <div
       className="foundation-app"
       data-network-mode="offline"
       data-navigation={primitives.navigation}
@@ -170,7 +170,7 @@ function FoundationApp({
         <RootApp primitives={primitives} dispatch={dispatch} />
         <LabControls primitives={primitives} dispatch={dispatch} />
       </RecoveryBoundary>
-    </main>
+    </div>
   );
 }
 
