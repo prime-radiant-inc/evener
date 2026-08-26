@@ -129,8 +129,20 @@ func assertRenameNavigation(t *testing.T, rr *httptest.ResponseRecorder, web *We
 	if response.Navigation.GenerationID != events[0].GenerationID || !reflect.DeepEqual(responseTargets, events[0].Targets) {
 		t.Fatalf("response navigation=%+v publication=%+v", response.Navigation, events[0])
 	}
-	if !reflect.DeepEqual(events[0].Targets, wantTargets) {
-		t.Fatalf("rename targets=%+v, want exactly %+v", events[0].Targets, wantTargets)
+	if len(events[0].Targets) != len(wantTargets) {
+		t.Fatalf("rename target count=%d, want %d: %+v", len(events[0].Targets), len(wantTargets), events[0].Targets)
+	}
+	for i, want := range wantTargets {
+		got := events[0].Targets[i]
+		if got.Kind != want.Kind || got.ProjectKey != want.ProjectKey {
+			t.Fatalf("rename target[%d]=%+v, want kind/key=%+v", i, got, want)
+		}
+		if got.Kind == appwire.NavigationTargetProject && got.Revision == 0 {
+			t.Fatalf("rename project target[%d] has no revision: %+v", i, got)
+		}
+		if got.Kind == appwire.NavigationTargetAllLoadedProjects && got.Revision != 0 {
+			t.Fatalf("rename wildcard target[%d] revision=%d, want 0", i, got.Revision)
+		}
 	}
 	if replay := web.navigation.DrainPublications(); len(replay) != 0 {
 		t.Fatalf("second typed event=%+v", replay)
