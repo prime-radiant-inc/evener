@@ -388,6 +388,60 @@ func TestRunResumeRunningReservesBeforeRestore(t *testing.T) {
 	}
 }
 
+func TestRunResumePassesTimeoutLifetimeToRestore(t *testing.T) {
+	adapter := &scriptedProvider{name: "openai"}
+	installRunScriptedProvider(t, adapter)
+	oldRestore := runRestoreSession
+	t.Cleanup(func() { runRestoreSession = oldRestore })
+
+	stateDir := t.TempDir()
+	meta := schema.SessionMeta{
+		ID:        "02wMz5Txv1C3Hut0M8GCeB",
+		ProfileID: "openai",
+		Model:     "gpt-test",
+		CreatedAt: time.Unix(1, 0).UTC(),
+		UpdatedAt: time.Unix(2, 0).UTC(),
+	}
+	if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+
+	wantErr := errors.New("restore lifetime observed")
+	var restoredLifetime context.Context
+	runRestoreSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, _ schema.SessionMeta, cfg agent.RestoreSessionConfig) (*agent.Session, error) {
+		restoredLifetime = cfg.LifetimeContext
+		return nil, wantErr
+	}
+	startedAt := time.Now()
+	err := run(context.Background(), runConfig{
+		resume:                meta.ID,
+		workDir:               stateDir,
+		stateDir:              stateDir,
+		runTimeout:            time.Hour,
+		noDefaultMarketplaces: true,
+		stdout:                &bytes.Buffer{},
+		stderr:                &bytes.Buffer{},
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("run error = %v, want restore sentinel", err)
+	}
+	if restoredLifetime == nil {
+		t.Fatal("restore did not receive the one-shot lifetime context")
+	}
+	deadline, ok := restoredLifetime.Deadline()
+	if !ok {
+		t.Fatal("restored lifetime has no --timeout deadline")
+	}
+	if remaining := deadline.Sub(startedAt); remaining < 59*time.Minute || remaining > 61*time.Minute {
+		t.Fatalf("restored lifetime deadline = %s after start, want approximately one hour", remaining)
+	}
+	select {
+	case <-restoredLifetime.Done():
+	case <-time.After(time.Second):
+		t.Fatal("restored lifetime remained live after run returned")
+	}
+}
+
 func readResumeArtifacts(t *testing.T, stateDir, sessionID string, paths ...string) map[string]string {
 	t.Helper()
 	paths = append(paths, filepath.Join(stateDir, "sessions", sessionID+".meta.json"))

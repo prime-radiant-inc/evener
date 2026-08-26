@@ -398,6 +398,17 @@ func TestAPIAttemptGroupZeroAttemptCancellationSettlement(t *testing.T) {
 	}
 }
 
+func TestAPIAttemptGroupRunBudgetExhaustionSettlesAsCallerCancel(t *testing.T) {
+	sink := &recordingAPIAttemptSink{}
+	group := NewAPIAttemptGroup("ag_run_budget")
+	ctx := WithAPIAttemptSink(WithAPIAttemptGroup(context.Background(), group), sink)
+	group.SettleResult(ctx, runBudgetError{})
+	_, settlements, _ := sink.snapshot()
+	if len(settlements) != 1 || settlements[0].Outcome != apilog.AttemptCallerCancel {
+		t.Fatalf("settlement = %+v, want caller cancellation", settlements)
+	}
+}
+
 func TestClientSessionGroupSettlesFailuresBeforeProviderMiddleware(t *testing.T) {
 	tests := []struct {
 		name string
