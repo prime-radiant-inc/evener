@@ -141,22 +141,6 @@ function isCustomSelection(value: unknown): value is { readonly kind: "custom" }
   );
 }
 
-function sameVector(left: ContentVector, right: ContentVector): boolean {
-  return (
-    left.toolIntent === right.toolIntent &&
-    left.toolCalls === right.toolCalls &&
-    left.reasoning === right.reasoning &&
-    left.expandByDefault === right.expandByDefault
-  );
-}
-
-function presetForVector(vector: ContentVector): ContentLevel | undefined {
-  for (const level of CONTENT_LEVELS) {
-    if (sameVector(vector, CONTENT_VECTORS[level])) return level;
-  }
-  return undefined;
-}
-
 export function presetContent(level: ContentLevel): ContentVector {
   return cloneVector(CONTENT_VECTORS[level]);
 }
@@ -171,9 +155,7 @@ export function normalizeContent(content: ContentSelection): ContentSelection {
   }
 
   if (!isCustomSelection(content)) throw new Error("invalid custom transcript content");
-  const vector = cloneVector(content);
-  const level = presetForVector(vector);
-  return level === undefined ? { kind: "custom", ...vector } : { kind: "preset", level };
+  return { kind: "custom", ...cloneVector(content) };
 }
 
 export function normalizeConfig(config: TranscriptDisplayConfigV1): TranscriptDisplayConfigV1 {
