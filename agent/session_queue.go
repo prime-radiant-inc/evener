@@ -6,7 +6,6 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"slices"
 	"strings"
 	"sync/atomic"
 
@@ -100,22 +99,6 @@ type steeringMessage struct {
 	turnOwner      *struct{ _ byte }                  `json:"-"`
 }
 
-func (s *Session) removeTurnOwnedSteering(owner *struct{ _ byte }) {
-	if owner == nil {
-		return
-	}
-	s.mu.Lock()
-	for i, entry := range slices.Backward(s.steeringQueue) {
-		if entry.turnOwner == owner {
-			s.steeringQueue = append(s.steeringQueue[:i], s.steeringQueue[i+1:]...)
-			s.mu.Unlock()
-			s.persistQueuesSnapshot()
-			return
-		}
-	}
-	s.mu.Unlock()
-}
-
 func (s *Session) removeAllTurnOwnedSteering() {
 	s.mu.Lock()
 	owners := make(map[*struct{ _ byte }]struct{}, len(s.visionTurnOwners))
@@ -132,6 +115,26 @@ func (s *Session) removeAllTurnOwnedSteering() {
 	s.visionTurnOwners = nil
 	s.mu.Unlock()
 	s.persistQueuesSnapshot()
+}
+
+func (s *Session) finishTurnOwnedSteering() {
+	s.mu.Lock()
+	s.visionTurnOwners = nil
+	s.mu.Unlock()
+}
+
+func (s *Session) trySteerTurnOwnedMessage(entry steeringMessage, owner *struct{ _ byte }) bool {
+	entry.turnOwner = owner
+	s.mu.Lock()
+	if s.closingOrClosedLocked() || (strings.TrimSpace(entry.Text) == "" && len(entry.Images) == 0) {
+		s.mu.Unlock()
+		return false
+	}
+	s.steeringQueue = append(s.steeringQueue, entry)
+	s.visionTurnOwners = append(s.visionTurnOwners, owner)
+	s.mu.Unlock()
+	s.persistQueuesSnapshot()
+	return true
 }
 
 func steeringInjectedDataFromMessage(msg steeringMessage) events.SteeringInjectedData {

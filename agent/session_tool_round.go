@@ -271,24 +271,14 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 			}
 			if vision.outcome == visionSideChannelOwnedTimeout || vision.outcome == visionSideChannelProviderFailure {
 				owner := &struct{ _ byte }{}
-				queued := false
 				if abortErr := s.withResponseSideEffects(ctx, func() {
-					queued = s.trySteerMessage(steeringMessage{Text: visionFailureSteering(path, vision), Kind: events.SteeringKindImageDescription, turnOwner: owner})
+					s.trySteerTurnOwnedMessage(steeringMessage{Text: visionFailureSteering(path, vision), Kind: events.SteeringKindImageDescription}, owner)
 				}); abortErr != nil {
-					if queued {
-						s.removeTurnOwnedSteering(owner)
-					}
+					s.removeAllTurnOwnedSteering()
 					return abortErr
 				}
-				if queued {
-					s.mu.Lock()
-					s.visionTurnOwners = append(s.visionTurnOwners, owner)
-					s.mu.Unlock()
-				}
 				if err := ctx.Err(); err != nil {
-					if queued {
-						s.removeTurnOwnedSteering(owner)
-					}
+					s.removeAllTurnOwnedSteering()
 					return err
 				}
 			} else if vision.outcome == visionSideChannelParentCanceled {
@@ -440,6 +430,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 
 	drained, err := s.drainPostToolWatchSends(ctx)
 	if err != nil {
+		s.removeAllTurnOwnedSteering()
 		return false, err
 	}
 	yieldToObserverCallback := drained.observerHandoff
@@ -454,8 +445,10 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 		}
 		s.injectDrainedSteering()
 	}); abortErr != nil {
+		s.removeAllTurnOwnedSteering()
 		return false, abortErr
 	}
+	s.finishTurnOwnedSteering()
 	if hooks, ok := ctx.Value(sessionToolRoundHooksKey{}).(sessionToolRoundHooks); ok && hooks.beforeTaskReminder != nil {
 		hooks.beforeTaskReminder()
 	}
@@ -466,6 +459,7 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 			s.appendSteeringTurn(reminder, kind)
 		}
 	}); abortErr != nil {
+		s.removeAllTurnOwnedSteering()
 		return false, abortErr
 	}
 	return yieldToObserverCallback, nil

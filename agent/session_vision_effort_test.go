@@ -569,10 +569,80 @@ func TestPersistToolResults_VisionTimeoutSteersWithPathAndFallback(t *testing.T)
 	}
 }
 
+func TestPersistToolResults_VisionFailureCanceledBeforeInjectionRemovesOnlyOwnedSteering(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	adapter := &immediateVisionFailureAdapter{name: "openai"}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess, err := NewSession(c, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+	go func() {
+		for range sess.Events() {
+		}
+	}()
+	sess.Steer("daemon survives")
+	sess.SteerFromUser("client survives")
+	if err := sess.persistToolResults(context.Background(), []llm.ToolCallData{{ID: "c1", Name: "read_file"}}, []tool.ExecResult{{
+		CallID: "c1", ToolName: "read_file", ImageData: []byte("png"), ImageMediaType: "image/png",
+	}}); err != nil {
+		t.Fatalf("persistToolResults: %v", err)
+	}
+	sess.mu.Lock()
+	if len(sess.visionTurnOwners) != 1 || len(sess.steeringQueue) != 3 {
+		sess.mu.Unlock()
+		t.Fatalf("published queue/owners = %d/%d, want 3/1", len(sess.steeringQueue), len(sess.visionTurnOwners))
+	}
+	sess.mu.Unlock()
+	ctx, cancel := context.WithCancel(context.Background())
+	hookEntered := make(chan struct{})
+	releaseHook := make(chan struct{})
+	ctx = context.WithValue(ctx, sessionToolRoundHooksKey{}, sessionToolRoundHooks{beforeSteering: func() {
+		close(hookEntered)
+		<-releaseHook
+	}})
+	var sigs []string
+	var failed []bool
+	done := make(chan error, 1)
+	go func() {
+		_, err := sess.injectPostToolSteering(ctx, nil, nil, &sigs, &failed)
+		done <- err
+	}()
+	<-hookEntered
+	cancel()
+	close(releaseHook)
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("injectPostToolSteering error = %v, want context.Canceled", err)
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if len(sess.visionTurnOwners) != 0 {
+		t.Fatalf("owners after canceled injection = %d, want 0", len(sess.visionTurnOwners))
+	}
+	if len(sess.steeringQueue) != 2 || sess.steeringQueue[0].Text != "daemon survives" || sess.steeringQueue[1].Text != "client survives" {
+		t.Fatalf("unrelated queue after canceled injection = %#v", sess.steeringQueue)
+	}
+}
+
 type contextBlockingAdapter struct {
 	name     string
 	started  chan<- struct{}
 	canceled chan<- struct{}
+}
+
+type immediateVisionFailureAdapter struct{ name string }
+
+func (a *immediateVisionFailureAdapter) Name() string { return a.name }
+
+func (a *immediateVisionFailureAdapter) Complete(context.Context, llm.Request) (llm.Response, error) {
+	return llm.Response{}, errors.New("provider secret sentinel")
+}
+
+func (a *immediateVisionFailureAdapter) Stream(context.Context, llm.Request) (llm.Stream, error) {
+	return nil, errors.New("stream not used")
 }
 
 func (a *contextBlockingAdapter) Name() string { return a.name }
