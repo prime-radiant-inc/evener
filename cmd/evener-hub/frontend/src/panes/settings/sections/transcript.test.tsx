@@ -1,15 +1,18 @@
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeAll, beforeEach, describe, expect, test } from "vitest";
-import { prefsStore, resetPrefsStoreForTests } from "../../../stores/prefs";
+import { afterEach, beforeAll, beforeEach, expect, test } from "vitest";
+import { FakeClient } from "../../../protocol/testing/fakeClient";
+import { connectionStore } from "../../../stores/connection";
+import {
+  initTranscriptDisplay,
+  resetTranscriptDisplayStoreForTests,
+  transcriptDisplayStore,
+} from "../../../stores/transcriptDisplay";
+import { makeTranscriptDisplayConfig, shippedDefault, toWireConfig } from "../../../transcriptDisplay/config";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { TranscriptSection } from "./transcript";
 
-// See shell/rail/Rail.test.tsx's identical comment: Node 26 shadows jsdom's
-// real window.localStorage with its own (non-functional under vitest)
-// global, so every test file that touches localStorage needs this same
-// small in-memory stand-in. Scoped to this file only.
 class MemoryStorage {
   private store = new Map<string, string>();
   getItem(key: string): string | null {
@@ -27,17 +30,23 @@ class MemoryStorage {
 }
 
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
+  // @ts-expect-error MemoryStorage is the deterministic browser storage seam.
   globalThis.localStorage = new MemoryStorage();
 });
 
 beforeEach(() => {
   localStorage.clear();
-  resetPrefsStoreForTests();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, features: undefined, client: null });
+  resetTranscriptDisplayStoreForTests();
+  initTranscriptDisplay();
   resetToastStoreForTests();
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, features: undefined, client: null });
+  resetTranscriptDisplayStoreForTests();
+});
 
 function renderWithToasts() {
   render(
@@ -48,101 +57,101 @@ function renderWithToasts() {
   );
 }
 
-// Every toggle that governs a line the transcript does not otherwise draw
-// defaults OFF, except Round timings and "Prompt loaded". Prompt loaded
-// governs the system-prompt scaffold and the per-load notice, both of which
-// the transcript renders unconditionally today, so defaulting it off would
-// delete a visible feature for everyone who never opened this pane. Round
-// timings ships ON per the five-participant study (docs/web-ui/
-// ux-plan-2026-07.md): its absence was the most-repeated complaint,
-// independently, from four of the five participants.
-test("the toggles that add a new line default off, except round timings; the one that governs existing items defaults on", () => {
+test("renders Desktop then Mobile stacked cards with hub-sync and browser-local scope copy", () => {
+  transcriptDisplayStore.setState({ hubSupport: "supported" });
   renderWithToasts();
-  expect(screen.getByRole("switch", { name: "Round timings" }).getAttribute("aria-checked")).toBe("true");
-  expect(screen.getByRole("switch", { name: "Token counts" }).getAttribute("aria-checked")).toBe("false");
-  expect(screen.getByRole("switch", { name: "Hook exits (all)" }).getAttribute("aria-checked")).toBe("false");
-  expect(screen.getByRole("switch", { name: "Hook exits (normal only)" }).getAttribute("aria-checked")).toBe("false");
-  // Sentence-case fix: legacy copy is "Prompt Loaded" (Title Case), which
-  // breaks the pattern the other 3 labels in this same section follow -
-  // normalized here per this wave's sentence-case gate.
-  expect(screen.getByRole("switch", { name: "Prompt loaded" }).getAttribute("aria-checked")).toBe("true");
+
+  const cards = screen.getAllByRole("article");
+  expect(cards.map((card) => card.getAttribute("data-testid"))).toEqual([
+    "transcript-display-card-desktop",
+    "transcript-display-card-mobile",
+  ]);
+  expect(screen.getByText(/Hub defaults sync to devices paired with this hub\./)).toBeTruthy();
+  expect(
+    screen.getByText(/A live transcript choice is browser-local and does not change another machine\./),
+  ).toBeTruthy();
+  expect(screen.getAllByText("Example only—not your data")).toHaveLength(2);
 });
 
-test("toggling Round timings persists independently of the others and toasts Settings saved", async () => {
-  const user = userEvent.setup();
-  // Round timings ships on; start from off so the click below exercises the
-  // same on-transition (and the same persisted key) this test always meant to.
-  prefsStore.getState().setTranscriptStatus("roundTimings", false);
+test("shows an accessible status for an unknown or older hub", () => {
+  renderWithToasts();
+  expect(screen.getByRole("status").textContent).toMatch(/Waiting/);
+  expect(screen.getByText(/Waiting for the hub connection to report transcript display support/)).toBeTruthy();
+
+  cleanup();
+  transcriptDisplayStore.setState({ hubSupport: "unsupported" });
+  renderWithToasts();
+  expect(screen.getByText(/older hub does not support synced transcript defaults/)).toBeTruthy();
+  expect(screen.getAllByRole("radio").every((radio) => (radio as HTMLButtonElement).disabled)).toBe(true);
+});
+
+test("keeps the preview on the draft until the hub acknowledges the canonical response", async () => {
+  const client = new FakeClient("ready");
+  const confirmed = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  const draft = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
+  const patchResult = {
+    layout: "desktop" as const,
+    revision: 2,
+    config: toWireConfig(confirmed),
+  };
+  let releasePatch!: (value: typeof patchResult) => void;
+  const pendingPatch = new Promise<typeof patchResult>((resolve) => {
+    releasePatch = resolve;
+  });
+  client.on("evener/settings/transcriptDisplay/get", () => ({
+    desktop: { revision: 1, config: toWireConfig(confirmed) },
+    mobile: { revision: 1, config: toWireConfig(shippedDefault("mobile").config) },
+  }));
+  client.on("evener/settings/transcriptDisplay/patch", () => pendingPatch);
+  connectionStore.getState().connect(client);
+  connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
   renderWithToasts();
 
-  await user.click(screen.getByRole("switch", { name: "Round timings" }));
+  await waitFor(() => expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(1));
+  await userEvent.setup().click(screen.getAllByRole("radio", { name: "Full detail" })[0]!);
+  expect(transcriptDisplayStore.getState().drafts.desktop).toEqual(draft);
+  expect(screen.queryByText("Settings saved")).toBeNull();
+  expect(screen.getByRole("status").textContent).toMatch(/Saving hub default/);
 
-  expect(prefsStore.getState().transcript).toEqual({
-    roundTimings: true,
-    tokenCounts: false,
-    hookExitsAll: false,
-    hookExitsNormal: false,
-    promptLoaded: true,
-  });
+  releasePatch(patchResult);
   expect(await screen.findByText("Settings saved")).toBeTruthy();
+  expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
+  expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(2);
 });
 
-// Token counts and Round timings gate two SEPARATE segments of the per-turn
-// transcript meta line, so neither may imply the other.
-test("toggling Token counts persists under its own key without disturbing Round timings", async () => {
-  const user = userEvent.setup();
+test("renders a server error as an alert with retry instead of a saved state", () => {
+  transcriptDisplayStore.setState({ hubSupport: "supported", hubError: "server unavailable" });
   renderWithToasts();
+  expect(screen.getByRole("alert").textContent).toContain("server unavailable");
+  expect(screen.getByRole("button", { name: "Retry" })).toBeTruthy();
+  expect(screen.queryByText("Settings saved")).toBeNull();
+});
 
-  await user.click(screen.getByRole("switch", { name: "Token counts" }));
+test("reverts a failed hub mutation and retries the last draft", async () => {
+  const client = new FakeClient("ready");
+  const confirmed = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  let patchCalls = 0;
+  client.on("evener/settings/transcriptDisplay/get", () => ({
+    desktop: { revision: 1, config: toWireConfig(confirmed) },
+    mobile: { revision: 1, config: toWireConfig(shippedDefault("mobile").config) },
+  }));
+  client.on("evener/settings/transcriptDisplay/patch", (params) => {
+    patchCalls += 1;
+    if (patchCalls === 1) throw new Error("server unavailable");
+    return { layout: params.layout, revision: 2, config: params.config };
+  });
+  connectionStore.getState().connect(client);
+  connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+  renderWithToasts();
+  await waitFor(() => expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(1));
 
-  expect(prefsStore.getState().transcript.tokenCounts).toBe(true);
-  // Untouched by this click, so it stays at its shipped default (on).
-  expect(prefsStore.getState().transcript.roundTimings).toBe(true);
-  expect(localStorage.getItem("evener.prefs.transcriptTokenCounts")).toBe("1");
+  await userEvent.setup().click(screen.getAllByRole("radio", { name: "Full detail" })[0]!);
+  expect((await screen.findByRole("alert")).textContent).toContain("server unavailable");
+  expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
+  expect(transcriptDisplayStore.getState().hub.desktop?.config).toEqual(confirmed);
+  expect(screen.queryByText("Settings saved")).toBeNull();
+
+  await userEvent.setup().click(screen.getByRole("button", { name: "Retry" }));
   expect(await screen.findByText("Settings saved")).toBeTruthy();
-});
-
-describe("Hook exits (all) / Hook exits (normal only)", () => {
-  test("both can be independently on - all is not exclusive with normal-only", async () => {
-    const user = userEvent.setup();
-    renderWithToasts();
-
-    await user.click(screen.getByRole("switch", { name: "Hook exits (all)" }));
-    await user.click(screen.getByRole("switch", { name: "Hook exits (normal only)" }));
-
-    expect(prefsStore.getState().transcript.hookExitsAll).toBe(true);
-    expect(prefsStore.getState().transcript.hookExitsNormal).toBe(true);
-  });
-
-  test("copy clarifies hookExitsAll is a superset of hookExitsNormal", () => {
-    renderWithToasts();
-    expect(screen.getByText(/The all-hooks setting includes these too\./)).toBeTruthy();
-  });
-});
-
-// This one starts ON (see the defaults test above), so the interesting
-// direction is turning it OFF - and the persisted "0" is what has to survive a
-// reload, since an absent key reads back as the ON default.
-test("toggling Prompt loaded off persists under its own key", async () => {
-  const user = userEvent.setup();
-  renderWithToasts();
-
-  await user.click(screen.getByRole("switch", { name: "Prompt loaded" }));
-
-  expect(prefsStore.getState().transcript.promptLoaded).toBe(false);
-  expect(localStorage.getItem("evener.prefs.transcriptPromptLoaded")).toBe("0");
-
-  await user.click(screen.getByRole("switch", { name: "Prompt loaded" }));
-
-  expect(prefsStore.getState().transcript.promptLoaded).toBe(true);
-  expect(localStorage.getItem("evener.prefs.transcriptPromptLoaded")).toBe("1");
-});
-
-// The intro copy dates from when all four toggles gated one "system status"
-// blob. Round timings and Token counts annotate a turn rather than show a
-// system event, so that framing now misdescribes half the section.
-test("the intro describes the section as optional transcript detail, not system status items", () => {
-  renderWithToasts();
-  expect(screen.getByText(/Optional transcript detail\./)).toBeTruthy();
-  expect(screen.queryByText(/System status items/)).toBeNull();
+  expect(patchCalls).toBe(2);
 });
