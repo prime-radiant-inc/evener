@@ -478,7 +478,10 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 			outcome = visionSideChannelOwnedTimeout
 		}
 		if outcome != visionSideChannelParentCanceled {
-			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("vision side-channel failed: %v", err)})
+			// Provider errors can contain request URLs, bodies, IDs, or credentials.
+			// The user-facing steering below is deliberately sanitized, so keep the
+			// warning sanitized too rather than reintroducing the raw adapter error.
+			s.emit(events.EventWarning, events.WarningData{Message: "vision side-channel unavailable"})
 		}
 		return visionSideChannelResult{elapsed: elapsed, outcome: outcome, err: err}
 	}
