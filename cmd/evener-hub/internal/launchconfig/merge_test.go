@@ -24,6 +24,14 @@ func TestMergeEnabledPluginsReplacementAndPresence(t *testing.T) {
 	if _, ok := got.Layers[LayerProject]; !ok {
 		t.Fatal("explicit empty project layer should contribute")
 	}
+	launch[0] = "source-mutated"
+	if (*got.Effective.EnabledPlugins)[0] != "alpha" {
+		t.Fatalf("effective changed when source mutated: %#v", *got.Effective.EnabledPlugins)
+	}
+	(*got.Effective.EnabledPlugins)[0] = "effective-mutated"
+	if launch[0] != "source-mutated" {
+		t.Fatalf("source changed when effective mutated: %#v", launch)
+	}
 
 	got, _ = mergeLayers(map[LayerName]Layer{LayerGlobal: {EnabledPlugins: &global}, LayerLaunch: {EnabledPlugins: &empty}})
 	if got.Effective.EnabledPlugins == nil || len(*got.Effective.EnabledPlugins) != 0 {

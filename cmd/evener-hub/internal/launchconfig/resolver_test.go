@@ -8,6 +8,7 @@ import (
 	"syscall"
 	"testing"
 
+	"github.com/BurntSushi/toml"
 	"primeradiant.com/evener/identifier"
 )
 
@@ -22,9 +23,8 @@ func writeFile(t *testing.T, path, content string) {
 }
 
 func TestDecodeTrustedRepoLayerRejectsEnabledPlugins(t *testing.T) {
-	layer, diags := decodeTrustedRepoLayer("/repo", []byte("enabled_plugins = [\"alpha\"]\nmodel = \"m\""), func(data []byte, out any) error {
-		_, err := tomlDecode(data, out)
-		return err
+	layer, diags := decodeTrustedRepoLayer("/repo", []byte("enabled_plugins = [\"alpha\"]\nmodel = \"m\""), func(data []byte, out any) (toml.MetaData, error) {
+		return tomlDecode(data, out)
 	})
 	if layer.EnabledPlugins != nil {
 		t.Fatalf("repo EnabledPlugins = %#v, want nil", layer.EnabledPlugins)

@@ -32,6 +32,22 @@ func TestLaunchConfigEnabledPluginsJSONPresence(t *testing.T) {
 	if roundTrip.EnabledPlugins == nil || len(*roundTrip.EnabledPlugins) != 0 {
 		t.Fatalf("round trip = %#v", roundTrip.EnabledPlugins)
 	}
+
+	named := []string{"alpha", "beta"}
+	namedRaw, err := json.Marshal(LaunchConfigLayer{EnabledPlugins: &named})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(namedRaw, []byte(`"enabledPlugins":["alpha","beta"]`)) {
+		t.Fatalf("named selection lost: %s", namedRaw)
+	}
+	var namedRoundTrip LaunchConfigLayer
+	if err := json.Unmarshal(namedRaw, &namedRoundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if namedRoundTrip.EnabledPlugins == nil || len(*namedRoundTrip.EnabledPlugins) != 2 || (*namedRoundTrip.EnabledPlugins)[0] != "alpha" || (*namedRoundTrip.EnabledPlugins)[1] != "beta" {
+		t.Fatalf("named round trip = %#v", namedRoundTrip.EnabledPlugins)
+	}
 }
 
 func TestThreadItemOutputImagesJSONRoundTrip(t *testing.T) {
