@@ -1,6 +1,6 @@
 // Shared ask_user question/option parsing (wave-5 T4 extraction). Ground
 // truth: agent/internal/tool/definitions.go's DefAskUser gives the exact
-// argumentsJson shape - {questions:[{header?(<=12 chars), question,
+// argumentsJson shape - {questions:[{header?, question,
 // options:[{label,detail,recommended?}], multi_select?, why?,
 // if_unanswered?}]}, 1-4 questions. This used to live private to
 // transcript/tools/askUser.tsx (the wave-4 read-only tool-call renderer);

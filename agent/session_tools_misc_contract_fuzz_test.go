@@ -468,9 +468,8 @@ func stmAskArgs(r *stmReader) map[string]any {
 	word := r.word()
 	return map[string]any{
 		"questions": []any{map[string]any{
-			// DefAskUser limits headers to 12 characters. Keep the fuzzed word in
-			// the body/detail fields while holding this structural field valid so
-			// the real handler, rather than argument repair, is the exercised seam.
+			// Keep this structural field stable so the real handler, rather than
+			// argument repair, is the exercised seam.
 			"header":   "Choice",
 			"question": "Choose " + word,
 			"options": []any{

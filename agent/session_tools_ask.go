@@ -161,8 +161,8 @@ func normalizeAskArgs(args map[string]any) (map[string]any, error) {
 }
 
 // parseAskQuestions extracts the askQuestions from an ask_user call's parsed
-// arguments. Schema-level shape (question/option counts, header maxLength,
-// required fields) is already enforced by the registry's JSON-Schema
+// arguments. Schema-level shape (question/option counts, required fields) is
+// already enforced by the registry's JSON-Schema
 // validation before the live Exec below ever runs (spec §5.1) — this checks
 // only the two semantic rules the schema cannot express: option labels
 // unique within a question, and at most one recommended option per
