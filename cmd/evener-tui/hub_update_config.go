@@ -183,7 +183,8 @@ func (m hubModel) handleLaunchOverridesResult(msg launchconfig.LaunchOverridesRe
 	m.launchOverridesModal = nil
 	if !msg.Cancelled {
 		m.spawnLaunchOverrides = msg.Overrides
-		return m, m.requestSpawnPluginPreview()
+		cmd := m.requestSpawnPluginPreview()
+		return m, cmd
 	}
 	return m, nil
 }
@@ -205,7 +206,8 @@ func (m hubModel) handlePluginPreviewResult(msg launchconfig.PluginPreviewResult
 
 func (m hubModel) handlePluginsForLaunchResult(msg launchconfig.PluginsForLaunchResultMsg) (tea.Model, tea.Cmd) {
 	if msg.Retry {
-		return m, m.requestSpawnPluginPreview()
+		cmd := m.requestSpawnPluginPreview()
+		return m, cmd
 	}
 	m.spawnPluginsPanel = nil
 	if msg.Cancelled || !msg.Applied || msg.EnabledPlugins == nil {
@@ -218,7 +220,8 @@ func (m hubModel) handlePluginsForLaunchResult(msg launchconfig.PluginsForLaunch
 	values := append([]string(nil), (*msg.EnabledPlugins)...)
 	updated.EnabledPlugins = &values
 	m.spawnLaunchOverrides = &updated
-	return m, m.requestSpawnPluginPreview()
+	cmd := m.requestSpawnPluginPreview()
+	return m, cmd
 }
 
 func (m hubModel) forwardSpawnPluginPreviewToPanel(msg launchconfig.PluginPreviewResultMsg) (tea.Model, tea.Cmd) {

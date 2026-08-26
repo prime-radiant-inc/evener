@@ -93,9 +93,11 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				return m, nil
 			}
 		}
-		return m, m.advanceSpawnFocus(1)
+		cmd := m.advanceSpawnFocus(1)
+		return m, cmd
 	case "shift+tab":
-		return m, m.advanceSpawnFocus(-1)
+		cmd := m.advanceSpawnFocus(-1)
+		return m, cmd
 	case "enter":
 		switch m.spawnFocus {
 		case hubSpawnFieldHarness:
@@ -104,7 +106,8 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case hubSpawnFieldModel:
 			return m.activateSpawnModelField()
 		case hubSpawnFieldDir:
-			return m, m.advanceSpawnFocus(1)
+			cmd := m.advanceSpawnFocus(1)
+			return m, cmd
 		case hubSpawnFieldPlugins:
 			return m.activateSpawnPluginsField()
 		default:
@@ -173,7 +176,8 @@ func (m hubModel) activateSpawnModelField() (tea.Model, tea.Cmd) {
 func (m hubModel) activateSpawnPluginsField() (tea.Model, tea.Cmd) {
 	if !m.spawnPluginPreviewLoaded || m.spawnPluginPreviewLoading || m.spawnPluginPreviewErr != nil {
 		if m.client != nil {
-			return m, m.requestSpawnPluginPreview()
+			cmd := m.requestSpawnPluginPreview()
+			return m, cmd
 		}
 		return m, nil
 	}

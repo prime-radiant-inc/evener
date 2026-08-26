@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"strings"
@@ -31,7 +32,7 @@ func (f *pluginSelectionFlag) Set(raw string) error {
 	for _, part := range parts {
 		name := strings.TrimSpace(part)
 		if name == "" {
-			return fmt.Errorf("enabled plugin selection contains an empty name")
+			return errors.New("enabled plugin selection contains an empty name")
 		}
 		if !isKebabCasePluginName(name) {
 			return fmt.Errorf("invalid plugin name %q: must be kebab-case", name)
@@ -82,13 +83,13 @@ func rejectPluginSelectionWithResume(enabledPlugins *[]string, resume string, re
 		return nil
 	}
 	if resume != "" && resumeLast {
-		return fmt.Errorf("--enabled-plugins cannot be used with --resume or --resume-last")
+		return errors.New("--enabled-plugins cannot be used with --resume or --resume-last")
 	}
 	if resume != "" {
-		return fmt.Errorf("--enabled-plugins cannot be used with --resume")
+		return errors.New("--enabled-plugins cannot be used with --resume")
 	}
 	if resumeLast {
-		return fmt.Errorf("--enabled-plugins cannot be used with --resume-last")
+		return errors.New("--enabled-plugins cannot be used with --resume-last")
 	}
 	return nil
 }
@@ -108,11 +109,11 @@ type effectivePluginJSON struct {
 	Source       plugins.LaunchPluginSource `json:"source"`
 	Marketplace  string                     `json:"marketplace,omitempty"`
 	Path         string                     `json:"path,omitempty"`
-	SkillCount   int                        `json:"skillCount"`
-	AgentCount   int                        `json:"agentCount"`
-	CommandCount int                        `json:"commandCount"`
-	HookCount    int                        `json:"hookCount"`
-	MCPCount     int                        `json:"mcpCount"`
+	SkillCount   int                        `json:"skillCount"`   //nolint:tagliatelle // stable CLI JSON uses camelCase
+	AgentCount   int                        `json:"agentCount"`   //nolint:tagliatelle // stable CLI JSON uses camelCase
+	CommandCount int                        `json:"commandCount"` //nolint:tagliatelle // stable CLI JSON uses camelCase
+	HookCount    int                        `json:"hookCount"`    //nolint:tagliatelle // stable CLI JSON uses camelCase
+	MCPCount     int                        `json:"mcpCount"`     //nolint:tagliatelle // stable CLI JSON uses camelCase
 }
 
 func renderLaunchPluginDiagnostics(w io.Writer, diagnostics []plugins.LaunchPluginDiagnostic) {

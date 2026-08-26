@@ -557,7 +557,8 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if msg.modelErr != nil && m.spawnHarnessUsesEvenerModels() {
 				m.err = fmt.Errorf("models failed: %w", msg.modelErr)
 			}
-			return m, m.requestSpawnPluginPreview()
+			cmd := m.requestSpawnPluginPreview()
+			return m, cmd
 		}
 		return m, nil
 	case hubAuthStatusMsg:

@@ -92,7 +92,7 @@ func TestPluginsForLaunchPanel_ScrollingAndNarrowRender(t *testing.T) {
 		plugins[i] = appwire.PluginLaunchCandidate{Name: "plugin-" + string(rune('a'+i))}
 	}
 	p := NewPluginsForLaunchPanel(appwire.PluginPreviewResponse{Plugins: plugins}, nil, 80)
-	for i := 0; i < 19; i++ {
+	for range 19 {
 		p = updatePluginsPanel(p, tea.KeyMsg{Type: tea.KeyDown})
 	}
 	if strings.Contains(p.View(), "plugin-a") || !strings.Contains(p.View(), "plugin-t") {

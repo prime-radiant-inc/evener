@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -66,7 +67,7 @@ func asideSessionFSWithConfig(fs afero.Fs, stateDir, parentID string, config *sc
 // only to roll back a child that has not completed launch.
 func RemoveSessionArtifacts(stateDir, sessionID string) error {
 	if stateDir == "" {
-		return fmt.Errorf("state directory is empty")
+		return errors.New("state directory is empty")
 	}
 	if err := schema.ValidateSessionID(sessionID); err != nil {
 		return err
