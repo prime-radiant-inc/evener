@@ -2,6 +2,7 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
 	"reflect"
 	"strings"
 	"testing"
@@ -476,6 +477,13 @@ func TestTrimActivityTreeToFit_TrimsExcessEntries(t *testing.T) {
 	if got.Root.Branch.Continuation == "" {
 		t.Fatal("expected continuation token after trimming")
 	}
+	cont, err := decodeActivityContinuation(got.Root.Branch.Continuation, "root")
+	if err != nil {
+		t.Fatalf("decode continuation: %v", err)
+	}
+	if cont.Revision != tree.Revision {
+		t.Fatalf("continuation revision = %d, want %d", cont.Revision, tree.Revision)
+	}
 	if len(got.Root.Entries) >= 600 {
 		t.Fatalf("expected fewer entries after trimming, got %d", len(got.Root.Entries))
 	}
@@ -528,7 +536,7 @@ func TestTrimActivityTrailingEntry_DelegateChildRecurses(t *testing.T) {
 func TestEncodeActivityContinuation(t *testing.T) {
 	t.Parallel()
 	// A valid continuation round-trips.
-	cont := activityContinuation{Version: activityContinuationV1, RootID: "root", SessionID: "root", Path: []string{"dlg_1"}}
+	cont := activityContinuation{Version: activityContinuationV1, RootID: "root", SessionID: "root", Revision: 7, Path: []string{"dlg_1"}}
 	encoded := encodeActivityContinuation(cont)
 	if encoded == "" {
 		t.Fatal("encoded continuation is empty")
@@ -537,7 +545,7 @@ func TestEncodeActivityContinuation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("decode: %v", err)
 	}
-	if !reflect.DeepEqual(decoded.Path, cont.Path) || decoded.SessionID != cont.SessionID {
+	if !reflect.DeepEqual(decoded.Path, cont.Path) || decoded.SessionID != cont.SessionID || decoded.Revision != cont.Revision {
 		t.Fatalf("round-trip mismatch: %+v", decoded)
 	}
 }
@@ -571,6 +579,19 @@ func TestDecodeActivityContinuation_Malformed(t *testing.T) {
 	badHop := encodeActivityContinuation(activityContinuation{Version: 1, RootID: "root", SessionID: "root", Path: []string{"bad hop!"}})
 	if _, err := decodeActivityContinuation(badHop, "root"); err == nil {
 		t.Fatal("invalid path hop should error")
+	}
+}
+
+func TestValidateActivityContinuationRevisionRequiresRestart(t *testing.T) {
+	t.Parallel()
+	cont := activityContinuation{Version: activityContinuationV1, RootID: "root", SessionID: "root", Revision: 1}
+	err := validateActivityContinuationRevision(cont, 2)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("revision mismatch error = %T %v, want conflict", err, err)
+	}
+	if !strings.Contains(wire.Message, "restart") {
+		t.Fatalf("revision mismatch message = %q, want restart guidance", wire.Message)
 	}
 }
 

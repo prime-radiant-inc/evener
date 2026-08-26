@@ -28,6 +28,7 @@ type activityContinuation struct {
 	Version   int      `json:"v"`
 	RootID    string   `json:"root"`
 	SessionID string   `json:"session"`
+	Revision  uint64   `json:"revision"`
 	Path      []string `json:"path"`
 }
 
@@ -65,6 +66,7 @@ type activityBudget struct {
 	visiting     map[string]bool
 	bounded      bool
 	rootID       string
+	revision     uint64
 	maxWorkUnits int
 	usedWork     int
 	maxDepth     int
@@ -139,8 +141,11 @@ func decodeActivityContinuation(token, expectedRoot string) (activityContinuatio
 	return cont, nil
 }
 
-// JobActivityTree builds the session's job-activity tree reported over
-// appwire, after validating params' root reference against this session.
+// JobActivityTree builds one bounded page of the session's job-activity tree
+// reported over appwire, after validating params' root reference against this
+// session. A page is not complete history when any branch reports an error,
+// truncation, or continuation; callers must restart when a continuation's
+// revision is stale rather than combining snapshots.
 func (s *Session) JobActivityTree(params appwire.JobsListParams) (appwire.JobActivityTree, error) {
 	if s == nil {
 		return appwire.JobActivityTree{}, errors.New("session unavailable")
@@ -153,6 +158,9 @@ func (s *Session) JobActivityTree(params appwire.JobsListParams) (appwire.JobAct
 	if s.jobActivityClock == nil {
 		snapshot, startDepth, err := loadActivitySnapshotForParams(root, params)
 		if err != nil {
+			return appwire.JobActivityTree{}, err
+		}
+		if err := validateLiveActivityContinuationRevision(params, s.jobActivityClock, snapshot); err != nil {
 			return appwire.JobActivityTree{}, err
 		}
 		return projectBoundedActivityTree(*snapshot, root.sessionID, startDepth, 0, now)
@@ -210,7 +218,30 @@ func loadActivitySnapshotForParams(root activitySessionLocator, params appwire.J
 	if err != nil {
 		return nil, 0, err
 	}
+	if root.live != nil {
+		if err := validateLiveActivityContinuationRevision(params, root.live.jobActivityClock, snapshot); err != nil {
+			return nil, 0, err
+		}
+	}
 	return snapshot, -len(cont.Path), nil
+}
+
+func validateLiveActivityContinuationRevision(params appwire.JobsListParams, clock *jobActivityClock, snapshot *activitySessionSnapshot) error {
+	if strings.TrimSpace(params.Continuation) == "" || snapshot == nil {
+		return nil
+	}
+	cont, err := decodeActivityContinuation(params.Continuation, snapshot.RootID)
+	if err != nil {
+		return err
+	}
+	return validateActivityContinuationRevision(cont, activityCurrentRootRevision(clock))
+}
+
+func validateActivityContinuationRevision(cont activityContinuation, current uint64) error {
+	if cont.Revision != current {
+		return appwire.Conflict(fmt.Sprintf("activity continuation revision %d is stale; restart from the root at revision %d", cont.Revision, current))
+	}
+	return nil
 }
 
 func buildActivityFullSnapshot(loc activitySessionLocator, visited map[string]bool, required bool) (*activitySessionSnapshot, error) {
@@ -462,6 +493,7 @@ func activityFilterSnapshotToDelegate(base activitySessionSnapshot, delegateID s
 
 func projectBoundedActivityTree(snapshot activitySessionSnapshot, rootID string, startDepth int, revision uint64, now time.Time) (appwire.JobActivityTree, error) {
 	budget := newBoundedActivityBudget(rootID, now)
+	budget.revision = revision
 	root := projectActivitySessionAt(snapshot, budget, startDepth, nil)
 	tree := appwire.JobActivityTree{Revision: revision, Root: root}
 	return trimActivityTreeToFit(tree, rootID)
@@ -833,6 +865,7 @@ func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *a
 			Version:   activityContinuationV1,
 			RootID:    budget.rootID,
 			SessionID: sessionID,
+			Revision:  budget.revision,
 			Path:      append([]string(nil), path...),
 		})
 	}
@@ -848,6 +881,7 @@ func markActivityDelegateTruncated(delegate *appwire.JobActivityDelegate, budget
 			Version:   activityContinuationV1,
 			RootID:    budget.rootID,
 			SessionID: sessionID,
+			Revision:  budget.revision,
 			Path:      append([]string(nil), path...),
 		})
 	}
@@ -969,20 +1003,24 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string) (appwire
 		if len(raw) <= activityMaxEncodedBytes {
 			return tree, nil
 		}
-		if !trimActivityTrailingEntry(&tree.Root, rootID, nil) {
+		if !trimActivityTrailingEntryAtRevision(&tree.Root, rootID, tree.Revision, nil) {
 			return tree, nil
 		}
 	}
 }
 
 func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID string, path []string) bool {
+	return trimActivityTrailingEntryAtRevision(session, rootID, 0, path)
+}
+
+func trimActivityTrailingEntryAtRevision(session *appwire.JobActivitySession, rootID string, revision uint64, path []string) bool {
 	if session == nil || len(session.Entries) == 0 {
 		return false
 	}
 	i := len(session.Entries) - 1
 	entry := &session.Entries[i]
 	if entry.Delegate != nil && entry.Delegate.Child != nil {
-		if trimActivityTrailingEntry(entry.Delegate.Child, rootID, appendActivityPath(path, entry.Delegate.DelegateID)) {
+		if trimActivityTrailingEntryAtRevision(entry.Delegate.Child, rootID, revision, appendActivityPath(path, entry.Delegate.DelegateID)) {
 			return true
 		}
 	}
@@ -992,6 +1030,7 @@ func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID strin
 		Version:   activityContinuationV1,
 		RootID:    rootID,
 		SessionID: session.SessionID,
+		Revision:  revision,
 		Path:      append([]string(nil), path...),
 	})
 	return true

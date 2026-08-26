@@ -1407,6 +1407,8 @@ type JobActivitySession struct {
 }
 
 type JobActivityTree struct {
+	// This is one bounded page. A tree is complete only when every branch's
+	// counts.complete is true; continuation pages must retain this revision.
 	Revision uint64             `json:"revision"`
 	Root     JobActivitySession `json:"root"`
 }

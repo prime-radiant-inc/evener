@@ -54,6 +54,13 @@ func LoadSessionJobActivityTree(stateDir, sessionID string, params appwire.JobsL
 			return appwire.JobActivityTree{}, err
 		}
 		revision = activitySnapshotPersistedRevision(full, rootRevisionID)
+		cont, err := decodeActivityContinuation(params.Continuation, sessionID)
+		if err != nil {
+			return appwire.JobActivityTree{}, err
+		}
+		if err := validateActivityContinuationRevision(cont, revision); err != nil {
+			return appwire.JobActivityTree{}, err
+		}
 	}
 	return projectBoundedActivityTree(*snapshot, sessionID, startDepth, revision, time.Now().UTC())
 }
