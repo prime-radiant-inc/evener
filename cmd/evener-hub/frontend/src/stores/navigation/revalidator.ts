@@ -19,7 +19,24 @@ interface Entry {
   epoch: number;
 }
 const protocolError = (message: string) => new Error(`navigation protocol: ${message}`);
-const frozen = (state: ResourceState): ResourceState => Object.freeze({ ...state });
+const clone = <T>(value: T): T => {
+  if (value === null || typeof value !== "object") return value;
+  if (typeof structuredClone === "function") return structuredClone(value);
+  return JSON.parse(JSON.stringify(value)) as T;
+};
+const deepFreeze = <T>(value: T): T => {
+  if (value !== null && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
+};
+const frozen = (state: ResourceState): ResourceState =>
+  Object.freeze({
+    ...state,
+    key: Object.isFrozen(state.key) ? state.key : deepFreeze(clone(state.key)),
+    data: state.data === null ? null : Object.isFrozen(state.data) ? state.data : deepFreeze(clone(state.data)),
+  });
 
 export class NavigationRevalidator {
   private generationIDValue: string;
@@ -159,7 +176,8 @@ export class NavigationRevalidator {
     run = e
       .request(controller.signal, e.state.etag)
       .then((response) => {
-        if (epoch !== this.epoch || generation !== this.generationIDValue || e.epoch !== epoch) return e.state;
+        if (this.disposed || epoch !== this.epoch || generation !== this.generationIDValue || e.epoch !== epoch)
+          return e.state;
         try {
           validate(response, generation, e.state.etag);
         } catch (cause) {
@@ -207,7 +225,14 @@ export class NavigationRevalidator {
     return e.state;
   }
   private emit(state: ResourceState): void {
-    if (!this.disposed) for (const listener of this.listeners) listener(state);
+    if (!this.disposed)
+      for (const listener of this.listeners) {
+        try {
+          listener(state);
+        } catch {
+          /* observers cannot affect request lifecycle */
+        }
+      }
   }
 }
 function matchesBase(key: ResourceKey, base: Partial<ResourceKey>): boolean {
