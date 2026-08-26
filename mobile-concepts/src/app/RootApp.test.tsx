@@ -102,7 +102,10 @@ function nextPopState(): Promise<PopStateEvent> {
 }
 
 beforeEach(() => window.history.replaceState(null, "", "/"));
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.restoreAllMocks();
+});
 
 describe("RootApp", () => {
   it("starts at the gallery without a persisted concept and opens live Sessions on first selection", () => {
@@ -157,6 +160,9 @@ describe("RootApp", () => {
         "aria-current",
         "page",
       );
+      expect(
+        root?.querySelectorAll("[data-concept-switch-trigger='true']"),
+      ).toHaveLength(1);
       navigation.dispose();
     },
   );
@@ -254,6 +260,150 @@ describe("RootApp", () => {
     expect(
       document.querySelector(".concept-constellation"),
     ).toBeInTheDocument();
+    navigation.dispose();
+  });
+
+  it.each([
+    {
+      name: "double Close",
+      expectedConcept: "stillwater",
+      request(close: HTMLButtonElement) {
+        fireEvent.click(close);
+        fireEvent.click(close);
+      },
+    },
+    {
+      name: "repeated Escape",
+      expectedConcept: "stillwater",
+      request(_close: HTMLButtonElement, dialog: HTMLElement) {
+        fireEvent.keyDown(dialog, { key: "Escape" });
+        fireEvent.keyDown(dialog, { key: "Escape" });
+      },
+    },
+    {
+      name: "selection followed by Close",
+      expectedConcept: "constellation",
+      request(close: HTMLButtonElement) {
+        fireEvent.click(
+          screen.getByRole("button", { name: "Select Constellation" }),
+        );
+        fireEvent.click(close);
+      },
+    },
+  ] as const)(
+    "$name consumes only the overlay while popstate is pending",
+    async ({ expectedConcept, request }) => {
+      const { store, navigation } = renderRoot({ concept: "stillwater" });
+      navigation.dispatch({
+        type: "openSession",
+        sessionId: "session-native-client",
+      });
+      const routeBefore = store.getState().route;
+      const opener = screen.getByRole("button", { name: "Switch concept" });
+      opener.focus();
+      fireEvent.click(opener);
+      const dialog = screen.getByRole("dialog", { name: "Switch concept" });
+      const close = screen.getByRole<HTMLButtonElement>("button", {
+        name: "Close concept switcher",
+      });
+      const back = vi.spyOn(window.history, "back");
+      const popped = nextPopState();
+
+      request(close, dialog);
+      const controlsDisabled =
+        close.disabled &&
+        screen
+          .getAllByRole<HTMLButtonElement>("button", { name: /^Select / })
+          .every((choice) => choice.disabled);
+      await popped;
+      await new Promise((resolve) => window.setTimeout(resolve, 30));
+
+      expect(controlsDisabled).toBe(true);
+      expect(back).toHaveBeenCalledTimes(1);
+      expect(store.getState().overlay).toBeNull();
+      expect(store.getState().route).toEqual(routeBefore);
+      expect(store.getState().concept).toBe(expectedConcept);
+      navigation.dispose();
+    },
+  );
+
+  it("switches on an actual Voice route and restores focus to the marked replacement renderer trigger", async () => {
+    const { store, navigation } = renderRoot({ concept: "stillwater" });
+    navigation.dispatch({
+      type: "openVoice",
+      sessionId: "session-native-client",
+    });
+    const opener = screen.getByRole("button", { name: "Switch concept" });
+    expect(opener).toHaveAttribute("data-concept-switch-trigger", "true");
+    opener.focus();
+    fireEvent.click(opener);
+    const closed = nextPopState();
+
+    fireEvent.click(
+      screen.getByRole("button", { name: "Select Constellation" }),
+    );
+    await closed;
+
+    const replacement = screen.getByRole("button", { name: "Switch concept" });
+    expect(replacement).not.toBe(opener);
+    expect(replacement).toHaveAttribute("data-concept-switch-trigger", "true");
+    await waitFor(() => expect(replacement).toHaveFocus());
+    expect(store.getState().route).toEqual({
+      kind: "voice",
+      sessionId: "session-native-client",
+    });
+    expect(
+      document.querySelector(".concept-constellation main"),
+    ).toHaveAttribute("data-route", "voice");
+    navigation.dispose();
+  });
+
+  it("same-concept selection closes one entry and restores the connected marked opener", async () => {
+    const { store, navigation } = renderRoot({ concept: "stillwater" });
+    navigation.dispatch({
+      type: "openSession",
+      sessionId: "session-native-client",
+    });
+    const routeBefore = store.getState().route;
+    const opener = screen.getByRole("button", { name: "Switch concept" });
+    expect(opener).toHaveAttribute("data-concept-switch-trigger", "true");
+    opener.focus();
+    fireEvent.click(opener);
+    const closed = nextPopState();
+
+    fireEvent.click(screen.getByRole("button", { name: "Select Stillwater" }));
+    await closed;
+
+    expect(store.getState().concept).toBe("stillwater");
+    expect(store.getState().route).toEqual(routeBefore);
+    await waitFor(() => expect(opener).toHaveFocus());
+    navigation.dispose();
+  });
+
+  it("re-arms closing and focus restoration across repeated real-history open/close cycles", async () => {
+    const { store, navigation } = renderRoot({ concept: "field-notes" });
+    navigation.dispatch({
+      type: "openSession",
+      sessionId: "session-native-client",
+    });
+    const routeBefore = store.getState().route;
+
+    for (let cycle = 0; cycle < 3; cycle += 1) {
+      const opener = screen.getByRole("button", { name: "Switch concept" });
+      expect(opener).toHaveAttribute("data-concept-switch-trigger", "true");
+      opener.focus();
+      fireEvent.click(opener);
+      const depth = window.history.state.depth;
+      const closed = nextPopState();
+      fireEvent.click(
+        screen.getByRole("button", { name: "Close concept switcher" }),
+      );
+      await closed;
+
+      expect(window.history.state.depth).toBe(depth - 1);
+      expect(store.getState().route).toEqual(routeBefore);
+      await waitFor(() => expect(opener).toHaveFocus());
+    }
     navigation.dispose();
   });
 
