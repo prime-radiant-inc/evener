@@ -159,6 +159,9 @@ export class NavigationRevalidator {
       if (e) this.raise(e, undefined, true);
     }
   }
+  forceLocations(): void {
+    this.force(this.loadedKeys().filter((key) => key.kind === "location"));
+  }
   resetGeneration(generationID: string): void {
     // The promise returned by an earlier load belongs to that old request.
     // Retained callbacks are started immediately for the new epoch; their
@@ -372,7 +375,8 @@ export function applyNavigationInvalidation(
   if (payload.generationId !== revalidator.generationID) {
     revalidator.resetGeneration(payload.generationId);
   }
-  if (revalidator.acceptSequence(payload.sequence))
-    revalidator.force(revalidator.loadedKeys().filter((key) => key.kind !== "location"));
+  const gap = revalidator.acceptSequence(payload.sequence);
+  if (gap) revalidator.force(revalidator.loadedKeys());
   for (const target of payload.targets) revalidator.invalidate(target);
+  if (!gap) revalidator.forceLocations();
 }

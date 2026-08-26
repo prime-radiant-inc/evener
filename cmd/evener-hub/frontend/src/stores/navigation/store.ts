@@ -18,6 +18,7 @@ import type {
   NavigationSessionLocation,
 } from "../../protocol/types.gen";
 import { loadExpansion, saveExpansion } from "../../shell/rail/railExpansion";
+import { treeStore } from "../tree";
 import { type NavigationInvalidationWaiter, NavigationRevalidator } from "./revalidator";
 import { keyID, type NavigationRequest, type ResourceKey, type ResourceState } from "./types";
 
@@ -110,9 +111,23 @@ let revalidator: NavigationRevalidator | null = null;
 let unsubs: Array<() => void> = [];
 let bootEpoch = 0;
 let bootStartedEpoch = -1;
+let legacyTreeUnsub: (() => void) | null = null;
 const PAGE_LIMIT = 50;
 const CATALOG_LIMIT = 100;
 const key = (k: ResourceKey) => Object.freeze(k);
+function enterLegacyMode(): void {
+  legacyTreeUnsub?.();
+  legacyTreeUnsub = treeStore.subscribe(() => {
+    navigationStore.setState((state) => ({ attention: { ...state.attention } }));
+  });
+  navigationStore.setState({
+    mode: "legacy",
+    capability: null,
+    clientGenerationID: "",
+    lastSequence: 0,
+    attention: initialAttention,
+  });
+}
 function setResource(state: ResourceState, client = activeClient, epoch = bootEpoch): void {
   if (client !== activeClient || epoch !== bootEpoch) return;
   if (state.key.kind === "manifest") navigationStore.setState({ manifest: state as ResourceState<NavigationManifest> });
@@ -340,6 +355,9 @@ function load<T>(k: ResourceKey): Promise<ResourceState<T>> {
     )
       return s as ResourceState<T>;
     setResource(s);
+    if (k.kind === "manifest" && s.data && isNavigationManifest(s.data)) {
+      navigationStore.setState({ attention: { changed: [], summary: s.data.attentionSummary } });
+    }
     if (s.error instanceof NavigationProtocolError) {
       navigationStore.setState({ protocolError: s.error });
       if (k.kind !== "manifest") requestRevalidator.force([{ kind: "manifest" }]);
@@ -419,6 +437,7 @@ function actions() {
         navigationStore.setState({ clientGenerationID: mutation.generation_id, lastSequence: 0 });
       }
       for (const target of mutation.targets) revalidator.invalidate(target);
+      revalidator.forceLocations();
       return revalidator.waitForTargets(mutation.targets, mutation.generation_id);
     },
     setExpanded: (projectKey: string, expanded: boolean) => {
@@ -550,15 +569,11 @@ export function initNavigation(
     const cap: NavigationCapability | undefined =
       info && "navigation" in info ? info.navigation : info && "version" in info ? info : undefined;
     if (!cap) {
-      navigationStore.setState({
-        mode: "legacy",
-        capability: null,
-        clientGenerationID: "",
-        lastSequence: 0,
-        attention: initialAttention,
-      });
+      enterLegacyMode();
       return;
     }
+    legacyTreeUnsub?.();
+    legacyTreeUnsub = null;
     void boot(cap, epoch, ownedClient);
   };
   revalidator = new NavigationRevalidator();
@@ -580,11 +595,13 @@ export function initNavigation(
       const gap = p.sequence > s.lastSequence + 1;
       navigationStore.setState({ lastSequence: p.sequence });
       if (revalidator) {
-        if (gap) revalidator.force(revalidator.loadedKeys().filter((k) => k.kind !== "location"));
-        else
+        if (gap) revalidator.force(revalidator.loadedKeys());
+        else {
           p.targets.forEach((t) => {
             revalidator?.invalidate(t);
           });
+          revalidator.forceLocations();
+        }
       }
       revalidator?.notifyInvalidation(p);
     }),
@@ -598,7 +615,7 @@ export function initNavigation(
           if (ownedClient !== activeClient || epoch !== bootEpoch) return;
           const cap = i.navigation;
           if (!cap) {
-            navigationStore.setState({ mode: "legacy", capability: null, attention: initialAttention });
+            enterLegacyMode();
             return;
           }
           const same = cap.version === 1 && revalidator?.generationID === cap.generationId;
@@ -632,6 +649,8 @@ export function initNavigation(
       unsubs = [];
       revalidator?.dispose();
       revalidator = null;
+      legacyTreeUnsub?.();
+      legacyTreeUnsub = null;
       activeClient = null;
       bootStartedEpoch = -1;
     }
@@ -645,6 +664,8 @@ export function resetNavigationStoreForTests(): void {
   unsubs = [];
   revalidator?.dispose();
   revalidator = null;
+  legacyTreeUnsub?.();
+  legacyTreeUnsub = null;
   activeClient = null;
   bootStartedEpoch = -1;
   navigationStore.setState({ ...initial(), ...actions() });

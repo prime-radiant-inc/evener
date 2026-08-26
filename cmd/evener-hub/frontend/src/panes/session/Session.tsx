@@ -26,8 +26,8 @@ import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
 import { workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
+import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../stores/threads";
-import { useTreeStore } from "../../stores/tree";
 import {
   Button,
   Cadence,
@@ -43,7 +43,7 @@ import { Composer } from "./composer/Composer";
 import { requestQuoteInsert } from "./composer/quoteInsert";
 import { cadenceStateForStatus, NOW_TICK_MS, SessionNowContext, useNowTick } from "./liveness";
 import { PendingChips } from "./pending/PendingChips";
-import { resolveThreadName } from "./threadTitle";
+import { navigationSummaryFor, resolveThreadName } from "./threadTitle";
 import { exchangeOpenersFor } from "./transcript/exchangeOpeners";
 import { isItemLive, TurnBlock } from "./transcript/TurnBlock";
 import { isDormantTranscript } from "./transcript/transcriptVisibility";
@@ -201,6 +201,7 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // lets this pane render an honest terminal state instead of "Loading
   // transcript…" forever.
   const deletedRef = useThreadsStore((s) => !model && s.deletedRefs.has(ref));
+  const navigation = useNavigationStore();
 
   const frameTimes = useThreadsStore((s) => s.frameTimes.get(ref) ?? EMPTY_FRAME_TIMES);
   const now = useNowTick(NOW_TICK_MS);
@@ -305,13 +306,13 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
   // opened before its transcript hydrates showed the raw ref here even when
   // the tree store already knew the friendly title, while the dockview tab
   // right above it already showed that title.
-  const tree = useTreeStore((s) => s.tree);
   // Never the raw ref while the deleted state is showing (below): the ref is
   // the one thing about a gone session that means nothing to a person
   // reading the pane's own header.
   const title = deletedRef
     ? "Session deleted"
-    : (resolveThreadName(model ? new Map([[ref, model]]) : EMPTY_THREADS, tree, ref) ?? ref);
+    : (resolveThreadName(model ? new Map([[ref, model]]) : EMPTY_THREADS, navigationSummaryFor(ref, navigation), ref) ??
+      ref);
 
   // Closing follows Settings.tsx's own handleClose seam exactly (its own doc
   // comment on the trap this avoids, and needsYouCycle.ts's identical note):

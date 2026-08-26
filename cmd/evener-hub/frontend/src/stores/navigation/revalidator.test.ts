@@ -426,7 +426,7 @@ test("late below-target response preserves last-good data and trailing ownership
   });
 });
 
-test("wildcard and sequence gaps request their exact loaded scopes with conditional ETags", async () => {
+test("wildcard and sequence gaps request their exact loaded scopes, including demanded locations", async () => {
   const manifest: ResourceKey = { kind: "manifest" };
   const page: ResourceKey = { kind: "project_page", projectKey: "p", tier: "current", offset: 0, limit: 10 };
   const section: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 10 };
@@ -446,6 +446,7 @@ test("wildcard and sequence gaps request their exact loaded scopes with conditio
   expect(calls.slice(start).map(({ key: loaded, etag }) => [loaded.kind, etag])).toEqual([
     ["project", keyID(key)],
     ["project_page", keyID(page)],
+    ["location", keyID(location)],
   ]);
 
   start = calls.length;
@@ -457,6 +458,7 @@ test("wildcard and sequence gaps request their exact loaded scopes with conditio
     ["project_page", keyID(page)],
     ["section", keyID(section)],
     ["catalog", keyID(catalog)],
+    ["location", keyID(location)],
   ]);
   expect(r.get(location)?.stale).toBe(false);
 });

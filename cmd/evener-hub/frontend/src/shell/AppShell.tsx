@@ -8,8 +8,16 @@ import { requestComposerFocus } from "../panes/session/composer/composerFocus";
 import { AppwireClient } from "../protocol/client";
 import type { AppwireClientLike } from "../protocol/testing/fakeClient";
 import { rpcURLFromLocation } from "../protocol/transport";
+import type { NavigationSessionLocation } from "../protocol/types.gen";
 import { connectionStore, useConnectionStore } from "../stores/connection";
-import { type TreeResponse, treeStore, useTreeStore } from "../stores/tree";
+import {
+  selectLocation,
+  selectNeedsYouRows,
+  selectNextSectionOffset,
+  selectSectionRemaining,
+} from "../stores/navigation/selectors";
+import { navigationStore, useNavigationStore } from "../stores/navigation/store";
+import { keyID } from "../stores/navigation/types";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { ToastRegion } from "./chrome/ToastRegion";
 import { ClientProvider } from "./clientContext";
@@ -20,7 +28,6 @@ import { CommandPalette } from "./palette/CommandPalette";
 import { openPalette, paletteStore } from "./palette/paletteController";
 import { RailHost } from "./rail";
 import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "./rail/needsYouCycle";
-import { topLevelAncestorRef } from "./rail/railNodes";
 import { urlToPane } from "./routing";
 import { openNestedSessionWithOwner, openTopLevelSession } from "./sessionPlacement";
 import { isSinglePaneRoute } from "./singlePane";
@@ -127,7 +134,12 @@ function focusedSessionRef(): string | null {
   return sessionRefFromRouteParams(pane.params);
 }
 
-function routePlacementIsApplied(pathname: string, tree: TreeResponse | null, allowFocusedPanel = false): boolean {
+function routePlacementIsApplied(
+  pathname: string,
+  location: NavigationSessionLocation | null,
+  locationTerminal = false,
+  allowFocusedPanel = false,
+): boolean {
   const route = urlToPane(pathname);
   if (route === null || route.type === "welcome") return true;
 
@@ -143,12 +155,20 @@ function routePlacementIsApplied(pathname: string, tree: TreeResponse | null, al
   }
 
   const ref = sessionRefFromRouteParams(route.params);
-  if (ref === null || tree === null) return false;
-  const ancestorRef = topLevelAncestorRef([...tree.projects, ...tree.test_runs], ref);
+  if (ref === null) return false;
   const sessionRefOf = (pane: { params: unknown }): string | null => {
     const paneRef = (pane.params as { ref?: unknown }).ref;
     return typeof paneRef === "string" ? paneRef : null;
   };
+  if (location === null) {
+    const main = workspace.mainPane();
+    return (
+      (navigationStore.getState().mode === "legacy" || locationTerminal) &&
+      main?.type === "session" &&
+      sessionRefOf(main) === ref
+    );
+  }
+  const ancestorRef = location.top_level ? ref : location.top_level_ref;
   const focusedPane = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
   const focusedPanel =
     focusedPane?.type === "sessionTasks" ||
@@ -183,13 +203,10 @@ function routePlacementIsApplied(pathname: string, tree: TreeResponse | null, al
 // - nested session routes always open their top-level owner in main and the nested
 //   session beside it (never a subagent in main beside an unrelated root).
 // - global settings always uses the main slot.
-// session deep-links defer opening until /api/tree arrives; otherwise we cannot tell
-// whether a ref is nested and would open it in main before fixing, causing a full
-// close/reopen cycle later. Deferred open preserves the same mount semantics.
 function openRouteAsPane(
   pathname: string,
-  tree: TreeResponse | null,
-  _treeError: string | null,
+  location: NavigationSessionLocation | null,
+  locationTerminal: boolean,
   pendingSessionRef: { current: string | null },
 ): void {
   const route = urlToPane(pathname);
@@ -202,14 +219,14 @@ function openRouteAsPane(
     const ref = sessionRefFromRouteParams(route.params);
     if (ref === null) return;
 
-    if (tree === null) {
+    if (location === null && !locationTerminal && navigationStore.getState().mode !== "legacy") {
       pendingSessionRef.current = ref;
       return;
     }
 
     pendingSessionRef.current = null;
-    const ancestorRef = topLevelAncestorRef([...tree.projects, ...tree.test_runs], ref);
-    if (ancestorRef === null || ancestorRef === ref) {
+    const ancestorRef = location?.top_level ? ref : (location?.top_level_ref ?? ref);
+    if (ancestorRef === ref) {
       openTopLevelSession(ref);
       return;
     }
@@ -229,8 +246,8 @@ function openRouteAsPane(
   workspaceStore.getState().openPane("welcome", {});
 }
 
-function reconcileWelcomeRouteWithTree(tree: TreeResponse | null): void {
-  if (tree === null) return;
+function reconcileWelcomeRouteWithLocation(location: NavigationSessionLocation | null): void {
+  if (location === null) return;
 
   const main = workspaceStore.getState().mainPane();
   if (main?.type !== "session") return;
@@ -238,10 +255,9 @@ function reconcileWelcomeRouteWithTree(tree: TreeResponse | null): void {
   const childRef = sessionRefFromRouteParams(main.params);
   if (childRef === null) return;
 
-  const ownerRef = topLevelAncestorRef([...tree.projects, ...tree.test_runs], childRef);
-  if (ownerRef === null || ownerRef === childRef) return;
+  if (location.top_level || location.ref !== childRef) return;
 
-  openNestedSessionWithOwner(childRef, ownerRef);
+  openNestedSessionWithOwner(childRef, location.top_level_ref);
 }
 
 export function AppShell({ client: injectedClient }: AppShellProps) {
@@ -307,6 +323,43 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   // not a focus hijack, and ⌘K from inside a Dialog is the same "open the
   // palette" intent as anywhere else.
   useEffect(() => {
+    const requestedPages = new Set<string>();
+    let generation = navigationStore.getState().clientGenerationID;
+    let mounted = true;
+    let intent = 0;
+    const nextPageFor = (state: ReturnType<typeof navigationStore.getState>) => {
+      const offset = selectNextSectionOffset("needs_you", state);
+      return { offset, id: keyID({ kind: "section", section: "needs_you", offset, limit: 50 }) };
+    };
+    const openDemandedPage = (
+      beforeRefs: Set<string>,
+      focusAtIntent: string | null,
+      focusedPaneAtIntent: string | null,
+      pageID: string,
+      offset: number,
+    ) => {
+      if (requestedPages.has(pageID)) return;
+      const capturedIntent = ++intent;
+      requestedPages.add(pageID);
+      void navigationStore
+        .getState()
+        .loadSection("needs_you", offset)
+        .then(() => {
+          if (
+            !mounted ||
+            capturedIntent !== intent ||
+            paletteStore.getState().open ||
+            document.querySelector('[aria-modal="true"]') !== null ||
+            workspaceStore.getState().focusedPaneId !== focusedPaneAtIntent ||
+            focusedSessionRef() !== focusAtIntent
+          )
+            return;
+          const after = selectNeedsYouRows(navigationStore.getState());
+          const newlyLoaded = after.find((row) => !beforeRefs.has(row.ref));
+          if (newlyLoaded) openNeedsYouSession(newlyLoaded.ref);
+        })
+        .catch(() => undefined);
+    };
     function blockedByOpenModal(event: KeyboardEvent): boolean {
       if (paletteStore.getState().open) return true;
       const target = event.target;
@@ -331,7 +384,36 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
       if (key === "j") {
         if (blockedByOpenModal(event)) return;
         event.preventDefault();
-        const next = nextNeedsYouRef(needsYouRefs(treeStore.getState().tree), focusedSessionRef());
+        const state = navigationStore.getState();
+        if (state.clientGenerationID !== generation) {
+          generation = state.clientGenerationID;
+          requestedPages.clear();
+        }
+        const rows = selectNeedsYouRows(state);
+        const refs = needsYouRefs(rows);
+        const current = focusedSessionRef();
+        if (
+          state.mode === "v1" &&
+          (refs.length === 0 || (current !== null && refs.indexOf(current) === refs.length - 1))
+        ) {
+          const page = nextPageFor(state);
+          const resource = state.resources.get(page.id);
+          const beforeRefs = new Set(refs);
+          if (resource?.data !== null && resource?.data !== undefined && !resource.error && !resource.stale) {
+            const newlyLoaded = selectNeedsYouRows(state).find((row) => !beforeRefs.has(row.ref));
+            if (newlyLoaded) openNeedsYouSession(newlyLoaded.ref);
+            else {
+              const wrapped = nextNeedsYouRef(refs, current);
+              if (wrapped !== null) openNeedsYouSession(wrapped);
+            }
+            return;
+          }
+          if (refs.length === 0 && (state.manifest?.data?.sections.needs_you.count ?? 0) === 0) return;
+          if (refs.length > 0 && selectSectionRemaining("needs_you", state) === 0) return;
+          openDemandedPage(beforeRefs, current, workspaceStore.getState().focusedPaneId, page.id, page.offset);
+          return;
+        }
+        const next = nextNeedsYouRef(refs, current);
         if (next !== null) openNeedsYouSession(next);
       }
     }
@@ -345,6 +427,8 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
     window.addEventListener("keydown", onKeyDown);
     document.addEventListener("click", onClick);
     return () => {
+      mounted = false;
+      intent++;
       window.removeEventListener("keydown", onKeyDown);
       document.removeEventListener("click", onClick);
     };
@@ -353,8 +437,26 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   const connectionState = useConnectionStore((s) => s.state);
   const pathname = usePathname();
   const route = urlToPane(pathname);
-  const tree = useTreeStore((state) => state.tree);
-  const treeError = useTreeStore((state) => state.error);
+  const sessionRouteRef = route?.type === "session" ? sessionRefFromRouteParams(route.params) : null;
+  const restoredSessionRef =
+    route?.type === "welcome" ? sessionRefFromRouteParams(workspaceStore.getState().mainPane()?.params) : null;
+  const locationRef = sessionRouteRef ?? restoredSessionRef;
+  const locationResource = useNavigationStore(selectLocation(locationRef ?? ""));
+  const locationErrorStatus = (locationResource?.error as { status?: unknown } | null)?.status;
+  const locationFailed = locationResource?.error != null;
+  const locationNotFound = locationErrorStatus === 404;
+  const locationTerminal = locationFailed && (locationResource?.data === null || locationNotFound);
+  const location = locationNotFound
+    ? null
+    : ((locationResource?.data as NavigationSessionLocation | undefined) ?? null);
+  useEffect(() => {
+    if (locationRef === null || navigationStore.getState().mode !== "v1") return;
+    if (locationFailed || (locationResource && !locationResource.stale)) return;
+    void navigationStore
+      .getState()
+      .lookupLocation(locationRef)
+      .catch(() => undefined);
+  }, [locationFailed, locationRef, locationResource]);
   const isMobile = useIsMobile();
   const pendingSessionRef = useRef<string | null>(null);
   // Single-pane mode (the /thread/{ref} share link): the shell strips its own
@@ -442,18 +544,15 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
   const placedPathnameRef = useRef<string | null>(null);
   if (!dockHostHasMountedRef.current && openedForPathnameRef.current !== pathname) {
     openedForPathnameRef.current = pathname;
-    openRouteAsPane(pathname, tree, treeError, pendingSessionRef);
+    openRouteAsPane(pathname, location, locationTerminal, pendingSessionRef);
   }
   if (route !== null) dockHostHasMountedRef.current = true;
 
   // A route this shell has parsed but not yet placed: pendingSessionRef is
-  // what openRouteAsPane leaves behind while a session deep link waits for
-  // /api/tree, and it is cleared by the same call that finally places the
-  // pane - so it covers the whole wait, including the one commit AFTER the
-  // tree lands (the route effect below runs after its children's effects, so
-  // the tree arriving is not yet the route being placed). Read here, below
-  // the render-phase open, rather than beside the other route derivations
-  // above, so it accounts for whatever that call just decided.
+  // what openRouteAsPane leaves behind while a deep link waits for
+  // its bounded location resource, and it is cleared by the same call that
+  // finally places the pane - so it covers the whole wait, including the one
+  // commit after the location arrives.
   //
   // The mobile host is told because it publishes the focused pane's URL, and
   // would otherwise overwrite the deep link with its own fallback pane's "/"
@@ -477,16 +576,16 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
         pendingSessionRef.current === null &&
         placedPathnameRef.current === pathname &&
         !routePlacementInProgressRef.current;
-      if (routePlacementIsApplied(pathname, tree, allowFocusedPanel)) {
+      if (routePlacementIsApplied(pathname, location, locationTerminal, allowFocusedPanel)) {
         placedPathnameRef.current = pathname;
         return;
       }
       openedForPathnameRef.current = pathname;
-      const expectWorkspaceTransition = route.type !== "session" || tree !== null;
+      const expectWorkspaceTransition = route.type !== "session" || location !== null;
       routePlacementInProgressRef.current = expectWorkspaceTransition;
       routePlacementPathnameRef.current = expectWorkspaceTransition ? pathname : null;
       try {
-        openRouteAsPane(pathname, tree, treeError, pendingSessionRef);
+        openRouteAsPane(pathname, location, locationTerminal, pendingSessionRef);
       } finally {
         if (!expectWorkspaceTransition) {
           routePlacementInProgressRef.current = false;
@@ -495,11 +594,11 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
       }
       return;
     }
-    if (route?.type === "welcome") reconcileWelcomeRouteWithTree(tree);
+    if (route?.type === "welcome") reconcileWelcomeRouteWithLocation(location);
     if (openedForPathnameRef.current === pathname && pendingSessionRef.current === null) return; // already opened above, this render
     openedForPathnameRef.current = pathname;
-    openRouteAsPane(pathname, tree, treeError, pendingSessionRef);
-  }, [pathname, route?.type, tree, treeError, workspacePanesVersion]);
+    openRouteAsPane(pathname, location, locationTerminal, pendingSessionRef);
+  }, [pathname, route?.type, location, locationTerminal, workspacePanesVersion]);
 
   return (
     <ClientProvider client={client}>

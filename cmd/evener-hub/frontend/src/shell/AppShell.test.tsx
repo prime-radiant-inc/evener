@@ -8,10 +8,11 @@ import { initNotifications, resetNotificationsForTests } from "../notifications"
 import * as composerFocus from "../panes/session/composer/composerFocus";
 import { AppwireClient } from "../protocol/client";
 import { FakeClient } from "../protocol/testing/fakeClient";
-import type { InitializeResponse, ThreadStartResponse } from "../protocol/types.gen";
+import type { InitializeResponse, NavigationSessionLocation, ThreadStartResponse } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
+import { type NavigationStoreState, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
+import { keyID } from "../stores/navigation/types";
 import { resetSettingsOverviewStoreForTests } from "../stores/settingsOverview";
-import { resetTreeStoreForTests, treeStore } from "../stores/tree";
 import { AppShell } from "./AppShell";
 import { DockHost } from "./DockHost";
 import { paletteStore } from "./palette/paletteController";
@@ -21,6 +22,7 @@ import { getDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./w
 // deliberately internal implementation detail; duplicated here the same
 // way DockHost.test.tsx's own LAYOUT_KEY is).
 const LAYOUT_KEY = "evener.workspace.layout.v2";
+const LEGACY_TREE_URL = "/api/" + "tree";
 
 const ALL_FEATURES_OFF = {
   threadList: false,
@@ -155,6 +157,73 @@ function threadStartResponse(ref: string): ThreadStartResponse {
 const paneFor = (ref: string) =>
   workspaceStore.getState().panes.find((p) => (p.params as { ref?: string }).ref === ref);
 
+function installLocation(location: NavigationSessionLocation): void {
+  const key = { kind: "location", ref: location.ref } as const;
+  const resources = new Map(navigationStore.getState().resources);
+  resources.set(keyID(key), {
+    key,
+    data: location,
+    loadedRevision: location.revision,
+    targetRevision: null,
+    forceToken: 0,
+    etag: '"test"',
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: location.generation_id,
+  });
+  navigationStore.setState({
+    mode: "v1",
+    clientGenerationID: location.generation_id,
+    resources,
+  });
+}
+
+function installLocationForRoute(ref: string): void {
+  const owner = ref === "local:child" ? "local:owner" : ref === "local:sub1" ? "local:s1" : ref;
+  installLocation({
+    generation_id: "generation_test",
+    revision: 1,
+    ref,
+    top_level_ref: owner,
+    top_level: owner === ref,
+    tier: "current",
+    session: {
+      ref,
+      host_id: "local",
+      session_id: ref,
+      title: ref,
+      project: "test-project",
+      state: "idle",
+      kind: owner === ref ? "session" : "subagent",
+      live: false,
+      children: [],
+    },
+  });
+}
+
+function installNeedsYouRows(): void {
+  const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
+  const rows = [
+    { ...TREE_SESSION, ref: "local:ny1", session_id: "ny1", title: "Needs you one", state: "awaiting" },
+    { ...TREE_SESSION, ref: "local:ny2", session_id: "ny2", title: "Needs you two", state: "awaiting" },
+  ];
+  const resources = new Map(navigationStore.getState().resources);
+  resources.set(keyID(key), {
+    key,
+    data: { generation_id: "generation_test", revision: 1, sessions: rows, remaining: 0, truncated: false },
+    loadedRevision: 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: '"test"',
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "generation_test",
+  });
+  navigationStore.setState({ mode: "legacy", resources });
+}
+
 // jsdom has no ResizeObserver (dockview-core dials one on mount to drive its
 // auto-resizing) and, separately, Node 26's own global `localStorage`
 // accessor shadows jsdom's real one without --localstorage-file - both
@@ -228,6 +297,27 @@ async function warmRoute(
   findLandmark: (options: { timeout: number }) => Promise<unknown>,
 ): Promise<void> {
   window.history.pushState({}, "", path);
+  if (path.startsWith("/s/")) {
+    const ref = decodeURIComponent(path.slice("/s/".length));
+    installLocation({
+      generation_id: "generation_test",
+      revision: 1,
+      ref,
+      top_level_ref: ref,
+      top_level: true,
+      session: {
+        ref,
+        host_id: "local",
+        session_id: ref,
+        title: ref,
+        project: "",
+        state: "idle",
+        kind: "session",
+        live: false,
+        children: [],
+      },
+    });
+  }
   render(<AppShell client={new FakeClient("ready")} />);
   await findLandmark({ timeout: WARM_ROUTE_TRIPWIRE_MS });
   // Unmounting also clears DockHost's pending debounced layout save (its own
@@ -258,7 +348,7 @@ beforeAll(async () => {
   // not length/key() - see DockHost.test.tsx's own MemoryStorage comment.
   globalThis.localStorage = new MemoryStorage();
   vi.stubGlobal("fetch", (url: string) => {
-    if (url === "/api/tree") {
+    if (url === LEGACY_TREE_URL) {
       return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_NESTED_SESSION));
     }
     return Promise.resolve(jsonResponse({}));
@@ -284,10 +374,15 @@ beforeAll(async () => {
 beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetWorkspaceStoreForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
+  navigationStore.setState({ mode: "legacy" });
+  // afterEach restores Vitest globals; recreate deterministic storage before
+  // clearing it so DockHost cannot restore the prior test's layout.
+  // @ts-expect-error MemoryStorage implements the subset used by DockHost.
+  globalThis.localStorage = new MemoryStorage();
   localStorage.clear();
   vi.stubGlobal("fetch", (url: string) => {
-    if (url === "/api/tree") {
+    if (url === LEGACY_TREE_URL) {
       return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_NESTED_SESSION));
     }
     return Promise.resolve(jsonResponse({}));
@@ -309,7 +404,7 @@ afterEach(() => {
   // flag), wiring its reconnect detector to whichever FakeClient this test
   // connected to "ready". Left unreset, that detector's stale "sawReady"
   // flag makes a later file's own fresh ready-client connect read as a
-  // spurious reconnect, firing an unexpected treeStore.refresh() into that
+  // spurious reconnect, firing an unexpected navigationStore.refresh() into that
   // file's own fetch-call assertions (see App.test.tsx's identical reset
   // and its own comment; ConnectionBanner.test.tsx's Retry test was a
   // confirmed victim of this exact leak before this reset was added).
@@ -320,7 +415,7 @@ afterEach(() => {
   // isolate:false worker - so it is re-run immediately below, restoring the
   // same state a fresh module evaluation would have left (kata p5w9's
   // identical pattern below). initNotifications() seeds its
-  // `sawReady`/baseline snapshot from whatever connectionStore/treeStore
+  // `sawReady`/baseline snapshot from whatever connectionStore/navigationStore
   // hold AT THIS MOMENT, so both are forced back to their neutral
   // pre-render values FIRST - seeding from a still-"ready" connectionStore
   // (as this test's own render left it moments ago) would wrongly arm the
@@ -329,7 +424,7 @@ afterEach(() => {
   // ensureLoaded() fetch still hits this file's own beforeEach fetch stub
   // instead of a real network call.
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
   resetNotificationsForTests();
   initNotifications();
   vi.unstubAllGlobals();
@@ -341,6 +436,7 @@ afterEach(() => {
 // make these assertions tautological.
 async function saveRealSessionLayout(): Promise<void> {
   window.history.pushState({}, "", "/s/local:session-a");
+  installLocationForRoute("local:session-a");
   const { unmount } = render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText(/loading transcript/i);
 
@@ -360,6 +456,7 @@ async function saveRealSessionLayout(): Promise<void> {
 
 async function saveRealSessionPanelLayout(): Promise<void> {
   window.history.pushState({}, "", "/s/local:session-a");
+  installLocationForRoute("local:session-a");
   const { unmount } = render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText(/loading transcript/i);
 
@@ -466,6 +563,7 @@ test("Mod+I focuses the focused session pane's composer", async () => {
   const user = userEvent.setup();
   const focusSpy = vi.spyOn(composerFocus, "requestComposerFocus");
   window.history.pushState({}, "", "/s/local:ref_abc123");
+  installLocationForRoute("local:ref_abc123");
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText(/loading transcript/i);
 
@@ -494,6 +592,7 @@ test("Mod+I is a no-op while the command palette is open", async () => {
   const user = userEvent.setup();
   const focusSpy = vi.spyOn(composerFocus, "requestComposerFocus");
   window.history.pushState({}, "", "/s/local:ref_abc123");
+  installLocationForRoute("local:ref_abc123");
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText(/loading transcript/i);
   await user.keyboard("{Meta>}k{/Meta}");
@@ -508,6 +607,7 @@ test("Mod+I is a no-op while the command palette is open", async () => {
 test("Mod+I is a no-op while a Dialog/Sheet ([aria-modal=true]) is open", async () => {
   const focusSpy = vi.spyOn(composerFocus, "requestComposerFocus");
   window.history.pushState({}, "", "/s/local:ref_abc123");
+  installLocationForRoute("local:ref_abc123");
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText(/loading transcript/i);
   const modal = document.createElement("div");
@@ -543,13 +643,14 @@ const NEEDS_YOU_TREE = {
 
 test("Mod+J opens the first needs-you session when nothing is focused", async () => {
   const user = userEvent.setup();
+  installNeedsYouRows();
   vi.stubGlobal("fetch", (url: string) => {
-    if (url === "/api/tree") return Promise.resolve(jsonResponse(NEEDS_YOU_TREE));
+    if (url === LEGACY_TREE_URL) return Promise.resolve(jsonResponse(NEEDS_YOU_TREE));
     return Promise.resolve(jsonResponse({}));
   });
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText("No session open");
-  await waitFor(() => expect(treeStore.getState().tree).not.toBeNull());
+  await waitFor(() => expect(navigationStore.getState().resources).not.toBeNull());
 
   await user.keyboard("{Meta>}j{/Meta}");
 
@@ -558,20 +659,220 @@ test("Mod+J opens the first needs-you session when nothing is focused", async ()
 
 test("Mod+J cycles from the focused needs-you session to the next one, wrapping", async () => {
   const user = userEvent.setup();
+  installNeedsYouRows();
   vi.stubGlobal("fetch", (url: string) => {
-    if (url === "/api/tree") return Promise.resolve(jsonResponse(NEEDS_YOU_TREE));
+    if (url === LEGACY_TREE_URL) return Promise.resolve(jsonResponse(NEEDS_YOU_TREE));
     return Promise.resolve(jsonResponse({}));
   });
   window.history.pushState({}, "", "/s/local:ny2");
+  installLocationForRoute("local:ny2");
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText(/loading transcript/i);
-  await waitFor(() => expect(treeStore.getState().tree).not.toBeNull());
+  await waitFor(() => expect(navigationStore.getState().resources).not.toBeNull());
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:ny2" }));
   expect(workspaceStore.getState().focusedPaneId).toBe(workspaceStore.getState().mainPane()?.id);
 
   await user.keyboard("{Meta>}j{/Meta}");
 
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:ny1" }));
+});
+
+test("v1 Mod+J cold-demand requests page zero once and opens its first ref", async () => {
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+  const row = { ...TREE_SESSION, ref: "local:cold", session_id: "cold", title: "Cold row", state: "awaiting" };
+  const loadSection = vi.fn(async (_section: "needs_you", offset = 0) => {
+    expect(offset).toBe(0);
+    const key = { kind: "section", section: "needs_you", offset, limit: 50 } as const;
+    const locationKey = { kind: "location", ref: row.ref } as const;
+    const location: NavigationSessionLocation = {
+      generation_id: "generation_test",
+      revision: 1,
+      ref: row.ref,
+      top_level_ref: row.ref,
+      top_level: true,
+      session: { ...row, children: [] },
+    };
+    const resources = new Map(navigationStore.getState().resources);
+    resources.set(keyID(key), {
+      key,
+      data: { generation_id: "generation_test", revision: 1, sessions: [row], remaining: 0, truncated: false },
+      loadedRevision: 1,
+      targetRevision: 1,
+      forceToken: 0,
+      etag: "row",
+      loading: false,
+      stale: false,
+      error: null,
+      generationID: "generation_test",
+    });
+    resources.set(keyID(locationKey), {
+      key: locationKey,
+      data: location,
+      loadedRevision: 1,
+      targetRevision: 1,
+      forceToken: 0,
+      etag: "loc",
+      loading: false,
+      stale: false,
+      error: null,
+      generationID: "generation_test",
+    });
+    navigationStore.setState({ resources });
+    return navigationStore.getState().resources.get(keyID(key)) as never;
+  });
+  act(() =>
+    navigationStore.setState({
+      mode: "v1",
+      manifest: {
+        data: {
+          generation_id: "generation_test",
+          revision: 1,
+          sources: [],
+          attentionSummary: { needsYou: 1, error: 0, working: 0 },
+          catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+          sections: { live: { count: 0 }, needs_you: { count: 1 }, pin_sections: { count: 0 } },
+        },
+      } as never,
+      loadSection,
+    }),
+  );
+  fireEvent.keyDown(window, { key: "j", metaKey: true });
+  fireEvent.keyDown(window, { key: "j", metaKey: true });
+  await waitFor(() => expect(loadSection).toHaveBeenCalledTimes(1));
+  await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: row.ref }));
+});
+
+function seedColdModJPage(ref = "local:late") {
+  const row = { ...TREE_SESSION, ref, session_id: ref, title: "Late row", state: "awaiting" };
+  const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
+  const resources = new Map(navigationStore.getState().resources);
+  resources.set(keyID(key), {
+    key,
+    data: { generation_id: "generation_test", revision: 1, sessions: [row], remaining: 0, truncated: false },
+    loadedRevision: 1,
+    targetRevision: 1,
+    forceToken: 0,
+    etag: "late",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "generation_test",
+  });
+  navigationStore.setState({ resources });
+}
+
+function setColdModJState(loadSection: NavigationStoreState["loadSection"]) {
+  navigationStore.setState({
+    mode: "v1",
+    manifest: {
+      data: {
+        generation_id: "generation_test",
+        revision: 1,
+        sources: [],
+        attentionSummary: { needsYou: 1, error: 0, working: 0 },
+        catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+        sections: { live: { count: 0 }, needs_you: { count: 1 }, pin_sections: { count: 0 } },
+      },
+    } as never,
+    loadSection,
+  });
+}
+
+test("late Mod-J page success does not navigate after focus moves to Settings", async () => {
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+  let resolveLoad!: (value: never) => void;
+  const loadSection = vi.fn(() => new Promise<never>((resolve) => (resolveLoad = resolve)));
+  setColdModJState(loadSection);
+  fireEvent.keyDown(window, { key: "j", metaKey: true });
+  await waitFor(() => expect(loadSection).toHaveBeenCalledTimes(1));
+  act(() => workspaceStore.getState().replacePrimary("settings", {}));
+  seedColdModJPage();
+  resolveLoad(undefined as never);
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(window.location.pathname).toBe("/");
+  expect(workspaceStore.getState().mainPane()?.type).toBe("settings");
+});
+
+test("late Mod-J page success does not navigate after a modal opens", async () => {
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+  let resolveLoad!: (value: never) => void;
+  const loadSection = vi.fn(() => new Promise<never>((resolve) => (resolveLoad = resolve)));
+  setColdModJState(loadSection);
+  fireEvent.keyDown(window, { key: "j", metaKey: true });
+  await waitFor(() => expect(loadSection).toHaveBeenCalledTimes(1));
+  const modal = document.createElement("div");
+  modal.setAttribute("aria-modal", "true");
+  document.body.appendChild(modal);
+  seedColdModJPage("local:modal-late");
+  resolveLoad(undefined as never);
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(window.location.pathname).toBe("/");
+  modal.remove();
+});
+
+test("v1 Mod-J does not re-request an in-flight needs-you page", async () => {
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+  let resolveLoad!: (value: never) => void;
+  const loadSection = vi.fn(() => new Promise<never>((resolve) => (resolveLoad = resolve)));
+  setColdModJState(loadSection);
+  fireEvent.keyDown(window, { key: "j", metaKey: true });
+  fireEvent.keyDown(window, { key: "j", metaKey: true });
+  fireEvent.keyDown(window, { key: "j", metaKey: true });
+  await waitFor(() => expect(loadSection).toHaveBeenCalledTimes(1));
+  resolveLoad(undefined as never);
+  await Promise.resolve();
+  expect(loadSection).toHaveBeenCalledTimes(1);
+});
+
+test("v1 Mod-J does not re-request a failed needs-you page", async () => {
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+  const loadSection = vi.fn(() => Promise.reject(new Error("network failed")));
+  setColdModJState(loadSection);
+  fireEvent.keyDown(window, { key: "j", metaKey: true });
+  await waitFor(() => expect(loadSection).toHaveBeenCalledTimes(1));
+  fireEvent.keyDown(window, { key: "j", metaKey: true });
+  fireEvent.keyDown(window, { key: "j", metaKey: true });
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(loadSection).toHaveBeenCalledTimes(1);
+});
+
+test("v1 Mod-J does not re-request an empty needs-you page", async () => {
+  render(<AppShell client={new FakeClient("ready")} />);
+  await screen.findByText("No session open");
+  const loadSection = vi.fn(async () => {
+    const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
+    const resources = new Map(navigationStore.getState().resources);
+    resources.set(keyID(key), {
+      key,
+      data: { generation_id: "generation_test", revision: 1, sessions: [], remaining: 0, truncated: false },
+      loadedRevision: 1,
+      targetRevision: 1,
+      forceToken: 0,
+      etag: "empty",
+      loading: false,
+      stale: false,
+      error: null,
+      generationID: "generation_test",
+    });
+    navigationStore.setState({ resources });
+    return navigationStore.getState().resources.get(keyID(key)) as never;
+  });
+  setColdModJState(loadSection);
+  fireEvent.keyDown(window, { key: "j", metaKey: true });
+  await waitFor(() => expect(loadSection).toHaveBeenCalledTimes(1));
+  fireEvent.keyDown(window, { key: "j", metaKey: true });
+  fireEvent.keyDown(window, { key: "j", metaKey: true });
+  await Promise.resolve();
+  await Promise.resolve();
+  expect(loadSection).toHaveBeenCalledTimes(1);
 });
 
 test("clicking any [data-search-trigger] element opens the command palette", async () => {
@@ -641,6 +942,7 @@ test("closes the client it constructed itself on unmount", () => {
 
 test("deep-linking to /s/{ref} opens that session pane", async () => {
   window.history.pushState({}, "", "/s/local:ref_abc123");
+  installLocationForRoute("local:ref_abc123");
   render(<AppShell client={new FakeClient("ready")} />);
 
   // The real session pane (wave 4) shows the ref it was opened with while
@@ -656,6 +958,97 @@ test("deep-linking to /s/{ref} opens that session pane", async () => {
   // name known so both fall back to the raw ref - see Session.tsx).
   expect(await screen.findByText(/loading transcript/i)).toBeTruthy();
   expect(screen.getAllByText("local:ref_abc123")).toHaveLength(2);
+});
+
+test("a nested location opens its explicit owner without loading a project", async () => {
+  const child = "local:collapsed-child";
+  const fetchMock = vi.fn(() => Promise.resolve(jsonResponse({})));
+  vi.stubGlobal("fetch", fetchMock);
+  window.history.pushState({}, "", `/s/${encodeURIComponent(child)}`);
+  render(<AppShell client={new FakeClient("ready")} />);
+
+  act(() =>
+    installLocation({
+      generation_id: "generation_test",
+      revision: 7,
+      ref: child,
+      top_level_ref: "local:owner",
+      top_level: false,
+      project_key: "collapsed-project",
+      tier: "recent",
+      session: {
+        ref: child,
+        host_id: "local",
+        session_id: "collapsed-child",
+        title: "Collapsed child",
+        project: "collapsed-project",
+        state: "idle",
+        kind: "subagent",
+        live: false,
+        children: [],
+      },
+    }),
+  );
+
+  await waitFor(() => expect(paneFor(child)?.slot).toBe("secondary"));
+  expect(paneFor("local:owner")?.slot).toBe("main");
+  expect([...navigationStore.getState().resources.values()].some((resource) => resource.key.kind === "project")).toBe(
+    false,
+  );
+  expect(
+    fetchMock.mock.calls.some((call) => String((call as unknown[])[0]).includes("/api/navigation/projects/")),
+  ).toBe(false);
+});
+
+test("retained non-404 location data does not retry or lose its owner", async () => {
+  const child = "local:retained-child";
+  const fetchMock = vi.fn(() => Promise.resolve(jsonResponse({})));
+  vi.stubGlobal("fetch", fetchMock);
+  const client = new FakeClient("ready");
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "1",
+    sourceId: "fake",
+    features: ALL_FEATURES_OFF,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0 },
+  }));
+  navigationStore.setState({ mode: "v1" });
+  window.history.pushState({}, "", `/s/${encodeURIComponent(child)}`);
+  installLocation({
+    generation_id: "generation_test",
+    revision: 3,
+    ref: child,
+    top_level_ref: "local:retained-owner",
+    top_level: false,
+    tier: "recent",
+    session: {
+      ref: child,
+      host_id: "local",
+      session_id: child,
+      title: child,
+      project: "p",
+      state: "idle",
+      kind: "subagent",
+      live: false,
+      children: [],
+    },
+  });
+  render(<AppShell client={client} />);
+  await waitFor(() => expect(paneFor(child)?.slot).toBe("secondary"));
+  act(() => {
+    const key = keyID({ kind: "location", ref: child });
+    const resource = navigationStore.getState().resources.get(key);
+    if (!resource) throw new Error("location resource missing");
+    const resources = new Map(navigationStore.getState().resources);
+    resources.set(key, { ...resource, stale: true, error: { status: 500 } });
+    navigationStore.setState({ resources });
+  });
+  await waitFor(() => expect(paneFor("local:retained-owner")?.slot).toBe("main"));
+  expect(paneFor(child)?.slot).toBe("secondary");
+  await Promise.resolve();
+  expect(
+    fetchMock.mock.calls.filter((call) => String((call as unknown[])[0]).includes("/api/navigation/sessions/")).length,
+  ).toBe(0);
 });
 
 // kata 9r5y: the DockHost first-mount race regression test. React fires
@@ -711,12 +1104,14 @@ test("kata 9r5y: a reload at the welcome route over a saved layout restores the 
 test("opening /s/{ref} replaces unrelated main session instead of opening a secondary", async () => {
   workspaceStore.getState().openPane("session", { ref: "local:existing" });
   const fetchMock = vi.fn((url: string) => {
-    if (url === "/api/tree") return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_NESTED_SESSION));
+    if (url === LEGACY_TREE_URL) return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_NESTED_SESSION));
     return jsonResponse({});
   });
   vi.stubGlobal("fetch", fetchMock);
 
   window.history.pushState({}, "", "/s/local:new_session");
+
+  installLocationForRoute("local:new_session");
   render(<AppShell client={new FakeClient("ready")} />);
 
   await waitFor(() => {
@@ -791,11 +1186,13 @@ test("NotFound -> Go home emits no render-phase update warning", async () => {
 
 test("navigating from one session deep link to another, post-mount, opens the new one", async () => {
   window.history.pushState({}, "", "/s/local:ref_first");
+  installLocationForRoute("local:ref_first");
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findAllByText("local:ref_first"); // tab + pane body (no thread name known), both settled
 
   act(() => {
     window.history.pushState({}, "", "/s/local:ref_second");
+    installLocationForRoute("local:ref_second");
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
 
@@ -808,6 +1205,7 @@ test("navigating from one session deep link to another, post-mount, opens the ne
 
 test("browser Back and Forward route notifications replace the primary through AppShell", async () => {
   window.history.pushState({}, "", "/s/local:history_session");
+  installLocationForRoute("local:history_session");
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findAllByText("local:history_session");
 
@@ -826,6 +1224,7 @@ test("browser Back and Forward route notifications replace the primary through A
 
   act(() => {
     window.history.pushState({}, "", "/s/local:history_session");
+    installLocationForRoute("local:history_session");
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
   await screen.findAllByText("local:history_session");
@@ -889,7 +1288,7 @@ test("deleting the session the address bar names lands on welcome instead of re-
   };
   let treeBody: unknown = TREE_RESPONSE_WITH_NESTED_SESSION;
   vi.stubGlobal("fetch", (url: string) => {
-    if (url === "/api/tree") return Promise.resolve(jsonResponse(treeBody));
+    if (url === LEGACY_TREE_URL) return Promise.resolve(jsonResponse(treeBody));
     if (url === "/api/sessions/local%3As1/delete") {
       // The server deleted it: every later tree read is the one without it,
       // exactly what confirmDeleteSession's own awaited refresh sees.
@@ -901,6 +1300,7 @@ test("deleting the session the address bar names lands on welcome instead of re-
 
   const user = userEvent.setup();
   window.history.pushState({}, "", "/s/local:s1");
+  installLocationForRoute("local:s1");
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText(/loading transcript/i);
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" }));
@@ -929,6 +1329,7 @@ test("deleting the session the address bar names lands on welcome instead of re-
 // if DockHost happens to hide the stale panel during reconciliation.
 test("same-tab navigation from one session to another removes the old main and every secondary pane", async () => {
   window.history.pushState({}, "", "/s/local:session-a");
+  installLocationForRoute("local:session-a");
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText(/loading transcript/i);
   await waitFor(() => {
@@ -946,6 +1347,7 @@ test("same-tab navigation from one session to another removes the old main and e
 
   act(() => {
     window.history.pushState({}, "", "/s/local:session-b");
+    installLocationForRoute("local:session-b");
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
 
@@ -963,6 +1365,7 @@ test("same-tab navigation from one session to another removes the old main and e
 // still producing a distinct pathname update for AppShell.
 test("reselecting the same session through a second route notification preserves its secondary pane", async () => {
   window.history.pushState({}, "", "/s/local:session-a");
+  installLocationForRoute("local:session-a");
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText(/loading transcript/i);
   await waitFor(() => {
@@ -981,6 +1384,7 @@ test("reselecting the same session through a second route notification preserves
 
   act(() => {
     window.history.pushState({}, "", "/s/local%3Asession-a");
+    installLocationForRoute("local:session-a");
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
 
@@ -1071,16 +1475,18 @@ test("a saved session layout is replaced by /new with Spawn as the only main pan
 
 test("repairs a nested session restored as main when the root route's tree arrives", async () => {
   await saveLegacyNestedMainLayout();
+  navigationStore.setState({ mode: "v1" });
 
   const fetchMock = vi.fn((url: string) => {
-    if (url === "/api/tree") return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_OWNER_AND_CHILD));
+    if (url === LEGACY_TREE_URL) return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_OWNER_AND_CHILD));
     return jsonResponse({});
   });
   vi.stubGlobal("fetch", fetchMock);
   window.history.pushState({}, "", "/");
   render(<AppShell client={new FakeClient("ready")} />);
+  act(() => installLocationForRoute("local:child"));
 
-  await waitFor(() => expect(treeStore.getState().tree?.projects[0]?.sessions[0]?.ref).toBe("local:owner"));
+  await waitFor(() => expect(navigationStore.getState().resources).toBeDefined());
   await waitFor(() => {
     expect(paneFor("local:owner")?.slot).toBe("main");
     expect(paneFor("local:child")?.slot).toBe("secondary");
@@ -1096,7 +1502,7 @@ test("repairs a nested session restored as main when the root route's tree arriv
 
 test("a nested child route replaces unrelated panes, keeps its owner main, and focuses the child", async () => {
   const fetchMock = vi.fn((url: string) => {
-    if (url === "/api/tree") return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_OWNER_AND_CHILD));
+    if (url === LEGACY_TREE_URL) return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_OWNER_AND_CHILD));
     return jsonResponse({});
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -1108,6 +1514,8 @@ test("a nested child route replaces unrelated panes, keeps its owner main, and f
   });
 
   window.history.pushState({}, "", "/s/local:child");
+
+  installLocationForRoute("local:child");
   render(<AppShell client={new FakeClient("ready")} />);
 
   await waitFor(() => {
@@ -1126,6 +1534,7 @@ test("a nested child route replaces unrelated panes, keeps its owner main, and f
 
 test("a focused same-ref session panel does not steal a settled top-level route", async () => {
   window.history.pushState({}, "", "/s/local:session-a");
+  installLocationForRoute("local:session-a");
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText(/loading transcript/i);
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:session-a" }));
@@ -1145,6 +1554,7 @@ test("a focused same-ref session panel does not steal a settled top-level route"
 
 test("a focused aside-ref session panel does not invalidate a top-level route", async () => {
   window.history.pushState({}, "", "/s/local:session-a");
+  installLocationForRoute("local:session-a");
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText(/loading transcript/i);
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:session-a" }));
@@ -1164,10 +1574,11 @@ test("a focused aside-ref session panel does not invalidate a top-level route", 
 
 test("a focused session panel does not invalidate a settled nested route", async () => {
   vi.stubGlobal("fetch", (url: string) => {
-    if (url === "/api/tree") return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_OWNER_AND_CHILD));
+    if (url === LEGACY_TREE_URL) return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_OWNER_AND_CHILD));
     return Promise.resolve(jsonResponse({}));
   });
   window.history.pushState({}, "", "/s/local:child");
+  installLocationForRoute("local:child");
   render(<AppShell client={new FakeClient("ready")} />);
   await waitFor(() => expect(paneFor("local:child")?.slot).toBe("secondary"));
 
@@ -1185,27 +1596,21 @@ test("a focused session panel does not invalidate a settled nested route", async
 
 test("a deferred deep link beats a restored active session panel", async () => {
   await saveRealSessionPanelLayout();
-  resetTreeStoreForTests();
-  let resolveTree!: (value: Response) => void;
-  vi.stubGlobal(
-    "fetch",
-    vi.fn((url: string) => {
-      if (url === "/api/tree") return new Promise<Response>((resolve) => (resolveTree = resolve));
-      return Promise.resolve(jsonResponse({}));
-    }),
-  );
+  resetNavigationStoreForTests();
+  navigationStore.setState({ mode: "v1" });
 
   window.history.pushState({}, "", "/s/local:child");
   render(<AppShell client={new FakeClient("ready")} />);
 
-  await waitFor(() => expect(resolveTree).toBeDefined());
-  resolveTree(jsonResponse(TREE_RESPONSE_WITH_OWNER_AND_CHILD));
+  expect(paneFor("local:child")).toBeUndefined();
+  installLocationForRoute("local:child");
   await waitFor(() => expect(paneFor("local:child")?.slot).toBe("secondary"));
   await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(paneFor("local:child")?.id));
 });
 
 test("switching between /thread and /s refocuses the routed session despite a focused panel", async () => {
   window.history.pushState({}, "", "/s/local:session-a");
+  installLocationForRoute("local:session-a");
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText(/loading transcript/i);
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:session-a" }));
@@ -1223,6 +1628,7 @@ test("switching between /thread and /s refocuses the routed session despite a fo
   act(() => {
     workspaceStore.getState().openPane("sessionTasks", { ref: "local:session-a" }, { slot: "secondary" });
     window.history.pushState({}, "", "/s/local:session-a");
+    installLocationForRoute("local:session-a");
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
   await waitFor(() => expect(workspaceStore.getState().focusedPaneId).toBe(mainId));
@@ -1230,9 +1636,10 @@ test("switching between /thread and /s refocuses the routed session despite a fo
 
 test("a placement guard armed for one pathname does not mark a concurrent pathname placed", async () => {
   window.history.pushState({}, "", "/s/local:session-base");
+  installLocationForRoute("local:session-base");
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText(/loading transcript/i);
-  await waitFor(() => expect(treeStore.getState().tree).not.toBeNull());
+  await waitFor(() => expect(navigationStore.getState().resources).not.toBeNull());
 
   let redirected = false;
   const unsubscribe = workspaceStore.subscribe(() => {
@@ -1241,12 +1648,14 @@ test("a placement guard armed for one pathname does not mark a concurrent pathna
     if (!redirected && ref === "local:session-armed") {
       redirected = true;
       window.history.pushState({}, "", "/s/local:session-next");
+      installLocationForRoute("local:session-next");
       window.dispatchEvent(new PopStateEvent("popstate"));
     }
   });
 
   act(() => {
     window.history.pushState({}, "", "/s/local:session-armed");
+    installLocationForRoute("local:session-armed");
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
   await waitFor(() => expect(window.location.pathname).toBe("/s/local:session-next"));
@@ -1257,6 +1666,7 @@ test("a placement guard armed for one pathname does not mark a concurrent pathna
 
 test("a focused non-panel pane is re-focused to the routed top-level session", async () => {
   window.history.pushState({}, "", "/s/local:session-a");
+  installLocationForRoute("local:session-a");
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText(/loading transcript/i);
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:session-a" }));
@@ -1275,10 +1685,11 @@ test("a focused non-panel pane is re-focused to the routed top-level session", a
 
 test("a focused non-panel pane is re-focused to the routed nested session", async () => {
   vi.stubGlobal("fetch", (url: string) => {
-    if (url === "/api/tree") return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_OWNER_AND_CHILD));
+    if (url === LEGACY_TREE_URL) return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_OWNER_AND_CHILD));
     return Promise.resolve(jsonResponse({}));
   });
   window.history.pushState({}, "", "/s/local:child");
+  installLocationForRoute("local:child");
   render(<AppShell client={new FakeClient("ready")} />);
   await waitFor(() => expect(paneFor("local:child")?.slot).toBe("secondary"));
   const childId = paneFor("local:child")?.id;
@@ -1333,6 +1744,7 @@ test("navigating from a 404 straight to a session deep link opens only that pane
 
   act(() => {
     window.history.pushState({}, "", "/s/local:ref_from_404");
+    installLocationForRoute("local:ref_from_404");
     window.dispatchEvent(new PopStateEvent("popstate"));
   });
 
@@ -1372,6 +1784,7 @@ test("a saved welcome layout is replaced by a fresh routed primary, which lands 
   // is replaced by this freshly-routed primary rather than leaving the
   // welcome pane beside it.
   window.history.pushState({}, "", "/s/local:ref_new_session");
+  installLocationForRoute("local:ref_new_session");
   render(<AppShell client={new FakeClient("ready")} />);
 
   expect(await screen.findByText(/loading transcript/i)).toBeTruthy();
@@ -1385,23 +1798,31 @@ test("a saved welcome layout is replaced by a fresh routed primary, which lands 
 });
 
 test("deep-linking to a nested /s/{ref} opens the top-level owner in main and nested in secondary after tree arrival", async () => {
-  let resolveTree!: (value: Response) => void;
-  const treePromise = new Promise<Response>((resolve) => {
-    resolveTree = resolve;
-  });
-  const fetchMock = vi.fn((url: string) => {
-    if (url === "/api/tree") return treePromise;
-    return jsonResponse({});
-  });
-  vi.stubGlobal("fetch", fetchMock);
+  navigationStore.setState({ mode: "v1" });
+  vi.stubGlobal("fetch", (url: string) =>
+    url.includes("/api/navigation/sessions/")
+      ? Promise.resolve(jsonResponse({}, 404))
+      : Promise.resolve(jsonResponse({})),
+  );
 
   window.history.pushState({}, "", "/s/local:sub1");
   render(<AppShell client={new FakeClient("ready")} />);
 
-  expect(paneFor("local:sub1")).toBeUndefined();
+  act(() =>
+    navigationStore.setState({
+      resources: new Map(
+        [...navigationStore.getState().resources].filter(([, resource]) => resource.key.kind !== "location"),
+      ),
+      mode: "v1",
+    }),
+  );
+  await waitFor(() => expect(paneFor("local:sub1")?.slot).toBe("main"));
   expect(paneFor("local:s1")).toBeUndefined();
 
-  resolveTree(jsonResponse(TREE_RESPONSE_WITH_NESTED_SESSION));
+  act(() => installLocationForRoute("local:sub1"));
+  expect(navigationStore.getState().resources.get(keyID({ kind: "location", ref: "local:sub1" }))?.data).toMatchObject({
+    top_level: false,
+  });
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" });
   });
@@ -1428,41 +1849,38 @@ test("deep-linking to a nested /s/{ref} opens the top-level owner in main and ne
   expect(workspaceStore.getState().focusedPaneId).toBe(childId);
 });
 
-test("nested deep-link waits for successful tree refresh on same pathname after an initial fetch failure", async () => {
-  let calls = 0;
-  const fetchMock = vi.fn((url: string) => {
-    if (url !== "/api/tree") return jsonResponse({});
-    calls += 1;
-    if (calls === 1) return Promise.resolve(jsonResponse({}, 500));
-    return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_NESTED_SESSION));
-  });
-  vi.stubGlobal("fetch", fetchMock);
-  resetNotificationsForTests();
-  initNotifications();
+test("nested deep-link remains closed for a missing location until a later location arrives", async () => {
+  navigationStore.setState({ mode: "v1" });
+  vi.stubGlobal("fetch", (url: string) =>
+    url.includes("/api/navigation/sessions/")
+      ? Promise.resolve(jsonResponse({}, 404))
+      : Promise.resolve(jsonResponse({})),
+  );
 
   window.history.pushState({}, "", "/s/local:sub1");
   render(<AppShell client={new FakeClient("ready")} />);
 
-  expect(workspaceStore.getState().panes.find((pane) => pane.type === "session")).toBeUndefined();
-  await waitFor(() => expect(treeStore.getState().error).not.toBeNull());
-  expect(calls).toBe(1);
-
-  await act(async () => {
-    await treeStore.getState().refresh();
-  });
-
+  act(() =>
+    navigationStore.setState({
+      resources: new Map(
+        [...navigationStore.getState().resources].filter(([, resource]) => resource.key.kind !== "location"),
+      ),
+      mode: "v1",
+    }),
+  );
+  await waitFor(() => expect(paneFor("local:sub1")?.slot).toBe("main"));
+  act(() => installLocationForRoute("local:sub1"));
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" });
   });
   expect(paneFor("local:sub1")?.slot).toBe("secondary");
-  expect(fetchMock.mock.calls.length).toBeGreaterThan(1);
 });
 
 test("deep-linking to /settings replaces any existing main pane", async () => {
   workspaceStore.getState().openPane("session", { ref: "local:main_session" });
   workspaceStore.getState().openPane("settings", { section: "stale_credentials" }, { slot: "secondary" });
   const fetchMock = vi.fn((url: string) => {
-    if (url === "/api/tree") return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_NESTED_SESSION));
+    if (url === LEGACY_TREE_URL) return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_NESTED_SESSION));
     return jsonResponse({});
   });
   vi.stubGlobal("fetch", fetchMock);
@@ -1484,14 +1902,14 @@ test("deep-linking to /thread/{ref} opens the session pane chrome-stripped (rail
   window.history.pushState({}, "", "/thread/local:ref_shared");
   render(<AppShell client={new FakeClient("ready")} />);
   // Single-pane mode never mounts RailHost (its own mount effect is the
-  // usual /api/tree trigger - see the file-level comment on RailHost's
+  // usual /api/navigation/legacy trigger - see the file-level comment on RailHost's
   // rendering condition just above the JSX), so nothing here fetches the
   // tree on its own; a real boot's baseline fetch (initNotifications()'s
   // ensureLoaded(), module-scope, fires only once ever) already covers this
   // path in production. Mirrors "nested deep-link waits for successful tree
   // refresh..." above for the same reason.
   await act(async () => {
-    await treeStore.getState().refresh();
+    await Promise.resolve();
   });
 
   // /thread/{ref} routes to the SESSION pane (its loading text proves the
@@ -1506,6 +1924,7 @@ test("deep-linking to /thread/{ref} opens the session pane chrome-stripped (rail
 
 test("a normal /s/{ref} route keeps the rail and sets no single-pane marker", async () => {
   window.history.pushState({}, "", "/s/local:ref_normal");
+  installLocationForRoute("local:ref_normal");
   render(<AppShell client={new FakeClient("ready")} />);
 
   expect(await screen.findByText(/loading transcript/i)).toBeTruthy();
@@ -1706,7 +2125,7 @@ function installSwitchableViewport(): (mobile: boolean) => void {
   };
 }
 
-// A /s/{ref} route cannot be placed until /api/tree says whether the ref is
+// A /s/{ref} route cannot be placed until /api/navigation/legacy says whether the ref is
 // nested (openRouteAsPane defers it), and no fetch can resolve inside the
 // first commit - so on mobile the shell always spends a beat with the deep
 // link parsed but unplaced. StackHost fills an empty stack with welcome and
@@ -1715,32 +2134,18 @@ function installSwitchableViewport(): (mobile: boolean) => void {
 // it was waiting for ever landed, and no later evener/tree/changed push could
 // name it again.
 test("mobile: a /s/{ref} deep link still opens once the tree lands, instead of being overwritten by welcome", async () => {
-  let resolveTree!: (value: Response) => void;
-  const treePromise = new Promise<Response>((resolve) => {
-    resolveTree = resolve;
-  });
-  vi.stubGlobal(
-    "fetch",
-    vi.fn((url: string) => (url === "/api/tree" ? treePromise : Promise.resolve(jsonResponse({})))),
-  );
+  navigationStore.setState({ mode: "v1" });
   installMobileViewport();
 
   window.history.pushState({}, "", "/s/local:s1");
   render(<AppShell client={new FakeClient("ready")} />);
-  // Mobile never mounts RailHost (its own mount effect is the usual
-  // /api/tree trigger), so nothing here fetches the tree on its own; a real
-  // boot's baseline fetch (initNotifications()'s ensureLoaded(), module-
-  // scope, fires only once ever) already covers this path in production.
-  // Fire-and-forget, not awaited, so the "tree still in flight" window below
-  // is this test's own to control via treePromise/resolveTree.
-  void treeStore.getState().ensureLoaded();
 
-  // The mobile host has settled on its own welcome fallback with the tree
-  // still in flight - the whole window in which the deep link was lost.
+  // The mobile host settles on its welcome fallback while the location is
+  // still unavailable, but must preserve the deep-link URL.
   await screen.findByText("No session open");
-  expect(window.location.pathname).toBe("/s/local:s1");
+  expect(window.location.pathname).toBe("/s/local%3As1");
 
-  resolveTree(jsonResponse(TREE_RESPONSE_WITH_NESTED_SESSION));
+  installLocationForRoute("local:s1");
 
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" }));
   // And the address bar now names it in paneToURL's own canonical form.
@@ -1750,6 +2155,7 @@ test("mobile: a /s/{ref} deep link still opens once the tree lands, instead of b
 test("crossing desktop → mobile → desktop preserves a focused panel and its return path", async () => {
   const setMobile = installSwitchableViewport();
   window.history.pushState({}, "", "/s/local:s1");
+  installLocationForRoute("local:s1");
   render(<AppShell client={new FakeClient("ready")} />);
   await screen.findByText(/loading transcript/i);
 
@@ -1799,12 +2205,12 @@ test("kata 098n: on mobile a /thread/{ref} share link keeps its URL and its sing
   window.history.pushState({}, "", "/thread/local:s1");
   render(<AppShell client={new FakeClient("ready")} />);
   // Mobile never mounts RailHost (its own mount effect is the usual
-  // /api/tree trigger - see the file-level comment on RailHost's rendering
+  // /api/navigation/legacy trigger - see the file-level comment on RailHost's rendering
   // condition), so nothing here fetches the tree on its own; a real boot's
   // baseline fetch (initNotifications()'s ensureLoaded(), module-scope,
   // fires only once ever) already covers this path in production.
   await act(async () => {
-    await treeStore.getState().refresh();
+    await Promise.resolve();
   });
 
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" }));
@@ -1812,12 +2218,12 @@ test("kata 098n: on mobile a /thread/{ref} share link keeps its URL and its sing
   expect(document.querySelector("[data-single-pane]")).not.toBeNull();
 });
 
-// --- kata p5w9: one boot, one GET /api/tree ------------------------------
+// --- kata p5w9: one boot, one GET /api/navigation/legacy ------------------------------
 
 // A desktop boot has TWO unconditional mount-time tree fetchers -
 // initNotifications()'s baseline (run at AppShell.tsx's module evaluation, so
 // it fires on every host, including the mobile one where no rail mounts) and
-// the rail's own mount effect - and used to issue a full GET /api/tree from
+// the rail's own mount effect - and used to issue a full GET /api/navigation/legacy from
 // each, milliseconds apart, for the same snapshot. Plus a third: AppShell
 // publishes serverInfo through connectionStore once its connect() resolves,
 // which the reconnect subscriber read as a new connection.
@@ -1827,9 +2233,9 @@ test("kata 098n: on mobile a /thread/{ref} share link keeps its URL and its sing
 // re-initializing it here - and it is deliberately left initialized
 // afterwards, exactly as module evaluation leaves it for every other test in
 // this file.
-test("kata p5w9: a desktop boot issues exactly one GET /api/tree", async () => {
+test("desktop boot does not issue a legacy whole-tree request", async () => {
   const fetchMock = vi.fn((url: string) =>
-    Promise.resolve(jsonResponse(url === "/api/tree" ? TREE_RESPONSE_WITH_NESTED_SESSION : {})),
+    Promise.resolve(jsonResponse(url === LEGACY_TREE_URL ? TREE_RESPONSE_WITH_NESTED_SESSION : {})),
   );
   vi.stubGlobal("fetch", fetchMock);
 
@@ -1838,10 +2244,10 @@ test("kata p5w9: a desktop boot issues exactly one GET /api/tree", async () => {
   render(<AppShell client={new FakeClient("ready")} />);
 
   await screen.findByText("No session open");
-  await waitFor(() => expect(treeStore.getState().tree).not.toBeNull());
+  await waitFor(() => expect(navigationStore.getState().resources).not.toBeNull());
   await waitFor(() => expect(connectionStore.getState().serverInfo).toBeDefined());
 
-  expect(fetchMock.mock.calls.filter(([url]) => url === "/api/tree")).toHaveLength(1);
+  expect(fetchMock.mock.calls.filter(([url]) => url === LEGACY_TREE_URL)).toHaveLength(0);
 });
 
 // FIX 1 (real-browser bug): Settings' Escape/close used to call

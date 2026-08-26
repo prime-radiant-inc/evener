@@ -6,12 +6,17 @@ import {
   selectExpanded,
   selectGlobalRows,
   selectLocation,
+  selectNeedsYouCount,
+  selectNeedsYouRows,
+  selectNextSectionOffset,
   selectPinSections,
   selectProjectPage,
   selectProjectResource,
+  selectSectionRemaining,
 } from "./selectors";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "./store";
 import { capability, manifest } from "./testing";
+import { keyID } from "./types";
 
 const generation = "generation_test";
 const completeSession = (value: Record<string, unknown>): Record<string, unknown> => ({
@@ -126,6 +131,150 @@ test("manifest is fetched first, count-zero resources are skipped, and defaults 
   expect(calls.some((x) => x.includes("needs-you") || x.includes("archived-projects") || x.includes("test-runs"))).toBe(
     false,
   );
+});
+
+test("validated manifest attention seeds the v1 summary before notifications", async () => {
+  await init((url) =>
+    url === "/api/navigation"
+      ? json(emptyManifest({ attentionSummary: { needsYou: 2, error: 1, working: 3 } }))
+      : json({ sessions: [], remaining: 0 }),
+  );
+  expect(navigationStore.getState().attention.summary).toEqual({ needsYou: 2, error: 1, working: 3 });
+});
+
+test("needs-you selectors keep manifest count, first-occurrence order, short-page cursor, and remaining", () => {
+  const row = (ref: string) => ({
+    ref,
+    host_id: "local",
+    session_id: ref,
+    title: ref,
+    project: "",
+    state: "awaiting",
+    kind: "session",
+    live: false,
+    children: [],
+  });
+  const first = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
+  const short = { kind: "section", section: "needs_you", offset: 2, limit: 50 } as const;
+  const resources = new Map([
+    [
+      keyID(first),
+      {
+        key: first,
+        data: {
+          generation_id: generation,
+          revision: 1,
+          sessions: [row("a"), row("b")],
+          remaining: 25,
+          truncated: true,
+        },
+        loadedRevision: 1,
+        targetRevision: 1,
+        forceToken: 0,
+        etag: "a",
+        loading: false,
+        stale: false,
+        error: null,
+        generationID: generation,
+      },
+    ],
+    [
+      keyID(short),
+      {
+        key: short,
+        data: {
+          generation_id: generation,
+          revision: 1,
+          sessions: [row("b"), row("c")],
+          remaining: 0,
+          truncated: false,
+        },
+        loadedRevision: 1,
+        targetRevision: 1,
+        forceToken: 0,
+        etag: "b",
+        loading: false,
+        stale: false,
+        error: null,
+        generationID: generation,
+      },
+    ],
+  ]);
+  navigationStore.setState({
+    mode: "v1",
+    manifest: {
+      key: { kind: "manifest" },
+      data: emptyManifest({ sections: { live: { count: 0 }, needs_you: { count: 75 }, pin_sections: { count: 0 } } }),
+      loadedRevision: 1,
+      targetRevision: 1,
+      forceToken: 0,
+      etag: "m",
+      loading: false,
+      stale: false,
+      error: null,
+      generationID: generation,
+    },
+    resources,
+  });
+  const state = navigationStore.getState();
+  expect(selectNeedsYouCount(state)).toBe(75);
+  expect(selectNeedsYouRows(state).map((item) => item.ref)).toEqual(["a", "b", "c"]);
+  expect(selectSectionRemaining("needs_you", state)).toBe(0);
+  expect(selectNextSectionOffset("needs_you", state)).toBe(4);
+});
+
+test("needs-you cursor uses limit as the same-offset canonical tie-break", () => {
+  const row = (ref: string) => ({
+    ref,
+    host_id: "local",
+    session_id: ref,
+    title: ref,
+    project: "",
+    state: "awaiting",
+    kind: "session",
+    live: false,
+    children: [],
+  });
+  const narrow = { kind: "section", section: "needs_you", offset: 10, limit: 10 } as const;
+  const wide = { kind: "section", section: "needs_you", offset: 10, limit: 20 } as const;
+  navigationStore.setState({
+    mode: "v1",
+    resources: new Map([
+      [
+        keyID(narrow),
+        {
+          key: narrow,
+          data: { sessions: [row("a")], remaining: 1 },
+          loadedRevision: 1,
+          targetRevision: 1,
+          forceToken: 0,
+          etag: "a",
+          loading: false,
+          stale: false,
+          error: null,
+          generationID: generation,
+        },
+      ],
+      [
+        keyID(wide),
+        {
+          key: wide,
+          data: { sessions: [row("b"), row("c")], remaining: 2 },
+          loadedRevision: 1,
+          targetRevision: 1,
+          forceToken: 0,
+          etag: "b",
+          loading: false,
+          stale: false,
+          error: null,
+          generationID: generation,
+        },
+      ],
+    ]),
+  });
+  const state = navigationStore.getState();
+  expect(selectSectionRemaining("needs_you", state)).toBe(2);
+  expect(selectNextSectionOffset("needs_you", state)).toBe(12);
 });
 
 test("routes encode identifiers, enforce limits, credentials and conditional ETag", async () => {
@@ -338,7 +487,31 @@ test("notification fencing rejects duplicate, wrong generation, and gaps while l
   expect(navigationStore.getState().lastSequence).toBe(before + 2);
 });
 
-test("same-generation reconnect revalidates locations while a sequence gap intentionally does not", async () => {
+test("terminal location failures are retained without an automatic retry or project expansion", async () => {
+  const client = new FakeClient("ready");
+  let locationCalls = 0;
+  const fetchMock = vi.fn((url: string) => {
+    if (url === "/api/navigation") return json(emptyManifest());
+    locationCalls++;
+    return json({}, 404);
+  });
+  vi.stubGlobal("fetch", fetchMock);
+  initNavigation(client, capability());
+  await flush();
+  const first = await navigationStore.getState().lookupLocation("missing");
+  await flush();
+  expect(first.error).toMatchObject({ status: 404 });
+  expect(locationCalls).toBe(1);
+  expect([...navigationStore.getState().resources.values()].some((resource) => resource.key.kind === "project")).toBe(
+    false,
+  );
+  await flush();
+  expect(locationCalls).toBe(1);
+  await navigationStore.getState().lookupLocation("missing");
+  expect(locationCalls).toBe(2);
+});
+
+test("same-generation reconnect and sequence gaps revalidate demanded locations", async () => {
   const client = new FakeClient("ready");
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
@@ -366,12 +539,12 @@ test("same-generation reconnect revalidates locations while a sequence gap inten
     params: { generationId: generation, sequence: 2, targets: [] },
   } as never);
   await flush();
-  expect(locationCalls).toBe(1);
+  expect(locationCalls).toBe(2);
 
   client.emitStateChange("reconnecting");
   client.emitReady();
   await flush();
-  expect(locationCalls).toBe(2);
+  expect(locationCalls).toBe(3);
 });
 
 test("selectors expose every loaded global/pin page, location, project/page resources and expansion", async () => {

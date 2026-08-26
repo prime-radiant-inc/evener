@@ -47,6 +47,7 @@ function onNavigationAttention(): void {
   const state = navigationStore.getState();
   applyCounts();
   if (state.mode !== "v1") return;
+  if (state.attention.changed.length === 0 && prevNavigationAttention === null) return;
   const next = new Map(prevNavigationAttention);
   for (const changed of state.attention.changed) {
     const level = changed.level === "error" ? "error" : changed.level === "needs_you" ? "needs_you" : null;
@@ -142,6 +143,7 @@ export function initNotifications(): void {
   subscriptions.push(
     navigationStore.subscribe((state, prev) => {
       if (state.attention !== prev.attention) onNavigationAttention();
+      if (state.resources !== prev.resources) applyTitleNow();
       if (prev.mode === "v1" && state.mode !== "v1") prevNavigationAttention = null;
       if (state.mode === "legacy" && prev.mode !== "legacy" && treeStore.getState().tree === null)
         void treeStore.getState().ensureLoaded();

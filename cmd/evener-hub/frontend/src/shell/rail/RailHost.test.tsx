@@ -1,6 +1,8 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { manifest as navigationManifest } from "../../stores/navigation/testing";
 import { prefsStore, resetPrefsStoreForTests, SIDEBAR_WIDTH_MAX } from "../../stores/prefs";
 import { resetTreeStoreForTests, treeStore } from "../../stores/tree";
 import { resetWorkspaceStoreForTests } from "../workspace";
@@ -31,7 +33,18 @@ function emptyTree(needsYou = 0) {
     generated_at: "2026-01-01T00:00:00Z",
     sources: [],
     live: [],
-    needs_you: [],
+    needs_you: Array.from({ length: needsYou }, (_, index) => ({
+      row_id: `needs-${index}`,
+      ref: `local:needs-${index}`,
+      host_id: "local",
+      session_id: `needs-${index}`,
+      title: `Needs ${index}`,
+      project: "",
+      state: "awaiting",
+      kind: "session",
+      live: false,
+      children: [],
+    })),
     pin_sections: [],
     projects: [],
     archived_projects: [],
@@ -53,6 +66,8 @@ beforeEach(() => {
   localStorage.clear();
   resetPrefsStoreForTests();
   resetTreeStoreForTests();
+  resetNavigationStoreForTests();
+  navigationStore.setState({ mode: "legacy" });
   resetWorkspaceStoreForTests();
   // Quiet, resolving fetch so any mounted <Rail/> refresh() doesn't throw.
   vi.stubGlobal(
@@ -112,6 +127,30 @@ describe("hide / show", () => {
     render(<RailHost />);
     expect(screen.getByRole("button", { name: /show sidebar.*3 need attention/i })).toBeTruthy();
   });
+});
+
+test("v1 badge ignores stale legacy tree attention and uses manifest section count", () => {
+  prefsStore.getState().setSidebarHidden(true);
+  treeStore.setState({ tree: emptyTree(9) });
+  navigationStore.setState({
+    mode: "v1",
+    manifest: {
+      key: { kind: "manifest" },
+      data: navigationManifest({
+        sections: { live: { count: 0 }, needs_you: { count: 2 }, pin_sections: { count: 0 } },
+      }),
+      loadedRevision: 1,
+      targetRevision: 1,
+      forceToken: 0,
+      etag: '"manifest"',
+      loading: false,
+      stale: false,
+      error: null,
+      generationID: "generation_test",
+    },
+  });
+  render(<RailHost />);
+  expect(screen.getByRole("button", { name: /show sidebar.*2 need attention/i })).toBeTruthy();
 });
 
 describe("⌘B toggles hidden", () => {

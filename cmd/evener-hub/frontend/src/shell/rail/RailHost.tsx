@@ -14,8 +14,9 @@
 // (railController) hands it a session ref; if the rail is hidden, revealing
 // docks it first so there's a mounted Rail to expand + scroll.
 import { type JSX, useCallback, useEffect, useState } from "react";
+import { selectNeedsYouCount } from "../../stores/navigation/selectors";
+import { useNavigationStore } from "../../stores/navigation/store";
 import { prefsStore, usePrefsStore } from "../../stores/prefs";
-import { useTreeStore } from "../../stores/tree";
 import { Badge } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useIsMobile } from "../useIsMobile";
@@ -46,7 +47,8 @@ export function RailHost(_props: { railSlot?: never } = {}): JSX.Element {
   const isMobile = useIsMobile();
   const hidden = usePrefsStore((s) => s.sidebarHidden);
   const sidebarWidth = usePrefsStore((s) => s.sidebarWidth);
-  const needsYou = useTreeStore((s) => s.tree?.attentionSummary.needsYou ?? 0);
+  const navigation = useNavigationStore();
+  const needsYou = selectNeedsYouCount(navigation);
   const [revealTarget, setRevealTarget] = useState<string | null>(null);
   const clearReveal = useCallback(() => setRevealTarget(null), []);
 

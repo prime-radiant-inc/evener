@@ -1,9 +1,9 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { TreeNode as ApiTreeNode } from "../../stores/tree";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
 import * as railActions from "../rail/actions";
+import type { NavigationSessionModel } from "./SessionMenu";
 import { SessionMenu, type SessionMenuActions, type SessionMenuProps } from "./SessionMenu";
 
 // Task 4's "Pin this session…" mounts the real PinSectionPicker, which
@@ -137,7 +137,7 @@ test("Shut down confirms before calling onShutdown", async () => {
   await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
 });
 
-test("no organization or delete items without a treeNode", async () => {
+test("no organization or delete items without a navigation session", async () => {
   const user = userEvent.setup();
   renderMenu();
   await openMenu(user);
@@ -146,25 +146,21 @@ test("no organization or delete items without a treeNode", async () => {
   expect(screen.queryByRole("menuitem", { name: /delete/i })).toBeNull();
 });
 
-function treeNode(overrides: Partial<ApiTreeNode> = {}): ApiTreeNode {
+function navigationSession(overrides: Partial<NavigationSessionModel> = {}): NavigationSessionModel {
   return {
-    row_id: "row_1",
     ref: "ref_a",
     host_id: "local",
     session_id: "sess_a",
     title: "My session",
-    project: "proj",
-    state: "idle",
     kind: "session",
-    live: false,
-    children: [],
+    top_level: true,
     ...overrides,
   };
 }
 
 test("full menu: organize group between separators, delete last", async () => {
   const user = userEvent.setup();
-  renderMenu({ treeNode: treeNode() });
+  renderMenu({ session: navigationSession() });
   await openMenu(user);
   const items = screen.getAllByRole("menuitem").map((el) => el.textContent);
   expect(items).toEqual([
@@ -182,13 +178,13 @@ test("full menu: organize group between separators, delete last", async () => {
 
 test("nested kinds and remote hosts lose organization/delete items", async () => {
   const user = userEvent.setup();
-  renderMenu({ treeNode: treeNode({ kind: "subagent" }) });
+  renderMenu({ session: navigationSession({ kind: "subagent" }) });
   await openMenu(user);
   expect(screen.queryByRole("menuitem", { name: /pin/i })).toBeNull();
   expect(screen.queryByRole("menuitem", { name: /archive/i })).toBeNull();
   expect(screen.queryByRole("menuitem", { name: /delete/i })).toBeNull();
   cleanup();
-  renderMenu({ treeNode: treeNode({ host_id: "remote" }) });
+  renderMenu({ session: navigationSession({ host_id: "remote" }) });
   await openMenu(user);
   expect(screen.getByRole("menuitem", { name: "Pin this session…" })).toBeTruthy();
   expect(screen.queryByRole("menuitem", { name: /delete/i })).toBeNull();
@@ -196,7 +192,7 @@ test("nested kinds and remote hosts lose organization/delete items", async () =>
 
 test("pinned session offers Unpin; archived offers Unarchive", async () => {
   const user = userEvent.setup();
-  const actions = renderMenu({ treeNode: treeNode({ pin_section_id: "sec_1", tier: "archived" }) });
+  const actions = renderMenu({ session: navigationSession({ pin_section_id: "sec_1", tier: "archived" }) });
   await openMenu(user);
   await user.click(screen.getByRole("menuitem", { name: "Unpin" }));
   expect(actions.onUnpin).toHaveBeenCalledTimes(1);
@@ -207,7 +203,7 @@ test("pinned session offers Unpin; archived offers Unarchive", async () => {
 
 test("Pin this session… opens the PinSectionPicker; assigning calls onPin and closes", async () => {
   const user = userEvent.setup();
-  const actions = renderMenu({ treeNode: treeNode() });
+  const actions = renderMenu({ session: navigationSession() });
   await openMenu(user);
   await user.click(screen.getByRole("menuitem", { name: "Pin this session…" }));
   await user.click(await screen.findByRole("button", { name: "Client" }));
@@ -218,7 +214,7 @@ test("Pin this session… opens the PinSectionPicker; assigning calls onPin and 
 
 test("Delete… confirms before calling onDelete", async () => {
   const user = userEvent.setup();
-  const actions = renderMenu({ treeNode: treeNode() });
+  const actions = renderMenu({ session: navigationSession() });
   await openMenu(user);
   await user.click(screen.getByRole("menuitem", { name: "Delete…" }));
   const dialog = screen.getByRole("dialog", { name: "Delete session?" });

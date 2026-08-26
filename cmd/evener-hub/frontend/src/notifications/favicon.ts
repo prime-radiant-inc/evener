@@ -8,7 +8,7 @@
 // sanctioned non-token color site in the wave — the literals live on the
 // generated SVG, never in tokens.css, precisely because tokens.css tracks
 // the app-surface theme these must not follow.
-import type { AttentionSummary } from "../stores/tree";
+import type { AttentionSummary } from "../protocol/types.gen";
 
 const DOT_ERROR = "#f7768e";
 const DOT_NEEDS_YOU = "#e0af68";

@@ -10,10 +10,12 @@ import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react"
 import { requestComposerFocus } from "../../panes/session/composer/composerFocus";
 import { requestQuoteInsert } from "../../panes/session/composer/quoteInsert";
 import { errorText, isHubLaunchError } from "../../protocol/errors";
-import type { CommandDescriptor } from "../../protocol/types.gen";
+import type { CommandDescriptor, NavigationSessionSummary } from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
+import { selectNeedsYouRows, selectNextSectionOffset, selectSectionRemaining } from "../../stores/navigation/selectors";
+import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
+import { keyID } from "../../stores/navigation/types";
 import { threadsStore } from "../../stores/threads";
-import { type TreeNode as ApiTreeNode, useTreeStore } from "../../stores/tree";
 import { Chip, Dialog, KeyHint, StatusDot, useToasts } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { openNeedsYouSession } from "../rail/needsYouCycle";
@@ -80,13 +82,6 @@ const CLASS = {
 const SEARCH_PLACEHOLDER = "search live + past sessions · / for commands · ? for shortcuts";
 const SEARCH_DEBOUNCE_MS = 150;
 
-// A stable empty-array reference for the needsYouNodes selector below: `?? []`
-// would otherwise allocate a fresh array every render when tree is null (or
-// every time useTreeStore's own tree reference changes with no needs_you of
-// its own), and zustand's useStore re-renders on referential inequality - a
-// fresh empty array every render is an infinite render loop, not a no-op.
-const NO_NEEDS_YOU: readonly ApiTreeNode[] = [];
-
 interface HelpRow {
   keys: string[];
   desc: string;
@@ -149,7 +144,7 @@ type PaletteItem =
   | { kind: "arg"; item: CommandArgsEnumItem }
   // UX fix: the empty-query view's needs-you list (Mod+J's palette-visible
   // counterpart) - one row per tree.needs_you entry.
-  | { kind: "needsYou"; node: ApiTreeNode }
+  | { kind: "needsYou"; node: NavigationSessionSummary }
   // 2026-08-14: the ONE row a session-scoped command name prefix-match
   // resolves to (sessionScopedHandoffMatch) - see activateHandoff's own doc
   // comment. hasFocusedSession decides both the row's own copy and whether
@@ -218,7 +213,8 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
   const catalogCommands = useCommandCatalog((state) => state.commands);
   // UX fix: the empty-query view's needs-you list (Mod+J's palette-visible
   // counterpart, needsYouCycle.ts's own tree-order source of truth).
-  const needsYouNodes = useTreeStore((s) => s.tree?.needs_you ?? NO_NEEDS_YOU);
+  const navigation = useNavigationStore();
+  const needsYouNodes = useMemo(() => selectNeedsYouRows(navigation), [navigation]);
   const inputRef = useRef<HTMLInputElement>(null);
 
   const [query, setQuery] = useState(initialQuery);
@@ -232,6 +228,22 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
   const [enumStatus, setEnumStatus] = useState<"idle" | "loading" | "loaded" | "error">("idle");
   const [enumItems, setEnumItems] = useState<CommandArgsEnumItem[]>([]);
   const searchTokenRef = useRef(0);
+  const requestedNeedsPages = useRef(new Set<string>());
+
+  const mode = computeMode({ query, hasSelectedCommand: selectedCommand !== null });
+  useEffect(() => {
+    if (mode !== "search" || query.trim()) return;
+    const needsYouCount = needsYouNodes.length;
+    const initialDemand = needsYouCount === 0 && (navigation.manifest?.data?.sections.needs_you.count ?? 0) > 0;
+    const overflowDemand =
+      needsYouCount > 0 && activeIndex >= needsYouCount - 1 && selectSectionRemaining("needs_you", navigation) > 0;
+    if (!initialDemand && !overflowDemand) return;
+    const offset = selectNextSectionOffset("needs_you", navigation);
+    const pageID = keyID({ kind: "section", section: "needs_you", offset, limit: 50 });
+    if (requestedNeedsPages.current.has(pageID)) return;
+    requestedNeedsPages.current.add(pageID);
+    void navigationStore.getState().loadSection("needs_you", offset);
+  }, [activeIndex, mode, navigation, needsYouNodes.length, query]);
 
   // The palette's context is fixed at open time - focus is trapped inside the
   // overlay, so the focused session can't change while it's open. Computing it
@@ -241,8 +253,6 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
   // focusedModel(), so turn-state guards stay current. (buildPaletteContext is
   // a stable module import, so the empty dep array needs no suppression.)
   const ctx = useMemo(() => buildPaletteContext(), []);
-  const mode = computeMode({ query, hasSelectedCommand: selectedCommand !== null });
-
   const ui: PaletteUi = {
     clearToSearch: () => {
       setSelectedCommand(null);
@@ -683,7 +693,7 @@ function buildView(args: {
   enumItems: CommandArgsEnumItem[];
   showingHelp: boolean;
   catalogCommands: CommandDescriptor[];
-  needsYouNodes: readonly ApiTreeNode[];
+  needsYouNodes: readonly NavigationSessionSummary[];
 }): ResultsView {
   const { mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp, catalogCommands, needsYouNodes } =
     args;
