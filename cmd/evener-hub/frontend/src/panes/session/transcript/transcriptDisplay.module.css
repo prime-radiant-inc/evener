@@ -202,6 +202,12 @@
   box-shadow: var(--shadow-overlay);
 }
 
+.detailPanel,
+.detailSheetContent {
+  container-type: inline-size;
+  container-name: transcript-detail-panel;
+}
+
 .detailPanelTitle {
   margin: 0;
   color: var(--ink-hi);
@@ -279,19 +285,24 @@
     text-overflow: ellipsis;
   }
 
-  .detailPanel {
-    min-width: min(24rem, calc(100vw - 1rem));
+  .detailControl .detailTrigger {
+    min-width: 0;
   }
+}
 
-  .fieldsets {
+@container transcript-detail-panel (max-width: 34rem) {
+  .detailPanel .fieldsets,
+  .detailSheetContent .fieldsets {
     grid-template-columns: minmax(0, 1fr);
   }
 
-  .detailActions {
+  .detailPanel .detailActions,
+  .detailSheetContent .detailActions {
     flex-direction: column;
   }
 
-  .detailActions button {
+  .detailPanel .detailActions button,
+  .detailSheetContent .detailActions button {
     width: 100%;
   }
 }

@@ -86,6 +86,21 @@ test("renders a desktop Popover with effective compact summary, scope, reset, an
   expect(onEditHubDefaults).toHaveBeenCalledOnce();
 });
 
+test("keeps the portaled desktop panel as the container for compact descendants", async () => {
+  const user = userEvent.setup();
+  render(<TranscriptDetailControl layout="desktop" onEditHubDefaults={() => {}} />);
+
+  await user.click(screen.getByRole("button", { name: "Detail: Tools" }));
+
+  const portalPanel = screen.getByTestId("transcript-detail-popover");
+  expect(portalPanel.querySelector('[class*="detailPanel"]')).toBeTruthy();
+
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "transcriptDisplay.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css).toMatch(/\.detailPanel,\s*\.detailSheetContent\s*\{[^}]*container-type:\s*inline-size/);
+  expect(css).toMatch(/@container\s+transcript-detail-panel\s*\([^)]*\)[\s\S]*\.detailPanel\s+\.fieldsets/);
+});
+
 test("sets and clears only the browser-local value for the selected layout", async () => {
   const user = userEvent.setup();
   render(<TranscriptDetailControl layout="desktop" onEditHubDefaults={() => {}} />);
