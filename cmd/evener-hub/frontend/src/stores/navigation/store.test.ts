@@ -100,30 +100,59 @@ test("routes encode identifiers, enforce limits, credentials and conditional ETa
 });
 
 test("HTTP status, content type, server headers and 304 are validated", async () => {
-  let n = 0;
-  await init((url) => {
+  let manifestCalls = 0;
+  const fetcher = vi.fn((url: string) => {
     if (url === "/api/navigation") {
-      n++;
-      return n === 1 ? json(emptyManifest(), 200, '"a"', 3) : json(undefined, 304, '"a"', 3);
+      manifestCalls++;
+      return json(emptyManifest(), 200, '"a"', 3);
     }
-    return json({ sessions: [], remaining: 0 });
+    return json({ sessions: [], remaining: 0 }, 200, '"section"', 3);
   });
-  const first = navigationStore.getState().manifest;
-  expect(first?.etag).toBe('"a"');
-  // A loaded resource is served from cache until explicit invalidation; 304 is exercised by notification force below.
+  await init(fetcher);
+  expect(navigationStore.getState().manifest?.etag).toBe('"a"');
+  await navigationStore.getState().loadSection("live");
+  fetcher.mockImplementation((url: string) =>
+    url === "/api/navigation/sections/live?offset=0&limit=50"
+      ? json(undefined, 304, '"section"', 3)
+      : json(emptyManifest(), 200, '"a"', 3),
+  );
   const client = new FakeClient("ready");
   resetNavigationStoreForTests();
-  vi.stubGlobal("fetch", vi.fn(() => json(emptyManifest(), 200, '"a"', 3)));
+  vi.stubGlobal("fetch", fetcher);
   initNavigation(client, capability());
   await flush();
-  expect(navigationStore.getState().manifest?.data).toEqual(emptyManifest());
-  const bad = vi.fn(() => json(emptyManifest(), 200, '"b"', 3));
-  vi.stubGlobal("fetch", bad);
-  client.emitNotification({ method: "evener/navigation/invalidated", params: { generationId: generation, sequence: 1, targets: [{ kind: "manifest", revision: 4 }] } } as never);
+  await navigationStore.getState().loadSection("live");
+  client.emitNotification({
+    method: "evener/navigation/invalidated",
+    params: { generationId: generation, sequence: 1, targets: [{ kind: "section", section: "live", revision: 4 }] },
+  } as never);
   await flush();
-  expect(bad.mock.calls[0]?.[1]).toMatchObject({ credentials: "same-origin", headers: { "If-None-Match": '"a"' } });
-  expect(navigationStore.getState().manifest?.data).toEqual(emptyManifest());
-  expect(n).toBeGreaterThan(0);
+  const sectionCall = fetcher.mock.calls.find(([url]) => url.includes("sections/live"));
+  expect(sectionCall?.[1]).toMatchObject({ credentials: "same-origin", headers: { "If-None-Match": '"section"' } });
+  expect(
+    [...navigationStore.getState().resources.values()].find(
+      (resource) => resource.key.kind === "section" && resource.key.section === "live",
+    )?.stale,
+  ).toBe(false);
+  expect(manifestCalls).toBeGreaterThan(0);
+});
+
+test("non-200, non-JSON, and missing server headers become resource errors", async () => {
+  let mode = "status";
+  await init((url) => {
+    if (url === "/api/navigation") return json(emptyManifest());
+    if (mode === "status") return json({}, 206);
+    if (mode === "type") return new Response("{}", { status: 200, headers: { "content-type": "text/plain", etag: '"x"' } });
+    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  });
+  const status = await navigationStore.getState().loadSection("live");
+  expect(status.error).toBeTruthy();
+  mode = "type";
+  const type = await navigationStore.getState().loadSection("needs_you");
+  expect(type.error).toBeTruthy();
+  mode = "etag";
+  const etag = await navigationStore.getState().loadCatalog("projects");
+  expect(etag.error).toBeTruthy();
 });
 
 test("stale client completion cannot overwrite newer client", async () => {
