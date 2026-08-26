@@ -37,20 +37,6 @@ func captureNavigationREST(t *testing.T, web *WebServer, rr *httptest.ResponseRe
 	}
 }
 
-func captureArchiveNavigationREST(t *testing.T, web *WebServer, rr *httptest.ResponseRecorder) navigationRESTCapture {
-	t.Helper()
-	var response archiveMutationResponse
-	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
-		t.Fatalf("decode response %q: %v", rr.Body.String(), err)
-	}
-	published := web.navigation.DrainPublications()
-	return navigationRESTCapture{
-		generation: response.Navigation.GenerationID,
-		targets:    append([]appwire.NavigationInvalidationTarget(nil), response.Navigation.Targets...),
-		published:  published,
-	}
-}
-
 func TestRESTNavigationTicketConvergesWithPublisherFIFO(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	web := NewWebServer(hubcore.WebConfig{
