@@ -1,4 +1,4 @@
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readdir, writeFile } from "node:fs/promises";
 import net from "node:net";
 import os from "node:os";
 import path from "node:path";
@@ -54,66 +54,51 @@ function actionSource(concept, destination, textScale, variant = {}) {
     const waitFor = selector => new Promise(resolve => { const current=document.querySelector(selector); if(current){resolve(current);return} const observer=new MutationObserver(()=>{const found=document.querySelector(selector);if(found){observer.disconnect();resolve(found)}});observer.observe(document,{subtree:true,childList:true,attributes:true}); });
     const named = name => controls().find(el => (el.getAttribute('aria-label') || el.textContent || '').trim() === name);
     const click = async name => { const el = named(name); if (!el) throw new Error('missing real control: ' + name); el.click(); await frame(); await frame(); return el; };
-    const selectorClick = async selector => { const holder = document.querySelector(selector); const el = holder?.matches('button,a,input') ? holder : holder?.querySelector('button,a,input'); if (!el) throw new Error('missing real control: ' + selector); el.click(); await frame(); await frame(); };
+    const selectorClick = async selector => { const holder = document.querySelector(selector); const el = holder?.matches('button,a,input') ? holder : holder?.querySelector('button,a,input'); if (!el) throw new Error('missing real control: ' + selector); el.click(); await frame(); await frame(); return {holder,el}; };
     const input = async (label, value) => { const el = controls().find(node => node.getAttribute('aria-label') === label); if (!el) throw new Error('missing real field: ' + label); const setter = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(el), 'value')?.set; setter.call(el, value); el.dispatchEvent(new Event('input', {bubbles:true})); el.dispatchEvent(new Event('change', {bubbles:true})); await frame(); };
     await frame(); await frame();
     if (!document.querySelector('[data-testid="concept-gallery"]')) throw new Error('case storage was not isolated');
     await click(${JSON.stringify(`Select ${conceptNames[concept]}`)});
     await waitFor('main[data-route="sessions"]');
     if (${JSON.stringify(variant.scenario ?? null)}) { await click('Lab Controls'); const scenario = [...document.querySelectorAll('input[name="scenario"]')].find(el => el.parentElement?.textContent?.trim() === ${JSON.stringify(variant.scenario ?? "")}); if (!scenario) throw new Error('missing scenario control'); scenario.click(); await frame(); if (named('Close Lab Controls')) await click('Close Lab Controls'); }
-    if (${JSON.stringify(variant.appearance ?? null)}) { await click('Settings'); const appearance = controls().find(el => el.getAttribute('aria-label') === 'Appearance'); if (!appearance) throw new Error('missing Appearance'); const setter=Object.getOwnPropertyDescriptor(Object.getPrototypeOf(appearance),'value').set; setter.call(appearance,${JSON.stringify(variant.appearance ?? "")}); appearance.dispatchEvent(new Event('change',{bubbles:true})); await frame(); }
-    if (${JSON.stringify(Boolean(variant.reducedMotion))}) { if (!document.querySelector('[role="dialog"]')) await click('Lab Controls'); const reduced = controls().find(el => el.getAttribute('aria-label') === 'Reduce motion' || el.parentElement?.textContent?.includes('Reduce motion')); if (!reduced) throw new Error('missing reduced motion control'); reduced.click(); await frame(); }
-    if (${JSON.stringify(destination)} === 'search') { await click('Search'); await input('Search', 'Fixture-first plan'); }
+    if (${JSON.stringify(variant.appearance ?? null)}) { await click('Lab Controls'); const appearance = [...document.querySelectorAll('input[name="appearance"]')].find(el=>el.parentElement?.textContent?.trim()===${JSON.stringify(variant.appearance ?? "")}); if (!appearance) throw new Error('missing Appearance'); appearance.click(); await frame(); await frame(); await click('Close Lab Controls'); }
+    if (${JSON.stringify(Boolean(variant.reducedMotion))}) { await click('Lab Controls'); const reduced = document.querySelector('.lab-controls__check input[type="checkbox"]'); if (!reduced) throw new Error('missing reduced motion control'); reduced.click(); await frame(); await frame(); if(!reduced.checked)throw new Error('reduced motion checkbox did not check'); await click('Close Lab Controls'); }
+    if (${JSON.stringify(destination)} === 'search') { await click('Search'); await input('Search', 'Fixture-first plan'); if(!document.querySelector('[data-search-result-id]'))throw new Error('search result state not rendered'); }
     if (['conversation','work','voice','voice-speaking'].includes(${JSON.stringify(destination)})) { await selectorClick('[data-session-id="session-native-client"]'); }
     if (${JSON.stringify(destination)} === 'question') await selectorClick('[data-session-id="session-mobile-release"]');
-    if (${JSON.stringify(destination)} === 'conversation') await click('Inspect fixture schema');
-    if (${JSON.stringify(destination)} === 'work') { await click('Work'); await selectorClick('[data-work-node-id]'); }
-    if (${JSON.stringify(destination)} === 'question') { const option = await waitFor('[data-question-id] input'); option.click(); await frame(); await input('Note', 'Browser matrix note'); }
-    if (${JSON.stringify(destination)} === 'new') { await click('New Session'); await selectorClick('[data-project-id]'); await input('Prompt', 'Browser matrix populated prompt'); }
+    if (${JSON.stringify(destination)} === 'conversation') { const tool=await click('Inspect fixture schema'); if(tool.getAttribute('aria-expanded')!=='true'&&!document.querySelector('[data-long-tool-output]'))throw new Error('tool disclosure did not expand'); }
+    if (${JSON.stringify(destination)} === 'work') { await click('Work'); const work=await selectorClick('[data-work-node-id]'); if(work.el.getAttribute('aria-expanded')!=='true'&&work.holder.getAttribute('aria-expanded')!=='true'&&!work.holder.querySelector('[aria-expanded="true"]'))throw new Error('subagent disclosure did not expand'); }
+    if (${JSON.stringify(destination)} === 'question') { const option = await waitFor('[data-question-id] input'); option.click(); await frame(); await input('Note', 'Browser matrix note'); if(!option.checked||document.querySelector('textarea[aria-label="Note"]')?.value!=='Browser matrix note')throw new Error('question selection/note did not persist'); }
+    if (${JSON.stringify(destination)} === 'new') { await click('New Session'); await selectorClick('[data-project-id]'); await input('Prompt', 'Browser matrix populated prompt'); if(!document.querySelector('[aria-label="Project path"]')?.value||document.querySelector('[aria-label="Prompt"]')?.value!=='Browser matrix populated prompt')throw new Error('New Session fields not populated'); }
     if (${JSON.stringify(destination)} === 'settings') { await click('Settings'); await click('Lab Controls'); }
-    if (${JSON.stringify(destination)}.startsWith('voice')) { await click('Voice'); await click('Set voice state: listening'); ${destination === "voice-speaking" ? "await click('Set voice state: speaking');" : ""} }
+    if (${JSON.stringify(destination)}.startsWith('voice')) { await click('Voice'); await click('Set voice state: listening'); ${destination === "voice-speaking" ? "await click('Set voice state: speaking');" : ""} const expected=${JSON.stringify(destination === "voice-speaking" ? "speaking" : "listening")}; if(document.querySelector('[aria-label="Set voice state: '+expected+'"]')?.getAttribute('aria-pressed')!=='true')throw new Error('voice state did not reach '+expected); }
     if (${JSON.stringify(textScale)} === 'accessibility') { if (!document.querySelector('[role="dialog"]')) await click('Lab Controls'); const radio = document.querySelector('input[name="text-scale"][value="accessibility"]') || [...document.querySelectorAll('input[type="radio"]')].find(el => el.parentElement?.textContent?.trim() === 'accessibility'); if (!radio) throw new Error('missing accessibility text control'); radio.click(); await frame(); if (${JSON.stringify(destination)} !== 'settings') await click('Close Lab Controls'); }
-    return { route: document.querySelector('main')?.dataset.route, platform: document.documentElement.dataset.platform, fileInputs: document.querySelectorAll('input[type="file"],input[capture]').length, attempts: window.__capabilityAttempts };
+    const preferences=JSON.parse(localStorage.getItem('evener-concepts.preferences.v1')||'{}');
+    if(${JSON.stringify(variant.scenario ?? null)}&&preferences.scenario!==${JSON.stringify(variant.scenario ?? null)})throw new Error('scenario state did not persist');
+    if(${JSON.stringify(["loading", "empty", "error"].includes(variant.scenario))}&&!document.querySelector('[data-screen-state=${variant.scenario ?? ""}]'))throw new Error('scenario screen state not rendered');
+    if(${JSON.stringify(variant.scenario === "offline")}&&!document.querySelector('[data-offline-policy="read-only"]'))throw new Error('offline policy state not rendered');
+    if(${JSON.stringify(variant.appearance ?? null)}&&document.documentElement.dataset.appearance!==${JSON.stringify(variant.appearance ?? null)})throw new Error('appearance state did not apply');
+    if(${JSON.stringify(Boolean(variant.reducedMotion))}&&(preferences.reducedMotion!==true||document.documentElement.dataset.reducedMotion!=='true'))throw new Error('reduced motion state did not apply: '+JSON.stringify({preference:preferences.reducedMotion,resolved:document.documentElement.dataset.reducedMotion}));
+    if(${JSON.stringify(destination)}==='sessions'&&${JSON.stringify(!variant.scenario)})for(const group of ['needs-you','running','recent'])if(!document.querySelector('[data-session-group-id="'+group+'"]'))throw new Error('Sessions missing '+group+' group');
+    return { route: document.querySelector('main')?.dataset.route, platform: document.documentElement.dataset.platform, appearance:document.documentElement.dataset.appearance,reducedMotion:document.documentElement.dataset.reducedMotion,scenario:preferences.scenario,fileInputs: document.querySelectorAll('input[type="file"],input[capture]').length, attempts: window.__capabilityAttempts };
   })()`;
 }
 
 async function focusAudit(client) {
-  const expected = await evaluate(
+  const setup = await evaluate(
     client,
-    `(() => [...document.querySelectorAll('button:not([disabled]),input:not([disabled]):not([type="hidden"]),textarea:not([disabled]),select:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])')].filter(e => {const r=e.getBoundingClientRect(),s=getComputedStyle(e);const radioSkipped=e.matches('input[type="radio"]')&&!e.checked&&document.querySelector('input[type="radio"][name="'+CSS.escape(e.name)+'"]:checked');return r.width>0&&r.height>0&&s.visibility!=='hidden'&&!e.closest('[inert],[aria-hidden="true"]')&&!radioSkipped}).map((e,i)=>{e.dataset.browserFocusId='focus-'+i;return e.dataset.browserFocusId}))()`,
+    `(() => {
+    const candidates=[...document.querySelectorAll('button:not([disabled]),input:not([disabled]):not([type="hidden"]),textarea:not([disabled]),select:not([disabled]),a[href],[tabindex]:not([tabindex="-1"])')].filter(e=>{const r=e.getBoundingClientRect(),s=getComputedStyle(e),radioSkipped=e.matches('input[type="radio"]')&&!e.checked&&document.querySelector('input[type="radio"][name="'+CSS.escape(e.name)+'"]:checked');return r.width>0&&r.height>0&&s.visibility!=='hidden'&&!e.closest('[inert],[aria-hidden="true"]')&&!radioSkipped});
+    const style=e=>{const s=getComputedStyle(e);return{outlineStyle:s.outlineStyle,outlineWidth:s.outlineWidth,outlineColor:s.outlineColor,outlineOffset:s.outlineOffset,boxShadow:s.boxShadow};};
+    const name=(e,i)=>e.id||e.getAttribute('aria-label')||e.textContent?.trim().slice(0,80)||e.tagName+'-'+i;
+    const expected=candidates.map((e,i)=>{e.dataset.browserFocusId='focus-'+i;return{id:e.dataset.browserFocusId,subject:name(e,i),before:style(e)};});
+    document.body.tabIndex=-1;document.body.focus();document.body.removeAttribute('tabindex');
+    return expected;
+  })()`,
   );
-  const inspectFocus = () =>
-    evaluate(
-      client,
-      `(() => { const e=document.activeElement,s=getComputedStyle(e),label=e.labels?.[0],ls=label?getComputedStyle(label):null; const indicator=style=>style&&(style.outlineStyle!=='none'&&parseFloat(style.outlineWidth)>0 || (style.boxShadow!=='none'&&!style.boxShadow.includes('rgba(0, 0, 0, 0)'))); const id=e.dataset.browserFocusId || ''; return {id, subject:e.id||e.getAttribute('aria-label')||e.textContent?.trim().slice(0,80)||e.tagName, visible:indicator(s)||indicator(ls)}; })()`,
-    );
+  const expected = setup.map(({ id }) => id);
   const actual = [];
-  let initial = await inspectFocus();
-  if (initial.id) {
-    for (const modifiers of [8, 0]) {
-      await client.send("Input.dispatchKeyEvent", {
-        type: "keyDown",
-        key: "Tab",
-        code: "Tab",
-        modifiers,
-        windowsVirtualKeyCode: 9,
-      });
-      await client.send("Input.dispatchKeyEvent", {
-        type: "keyUp",
-        key: "Tab",
-        code: "Tab",
-        modifiers,
-        windowsVirtualKeyCode: 9,
-      });
-    }
-    initial = await inspectFocus();
-    actual.push(initial);
-  } else
-    await evaluate(
-      client,
-      "document.body.tabIndex=-1;document.body.focus();document.body.removeAttribute('tabindex');true",
-    );
-  for (let index = actual.length; index < expected.length; index += 1) {
+  for (let index = 0; index < expected.length; index += 1) {
     await client.send("Input.dispatchKeyEvent", {
       type: "keyDown",
       key: "Tab",
@@ -126,7 +111,20 @@ async function focusAudit(client) {
       code: "Tab",
       windowsVirtualKeyCode: 9,
     });
-    actual.push(await inspectFocus());
+    actual.push(
+      await evaluate(
+        client,
+        `(() => {
+      const e=document.activeElement,s=getComputedStyle(e),before=${JSON.stringify(setup)}.find(item=>item.id===e.dataset.browserFocusId)?.before;
+      const after={outlineStyle:s.outlineStyle,outlineWidth:s.outlineWidth,outlineColor:s.outlineColor,outlineOffset:s.outlineOffset,boxShadow:s.boxShadow};
+      const outlineChanged=before&&(after.outlineStyle!==before.outlineStyle||after.outlineWidth!==before.outlineWidth||after.outlineColor!==before.outlineColor||after.outlineOffset!==before.outlineOffset)&&after.outlineStyle!=='none'&&parseFloat(after.outlineWidth)>0;
+      const shadowChanged=before&&after.boxShadow!==before.boxShadow&&after.boxShadow!=='none';
+      const shadowColor=after.boxShadow.match(/rgba?\\([^)]*\\)/)?.[0]??after.boxShadow;
+      const backgrounds=[];let current=e.parentElement;while(current){const style=getComputedStyle(current);backgrounds.push({color:style.backgroundColor,image:style.backgroundImage,opacity:style.opacity});current=current.parentElement;}
+      return{id:e.dataset.browserFocusId||'',subject:${JSON.stringify(setup)}.find(item=>item.id===e.dataset.browserFocusId)?.subject||e.tagName,visible:Boolean(outlineChanged||shadowChanged),candidate:{id:${JSON.stringify(setup)}.find(item=>item.id===e.dataset.browserFocusId)?.subject||e.tagName,kind:'focus',foreground:outlineChanged?after.outlineColor:shadowColor,backgrounds,minimum:3,changed:Boolean(outlineChanged||shadowChanged),before,after,source:outlineChanged?'outline':shadowChanged?'box-shadow':'none'}};
+    })()`,
+      ),
+    );
   }
   if (expected.length > 1) {
     await client.send("Input.dispatchKeyEvent", {
@@ -152,16 +150,20 @@ async function focusAudit(client) {
         `Shift+Tab mismatch: expected ${actual.at(-2)?.id}, got ${reverse}`,
       );
   }
-  return actual.map((item, index) => ({
-    id: item.subject,
-    order: expected.indexOf(item.id) + 1,
-    visible: item.visible,
-    actualOrder: index + 1,
-  }));
+  return {
+    focusCandidates: actual.map(({ candidate }) => candidate),
+    focusOrder: actual.map((item, index) => ({
+      id: item.subject,
+      order: expected.indexOf(item.id) + 1,
+      visible: item.visible,
+      actualOrder: index + 1,
+    })),
+  };
 }
 
 async function setupPage(client, origin, viewport, safeArea, sentinels = true) {
   const ua = agents[viewport.platform];
+  const layoutHeight = viewport.layoutHeight ?? viewport.height;
   await Promise.all([
     client.send("Page.enable"),
     client.send("Runtime.enable"),
@@ -171,12 +173,28 @@ async function setupPage(client, origin, viewport, safeArea, sentinels = true) {
     origin,
     storageTypes: "all",
   });
-  await client.send("Emulation.setDeviceMetricsOverride", {
+  const metrics = {
     width: viewport.width,
-    height: viewport.height,
+    height: layoutHeight,
     deviceScaleFactor: 2,
     mobile: true,
-  });
+    screenWidth: viewport.width,
+    screenHeight: layoutHeight,
+  };
+  if (viewport.visibleHeight)
+    metrics.viewport = {
+      x: 0,
+      y: 0,
+      width: viewport.width,
+      height: viewport.visibleHeight,
+      scale: 1,
+    };
+  await client.send("Emulation.setDeviceMetricsOverride", metrics);
+  if (viewport.visibleHeight)
+    await client.send("Emulation.setVisibleSize", {
+      width: viewport.width,
+      height: viewport.visibleHeight,
+    });
   await client.send("Emulation.setUserAgentOverride", {
     userAgent: ua.userAgent,
     platform: ua.platform,
@@ -215,17 +233,23 @@ async function runCase({
   query = "",
   expectedPlatform = viewport.platform,
   variant = {},
+  caseIndex,
 }) {
   const client = await chrome.newPage();
   const offOrigin = [];
   const requests = [];
   client.on("Network.requestWillBeSent", (event) => {
     requests.push(event.request.url);
-    if (
-      !event.request.url.startsWith(origin) &&
-      !/^(data|blob):/.test(event.request.url)
-    )
+    try {
+      const parsed = new URL(event.request.url);
+      if (
+        !["data:", "blob:"].includes(parsed.protocol) &&
+        parsed.origin !== origin
+      )
+        offOrigin.push(event.request.url);
+    } catch {
       offOrigin.push(event.request.url);
+    }
   });
   try {
     await setupPage(client, origin, viewport, safeArea);
@@ -245,31 +269,66 @@ async function runCase({
       throw new Error(
         `platform mismatch: ${state.platform} != ${expectedPlatform}`,
       );
-    if (state.fileInputs !== 0 || state.attempts.length)
-      throw new Error(`capability audit failed: ${JSON.stringify(state)}`);
-    if (offOrigin.length)
-      throw new Error(`off-origin request(s): ${offOrigin.join(", ")}`);
-    const focusOrder = await focusAudit(client);
+    const focus = await focusAudit(client);
     const measurements = await measurePage(client, {
       platform: expectedPlatform,
-      viewport,
-      safeArea,
-      focusOrder,
-      keyboardTop: viewport.height,
+      focusOrder: focus.focusOrder,
+      focusCandidates: focus.focusCandidates,
     });
+    const capabilityFailures = [];
+    if (viewport.visibleHeight) {
+      const layoutHeight = viewport.layoutHeight ?? viewport.height;
+      if (
+        measurements.viewport.height !== layoutHeight ||
+        measurements.viewport.visualHeight >= measurements.viewport.height ||
+        Math.abs(measurements.viewport.visualHeight - viewport.visibleHeight) >
+          1
+      )
+        capabilityFailures.push({
+          code: "keyboard-emulation-unsupported",
+          expected: { layoutHeight, visualHeight: viewport.visibleHeight },
+          actual: measurements.viewport,
+        });
+    }
     const route = state.route ?? destination;
-    const violations = assertGeometry(measurements, { route });
-    const name = `${concept}-${expectedPlatform}-${destination}-${textScale}-${safeArea.top}-${safeArea.bottom}${variant.scenario ? `-${variant.scenario}` : ""}`;
+    const violations = assertGeometry(measurements, { route, safeArea });
+    const identity = [
+      String(caseIndex).padStart(3, "0"),
+      concept,
+      expectedPlatform,
+      `${viewport.width}x${viewport.layoutHeight ?? viewport.height}`,
+      viewport.visibleHeight
+        ? `visual-${viewport.visibleHeight}`
+        : "visual-full",
+      destination,
+      textScale,
+      `appearance-${variant.appearance ?? "system"}`,
+      `motion-${variant.reducedMotion ? "reduce" : "system"}`,
+      `scenario-${variant.scenario ?? (destination === "question" ? "question" : "baseline")}`,
+      query ? "query-override" : "query-none",
+      `safe-${safeArea.top}-${safeArea.right}-${safeArea.bottom}-${safeArea.left}`,
+    ];
+    const name = identity.join("-").replaceAll(/[^a-zA-Z0-9_.-]/g, "_");
     const file = path.join(outputDirectory, `${name}.png`);
     await screenshot(client, file);
+    const finalAudit = await evaluate(
+      client,
+      `({attempts:[...(window.__capabilityAttempts??[])],fileInputs:document.querySelectorAll('input[type="file"],input[capture]').length})`,
+    );
+    if (finalAudit.fileInputs !== 0 || finalAudit.attempts.length)
+      throw new Error(`capability audit failed: ${JSON.stringify(finalAudit)}`);
+    if (offOrigin.length)
+      throw new Error(`off-origin request(s): ${offOrigin.join(", ")}`);
     return {
       audit: {
-        capabilityAttempts: state.attempts,
-        fileInputs: state.fileInputs,
+        capabilityAttempts: finalAudit.attempts,
+        fileInputs: finalAudit.fileInputs,
         offOriginRequests: offOrigin,
         requests,
       },
       measurements,
+      capabilityFailures,
+      state,
       name,
       route,
       violations,
@@ -284,47 +343,51 @@ async function runCase({
 async function cspCase(chrome, origin) {
   const server = net.createServer();
   let connections = 0;
+  let listening = false;
+  let client;
   server.on("connection", (socket) => {
     connections += 1;
     socket.destroy();
   });
-  await new Promise((resolve, reject) => {
-    server.once("error", reject);
-    server.listen(0, "127.0.0.1", resolve);
-  });
-  const address = server.address();
-  const target = `http://127.0.0.1:${address.port}`;
-  const client = await chrome.newPage();
   const network = [];
   const targetRequests = new Set();
-  client.on("Network.requestWillBeSent", (event) => {
-    if (event.request.url.startsWith(target)) {
-      targetRequests.add(event.requestId);
-      network.push({
-        type: "request",
-        requestId: event.requestId,
-        url: event.request.url,
-      });
-    }
-  });
-  client.on("Network.loadingFailed", (event) => {
-    if (targetRequests.has(event.requestId))
-      network.push({
-        type: "failed",
-        requestId: event.requestId,
-        blockedReason: event.blockedReason,
-        errorText: event.errorText,
-      });
-  });
-  client.on("Network.responseReceived", (event) => {
-    if (targetRequests.has(event.requestId))
-      network.push({
-        type: "response",
-        requestId: event.requestId,
-        status: event.response.status,
-      });
-  });
   try {
+    await new Promise((resolve, reject) => {
+      server.once("error", reject);
+      server.listen(0, "127.0.0.1", resolve);
+    });
+    listening = true;
+    const address = server.address();
+    const target = `http://127.0.0.1:${address.port}`;
+    const targetOrigin = new URL(target).origin;
+    client = await chrome.newPage();
+    client.on("Network.requestWillBeSent", (event) => {
+      if (new URL(event.request.url).origin === targetOrigin) {
+        targetRequests.add(event.requestId);
+        network.push({
+          type: "request",
+          requestId: event.requestId,
+          url: event.request.url,
+        });
+      }
+    });
+    client.on("Network.loadingFailed", (event) => {
+      if (targetRequests.has(event.requestId))
+        network.push({
+          type: "failed",
+          requestId: event.requestId,
+          blockedReason: event.blockedReason,
+          errorText: event.errorText,
+        });
+    });
+    client.on("Network.responseReceived", (event) => {
+      if (targetRequests.has(event.requestId))
+        network.push({
+          type: "response",
+          requestId: event.requestId,
+          status: event.response.status,
+        });
+    });
     await setupPage(
       client,
       origin,
@@ -367,8 +430,8 @@ async function cspCase(chrome, origin) {
       network,
     };
   } finally {
-    await client.close();
-    await new Promise((resolve) => server.close(resolve));
+    if (client) await client.close();
+    if (listening) await new Promise((resolve) => server.close(resolve));
   }
 }
 
@@ -381,18 +444,24 @@ export async function runBrowserMatrix(options = {}) {
     );
   await mkdir(outputDirectory, { recursive: true });
   const caseMatch = options.caseMatch ?? process.env.BROWSER_CASE_MATCH ?? "";
-  const server = await preview({
-    configFile: false,
-    root: process.cwd(),
-    preview: { host: "127.0.0.1", port: 0, strictPort: false },
-    build: { outDir: "dist" },
-  });
-  const address = server.httpServer.address();
-  const origin = `http://127.0.0.1:${address.port}`;
-  const chrome = await startChrome();
+  let server;
+  let chrome;
+  let origin;
   const results = [];
   let failed = false;
+  let caseIndex = 0;
+  let primaryError;
+  const cleanupErrors = [];
   try {
+    server = await preview({
+      configFile: false,
+      root: process.cwd(),
+      preview: { host: "127.0.0.1", port: 0, strictPort: false },
+      build: { outDir: "dist" },
+    });
+    const address = server.httpServer.address();
+    origin = `http://127.0.0.1:${address.port}`;
+    chrome = await startChrome();
     for (const concept of concepts)
       for (const viewport of [viewports.iosPortrait, viewports.androidPortrait])
         for (const destination of [
@@ -414,6 +483,7 @@ export async function runBrowserMatrix(options = {}) {
               )
             )
               continue;
+            caseIndex += 1;
             try {
               results.push(
                 await runCase({
@@ -424,12 +494,13 @@ export async function runBrowserMatrix(options = {}) {
                   viewport,
                   destination,
                   textScale,
+                  caseIndex,
                 }),
               );
             } catch (error) {
               failed = true;
               results.push({
-                name: `${concept}-${viewport.platform}-${destination}-${textScale}`,
+                name: `${String(caseIndex).padStart(3, "0")}-${concept}-${viewport.platform}-${destination}-${textScale}`,
                 error: error.message,
                 violations: [],
               });
@@ -437,22 +508,26 @@ export async function runBrowserMatrix(options = {}) {
           }
     for (const extra of [
       {
+        tag: "safe-zero",
         concept: "stillwater",
         viewport: viewports.iosPortrait,
         destination: "sessions",
         safeArea: { top: 0, right: 0, bottom: 0, left: 0 },
       },
       {
+        tag: "conversation-landscape",
         concept: "stillwater",
         viewport: viewports.landscape,
         destination: "conversation",
       },
       {
+        tag: "voice-landscape",
         concept: "stillwater",
         viewport: viewports.landscape,
         destination: "voice",
       },
       {
+        tag: "query-override",
         concept: "stillwater",
         viewport: viewports.iosPortrait,
         destination: "sessions",
@@ -469,42 +544,52 @@ export async function runBrowserMatrix(options = {}) {
         "completed",
         "long-content",
       ].map((scenario) => ({
+        tag: `scenario-${scenario}`,
         concept: "stillwater",
         viewport: viewports.iosPortrait,
         destination: "sessions",
         variant: { scenario },
       })),
       {
+        tag: "appearance-dark",
         concept: "stillwater",
         viewport: viewports.iosPortrait,
         destination: "sessions",
         variant: { appearance: "dark" },
       },
       {
+        tag: "motion-reduce",
         concept: "stillwater",
         viewport: viewports.iosPortrait,
         destination: "sessions",
         variant: { reducedMotion: true },
       },
       {
+        tag: "keyboard-visual-viewport",
         concept: "stillwater",
-        viewport: { ...viewports.iosPortrait, height: 600 },
+        viewport: {
+          ...viewports.iosPortrait,
+          layoutHeight: viewports.iosPortrait.height,
+          visibleHeight: 600,
+        },
         destination: "conversation",
       },
     ]) {
-      if (caseMatch) continue;
+      if (caseMatch && !extra.tag.includes(caseMatch)) continue;
+      caseIndex += 1;
       try {
         const value = await runCase({
           chrome,
           origin,
           outputDirectory,
+          caseIndex,
           ...extra,
         });
         results.push(value);
       } catch (error) {
         failed = true;
         results.push({
-          name: `extra-${extra.destination}${extra.variant?.scenario ? `-${extra.variant.scenario}` : ""}`,
+          name: `${String(caseIndex).padStart(3, "0")}-extra-${extra.destination}${extra.variant?.scenario ? `-${extra.variant.scenario}` : ""}`,
           error: error.message,
           violations: [],
         });
@@ -518,6 +603,36 @@ export async function runBrowserMatrix(options = {}) {
       csp = { error: error.message };
     }
     const violations = results.flatMap((result) => result.violations ?? []);
+    const capabilityFailures = results.flatMap(
+      (result) => result.capabilityFailures ?? [],
+    );
+    if (capabilityFailures.length) failed = true;
+    const screenshotPaths = results
+      .map((result) => result.screenshot)
+      .filter(Boolean);
+    const uniqueScreenshots = new Set(screenshotPaths);
+    const pngFiles = (await readdir(outputDirectory)).filter((file) =>
+      file.endsWith(".png"),
+    );
+    if (
+      uniqueScreenshots.size !== screenshotPaths.length ||
+      pngFiles.length !== screenshotPaths.length
+    ) {
+      failed = true;
+      results.push({
+        name: "screenshot-identity-audit",
+        error: `screenshot identity mismatch: records=${screenshotPaths.length}, unique=${uniqueScreenshots.size}, files=${pngFiles.length}`,
+        violations: [],
+      });
+    }
+    if (!caseMatch && screenshotPaths.length !== 123) {
+      failed = true;
+      results.push({
+        name: "screenshot-count-audit",
+        error: `expected 123 unique screenshots, got ${screenshotPaths.length}`,
+        violations: [],
+      });
+    }
     if (violations.length) failed = true;
     const evidence = path.join(outputDirectory, "results.json");
     await writeFile(
@@ -526,7 +641,7 @@ export async function runBrowserMatrix(options = {}) {
     );
     console.log(`Browser evidence: ${outputDirectory}`);
     console.log(
-      `Cases: ${results.length}; screenshots: ${results.filter((result) => result.screenshot).length}; violations: ${violations.length}; case errors: ${results.filter((result) => result.error).length}`,
+      `Cases: ${results.length}; screenshots: ${results.filter((result) => result.screenshot).length}; violations: ${violations.length}; capability failures: ${capabilityFailures.length}; case errors: ${results.filter((result) => result.error).length}`,
     );
     console.log(`CSP: ${JSON.stringify(csp)}`);
     if (failed) {
@@ -534,11 +649,28 @@ export async function runBrowserMatrix(options = {}) {
       error.results = results;
       throw error;
     }
-    return results;
+  } catch (error) {
+    failed = true;
+    primaryError = error;
   } finally {
-    await chrome.close({ retainProfile: failed });
-    await new Promise((resolve) => server.httpServer.close(resolve));
+    if (chrome)
+      await chrome
+        .close({ retainProfile: failed })
+        .catch((error) => cleanupErrors.push(error));
+    if (server)
+      await new Promise((resolve, reject) =>
+        server.httpServer.close((error) => (error ? reject(error) : resolve())),
+      ).catch((error) => cleanupErrors.push(error));
   }
+  if (primaryError && cleanupErrors.length)
+    throw new AggregateError(
+      [primaryError, ...cleanupErrors],
+      "browser matrix and cleanup failed",
+    );
+  if (primaryError) throw primaryError;
+  if (cleanupErrors.length)
+    throw new AggregateError(cleanupErrors, "browser matrix cleanup failed");
+  return results;
 }
 
 if (import.meta.url === `file://${process.argv[1]}`)
