@@ -18,8 +18,13 @@
   display: none;
 }
 
-.summary:hover {
+.summary:hover:not([aria-disabled="true"]) {
   background: var(--hover-1);
+}
+
+.summary[aria-disabled="true"] {
+  cursor: not-allowed;
+  opacity: 0.5;
 }
 
 /* The open disclosure's own persistent affordance - the same "which one is

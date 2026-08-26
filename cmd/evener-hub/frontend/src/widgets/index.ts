@@ -29,6 +29,8 @@ export type { DiffBlockProps } from "./diffblock";
 export { DiffBlock } from "./diffblock";
 export type { DiffTableCell, DiffTableColumn, DiffTableProps, DiffTableRow } from "./difftable";
 export { DiffTable } from "./difftable";
+export type { DisclosureProps } from "./disclosure";
+export { Disclosure } from "./disclosure";
 export type { DropzoneProps } from "./dropzone";
 export { Dropzone } from "./dropzone";
 export type { EmptyStateProps } from "./emptystate";
