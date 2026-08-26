@@ -833,7 +833,7 @@ func DefAskUser() llm.ToolDefinition {
 	return llm.ToolDefinition{
 		Name: "ask_user",
 		Description: "Ask the user structured questions. Asking yields the floor: when the round containing your `ask_user` call(s) completes, your turn ends and the session waits visibly for the reply (no timeout). Do the work that does not need answers first, then batch every question this decision point needs — several `ask_user` calls may share the round, and a `communicate` in the same round still delivers its message. The answers arrive in the user's next message: either the numbered `[answers]` form (one resolution per question: a selection, free text, \"you decide\" — choose with your judgment, honoring any stated leaning —, your stated fallback, or skipped — proceed on your best judgment, state the assumption, and do not immediately re-ask) or free prose; treat either as the reply to everything you asked. Any answer may carry a user note — read it; it can qualify or override the selection.\n\n" +
-			"- `questions`: 1–4 per call, each with an optional short `header` (omitted headers display as `Question N`), the full `question`, and 2–5 `options` (`{label, detail}`, labels unique). Set `multi_select` to allow several; set `recommended: true` on at most one option and put it first. For a single question, `question` + `options` may be given directly instead of the `questions` array.\n" +
+			"- `questions`: 1–4 per call, each with an optional display `header` (omitted headers display as `Question N`), the full `question`, and 2–5 `options` (`{label, detail}`, labels unique). Set `multi_select` to allow several; set `recommended: true` on at most one option and put it first. For a single question, `question` + `options` may be given directly instead of the `questions` array.\n" +
 			"- Do not add an \"Other\" or free-text option; the UI always offers one, plus \"you decide\".\n" +
 			"- Optional per question: `why` (one line: what the answer changes) and `if_unanswered` (the fallback you would take; the user can accept it with one tap).\n\n" +
 			"First try to resolve the question yourself with tools. Asking is how you end your turn when only the user can unblock the rest — finish the answer-independent work before you ask.",
@@ -850,7 +850,7 @@ func DefAskUser() llm.ToolDefinition {
 					"items": map[string]any{
 						"type": "object",
 						"properties": map[string]any{
-							"header":   map[string]any{"type": "string", "description": "Short chip/tab label."},
+							"header":   map[string]any{"type": "string", "description": "Display label; answer framing encodes delimiter characters when needed."},
 							"question": map[string]any{"type": "string", "description": "The full question text."},
 							"options": map[string]any{
 								"type":        "array",

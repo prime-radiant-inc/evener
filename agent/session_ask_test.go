@@ -2143,6 +2143,19 @@ func TestAskUser_ShorthandDecodesToBatchEquivalent(t *testing.T) {
 	}
 }
 
+func TestAskUser_ShorthandSurvivesSessionPrevalidation(t *testing.T) {
+	t.Parallel()
+	sess := newAskTestSession(t, SessionConfig{})
+
+	res := sess.execTool(context.Background(), askUserCall("c1", askUserArgsShorthand()), "")
+	if res.IsError {
+		t.Fatalf("session ask_user shorthand errored: %s", res.FullOutput)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("askPendingCount = %d, want 1", got)
+	}
+}
+
 // TestAskUser_ShorthandWithAllOptionals verifies shorthand form with all
 // optional fields (header, why, if_unanswered, multi_select) normalizes correctly.
 func TestAskUser_ShorthandWithAllOptionals(t *testing.T) {

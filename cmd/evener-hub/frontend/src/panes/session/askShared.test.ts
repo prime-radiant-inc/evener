@@ -123,6 +123,13 @@ test("answeredAskUserSuffix reads the answer back from a later [answers] reply",
   expect(answeredAskUserSuffix(threadModel([ask, reply]), ask)).toBe(' — answered: "Yes"');
 });
 
+test("answeredAskUserSuffix decodes a JSON-encoded unsafe header", () => {
+  const unsafeHeader = "A]B\nC";
+  const ask = item({ argumentsJSON: askUserArgs([{ ...ONE_QUESTION[0], header: unsafeHeader }]) });
+  const reply = userMessage({ text: '[answers]\n1. ["A]B\\nC"] → "Yes"' });
+  expect(answeredAskUserSuffix(threadModel([ask, reply]), ask)).toBe(' — answered: "Yes"');
+});
+
 test("answeredAskUserSuffix strips a trailing note from the recap", () => {
   const ask = item({ argumentsJSON: askUserArgs(ONE_QUESTION) });
   const reply = userMessage({ text: '[answers]\n1. [Deploy?] → "Yes" — note: "ship it now"' });

@@ -81,11 +81,10 @@ export function parseAskUserQuestions(item: ItemModel): AskUserQuestion[] | unde
 }
 
 // One line of a composed [answers] reply (askCompose.ts's composeAskAnswers,
-// byte-exact format): "N. [Header] → resolution text[ — note: "..."]". The
-// header is captured raw (never escaped by composeAskAnswers, unlike the
-// resolution's quoted strings), so this matches on brackets rather than
-// trying to unescape anything.
-const ASK_ANSWER_LINE_RE = /^\d+\.\s\[([^\]]*)\]\s→\s(.*)$/;
+// byte-exact format): "N. [Header] → resolution text[ — note: "..."]". Safe
+// headers are raw; headers containing ]/CR/LF are JSON strings, so their
+// delimiters cannot be mistaken for the framing brackets.
+const ASK_ANSWER_LINE_RE = /^\d+\.\s(?:\[([^\]\r\n]*)\]|\[("(?:\\.|[^"\\])*")\])\s→\s(.*)$/;
 
 // parseAskAnswerLines reads a composed [answers] reply's text back into a
 // header -> resolution-text map. The optional trailing " — note: ..." is
@@ -96,8 +95,17 @@ function parseAskAnswerLines(text: string): Map<string, string> {
   for (const line of text.split("\n")) {
     const m = ASK_ANSWER_LINE_RE.exec(line);
     if (!m) continue;
-    const header = m[1] ?? "";
-    const rest = m[2] ?? "";
+    let header = m[1] ?? "";
+    if (m[2] !== undefined) {
+      try {
+        const decoded = JSON.parse(m[2]);
+        if (typeof decoded !== "string") continue;
+        header = decoded;
+      } catch {
+        continue;
+      }
+    }
+    const rest = m[3] ?? "";
     const noteAt = rest.indexOf(" — note: ");
     map.set(header, noteAt === -1 ? rest : rest.slice(0, noteAt));
   }
