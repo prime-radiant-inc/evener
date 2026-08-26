@@ -45,6 +45,123 @@ const fixture = {
   ],
 } as unknown as ThreadModel;
 
+const crossTurnFixture = {
+  ...fixture,
+  turns: [
+    {
+      id: "turn_a",
+      status: "completed",
+      items: [
+        {
+          id: "tool_a",
+          turnId: "turn_a",
+          type: "commandExecution",
+          text: "",
+          description: "One",
+          toolName: "read_file",
+          status: "completed",
+        },
+      ],
+    },
+    {
+      id: "turn_b",
+      status: "completed",
+      items: [
+        {
+          id: "tool_b",
+          turnId: "turn_b",
+          type: "commandExecution",
+          text: "",
+          description: "Two",
+          toolName: "grep_files",
+          status: "completed",
+        },
+      ],
+    },
+    {
+      id: "turn_c",
+      status: "completed",
+      items: [
+        {
+          id: "tool_c",
+          turnId: "turn_c",
+          type: "commandExecution",
+          text: "",
+          description: "Three",
+          toolName: "read_file",
+          status: "completed",
+        },
+        { id: "agent_c", turnId: "turn_c", type: "agentMessage", text: "done", status: "completed" },
+      ],
+    },
+  ],
+} as unknown as ThreadModel;
+
+const boundaryFixture = {
+  ...fixture,
+  turns: [
+    {
+      id: "turn_before",
+      status: "completed",
+      items: [
+        {
+          id: "tool_before",
+          turnId: "turn_before",
+          type: "commandExecution",
+          text: "",
+          description: "Solo",
+          toolName: "read_file",
+          status: "completed",
+        },
+      ],
+    },
+    {
+      id: "turn_message",
+      status: "completed",
+      items: [
+        { id: "message", turnId: "turn_message", type: "agentMessage", text: "between", status: "completed" },
+        {
+          id: "tool_after_message",
+          turnId: "turn_message",
+          type: "commandExecution",
+          text: "",
+          description: "After message",
+          toolName: "read_file",
+          status: "completed",
+        },
+      ],
+    },
+    {
+      id: "turn_critical",
+      status: "completed",
+      items: [
+        {
+          id: "critical_tool",
+          turnId: "turn_critical",
+          type: "warning",
+          text: "critical boundary",
+          status: "completed",
+        },
+      ],
+    },
+    {
+      id: "turn_after",
+      status: "completed",
+      items: [
+        {
+          id: "tool_after",
+          turnId: "turn_after",
+          type: "commandExecution",
+          text: "",
+          description: "After critical",
+          toolName: "read_file",
+          status: "completed",
+        },
+      ],
+    },
+  ],
+} as unknown as ThreadModel;
+
 afterEach(cleanup);
 
 let offsetHeightDescriptor: PropertyDescriptor | undefined;
@@ -89,5 +206,60 @@ describe("TranscriptBody", () => {
 
     expect(screen.queryByTestId("transcript-virtual-list")).toBeNull();
     expect(screen.getByText("Inspect the tree")).toBeTruthy();
+  });
+
+  test("coalesces purpose-only intents across adjacent turns into one stable virtual row", () => {
+    const { rerender } = render(
+      <TranscriptBody
+        model={crossTurnFixture}
+        config={preset("intent")}
+        surface="live"
+        disclosureScope="live:cross-turn"
+      />,
+    );
+
+    const group = screen.getAllByTestId("intent-group");
+    expect(group).toHaveLength(1);
+    expect(group[0]?.textContent).toContain("3 actions");
+    expect(group[0]?.textContent).toContain("One");
+    expect(group[0]?.textContent).toContain("Two");
+    expect(group[0]?.textContent).toContain("Three");
+    expect(screen.queryAllByTestId("tool-call-item")).toHaveLength(0);
+    expect(screen.getAllByTestId("transcript-row")).toHaveLength(2);
+    expect(screen.getAllByTestId("transcript-row")[0]?.getAttribute("data-row-id")).toBe(
+      "intent-group:intent:tool_a:intent:tool_c",
+    );
+    expect(
+      document.querySelector('[data-view-anchor-id="intent:tool_b"]')?.getAttribute("data-view-anchor-turn-id"),
+    ).toBe("turn_b");
+
+    const rowIds = screen.getAllByTestId("transcript-row").map((row) => row.getAttribute("data-row-id"));
+    rerender(
+      <TranscriptBody
+        model={crossTurnFixture}
+        config={preset("intent")}
+        surface="live"
+        disclosureScope="live:cross-turn"
+      />,
+    );
+    expect(screen.getAllByTestId("transcript-row").map((row) => row.getAttribute("data-row-id"))).toEqual(rowIds);
+  });
+
+  test("does not merge intents across visible message or critical boundaries", () => {
+    render(
+      <TranscriptBody
+        model={boundaryFixture}
+        config={preset("intent")}
+        surface="preview"
+        disclosureScope="preview:boundaries"
+      />,
+    );
+
+    const groups = screen.getAllByTestId("intent-group");
+    expect(groups).toHaveLength(3);
+    expect(groups.map((group) => group.textContent)).toEqual(
+      expect.arrayContaining(["1 actionSolo", "1 actionAfter message", "1 actionAfter critical"]),
+    );
+    expect(screen.getByTestId("warning-item")).toBeTruthy();
   });
 });

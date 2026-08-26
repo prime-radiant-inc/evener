@@ -47,7 +47,11 @@ import { useSeenDivider } from "./transcript/flow/useSeenDivider";
 import { useTranscriptScroll } from "./transcript/flow/useTranscriptScroll";
 import { SelectionQuote } from "./transcript/SelectionQuote";
 import { formatQuoteBlock } from "./transcript/selectionQuoteLogic";
-import { TranscriptBody } from "./transcript/TranscriptBody";
+import {
+  TranscriptBody,
+  transcriptAnchorEntriesForRows,
+  transcriptRowsForProjection,
+} from "./transcript/TranscriptBody";
 import { SandboxEscalationRail } from "./transcript/tools/sandboxEscalation";
 import { isDormantTranscript } from "./transcript/transcriptVisibility";
 import { useTranscript } from "./transcript/useTranscript";
@@ -172,18 +176,8 @@ export default function Session({ params, paneId, focused: paneFocused }: PanePr
     [displayHub, displayLocal, displayViewport],
   );
   const projection = useMemo(() => (model ? projectThread(model, displayConfig) : undefined), [model, displayConfig]);
-  const anchorEntries = useMemo(
-    () =>
-      projection?.turns.flatMap((turn, index) =>
-        turn.entries.map((entry) => ({
-          id: entry.id,
-          sourceIndex: entry.sourceIndex,
-          index,
-          isMessage: entry.kind === "item" && entry.isMessage,
-        })),
-      ) ?? [],
-    [projection],
-  );
+  const renderRows = useMemo(() => (projection ? transcriptRowsForProjection(projection) : []), [projection]);
+  const anchorEntries = useMemo(() => transcriptAnchorEntriesForRows(renderRows), [renderRows]);
 
   // VirtualList's own imperative handle (getScrollElement/scrollToIndex) is
   // the seam useTranscriptScroll needs for every scroll-behavior concern

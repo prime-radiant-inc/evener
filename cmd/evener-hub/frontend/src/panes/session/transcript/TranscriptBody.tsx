@@ -2,18 +2,201 @@ import type { ReactNode, RefObject } from "react";
 import { useMemo } from "react";
 import type { ThreadModel } from "../../../protocol/model";
 import type { TranscriptDisplayConfigV1 } from "../../../transcriptDisplay/config";
-import { projectThread } from "../../../transcriptDisplay/projector";
+import {
+  type ProjectedEntry,
+  type ProjectedTurn,
+  projectThread,
+  type TranscriptProjection,
+} from "../../../transcriptDisplay/projector";
 import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
 import { VirtualList, type VirtualListHandle } from "../../../widgets";
 import { modelLabel } from "../chrome/statusFormat";
 import { exchangeOpenersFor } from "./exchangeOpeners";
 import { FlowOverlay } from "./flow/FlowOverlay";
-import { TurnBlock } from "./TurnBlock";
+import { ProjectedIntentGroup, TurnBlock } from "./TurnBlock";
 import "./messages";
 import "./tools";
 import styles from "../session.module.css";
 
 const ESTIMATED_TURN_HEIGHT = 96;
+type IntentEntry = Extract<ProjectedEntry, { kind: "intent" }>;
+type NonIntentEntry = Exclude<ProjectedEntry, { kind: "intent" }>;
+
+export interface TranscriptTurnRow {
+  readonly kind: "turn";
+  readonly id: string;
+  readonly turn: ProjectedTurn;
+  readonly sourceTurnIndex: number;
+  readonly showTurnSeparator: boolean;
+}
+
+export interface TranscriptIntentGroupRow {
+  readonly kind: "intentGroup";
+  readonly id: string;
+  readonly entries: readonly IntentEntry[];
+  readonly sourceTurnIndexes: readonly number[];
+  readonly sourceTurnIds: readonly string[];
+}
+
+export type TranscriptBodyRow = TranscriptTurnRow | TranscriptIntentGroupRow;
+
+export interface TranscriptAnchorEntry {
+  readonly id: string;
+  readonly sourceIndex: number;
+  readonly index: number;
+  readonly isMessage: boolean;
+}
+
+interface FlatEntry {
+  readonly entry: ProjectedEntry;
+  readonly turnIndex: number;
+}
+
+interface CrossTurnIntentRun {
+  readonly id: string;
+  readonly entries: readonly IntentEntry[];
+  readonly sourceTurnIndexes: readonly number[];
+  readonly sourceTurnIds: readonly string[];
+}
+
+function entryKey(turnIndex: number, entry: ProjectedEntry): string {
+  return `${turnIndex}\0${entry.id}`;
+}
+
+function fragmentTurn(turn: ProjectedTurn, entries: readonly NonIntentEntry[]): ProjectedTurn {
+  const visibleIds = new Set(entries.map((entry) => entry.item.id));
+  return {
+    id: turn.id,
+    source: turn.source,
+    entries,
+    visibleItems: turn.visibleItems.filter((item) => visibleIds.has(item.id)),
+  };
+}
+
+function turnRow(
+  turn: ProjectedTurn,
+  sourceTurnIndex: number,
+  entries: readonly NonIntentEntry[],
+  segment: number,
+  showTurnSeparator: boolean,
+): TranscriptTurnRow {
+  const isWholeTurn = entries.length === turn.entries.length;
+  return {
+    kind: "turn",
+    id: isWholeTurn ? turn.id : `turn:${turn.id}:segment:${segment}`,
+    turn: isWholeTurn ? turn : fragmentTurn(turn, entries),
+    sourceTurnIndex,
+    showTurnSeparator,
+  };
+}
+
+/**
+ * Converts projected turns into the stable rows consumed by both the virtual
+ * and preview layouts. A contiguous intent run that crosses a turn boundary
+ * becomes one row; any visible item/critical/message entry breaks that run.
+ * Single-turn intent groups remain inside TurnBlock so ordinary turn chrome is
+ * unchanged.
+ */
+export function transcriptRowsForProjection(projection: TranscriptProjection): readonly TranscriptBodyRow[] {
+  const flat: FlatEntry[] = projection.turns.flatMap((turn, turnIndex) =>
+    turn.entries.map((entry) => ({ entry, turnIndex })),
+  );
+  const crossRunByEntry = new Map<string, CrossTurnIntentRun>();
+  let flatIndex = 0;
+  while (flatIndex < flat.length) {
+    const first = flat[flatIndex];
+    if (first?.entry.kind !== "intent") {
+      flatIndex += 1;
+      continue;
+    }
+    let end = flatIndex + 1;
+    while (end < flat.length && flat[end]?.entry.kind === "intent") end += 1;
+    const run = flat.slice(flatIndex, end);
+    const sourceTurnIndexes = [...new Set(run.map((item) => item.turnIndex))];
+    let adjacentTurns = sourceTurnIndexes.length > 1;
+    for (let index = 1; index < sourceTurnIndexes.length; index += 1) {
+      const previous = sourceTurnIndexes[index - 1];
+      const current = sourceTurnIndexes[index];
+      if (previous === undefined || current === undefined || current !== previous + 1) {
+        adjacentTurns = false;
+        break;
+      }
+    }
+    if (adjacentTurns) {
+      const entries = run.map((item) => item.entry).filter((entry): entry is IntentEntry => entry.kind === "intent");
+      const sourceTurnIds = sourceTurnIndexes.map((turnIndex) => projection.turns[turnIndex]?.id ?? "");
+      const group: CrossTurnIntentRun = {
+        id: `intent-group:${entries[0]?.id}:${entries.at(-1)?.id}`,
+        entries,
+        sourceTurnIndexes,
+        sourceTurnIds,
+      };
+      for (const item of run) crossRunByEntry.set(entryKey(item.turnIndex, item.entry), group);
+    }
+    flatIndex = end;
+  }
+
+  const rows: TranscriptBodyRow[] = [];
+  const emittedRuns = new Set<CrossTurnIntentRun>();
+  for (const [sourceTurnIndex, projectedTurn] of projection.turns.entries()) {
+    let segmentStart = 0;
+    let cursor = 0;
+    let segment = 0;
+    let hadCrossRun = false;
+    while (cursor < projectedTurn.entries.length) {
+      const entry = projectedTurn.entries[cursor];
+      const run = entry === undefined ? undefined : crossRunByEntry.get(entryKey(sourceTurnIndex, entry));
+      if (run === undefined) {
+        cursor += 1;
+        continue;
+      }
+      hadCrossRun = true;
+      if (cursor > segmentStart) {
+        const entries = projectedTurn.entries
+          .slice(segmentStart, cursor)
+          .filter((item): item is NonIntentEntry => item.kind !== "intent");
+        rows.push(turnRow(projectedTurn, sourceTurnIndex, entries, segment++, false));
+      }
+      if (!emittedRuns.has(run)) {
+        rows.push({
+          kind: "intentGroup",
+          id: run.id,
+          entries: run.entries,
+          sourceTurnIndexes: run.sourceTurnIndexes,
+          sourceTurnIds: run.sourceTurnIds,
+        });
+        emittedRuns.add(run);
+      }
+      while (cursor < projectedTurn.entries.length) {
+        const candidate = projectedTurn.entries[cursor];
+        if (candidate === undefined || crossRunByEntry.get(entryKey(sourceTurnIndex, candidate)) !== run) break;
+        cursor += 1;
+      }
+      segmentStart = cursor;
+    }
+    if (!hadCrossRun) {
+      rows.push({ kind: "turn", id: projectedTurn.id, turn: projectedTurn, sourceTurnIndex, showTurnSeparator: true });
+    } else if (segmentStart < projectedTurn.entries.length) {
+      const entries = projectedTurn.entries
+        .slice(segmentStart)
+        .filter((item): item is NonIntentEntry => item.kind !== "intent");
+      rows.push(turnRow(projectedTurn, sourceTurnIndex, entries, segment++, true));
+    }
+  }
+  return rows;
+}
+
+export function transcriptAnchorEntriesForRows(rows: readonly TranscriptBodyRow[]): readonly TranscriptAnchorEntry[] {
+  return rows.flatMap((row, index) => {
+    const entries = row.kind === "intentGroup" ? row.entries : row.turn.entries;
+    return entries.map((entry) => ({
+      id: entry.id,
+      sourceIndex: entry.sourceIndex,
+      index,
+      isMessage: entry.kind === "item" && entry.isMessage,
+    }));
+  });
+}
 
 export interface TranscriptBodyProps {
   model: ThreadModel;
@@ -43,21 +226,54 @@ export function TranscriptBody({
   trailingContent,
 }: TranscriptBodyProps) {
   const projection = useMemo(() => projectThread(model, config), [model, config]);
+  const rows = useMemo(() => transcriptRowsForProjection(projection), [projection]);
   const openers = useMemo(() => exchangeOpenersFor(model.turns), [model.turns]);
   const agentLabel = modelLabel(model.modelProvider, model.model);
-  const renderTurn = (index: number) => {
-    const projectedTurn = projection.turns[index];
-    if (!projectedTurn) throw new Error(`Transcript index ${index} out of range for ${projection.turns.length} turns`);
+
+  const renderRow = (row: TranscriptBodyRow, index: number) => {
+    const seenTurnId = showSeenDividerTurnId;
+    const seenAlreadyRendered =
+      seenTurnId !== undefined &&
+      rows
+        .slice(0, index)
+        .some((previous) =>
+          previous.kind === "intentGroup"
+            ? previous.sourceTurnIds.includes(seenTurnId)
+            : previous.turn.source.id === seenTurnId,
+        );
+    const showSeenDivider = seenTurnId !== undefined && !seenAlreadyRendered;
+    if (row.kind === "intentGroup") {
+      return (
+        <div data-testid="transcript-row" data-row-id={row.id}>
+          <ProjectedIntentGroup
+            entries={row.entries}
+            rowId={row.id}
+            sourceTurnIds={row.sourceTurnIds}
+            viewAnchorIndex={index}
+            showSeenDivider={showSeenDivider && row.sourceTurnIds.includes(seenTurnId ?? "")}
+          />
+        </div>
+      );
+    }
     return (
-      <TurnBlock
-        turn={projectedTurn}
-        sessionRef={sessionRef}
-        showSeenDivider={projectedTurn.id === showSeenDividerTurnId}
-        exchangeOpeners={openers}
-        agentLabel={agentLabel}
-        viewAnchorIndex={index}
-      />
+      <div data-testid="transcript-row" data-row-id={row.id}>
+        <TurnBlock
+          turn={row.turn}
+          sessionRef={sessionRef}
+          showSeenDivider={showSeenDivider && row.turn.source.id === seenTurnId}
+          exchangeOpeners={openers}
+          agentLabel={agentLabel}
+          viewAnchorIndex={index}
+          showTurnSeparator={row.showTurnSeparator}
+        />
+      </div>
     );
+  };
+
+  const rowAt = (index: number) => {
+    const row = rows[index];
+    if (!row) throw new Error(`Transcript row ${index} out of range for ${rows.length} rows`);
+    return row;
   };
 
   const list = (
@@ -66,10 +282,10 @@ export function TranscriptBody({
         ref={listRef}
         dynamic
         anchorToEnd
-        count={projection.turns.length}
+        count={rows.length}
         estimateSize={() => ESTIMATED_TURN_HEIGHT}
-        getItemKey={(index) => projection.turns[index]?.id ?? index}
-        renderRow={renderTurn}
+        getItemKey={(index) => rowAt(index).id}
+        renderRow={(index) => renderRow(rowAt(index), index)}
         onChange={() => onMeasurementsChange?.()}
       />
     </div>
@@ -78,8 +294,8 @@ export function TranscriptBody({
   const content =
     surface === "preview" ? (
       <div data-testid="transcript-preview-flow">
-        {projection.turns.map((_, index) => (
-          <div key={projection.turns[index]?.id ?? index}>{renderTurn(index)}</div>
+        {rows.map((row, index) => (
+          <div key={row.id}>{renderRow(row, index)}</div>
         ))}
       </div>
     ) : (
