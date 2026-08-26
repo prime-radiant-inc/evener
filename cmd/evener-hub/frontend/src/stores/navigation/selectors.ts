@@ -4,6 +4,14 @@ import { keyID, type ResourceKey, type ResourceState } from "./types";
 export const selectAttentionSummary = (s: ReturnType<typeof navigationStore.getState>) => s.attention.summary;
 export const selectResource = (key: ResourceKey) => (s: ReturnType<typeof navigationStore.getState>) =>
   s.resources.get(keyID(key));
+export const selectProjectResource = (projectKey: string) => (s: ReturnType<typeof navigationStore.getState>) =>
+  s.resources.get(keyID({ kind: "project", projectKey }));
+export const selectProjectPage =
+  (projectKey: string, tier: "current" | "recent" | "archived", offset = 0, limit = 50) =>
+  (s: ReturnType<typeof navigationStore.getState>) =>
+    s.resources.get(keyID({ kind: "project_page", projectKey, tier, offset, limit }));
+export const selectLocation = (ref: string) => (s: ReturnType<typeof navigationStore.getState>) =>
+  s.resources.get(keyID({ kind: "location", ref }));
 export function selectGlobalRows(state = navigationStore.getState()): NavigationSessionSummary[] {
   const rows: NavigationSessionSummary[] = [];
   for (const k of [
@@ -34,5 +42,24 @@ export function findSessionNode(ref: string, state = navigationStore.getState())
     }
     return null;
   };
-  return walk(selectGlobalRows(state));
+  const rows = [...selectGlobalRows(state)];
+  for (const resource of state.resources.values()) {
+    if (resource.key.kind === "pin_section" || resource.key.kind === "project_page") {
+      const data = resource.data as { sessions?: NavigationSessionSummary[] } | null;
+      if (data?.sessions) rows.push(...data.sessions);
+    }
+    if (resource.key.kind === "project") {
+      const data = resource.data as {
+        current?: { sessions?: NavigationSessionSummary[] };
+        recent?: { sessions?: NavigationSessionSummary[] };
+        archived?: { sessions?: NavigationSessionSummary[] };
+      } | null;
+      for (const tier of [data?.current, data?.recent, data?.archived]) if (tier?.sessions) rows.push(...tier.sessions);
+    }
+    if (resource.key.kind === "location") {
+      const data = resource.data as { session?: NavigationSessionSummary } | null;
+      if (data?.session) rows.push(data.session);
+    }
+  }
+  return walk(rows);
 }

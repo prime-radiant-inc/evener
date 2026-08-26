@@ -34,10 +34,42 @@ let rebaselinePending = false;
 // Whether we have already seen the connection reach "ready" once — so the
 // initial connect is distinguished from a reconnect.
 let sawReady = false;
+let prevNavigationAttention: Map<string, AttentionEntry> | null = null;
 const subscriptions: Array<() => void> = [];
 
 function currentSummary() {
-  return navigationStore.getState().attention.summary ?? treeStore.getState().tree?.attentionSummary ?? null;
+  return navigationStore.getState().mode === "v1"
+    ? navigationStore.getState().attention.summary
+    : (navigationStore.getState().attention.summary ?? treeStore.getState().tree?.attentionSummary ?? null);
+}
+
+function onNavigationAttention(): void {
+  const state = navigationStore.getState();
+  applyCounts();
+  if (state.mode !== "v1") return;
+  const next = new Map(prevNavigationAttention);
+  for (const changed of state.attention.changed) {
+    const level = changed.level === "error" ? "error" : changed.level === "needs_you" ? "needs_you" : null;
+    if (!level) continue;
+    next.set(changed.threadId, {
+      ref: changed.threadId,
+      title: changed.title,
+      level,
+      askPending: changed.askPending === true,
+    });
+  }
+  if (prevNavigationAttention === null) {
+    prevNavigationAttention = next;
+    return;
+  }
+  const { notifications, notificationsLoudScope } = prefsStore.getState();
+  const alerts = detectFires(prevNavigationAttention, next, notificationsLoudScope);
+  prevNavigationAttention = next;
+  if (alerts.length === 0 || document.hasFocus?.() || !isLeader()) return;
+  for (const entry of alerts) {
+    if (notifications.os) fireOsNotification(entry);
+    if (notifications.sound) playTone();
+  }
 }
 
 // Title base tracks the focused pane; both channels read their pref straight
@@ -53,6 +85,7 @@ function applyCounts(): void {
 }
 
 function onTreeChanged(): void {
+  if (navigationStore.getState().mode === "v1") return;
   // Counts (title + favicon) apply unconditionally on every snapshot — even
   // before a baseline, even focused, even on a non-leader tab (floor §3.6);
   // only the OS/sound edge-fire below is gated.
@@ -105,7 +138,9 @@ export function initNotifications(): void {
   );
   subscriptions.push(
     navigationStore.subscribe((state, prev) => {
-      if (state.attention !== prev.attention) applyCounts();
+      if (state.attention !== prev.attention) onNavigationAttention();
+      if (state.mode === "legacy" && prev.mode !== "legacy" && treeStore.getState().tree === null)
+        void treeStore.getState().ensureLoaded();
     }),
   );
 
@@ -148,7 +183,7 @@ export function initNotifications(): void {
       }
       rebaselinePending = true;
       const client = connectionStore.getState().client;
-      if (!client || navigationStore.getState().capability === null) void treeStore.getState().refresh();
+      if (!client || navigationStore.getState().mode === "legacy") void treeStore.getState().refresh();
     }),
   );
 
@@ -163,7 +198,7 @@ export function initNotifications(): void {
   // ensureLoaded, not refresh: the duty is "a tree exists", and on a desktop
   // boot the rail asks for the same thing at the same moment, so this shares
   // that one request instead of issuing a second identical GET (kata p5w9).
-  void treeStore.getState().ensureLoaded();
+  if (!connectionStore.getState().client) void treeStore.getState().ensureLoaded();
 }
 
 // resetNotificationsForTests unwinds every store subscription and resets the
@@ -176,5 +211,6 @@ export function resetNotificationsForTests(): void {
   prevSnapshot = null;
   rebaselinePending = false;
   sawReady = false;
+  prevNavigationAttention = null;
   resetNavigationStoreForTests();
 }

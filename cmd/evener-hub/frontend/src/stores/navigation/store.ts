@@ -2,7 +2,7 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { AppwireClientLike } from "../../protocol/testing/fakeClient";
 import type {
-  AnyNotification,
+  AttentionChanged,
   AttentionSummary,
   InitializeResponse,
   NavigationCapability,
@@ -35,7 +35,8 @@ export interface NavigationStoreState {
   manifest: ResourceState<NavigationManifest> | null;
   resources: ResourceMap;
   expanded: ReadonlyMap<string, boolean>;
-  attention: { changed: AnyNotification extends never ? never : unknown[]; summary: AttentionSummary | null };
+  attention: { changed: AttentionChanged[]; summary: AttentionSummary | null };
+  mode: "unknown" | "legacy" | "v1";
   protocolError: Error | null;
   loadManifest(): Promise<ResourceState<NavigationManifest>>;
   loadSection(
@@ -81,6 +82,7 @@ const initial = (): Omit<
   | "toggleExpanded"
 > => ({
   capability: null,
+  mode: "unknown",
   clientGenerationID: "",
   lastSequence: 0,
   manifest: null,
@@ -101,9 +103,11 @@ let activeClient: AppwireClientLike | null = null;
 let revalidator: NavigationRevalidator | null = null;
 let unsubs: Array<() => void> = [];
 let bootEpoch = 0;
+let bootStartedEpoch = -1;
 const LIMIT = 50;
 const key = (k: ResourceKey) => Object.freeze(k);
-function setResource(state: ResourceState): void {
+function setResource(state: ResourceState, client = activeClient, epoch = bootEpoch): void {
+  if (client !== activeClient || epoch !== bootEpoch) return;
   if (state.key.kind === "manifest") navigationStore.setState({ manifest: state as ResourceState<NavigationManifest> });
   else {
     const resources = new Map(navigationStore.getState().resources);
@@ -156,7 +160,7 @@ function urlFor(k: ResourceKey): string {
     case "project_page":
       return `/api/navigation/projects/${encodeURIComponent(k.projectKey)}?tier=${k.tier}&offset=${k.offset}&limit=${k.limit}`;
     case "location":
-      return `/api/navigation/sessions/${encodeURIComponent(k.ref)}`;
+      return `/api/navigation/location/${encodeURIComponent(k.ref)}`;
   }
 }
 function load<T>(k: ResourceKey): Promise<ResourceState<T>> {
@@ -171,6 +175,29 @@ function load<T>(k: ResourceKey): Promise<ResourceState<T>> {
     return s as ResourceState<T>;
   });
 }
+async function withProjectRecovery(projectKey: string): Promise<ResourceState<NavigationProjectResource>> {
+  const first = await load<NavigationProjectResource>({ kind: "project", projectKey });
+  const error = first.error as { status?: number } | null;
+  if (error?.status !== 404) return first;
+  const state = navigationStore.getState();
+  const catalogs = [...state.resources.values()].filter((r) => r.key.kind === "catalog");
+  const known = catalogs.filter((r) => {
+    const data = r.data as NavigationProjectCatalog | null;
+    return data?.projects.some((p) => p.key === projectKey) ?? false;
+  });
+  const candidates = known.length > 0 ? known : catalogs;
+  if (candidates.length === 0) await load<NavigationManifest>({ kind: "manifest" }).catch(() => undefined);
+  else {
+    revalidator?.force(candidates.map((r) => r.key));
+    await Promise.all(candidates.map((r) => load(r.key).catch(() => undefined)));
+  }
+  const present = [...navigationStore.getState().resources.values()].some((r) => {
+    if (r.key.kind !== "catalog") return false;
+    return (r.data as NavigationProjectCatalog | null)?.projects.some((p) => p.key === projectKey) ?? false;
+  });
+  if (!present) return first;
+  return load<NavigationProjectResource>({ kind: "project", projectKey });
+}
 function actions() {
   return {
     loadManifest: () => load<NavigationManifest>({ kind: "manifest" }),
@@ -182,7 +209,7 @@ function actions() {
       load<NavigationPinSectionCatalog>({ kind: "pin_catalog", offset, limit }),
     loadPinSection: (sectionId: string, offset = 0, limit = LIMIT) =>
       load<NavigationPinSectionCatalog>({ kind: "pin_section", sectionId, offset, limit }),
-    loadProject: (projectKey: string) => load<NavigationProjectResource>({ kind: "project", projectKey }),
+    loadProject: (projectKey: string) => withProjectRecovery(projectKey),
     loadProjectPage: (projectKey: string, tier: "current" | "recent" | "archived", offset = 0, limit = LIMIT) =>
       load<NavigationProjectPage>({ kind: "project_page", projectKey, tier, offset, limit }),
     lookupLocation: (ref: string) => load<NavigationSessionLocation>({ kind: "location", ref }),
@@ -207,7 +234,14 @@ async function boot(cap: NavigationCapability, epoch: number): Promise<void> {
     return;
   }
   if (revalidator && revalidator.generationID !== cap.generationId) revalidator.resetGeneration(cap.generationId);
-  navigationStore.setState({ capability: cap, clientGenerationID: cap.generationId, lastSequence: cap.sequence });
+  navigationStore.setState({
+    capability: cap,
+    mode: "v1",
+    clientGenerationID: cap.generationId,
+    lastSequence: cap.sequence,
+  });
+  if (bootStartedEpoch === epoch) return;
+  bootStartedEpoch = epoch;
   const manifest = await navigationStore
     .getState()
     .loadManifest()
@@ -215,31 +249,45 @@ async function boot(cap: NavigationCapability, epoch: number): Promise<void> {
   if (!manifest || epoch !== bootEpoch) return;
   const m = manifest.data;
   if (!m) return;
-  const jobs: Promise<unknown>[] = [];
-  if (m.sections.live.count > 0) jobs.push(navigationStore.getState().loadSection("live"));
-  if (m.sections.needs_you.count > 0) jobs.push(navigationStore.getState().loadSection("needs_you"));
-  if (m.sections.pin_sections.count > 0) jobs.push(navigationStore.getState().loadPinCatalog());
+  const jobs: Array<() => Promise<unknown>> = [];
+  if (m.sections.live.count > 0) jobs.push(() => navigationStore.getState().loadSection("live"));
+  if (m.sections.needs_you.count > 0) jobs.push(() => navigationStore.getState().loadSection("needs_you"));
+  if (m.sections.pin_sections.count > 0) jobs.push(() => navigationStore.getState().loadPinCatalog());
   for (const c of ["projects", "archived_projects", "test_runs"] as const)
-    if (m.catalogs[c].count > 0) jobs.push(navigationStore.getState().loadCatalog(c));
-  await Promise.allSettled(jobs);
+    if (m.catalogs[c].count > 0) jobs.push(() => navigationStore.getState().loadCatalog(c));
+  await runBounded(jobs, epoch);
+  if (epoch !== bootEpoch || activeClient === null) return;
+  const pinCatalog = navigationStore.getState().resources.get(keyID({ kind: "pin_catalog", offset: 0, limit: LIMIT }));
+  const pinSections = (pinCatalog?.data as NavigationPinSectionCatalog | null)?.pin_sections ?? [];
+  await runBounded(
+    pinSections.filter((p) => p.count > 0).map((p) => () => navigationStore.getState().loadPinSection(p.id)),
+    epoch,
+  );
   // Hydrate only visible/default-expanded projects. A small explicit worker
   // pool prevents a large catalog from monopolising the browser connection.
   const projects = selectSummaries();
   const pending = projects
     .filter((p) => navigationStore.getState().expanded.get(p.key) ?? p.default_expanded)
     .map((p) => p.key);
+  await runBounded(
+    pending.map((project) => () => navigationStore.getState().loadProject(project)),
+    epoch,
+  );
+  const pages: Array<() => Promise<unknown>> = [];
+  for (const project of pending)
+    for (const tier of ["current", "recent", "archived"] as const)
+      pages.push(() => navigationStore.getState().loadProjectPage(project, tier));
+  await runBounded(pages, epoch);
+}
+async function runBounded(jobs: Array<() => Promise<unknown>>, epoch: number): Promise<void> {
   let cursor = 0;
   const worker = async () => {
-    while (cursor < pending.length) {
-      const project = pending[cursor++];
-      if (project)
-        await navigationStore
-          .getState()
-          .loadProject(project)
-          .catch(() => undefined);
+    while (cursor < jobs.length && epoch === bootEpoch) {
+      const job = jobs[cursor++];
+      if (job) await job().catch(() => undefined);
     }
   };
-  await Promise.all(Array.from({ length: Math.min(4, pending.length) }, worker));
+  await Promise.all(Array.from({ length: Math.min(4, jobs.length) }, worker));
 }
 function selectSummaries(): Array<{ key: string; default_expanded?: boolean }> {
   const out: Array<{ key: string; default_expanded?: boolean }> = [];
@@ -253,7 +301,7 @@ export function initNavigation(
   client: AppwireClientLike,
   initialize?: InitializeResponse | NavigationCapability | null,
 ): () => void {
-  if (activeClient === client) return () => {};
+  if (activeClient === client && initialize === undefined) return () => {};
   unsubs.forEach((u) => {
     u();
   });
@@ -267,9 +315,11 @@ export function initNavigation(
     if (cap) void boot(cap, epoch);
   };
   revalidator = new NavigationRevalidator();
-  unsubs.push(revalidator.subscribe(setResource));
+  const ownedClient = client;
+  unsubs.push(revalidator.subscribe((state) => setResource(state, ownedClient, epoch)));
   unsubs.push(
     client.onNotification((n) => {
+      if (ownedClient !== activeClient || epoch !== bootEpoch) return;
       if (n.method === "evener/attention/changed") {
         navigationStore.setState({ attention: { changed: n.params.changed, summary: n.params.summary } });
         return;
@@ -277,7 +327,7 @@ export function initNavigation(
       if (n.method !== "evener/navigation/invalidated") return;
       const p = n.params as NavigationInvalidatedPayload;
       const s = navigationStore.getState();
-      if (p.generationId !== s.clientGenerationID || p.sequence <= s.lastSequence) {
+      if (s.mode !== "v1" || p.generationId !== s.clientGenerationID || p.sequence <= s.lastSequence) {
         navigationStore.setState({ protocolError: new Error("navigation sequence or generation mismatch") });
         return;
       }
@@ -294,10 +344,27 @@ export function initNavigation(
   );
   unsubs.push(
     client.onReady(() => {
-      revalidator?.force(revalidator.loadedKeys().filter((k) => k.kind !== "location"));
+      if (ownedClient !== activeClient || epoch !== bootEpoch) return;
       void client
         .connect()
-        .then((i) => start(i))
+        .then((i) => {
+          if (ownedClient !== activeClient || epoch !== bootEpoch) return;
+          const cap = i.navigation;
+          if (!cap) {
+            navigationStore.setState({ mode: "legacy", capability: null });
+            return;
+          }
+          const same = revalidator?.generationID === cap.generationId;
+          if (same) {
+            navigationStore.setState({
+              capability: cap,
+              mode: "v1",
+              clientGenerationID: cap.generationId,
+              lastSequence: cap.sequence,
+            });
+            revalidator?.force(revalidator.loadedKeys().filter((k) => k.kind !== "location"));
+          } else start(i);
+        })
         .catch(() => {});
     }),
   );
@@ -305,7 +372,11 @@ export function initNavigation(
   else
     void client
       .connect()
-      .then((i) => start(i))
+      .then((i) => {
+        if (ownedClient !== activeClient || epoch !== bootEpoch) return;
+        if (!i.navigation) navigationStore.setState({ mode: "legacy", capability: null });
+        else start(i);
+      })
       .catch(() => {});
   return () => {
     if (activeClient === client) {
@@ -316,6 +387,7 @@ export function initNavigation(
       revalidator?.dispose();
       revalidator = null;
       activeClient = null;
+      bootStartedEpoch = -1;
     }
   };
 }
@@ -328,5 +400,6 @@ export function resetNavigationStoreForTests(): void {
   revalidator?.dispose();
   revalidator = null;
   activeClient = null;
+  bootStartedEpoch = -1;
   navigationStore.setState({ ...initial(), ...actions() });
 }
