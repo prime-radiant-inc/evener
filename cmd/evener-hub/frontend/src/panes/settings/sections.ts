@@ -7,7 +7,7 @@
 // (browser-only dedicated-app pairing), added after that
 // baseline and deliberately placed last, in the Daemon cluster. The 16
 // legacy-parity sections are 5 ungrouped top links (General/Theme/
-// Transcript/Display/Notifications) plus 3 labeled clusters ("Agents &
+// Transcript display/Display/Notifications) plus 3 labeled clusters ("Agents &
 // models"/"Extensions"/"Daemon"), in this fixed order. The per-project
 // override (?cwd=) and the /credentials alias are deliberately NOT rows
 // here - per-project is a standalone page reached via a project's own gear
@@ -39,7 +39,7 @@ export const SETTINGS_SECTIONS: SettingsSection[] = [
   // --- ungrouped ---------------------------------------------------------
   { id: "general", label: "General" },
   { id: "theme", label: "Theme" },
-  { id: "transcript", label: "Transcript" },
+  { id: "transcript", label: "Transcript display" },
   { id: "display", label: "Display" },
   { id: "notifications", label: "Notifications" },
   // --- Agents & models -----------------------------------------------

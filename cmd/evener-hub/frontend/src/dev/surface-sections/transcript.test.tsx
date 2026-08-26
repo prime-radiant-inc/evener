@@ -1,11 +1,3 @@
-// Proves the transcript surface section (dw3s) gives a fresh checkout every
-// state a tool-call row can be in without any throwaway harness: a shell row
-// collapsed by default, one forced open to show the expanded state, one that
-// failed (auto-expands on its own), an edit_file diff row, and the delegate
-// row. Each assertion reads the SAME markers ToolCallItem itself renders
-// (data-tool-name, data-failed, the <details open> attribute, the
-// tool-call-body testid) rather than re-deriving them, so this test breaks
-// the moment the fixture stops actually exercising the state it claims to.
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { resetDisclosureStoreForTests } from "../../widgets/disclosure/disclosureStore";
@@ -22,43 +14,29 @@ function rowFor(toolName: string): HTMLElement {
   return row;
 }
 
-// ToolCallItem's disclosure trigger is a real button[aria-expanded]
-// (ToolRow.tsx), not a native <details>; the open state lives on aria-expanded
-// of the tool-row child, not on a .open property of the wrapper.
 function isOpen(item: HTMLElement): boolean {
   return item.querySelector('[data-testid="tool-row-trigger"]')?.getAttribute("aria-expanded") === "true";
 }
 
-test("a completed shell row starts collapsed", () => {
+test("renders the shared deterministic fixture through the preview surface", () => {
   render(<TranscriptSurfaceSection />);
-  const rows = screen.getAllByTestId("tool-call-item").filter((el) => el.dataset.toolName === "shell");
-  const collapsed = rows.find((el) => !isOpen(el));
-  expect(collapsed).toBeTruthy();
+  expect(screen.getAllByText("Inspect the transcript display flow").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("The transcript display flow is ready.").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("I will inspect the display projection and its test coverage.").length).toBeGreaterThan(0);
+  expect(screen.getAllByText("Working tree environment is ready.").length).toBeGreaterThan(0);
 });
 
-test("one shell row is forced open to demonstrate the expanded state", () => {
+test("renders both successful and failed production tool rows", () => {
   render(<TranscriptSurfaceSection />);
-  const rows = screen.getAllByTestId("tool-call-item").filter((el) => el.dataset.toolName === "shell");
-  const expandedNonFailed = rows.find((el) => isOpen(el) && el.dataset.failed === undefined);
-  expect(expandedNonFailed).toBeTruthy();
+  expect(rowFor("read_file")).toBeTruthy();
+  const failed = rowFor("shell");
+  expect(failed.dataset.failed).toBe("true");
+  expect(isOpen(failed)).toBe(true);
 });
 
-test("a failed shell row auto-expands and carries data-failed", () => {
+test("uses fixed fixture timestamps and no live streaming markers", () => {
   render(<TranscriptSurfaceSection />);
-  const rows = screen.getAllByTestId("tool-call-item").filter((el) => el.dataset.toolName === "shell");
-  const failed = rows.find((el) => el.dataset.failed === "true");
-  expect(failed).toBeTruthy();
-  expect(isOpen(failed!)).toBe(true);
-});
-
-test("an edit_file row renders a diff body", () => {
-  render(<TranscriptSurfaceSection />);
-  const row = rowFor("edit_file");
-  expect(isOpen(row)).toBe(true);
-  expect(row.querySelector('[data-testid="tool-call-body"]')).toBeTruthy();
-});
-
-test("the delegate row is registered", () => {
-  render(<TranscriptSurfaceSection />);
-  expect(rowFor("delegate")).toBeTruthy();
+  const rows = screen.getAllByTestId("tool-call-item");
+  expect(rows.length).toBeGreaterThan(0);
+  expect(screen.queryByText(/elapsed|streaming/i)).toBeNull();
 });

@@ -6,10 +6,6 @@ import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { DisplaySection } from "./display";
 
-// See shell/rail/Rail.test.tsx's identical comment: Node 26 shadows jsdom's
-// real window.localStorage with its own (non-functional under vitest)
-// global, so every test file that touches localStorage needs this same
-// small in-memory stand-in. Scoped to this file only.
 class MemoryStorage {
   private store = new Map<string, string>();
   getItem(key: string): string | null {
@@ -27,7 +23,7 @@ class MemoryStorage {
 }
 
 beforeAll(() => {
-  // @ts-expect-error see MemoryStorage's own comment for why this is needed
+  // @ts-expect-error MemoryStorage is the deterministic browser storage seam.
   globalThis.localStorage = new MemoryStorage();
 });
 
@@ -48,16 +44,14 @@ function renderWithToasts() {
   );
 }
 
-// Both default off: the per-turn cost segment Show estimated cost gates is
-// opt-in transcript detail, and the session total in the footer strip shows
-// regardless.
-test("Enter sends and Show estimated cost both default OFF", () => {
+test("Enter sends remains the only Display setting and defaults off", () => {
   renderWithToasts();
   expect(screen.getByRole("switch", { name: "Enter sends" }).getAttribute("aria-checked")).toBe("false");
-  expect(screen.getByRole("switch", { name: "Show estimated cost" }).getAttribute("aria-checked")).toBe("false");
+  expect(screen.queryByRole("switch", { name: "Show estimated cost" })).toBeNull();
+  expect(screen.queryByText(/estimated cost/i)).toBeNull();
 });
 
-test("toggling Enter sends persists to the PINNED evener.prefs.enterToSend key ('1'/'0' encoding, matching W5's shipped reader) and toasts Settings saved", async () => {
+test("toggling Enter sends persists to the pinned key and toasts Settings saved", async () => {
   const user = userEvent.setup();
   renderWithToasts();
 
@@ -66,22 +60,6 @@ test("toggling Enter sends persists to the PINNED evener.prefs.enterToSend key (
   expect(prefsStore.getState().enterToSend).toBe(true);
   expect(localStorage.getItem("evener.prefs.enterToSend")).toBe("1");
   expect(await screen.findByText("Settings saved")).toBeTruthy();
-});
-
-test("toggling Show estimated cost persists to the PINNED evener.prefs.showCost key independently of Enter sends", async () => {
-  const user = userEvent.setup();
-  renderWithToasts();
-
-  await user.click(screen.getByRole("switch", { name: "Show estimated cost" }));
-
-  expect(prefsStore.getState().showCost).toBe(true);
-  expect(prefsStore.getState().enterToSend).toBe(false); // unaffected
-  expect(localStorage.getItem("evener.prefs.showCost")).toBe("1");
-});
-
-test("Show estimated cost help text says the session total stays in the footer", () => {
-  renderWithToasts();
-  expect(screen.getByText(/The session's total cost always shows in the footer\./)).toBeTruthy();
 });
 
 test("Enter sends help text explains both keybind modes", () => {
