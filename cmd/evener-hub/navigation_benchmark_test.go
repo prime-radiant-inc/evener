@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
-	_ "embed"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -22,15 +21,13 @@ import (
 	"primeradiant.com/evener/identifier"
 )
 
-//go:embed testdata/navigation_legacy_baseline.json
-var navigationLegacyBaseline []byte
-
-type navigationBaseline struct {
-	ResponseBytes int64 `json:"response_bytes"`
-	AllocsBytes   int64 `json:"allocs_bytes_per_op"`
-	Projects      int   `json:"projects"`
-	Sessions      int   `json:"sessions"`
-}
+// legacyBaseline encodes the frozen pre-optimization measurements that
+// the performance budget fractions are defined against. The original
+// /api/tree monolith produced 581485 uncompressed bytes and 25311669
+// B/op on this fixture; the bounded navigation resources are budgeted
+// as fractions of those numbers.
+const legacyBaselineResponseBytes = 581485
+const legacyBaselineAllocsBytes = 25311669
 
 const (
 	legacyNavigationProjects           = 20

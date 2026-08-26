@@ -5,6 +5,7 @@ import (
 	"compress/gzip"
 	"encoding/json"
 	"io"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"sync"
@@ -486,13 +487,8 @@ func TestNavigationIntegration(t *testing.T) {
 // TestNavigationPerformanceBudgets proves the fixed byte and allocation budgets
 // from the transport optimization spec (§900-935) on the deterministic fixture.
 func TestNavigationPerformanceBudgets(t *testing.T) {
-	var baseline navigationBaseline
-	if err := json.Unmarshal(navigationLegacyBaseline, &baseline); err != nil {
-		t.Fatalf("decode navigation baseline: %v", err)
-	}
-	if baseline.ResponseBytes <= 0 || baseline.AllocsBytes <= 0 {
-		t.Fatalf("invalid baseline: bytes=%d allocs=%d", baseline.ResponseBytes, baseline.AllocsBytes)
-	}
+	const baselineResponseBytes = legacyBaselineResponseBytes
+	const baselineAllocsBytes = legacyBaselineAllocsBytes
 
 	// Budget thresholds from the spec.
 	const (
@@ -505,24 +501,24 @@ func TestNavigationPerformanceBudgets(t *testing.T) {
 	t.Run("mandatory_hydration_uncompressed_json", func(t *testing.T) {
 		web := newNavigationBenchmarkFixture(t)
 		stats := hydrateMandatoryIdentity(t, web)
-		budget := int64(float64(baseline.ResponseBytes) * mandatoryUncompressedFraction)
+		budget := int64(math.Round(float64(baselineResponseBytes) * mandatoryUncompressedFraction))
 		t.Logf("mandatory uncompressed JSON: %d bytes (budget %d, legacy %d)",
-			stats.uncompressedJSON, budget, baseline.ResponseBytes)
+			stats.uncompressedJSON, budget, baselineResponseBytes)
 		if int64(stats.uncompressedJSON) > budget {
 			t.Fatalf("mandatory uncompressed JSON %d > budget %d (15%% of legacy %d)",
-				stats.uncompressedJSON, budget, baseline.ResponseBytes)
+				stats.uncompressedJSON, budget, baselineResponseBytes)
 		}
 	})
 
 	t.Run("mandatory_hydration_gzip_transferred", func(t *testing.T) {
 		web := newNavigationBenchmarkFixture(t)
 		stats := hydrateMandatoryGzip(t, web)
-		budget := int64(float64(baseline.ResponseBytes) * mandatoryGzipFraction)
+		budget := int64(math.Round(float64(baselineResponseBytes) * mandatoryGzipFraction))
 		t.Logf("mandatory gzip transferred: %d bytes (budget %d, legacy %d)",
-			stats.transferredBytes, budget, baseline.ResponseBytes)
+			stats.transferredBytes, budget, baselineResponseBytes)
 		if int64(stats.transferredBytes) > budget {
 			t.Fatalf("mandatory gzip transferred %d > budget %d (10%% of legacy %d)",
-				stats.transferredBytes, budget, baseline.ResponseBytes)
+				stats.transferredBytes, budget, baselineResponseBytes)
 		}
 	})
 
@@ -548,12 +544,12 @@ func TestNavigationPerformanceBudgets(t *testing.T) {
 			projectKeys[i] = catalog.Projects[i].Key
 		}
 		stats := hydrateExpandedGzip(t, web, projectKeys)
-		budget := int64(float64(baseline.ResponseBytes) * expandedGzipFraction)
+		budget := int64(math.Round(float64(baselineResponseBytes) * expandedGzipFraction))
 		t.Logf("expanded gzip transferred: %d bytes (budget %d, legacy %d)",
-			stats.transferredBytes, budget, baseline.ResponseBytes)
+			stats.transferredBytes, budget, baselineResponseBytes)
 		if int64(stats.transferredBytes) > budget {
 			t.Fatalf("expanded gzip transferred %d > budget %d (35%% of legacy %d)",
-				stats.transferredBytes, budget, baseline.ResponseBytes)
+				stats.transferredBytes, budget, baselineResponseBytes)
 		}
 	})
 
@@ -583,9 +579,9 @@ func TestNavigationPerformanceBudgets(t *testing.T) {
 
 		// The B/op budget itself is asserted by the benchmark using
 		// testing.AllocsChecker semantics. Document the target:
-		warmAllocsBudget := int64(float64(baseline.AllocsBytes) * warmAllocsFraction)
+		warmAllocsBudget := int64(math.Round(float64(baselineAllocsBytes) * warmAllocsFraction))
 		t.Logf("warm manifest B/op budget: %d (20%% of legacy %d) — verified by BenchmarkNavigationMandatory",
-			warmAllocsBudget, baseline.AllocsBytes)
+			warmAllocsBudget, baselineAllocsBytes)
 	})
 }
 
