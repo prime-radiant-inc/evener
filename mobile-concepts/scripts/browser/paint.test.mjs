@@ -5,6 +5,7 @@ import {
   applyRenderedSamples,
   composePaintGroups,
   extractPaintStack,
+  mergeStabilizationEvidence,
   selectFocusIndicator,
   stabilizePagePaint,
 } from "./geometry.mjs";
@@ -90,6 +91,18 @@ test("infinite animation selects and records a visible representative phase", as
       animation.currentTime >= 50
         ? { left: 5, top: 6, right: 49, bottom: 50, width: 44, height: 44 }
         : { left: 5, top: 6, right: 5, bottom: 6, width: 0, height: 0 },
+    viewportIntersection:
+      animation.currentTime >= 50
+        ? { left: 5, top: 6, right: 49, bottom: 50, width: 44, height: 44 }
+        : { left: 5, top: 6, right: 5, bottom: 6, width: 0, height: 0 },
+    clipIntersection:
+      animation.currentTime >= 50
+        ? { left: 5, top: 6, right: 49, bottom: 50, width: 44, height: 44 }
+        : { left: 5, top: 6, right: 5, bottom: 6, width: 0, height: 0 },
+    intersection:
+      animation.currentTime >= 50
+        ? { left: 5, top: 6, right: 49, bottom: 50, width: 44, height: 44 }
+        : { left: 5, top: 6, right: 5, bottom: 6, width: 0, height: 0 },
   });
   const evidence = await stabilizePagePaint(
     { fonts: { ready: Promise.resolve() }, getAnimations: () => [animation] },
@@ -105,15 +118,382 @@ test("infinite animation selects and records a visible representative phase", as
       visible: false,
       opacity: 0,
       rect: { left: 5, top: 6, right: 5, bottom: 6, width: 0, height: 0 },
+      viewportIntersection: {
+        left: 5,
+        top: 6,
+        right: 5,
+        bottom: 6,
+        width: 0,
+        height: 0,
+      },
+      clipIntersection: {
+        left: 5,
+        top: 6,
+        right: 5,
+        bottom: 6,
+        width: 0,
+        height: 0,
+      },
+      intersection: {
+        left: 5,
+        top: 6,
+        right: 5,
+        bottom: 6,
+        width: 0,
+        height: 0,
+      },
     },
     after: {
       element: "voice-control",
       visible: true,
       opacity: 1,
       rect: { left: 5, top: 6, right: 49, bottom: 50, width: 44, height: 44 },
+      viewportIntersection: {
+        left: 5,
+        top: 6,
+        right: 49,
+        bottom: 50,
+        width: 44,
+        height: 44,
+      },
+      clipIntersection: {
+        left: 5,
+        top: 6,
+        right: 49,
+        bottom: 50,
+        width: 44,
+        height: 44,
+      },
+      intersection: {
+        left: 5,
+        top: 6,
+        right: 49,
+        bottom: 50,
+        width: 44,
+        height: 44,
+      },
     },
     chosenTime: 50,
   });
+});
+
+test("all invisible infinite phases become an explicit capability failure", async () => {
+  const target = { id: "hidden-control", tagName: "BUTTON" };
+  const animation = {
+    animationName: "hidden-loop",
+    currentTime: 10,
+    effect: {
+      target,
+      getComputedTiming: () => ({ endTime: Infinity }),
+      getTiming: () => ({ duration: 100, iterations: Infinity }),
+    },
+    pause() {},
+  };
+  const invisible = () => ({
+    element: "hidden-control",
+    visible: false,
+    opacity: 0,
+    rect: { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 },
+    viewportIntersection: {
+      left: 0,
+      top: 0,
+      right: 0,
+      bottom: 0,
+      width: 0,
+      height: 0,
+    },
+    clipIntersection: {
+      left: 0,
+      top: 0,
+      right: 0,
+      bottom: 0,
+      width: 0,
+      height: 0,
+    },
+    intersection: { left: 0, top: 0, right: 0, bottom: 0, width: 0, height: 0 },
+  });
+  const evidence = await stabilizePagePaint(
+    { fonts: { ready: Promise.resolve() }, getAnimations: () => [animation] },
+    () => Promise.resolve(),
+    invisible,
+  );
+  assert.deepEqual(evidence.infiniteStabilized, []);
+  assert.deepEqual(evidence.capabilityFailures, [
+    {
+      code: "infinite-animation-no-visible-representative",
+      identity: "hidden-loop",
+      affectedElement: "hidden-control",
+      before: invisible(),
+      sampledPhases: [10, 0, 25, 50, 75],
+    },
+  ]);
+});
+
+test("offscreen and ancestor-clipped infinite phases cannot win", async () => {
+  const target = { id: "moving-control", tagName: "BUTTON" };
+  const animation = {
+    animationName: "moving-loop",
+    currentTime: 0,
+    effect: {
+      target,
+      getComputedTiming: () => ({ endTime: Infinity }),
+      getTiming: () => ({ duration: 100, iterations: Infinity }),
+    },
+    pause() {},
+  };
+  const snapshot = () => {
+    const time = animation.currentTime;
+    const visible = time === 50;
+    return {
+      element: "moving-control",
+      visible,
+      opacity: 1,
+      rect:
+        time === 0
+          ? { left: 500, top: 0, right: 544, bottom: 44, width: 44, height: 44 }
+          : { left: 10, top: 10, right: 54, bottom: 54, width: 44, height: 44 },
+      viewportIntersection:
+        time === 0
+          ? { left: 500, top: 0, right: 393, bottom: 44, width: 0, height: 44 }
+          : { left: 10, top: 10, right: 54, bottom: 54, width: 44, height: 44 },
+      clipIntersection: visible
+        ? { left: 10, top: 10, right: 54, bottom: 54, width: 44, height: 44 }
+        : { left: 10, top: 10, right: 10, bottom: 54, width: 0, height: 44 },
+      intersection: visible
+        ? { left: 10, top: 10, right: 54, bottom: 54, width: 44, height: 44 }
+        : { left: 10, top: 10, right: 10, bottom: 54, width: 0, height: 44 },
+    };
+  };
+  const evidence = await stabilizePagePaint(
+    { fonts: { ready: Promise.resolve() }, getAnimations: () => [animation] },
+    () => Promise.resolve(),
+    snapshot,
+  );
+  assert.equal(evidence.infiniteStabilized[0].chosenTime, 50);
+  assert.equal(evidence.infiniteStabilized[0].after.intersection.width, 44);
+});
+
+test("default DOM snapshot intersects viewport and clipping ancestors", async () => {
+  const documentTarget = {
+    fonts: { ready: Promise.resolve() },
+    defaultView: {
+      innerWidth: 100,
+      innerHeight: 100,
+      getComputedStyle(element) {
+        return element === parent
+          ? {
+              display: "block",
+              visibility: "visible",
+              opacity: "1",
+              overflowX: "hidden",
+              overflowY: "hidden",
+            }
+          : {
+              display: "block",
+              visibility: "visible",
+              opacity: "1",
+              overflowX: "visible",
+              overflowY: "visible",
+            };
+      },
+    },
+  };
+  const parent = {
+    id: "clip",
+    tagName: "DIV",
+    ownerDocument: documentTarget,
+    parentElement: null,
+    getBoundingClientRect: () => ({
+      left: 0,
+      top: 0,
+      right: 20,
+      bottom: 20,
+      width: 20,
+      height: 20,
+    }),
+  };
+  const target = {
+    id: "moving",
+    tagName: "BUTTON",
+    ownerDocument: documentTarget,
+    parentElement: parent,
+    getBoundingClientRect() {
+      if (animation.currentTime === 0)
+        return {
+          left: 200,
+          top: 0,
+          right: 244,
+          bottom: 44,
+          width: 44,
+          height: 44,
+        };
+      if (animation.currentTime === 25)
+        return {
+          left: 30,
+          top: 0,
+          right: 74,
+          bottom: 44,
+          width: 44,
+          height: 44,
+        };
+      return { left: 5, top: 5, right: 15, bottom: 15, width: 10, height: 10 };
+    },
+  };
+  const animation = {
+    animationName: "moving-dom-loop",
+    currentTime: 0,
+    effect: {
+      target,
+      getComputedTiming: () => ({ endTime: Infinity }),
+      getTiming: () => ({ duration: 100, iterations: Infinity }),
+    },
+    pause() {},
+  };
+  documentTarget.getAnimations = () => [animation];
+  const evidence = await stabilizePagePaint(documentTarget, () =>
+    Promise.resolve(),
+  );
+  assert.equal(evidence.infiniteStabilized[0].chosenTime, 50);
+  assert.deepEqual(
+    evidence.infiniteStabilized[0].after.clippingAncestors.map(
+      ({ element }) => element,
+    ),
+    ["clip"],
+  );
+  assert.deepEqual(evidence.infiniteStabilized[0].after.intersection, {
+    left: 5,
+    top: 5,
+    right: 15,
+    bottom: 15,
+    width: 10,
+    height: 10,
+  });
+});
+
+for (const stage of [
+  "phase-assignment",
+  "phase-frame",
+  "phase-snapshot",
+  "final-assignment",
+]) {
+  test(`infinite animation ${stage} exception becomes capability evidence`, async () => {
+    const target = { id: "fragile-control", tagName: "BUTTON" };
+    let currentTime = 10;
+    let assignment = 0;
+    const animation = {
+      animationName: "fragile-loop",
+      effect: {
+        target,
+        getComputedTiming: () => ({ endTime: Infinity }),
+        getTiming: () => ({ duration: 100, iterations: Infinity }),
+      },
+      pause() {},
+      get currentTime() {
+        return currentTime;
+      },
+      set currentTime(value) {
+        assignment += 1;
+        if (stage === "phase-assignment" && assignment === 1)
+          throw new Error("assignment exploded");
+        if (stage === "final-assignment" && assignment === 6)
+          throw new Error("final exploded");
+        currentTime = value;
+      },
+    };
+    let frameCount = 0;
+    const frame = async () => {
+      frameCount += 1;
+      if (stage === "phase-frame" && frameCount === 1)
+        throw new Error("frame exploded");
+    };
+    let snapshots = 0;
+    const snapshot = () => {
+      snapshots += 1;
+      if (stage === "phase-snapshot" && snapshots === 2)
+        throw new Error("snapshot exploded");
+      return {
+        element: "fragile-control",
+        visible: true,
+        opacity: 1,
+        rect: { left: 0, top: 0, right: 44, bottom: 44, width: 44, height: 44 },
+        viewportIntersection: {
+          left: 0,
+          top: 0,
+          right: 44,
+          bottom: 44,
+          width: 44,
+          height: 44,
+        },
+        clipIntersection: {
+          left: 0,
+          top: 0,
+          right: 44,
+          bottom: 44,
+          width: 44,
+          height: 44,
+        },
+        intersection: {
+          left: 0,
+          top: 0,
+          right: 44,
+          bottom: 44,
+          width: 44,
+          height: 44,
+        },
+      };
+    };
+    const evidence = await stabilizePagePaint(
+      { fonts: { ready: Promise.resolve() }, getAnimations: () => [animation] },
+      frame,
+      snapshot,
+    );
+    assert.equal(evidence.infiniteStabilized.length, 0);
+    assert.equal(
+      evidence.capabilityFailures[0].code,
+      "infinite-animation-evaluation-failed",
+    );
+    assert.equal(evidence.capabilityFailures[0].identity, "fragile-loop");
+    assert.equal(
+      evidence.capabilityFailures[0].affectedElement,
+      "fragile-control",
+    );
+    assert.equal(evidence.capabilityFailures[0].stage, stage);
+  });
+}
+
+test("missing infinite duration and current time is explicit capability evidence", async () => {
+  const target = { id: "timeless-control", tagName: "BUTTON" };
+  const animation = {
+    animationName: "timeless-loop",
+    currentTime: null,
+    effect: {
+      target,
+      getComputedTiming: () => ({ endTime: Infinity }),
+      getTiming: () => ({ duration: "auto", iterations: Infinity }),
+    },
+    pause() {},
+  };
+  const evidence = await stabilizePagePaint(
+    { fonts: { ready: Promise.resolve() }, getAnimations: () => [animation] },
+    () => Promise.resolve(),
+    () => null,
+  );
+  assert.equal(
+    evidence.capabilityFailures[0].code,
+    "infinite-animation-no-representative-time",
+  );
+  assert.deepEqual(evidence.infiniteStabilized, []);
+});
+
+test("stabilization evidence retains post-focus result and deduplicates failures", () => {
+  const failure = { code: "post-focus-failure", identity: "animation" };
+  const merged = mergeStabilizationEvidence({
+    preCollection: { capabilityFailures: [] },
+    focusSteps: [{ capabilityFailures: [failure] }],
+    postFocus: { capabilityFailures: [failure] },
+  });
+  assert.equal(merged.stabilization.postFocus.capabilityFailures[0], failure);
+  assert.deepEqual(merged.capabilityFailures, [failure]);
 });
 
 test("paused finite animation is forced terminal without awaiting finished", async () => {
