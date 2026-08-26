@@ -6,8 +6,11 @@ import (
 	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
+	"fmt"
+	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -24,13 +27,92 @@ func TestCaptureUsesOneDeadlineAndKeepsSuccessfulPartialChoices(t *testing.T) {
 		}
 		return []llm.ModelInfo{{ID: "z"}, {ID: "a"}, {ID: "a"}}, nil
 	}
-	s := Capture(context.Background(), []string{"slow", "good"}, fetch, 30*time.Millisecond)
+	s := Capture(context.Background(), []string{"slow", "good"}, fetch, nil, 30*time.Millisecond)
 	if s.Complete || len(s.Choices) != 2 || s.Choices[0] != "good/a" || s.Choices[1] != "good/z" {
 		t.Fatalf("snapshot = %#v", s)
 	}
 	if s.Status["slow"].Kind != StatusTimeout || s.Status["good"].Kind != StatusSuccess {
 		t.Fatalf("status = %#v", s.Status)
 	}
+}
+
+func TestCaptureRejectsUnsafeModelIdentifiers(t *testing.T) {
+	models := []llm.ModelInfo{
+		{ID: "safe"},
+		{ID: " padded "},
+		{ID: "space inside"},
+		{ID: "line\nbreak"},
+		{ID: "bidi\u202eoverride"},
+		{ID: strings.Repeat("x", 257)},
+		{ID: string([]byte{0xff})},
+	}
+	snapshot := Capture(context.Background(), []string{"provider"}, func(context.Context, string) ([]llm.ModelInfo, error) {
+		return models, nil
+	}, nil, time.Second)
+
+	want := []string{"provider/padded", "provider/safe"}
+	if !slices.Equal(snapshot.Choices, want) {
+		t.Fatalf("choices = %q, want %q", snapshot.Choices, want)
+	}
+	if snapshot.Complete || snapshot.Status["provider"].Kind != StatusLimited {
+		t.Fatalf("unsafe omissions were not reported as incomplete: %#v", snapshot)
+	}
+}
+
+func TestCaptureEnforcesProviderModelAndByteBounds(t *testing.T) {
+	t.Run("providers", func(t *testing.T) {
+		providers := make([]string, 65)
+		for i := range providers {
+			providers[i] = fmt.Sprintf("provider-%02d", len(providers)-1-i)
+		}
+		var calls atomic.Int32
+		snapshot := Capture(context.Background(), providers, func(_ context.Context, name string) ([]llm.ModelInfo, error) {
+			calls.Add(1)
+			return []llm.ModelInfo{{ID: "model"}}, nil
+		}, nil, time.Second)
+		if got := calls.Load(); got != 64 {
+			t.Fatalf("provider fetches = %d, want bounded at 64", got)
+		}
+		if snapshot.Complete || len(snapshot.Choices) != 64 {
+			t.Fatalf("provider-bounded snapshot = %#v", snapshot)
+		}
+		if snapshot.Choices[0] != "provider-00/model" || snapshot.Choices[63] != "provider-63/model" {
+			t.Fatalf("provider bound was not deterministic: first=%q last=%q", snapshot.Choices[0], snapshot.Choices[63])
+		}
+	})
+
+	t.Run("models", func(t *testing.T) {
+		models := make([]llm.ModelInfo, 4097)
+		for i := range models {
+			models[i].ID = fmt.Sprintf("model-%04d", i)
+		}
+		snapshot := Capture(context.Background(), []string{"provider"}, func(context.Context, string) ([]llm.ModelInfo, error) {
+			return models, nil
+		}, nil, time.Second)
+		if len(snapshot.Choices) != 4096 || snapshot.Complete || snapshot.Status["provider"].Kind != StatusLimited {
+			t.Fatalf("model-bounded snapshot: choices=%d complete=%v status=%#v", len(snapshot.Choices), snapshot.Complete, snapshot.Status)
+		}
+	})
+
+	t.Run("bytes", func(t *testing.T) {
+		models := make([]llm.ModelInfo, 4096)
+		for i := range models {
+			models[i].ID = fmt.Sprintf("%04d-%s", i, strings.Repeat("x", 195))
+		}
+		snapshot := Capture(context.Background(), []string{"provider"}, func(context.Context, string) ([]llm.ModelInfo, error) {
+			return models, nil
+		}, nil, time.Second)
+		var capturedBytes int
+		for _, choice := range snapshot.Choices {
+			capturedBytes += len([]byte(choice))
+		}
+		if capturedBytes > 256*1024 {
+			t.Fatalf("captured choice bytes = %d, want at most %d", capturedBytes, 256*1024)
+		}
+		if snapshot.Complete || snapshot.Status["provider"].Kind != StatusLimited {
+			t.Fatalf("byte truncation was not reported as incomplete: %#v", snapshot.Status)
+		}
+	})
 }
 
 func TestRenderInlineRequiresCompleteCountAndUTF8ByteBounds(t *testing.T) {

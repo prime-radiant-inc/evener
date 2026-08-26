@@ -9,10 +9,13 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"slices"
 	"sort"
 	"strings"
 	"sync"
 	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/llm"
 )
@@ -24,6 +27,7 @@ const (
 	StatusEmpty   StatusKind = "empty-success"
 	StatusFailure StatusKind = "failure"
 	StatusTimeout StatusKind = "timeout"
+	StatusLimited StatusKind = "limited"
 )
 
 type ProviderStatus struct {
@@ -54,70 +58,116 @@ const (
 	DefaultInlineMaxBytes = 4096
 	DefaultPageMaxBytes   = 4096
 	DefaultPageMaxCount   = 128
+	// Capture bounds keep startup catalog work finite even when a provider
+	// returns an unexpectedly large or malformed model list.
+	captureMaxProviders   = 64
+	captureMaxModels      = 4096
+	captureMaxBytes       = 256 * 1024
+	captureMaxProviderLen = 128
+	captureMaxModelIDLen  = 256
 )
 
-func Capture(parent context.Context, providers []string, fetch func(context.Context, string) ([]llm.ModelInfo, error), budget time.Duration) Snapshot {
+func Capture(parent context.Context, providers []string, fetch func(context.Context, string) ([]llm.ModelInfo, error), visible func(string, llm.ModelInfo) bool, budget time.Duration) Snapshot {
 	ctx, cancel := context.WithTimeout(parent, budget)
 	defer cancel()
-	providers = append([]string(nil), providers...)
+	providers, providerLimited := boundedProviders(providers)
 	sort.Strings(providers)
 	type result struct {
-		name   string
-		models []llm.ModelInfo
-		err    error
+		name    string
+		ids     []string
+		err     error
+		limited bool
 	}
 	out := make(chan result, len(providers))
 	for _, name := range providers {
 		go func(name string) {
-			m, e := fetch(ctx, name)
+			models, err := fetch(ctx, name)
+			r := result{name: name, err: err}
+			if err == nil {
+				seen := make(map[string]bool)
+				var bytes int
+				for _, model := range models {
+					id, ok := safeModelID(model.ID)
+					if !ok {
+						r.limited = true
+						continue
+					}
+					model.ID = id
+					if visible != nil && !visible(name, model) {
+						continue
+					}
+					if seen[id] {
+						continue
+					}
+					choiceBytes := len(name) + 1 + len(id)
+					if len(r.ids) >= captureMaxModels || bytes+choiceBytes > captureMaxBytes {
+						r.limited = true
+						continue
+					}
+					seen[id] = true
+					r.ids = append(r.ids, id)
+					bytes += choiceBytes
+				}
+				sort.Strings(r.ids)
+			}
 			select {
-			case out <- result{name, m, e}:
+			case out <- r:
 			case <-ctx.Done():
 			}
 		}(name)
 	}
-	status := map[string]ProviderStatus{}
-	set := map[string]bool{}
+	results := make(map[string]result, len(providers))
 	received := 0
 	for received < len(providers) {
 		select {
 		case r := <-out:
 			received++
-			if r.err != nil {
-				k := StatusFailure
-				if errors.Is(r.err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
-					k = StatusTimeout
-				}
-				status[r.name] = ProviderStatus{k, "enumeration did not complete"}
-				continue
-			}
-			if len(r.models) == 0 {
-				status[r.name] = ProviderStatus{StatusEmpty, "provider verified no models"}
-			} else {
-				status[r.name] = ProviderStatus{StatusSuccess, "enumeration succeeded"}
-			}
-			for _, m := range r.models {
-				if id := strings.TrimSpace(m.ID); id != "" {
-					set[r.name+"/"+id] = true
-				}
-			}
+			results[r.name] = r
 		case <-ctx.Done():
-			for _, p := range providers {
-				if _, ok := status[p]; !ok {
-					status[p] = ProviderStatus{StatusTimeout, "enumeration timed out"}
-				}
-			}
 			received = len(providers)
 		}
 	}
-	choices := make([]string, 0, len(set))
-	for c := range set {
-		choices = append(choices, c)
-	}
-	sort.Strings(choices)
-	complete := len(providers) > 0
+	status := make(map[string]ProviderStatus, len(providers))
+	choices := make([]string, 0)
+	choiceBytes := 0
+	complete := len(providers) > 0 && !providerLimited
 	for _, p := range providers {
-		if status[p].Kind != StatusSuccess && status[p].Kind != StatusEmpty {
+		r, ok := results[p]
+		if !ok {
+			status[p] = ProviderStatus{StatusTimeout, "enumeration timed out"}
+			complete = false
+			continue
+		}
+		if r.err != nil {
+			kind := StatusFailure
+			if errors.Is(r.err, context.DeadlineExceeded) || errors.Is(ctx.Err(), context.DeadlineExceeded) {
+				kind = StatusTimeout
+			}
+			status[p] = ProviderStatus{kind, "enumeration did not complete"}
+			complete = false
+			continue
+		}
+		kind := StatusSuccess
+		detail := "enumeration succeeded"
+		if len(r.ids) == 0 {
+			kind = StatusEmpty
+			detail = "provider verified no models"
+		}
+		for _, id := range r.ids {
+			choice := p + "/" + id
+			if len(choices) >= captureMaxModels || choiceBytes+len(choice) > captureMaxBytes {
+				r.limited = true
+				continue
+			}
+			choices = append(choices, choice)
+			choiceBytes += len(choice)
+		}
+		if r.limited {
+			kind = StatusLimited
+			detail = "enumeration exceeded safe capture bounds"
+		}
+		status[p] = ProviderStatus{kind, detail}
+		if kind != StatusSuccess && kind != StatusEmpty {
 			complete = false
 		}
 	}
@@ -126,6 +176,11 @@ func Capture(parent context.Context, providers []string, fetch func(context.Cont
 	h := sha256.New()
 	h.Write([]byte("model-snapshot-v2\x00"))
 	h.Write([]byte{byte(len(providers))})
+	if complete {
+		h.Write([]byte{1})
+	} else {
+		h.Write([]byte{0})
+	}
 	for _, p := range providers {
 		h.Write([]byte(p))
 		h.Write([]byte{0})
@@ -138,6 +193,53 @@ func Capture(parent context.Context, providers []string, fetch func(context.Cont
 	}
 	version := hex.EncodeToString(h.Sum(nil)[:12])
 	return Snapshot{Version: version, Complete: complete, Choices: choices, Status: status, key: key, mu: &sync.Mutex{}}
+}
+
+func boundedProviders(providers []string) ([]string, bool) {
+	bounded := make([]string, 0, min(len(providers), captureMaxProviders))
+	limited := false
+	for _, provider := range providers {
+		if !safeProviderName(provider) {
+			limited = true
+			continue
+		}
+		at, found := slices.BinarySearch(bounded, provider)
+		if found {
+			continue
+		}
+		if len(bounded) == captureMaxProviders {
+			limited = true
+			if at == len(bounded) {
+				continue
+			}
+			bounded = bounded[:len(bounded)-1]
+		}
+		bounded = append(bounded, provider)
+		copy(bounded[at+1:], bounded[at:len(bounded)-1])
+		bounded[at] = provider
+	}
+	return bounded, limited
+}
+
+func safeProviderName(name string) bool {
+	return name == strings.TrimSpace(name) && safeIdentifier(name, captureMaxProviderLen)
+}
+
+func safeModelID(id string) (string, bool) {
+	id = strings.TrimSpace(id)
+	return id, safeIdentifier(id, captureMaxModelIDLen)
+}
+
+func safeIdentifier(value string, maxBytes int) bool {
+	if value == "" || len(value) > maxBytes || !utf8.ValidString(value) {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsSpace(r) || unicode.IsControl(r) || unicode.In(r, unicode.Cf, unicode.Co, unicode.Cs) {
+			return false
+		}
+	}
+	return true
 }
 func (s Snapshot) Inline(maxCount, maxBytes int) (string, bool) {
 	if !s.Complete || len(s.Choices) > maxCount {

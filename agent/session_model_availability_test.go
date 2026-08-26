@@ -242,6 +242,34 @@ func TestLeafSessionsSkipModelAvailabilityCapture(t *testing.T) {
 	})
 }
 
+func TestNewSessionSnapshotUsesSharedModelVisibility(t *testing.T) {
+	selected := &modelAvailabilityAdapter{models: []llm.ModelInfo{
+		{ID: "gpt-5.5"},
+		{ID: "text-embedding-3-small"},
+	}}
+	selected.name = "openai"
+	other := &modelAvailabilityAdapter{models: []llm.ModelInfo{
+		{ID: "tool-model", CapabilitiesAdvertised: true, SupportsTools: true},
+		{ID: "tool-less-model", CapabilitiesAdvertised: true, SupportsTools: false},
+	}}
+	other.name = "router"
+	client := llm.NewClient()
+	client.Register(selected)
+	client.Register(other)
+	client.SetNameToTag(map[string]string{"router": "openrouter"})
+
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.5"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	want := []string{"openai/gpt-5.5", "router/tool-model"}
+	if sess.modelSnapshot == nil || !slices.Equal(sess.modelSnapshot.Choices, want) {
+		t.Fatalf("visible startup choices = %#v, want %q", sess.modelSnapshot, want)
+	}
+}
+
 func TestModelListToolReturnsEveryChoiceExactlyOnceWithinPageBound(t *testing.T) {
 	models := make([]llm.ModelInfo, modelavailability.DefaultInlineMaxCount)
 	for i := range models {

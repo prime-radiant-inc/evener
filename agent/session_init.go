@@ -480,11 +480,14 @@ func (s *Session) captureModelAvailability(selectedModels liveModelEnumeration) 
 	if len(names) == 0 {
 		return
 	}
+	catalog := llm.EmbeddedModelCatalog()
 	snapshot := modelavailability.Capture(s.sessionCtx, names, func(ctx context.Context, name string) ([]llm.ModelInfo, error) {
 		if name == s.profile.ID() {
 			return append([]llm.ModelInfo(nil), selectedModels.models...), selectedModels.err
 		}
 		return s.client.ListModels(ctx, name)
+	}, func(name string, model llm.ModelInfo) bool {
+		return modelSwitchVisible(s.client.BehaviorTagOf(name), model, catalog)
 	}, liveModelMetadataTimeout)
 	s.modelSnapshot = &snapshot
 	if text, ok := inlineModelSnapshot(snapshot); ok {
