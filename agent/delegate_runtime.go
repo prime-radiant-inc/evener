@@ -82,6 +82,13 @@ type delegateQuietAttentionClaim struct {
 }
 
 func (c *delegateTreeController) ReportActivity(lease delegateLease, at time.Time) error {
+	return c.ReportActivityPhase(lease, at, "")
+}
+
+// ReportActivityPhase records parent-visible progress. Provider retry/backoff is
+// deliberately not productive progress: it must not move the timestamp used by
+// one-shot drain liveness. Other phases retain the historical activity behavior.
+func (c *delegateTreeController) ReportActivityPhase(lease delegateLease, at time.Time, phase string) error {
 	if c == nil {
 		return errDelegateStaleLease
 	}
@@ -93,6 +100,10 @@ func (c *delegateTreeController) ReportActivity(lease delegateLease, at time.Tim
 	if err != nil {
 		c.mu.Unlock()
 		return err
+	}
+	if phase == jobPhaseModelRetrying {
+		c.mu.Unlock()
+		return nil
 	}
 	if at.Before(live.activityAt) {
 		c.mu.Unlock()
@@ -297,8 +308,8 @@ func bindStableDelegateActivityToOwner(child *Session, controller *delegateTreeC
 	child.mu.Lock()
 	child.cfg.spawn.parentDelegateID = lease.delegateID
 	child.cfg.spawn.forwardJobEvent = forward
-	child.cfg.spawn.parentJobActivity = func(string, string) {
-		_ = controller.ReportActivity(lease, child.sclock().Now())
+	child.cfg.spawn.parentJobActivity = func(_ string, phase string) {
+		_ = controller.ReportActivityPhase(lease, child.sclock().Now(), phase)
 	}
 	jm := child.jobManager
 	child.mu.Unlock()

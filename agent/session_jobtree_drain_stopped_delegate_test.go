@@ -86,6 +86,33 @@ func newWedgedDelegateFixtureIn(t *testing.T, delegateID string, turnEndsProcess
 	return &wedgedDelegateFixture{root: root, child: child, delegateID: delegateID, lease: lease, clk: clk}
 }
 
+func TestRetryActivityDoesNotRefreshDrainLiveness(t *testing.T) {
+	f := newWedgedDelegateFixture(t, "dlg_retry")
+	productive := f.clk.Now()
+	f.clk.Advance(DrainStallTimeout - time.Second)
+	if err := f.root.delegateController.ReportActivityPhase(f.lease, f.clk.Now(), jobPhaseModelRetrying); err != nil {
+		t.Fatalf("retry activity: %v", err)
+	}
+	f.clk.Advance(2 * time.Second)
+	f.root.delegateController.mu.Lock()
+	got := f.root.delegateController.live[f.delegateID].activityAt
+	f.root.delegateController.mu.Unlock()
+	if !got.Equal(productive) {
+		t.Fatalf("retry refreshed productive activity to %v, want %v", got, productive)
+	}
+	f.clk.Advance(time.Second)
+	productive = f.clk.Now()
+	if err := f.root.delegateController.ReportActivityPhase(f.lease, productive, jobPhaseToolRunning); err != nil {
+		t.Fatalf("productive activity: %v", err)
+	}
+	f.root.delegateController.mu.Lock()
+	got = f.root.delegateController.live[f.delegateID].activityAt
+	f.root.delegateController.mu.Unlock()
+	if !got.Equal(productive) {
+		t.Fatalf("productive activity did not refresh liveness: got %v, want %v", got, productive)
+	}
+}
+
 // requestStop runs the REAL stop path — the one job_stop reaches — so the
 // pending-stop timestamp the drain reads is the one production writes.
 func (f *wedgedDelegateFixture) requestStop(t *testing.T) {
