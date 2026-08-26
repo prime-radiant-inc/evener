@@ -809,7 +809,9 @@ func (s *Session) acceptDelegateDeliveryPlan(plan delegateDeliveryPlan) (delegat
 	s.mu.Lock()
 	processing := s.state == SessionProcessing
 	s.mu.Unlock()
-	if processing {
+	// A waiter-bearing plan completes a tool executing in this processing turn.
+	// Deferring it behind that turn would make the turn wait on its own queue.
+	if processing && plan.waiter == nil {
 		s.pendingDelegateDeliveries = append(s.pendingDelegateDeliveries, plan)
 		shouldWake := !s.delegateDeliveryWake && !s.delegateDeliveryRetry.active
 		if shouldWake {

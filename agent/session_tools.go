@@ -940,6 +940,13 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 		s.maybeAutoSave()
 		s.announceReadableToolResultImages(results)
 	}); abortErr != nil {
+		// The tool round will not persist, so release any inline delivery receipts
+		// it acquired before cancellation and leave their durable heads replayable.
+		for _, binding := range s.takeDelegateDeliveryCommits(calls) {
+			if binding.commit != nil {
+				_, _ = binding.commit.Complete(false)
+			}
+		}
 		if ctx.Err() != nil && !s.isClosingOrClosed() {
 			s.appendCanceledToolResults(calls, results, abortErr)
 		}
