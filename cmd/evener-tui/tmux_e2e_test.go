@@ -141,7 +141,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.SendKeys("n")
 	app.WaitFor("evener / new session", "Dir:      "+tuiE2EProjectDir, "Plugins:  2/2 enabled", "Prompt (optional):")
 	app.SendKeys("Tab", "Tab", "Tab", "Enter", "Enter")
-	app.WaitFor("Plugins for launch", "[x] alpha", "[x] beta")
+	app.WaitFor("Plugins for this session", "[x] alpha", "[x] beta")
 	app.SendKeys("Space", "Enter")
 	app.WaitFor("Plugins:  1/2 enabled")
 	app.SendKeys("Tab")

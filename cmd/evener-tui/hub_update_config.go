@@ -195,15 +195,18 @@ func (m hubModel) handlePluginPreviewResult(msg launchconfig.PluginPreviewResult
 	m.spawnPluginPreviewLoading = false
 	if msg.Err != nil {
 		m.spawnPluginPreviewErr = msg.Err
-		return m, nil
+		return m.forwardSpawnPluginPreviewToPanel(msg)
 	}
 	m.spawnPluginPreviewErr = nil
 	m.spawnPluginPreviewLoaded = true
 	m.spawnPluginPreview = msg.Response
-	return m, nil
+	return m.forwardSpawnPluginPreviewToPanel(msg)
 }
 
 func (m hubModel) handlePluginsForLaunchResult(msg launchconfig.PluginsForLaunchResultMsg) (tea.Model, tea.Cmd) {
+	if msg.Retry {
+		return m, m.requestSpawnPluginPreview()
+	}
 	m.spawnPluginsPanel = nil
 	if msg.Cancelled || !msg.Applied || msg.EnabledPlugins == nil {
 		return m, nil
@@ -216,6 +219,16 @@ func (m hubModel) handlePluginsForLaunchResult(msg launchconfig.PluginsForLaunch
 	updated.EnabledPlugins = &values
 	m.spawnLaunchOverrides = &updated
 	return m, m.requestSpawnPluginPreview()
+}
+
+func (m hubModel) forwardSpawnPluginPreviewToPanel(msg launchconfig.PluginPreviewResultMsg) (tea.Model, tea.Cmd) {
+	if m.spawnPluginsPanel == nil {
+		return m, nil
+	}
+	updated, cmd := m.spawnPluginsPanel.Update(msg)
+	panel := updated.(launchconfig.PluginsForLaunchPanel)
+	m.spawnPluginsPanel = &panel
+	return m, cmd
 }
 
 func (m hubModel) handleLaunchSettingsEditRequest(msg launchconfig.LaunchSettingsEditRequestMsg) (tea.Model, tea.Cmd) {

@@ -104,12 +104,7 @@ func (m hubModel) updateSpawnKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case hubSpawnFieldModel:
 			return m.activateSpawnModelField()
 		case hubSpawnFieldDir:
-			// Enter advances as a form action. Tab additionally returns the
-			// transition refresh command; keeping Enter command-free preserves the
-			// existing synchronous form-submit tests and the field remains ready
-			// for the next preview-triggering transition.
-			m.advanceSpawnFocus(1)
-			return m, nil
+			return m, m.advanceSpawnFocus(1)
 		case hubSpawnFieldPlugins:
 			return m.activateSpawnPluginsField()
 		default:
@@ -330,10 +325,24 @@ func (m *hubModel) advanceSpawnFocus(delta int) tea.Cmd {
 		next %= count
 	}
 	m.setSpawnFocus(hubSpawnField(next))
-	if previous == hubSpawnFieldDir && m.spawnFocus != hubSpawnFieldDir && m.spawnPluginPreviewLoaded {
+	if previous == hubSpawnFieldDir && m.spawnFocus != hubSpawnFieldDir && m.spawnPluginPreviewNeedsRefresh() {
 		return m.requestSpawnPluginPreviewIfChanged()
 	}
 	return nil
+}
+
+func (m hubModel) spawnPluginPreviewNeedsRefresh() bool {
+	params := appwire.PluginPreviewParams{CWD: strings.TrimSpace(m.spawnDir)}
+	if m.spawnLaunchOverrides != nil {
+		cp := *m.spawnLaunchOverrides
+		if cp.EnabledPlugins != nil {
+			values := append([]string(nil), (*cp.EnabledPlugins)...)
+			cp.EnabledPlugins = &values
+		}
+		params.LaunchOverrides = &cp
+	}
+	raw, _ := json.Marshal(params)
+	return string(raw) != m.spawnPluginPreviewParamsDigest
 }
 
 func (m *hubModel) resizeSpawnInput() {
@@ -406,6 +415,9 @@ func (m hubModel) spawnFieldHint() string {
 	case hubSpawnFieldDir:
 		return "type path  tab: recent/complete  enter: next  ctrl+u clear"
 	case hubSpawnFieldPlugins:
+		if m.spawnPluginPreviewErr != nil {
+			return "enter: retry plugin inspection"
+		}
 		return "enter/space: choose plugins"
 	default:
 		return "enter: start  ctrl+j: newline"
@@ -415,7 +427,7 @@ func (m hubModel) spawnFieldHint() string {
 func (m hubModel) spawnPluginsSummary() string {
 	if !m.spawnPluginPreviewLoaded {
 		if m.spawnPluginPreviewErr != nil {
-			return "unavailable (retry)"
+			return "Couldn't inspect plugins — press Enter to retry"
 		}
 		return "loading..."
 	}

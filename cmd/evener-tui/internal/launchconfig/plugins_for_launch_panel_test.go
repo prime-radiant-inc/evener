@@ -109,7 +109,7 @@ func TestPluginsForLaunchPanel_RejectsErrorOnlyOnEnter(t *testing.T) {
 	p := NewPluginsForLaunchPanel(appwire.PluginPreviewResponse{Plugins: []appwire.PluginLaunchCandidate{{Name: "alpha"}}}, nil, 80)
 	updated, _ := p.Update(PluginPreviewResultMsg{Key: "current", Err: errors.New("hub unavailable")})
 	p = updated.(PluginsForLaunchPanel)
-	if p.Done() || !strings.Contains(p.View(), "Preview failed") {
+	if p.Done() || !strings.Contains(p.View(), "Couldn't inspect plugins") || !strings.Contains(p.View(), "Press Enter to retry") {
 		t.Fatalf("failure state: done=%v view=%q", p.Done(), p.View())
 	}
 }

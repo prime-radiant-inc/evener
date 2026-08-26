@@ -1,7 +1,10 @@
 package tui
 
 import (
+	"encoding/json"
+	"errors"
 	"reflect"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -58,5 +61,105 @@ func TestSpawnPlugins_ExplicitEmptyIsSentAndStartFailurePreservesSelection(t *te
 	m = updated.(hubModel)
 	if m.spawnLaunchOverrides == nil || m.spawnLaunchOverrides.EnabledPlugins == nil {
 		t.Fatal("failed start cleared explicit selection")
+	}
+}
+
+func TestSpawnPlugins_CancelRestoresAndSuccessfulStartClears(t *testing.T) {
+	values := []string{"alpha"}
+	m := newHubModel(nil, "http://hub.test")
+	m.mode = hubModeSpawn
+	m.spawnLaunchOverrides = &appwire.LaunchConfigLayer{EnabledPlugins: &values}
+	p := launchconfig.NewPluginsForLaunchPanel(appwire.PluginPreviewResponse{Plugins: []appwire.PluginLaunchCandidate{{Name: "alpha", Selected: true}}}, &values, 80)
+	m.spawnPluginsPanel = &p
+	updated, cmd := m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyEscape})
+	m = updated.(hubModel)
+	if cmd == nil {
+		t.Fatal("cancel did not return result")
+	}
+	updated, _ = m.updateImpl(cmd())
+	m = updated.(hubModel)
+	if m.spawnLaunchOverrides == nil || !reflect.DeepEqual(*m.spawnLaunchOverrides.EnabledPlugins, values) {
+		t.Fatalf("cancel changed one-shot selection: %+v", m.spawnLaunchOverrides)
+	}
+	updated, _ = m.updateImpl(hubSpawnMsg{resp: hubSpawnResponse{Ref: "local:02NEW"}})
+	m = updated.(hubModel)
+	if m.spawnLaunchOverrides != nil {
+		t.Fatalf("successful start retained one-shot selection: %+v", m.spawnLaunchOverrides)
+	}
+}
+
+func TestSpawnPlugins_FailureRetryAndOpenPanelRefresh(t *testing.T) {
+	client, cleanup := newTestHubClient(t, nil)
+	defer cleanup()
+	m := newHubModel(client, "http://hub.test")
+	m.mode = hubModeSpawn
+	m.spawnPluginPreviewRequestKey = "current"
+	updated, _ := m.updateImpl(launchconfig.PluginPreviewResultMsg{Key: "current", Err: errors.New("hub unavailable")})
+	m = updated.(hubModel)
+	if !strings.Contains(m.spawnPluginsSummary(), "Couldn't inspect plugins") {
+		t.Fatalf("failure summary=%q", m.spawnPluginsSummary())
+	}
+	m.setSpawnFocus(hubSpawnFieldPlugins)
+	updated, cmd := m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(hubModel)
+	if cmd == nil {
+		t.Fatal("failure state did not expose retry command")
+	}
+	if _, ok := cmd().(launchconfig.PluginPreviewRequestMsg); !ok {
+		t.Fatalf("retry command message=%T, want PluginPreviewRequestMsg", cmd())
+	}
+	preview := appwire.PluginPreviewResponse{Plugins: []appwire.PluginLaunchCandidate{{Name: "fresh"}}}
+	p := launchconfig.NewPluginsForLaunchPanel(preview, nil, 80)
+	m.spawnPluginsPanel = &p
+	m.spawnPluginPreviewRequestKey = "open"
+	updated, _ = m.updateImpl(launchconfig.PluginPreviewResultMsg{Key: "stale", Response: appwire.PluginPreviewResponse{Plugins: []appwire.PluginLaunchCandidate{{Name: "stale"}}}})
+	m = updated.(hubModel)
+	if strings.Contains(m.spawnPluginsPanel.View(), "stale") {
+		t.Fatal("stale preview replaced candidates in open panel")
+	}
+	updated, _ = m.updateImpl(launchconfig.PluginPreviewResultMsg{Key: "open", Response: appwire.PluginPreviewResponse{Plugins: []appwire.PluginLaunchCandidate{{Name: "new"}}}})
+	m = updated.(hubModel)
+	if m.spawnPluginsPanel == nil || !strings.Contains(m.spawnPluginsPanel.View(), "new") {
+		t.Fatal("open panel did not receive refreshed candidates")
+	}
+	updated, _ = m.updateImpl(launchconfig.PluginPreviewResultMsg{Key: "open", Err: errors.New("temporary failure")})
+	m = updated.(hubModel)
+	if !strings.Contains(m.spawnPluginsPanel.View(), "Couldn't inspect plugins") {
+		t.Fatal("open panel did not show honest refresh failure")
+	}
+	updated, cmd = m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(hubModel)
+	if cmd == nil {
+		t.Fatal("open panel did not expose host retry")
+	}
+	if !cmd().(launchconfig.PluginsForLaunchResultMsg).Retry {
+		t.Fatal("open panel enter did not request retry")
+	}
+}
+
+func TestSpawnPlugins_DirectoryRefreshIsTransitionDriven(t *testing.T) {
+	client, cleanup := newTestHubClient(t, nil)
+	defer cleanup()
+	m := newHubModel(client, "http://hub.test")
+	m.mode = hubModeSpawn
+	m.spawnDir = "/tmp/old"
+	m.spawnDirInput.SetValue(m.spawnDir)
+	m.spawnPluginPreviewLoaded = true
+	params := appwire.PluginPreviewParams{CWD: m.spawnDir}
+	raw, _ := json.Marshal(params)
+	m.spawnPluginPreviewParamsDigest = string(raw)
+	m.spawnPluginPreviewRevision = 1
+	m.setSpawnFocus(hubSpawnFieldDir)
+	for _, r := range "typed" {
+		updated, _ := m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		m = updated.(hubModel)
+	}
+	before := m.spawnPluginPreviewRevision
+	m.spawnDir = "/tmp/new"
+	m.spawnDirInput.SetValue(m.spawnDir)
+	updated, cmd := m.updateSpawnKey(tea.KeyMsg{Type: tea.KeyEnter})
+	m = updated.(hubModel)
+	if cmd == nil || m.spawnPluginPreviewRevision != before+1 {
+		t.Fatalf("dir enter refresh revision=%d before=%d cmd=%v", m.spawnPluginPreviewRevision, before, cmd != nil)
 	}
 }

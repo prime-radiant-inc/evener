@@ -19,6 +19,7 @@ import (
 type PluginsForLaunchResult struct {
 	Applied        bool
 	Cancelled      bool
+	Retry          bool
 	EnabledPlugins *[]string
 }
 
@@ -30,6 +31,7 @@ type PluginsForLaunchPanel struct {
 	selectionOrder  []string
 	initial         map[string]bool
 	initialProvided bool
+	dirty           bool
 	selectionErrors map[string]string
 	diagnostics     []string
 	filter          string
@@ -99,7 +101,7 @@ func (p PluginsForLaunchPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				p.diagnostics = append(p.diagnostics, message)
 			}
 		}
-		if !p.initialProvided {
+		if !p.initialProvided && !p.dirty {
 			p.selected = map[string]bool{}
 			p.selectionOrder = nil
 			for _, plugin := range p.plugins {
@@ -118,7 +120,10 @@ func (p PluginsForLaunchPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			p.done = true
 			return p, func() tea.Msg { return PluginsForLaunchResultMsg{Cancelled: true} }
 		case tea.KeyEnter:
-			if p.previewErr != nil || p.hasBlockingSelectionError() {
+			if p.previewErr != nil {
+				return p, func() tea.Msg { return PluginsForLaunchResultMsg{Retry: true} }
+			}
+			if p.hasBlockingSelectionError() {
 				return p, nil
 			}
 			values := p.selectedValues()
@@ -142,8 +147,10 @@ func (p PluginsForLaunchPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			for _, r := range v.Runes {
 				switch r {
 				case 'a':
+					p.dirty = true
 					p.selectVisible()
 				case 'n':
+					p.dirty = true
 					p.selected = map[string]bool{}
 					p.selectionOrder = nil
 				default:
@@ -205,6 +212,7 @@ func (p *PluginsForLaunchPanel) toggleCursor() {
 		return
 	}
 	name := filtered[p.cursor].Name
+	p.dirty = true
 	p.selected[name] = !p.selected[name]
 	if p.selected[name] {
 		p.selectionOrder = append(p.selectionOrder, name)
@@ -255,9 +263,9 @@ func (p PluginsForLaunchPanel) View() string {
 		body.WriteString("\n\n")
 	}
 	if p.previewErr != nil {
-		body.WriteString("Preview failed: ")
+		body.WriteString("Couldn't inspect plugins: ")
 		body.WriteString(p.previewErr.Error())
-		body.WriteString("\nRetry after returning to the field.\n")
+		body.WriteString("\nPress Enter to retry; current candidates are not editable.\n")
 	} else {
 		filtered := p.filtered()
 		start := 0
@@ -301,7 +309,7 @@ func (p PluginsForLaunchPanel) View() string {
 		tuiprim.KbdHint("↑↓", "navigate"), tuiprim.KbdHint("space", "toggle"),
 		tuiprim.KbdHint("a", "all visible"), tuiprim.KbdHint("n", "none"),
 		tuiprim.KbdHint("enter", "apply"), tuiprim.KbdHint("esc", "cancel"))
-	return tuiprim.Overlay(tuiprim.OverlayOpts{Title: "Plugins for launch", Width: width, Body: body.String(), Footer: footer})
+	return tuiprim.Overlay(tuiprim.OverlayOpts{Title: "Plugins for this session", Width: width, Body: body.String(), Footer: footer})
 }
 
 func trimLastRune(s string) string {
