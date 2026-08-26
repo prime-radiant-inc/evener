@@ -8,6 +8,7 @@ import (
 	"io"
 	"os"
 	"strings"
+	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/events"
@@ -57,15 +58,16 @@ type runConfig struct {
 	stdout                    io.Writer
 	stderr                    io.Writer
 
-	skillsDirs                  []string // extra skill directories
-	mcpServers                  []string // --mcp inline specs
-	mcpConfigs                  []string // --mcp-config file paths
-	pluginDirs                  []string // --plugin-dir directories
-	noDefaultMarketplaces       bool     // --no-default-marketplaces
-	systemPromptAsUser          bool     // --system-prompt-as-user
-	openAIResponsesContinuation string   // --openai-responses-continuation
-	sandboxMode                 string   // --sandbox mode name (default "off")
-	sandboxNet                  string   // --sandbox-net on|off
+	skillsDirs                  []string      // extra skill directories
+	mcpServers                  []string      // --mcp inline specs
+	mcpConfigs                  []string      // --mcp-config file paths
+	pluginDirs                  []string      // --plugin-dir directories
+	noDefaultMarketplaces       bool          // --no-default-marketplaces
+	systemPromptAsUser          bool          // --system-prompt-as-user
+	openAIResponsesContinuation string        // --openai-responses-continuation
+	runTimeout                  time.Duration // --timeout; zero disables
+	sandboxMode                 string        // --sandbox mode name (default "off")
+	sandboxNet                  string        // --sandbox-net on|off
 
 	// Resume options.
 	resume       string // session ID to resume
@@ -100,6 +102,11 @@ var (
 )
 
 func run(ctx context.Context, cfg runConfig) error {
+	if cfg.runTimeout > 0 {
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, cfg.runTimeout)
+		defer cancel()
+	}
 	if cfg.stdout == nil {
 		cfg.stdout = os.Stdout
 	}

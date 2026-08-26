@@ -85,8 +85,8 @@ func Retry[T any](ctx context.Context, policy RetryPolicy, sleep SleepFunc, rand
 			return zero, err
 		}
 		if policy.WallBudgetedRateLimit(err) {
-			if !policy.rateLimitBudgetRemains(err, start) {
-				return zero, err
+			if !rateLimitBudgetRemains(ctx, policy, err, start) {
+				return zero, rateLimitBudgetExhausted(ctx, err)
 			}
 		} else if attempt >= maxRetries {
 			return zero, err
@@ -97,9 +97,9 @@ func Retry[T any](ctx context.Context, policy RetryPolicy, sleep SleepFunc, rand
 			return zero, err
 		}
 		if policy.WallBudgetedRateLimit(err) {
-			remaining := policy.RateLimitWallBudget - policy.now().Sub(start)
+			remaining := rateLimitRemaining(ctx, policy, start)
 			if remaining <= 0 {
-				return zero, err
+				return zero, rateLimitBudgetExhausted(ctx, err)
 			}
 			if delay > remaining {
 				// Do not start a wait that would carry the group beyond its wall
@@ -114,10 +114,38 @@ func Retry[T any](ctx context.Context, policy RetryPolicy, sleep SleepFunc, rand
 		if err := sleep(ctx, delay); err != nil {
 			return zero, err
 		}
-		if policy.WallBudgetedRateLimit(err) && !policy.rateLimitBudgetRemains(err, start) {
-			return zero, err
+		if policy.WallBudgetedRateLimit(err) && !rateLimitBudgetRemains(ctx, policy, err, start) {
+			return zero, rateLimitBudgetExhausted(ctx, err)
 		}
 	}
+}
+
+func rateLimitBudgetExhausted(ctx context.Context, original error) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if _, ok := ctx.Deadline(); !ok {
+		return original
+	}
+	return context.DeadlineExceeded
+}
+
+func rateLimitShutdownReserve(policy RetryPolicy) time.Duration {
+	if policy.RateLimitShutdownReserve > 0 {
+		return policy.RateLimitShutdownReserve
+	}
+	return defaultRateLimitShutdownReserve
+}
+
+func rateLimitRemaining(ctx context.Context, policy RetryPolicy, start time.Time) time.Duration {
+	if deadline, ok := ctx.Deadline(); ok {
+		return deadline.Sub(policy.now()) - rateLimitShutdownReserve(policy)
+	}
+	return policy.RateLimitWallBudget - policy.now().Sub(start)
+}
+
+func rateLimitBudgetRemains(ctx context.Context, policy RetryPolicy, err error, start time.Time) bool {
+	return policy.WallBudgetedRateLimit(err) && rateLimitRemaining(ctx, policy, start) > 0
 }
 
 func retryDelay(policy RetryPolicy, randFloat func() float64, err error, n int) (time.Duration, bool) {

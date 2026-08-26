@@ -132,8 +132,8 @@ func RetryStream(ctx context.Context, opts RetryStreamOptions, attempt StreamAtt
 			return err
 		}
 		if opts.Policy.WallBudgetedRateLimit(err) {
-			if !opts.Policy.rateLimitBudgetRemains(err, start) {
-				return err
+			if !rateLimitBudgetRemains(ctx, opts.Policy, err, start) {
+				return rateLimitBudgetExhausted(ctx, err)
 			}
 		} else if n >= maxRetries {
 			return err
@@ -143,9 +143,9 @@ func RetryStream(ctx context.Context, opts RetryStreamOptions, attempt StreamAtt
 			return err
 		}
 		if opts.Policy.WallBudgetedRateLimit(err) {
-			remaining := opts.Policy.RateLimitWallBudget - opts.Policy.now().Sub(start)
+			remaining := rateLimitRemaining(ctx, opts.Policy, start)
 			if remaining <= 0 {
-				return err
+				return rateLimitBudgetExhausted(ctx, err)
 			}
 			if delay > remaining {
 				// Wait only to the wall-budget boundary; do not start another
@@ -159,8 +159,8 @@ func RetryStream(ctx context.Context, opts RetryStreamOptions, attempt StreamAtt
 		if sleepErr := sleep(ctx, delay); sleepErr != nil {
 			return sleepErr
 		}
-		if opts.Policy.WallBudgetedRateLimit(err) && !opts.Policy.rateLimitBudgetRemains(err, start) {
-			return err
+		if opts.Policy.WallBudgetedRateLimit(err) && !rateLimitBudgetRemains(ctx, opts.Policy, err, start) {
+			return rateLimitBudgetExhausted(ctx, err)
 		}
 		// Discard partial output before re-running so the next attempt replaces
 		// what the failed one already streamed.
