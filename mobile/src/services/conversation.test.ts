@@ -583,6 +583,111 @@ describe("ConversationService", () => {
     });
   });
 
+  describe("readProjection", () => {
+    it("sends thread/read with turnLimit 50, includeTurns, subscribe, replaceSubscription", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      // Clear previous calls so we see only readProjection's request.
+      client.calls.length = 0;
+      await service.readProjection?.("ref-1");
+      const call = client.calls.find((c) => c.method === "thread/read");
+      expect(call).toBeDefined();
+      expect(call?.params).toMatchObject({
+        ref: "ref-1",
+        includeTurns: true,
+        subscribe: true,
+        replaceSubscription: true,
+        turnLimit: 50,
+      });
+    });
+
+    it("returns ConversationReadProjection with conversation, activity, olderCursor", async () => {
+      const { service } = setup({ olderCursor: "older-abc" });
+      await service.open("ref-1");
+      const result = await service.readProjection?.("ref-1");
+      expect(result).toBeDefined();
+      expect(result?.conversation).toBeDefined();
+      expect(result?.conversation.id).toBe("thread-1");
+      expect(result?.activity).toBeDefined();
+      expect(result?.activity.tasks).toEqual([]);
+      expect(result?.activity.work).toEqual([]);
+      expect(result?.activity.usage).toBeDefined();
+      expect(result?.activity.capabilities).toBeDefined();
+      expect(result?.olderCursor).toBe("older-abc");
+    });
+
+    it("does not expose a raw Thread in the projection result", async () => {
+      const { service } = setup();
+      await service.open("ref-1");
+      const result = await service.readProjection?.("ref-1");
+      expect(result).toBeDefined();
+      // The result must not carry a raw Thread — only conversation + activity.
+      const keys = Object.keys(result ?? {});
+      expect(keys).not.toContain("thread");
+      expect(keys).toEqual(
+        expect.arrayContaining(["conversation", "activity", "olderCursor"]),
+      );
+    });
+
+    it("passes cursor to readProjection when provided", async () => {
+      const { client, service } = setup({ olderCursor: "page-1" });
+      await service.open("ref-1");
+      client.calls.length = 0;
+      await service.readProjection?.("ref-1", "page-1");
+      const call = client.calls.find((c) => c.method === "thread/read");
+      expect(call?.params).toMatchObject({
+        ref: "ref-1",
+        cursor: "page-1",
+      });
+    });
+
+    it("activity contains sanitized tasks/work/usage from the thread", async () => {
+      const thread = makeThread({
+        evener: {
+          ref: "ref-1",
+          capabilities: ALL_TRUE_CAPS,
+          queue: { revision: 0 },
+          tasks: { total: 5, done: 2 },
+          usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
+          diagnostics: {
+            jobs: [
+              {
+                jobId: "job-1",
+                jobType: "shell",
+                status: "running",
+                outputBytes: 1024,
+              },
+            ],
+          },
+        },
+      });
+      const { service } = setup({ thread });
+      await service.open("ref-1");
+      const result = await service.readProjection?.("ref-1");
+      expect(result?.activity.tasks).toHaveLength(3);
+      const doneGroup = result?.activity.tasks.find((g) => g.status === "done");
+      expect(doneGroup?.count).toBe(2);
+      expect(result?.activity.work).toHaveLength(1);
+      expect(result?.activity.work[0]?.label).toBe("shell");
+      expect(result?.activity.usage.totalTokens).toBe(150);
+    });
+  });
+
+  describe("loadOlder with explicit limit", () => {
+    it("passes limit 50 to thread/turns/list", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      client.calls.length = 0;
+      await service.loadOlder("cursor-xyz");
+      const call = client.calls.find((c) => c.method === "thread/turns/list");
+      expect(call?.params).toMatchObject({
+        ref: "ref-1",
+        cursor: "cursor-xyz",
+        limit: 50,
+      });
+    });
+  });
+
   describe("close", () => {
     it("unsubscribes from notifications", async () => {
       const { client, service } = setup();
