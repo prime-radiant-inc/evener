@@ -20,6 +20,11 @@ const rejections = [
   ["transport", "new WebSocket(url)", "forbidden-transport", "ts"],
   ["tauri", 'import { invoke } from "@tauri-apps/api/core"', "forbidden-transport", "ts"],
   ["global css", "body { color: red; }", "unscoped-css", "css"],
+  // Narrow-scope negatives: selectors that look like .live-concept-* but are
+  // NOT scoped under the exact .live-concept-switcher root.
+  ["evil prefix", ".live-concept-evil { color: red; }", "unscoped-css", "css"],
+  ["mixed unscoped", ".live-concept-switcher__row, body { color: red; }", "unscoped-css", "css"],
+  ["unscoped descendant", ".live-concept-switcher body { color: red; }", "unscoped-css", "css"],
 ];
 
 function slug(name) {
@@ -35,17 +40,20 @@ async function buildTempTree() {
     await writeFile(join(liveConcepts, `${slug(name)}.${ext}`), `${content}\n`, "utf8");
   }
 
-  // Accepted: scoped CSS inside live-concepts
+  // Accepted: .concept-* scoped CSS inside live-concepts
   await writeFile(
     join(liveConcepts, "good-scoped.css"),
     ".concept-stillwater .sw-row {}\n",
     "utf8",
   );
 
-  // Accepted: .live-concept- scoped CSS inside live-concepts
+  // Accepted: .live-concept-switcher root-scoped CSS inside live-concepts.
+  // Every selector list must start with the .live-concept-switcher root.
   await writeFile(
-    join(liveConcepts, "good-live-scoped.css"),
-    ".live-concept-switcher .live-concept-switcher__dialog {}\n",
+    join(liveConcepts, "good-switcher-scoped.css"),
+    ".live-concept-switcher .live-concept-switcher__dialog {}\n" +
+    ".live-concept-switcher__overlay {}\n" +
+    ".live-concept-switcher__choice[data-concept-selected=\"true\"] {}\n",
     "utf8",
   );
 
@@ -96,9 +104,33 @@ describe("checkLiveConceptBoundary", () => {
         "scoped .concept-* CSS should not be flagged",
       );
       assert.equal(
-        violations.find((v) => v.file.includes("good-live-scoped.css")),
+        violations.find((v) => v.file.includes("good-switcher-scoped.css")),
         undefined,
-        "scoped .live-concept-* CSS should not be flagged",
+        "scoped .live-concept-switcher CSS should not be flagged",
+      );
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects .live-concept-evil and unscoped selectors mixed with switcher", async () => {
+    const root = await buildTempTree();
+    try {
+      const violations = await checkLiveConceptBoundary(root);
+      // .live-concept-evil must be rejected — not a valid switcher root.
+      assert.ok(
+        violations.find((v) => v.file.includes("evil-prefix.css") && v.code === "unscoped-css"),
+        ".live-concept-evil should be flagged as unscoped",
+      );
+      // Mixed selector list containing body should be rejected.
+      assert.ok(
+        violations.find((v) => v.file.includes("mixed-unscoped.css") && v.code === "unscoped-css"),
+        "mixed unscoped selector list should be flagged",
+      );
+      // Unscoped descendant outside the switcher root should be rejected.
+      assert.ok(
+        violations.find((v) => v.file.includes("unscoped-descendant.css") && v.code === "unscoped-css"),
+        "unscoped descendant outside root should be flagged",
       );
     } finally {
       await rm(root, { recursive: true, force: true });
