@@ -8,11 +8,12 @@
 // thread/list and projects each Thread to a RosterEntry, classifying attention
 // as "needsYou" (awaiting status or askPending), "running" (active status), or
 // "recent" (everything else).
+//
+// Contract (generation 2): list() requests a single page of up to 501 threads
+// and returns at most 500. hasMore is true when the server returned more than
+// 500 rows. There is no cursor pagination — the roster is a single-page view.
 
 import type {
-  HarnessDescriptor,
-  HarnessListResponse,
-  MethodTypes,
   Thread,
   ThreadListResponse,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
@@ -32,11 +33,14 @@ export interface RosterEntry {
 }
 
 export interface RosterService {
-  list(
-    cursor?: string,
-  ): Promise<{ threads: RosterEntry[]; nextCursor?: string }>;
+  list(): Promise<{ threads: RosterEntry[]; hasMore: boolean }>;
   refresh(): Promise<void>;
 }
+
+// The maximum number of threads displayed in the roster.
+export const ROSTER_PAGE_SIZE = 500;
+// The number of threads to request so hasMore can be determined in one call.
+const ROSTER_REQUEST_LIMIT = ROSTER_PAGE_SIZE + 1;
 
 // Classify a thread's attention based on its status and askPending flag.
 // - awaiting status or askPending=true => "needsYou" (agent needs user input)
@@ -66,17 +70,15 @@ export function createRosterService(
   client: ConversationClientLike,
 ): RosterService {
   return {
-    async list(cursor) {
-      const params: MethodTypes["thread/list"]["params"] = {};
-      if (cursor !== undefined) {
-        params.cursor = cursor;
-      }
-      const response: ThreadListResponse = await client.request(
-        "thread/list",
-        params,
-      );
-      const threads = (response.data ?? []).map(projectThread);
-      return { threads, nextCursor: response.nextCursor };
+    async list() {
+      const response: ThreadListResponse = await client.request("thread/list", {
+        limit: ROSTER_REQUEST_LIMIT,
+      });
+      const rows = (response.data ?? []).map(projectThread);
+      return {
+        threads: rows.slice(0, ROSTER_PAGE_SIZE),
+        hasMore: rows.length > ROSTER_PAGE_SIZE,
+      };
     },
 
     async refresh() {
@@ -85,5 +87,9 @@ export function createRosterService(
   };
 }
 
+export type {
+  HarnessDescriptor,
+  HarnessListResponse,
+} from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 // Re-export for convenience so tests and screens can import from one place.
-export type { ConversationClientLike, HarnessDescriptor, HarnessListResponse };
+export type { ConversationClientLike } from "./conversation";

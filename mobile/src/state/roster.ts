@@ -1,19 +1,66 @@
 // RosterStore — the session roster's Zustand state. Wraps a RosterService
 // (which wraps an AppwireClient's thread/list). Holds entries, loading, error,
-// and a search term. Groups entries by attention and filters locally after
-// the roster loads.
+// a search term, hasMore, sessionsVisible, and a generation counter. Groups
+// entries by attention and filters locally after the roster loads.
 //
-// The store never auto-retries a refresh. On error it sets the error message
-// and keeps the last entries. Pull-to-refresh calls refresh(service) again.
+// Generation safety: refresh() captures the generation at call time. If the
+// generation changed during the await (e.g. a profile switch bumped it), the
+// late result is silently dropped so it cannot overwrite a newer state.
+//
+// Event refresh: when sessionsVisible is true, tree/changed, attention/changed,
+// and thread/status/changed notifications schedule a debounced refresh through
+// the injected scheduler. The scheduler key is scoped to the current generation
+// so a pending refresh from an old generation is invalidated by a generation
+// bump. Two rapid signals coalesce into one refresh because they share the
+// same key.
+//
+// Last-good retention: on refresh error the store keeps the existing entries
+// and sets the error message. Pull-to-refresh calls refresh(service) again.
 
 import { create } from "zustand";
+import type { AnyNotification } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type { RosterEntry, RosterService } from "../services/roster";
+
+/** A scheduler that coalesces refresh effects by key. */
+export interface RosterScheduler {
+  schedule(key: string, effect: () => void): void;
+}
+
+/** Subscribe to AppWire notifications. Returns an unsubscribe function. */
+export type RosterSubscribe = (
+  handler: (n: AnyNotification) => void,
+) => () => void;
+
+/** Default scheduler uses setTimeout with a short debounce. */
+const DEFAULT_DEBOUNCE_MS = 300;
+
+function createDefaultScheduler(
+  debounceMs = DEFAULT_DEBOUNCE_MS,
+): RosterScheduler {
+  const timers = new Map<string, ReturnType<typeof setTimeout>>();
+  return {
+    schedule(key, effect) {
+      const existing = timers.get(key);
+      if (existing !== undefined) clearTimeout(existing);
+      timers.set(
+        key,
+        setTimeout(() => {
+          timers.delete(key);
+          effect();
+        }, debounceMs),
+      );
+    },
+  };
+}
 
 export interface RosterState {
   readonly entries: RosterEntry[];
   readonly loading: boolean;
   readonly error: string | null;
   readonly searchTerm: string;
+  readonly hasMore: boolean;
+  readonly sessionsVisible: boolean;
+  readonly generation: number;
 
   // Filtered entries based on the current search term (local filter).
   readonly visibleEntries: RosterEntry[];
@@ -27,6 +74,9 @@ export interface RosterState {
 
   refresh(service: RosterService): Promise<void>;
   setSearch(term: string): void;
+  setSessionsVisible(visible: boolean): void;
+  bumpGeneration(): void;
+  handleNotification(n: AnyNotification, service: RosterService): void;
   reset(): void;
 }
 
@@ -72,25 +122,58 @@ function derive(
   return { visibleEntries, groupedEntries: groupByAttention(visibleEntries) };
 }
 
-export function createRosterStore() {
-  return create<RosterState>((set, get) => ({
+// Notification methods that should trigger a roster refresh.
+const REFRESH_METHODS = new Set<string>([
+  "evener/tree/changed",
+  "evener/attention/changed",
+  "thread/status/changed",
+]);
+
+export interface CreateRosterStoreOptions {
+  readonly scheduler?: RosterScheduler;
+  readonly subscribe?: RosterSubscribe;
+}
+
+export function createRosterStore(options: CreateRosterStoreOptions = {}) {
+  const scheduler = options.scheduler ?? createDefaultScheduler();
+  const subscribe = options.subscribe;
+
+  // Track the last service passed to refresh so the auto-subscribed notification
+  // handler can schedule a debounced refresh without an explicit service ref.
+  let currentService: RosterService | null = null;
+
+  const store = create<RosterState>((set, get) => ({
     entries: [],
     loading: false,
     error: null,
     searchTerm: "",
+    hasMore: false,
+    sessionsVisible: false,
+    generation: 0,
     ...derive([], ""),
 
     async refresh(service) {
+      currentService = service;
+      const gen = get().generation;
       set({ loading: true, error: null });
       try {
         const result = await service.list();
+        if (gen !== get().generation) {
+          set({ loading: false });
+          return;
+        }
         set({
           entries: result.threads,
           loading: false,
           error: null,
+          hasMore: result.hasMore,
           ...derive(result.threads, get().searchTerm),
         });
       } catch (err) {
+        if (gen !== get().generation) {
+          set({ loading: false });
+          return;
+        }
         set({
           loading: false,
           error: err instanceof Error ? err.message : String(err),
@@ -102,14 +185,57 @@ export function createRosterStore() {
       set({ searchTerm: term, ...derive(get().entries, term) });
     },
 
+    setSessionsVisible(visible) {
+      set({ sessionsVisible: visible });
+    },
+
+    bumpGeneration() {
+      set((s) => ({ generation: s.generation + 1 }));
+    },
+
+    handleNotification(n, service) {
+      if (!get().sessionsVisible) return;
+      if (!REFRESH_METHODS.has(n.method)) return;
+      const gen = get().generation;
+      const key = `roster-refresh:${gen}`;
+      scheduler.schedule(key, () => {
+        void get().refresh(service);
+      });
+    },
+
     reset() {
       set({
         entries: [],
         loading: false,
         error: null,
         searchTerm: "",
+        hasMore: false,
         ...derive([], ""),
       });
     },
   }));
+
+  // Auto-subscribe to the notification seam when provided. The handler uses
+  // the last refresh service to schedule a debounced refresh.
+  if (subscribe !== undefined) {
+    subscribe((n) => {
+      const svc = currentService;
+      if (svc === null) return;
+      store.getState().handleNotification(n, svc);
+    });
+  }
+
+  return store;
+}
+
+// Wire the store's notification handler to a subscribe seam. Returns the
+// unsubscribe function. The handler reads the current service at call time.
+export function connectRosterNotifications(
+  store: ReturnType<typeof createRosterStore>,
+  service: RosterService,
+  subscribe: RosterSubscribe,
+): () => void {
+  return subscribe((n) => {
+    store.getState().handleNotification(n, service);
+  });
 }

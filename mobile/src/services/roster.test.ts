@@ -1,12 +1,12 @@
-// RosterService tests with a fake AppwireClient. Covers:
-// - list() wraps thread/list and maps each Thread to a RosterEntry
-// - ref comes from evener.ref, title from name or preview, project from cwd
-// - status comes from status.type
-// - updatedAt is passed through as ms
+// RosterService tests with a scripted fake client. Covers the generation-2
+// roster contract:
+// - list() requests thread/list with { limit: 501 } and NEVER sends a cursor
+// - 501 threads => 500 returned, hasMore === true
+// - <=500 threads => all returned, hasMore === false, single request
+// - projection: ref, title (name|preview), project (cwd), status, updatedAt
 // - attention classification: awaiting/askPending => needsYou, active => running, else recent
-// - cursor passthrough to thread/list params and nextCursor in the result
-// - refresh() delegates to list() with no cursor
-// - list() forwards cursor and limit
+// - refresh() delegates to list()
+// - errors propagate
 
 import { describe, expect, it } from "vitest";
 import type {
@@ -18,12 +18,12 @@ import type {
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import { createRosterService, type RosterEntry } from "./roster";
 
-// --- minimal fake client (same shape as conversation.test.ts) ----------------
+// --- scripted fake client (records requests) --------------------------------
 
 type RequestHandler = (params: unknown) => unknown | Promise<unknown>;
 
-class FakeAppwireClient {
-  readonly calls: { method: string; params: unknown }[] = [];
+class ScriptedClient {
+  readonly requests: { method: string; params: unknown }[] = [];
   private readonly handlers = new Map<string, RequestHandler>();
 
   on<M extends MethodName>(
@@ -39,11 +39,11 @@ class FakeAppwireClient {
     method: M,
     params: MethodTypes[M]["params"],
   ): Promise<MethodTypes[M]["result"]> {
-    this.calls.push({ method, params });
+    this.requests.push({ method, params });
     const handler = this.handlers.get(method);
     if (!handler) {
       return Promise.reject(
-        new Error(`FakeAppwireClient: no handler for "${method}"`),
+        new Error(`ScriptedClient: no handler for "${method}"`),
       );
     }
     return Promise.resolve().then(
@@ -56,7 +56,7 @@ class FakeAppwireClient {
   }
 }
 
-// --- thread factory ----------------------------------------------------------
+// --- thread factory ---------------------------------------------------------
 
 function makeThread(over: Partial<Thread> = {}): Thread {
   return {
@@ -92,185 +92,109 @@ function makeThread(over: Partial<Thread> = {}): Thread {
   };
 }
 
+function makeThreads(count: number, prefix = "t"): Thread[] {
+  const threads: Thread[] = [];
+  for (let i = 0; i < count; i++) {
+    threads.push(
+      makeThread({
+        id: `${prefix}-${i}`,
+        name: `Session ${i}`,
+        updatedAt: 1_000_000 + i,
+        evener: {
+          ref: `ref-${prefix}-${i}`,
+          capabilities: {} as never,
+          queue: { revision: 0 },
+        },
+      }),
+    );
+  }
+  return threads;
+}
+
 // --- tests ------------------------------------------------------------------
 
 describe("RosterService", () => {
-  it("list() calls thread/list and maps threads to roster entries", async () => {
-    const client = new FakeAppwireClient();
-    const threads = [
-      makeThread({
-        id: "t1",
-        name: "My Session",
-        preview: "preview text",
-        cwd: "/home/jesse/work",
-        updatedAt: 2_000_000,
-        status: { type: "idle" },
-        evener: {
-          ref: "ref-t1",
-          capabilities: {} as never,
-          queue: { revision: 0 },
-        },
-      }),
-    ];
-    client.on("thread/list", () => ({ data: threads }) as ThreadListResponse);
-
-    const service = createRosterService(client);
-    const result = await service.list();
-
-    expect(client.calls[0]?.method).toBe("thread/list");
-    const entry = result.threads[0] as RosterEntry;
-    expect(entry.ref).toBe("ref-t1");
-    expect(entry.title).toBe("My Session");
-    expect(entry.project).toBe("/home/jesse/work");
-    expect(entry.status).toBe("idle");
-    expect(entry.updatedAt).toBe(2_000_000);
-    expect(entry.attention).toBe("recent");
-  });
-
-  it("title falls back to preview when name is absent", async () => {
-    const client = new FakeAppwireClient();
-    const threads = [
-      makeThread({
-        id: "t2",
-        name: undefined,
-        preview: "fix the bug",
-        evener: {
-          ref: "ref-t2",
-          capabilities: {} as never,
-          queue: { revision: 0 },
-        },
-      }),
-    ];
-    client.on("thread/list", () => ({ data: threads }) as ThreadListResponse);
-
-    const service = createRosterService(client);
-    const result = await service.list();
-    expect((result.threads[0] as RosterEntry).title).toBe("fix the bug");
-  });
-
-  it("classifies awaiting status as needsYou", async () => {
-    const client = new FakeAppwireClient();
-    const threads = [
-      makeThread({
-        id: "t3",
-        status: { type: "awaiting" },
-        evener: {
-          ref: "ref-t3",
-          capabilities: {} as never,
-          queue: { revision: 0 },
-          askPending: false,
-        },
-      }),
-    ];
-    client.on("thread/list", () => ({ data: threads }) as ThreadListResponse);
-
-    const service = createRosterService(client);
-    const result = await service.list();
-    expect((result.threads[0] as RosterEntry).attention).toBe("needsYou");
-  });
-
-  it("classifies askPending true as needsYou even when status is idle", async () => {
-    const client = new FakeAppwireClient();
-    const threads = [
-      makeThread({
-        id: "t4",
-        status: { type: "idle" },
-        evener: {
-          ref: "ref-t4",
-          capabilities: {} as never,
-          queue: { revision: 0 },
-          askPending: true,
-        },
-      }),
-    ];
-    client.on("thread/list", () => ({ data: threads }) as ThreadListResponse);
-
-    const service = createRosterService(client);
-    const result = await service.list();
-    const entry = result.threads[0] as RosterEntry;
-    expect(entry.attention).toBe("needsYou");
-    expect(entry.askPending).toBe(true);
-  });
-
-  it("classifies active status as running", async () => {
-    const client = new FakeAppwireClient();
-    const threads = [
-      makeThread({
-        id: "t5",
-        status: { type: "active" },
-        evener: {
-          ref: "ref-t5",
-          capabilities: {} as never,
-          queue: { revision: 0 },
-        },
-      }),
-    ];
-    client.on("thread/list", () => ({ data: threads }) as ThreadListResponse);
-
-    const service = createRosterService(client);
-    const result = await service.list();
-    expect((result.threads[0] as RosterEntry).attention).toBe("running");
-  });
-
-  it("classifies idle status as recent", async () => {
-    const client = new FakeAppwireClient();
-    const threads = [
-      makeThread({
-        id: "t6",
-        status: { type: "idle" },
-        evener: {
-          ref: "ref-t6",
-          capabilities: {} as never,
-          queue: { revision: 0 },
-        },
-      }),
-    ];
-    client.on("thread/list", () => ({ data: threads }) as ThreadListResponse);
-
-    const service = createRosterService(client);
-    const result = await service.list();
-    expect((result.threads[0] as RosterEntry).attention).toBe("recent");
-  });
-
-  it("forwards cursor to thread/list params", async () => {
-    const client = new FakeAppwireClient();
+  it("list() calls thread/list with { limit: 501 }", async () => {
+    const client = new ScriptedClient();
     client.on("thread/list", () => ({ data: [] }) as ThreadListResponse);
 
     const service = createRosterService(client);
-    await service.list("cursor-abc");
+    await service.list();
 
-    const params = client.calls[0]?.params as { cursor?: string };
-    expect(params.cursor).toBe("cursor-abc");
+    expect(client.requests).toEqual([
+      { method: "thread/list", params: { limit: 501 } },
+    ]);
   });
 
-  it("returns nextCursor from the response", async () => {
-    const client = new FakeAppwireClient();
+  it("returns 500 threads and hasMore=true when 501 are returned", async () => {
+    const client = new ScriptedClient();
     client.on(
       "thread/list",
-      () => ({ data: [], nextCursor: "next-123" }) as ThreadListResponse,
+      () =>
+        ({
+          data: makeThreads(501),
+        }) as ThreadListResponse,
     );
 
     const service = createRosterService(client);
     const result = await service.list();
-    expect(result.nextCursor).toBe("next-123");
+
+    expect(result.threads).toHaveLength(500);
+    expect(result.hasMore).toBe(true);
   });
 
-  it("refresh() calls list() with no cursor", async () => {
-    const client = new FakeAppwireClient();
+  it("returns all threads and hasMore=false when 500 are returned", async () => {
+    const client = new ScriptedClient();
+    client.on(
+      "thread/list",
+      () =>
+        ({
+          data: makeThreads(500),
+        }) as ThreadListResponse,
+    );
+
+    const service = createRosterService(client);
+    const result = await service.list();
+
+    expect(result.threads).toHaveLength(500);
+    expect(result.hasMore).toBe(false);
+  });
+
+  it("does not send a cursor in the request params", async () => {
+    const client = new ScriptedClient();
     client.on("thread/list", () => ({ data: [] }) as ThreadListResponse);
 
     const service = createRosterService(client);
-    await service.refresh();
+    await service.list();
 
-    const params = client.calls[0]?.params as { cursor?: string };
+    const params = client.requests[0]?.params as Record<string, unknown>;
     expect(params.cursor).toBeUndefined();
   });
 
-  it("maps multiple threads preserving order", async () => {
-    const client = new FakeAppwireClient();
+  it("makes only one request regardless of row count", async () => {
+    const client = new ScriptedClient();
+    client.on(
+      "thread/list",
+      () =>
+        ({
+          data: makeThreads(500),
+        }) as ThreadListResponse,
+    );
+
+    const service = createRosterService(client);
+    await service.list();
+
+    expect(client.requests).toHaveLength(1);
+  });
+
+  it("maps threads to roster entries preserving order", async () => {
+    const client = new ScriptedClient();
     const threads = [
       makeThread({
         id: "a",
+        name: "Alpha",
+        cwd: "/home/jesse/work",
+        updatedAt: 2_000_000,
         status: { type: "active" },
         evener: {
           ref: "ref-a",
@@ -280,6 +204,8 @@ describe("RosterService", () => {
       }),
       makeThread({
         id: "b",
+        name: undefined,
+        preview: "fix the bug",
         status: { type: "awaiting" },
         evener: {
           ref: "ref-b",
@@ -301,20 +227,67 @@ describe("RosterService", () => {
 
     const service = createRosterService(client);
     const result = await service.list();
+
     expect(result.threads.map((e) => e.ref)).toEqual([
       "ref-a",
       "ref-b",
       "ref-c",
     ]);
-    expect(result.threads.map((e) => e.attention)).toEqual([
-      "running",
-      "needsYou",
-      "recent",
+    const e0 = result.threads[0] as RosterEntry;
+    expect(e0.title).toBe("Alpha");
+    expect(e0.project).toBe("/home/jesse/work");
+    expect(e0.status).toBe("active");
+    expect(e0.updatedAt).toBe(2_000_000);
+    expect(e0.attention).toBe("running");
+    const e1 = result.threads[1] as RosterEntry;
+    expect(e1.title).toBe("fix the bug");
+    expect(e1.attention).toBe("needsYou");
+    const e2 = result.threads[2] as RosterEntry;
+    expect(e2.attention).toBe("recent");
+  });
+
+  it("classifies askPending true as needsYou even when status is idle", async () => {
+    const client = new ScriptedClient();
+    client.on(
+      "thread/list",
+      () =>
+        ({
+          data: [
+            makeThread({
+              id: "t4",
+              status: { type: "idle" },
+              evener: {
+                ref: "ref-t4",
+                capabilities: {} as never,
+                queue: { revision: 0 },
+                askPending: true,
+              },
+            }),
+          ],
+        }) as ThreadListResponse,
+    );
+
+    const service = createRosterService(client);
+    const result = await service.list();
+    const entry = result.threads[0] as RosterEntry;
+    expect(entry.attention).toBe("needsYou");
+    expect(entry.askPending).toBe(true);
+  });
+
+  it("refresh() delegates to list()", async () => {
+    const client = new ScriptedClient();
+    client.on("thread/list", () => ({ data: [] }) as ThreadListResponse);
+
+    const service = createRosterService(client);
+    await service.refresh();
+
+    expect(client.requests).toEqual([
+      { method: "thread/list", params: { limit: 501 } },
     ]);
   });
 
   it("propagates errors from thread/list", async () => {
-    const client = new FakeAppwireClient();
+    const client = new ScriptedClient();
     client.on("thread/list", () => {
       throw new Error("server down");
     });
