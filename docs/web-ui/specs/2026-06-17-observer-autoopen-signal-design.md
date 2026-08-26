@@ -1,7 +1,9 @@
 # Observer-Subagent Auto-Open — Signal Surfacing Feasibility + Design Spec
 
 Date: 2026-06-17
-Status: Draft for Jesse's review. **No implementation** — this is a design/feasibility doc.
+Status: **Superseded historical design.** **No implementation** — this is a
+retained design/feasibility record; its observer read-grant and delegate-job
+claims are not the shipped contract.
 Scope: the agent runtime (`agent/`), the appwire wire types (`appwire/`), the Evener web hub
 (`cmd/evener-hub/`), and the multi-pane workspace (`assets/panes.js`, `assets/renderer.js`).
 Companion to `docs/web-ui/specs/2026-06-17-multi-pane-workspace-design.md` (the multi-pane MVP this
