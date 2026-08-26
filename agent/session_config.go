@@ -261,14 +261,6 @@ type SessionConfig struct {
 // deterministic. Never set by app callers; never persisted (json:"-" on the
 // parent field).
 type testConfig struct {
-	// mcpConnectContext replaces initMCP's production 30s context. Hermetic
-	// real-transport tests supply a context canceled by their test lifecycle;
-	// nil preserves the production outer timeout.
-	mcpConnectContext context.Context
-	// mcpConnectTimeout, when non-nil, overrides the manager's production 10s
-	// per-server timeout. A pointer to zero retains lifecycle cancellation without
-	// adding a wall-clock deadline.
-	mcpConnectTimeout *time.Duration
 	// visionSideChannelTimeout overrides the production vision timeout only for
 	// deterministic package tests. Zero preserves the production timeout.
 	visionSideChannelTimeout time.Duration

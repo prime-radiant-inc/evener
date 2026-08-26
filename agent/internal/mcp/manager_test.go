@@ -300,39 +300,26 @@ func TestMCPManager_Empty(t *testing.T) {
 
 func TestMCPManager_PerServerTimeout(t *testing.T) {
 	errDial := errors.New("stop after observing context")
-	tests := []struct {
-		name         string
-		opts         []Option
-		wantDeadline bool
-	}{
-		{name: "default is ten seconds", wantDeadline: true},
-		{name: "test lifecycle context only", opts: []Option{WithConnectTimeoutForTesting(0)}},
+	var deadline time.Time
+	var hasDeadline bool
+	before := time.Now()
+	mgr, outcomes := NewManager(t.Context(), []mcpconfig.ServerConfig{{Name: "ctx"}}, []func(context.Context) (mcpsdk.Transport, error){
+		func(ctx context.Context) (mcpsdk.Transport, error) {
+			deadline, hasDeadline = ctx.Deadline()
+			return nil, errDial
+		},
+	})
+	after := time.Now()
+	defer mgr.Close()
+
+	if len(outcomes) != 1 || !errors.Is(outcomes[0].Err, errDial) {
+		t.Fatalf("NewManager outcomes = %+v, want dial sentinel", outcomes)
 	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			var deadline time.Time
-			var hasDeadline bool
-			before := time.Now()
-			mgr, outcomes := NewManager(t.Context(), []mcpconfig.ServerConfig{{Name: "ctx"}}, []func(context.Context) (mcpsdk.Transport, error){
-				func(ctx context.Context) (mcpsdk.Transport, error) {
-					deadline, hasDeadline = ctx.Deadline()
-					return nil, errDial
-				},
-			}, tt.opts...)
-			after := time.Now()
-			defer mgr.Close()
-
-			if len(outcomes) != 1 || !errors.Is(outcomes[0].Err, errDial) {
-				t.Fatalf("NewManager outcomes = %+v, want dial sentinel", outcomes)
-			}
-			if hasDeadline != tt.wantDeadline {
-				t.Fatalf("connect context has deadline = %v, want %v", hasDeadline, tt.wantDeadline)
-			}
-			if tt.wantDeadline && (deadline.Before(before.Add(10*time.Second)) || deadline.After(after.Add(10*time.Second))) {
-				t.Fatalf("connect deadline = %v, want creation time + 10s in [%v, %v]", deadline, before.Add(10*time.Second), after.Add(10*time.Second))
-			}
-		})
+	if !hasDeadline {
+		t.Fatal("connect context has no deadline, want production 10s deadline")
+	}
+	if deadline.Before(before.Add(10*time.Second)) || deadline.After(after.Add(10*time.Second)) {
+		t.Fatalf("connect deadline = %v, want creation time + 10s in [%v, %v]", deadline, before.Add(10*time.Second), after.Add(10*time.Second))
 	}
 }
 

@@ -12,7 +12,6 @@ import (
 	"strings"
 	"sync"
 	"testing"
-	"time"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/schema"
@@ -75,13 +74,7 @@ func TestIntg_InitMCP_InlineServer(t *testing.T) {
 	bin := intg_buildMCPServer(t)
 
 	client := llm.NewClient()
-	cfg := SessionConfig{
-		MCPInline: []string{"intgsvc:" + bin},
-		testOnly: testConfig{
-			mcpConnectContext: t.Context(),
-			mcpConnectTimeout: new(time.Duration),
-		},
-	}
+	cfg := SessionConfig{MCPInline: []string{"intgsvc:" + bin}}
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -126,13 +119,7 @@ func TestIntg_InitMCP_PluginProvidedServerMerges(t *testing.T) {
 	}
 
 	client := llm.NewClient()
-	cfg := SessionConfig{
-		PluginDirs: []string{dir},
-		testOnly: testConfig{
-			mcpConnectContext: t.Context(),
-			mcpConnectTimeout: new(time.Duration),
-		},
-	}
+	cfg := SessionConfig{PluginDirs: []string{dir}}
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err != nil {
 		t.Fatalf("NewSession: %v", err)
@@ -195,17 +182,15 @@ func TestIntg_InitMCP_RegisterToolsError(t *testing.T) {
 	// dropped, but NewSession now survives instead of reporting the error.
 	longName := strings.Repeat("a", 60)
 	client := llm.NewClient()
-	cfg := SessionConfig{
-		MCPInline: []string{longName + ":" + bin},
-		testOnly: testConfig{
-			mcpConnectContext: t.Context(),
-			mcpConnectTimeout: new(time.Duration),
-		},
-	}
+	cfg := SessionConfig{MCPInline: []string{longName + ":" + bin}}
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err != nil {
 		t.Fatalf("NewSession must survive an MCP tool name exceeding the length limit, got: %v", err)
 	}
+	// Registration failure demotes the connection but leaves its live
+	// ClientSession owned by the Manager; take ownership before any assertion so
+	// fatal paths close the Manager, ClientSession, and subprocess too.
+	t.Cleanup(sess.Close)
 	if want := longName + "__echo"; sess.reg.Get(want) != nil {
 		t.Error("a failed server must contribute no callable tool")
 	}
@@ -235,13 +220,7 @@ func TestIntg_InitMCP_ConnectError(t *testing.T) {
 		t.Skipf("`true` not found: %v", err)
 	}
 	client := llm.NewClient()
-	cfg := SessionConfig{
-		MCPInline: []string{"deadsvc:" + truePath},
-		testOnly: testConfig{
-			mcpConnectContext: t.Context(),
-			mcpConnectTimeout: new(time.Duration),
-		},
-	}
+	cfg := SessionConfig{MCPInline: []string{"deadsvc:" + truePath}}
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err != nil {
 		t.Fatalf("NewSession must survive a dead MCP server, got: %v", err)
@@ -343,10 +322,6 @@ func TestIntg_NewSession_LateErrorClosesMCPManager(t *testing.T) {
 	cfg := SessionConfig{
 		MCPInline:       []string{"intgsvc:" + bin + " " + marker},
 		ContextStrategy: "bogus-nonexistent-strategy",
-		testOnly: testConfig{
-			mcpConnectContext: t.Context(),
-			mcpConnectTimeout: new(time.Duration),
-		},
 	}
 	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
 	if err == nil {
@@ -359,7 +334,9 @@ func TestIntg_NewSession_LateErrorClosesMCPManager(t *testing.T) {
 	if sess != nil {
 		t.Fatal("expected a nil session on error")
 	}
-	intg_awaitMCPExitMarker(t, marker, 5*time.Second)
+	if _, statErr := os.Stat(marker); statErr != nil {
+		t.Fatalf("MCP server exit marker %s missing after synchronous cleanup: %v", marker, statErr)
+	}
 }
 
 // TestIntg_RestoreSession_LateErrorClosesMCPManager is the restore-path
@@ -382,13 +359,7 @@ func TestIntg_RestoreSession_LateErrorClosesMCPManager(t *testing.T) {
 	sess, err := RestoreSessionFromMetaWithConfig(
 		w3init_restoreClient(), NewOpenAIProfile("gpt-5.2"),
 		execenv.NewLocalExecutionEnvironment(t.TempDir()), meta,
-		RestoreSessionConfig{
-			StateDir: stateDir,
-			testOnly: testConfig{
-				mcpConnectContext: t.Context(),
-				mcpConnectTimeout: new(time.Duration),
-			},
-		},
+		RestoreSessionConfig{StateDir: stateDir},
 	)
 	if err == nil {
 		sess.Close()
@@ -400,26 +371,8 @@ func TestIntg_RestoreSession_LateErrorClosesMCPManager(t *testing.T) {
 	if sess != nil {
 		t.Fatal("expected a nil session on error")
 	}
-	intg_awaitMCPExitMarker(t, marker, 5*time.Second)
-}
-
-// intg_awaitMCPExitMarker polls for the exit-marker file testdata/intgmcpserver
-// writes right before it exits (see main.go) and fails the test if it does not
-// appear within timeout. Manager.Close blocks on the subprocess's Cmd.Wait, so
-// a marker written by a Close'd server is already on disk by the time the
-// caller under test has returned; the poll only guards against incidental
-// scheduling jitter, not against a real close-vs-not-close race.
-func intg_awaitMCPExitMarker(t *testing.T, path string, timeout time.Duration) {
-	t.Helper()
-	deadline := time.Now().Add(timeout)
-	for {
-		if _, err := os.Stat(path); err == nil {
-			return
-		}
-		if time.Now().After(deadline) {
-			t.Fatalf("MCP server exit marker %s never appeared; the underlying subprocess was not closed", path)
-		}
-		time.Sleep(10 * time.Millisecond)
+	if _, statErr := os.Stat(marker); statErr != nil {
+		t.Fatalf("MCP server exit marker %s missing after synchronous cleanup: %v", marker, statErr)
 	}
 }
 

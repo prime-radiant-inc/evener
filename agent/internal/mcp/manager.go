@@ -139,7 +139,7 @@ func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, dials []f
 		return nil, nil
 	}
 
-	o := managerOptions{connectTimeout: 10 * time.Second}
+	var o managerOptions
 	for _, apply := range opts {
 		apply(&o)
 	}
@@ -159,7 +159,7 @@ func NewManager(ctx context.Context, configs []mcpconfig.ServerConfig, dials []f
 		}
 		go func(i int, cfg mcpconfig.ServerConfig, dial func(context.Context) (mcpsdk.Transport, error)) {
 			defer wg.Done()
-			mgr.conns[i] = connectOneWithTimeout(ctx, client, cfg, dial, o.connectTimeout)
+			mgr.conns[i] = connectOne(ctx, client, cfg, dial)
 		}(i, cfg, dial)
 	}
 	wg.Wait()
@@ -193,38 +193,27 @@ func NewManagerWithClock(ctx context.Context, configs []mcpconfig.ServerConfig, 
 	return mgr, outcomes
 }
 
-// connectOne is the package-local default used by direct tests and helpers.
-// It preserves NewManager's production 10s per-server timeout.
+// connectOne dials a transport via dial, connects to a single MCP server, and
+// discovers its tools — all bounded by a 10s timeout derived from ctx. Any
+// failure dialing, connecting, or listing tools yields a "failed" conn
+// recording the error; NewManager turns that into a connect-stage
+// ServerOutcome. dial is stored on the returned conn regardless of outcome.
 func connectOne(ctx context.Context, client *mcpsdk.Client, cfg mcpconfig.ServerConfig, dial func(context.Context) (mcpsdk.Transport, error)) conn {
-	return connectOneWithTimeout(ctx, client, cfg, dial, 10*time.Second)
-}
-
-// connectOneWithTimeout dials a transport, connects to one MCP server, and
-// discovers its tools under a child of ctx. A positive timeout adds a deadline;
-// a non-positive timeout adds cancellation only, preserving lifecycle
-// cancellation without layering a wall-clock deadline.
-func connectOneWithTimeout(ctx context.Context, client *mcpsdk.Client, cfg mcpconfig.ServerConfig, dial func(context.Context) (mcpsdk.Transport, error), timeout time.Duration) conn {
-	var connectCtx context.Context
-	var cancel context.CancelFunc
-	if timeout > 0 {
-		connectCtx, cancel = context.WithTimeout(ctx, timeout)
-	} else {
-		connectCtx, cancel = context.WithCancel(ctx)
-	}
+	perServerCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
 
-	transport, err := dial(connectCtx)
+	transport, err := dial(perServerCtx)
 	if err != nil {
 		return failedConn(cfg, dial, err)
 	}
 
-	session, err := client.Connect(connectCtx, transport, nil)
+	session, err := client.Connect(perServerCtx, transport, nil)
 	if err != nil {
 		return failedConn(cfg, dial, err)
 	}
 
 	// Discover tools from the server.
-	result, err := session.ListTools(connectCtx, nil)
+	result, err := session.ListTools(perServerCtx, nil)
 	if err != nil {
 		_ = session.Close()
 		return failedConn(cfg, dial, err)
@@ -261,8 +250,7 @@ func connectOneWithTimeout(ctx context.Context, client *mcpsdk.Client, cfg mcpco
 type Option func(*managerOptions)
 
 type managerOptions struct {
-	wrapper        *sandbox.Wrapper
-	connectTimeout time.Duration
+	wrapper *sandbox.Wrapper
 }
 
 // WithSandboxWrapper confines every stdio MCP server this manager spawns to the
@@ -270,13 +258,6 @@ type managerOptions struct {
 // is a no-op, so a non-sandboxed session behaves exactly as before.
 func WithSandboxWrapper(w *sandbox.Wrapper) Option {
 	return func(o *managerOptions) { o.wrapper = w }
-}
-
-// WithConnectTimeoutForTesting overrides NewManager's production 10s
-// per-server timeout. A non-positive duration retains parent cancellation but
-// adds no wall-clock deadline. It is only for hermetic real-transport tests.
-func WithConnectTimeoutForTesting(timeout time.Duration) Option {
-	return func(o *managerOptions) { o.connectTimeout = timeout }
 }
 
 // productionDial returns the default dial factory for cfg: build a fresh
