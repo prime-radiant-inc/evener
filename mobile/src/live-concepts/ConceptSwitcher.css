@@ -1,0 +1,103 @@
+/* ConceptSwitcher modal styles — every selector scoped under
+   .live-concept-switcher. No global element, body, root, or unscoped
+   attribute selectors. */
+
+.live-concept-switcher {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+}
+
+.live-concept-switcher__overlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.4);
+}
+
+.live-concept-switcher__dialog {
+  position: fixed;
+  left: 50%;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: min(420px, 90vw);
+  max-height: 80vh;
+  overflow: auto;
+  background: var(--evener-surface, #fff);
+  border-radius: 12px;
+  box-shadow: 0 8px 32px rgba(0, 0, 0, 0.2);
+  padding: 16px;
+}
+
+.live-concept-switcher__header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 12px;
+}
+
+.live-concept-switcher__title {
+  font-weight: 600;
+  font-size: 1.125rem;
+}
+
+.live-concept-switcher__back {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  background: none;
+  border: none;
+  cursor: pointer;
+  font-size: 0.875rem;
+  color: var(--evener-accent, #007aff);
+  padding: 4px 8px;
+  border-radius: 6px;
+}
+
+.live-concept-switcher__back:hover {
+  background: rgba(0, 0, 0, 0.05);
+}
+
+.live-concept-switcher__choices {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.live-concept-switcher__choice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 4px;
+  text-align: left;
+  background: var(--evener-surface-raised, #f5f5f7);
+  border: 2px solid transparent;
+  border-radius: 10px;
+  padding: 12px 14px;
+  cursor: pointer;
+}
+
+.live-concept-switcher__choice[data-concept-selected="true"] {
+  border-color: var(--evener-accent, #007aff);
+}
+
+.live-concept-switcher__choice:focus-visible {
+  outline: 2px solid var(--evener-accent, #007aff);
+  outline-offset: 2px;
+}
+
+.live-concept-switcher__choice-label {
+  font-weight: 600;
+  font-size: 1rem;
+}
+
+.live-concept-switcher__choice-description {
+  font-size: 0.8125rem;
+  color: var(--evener-secondary-text, #6b6b6b);
+}
+
+.live-concept-switcher__choice-selected {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--evener-accent, #007aff);
+  margin-top: 2px;
+}

@@ -174,7 +174,13 @@ function findUnscopedCssSelectors(css) {
       if (depth === 0) {
         const selector = current.trim();
         // Skip at-rules (@media, @keyframes, @font-face, …).
-        if (selector && !selector.startsWith("@") && !selector.includes(".concept-")) {
+        // Accept selectors scoped under .concept- or .live-concept-.
+        if (
+          selector &&
+          !selector.startsWith("@") &&
+          !selector.includes(".concept-") &&
+          !selector.includes(".live-concept-")
+        ) {
           unscoped.push(selector);
         }
       }
