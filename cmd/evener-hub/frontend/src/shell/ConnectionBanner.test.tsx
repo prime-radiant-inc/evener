@@ -256,7 +256,7 @@ describe("clicking Retry", () => {
     expect(connectionStore.getState().state).toBe("closed");
   });
 
-  test("populates serverInfo from the fresh client's connect() response, same as AppShell's own initial boot", async () => {
+  test("populates connection metadata from the fresh client's initialize response", async () => {
     const fresh = new FakeClient("ready");
     const scripted: InitializeResponse = {
       serverInfo: { name: "evener-hub-retry-test", version: "9.9.9" },
@@ -272,6 +272,7 @@ describe("clicking Retry", () => {
 
     await waitFor(() => {
       expect(connectionStore.getState().serverInfo).toEqual({ name: "evener-hub-retry-test", version: "9.9.9" });
+      expect(connectionStore.getState().features).toEqual(scripted.features);
     });
   });
 
