@@ -36,7 +36,7 @@ func TestRenameEndedSessionEditsMetaAndRefreshesIndex(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusNoContent {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	got, _ := past.Find(renameSessionID)
@@ -127,7 +127,7 @@ func TestRenameEndedSessionBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
 

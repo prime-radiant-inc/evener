@@ -19,6 +19,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostlock"
@@ -390,8 +391,16 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// PastIndex at all, so those two mutations broadcast unconditionally
 	// instead via WebServer.notifyMutation (web_api_archive.go,
 	// web_api_favorite.go).
-	past.SetOnChange(func() { bump(); notifyTreeChanged(web.appRPC) })
-	roster.SetOnChange(func() { bump(); notifyTreeChanged(web.appRPC) })
+	past.SetOnChange(func() { bump(); notifyTreeChanged(web.appRPC); web.navigation.Invalidate(navigationChangeHint{}) })
+	roster.SetOnChange(func() { bump(); notifyTreeChanged(web.appRPC); web.navigation.Invalidate(navigationChangeHint{}) })
+	archive.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
+	favorite.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
+	if remoteCache != nil {
+		remoteCache.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{Sources: true}) })
+	}
+	if pinSections != nil {
+		pinSections.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
+	}
 
 	if deps.afterWeb != nil {
 		deps.afterWeb(web)
@@ -417,6 +426,27 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// Start the resettable navigation scheduler only after the initial roster
 	// seed, so its first capture cannot publish a transient empty generation.
 	startBackground(func() { web.navigation.Start(ctx) })
+	// NavigationService is the sole typed-event authority. Drain its FIFO from
+	// one lifecycle-owned publisher so readiness coalescing cannot duplicate or
+	// reorder invalidations.
+	startBackground(func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-web.navigation.PublicationReady():
+				for {
+					payloads := web.navigation.DrainPublications()
+					if len(payloads) == 0 {
+						break
+					}
+					for _, payload := range payloads {
+						web.appRPC.BroadcastAll(appwire.NotifyEvenerNavigationInvalidated, payload)
+					}
+				}
+			}
+		}
+	})
 	startBackground(func() { watchHubRoster(ctx, roster) })
 
 	startBackground(func() {

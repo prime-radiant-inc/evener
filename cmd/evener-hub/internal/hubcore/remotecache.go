@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"reflect"
 	"sync"
 
 	"primeradiant.com/evener/appwire"
@@ -32,7 +33,13 @@ type RemoteThreadSnapshot struct {
 type RemoteThreadCache struct {
 	mu       sync.RWMutex
 	snapshot RemoteThreadSnapshot
+	onChange func()
 }
+
+// SetOnChange installs the post-commit content-change hook. The callback is
+// intentionally invoked outside the cache lock so consumers may capture the
+// source immediately without lock inversion.
+func (c *RemoteThreadCache) SetOnChange(fn func()) { c.mu.Lock(); c.onChange = fn; c.mu.Unlock() }
 
 func (c *RemoteThreadCache) Store(threads []appwire.Thread) {
 	c.StoreSnapshot(threads, true)
@@ -54,9 +61,39 @@ func (c *RemoteThreadCache) StoreSnapshot(threads []appwire.Thread, complete boo
 // monotonic sequence used by tree memoization.
 func (c *RemoteThreadCache) StoreSnapshotData(snapshot RemoteThreadSnapshot) {
 	c.mu.Lock()
+	previous := c.snapshot
+	previous = normalizeRemoteThreadSnapshot(previous)
+	snapshot = normalizeRemoteThreadSnapshot(snapshot)
+	if reflect.DeepEqual(previous.Threads, snapshot.Threads) && previous.Complete == snapshot.Complete && reflect.DeepEqual(previous.Sources, snapshot.Sources) {
+		c.mu.Unlock()
+		return
+	}
 	snapshot.Generation = c.snapshot.Generation + 1
 	c.snapshot = cloneRemoteThreadSnapshot(snapshot)
+	onChange := c.onChange
 	c.mu.Unlock()
+	if onChange != nil {
+		onChange()
+	}
+}
+
+func normalizeRemoteThreadSnapshot(snapshot RemoteThreadSnapshot) RemoteThreadSnapshot {
+	if snapshot.Threads == nil {
+		snapshot.Threads = []appwire.Thread{}
+	}
+	if snapshot.Sources == nil {
+		snapshot.Sources = map[string]RemoteSourceSnapshot{}
+	}
+	for id, source := range snapshot.Sources {
+		if source.Threads == nil {
+			source.Threads = []appwire.Thread{}
+		}
+		if source.IncompleteIDs == nil {
+			source.IncompleteIDs = []string{}
+		}
+		snapshot.Sources[id] = source
+	}
+	return snapshot
 }
 
 func (c *RemoteThreadCache) Get() []appwire.Thread {

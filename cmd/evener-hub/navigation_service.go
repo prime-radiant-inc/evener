@@ -140,20 +140,22 @@ type NavigationService struct {
 	retryAfter   time.Duration
 	cache        *navigationRepresentationCache
 
-	core             *navigationCoreSnapshot
-	resources        map[navigationResourceKey]navigationResourceState // includes tombstones
-	sequence         uint64
-	epoch            uint64
-	flight           *navigationBuildFlight
-	buildID          uint64
-	coreBuilds       uint64
-	wake             chan struct{}
-	lifecycleCtx     context.Context
-	lifecycleCancel  context.CancelFunc
-	lifecycleWG      sync.WaitGroup
-	lifecycleStopped bool
-	publications     []appwire.NavigationInvalidatedPayload
-	publicationReady chan struct{}
+	core                *navigationCoreSnapshot
+	resources           map[navigationResourceKey]navigationResourceState // includes tombstones
+	sequence            uint64
+	epoch               uint64
+	flight              *navigationBuildFlight
+	buildID             uint64
+	coreBuilds          uint64
+	wake                chan struct{}
+	lifecycleCtx        context.Context
+	lifecycleCancel     context.CancelFunc
+	lifecycleWG         sync.WaitGroup
+	lifecycleStopped    bool
+	publications        []appwire.NavigationInvalidatedPayload
+	publicationReady    chan struct{}
+	pendingHint         navigationChangeHint
+	pendingInvalidation bool
 }
 
 func newNavigationService(cfg navigationServiceConfig) *NavigationService {
@@ -213,9 +215,14 @@ func newNavigationGenerationID() (string, error) {
 
 // Invalidate marks source-side state dirty and immediately resets a scheduler
 // wait. Task 7 owns producer hooks; this method is intentionally idempotent.
-func (s *NavigationService) Invalidate(navigationChangeHint) {
+func (s *NavigationService) Invalidate(hint navigationChangeHint) {
 	s.mu.Lock()
 	s.epoch++
+	// Keep the hint until the scheduler consumes it.  In particular, a source
+	// wake must result in a forced capture; a normal scheduler build is not a
+	// publication operation.
+	s.pendingHint = mergeNavigationChangeHints(s.pendingHint, hint)
+	s.pendingInvalidation = true
 	s.mu.Unlock()
 	select {
 	case s.wake <- struct{}{}:
@@ -1041,6 +1048,7 @@ func (s *NavigationService) Start(ctx context.Context) {
 			if !s.waitRetryOrWake(ctx) {
 				return
 			}
+			s.refreshPending(ctx)
 			continue
 		}
 		s.mu.Lock()
@@ -1061,9 +1069,46 @@ func (s *NavigationService) Start(ctx context.Context) {
 		}
 		if elapsed {
 			s.Invalidate(navigationChangeHint{Time: true})
-			_, _ = s.Refresh(ctx, navigationChangeHint{Time: true})
+			s.refreshPending(ctx)
+		} else if s.hasPendingInvalidation() {
+			s.refreshPending(ctx)
 		}
 	}
+}
+
+func (s *NavigationService) hasPendingInvalidation() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pendingInvalidation
+}
+
+func (s *NavigationService) takePendingHint() navigationChangeHint {
+	s.mu.Lock()
+	hint := s.pendingHint
+	s.mu.Unlock()
+	return hint
+}
+
+func (s *NavigationService) refreshPending(ctx context.Context) {
+	hint := s.takePendingHint()
+	if !s.hasPendingInvalidation() {
+		return
+	}
+	if _, err := s.Refresh(ctx, hint); err != nil {
+		s.mu.Lock()
+		s.pendingHint = mergeNavigationChangeHints(hint, s.pendingHint)
+		s.pendingInvalidation = true
+		s.mu.Unlock()
+		return
+	}
+	s.mu.Lock()
+	// Only clear the portion consumed by this flight. Any callback that raced
+	// the flight remains pending for the next capture.
+	if reflect.DeepEqual(s.pendingHint, hint) {
+		s.pendingHint = navigationChangeHint{}
+		s.pendingInvalidation = false
+	}
+	s.mu.Unlock()
 }
 
 func (s *NavigationService) waitRetryOrWake(ctx context.Context) bool {

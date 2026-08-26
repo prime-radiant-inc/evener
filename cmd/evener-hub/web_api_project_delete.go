@@ -15,6 +15,7 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
@@ -23,6 +24,26 @@ import (
 type projectDeleteSkip struct {
 	ID     string `json:"id"`
 	Reason string `json:"reason"`
+}
+
+type projectDeleteResponse struct {
+	Deleted    []string                  `json:"deleted"`
+	Skipped    []projectDeleteSkip       `json:"skipped"`
+	Navigation hubapi.NavigationMutation `json:"navigation"`
+}
+
+func (s *WebServer) writeProjectDelete(w http.ResponseWriter, r *http.Request, deleted []string, skipped []projectDeleteSkip, changed bool, project string) {
+	navigation := s.emptyNavigationMutation()
+	if changed {
+		hint := navigationChangeHint{Projects: []string{project}}
+		var err error
+		navigation, err = s.navigation.Refresh(r.Context(), hint)
+		if err != nil {
+			writeAPIError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+	}
+	writeAPIJSON(w, http.StatusOK, projectDeleteResponse{Deleted: deleted, Skipped: skipped, Navigation: navigation})
 }
 
 var (
@@ -96,16 +117,22 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 			if errors.Is(ownerErr.Err, llm.ErrAPILogTargetLocked) || ownerErr.Live {
 				skipped = appendProjectDeleteLiveSkip(nil, ownerErr.ThreadID)
 			}
-			writeAPIJSON(w, http.StatusOK, map[string]any{"deleted": []string{}, "skipped": skipped})
+			s.writeProjectDelete(w, r, []string{}, skipped, false, project.ID)
 			return
 		}
-		defer releaseOwnership()
+		defer func() {
+			if releaseOwnership != nil {
+				releaseOwnership()
+			}
+		}()
 		result := s.cleanupProjectDeletion(record, nil)
 		if len(result.DecisionErrors) > 0 {
 			writeAPIError(w, http.StatusInternalServerError, strings.Join(result.DecisionErrors, "; "))
 			return
 		}
-		writeAPIJSON(w, http.StatusOK, map[string]any{"deleted": result.Deleted, "skipped": result.Skipped})
+		releaseOwnership()
+		releaseOwnership = nil
+		s.writeProjectDelete(w, r, result.Deleted, result.Skipped, len(result.Deleted) > 0, project.ID)
 		return
 	}
 	// Validate the body against the current tree entry for that key — never
@@ -162,7 +189,7 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 	}
 
 	if len(entries) == 0 {
-		writeAPIJSON(w, http.StatusOK, map[string]any{"deleted": []string{}, "skipped": []projectDeleteSkip{}})
+		s.writeProjectDelete(w, r, []string{}, []projectDeleteSkip{}, false, project.ID)
 		return
 	}
 	targets := make([]hubcore.DeletionTarget, 0, len(entries))
@@ -175,9 +202,13 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 		stateDirs[entry.ID] = entry.StateDir
 	}
 	ownedTargets, skipped, releaseOwnership := s.acquireProjectDeletionCandidates(targets, stateDirs)
-	defer releaseOwnership()
+	defer func() {
+		if releaseOwnership != nil {
+			releaseOwnership()
+		}
+	}()
 	if len(ownedTargets) == 0 {
-		writeAPIJSON(w, http.StatusOK, map[string]any{"deleted": []string{}, "skipped": skipped})
+		s.writeProjectDelete(w, r, []string{}, skipped, false, project.ID)
 		return
 	}
 
@@ -192,7 +223,9 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 		writeAPIError(w, http.StatusInternalServerError, strings.Join(result.DecisionErrors, "; "))
 		return
 	}
-	writeAPIJSON(w, http.StatusOK, map[string]any{"deleted": result.Deleted, "skipped": result.Skipped})
+	releaseOwnership()
+	releaseOwnership = nil
+	s.writeProjectDelete(w, r, result.Deleted, result.Skipped, len(result.Deleted) > 0, project.ID)
 }
 
 type projectDeletionOwnershipError struct {

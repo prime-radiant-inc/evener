@@ -20,6 +20,14 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
+func (s *WebServer) emptyNavigationMutation() hubapi.NavigationMutation {
+	mutation := hubapi.NavigationMutation{Targets: hubapi.NavigationArray[appwire.NavigationInvalidationTarget]{}}
+	if capability := s.navigation.Capability(); capability != nil {
+		mutation.GenerationID = capability.GenerationID
+	}
+	return mutation
+}
+
 var (
 	hubBuildNavigationTree       = hubcore.BuildTreeWithProjects
 	hubDeriveNavigationAttention = hubcore.DeriveAttention

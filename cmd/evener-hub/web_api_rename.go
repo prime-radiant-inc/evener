@@ -3,12 +3,31 @@ package hub
 import (
 	"encoding/json"
 	"net/http"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/hubapi"
 )
+
+type renameMutationResponse struct {
+	Navigation hubapi.NavigationMutation `json:"navigation"`
+}
+
+func (s *WebServer) writeRenameSuccess(w http.ResponseWriter, r *http.Request, id string) {
+	hint := navigationChangeHint{AllLoadedProjects: true}
+	if pe, ok := s.cfg.Past.Find(canonicalRouteID(id)); ok {
+		hint = navigationChangeHint{Projects: []string{filepath.Base(filepath.Dir(pe.StateDir))}}
+	}
+	navigation, err := s.navigation.Refresh(r.Context(), hint)
+	if err != nil {
+		writeAPIError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
+	writeAPIJSON(w, http.StatusOK, renameMutationResponse{Navigation: navigation})
+}
 
 var (
 	loadSessionMetaForRename = schema.LoadSessionMeta
@@ -42,7 +61,12 @@ func (s *WebServer) handleAPIRename(w http.ResponseWriter, r *http.Request, id s
 	ref := appRefFromRouteID(id)
 	live := isLiveForRename(s, id)
 	unlockDeletionTarget := lockDeletionTarget(s.cfg, ref, "")
-	defer unlockDeletionTarget()
+	locked := true
+	defer func() {
+		if locked {
+			unlockDeletionTarget()
+		}
+	}()
 	if err := deletionFenceError(s.cfg, ref, "", ""); err != nil {
 		writeAPIWireError(w, http.StatusBadGateway, err)
 		return
@@ -59,7 +83,9 @@ func (s *WebServer) handleAPIRename(w http.ResponseWriter, r *http.Request, id s
 			return
 		}
 		s.refreshRenamedMeta(id, name)
-		w.WriteHeader(http.StatusNoContent)
+		unlockDeletionTarget()
+		locked = false
+		s.writeRenameSuccess(w, r, id)
 		return
 	}
 
@@ -88,7 +114,9 @@ func (s *WebServer) handleAPIRename(w http.ResponseWriter, r *http.Request, id s
 				return
 			}
 			s.refreshRenamedMeta(id, name)
-			w.WriteHeader(http.StatusNoContent)
+			unlockDeletionTarget()
+			locked = false
+			s.writeRenameSuccess(w, r, id)
 			return
 		}
 	}
@@ -121,7 +149,9 @@ func (s *WebServer) handleAPIRename(w http.ResponseWriter, r *http.Request, id s
 		// renaming to the session's current name is a genuine content no-op).
 		notifyTreeChanged(s.appRPC)
 	}
-	w.WriteHeader(http.StatusNoContent)
+	unlockDeletionTarget()
+	locked = false
+	s.writeRenameSuccess(w, r, id)
 }
 
 // refreshRenamedMeta re-reads the persisted meta after a live rename and pushes

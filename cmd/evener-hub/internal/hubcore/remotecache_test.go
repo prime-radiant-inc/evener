@@ -1,10 +1,23 @@
 package hubcore
 
 import (
+	"sync/atomic"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
 )
+
+func TestRemoteThreadCacheEquivalentEmptyFormsAreNoOp(t *testing.T) {
+	c := &RemoteThreadCache{}
+	var calls atomic.Int32
+	c.SetOnChange(func() { calls.Add(1) })
+	c.StoreSnapshotData(RemoteThreadSnapshot{Complete: true, Threads: []appwire.Thread{}, Sources: map[string]RemoteSourceSnapshot{}})
+	first := c.Snapshot().Generation
+	c.StoreSnapshotData(RemoteThreadSnapshot{Complete: true, Threads: nil, Sources: nil})
+	if got := c.Snapshot().Generation; got != first || calls.Load() != 1 {
+		t.Fatalf("equivalent snapshot changed: generation=%d calls=%d", got, calls.Load())
+	}
+}
 
 func fuzzScenarioRemoteThreadCacheReadReturnsLastStored(t *testing.T) {
 	c := &RemoteThreadCache{}
