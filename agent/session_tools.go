@@ -304,6 +304,12 @@ type visionSideChannelResult struct {
 	err         error
 }
 
+// describeImage makes a side-channel API call with no tools to describe an image
+// using the model's native vision. Returns the text description, or "" on error.
+func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
+	return s.describeImageCall(ctx, r).description
+}
+
 // visionSideChannelStats is the machine-readable accounting contract carried
 // in successful image-description steering. Token fields are present only when
 // the provider reported usage; usage_available distinguishes an unavailable
@@ -325,25 +331,6 @@ const (
 	visionSideChannelStatsClose = "</evener:vision_side_channel_stats>"
 	visionRequestContract       = "Observe the image faithfully and answer the caller's request. Vision is non-authoritative for exact text or bytes; use OCR or the source when exactness matters."
 )
-
-// describeImage makes a side-channel API call with no tools to describe an image
-// using the model's native vision. Returns the text description, or "" on error.
-// The call includes context from the current task so the description is relevant.
-func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
-	return s.describeImageCall(ctx, r).description
-}
-
-// describeImageSteering preserves describeImage's text contract while appending
-// machine-readable side-channel accounting to the model-facing steering
-// message. The accounting is emitted only after a non-empty response succeeds,
-// so failures cannot claim successful usage or latency.
-func (s *Session) describeImageSteering(ctx context.Context, r tool.ExecResult) string {
-	result := s.describeImageCall(ctx, r)
-	if result.description == "" {
-		return ""
-	}
-	return result.description + "\n" + formatVisionSideChannelStats(result)
-}
 
 func visionUnavailableSteering(path string) string {
 	if path == "" {
