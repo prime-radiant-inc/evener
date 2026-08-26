@@ -6,6 +6,10 @@ on:
   pull_request:
     branches: [main]
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -24,6 +28,109 @@ jobs:
       - name: Test, build, and browser guards
         run: make test-web && make build-web && make test-web-browser
 
+  static:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-toolchain
+
+      - name: Build runtime pair and all Go workspace packages
+        run: make build && make build-go
+
+      - name: Vet (all go.work modules)
+        run: make vet
+
+      - name: Read tool versions
+        id: tool-versions
+        run: |
+          echo "golangci=$(awk '$1=="golangci-lint" {print $2}' .tool-versions)" >> "$GITHUB_OUTPUT"
+          echo "gitleaks=$(awk '$1=="gitleaks" {print $2}' .tool-versions)" >> "$GITHUB_OUTPUT"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Install golangci-lint
+        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" "v${{ steps.tool-versions.outputs.golangci }}"
+
+      - name: Install gitleaks
+        run: go install github.com/zricethezav/gitleaks/v8@v${{ steps.tool-versions.outputs.gitleaks }}
+
+      - name: Lint (make lint — every family of the local gate, all go.work modules)
+        env:
+          EVENER_GITLEAKS_REQUIRED: "1"
+        run: make lint
+
+      - name: Fuzz gap check (every decode/parse package has a target — static, fast)
+        run: make fuzz-gap-check
+
+  race:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-toolchain
+
+      - name: Test (race detector — the permanent -race gate, all go.work modules)
+        run: make test-race
+
+  tests-and-fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-toolchain
+
+      - name: Read golangci-lint version
+        id: golangci-version
+        run: |
+          echo "version=$(awk '$1=="golangci-lint" {print $2}' .tool-versions)" >> "$GITHUB_OUTPUT"
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+
+      - name: Install golangci-lint for dev-tooling self-tests
+        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" "v${{ steps.golangci-version.outputs.version }}"
+
+      - name: Deterministic tests (full root suite; frontend covered by web job)
+        run: ROOT_FULL=1 WEB=0 make test
+
+      - name: Dev-tooling self-test wave (scripts/*-selftest.sh — tooling, not the product)
+        run: make test-dev-tooling
+
+      - name: Fuzz seed-corpus replay (committed crashers — no search, deterministic)
+        run: make fuzz
+
+  snapshot-artifacts:
+    name: Build snapshot artifacts
+    if: github.event_name == 'pull_request'
+    needs: [static, race, tests-and-fuzz, web]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-toolchain
+
+      - name: Build snapshot
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean
+        env:
+          BUILD_CHANNEL: snapshot
+
+      - name: Inspect archives
+        run: for f in dist/*.tar.gz; do echo "== $f"; tar -tzf "$f"; done
+
+      - name: Upload archives
+        uses: actions/upload-artifact@v7
+        with:
+          name: evener-snapshot-artifacts
+          path: |
+            dist/*.tar.gz
+            dist/checksums.txt
+          if-no-files-found: error
+
+  # Temporary compatibility job. Branch protection requires this context until
+  # the split jobs above have run successfully and protection is cut over.
   build-and-test:
     runs-on: ubuntu-latest
     steps:

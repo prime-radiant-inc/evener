@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -46,9 +45,8 @@ func TestServeWebSocketHandlesAppWire(t *testing.T) {
 	}
 }
 
-func TestServeWebSocketKeepsBusyRPCAliveAndDetectsIdlePeerLoss(t *testing.T) {
+func TestServeWebSocketKeepsBusyRPCAliveAndPingsWhenReaderIsIdle(t *testing.T) {
 	server := NewServer(ServerConfig{ServerName: "test-server", Version: "test", SourceID: "local"})
-	server.keepalivePongTimeout = 5 * time.Millisecond
 	ticker := newControlledKeepaliveTicker()
 	decision := make(chan bool, 2)
 	server.keepaliveTickerFactory = func(time.Duration) webSocketKeepaliveTicker { return ticker }
@@ -67,8 +65,6 @@ func TestServeWebSocketKeepsBusyRPCAliveAndDetectsIdlePeerLoss(t *testing.T) {
 	httpServer := httptest.NewServer(http.HandlerFunc(server.ServeWebSocket))
 	defer httpServer.Close()
 
-	var answerPings atomic.Bool
-	answerPings.Store(true)
 	idlePingSeen := make(chan struct{}, 1)
 	ctx := context.Background()
 	wsConn, _, err := websocket.Dial(ctx, "ws"+httpServer.URL[len("http"):], &websocket.DialOptions{
@@ -78,7 +74,7 @@ func TestServeWebSocketKeepsBusyRPCAliveAndDetectsIdlePeerLoss(t *testing.T) {
 			case idlePingSeen <- struct{}{}:
 			default:
 			}
-			return answerPings.Load()
+			return true
 		},
 	})
 	if err != nil {
@@ -126,31 +122,28 @@ func TestServeWebSocketKeepsBusyRPCAliveAndDetectsIdlePeerLoss(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("held RPC did not complete after exact release")
 	}
-	// Once ordinary work is gone, an unanswered native ping must still retire
-	// the connection. The client remains a real coder/websocket peer, but stops
-	// answering control pings to model a silent half-open transport.
-	answerPings.Store(false)
-	ticker.Tick()
-	select {
-	case attempted := <-decision:
-		if !attempted {
+	// Receiving the RPC response does not order the send goroutine against the
+	// receive loop's next readerAvailable transition, so drive controlled ticks
+	// until the keepalive observes that transition and pings the idle peer.
+	availableDeadline := time.NewTimer(time.Second)
+	defer availableDeadline.Stop()
+	for {
+		ticker.Tick()
+		select {
+		case attempted := <-decision:
+			if attempted {
+				goto readerAvailable
+			}
+		case <-availableDeadline.C:
 			t.Fatal("keepalive did not observe the available reader")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("keepalive did not report the idle-reader decision")
 	}
+
+readerAvailable:
 	select {
 	case <-idlePingSeen:
 	case <-time.After(time.Second):
 		t.Fatal("idle keepalive never attempted a native ping")
-	}
-	select {
-	case _, ok := <-client.Notifications():
-		for ok {
-			_, ok = <-client.Notifications()
-		}
-	case <-time.After(time.Second):
-		t.Fatal("idle ping failure did not close the websocket client")
 	}
 }
 

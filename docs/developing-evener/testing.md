@@ -205,7 +205,8 @@ post-merge surface.
 
 Run it locally pre-merge and post-merge; `make merge-approval-gate` runs it as
 its third phase. The required CI equivalent is `ROOT_FULL=1 WEB=0 make test`,
-because the web job owns `make test-web` and the Go job must not duplicate it.
+because the web job owns `make test-web` and the deterministic Go job must not
+duplicate it.
 
 Requirements are the same as `make test`. `ROOT_FULL=1` enables no provider and
 no fuzz search. Any root or module failure is nonzero, and live tests stay
@@ -294,8 +295,8 @@ coverage, including those tests and the excluded root fuzz-tool packages, is
 explicitly owned and run by make fuzz. Ordinary make test remains the default
 local command and keeps the root wave in short mode unless ROOT_FULL=1 is
 explicitly set. The CI web job runs make test-web, make build-web, and
-make test-web-browser; the Go job runs ROOT_FULL=1 WEB=0 make test so frontend
-tests are not duplicated.
+make test-web-browser; the deterministic Go job runs ROOT_FULL=1 WEB=0 make
+test so frontend tests are not duplicated.
 
 The `make test` runner gives every Go module and frontend stream a distinct
 private `HOME` plus temporary and XDG roots beneath its per-run log directory.
