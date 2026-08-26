@@ -46,6 +46,26 @@ A capability is a bounded intersection, never an addition:
 
 A child can narrow the parent's tools, delegation allowance, roots, duration, and output visibility, but cannot restore or expand them. Unknown capabilities, requested downgrade, missing authorization, policy disagreement, commit mismatch, dirty/ineligible workspace, and peer identity mismatch fail closed before execution. Worker-reported capability is a fact to audit, not permission to grant.
 
+The sandbox comparison is a canonical partial order, evaluated only after both
+policies are normalized. A worker policy `W` satisfies requested controller
+policy `C` (`W ⪯ C`) only when every dimension below is no broader than `C`:
+
+| Dimension | `W ⪯ C` rule |
+|---|---|
+| Filesystem roots | Canonical, symlink-resolved read/write root set of `W` is a subset of `C`; path aliases are removed before comparison. |
+| Writes | `deny` is narrower than `allow`; a denied write cannot satisfy an allowed-write request. |
+| Network | `deny` is narrower than an allowlist, which is narrower than unrestricted; an allowlist must be a subset of `C`'s allowlist. |
+| Secret masks | `W` masks a superset of `C`'s masked paths/patterns, after canonicalization. |
+| Tools/capabilities | The callable tool and capability set of `W` is a subset of `C`; unknown names are not ignored. |
+| Numeric limits | Duration, CPU, memory, process, output, artifact, and concurrency limits in `W` are less than or equal to `C`. |
+
+Missing, unknown, malformed, incomparable, or non-canonical values fail closed;
+there is no default ordering for an omitted dimension. The worker sends the
+normalized policy identity and facts over the authenticated channel; the
+controller records the same comparison result before grant issuance, and the
+worker repeats it before admission. A policy identity is evidence of the
+canonical facts, not permission to widen them.
+
 ## 4. Envelope and protocol
 
 The wire protocol is a versioned, length-bounded, authenticated envelope. An implementation must define canonical serialization before shipping; the conceptual shape is:
@@ -76,15 +96,42 @@ Handshake exchanges protocol range, supported message kinds, worker identity, an
 
 Remote execution is a leased generation, not an owned process claim. One controller-side durable CAS authority allocates a strictly increasing fence per `(delegate_id, generation)`; allocation succeeds only from the currently persisted controller instance/epoch and records the new owner before any request is sent. A lease binds `(controller instance, controller epoch, delegate_id, generation, worker identity, verified grant ID/digest, capability digest, workspace identity, expiry, fencing generation)`. The worker durably stores the highest accepted fence for that delegate/generation and atomically compares-and-sets it when accepting a lease or renewal. Lower fences, equal fences from a different lease/connection, old controller epochs, and conflicting owners are rejected before launch.
 
-The worker may execute only the currently fenced lease and must persist its terminal disposition before acknowledging terminality. Heartbeats prove liveness of the authenticated peer and lease; they do not prove task progress or successful delivery. Lease time is the controller-issued absolute expiry; the worker uses its own monotonic clock, admits a bounded configured clock-skew margin, and fails closed when expiry or skew cannot be established. The controller renews explicitly before expiry; an old authenticated connection cannot renew after a newer fence, controller epoch, grant revocation, or expiry. A controller restart reloads the CAS record and must authenticate as the configured controller identity, then obtain a strictly higher controller epoch/fence before issuing any renewal or replacement lease. A late worker packet, stale heartbeat, or old generation cannot mutate current state.
+The lease uses an authenticated TTL/deadline protocol, not a shared clock. The
+grant carries controller wall-time validity (`issued_at`, `not_after`) and a
+maximum duration `Dmax`; the controller rejects a grant whose validity interval
+is absent, expired, exceeds `Dmax`, or cannot be established from its own
+trusted wall clock. At acceptance, the worker checks the authenticated grant
+wall-time interval against its own trusted wall clock with a configured maximum
+clock-error bound `E`; if the interval is expired, outside `E`, or the worker
+cannot establish that bound, it fails closed. The worker then computes a local
+monotonic deadline as `monotonic_now + min(requested_ttl, Dmax)`, persists that
+deadline together with the fence, and enforces it locally. The controller also
+enforces its own absolute deadline and sends renewal before both parties'
+deadlines; renewal carries a fresh bounded TTL and may only shorten the grant's
+remaining validity. Neither side treats the other's clock as its own.
+
+The worker records a boot/monotonic epoch with the lease. On reboot, monotonic
+reset, suspend/resume event that invalidates the configured bound, or inability
+to prove the persisted deadline belongs to the current boot epoch, every
+pre-reboot lease is expired and cannot renew. The controller must allocate a
+strictly higher fence and perform a new grant acceptance; old connections and
+old leases are rejected. A controller restart similarly reloads its CAS record,
+advances controller epoch, and cannot renew a pre-restart lease without that
+higher fence. Heartbeats prove liveness of the authenticated peer and lease;
+they do not prove task progress or successful delivery. A late packet, stale
+heartbeat, or old generation cannot mutate current state.
 
 There is exactly one lifecycle authority: the controller's stable delegate aggregate remains authoritative for public `dlg_...` status, ownership, stop, and transcript reference. A worker's local record is subordinate evidence. Ownership transfer is not implied by reconnect, and no second worker may run the same generation unless a future protocol explicitly performs an atomic fence/claim.
 
 ## 6. Reconnect, idempotency, and result delivery
 
-Every mutating request is idempotent by `(lease_id, request_id)` and every ordered stream item by `(lease_id, generation, sequence)`. Before sending `start`, the controller durably commits an admission record through its CAS authority: `prepared → sent → accepted/running → terminal|cancelled|indeterminate`, with request ID, grant/lease/fence, and retention-until at least `not_after + replay_horizon`. The worker has a matching durable dedupe record and atomically commits `admitted/running` with the accepted fence before launching the leaf. These records are retained through the lease/replay horizon and are not replaced by an in-memory cache.
+Every mutating request is idempotent by `(lease_id, request_id)` and every ordered stream item by `(lease_id, generation, sequence)`. The controller and worker have separate state machines; `sent` is controller-only and never a worker state or T4 oracle.
 
-Duplicate start responses are deterministic: `prepared` means the controller may send the original request; `sent` with no authenticated worker receipt is retried with the same request ID only while the prior execution is excluded by durable worker state; `accepted/running` returns the existing generation without launching; terminal/cancelled returns the recorded terminal result/receipt; and `indeterminate` returns `runtime_lost` and is never re-executed under that request ID. On worker restart, if its durable admission record proves terminal or running, it returns that state; if the record is absent or torn at a point where prior launch cannot be excluded, it records/returns `indeterminate` and refuses the retry. The controller likewise marks unresolved `sent` work indeterminate during restart rather than blindly reexecuting. Gaps are detected; the controller requests bounded replay or fails the generation as indeterminate.
+The controller state machine is `prepared → sent → accepted → running → terminal|cancelled|indeterminate`. `prepared` has a durable grant/lease/fence and may send; `sent` records that the request was emitted but has no worker admission proof; `accepted` records the worker receipt; `running` records a live generation; terminal and cancelled are final; indeterminate is final for that request ID and means prior execution cannot be excluded. On controller restart, unresolved `sent` becomes `indeterminate/runtime_lost` unless a durable worker acceptance receipt is already present; it is never blindly resent as a new request.
+
+The worker state machine is exact and durable: `absent → admitted_before_launch → launching → running → terminal|cancel_requested → cancelled|indeterminate`. The worker atomically writes `admitted_before_launch` with `(lease_id, request_id, generation, fence, grant digest, boot epoch, local monotonic deadline)` before spawning. It atomically changes that record to `launching` immediately before the spawn operation, then `running` only after a runtime identity/heartbeat proves the process is attached. A crash while `admitted_before_launch` or `launching` leaves the state recoverable but does not prove that no process escaped: on restart the worker must inspect durable runtime identity; if survival cannot be proved, it changes the record to `indeterminate/runtime_lost` and refuses execution. A proven live runtime transitions to `running`; a proven terminal runtime transitions to `terminal`; a proven stopped runtime transitions to `cancelled` only when cancellation was committed, otherwise `indeterminate`. `running` is never returned merely because a stale record says running.
+
+Duplicate/restart responses are deterministic for every worker state: `absent` rejects as `not_admitted`; `admitted_before_launch` or `launching` returns `indeterminate/runtime_lost` unless a live runtime identity is proven; `running` returns `running` only with a fresh runtime proof and current fence/deadline; `terminal` returns the recorded terminal result; `cancel_requested` returns the recorded cancellation phase and does not launch; `cancelled` returns the cancellation receipt; and `indeterminate` returns `runtime_lost` and never reexecutes. Records are retained at least through `not_after + replay_horizon`, not in an in-memory cache. Gaps are detected; the controller requests bounded replay or records indeterminate.
 
 Reconnect authenticates again and revalidates peer identity, lease, expiry, generation, capability digest, and workspace commit. It may resume protocol delivery, not silently resume execution. A terminal result is accepted only once, after integrity and authorization checks; transport acknowledgement means durable receipt, not user/model delivery. If receipt cannot be proven, status is `failed` or `stopped` with an explicit `runtime_lost`/`delivery_unknown` reason, never `completed` by timeout.
 
@@ -110,22 +157,24 @@ The public local vocabulary remains typed: synchronous protocol/authorization fa
 
 ## 10. Threat and requirement checklist
 
-Each future implementation/test plan must provide evidence for every item; this is a traceability checklist, not executable TDD. Each criterion names setup, action, durable oracle, and external result:
+Each future implementation/test plan must provide evidence for every row; this is a compact traceability matrix, not executable TDD. Every row has setup, action, expected durable state, and externally observable result:
 
-- **T1 impersonation/MITM:** mutual authentication rejects an untrusted, expired, revoked, or wrong-audience peer.
-- **T2 confused deputy/host injection:** model text, task data, URL, DNS, and worker advertisements cannot select or enroll a host.
-- **T3 capability escalation/downgrade:** attenuation is monotonic; worker and controller refuse a weaker sandbox, broader roots, delegation, secrets, or unknown capability.
-- **T4 replay/duplication:** Setup: persist a worker `sent`/dedupe record and crash at each pre/post-launch boundary. Action: replay the same `(lease_id, request_id)` through reconnect and restart. Expected durable state: exactly one `admitted/running`, terminal, cancelled, or indeterminate record retained through the replay horizon; never two launches. External result: duplicate response names the existing state, or `indeterminate/runtime_lost`, never a second start.
-- **T5 split brain:** Setup: persist fence `N`, then restart the controller and worker and issue fence `N+1` from the recovered controller CAS authority. Action: renew from the old connection/fence `N` and concurrently submit `N+1`. Expected durable state: worker highest fence is `N+1`, old renewal is rejected, and only the `N+1` owner can execute/mutate. External result: stale owner receives typed fencing/lease-expired error.
-- **T6 disconnect/restart:** reconnect, controller restart, worker restart, gaps, and unknown outcome preserve explicit failure semantics and no blind replay.
-- **T7 cancellation race:** Setup: arrange terminal and cancel requests at both orderings, including terminal committed before cancel but delivered after it. Action: apply both through the worker outcome CAS. Expected durable state: one outcome, with the first successful terminal/cancel CAS winning; no post-fence evidence is accepted. External result: receipt explicitly distinguishes `completed`, `cancelled`, or `delivery_unknown` and never claims delivery.
-- **T8 workspace confusion:** repository/commit/dirty/worktree mismatch is refused before execution.
-- **T9 secret exfiltration:** wire capture, logs, transcripts, artifacts, env snapshots, prompts, and sandboxed child processes contain no provider/API credentials or transport private keys.
-- **T10 sandbox dishonesty:** Setup: worker reports a signed/authenticated policy identity plus canonical policy facts (roots, write permission, network, secret masks) and controller has its required floor. Action: submit a missing, conflicting, or weaker policy report and attempt a write. Expected durable state: no authorization/admission record reaches `accepted`; mandatory denial audit exists; workspace remains unchanged. External result: typed fail-closed policy mismatch and no launch.
-- **T11 malicious protocol/data:** malformed, oversized, unknown, hash-mismatched, path-traversal, symlink/hardlink, and untrusted-output inputs are rejected/quarantined.
-- **T12 provenance/audit:** Setup: prepare a result/artifact with every provenance field and force each mandatory audit append to fail once. Action: attempt acceptance, then retry after audit recovery. Expected durable state: failed append leaves no `accepted/completed` result; `audit_unavailable` is durable; after recovery, exactly one accepted record references authenticated peer, lease/generation, sequence, verified grant/capability, workspace commit, policy identity, and causal parent. External result: accepted evidence is readable only after the mandatory audit/provenance record exists.
-- **T13 version safety:** incompatible required versions/features fail closed; negotiation is recorded and capability downgrade is refused.
-- **T14 claim boundaries:** tests and UI distinguish durable receipt, terminal result, notification, and user/model delivery; no test calls an acknowledgement delivery.
+| ID/threat | Setup | Action | Expected durable state | External result |
+|---|---|---|---|---|
+| T1 impersonation/MITM | Configure one enrolled peer and one untrusted/expired/revoked identity. | Attempt handshake and grant use from each. | No grant/admission for the untrusted identity; denial audit records identity/classification. | Typed authentication/authorization refusal; trusted peer proceeds only after mutual auth. |
+| T2 confused deputy/host injection | Configure a fixed peer registry; place host/URL text in task and worker advertisement. | Request start with injected host selection. | Controller persists only the configured peer decision; no grant for injected host. | Typed host-selection refusal; no network attempt to the injected host. |
+| T3 capability escalation/downgrade | Prepare a child grant and worker policy that broadens one root, tool, limit, or secret/network dimension, or has an unknown value. | Negotiate and attempt admission. | No accepted grant/lease; mandatory denial audit; no worker launch. | Typed policy/capability mismatch. |
+| T4 replay/duplication | Persist each controller state and each worker state around `admitted_before_launch`/`launching`; crash before and after spawn. | Replay identical `(lease_id, request_id)` after reconnect/restart. | Exactly one worker durable state through the replay horizon; uncertain pre-spawn state becomes `indeterminate/runtime_lost`; never two launches. | Deterministic state response; no blind reexecution. |
+| T5 split brain | Persist fence `N`; restart controller/worker; allocate higher fence `N+1`. | Renew old connection `N` while submitting `N+1`. | Worker highest fence is `N+1`; old renewal and old packets are rejected. | Typed fencing/lease-expired error to stale owner; only `N+1` can execute. |
+| T6 disconnect/restart | Run each controller/worker state, then disconnect or restart with missing, torn, or proven runtime evidence. | Reconnect and issue status/start/cancel. | Proven terminal remains terminal; proven live runtime may be running; unproven runtime becomes `indeterminate/runtime_lost`; no stale running state. | Deterministic response and explicit failure reason; no blind replay. |
+| T7 cancellation race | Arrange terminal-before-cancel and cancel-before-terminal orderings, including delayed packets. | Apply terminal/cancel through the worker outcome CAS. | Exactly one final outcome; first successful CAS wins; no post-fence evidence is accepted. | Receipt distinguishes `completed`, `cancelled`, or `delivery_unknown`; never claims delivery. |
+| T8 workspace confusion | Present missing, dirty, mismatched repo/commit, or mismatched worktree identity. | Attempt grant verification and start. | No admission; denial and workspace facts are durably audited; workspace unchanged. | Typed workspace refusal and no launch. |
+| T9 secret exfiltration | Instrument wire, logs, transcript, artifact, environment, prompt, and child-process surfaces with sentinel secrets. | Execute the first read-only slice and capture all surfaces. | No secret-bearing record is accepted; any detected leak fails/quarantines the generation and audits the failure. | Secret-free captures and typed quarantine/failure. |
+| T10 sandbox dishonesty | Supply canonical policy facts with missing, unknown, incomparable, or broader roots/write/network/mask/tool/limit dimensions. | Compare using the partial order and attempt a write. | No grant/admission; mandatory denial audit; workspace unchanged. | Typed fail-closed policy mismatch and no launch. |
+| T11 malicious protocol/data | Prepare malformed/oversized/unknown/path-traversal/hash-mismatched/symlink/hardlink/output inputs. | Send them at handshake, admission, artifact, and transcript boundaries. | No state transition past the boundary; artifact is quarantined and rejection audit persists. | Typed bounded protocol/data error; no execution or publication. |
+| T12 provenance/audit | Prepare a result/artifact with all provenance fields and inject each mandatory audit append failure. | Attempt acceptance, then retry after audit recovery. | Failed append leaves no accepted/completed result; `audit_unavailable` persists; recovery accepts exactly once with peer, lease/generation, sequence, grant, policy, workspace, and causal provenance. | Evidence is readable only after mandatory audit/provenance exists. |
+| T13 version safety | Configure incompatible required versions/features and a safety-floor downgrade. | Negotiate and attempt admission. | No grant/lease; negotiated refusal and required feature are durably recorded. | Typed version/capability refusal; no launch. |
+| T14 claim boundaries | Hold durable receipt, terminal result, notification, and user/model delivery at separate stages. | Drop or delay each stage and inspect every surface. | Only the actually committed stage is durable; no acknowledgement is recorded as delivery. | Distinct status/notification/read result; no false delivery claim. |
 
 **Audit-failure acceptance:** Setup: inject failure into each mandatory-before-admission, mandatory-before-launch, mandatory-before-terminal-receipt, and mandatory-before-result-acceptance append. Action: perform the corresponding transition and restart each authority. Expected durable state: no dependent success transition is committed; work is fenced/stopped or remains explicitly indeterminate; recovery retries the audit transition without blind execution. External result: typed `audit_unavailable`/`runtime_lost`, not `completed`, `cancelled`, or delivered.
 
