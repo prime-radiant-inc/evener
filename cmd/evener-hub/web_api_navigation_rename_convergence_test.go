@@ -48,7 +48,7 @@ func TestRESTNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 		defer func() { isLiveForRename = oldLive }()
 
 		rr := postJSON(t, web.Handler(), "/api/sessions/local:live-rename/rename", `{"name":"renamed-live"}`)
-		assertRenameNavigation(t, rr, web, 1, []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetProject, ProjectKey: "p1"}, {Kind: appwire.NavigationTargetAllLoadedProjects}})
+		generation := assertRenameNavigation(t, rr, web, 1, []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetProject, ProjectKey: "p1"}, {Kind: appwire.NavigationTargetAllLoadedProjects}}, "")
 		if live.got.Ref != "local:live-rename" || live.got.Name != "renamed-live" {
 			t.Fatalf("SetThreadName params=%+v", live.got)
 		}
@@ -57,7 +57,7 @@ func TestRESTNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 		}
 
 		rr = postJSON(t, web.Handler(), "/api/sessions/local:live-rename/rename", `{"name":"renamed-live"}`)
-		assertRenameNavigation(t, rr, web, 0, nil)
+		assertRenameNavigation(t, rr, web, 0, nil, generation)
 	})
 
 	t.Run("ended changed and repeat no-op", func(t *testing.T) {
@@ -89,7 +89,7 @@ func TestRESTNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 		defer func() { saveSessionMetaForRename = oldSave }()
 
 		rr := postJSON(t, web.Handler(), "/api/sessions/local:"+original.ID+"/rename", `{"name":"renamed-ended"}`)
-		assertRenameNavigation(t, rr, web, 1, []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetProject, ProjectKey: projectKey}})
+		generation := assertRenameNavigation(t, rr, web, 1, []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetProject, ProjectKey: projectKey}}, "")
 		if rr.Code != http.StatusOK {
 			t.Fatalf("status=%d, want 200", rr.Code)
 		}
@@ -102,11 +102,11 @@ func TestRESTNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 		}
 
 		rr = postJSON(t, web.Handler(), "/api/sessions/local:"+original.ID+"/rename", `{"name":"renamed-ended"}`)
-		assertRenameNavigation(t, rr, web, 0, nil)
+		assertRenameNavigation(t, rr, web, 0, nil, generation)
 	})
 }
 
-func assertRenameNavigation(t *testing.T, rr *httptest.ResponseRecorder, web *WebServer, wantEvents int, wantTargets []appwire.NavigationInvalidationTarget) {
+func assertRenameNavigation(t *testing.T, rr *httptest.ResponseRecorder, web *WebServer, wantEvents int, wantTargets []appwire.NavigationInvalidationTarget, wantGeneration string) string {
 	t.Helper()
 	var response renameMutationResponse
 	if rr.Code != http.StatusOK {
@@ -120,10 +120,10 @@ func assertRenameNavigation(t *testing.T, rr *httptest.ResponseRecorder, web *We
 		t.Fatalf("typed events=%d, want %d: %+v", len(events), wantEvents, events)
 	}
 	if wantEvents == 0 {
-		if response.Navigation.GenerationID == "" || len(response.Navigation.Targets) != 0 {
+		if response.Navigation.GenerationID != wantGeneration || len(response.Navigation.Targets) != 0 {
 			t.Fatalf("no-op navigation=%+v", response.Navigation)
 		}
-		return
+		return response.Navigation.GenerationID
 	}
 	responseTargets := append([]appwire.NavigationInvalidationTarget(nil), response.Navigation.Targets...)
 	if response.Navigation.GenerationID != events[0].GenerationID || !reflect.DeepEqual(responseTargets, events[0].Targets) {
@@ -147,4 +147,5 @@ func assertRenameNavigation(t *testing.T, rr *httptest.ResponseRecorder, web *We
 	if replay := web.navigation.DrainPublications(); len(replay) != 0 {
 		t.Fatalf("second typed event=%+v", replay)
 	}
+	return response.Navigation.GenerationID
 }
