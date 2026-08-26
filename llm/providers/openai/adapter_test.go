@@ -1126,6 +1126,128 @@ func TestStream_ResponsesContentThenMidStreamFailure_SurfacesCause(t *testing.T)
 	}
 }
 
+// TestStream_ResponsesStallBeforeContent_StaysOnResponses covers a Responses
+// stream that opens 200 OK, emits one event, then goes silent past the
+// configured StreamRead idle timeout. Silence is evidence about the network or
+// the provider's queue, never about which endpoints the model supports, so the
+// stall must terminate as a retryable stream error carrying the SSE read
+// timeout. Emitting the empty-stream sentinel instead retries Responses and
+// then hands the request to Chat Completions, which cannot serve a reasoning
+// model that also declares function tools (#484).
+func TestStream_ResponsesStallBeforeContent_StaysOnResponses(t *testing.T) {
+	var responsesHits, chatHits atomic.Int32
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			responsesHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"sequence_number\":0}\n\n"))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			// Hold the connection open with nothing further to read: the
+			// decoder's idle timer, not the server, ends this stream.
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		case "/v1/chat/completions":
+			chatHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	// Cleanups run last-registered-first: release the stalled handler before
+	// Close waits on it.
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:          "gpt-5.2",
+		Messages:       []llm.Message{llm.User("hi")},
+		AdapterTimeout: &llm.AdapterTimeout{StreamRead: 20 * time.Millisecond},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	_, streamErr := collectStreamEvents(t, stream)
+	if streamErr == nil {
+		t.Fatal("expected a StreamEventError after the stream stalled")
+	}
+	if errors.Is(streamErr, errEmptyResponsesStream) {
+		t.Fatalf("stall wrongly emitted the empty-stream fallback sentinel: %v", streamErr)
+	}
+	if !errors.Is(streamErr, llm.ErrSSEReadTimeout) {
+		t.Fatalf("stall error dropped the SSE read timeout cause: %v", streamErr)
+	}
+	if got := llm.Classify(streamErr); got != llm.ErrorClassRetryable {
+		t.Fatalf("Classify = %v, want retryable: %v", got, streamErr)
+	}
+	if got := responsesHits.Load(); got != 1 {
+		t.Fatalf("Responses hits = %d, want 1", got)
+	}
+	if got := chatHits.Load(); got != 0 {
+		t.Fatalf("Chat Completions hits = %d, want 0: %v", got, streamErr)
+	}
+}
+
+// TestStream_ResponsesReasoningItemThenClose_StaysOnResponses covers a
+// Responses stream that adds a reasoning output item and then closes before any
+// content event. A reasoning item is a Responses-API payload that an endpoint
+// not implementing the API cannot produce, so it proves the endpoint served the
+// request and rules out the empty-stream sentinel's "model may not support
+// /v1/responses" reading. The misclassification window is widest here: at high
+// reasoning effort a model can stream reasoning for a long time before the
+// first counted content event (#484).
+func TestStream_ResponsesReasoningItemThenClose_StaysOnResponses(t *testing.T) {
+	var responsesHits, chatHits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			responsesHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("event: response.output_item.added\n" +
+				"data: {\"type\":\"response.output_item.added\",\"sequence_number\":12,\"output_index\":0," +
+				"\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"summary\":[]}}\n\n"))
+		case "/v1/chat/completions":
+			chatHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), llm.Request{Model: "gpt-5.2", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	_, streamErr := collectStreamEvents(t, stream)
+	if streamErr == nil {
+		t.Fatal("expected a StreamEventError for a stream that never completed")
+	}
+	if errors.Is(streamErr, errEmptyResponsesStream) {
+		t.Fatalf("reasoning-only stream wrongly emitted the empty-stream fallback sentinel: %v", streamErr)
+	}
+	if got := llm.Classify(streamErr); got != llm.ErrorClassRetryable {
+		t.Fatalf("Classify = %v, want retryable: %v", got, streamErr)
+	}
+	if got := responsesHits.Load(); got != 1 {
+		t.Fatalf("Responses hits = %d, want 1", got)
+	}
+	if got := chatHits.Load(); got != 0 {
+		t.Fatalf("Chat Completions hits = %d, want 0: %v", got, streamErr)
+	}
+}
+
 func TestAdapter_Stream_CloseClosesResponsesStream(t *testing.T) {
 	requestDone := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

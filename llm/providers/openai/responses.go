@@ -223,7 +223,8 @@ func openAICodexUnsupportedRequestField(key string) bool {
 }
 
 // streamResponses is the raw Responses API streaming path.
-// It emits errEmptyResponsesStream if the stream closes 200 OK with zero content.
+// It emits errEmptyResponsesStream if the stream closes 200 OK without any
+// evidence that the endpoint served the request.
 func (a *Adapter) streamResponses(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	parentCtx := ctx
 	sctx, cancel := context.WithCancel(ctx)
@@ -581,8 +582,8 @@ func responsesInbandError(data []byte) error {
 // decodeResponsesStream consumes the Responses API SSE stream in its own
 // goroutine: it translates each event into llm stream events and emits the final
 // accumulated Response on response.completed. It emits errEmptyResponsesStream if
-// the stream closes 200 OK with zero content. It owns closing the response body
-// and the ChanStream.
+// the stream closes 200 OK without any evidence that the endpoint served the
+// request. It owns closing the response body and the ChanStream.
 func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, _ []byte, attempt *transport.APIAttemptCapture) {
 	defer func() {
 		_ = resp.Body.Close()
@@ -595,8 +596,12 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 	finished := false
 	var finalEvent *llm.StreamEvent
 	// sentContent tracks whether any meaningful content event was emitted.
-	// If the stream closes without content, we emit errEmptyResponsesStream.
 	sentContent := false
+	// sawReasoningItem records a reasoning output item — a Responses-API
+	// payload an endpoint that does not implement the API cannot produce. It
+	// proves the endpoint served this model before any content event, which a
+	// model at high reasoning effort can take a long time to reach.
+	sawReasoningItem := false
 	acc := newResponsesOutputAccumulator()
 
 	parseErr := llm.ParseSSE(sctx, resp.Body, func(ev llm.SSEEvent) error {
@@ -620,6 +625,9 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 		switch typ {
 		case "response.output_item.added":
 			if item, ok := payload["item"].(map[string]any); ok {
+				if itemType, _ := item["type"].(string); itemType == "reasoning" {
+					sawReasoningItem = true
+				}
 				acc.HandleOutputItemAdded(item)
 			}
 		case "response.output_text.delta":
@@ -752,9 +760,17 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 			// The provider reported a structured failure in-band; the decoded,
 			// typed error is the stream's terminal error in its own right.
 			terminalErr = fatal.Err
-		case !sentContent:
-			// Stream closed 200 OK with zero content: model likely does not
-			// support /v1/responses. Signal the caller to try Chat Completions.
+		case errors.Is(parseErr, llm.ErrSSEReadTimeout):
+			// The stream went idle past the read timeout. Silence is evidence
+			// about the network or the provider's queue, never about which
+			// endpoints the model supports, so it must stay a retryable stream
+			// error carrying its cause instead of handing the request to Chat
+			// Completions.
+			terminalErr = llm.NewStreamError("openai", "openai responses stream stalled without completion", parseErr)
+		case !sentContent && !sawReasoningItem:
+			// Stream closed 200 OK having produced nothing the Responses API
+			// alone can produce: model likely does not support /v1/responses.
+			// Signal the caller to try Chat Completions.
 			terminalErr = errEmptyResponsesStream
 		default:
 			// Content was streamed, then the stream ended without completion —
