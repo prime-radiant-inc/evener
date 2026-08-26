@@ -7,6 +7,7 @@ import {
   registerTranscriptView,
   resetTranscriptViewRegistryForTests,
   restoreTranscriptViews,
+  transitionTranscriptViews,
 } from "./transcriptViewRegistry";
 
 function captured(anchorId: string): CapturedTranscriptView {
@@ -28,6 +29,58 @@ function view(id: string, snapshot: CapturedTranscriptView): RegisteredTranscrip
     announce: vi.fn(),
   };
 }
+
+test("captures every pane before publishing, then restores and announces every pane", () => {
+  const events: string[] = [];
+  const left = view("left", captured("left-anchor"));
+  const right = view("right", captured("right-anchor"));
+  left.capture = vi.fn(() => {
+    events.push("capture:left");
+    return captured("left-anchor");
+  });
+  right.capture = vi.fn(() => {
+    events.push("capture:right");
+    return captured("right-anchor");
+  });
+  left.restore = vi.fn(() => events.push("restore:left"));
+  right.restore = vi.fn(() => events.push("restore:right"));
+  left.announce = vi.fn(() => events.push("announce:left"));
+  right.announce = vi.fn(() => events.push("announce:right"));
+  registerTranscriptView(left);
+  registerTranscriptView(right);
+
+  transitionTranscriptViews(() => events.push("publish"), "Transcript display changed");
+
+  expect(events).toEqual([
+    "capture:left",
+    "capture:right",
+    "publish",
+    "restore:left",
+    "restore:right",
+    "announce:left",
+    "announce:right",
+  ]);
+});
+
+test("consumes one pane remount capture only for the matching target layout", () => {
+  const snapshot = captured("remount-anchor");
+  const first = view("pane", snapshot);
+  first.layout = "desktop";
+  const unregister = registerTranscriptView(first);
+
+  transitionTranscriptViews(() => {}, "Transcript display changed", {
+    fingerprint: "mobile-config",
+    targetLayout: "mobile",
+  });
+  unregister();
+
+  const replacement = view("pane", captured("replacement-anchor"));
+  replacement.layout = "mobile";
+  registerTranscriptView(replacement);
+
+  expect(replacement.restore).toHaveBeenCalledOnce();
+  expect(replacement.restore).toHaveBeenCalledWith(snapshot);
+});
 
 afterEach(() => {
   resetTranscriptViewRegistryForTests();

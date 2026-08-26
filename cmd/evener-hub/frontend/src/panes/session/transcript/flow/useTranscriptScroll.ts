@@ -37,6 +37,7 @@ import type { ThreadModel, TurnModel } from "../../../../protocol/model";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import { isDormantTranscript } from "../transcriptVisibility";
 import { isAtBottom, isNearTop, readScrollMetrics, type ScrollMetrics } from "./scrollMetrics";
+import { type CapturedTranscriptView, registerTranscriptView } from "./transcriptViewRegistry";
 
 export interface UseTranscriptScrollOptions {
   ref: string;
@@ -136,6 +137,203 @@ function topVisiblePosition(positions: readonly ViewAnchorPosition[]): ViewAncho
     .sort((a, b) => b.offset - a.offset)[0];
   if (crossing) return crossing;
   return positions.filter((position) => position.offset >= 0).sort((a, b) => a.offset - b.offset)[0];
+}
+
+function focusedAnchorId(el: HTMLElement): string | undefined {
+  const active = el.ownerDocument.activeElement;
+  if (!(active instanceof HTMLElement)) return undefined;
+  const anchor = Array.from(el.querySelectorAll<HTMLElement>("[data-view-anchor-id]")).find(
+    (candidate) => candidate === active || candidate.contains(active),
+  );
+  return anchor?.dataset.viewAnchorId;
+}
+
+const capturedAnchorMetadata = new WeakMap<CapturedTranscriptView, ViewAnchor>();
+
+/** Capture the state that must survive a projected transcript replacement. */
+export function captureTranscriptView(
+  el: HTMLElement,
+  measure: (element: HTMLElement) => ScrollMetrics = readScrollMetrics,
+  measureAnchors: (element: HTMLElement) => ViewAnchorPosition[] = readAnchorPositions,
+): CapturedTranscriptView {
+  const metrics = measure(el);
+  const scrollable = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
+  const firstVisible = topVisiblePosition(measureAnchors(el));
+  const captured: CapturedTranscriptView = {
+    anchorId: firstVisible?.id,
+    anchorOffset: firstVisible?.offset ?? 0,
+    normalizedOffset: scrollable > 0 ? metrics.scrollTop / scrollable : 0,
+    followingBottom: isAtBottom(metrics),
+    focusedEntryId: focusedAnchorId(el),
+  };
+  if (firstVisible) capturedAnchorMetadata.set(captured, captureTopAnchor(firstVisible));
+  return captured;
+}
+
+function anchorFromCapture(
+  captured: CapturedTranscriptView,
+  candidates: readonly ViewAnchorPosition[],
+): ViewAnchor | undefined {
+  const metadata = capturedAnchorMetadata.get(captured);
+  if (metadata) return metadata;
+  const source = candidates.find((candidate) => candidate.id === captured.anchorId);
+  if (!source) return undefined;
+  return captureTopAnchor({ ...source, offset: captured.anchorOffset });
+}
+
+function focusCapturedEntry(el: HTMLElement, captured: CapturedTranscriptView, focusDetailTrigger: () => void): void {
+  if (captured.focusedEntryId === undefined) return;
+  const focused = Array.from(el.querySelectorAll<HTMLElement>("[data-view-anchor-id]")).find(
+    (candidate) => candidate.dataset.viewAnchorId === captured.focusedEntryId,
+  );
+  if (focused) {
+    focused.focus();
+    return;
+  }
+  focusDetailTrigger();
+}
+
+export interface UseTranscriptViewRegistrationOptions {
+  enabled: boolean;
+  id: string;
+  layout?: string;
+  viewKey?: string;
+  listRef?: RefObject<VirtualListHandle | null>;
+  measure?: (el: HTMLElement) => ScrollMetrics;
+  measureAnchors?: (el: HTMLElement) => ViewAnchorPosition[];
+  anchorEntries?: readonly Omit<ViewAnchorPosition, "offset" | "height">[];
+  renderedRowCount?: number;
+  detailTriggerRef?: RefObject<HTMLElement | null>;
+  focusDetailTrigger?: () => void;
+  announce?: (summary: string) => void;
+}
+
+export interface UseTranscriptViewRegistrationResult {
+  restoreAfterMeasurement(): void;
+}
+
+interface PendingTranscriptViewRestore {
+  readonly captured: CapturedTranscriptView;
+  target?: RestoredViewAnchor;
+  scrollRequested: boolean;
+}
+
+/**
+ * Registers the shared body with the transition registry without taking
+ * ownership of ordinary append/prepend scrolling. The body calls the result
+ * from VirtualList's measurement callback; the view-key layout effect covers
+ * hosts whose row measurement callback does not fire for a config commit.
+ */
+export function useTranscriptViewRegistration(
+  options: UseTranscriptViewRegistrationOptions,
+): UseTranscriptViewRegistrationResult {
+  const { enabled, id, layout, viewKey } = options;
+  const optionsRef = useRef(options);
+  optionsRef.current = options;
+  const pendingRef = useRef<PendingTranscriptViewRestore | null>(null);
+
+  const restoreAfterMeasurement = useCallback(() => {
+    const pending = pendingRef.current;
+    if (!pending) return;
+    const currentOptions = optionsRef.current;
+    const el = currentOptions.listRef?.current?.getScrollElement();
+    if (!el) return;
+
+    const measure = currentOptions.measure ?? readScrollMetrics;
+    const measureAnchors = currentOptions.measureAnchors ?? readAnchorPositions;
+    if (pending.captured.followingBottom) {
+      const count = currentOptions.renderedRowCount ?? 0;
+      if (count > 0) currentOptions.listRef?.current?.scrollToIndex(count - 1, { align: "end" });
+      focusCapturedEntry(el, pending.captured, () => {
+        currentOptions.focusDetailTrigger?.();
+        currentOptions.detailTriggerRef?.current?.focus();
+      });
+      pendingRef.current = null;
+      return;
+    }
+
+    const measured = measureAnchors(el);
+    const candidates = currentOptions.anchorEntries?.map((entry) => ({ ...entry, offset: 0 })) ?? measured;
+    const anchor = anchorFromCapture(pending.captured, candidates);
+    const restored = pending.target ?? (anchor ? restoreTopAnchor(anchor, candidates) : undefined);
+    if (!restored) {
+      const metrics = measure(el);
+      const scrollable = Math.max(0, metrics.scrollHeight - metrics.clientHeight);
+      el.scrollTop = Math.max(0, Math.min(1, pending.captured.normalizedOffset)) * scrollable;
+      focusCapturedEntry(el, pending.captured, () => {
+        currentOptions.focusDetailTrigger?.();
+        currentOptions.detailTriggerRef?.current?.focus();
+      });
+      pendingRef.current = null;
+      return;
+    }
+
+    const current = measured.find((position) => position.id === restored.id);
+    if (current) {
+      el.scrollTop += current.offset - restored.offset;
+      focusCapturedEntry(el, pending.captured, () => {
+        currentOptions.focusDetailTrigger?.();
+        currentOptions.detailTriggerRef?.current?.focus();
+      });
+      pendingRef.current = null;
+      return;
+    }
+
+    if (!pending.scrollRequested) {
+      pending.target = restored;
+      pending.scrollRequested = true;
+      currentOptions.listRef?.current?.scrollToIndex(restored.index, { align: "start" });
+    }
+  }, []);
+
+  const capture = useCallback((): CapturedTranscriptView => {
+    const currentOptions = optionsRef.current;
+    const el = currentOptions.listRef?.current?.getScrollElement();
+    if (!el) {
+      return {
+        anchorOffset: 0,
+        normalizedOffset: 0,
+        followingBottom: false,
+      };
+    }
+    return captureTranscriptView(el, currentOptions.measure, currentOptions.measureAnchors);
+  }, []);
+
+  const restore = useCallback((captured: CapturedTranscriptView): void => {
+    pendingRef.current = { captured, scrollRequested: false };
+  }, []);
+
+  const focusDetailTrigger = useCallback(() => {
+    const currentOptions = optionsRef.current;
+    if (currentOptions.focusDetailTrigger) {
+      currentOptions.focusDetailTrigger();
+      return;
+    }
+    currentOptions.detailTriggerRef?.current?.focus();
+  }, []);
+
+  const announce = useCallback((summary: string) => {
+    optionsRef.current.announce?.(summary);
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!enabled) return;
+    return registerTranscriptView({
+      id,
+      layout,
+      capture,
+      restore,
+      focusDetailTrigger,
+      announce,
+    });
+  }, [announce, capture, enabled, focusDetailTrigger, id, layout, restore]);
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: viewKey is deliberately trigger-only
+  useLayoutEffect(() => {
+    restoreAfterMeasurement();
+  }, [restoreAfterMeasurement, viewKey]);
+
+  return { restoreAfterMeasurement };
 }
 
 export interface UseTranscriptScrollResult {

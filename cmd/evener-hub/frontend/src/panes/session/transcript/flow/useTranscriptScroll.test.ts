@@ -6,10 +6,13 @@ import type { ThreadCapabilities } from "../../../../protocol/types.gen";
 import { resetThreadsStoreForTests } from "../../../../stores/threads";
 import type { VirtualListHandle } from "../../../../widgets/virtuallist";
 import type { ScrollMetrics } from "./scrollMetrics";
+import { resetTranscriptViewRegistryForTests, transitionTranscriptViews } from "./transcriptViewRegistry";
 import {
   captureTopAnchor,
+  captureTranscriptView,
   restoreTopAnchor,
   useTranscriptScroll,
+  useTranscriptViewRegistration,
   type ViewAnchorPosition,
 } from "./useTranscriptScroll";
 
@@ -129,6 +132,7 @@ const SCROLLED_AWAY: ScrollMetrics = { scrollTop: 0, scrollHeight: 5000, clientH
 
 beforeEach(() => {
   resetThreadsStoreForTests();
+  resetTranscriptViewRegistryForTests();
 });
 
 afterEach(() => {
@@ -1370,6 +1374,89 @@ describe("view-mode anchor preservation", () => {
     act(() => result.current.restoreViewAnchorAfterMeasurement());
 
     expect(el.scrollTop).toBe(462);
+  });
+});
+
+describe("registered transcript view preservation", () => {
+  test("captures the visible anchor, bottom state, and focused entry", () => {
+    const el = document.createElement("div");
+    const anchor = document.createElement("div");
+    anchor.dataset.viewAnchorId = "agent-4";
+    anchor.tabIndex = 0;
+    el.append(anchor);
+    document.body.append(el);
+    anchor.focus();
+
+    const captured = captureTranscriptView(
+      el,
+      () => ({ scrollTop: 950, scrollHeight: 1000, clientHeight: 50 }),
+      () => [{ id: "agent-4", sourceIndex: 4, index: 2, offset: 18, height: 96, isMessage: true }],
+    );
+
+    expect(captured).toMatchObject({
+      anchorId: "agent-4",
+      anchorOffset: 18,
+      normalizedOffset: 1,
+      followingBottom: true,
+      focusedEntryId: "agent-4",
+    });
+    el.remove();
+  });
+
+  test("restores a surviving focused entry and focuses the Detail fallback when it disappears", () => {
+    const list = makeListHandle();
+    document.body.append(list.el);
+    const oldEntry = document.createElement("button");
+    oldEntry.dataset.viewAnchorId = "tool-old";
+    list.el.append(oldEntry);
+    const detail = document.createElement("button");
+    document.body.append(detail);
+    oldEntry.focus();
+
+    let positions: ViewAnchorPosition[] = [
+      { id: "tool-old", sourceIndex: 4, index: 1, offset: 18, height: 40, isMessage: false },
+    ];
+    const anchorEntries = [{ id: "tool-old", sourceIndex: 4, index: 1, isMessage: false }];
+    const { rerender } = renderHook(
+      ({ viewKey, entries }) =>
+        useTranscriptViewRegistration({
+          enabled: true,
+          id: "pane",
+          layout: "desktop",
+          viewKey,
+          listRef: list.ref,
+          measure: () => ({ scrollTop: 300, scrollHeight: 1200, clientHeight: 300 }),
+          measureAnchors: () => positions,
+          anchorEntries: entries,
+          renderedRowCount: 2,
+          detailTriggerRef: { current: detail },
+        }),
+      { initialProps: { viewKey: "everything", entries: anchorEntries } },
+    );
+
+    positions = [{ id: "tool-old", sourceIndex: 4, index: 0, offset: 2, height: 40, isMessage: false }];
+    act(() => {
+      transitionTranscriptViews(
+        () => rerender({ viewKey: "intent", entries: anchorEntries }),
+        "Transcript display changed",
+      );
+    });
+    expect(document.activeElement).toBe(oldEntry);
+
+    positions = [{ id: "tool-old", sourceIndex: 4, index: 0, offset: 2, height: 40, isMessage: false }];
+    act(() => {
+      transitionTranscriptViews(() => {
+        oldEntry.remove();
+        positions = [{ id: "agent-new", sourceIndex: 5, index: 1, offset: 0, height: 96, isMessage: true }];
+        rerender({
+          viewKey: "tools",
+          entries: [{ id: "agent-new", sourceIndex: 5, index: 1, isMessage: true }],
+        });
+      }, "Transcript display changed again");
+    });
+    expect(document.activeElement).toBe(detail);
+    list.el.remove();
+    detail.remove();
   });
 });
 

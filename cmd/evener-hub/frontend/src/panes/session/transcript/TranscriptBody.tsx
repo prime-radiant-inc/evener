@@ -1,7 +1,9 @@
 import type { ReactNode, RefObject } from "react";
 import { useMemo } from "react";
+import { useStore } from "zustand";
 import type { ThreadModel } from "../../../protocol/model";
-import type { TranscriptDisplayConfigV1 } from "../../../transcriptDisplay/config";
+import { transcriptDisplayStore } from "../../../stores/transcriptDisplay";
+import { configFingerprint, type TranscriptDisplayConfigV1 } from "../../../transcriptDisplay/config";
 import {
   type ProjectedEntry,
   type ProjectedTurn,
@@ -13,6 +15,7 @@ import { VirtualList, type VirtualListHandle } from "../../../widgets";
 import { modelLabel } from "../chrome/statusFormat";
 import { exchangeOpenersFor } from "./exchangeOpeners";
 import { FlowOverlay } from "./flow/FlowOverlay";
+import { useTranscriptViewRegistration } from "./flow/useTranscriptScroll";
 import { ProjectedIntentGroup, TurnBlock } from "./TurnBlock";
 import "./messages";
 import "./tools";
@@ -217,6 +220,12 @@ export interface TranscriptBodyProps {
   listRef?: RefObject<VirtualListHandle | null>;
   onMeasurementsChange?: () => void;
   trailingContent?: ReactNode;
+  /** Stable pane identity for host-remount scroll state; optional for callers. */
+  viewId?: string;
+  /** Optional focus target supplied by the live Detail control. */
+  detailTriggerRef?: RefObject<HTMLElement | null>;
+  onFocusDetailTrigger?: () => void;
+  onAnnounceViewChange?: (summary: string) => void;
 }
 
 export function TranscriptBody({
@@ -231,11 +240,28 @@ export function TranscriptBody({
   listRef,
   onMeasurementsChange,
   trailingContent,
+  viewId,
+  detailTriggerRef,
+  onFocusDetailTrigger,
+  onAnnounceViewChange,
 }: TranscriptBodyProps) {
   const projection = useMemo(() => projectThread(model, config), [model, config]);
   const rows = useMemo(() => transcriptRowsForProjection(projection), [projection]);
   const openers = useMemo(() => exchangeOpenersFor(model.turns), [model.turns]);
   const agentLabel = modelLabel(model.modelProvider, model.model);
+  const displayViewport = useStore(transcriptDisplayStore, (state) => state.viewport);
+  const viewRegistration = useTranscriptViewRegistration({
+    enabled: surface !== "preview",
+    id: viewId ?? `${surface}:${sessionRef ?? disclosureScope}`,
+    layout: displayViewport,
+    viewKey: configFingerprint(config),
+    listRef,
+    anchorEntries: transcriptAnchorEntriesForRows(rows),
+    renderedRowCount: rows.length,
+    detailTriggerRef,
+    focusDetailTrigger: onFocusDetailTrigger,
+    announce: onAnnounceViewChange,
+  });
 
   const renderRow = (row: TranscriptBodyRow, index: number) => {
     const seenTurnId = showSeenDividerTurnId;
@@ -293,7 +319,13 @@ export function TranscriptBody({
         estimateSize={() => ESTIMATED_TURN_HEIGHT}
         getItemKey={(index) => rowAt(index).id}
         renderRow={(index) => renderRow(rowAt(index), index)}
-        onChange={() => onMeasurementsChange?.()}
+        onChange={() => {
+          try {
+            onMeasurementsChange?.();
+          } finally {
+            viewRegistration.restoreAfterMeasurement();
+          }
+        }}
       />
     </div>
   );
