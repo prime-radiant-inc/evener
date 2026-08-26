@@ -409,6 +409,30 @@ func TestNavigationServicePublicationFIFOHasExactSequencesAndRefreshNeverConsume
 	}
 }
 
+func TestNavigationServiceRefreshRegistersCausalTicketOnCommittedFlight(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	source.entered, source.release = make(chan struct{}), make(chan struct{})
+	service := newTestNavigationService(t, source)
+	done := make(chan hubapi.NavigationMutation, 1)
+	go func() {
+		mutation, _ := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
+		done <- mutation
+	}()
+	<-source.entered
+	service.mu.Lock()
+	ticket := service.flight.causalTicket
+	service.mu.Unlock()
+	if ticket == 0 {
+		t.Fatal("refresh flight was not assigned a causal ticket")
+	}
+	close(source.release)
+	<-done
+	publications := service.DrainPublications()
+	if len(publications) != 1 {
+		t.Fatalf("publications=%d, want one", len(publications))
+	}
+}
+
 func TestNavigationServiceConcurrentAppendAndDrainKeepFIFOAndWakeAtomic(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	service := newTestNavigationService(t, source)

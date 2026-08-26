@@ -110,14 +110,15 @@ type navigationCoreSnapshot struct {
 }
 
 type navigationBuildFlight struct {
-	done      chan struct{}
-	changes   map[navigationResourceKey]bool
-	err       error
-	id        uint64
-	hint      navigationChangeHint
-	mutated   bool
-	mutation  hubapi.NavigationMutation
-	finalized bool
+	done         chan struct{}
+	changes      map[navigationResourceKey]bool
+	err          error
+	id           uint64
+	hint         navigationChangeHint
+	mutated      bool
+	mutation     hubapi.NavigationMutation
+	finalized    bool
+	causalTicket uint64
 }
 
 type navigationServiceStats struct {
@@ -156,6 +157,8 @@ type NavigationService struct {
 	publicationReady    chan struct{}
 	pendingHint         navigationChangeHint
 	pendingInvalidation bool
+	pendingEpoch        uint64
+	nextCausalTicket    uint64
 }
 
 func newNavigationService(cfg navigationServiceConfig) *NavigationService {
@@ -223,6 +226,7 @@ func (s *NavigationService) Invalidate(hint navigationChangeHint) {
 	// publication operation.
 	s.pendingHint = mergeNavigationChangeHints(s.pendingHint, hint)
 	s.pendingInvalidation = true
+	s.pendingEpoch++
 	s.mu.Unlock()
 	select {
 	case s.wake <- struct{}{}:
@@ -267,7 +271,7 @@ func (s *NavigationService) VersionedKey(ctx context.Context, key navigationReso
 }
 
 func (s *NavigationService) versionedCore(ctx context.Context, key navigationResourceKey) (*navigationBuildFlight, navigationResourceKey, navigationProjection, error) {
-	flight, err := s.ensureSnapshot(ctx, false)
+	flight, err := s.ensureSnapshot(ctx, false, nil)
 	if err != nil {
 		return nil, navigationResourceKey{}, navigationProjection{}, err
 	}
@@ -342,7 +346,11 @@ func (s *NavigationService) Refresh(ctx context.Context, hint navigationChangeHi
 	if s.sequenceAtSafeLimit() {
 		return hubapi.NavigationMutation{}, errors.New("navigation sequence exceeds JavaScript safe integer")
 	}
-	flight, err := s.ensureSnapshot(ctx, true, hint)
+	s.mu.Lock()
+	s.nextCausalTicket++
+	ticket := s.nextCausalTicket
+	s.mu.Unlock()
+	flight, err := s.ensureSnapshot(ctx, true, []navigationChangeHint{hint}, ticket)
 	if err != nil {
 		return hubapi.NavigationMutation{}, err
 	}
@@ -380,7 +388,7 @@ func (s *NavigationService) sequenceAtSafeLimit() bool {
 	return s.sequence >= maxNavigationSafeInteger
 }
 
-func (s *NavigationService) ensureSnapshot(ctx context.Context, force bool, hints ...navigationChangeHint) (*navigationBuildFlight, error) {
+func (s *NavigationService) ensureSnapshot(ctx context.Context, force bool, hints []navigationChangeHint, tickets ...uint64) (*navigationBuildFlight, error) {
 	if ctx == nil {
 		return nil, errors.New("navigation: nil context")
 	}
@@ -410,6 +418,9 @@ func (s *NavigationService) ensureSnapshot(ctx context.Context, force bool, hint
 		return s.waitFlight(ctx, flight)
 	}
 	flight := &navigationBuildFlight{done: make(chan struct{})}
+	if len(tickets) != 0 {
+		flight.causalTicket = tickets[0]
+	}
 	if force && len(hints) != 0 {
 		flight.hint, flight.mutated = hints[0], true
 	}
@@ -1040,7 +1051,7 @@ func navigationTargetForResource(key navigationResourceKey, revision uint64) (ap
 func (s *NavigationService) Start(ctx context.Context) {
 	defer s.stopLifecycle()
 	for {
-		_, err := s.ensureSnapshot(ctx, false)
+		_, err := s.ensureSnapshot(ctx, false, nil)
 		if ctx.Err() != nil {
 			return
 		}
@@ -1090,25 +1101,34 @@ func (s *NavigationService) takePendingHint() navigationChangeHint {
 }
 
 func (s *NavigationService) refreshPending(ctx context.Context) {
-	hint := s.takePendingHint()
-	if !s.hasPendingInvalidation() {
+	hint, epoch, ok := s.snapshotPendingHint()
+	if !ok {
 		return
 	}
 	if _, err := s.Refresh(ctx, hint); err != nil {
 		s.mu.Lock()
-		s.pendingHint = mergeNavigationChangeHints(hint, s.pendingHint)
-		s.pendingInvalidation = true
+		if s.pendingEpoch == epoch {
+			s.pendingHint = mergeNavigationChangeHints(hint, s.pendingHint)
+			s.pendingInvalidation = true
+		}
 		s.mu.Unlock()
 		return
 	}
 	s.mu.Lock()
-	// Only clear the portion consumed by this flight. Any callback that raced
-	// the flight remains pending for the next capture.
-	if reflect.DeepEqual(s.pendingHint, hint) {
+	// Clear only the exact pending epoch consumed by this flight. A same-value
+	// invalidation racing after commit still advances the epoch and remains
+	// pending for a subsequent forced capture.
+	if s.pendingEpoch == epoch {
 		s.pendingHint = navigationChangeHint{}
 		s.pendingInvalidation = false
 	}
 	s.mu.Unlock()
+}
+
+func (s *NavigationService) snapshotPendingHint() (navigationChangeHint, uint64, bool) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.pendingHint, s.pendingEpoch, s.pendingInvalidation
 }
 
 func (s *NavigationService) waitRetryOrWake(ctx context.Context) bool {
