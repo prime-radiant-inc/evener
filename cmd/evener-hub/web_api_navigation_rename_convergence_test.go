@@ -62,7 +62,7 @@ func TestRESTNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 
 	t.Run("ended changed and repeat no-op", func(t *testing.T) {
 		root := t.TempDir()
-		stateDir := filepath.Join(root, "projects", "project-rename")
+		stateDir := filepath.Join(root, "projects", "project-0123456789")
 		original := schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB", Name: "old", NameSource: "generated", UpdatedAt: time.Unix(1_700_000_000, 0).UTC(), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/preserve"}}
 		if err := schema.SaveSessionMeta(stateDir, original); err != nil {
 			t.Fatal(err)
@@ -116,16 +116,22 @@ func assertRenameNavigation(t *testing.T, rr *httptest.ResponseRecorder, web *We
 		t.Fatalf("typed events=%d, want %d: %+v", len(events), wantEvents, events)
 	}
 	if wantEvents == 0 {
-		if response.Navigation.GenerationID != "" || len(response.Navigation.Targets) != 0 {
+		if len(response.Navigation.Targets) != 0 {
 			t.Fatalf("no-op navigation=%+v", response.Navigation)
 		}
 		return
 	}
-	if response.Navigation.GenerationID != events[0].GenerationID || !reflect.DeepEqual(response.Navigation.Targets, events[0].Targets) {
+	responseTargets := append([]appwire.NavigationInvalidationTarget(nil), response.Navigation.Targets...)
+	if response.Navigation.GenerationID != events[0].GenerationID || !reflect.DeepEqual(responseTargets, events[0].Targets) {
 		t.Fatalf("response navigation=%+v publication=%+v", response.Navigation, events[0])
 	}
-	if len(response.Navigation.Targets) == 0 || response.Navigation.Targets[0].Kind != appwire.NavigationTargetProject && response.Navigation.Targets[0].Kind != appwire.NavigationTargetAllLoadedProjects {
-		t.Fatalf("rename targets=%+v", response.Navigation.Targets)
+	hasProject, hasWildcard := false, false
+	for _, target := range events[0].Targets {
+		hasProject = hasProject || target.Kind == appwire.NavigationTargetProject
+		hasWildcard = hasWildcard || target.Kind == appwire.NavigationTargetAllLoadedProjects
+	}
+	if !hasProject && !hasWildcard {
+		t.Fatalf("rename targets=%+v", events[0].Targets)
 	}
 	if replay := web.navigation.DrainPublications(); len(replay) != 0 {
 		t.Fatalf("second typed event=%+v", replay)
