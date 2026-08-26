@@ -483,6 +483,7 @@ func TestDescribeImage_ParentCancellationDoesNotSteerUnavailable(t *testing.T) {
 	}()
 	select {
 	case <-started:
+	// TRIPWIRE: one second is far above the expected scripted adapter start signal.
 	case <-time.After(time.Second):
 		t.Fatal("vision call did not start")
 	}
@@ -492,6 +493,7 @@ func TestDescribeImage_ParentCancellationDoesNotSteerUnavailable(t *testing.T) {
 	}
 	select {
 	case <-canceled:
+	// TRIPWIRE: one second is far above the expected scripted parent cancellation signal.
 	case <-time.After(time.Second):
 		t.Fatal("vision call did not observe parent cancellation")
 	}
@@ -531,11 +533,13 @@ func TestPersistToolResults_VisionTimeoutSteersWithPathAndFallback(t *testing.T)
 	}
 	select {
 	case <-started:
+	// TRIPWIRE: one second is far above the expected scripted adapter start signal.
 	case <-time.After(time.Second):
 		t.Fatal("vision call did not start")
 	}
 	select {
 	case <-canceled:
+	// TRIPWIRE: one second is far above the expected scripted side deadline signal.
 	case <-time.After(time.Second):
 		t.Fatal("vision call did not observe its deadline")
 	}
