@@ -554,7 +554,11 @@ export function initNavigation(
     const cap: NavigationCapability | undefined =
       info && "navigation" in info ? info.navigation : info && "version" in info ? info : undefined;
     if (!cap) {
-      navigationStore.setState({ mode: "error", protocolError: new Error("navigation capability not available") });
+      navigationStore.setState({
+        mode: "error",
+        attention: initialAttention,
+        protocolError: new Error("navigation capability not available"),
+      });
       return;
     }
     void boot(cap, epoch, ownedClient);
@@ -598,7 +602,11 @@ export function initNavigation(
           if (ownedClient !== activeClient || epoch !== bootEpoch) return;
           const cap = i.navigation;
           if (!cap) {
-            navigationStore.setState({ mode: "error", protocolError: new Error("navigation capability not available") });
+            navigationStore.setState({
+              mode: "error",
+              attention: initialAttention,
+              protocolError: new Error("navigation capability not available"),
+            });
             return;
           }
           const same = cap.version === 1 && revalidator?.generationID === cap.generationId;

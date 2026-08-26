@@ -93,7 +93,21 @@ beforeEach(() => {
   // never call this test's loader at all.
   resetDockChunkForTests();
   resetDockHostLoaderForTests();
-  vi.stubGlobal("fetch", (url: string) => Promise.resolve(jsonResponse(url === "/api/navigation" ? EMPTY_NAV_RESPONSE : {})));
+  vi.stubGlobal("fetch", (url: string) => {
+    if (url === "/api/navigation") {
+      return Promise.resolve(
+        new Response(JSON.stringify(EMPTY_NAV_RESPONSE), {
+          headers: {
+            "Content-Type": "application/json",
+            etag: '"test"',
+            "X-Evener-Navigation-Generation": "test-generation",
+            "X-Evener-Navigation-Revision": "1",
+          },
+        }),
+      );
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
 });
 
 afterEach(() => {
@@ -141,7 +155,15 @@ afterEach(() => {
 test("a rejected DockHost chunk degrades the dock region, never the whole shell", async () => {
   vi.mocked(loadDockHost).mockRejectedValue(new Error(CHUNK_ERROR));
 
-  render(<AppShell client={new FakeClient("ready")} />);
+  const client = new FakeClient("ready");
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v3",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "test-generation", sequence: 0 },
+  }));
+  render(<AppShell client={client} />);
 
   expect(await screen.findByText("Couldn't load the workspace")).toBeTruthy();
   expect(screen.getByText(CHUNK_ERROR)).toBeTruthy();

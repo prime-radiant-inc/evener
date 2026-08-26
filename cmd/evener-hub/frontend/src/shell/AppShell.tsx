@@ -162,11 +162,7 @@ function routePlacementIsApplied(
   };
   if (location === null) {
     const main = workspace.mainPane();
-    return (
-      locationTerminal &&
-      main?.type === "session" &&
-      sessionRefOf(main) === ref
-    );
+    return locationTerminal && main?.type === "session" && sessionRefOf(main) === ref;
   }
   const ancestorRef = location.top_level ? ref : location.top_level_ref;
   const focusedPane = workspace.panes.find((pane) => pane.id === workspace.focusedPaneId);
@@ -409,7 +405,11 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
             return;
           }
           if (refs.length === 0 && (state.manifest?.data?.sections.needs_you.count ?? 0) === 0) return;
-          if (refs.length > 0 && selectSectionRemaining("needs_you", state) === 0) return;
+          if (refs.length > 0 && selectSectionRemaining("needs_you", state) === 0) {
+            const wrapped = nextNeedsYouRef(refs, current);
+            if (wrapped !== null) openNeedsYouSession(wrapped);
+            return;
+          }
           openDemandedPage(beforeRefs, current, workspaceStore.getState().focusedPaneId, page.id, page.offset);
           return;
         }

@@ -110,7 +110,20 @@ describe("hide / show", () => {
     prefsStore.getState().setSidebarHidden(true);
     navigationStore.setState({
       mode: "v1",
-      attention: { changed: [], summary: { needsYou: 3, error: 0, working: 0 } },
+      manifest: {
+        key: { kind: "manifest" },
+        data: navigationManifest({
+          sections: { live: { count: 0 }, needs_you: { count: 3 }, pin_sections: { count: 0 } },
+        }),
+        loadedRevision: 1,
+        targetRevision: 1,
+        forceToken: 0,
+        etag: '"manifest"',
+        loading: false,
+        stale: false,
+        error: null,
+        generationID: "test-generation",
+      },
     });
     render(<RailHost />);
     expect(screen.getByRole("button", { name: /show sidebar.*3 need attention/i })).toBeTruthy();

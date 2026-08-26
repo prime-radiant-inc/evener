@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import * as composerFocus from "../panes/session/composer/composerFocus";
-import { AppwireClient } from "../protocol/client";
+import { AppwireClient, type ConnectionState } from "../protocol/client";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { InitializeResponse, NavigationSessionLocation, ThreadStartResponse } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
@@ -48,6 +48,96 @@ function jsonResponse(body: unknown, status = 200): Response {
   } as Response;
 }
 
+// A navigation manifest Response with the headers the store's requestFor
+// requires (X-Evener-Navigation-Generation/Revision/etag). The plain
+// jsonResponse() omits these, so any test that lets initNavigation actually
+// fetch the manifest would fail with a "missing generation" protocol error.
+function navResponse(body: unknown = EMPTY_NAV_RESPONSE): Response {
+  return new Response(JSON.stringify(body), {
+    headers: {
+      "Content-Type": "application/json",
+      etag: '"test"',
+      "X-Evener-Navigation-Generation": "generation_test",
+      "X-Evener-Navigation-Revision": "1",
+    },
+  });
+}
+
+// A fetch handler that serves proper navigation Responses for every
+// /api/navigation URL the store's boot() or Rail might request: the manifest,
+// sections, catalogs, and projects. Each returns valid JSON with the required
+// headers so the revalidator's requestFor validation passes. The live section
+// includes TREE_SESSION so the rail can render "Session one".
+function navFetchHandler(url: string): Promise<Response> {
+  const u = String(url);
+  const headers = {
+    "Content-Type": "application/json",
+    etag: '"test"',
+    "X-Evener-Navigation-Generation": "generation_test",
+    "X-Evener-Navigation-Revision": "1",
+  };
+  if (u === NAV_URL) return Promise.resolve(navResponse());
+  if (u.includes("/api/navigation/sections/live")) {
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          generation_id: "generation_test",
+          revision: 1,
+          sessions: [TREE_SESSION],
+          remaining: 0,
+          truncated: false,
+        }),
+        { headers },
+      ),
+    );
+  }
+  if (u.includes("/api/navigation/sections/needs-you")) {
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({ generation_id: "generation_test", revision: 1, sessions: [], remaining: 0, truncated: false }),
+        { headers },
+      ),
+    );
+  }
+  if (u.includes("/api/navigation/catalogs/projects")) {
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          generation_id: "generation_test",
+          revision: 1,
+          projects: [{ key: "proj1", name: "Project one", session_count: 1, working_dir: "" }],
+          remaining: 0,
+        }),
+        { headers },
+      ),
+    );
+  }
+  if (u.includes("/api/navigation/catalogs/")) {
+    return Promise.resolve(
+      new Response(JSON.stringify({ generation_id: "generation_test", revision: 1, projects: [], remaining: 0 }), {
+        headers,
+      }),
+    );
+  }
+  if (u.includes("/api/navigation/projects/")) {
+    return Promise.resolve(
+      new Response(
+        JSON.stringify({
+          generation_id: "generation_test",
+          revision: 1,
+          key: "proj1",
+          current: { sessions: [TREE_SESSION], remaining: 0 },
+          recent: { sessions: [], remaining: 0 },
+          archived: { sessions: [], remaining: 0 },
+          truncated: false,
+        }),
+        { headers },
+      ),
+    );
+  }
+  return Promise.resolve(new Response(JSON.stringify({}), { headers }));
+}
+
 const TREE_SESSION = {
   row_id: "project:proj1:local:s1",
   ref: "local:s1",
@@ -78,9 +168,26 @@ const EMPTY_NAV_RESPONSE = {
   revision: 1,
   sources: [],
   attentionSummary: { needsYou: 0, error: 0, working: 0 },
-  sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+  sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
   catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
 };
+
+// A FakeClient whose connect() advertises a v1 navigation capability with a
+// generation matching EMPTY_NAV_RESPONSE. Tests that render <AppShell/> and
+// depend on the navigation store being in mode "v1" (rather than "error")
+// must use this instead of a bare `new FakeClient("ready")`, whose default
+// InitializeResponse has no navigation capability.
+function navClient(initialState: ConnectionState = "ready"): FakeClient {
+  const client = new FakeClient(initialState);
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v3",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "generation_test", sequence: 0 },
+  }));
+  return client;
+}
 
 const THREAD_CAPABILITIES = {
   send: false,
@@ -309,12 +416,7 @@ beforeAll(async () => {
   // methods DockHost.tsx actually calls (getItem/setItem/removeItem/clear),
   // not length/key() - see DockHost.test.tsx's own MemoryStorage comment.
   globalThis.localStorage = new MemoryStorage();
-  vi.stubGlobal("fetch", (url: string) => {
-    if (url === NAV_URL) {
-      return Promise.resolve(jsonResponse(EMPTY_NAV_RESPONSE));
-    }
-    return Promise.resolve(jsonResponse({}));
-  });
+  vi.stubGlobal("fetch", (url: string) => navFetchHandler(url));
   await import("../panes/welcome/Welcome");
   await import("../panes/session/Session");
   await import("../panes/settings/Settings");
@@ -343,12 +445,7 @@ beforeEach(() => {
   // @ts-expect-error MemoryStorage implements the subset used by DockHost.
   globalThis.localStorage = new MemoryStorage();
   localStorage.clear();
-  vi.stubGlobal("fetch", (url: string) => {
-    if (url === NAV_URL) {
-      return Promise.resolve(jsonResponse(EMPTY_NAV_RESPONSE));
-    }
-    return Promise.resolve(jsonResponse({}));
-  });
+  vi.stubGlobal("fetch", (url: string) => navFetchHandler(url));
 });
 
 afterEach(() => {
@@ -600,7 +697,7 @@ test("Mod+J opens the first needs-you session when nothing is focused", async ()
     features: {} as never,
     navigation: { version: 1, generationId: "generation_test", sequence: 0 },
   }));
-  vi.stubGlobal("fetch", (url: string) => Promise.resolve(jsonResponse({})));
+  vi.stubGlobal("fetch", (_url: string) => Promise.resolve(jsonResponse({})));
   render(<AppShell client={client} />);
   await screen.findByText("No session open");
   await waitFor(() => expect(navigationStore.getState().resources).not.toBeNull());
@@ -613,15 +710,8 @@ test("Mod+J opens the first needs-you session when nothing is focused", async ()
 test("Mod+J cycles from the focused needs-you session to the next one, wrapping", async () => {
   const user = userEvent.setup();
   installNeedsYouRows();
-  const client = new FakeClient("ready");
-  client.scriptConnect(() => ({
-    serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "evener-appwire-v3",
-    sourceId: "fake",
-    features: {} as never,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0 },
-  }));
-  vi.stubGlobal("fetch", (url: string) => Promise.resolve(jsonResponse({})));
+  const client = navClient();
+  vi.stubGlobal("fetch", (url: string) => navFetchHandler(url));
   window.history.pushState({}, "", "/s/local:ny2");
   installLocationForRoute("local:ny2");
   render(<AppShell client={client} />);
@@ -920,33 +1010,30 @@ test("deep-linking to /s/{ref} opens that session pane", async () => {
 
 test("a nested location opens its explicit owner without loading a project", async () => {
   const child = "local:collapsed-child";
-  const fetchMock = vi.fn(() => Promise.resolve(jsonResponse({})));
+  const fetchMock = vi.fn((url: string) => navFetchHandler(url));
   vi.stubGlobal("fetch", fetchMock);
   window.history.pushState({}, "", `/s/${encodeURIComponent(child)}`);
-  render(<AppShell client={new FakeClient("ready")} />);
-
-  act(() =>
-    installLocation({
-      generation_id: "generation_test",
-      revision: 7,
+  installLocation({
+    generation_id: "generation_test",
+    revision: 7,
+    ref: child,
+    top_level_ref: "local:owner",
+    top_level: false,
+    project_key: "collapsed-project",
+    tier: "recent",
+    session: {
       ref: child,
-      top_level_ref: "local:owner",
-      top_level: false,
-      project_key: "collapsed-project",
-      tier: "recent",
-      session: {
-        ref: child,
-        host_id: "local",
-        session_id: "collapsed-child",
-        title: "Collapsed child",
-        project: "collapsed-project",
-        state: "idle",
-        kind: "subagent",
-        live: false,
-        children: [],
-      },
-    }),
-  );
+      host_id: "local",
+      session_id: "collapsed-child",
+      title: "Collapsed child",
+      project: "collapsed-project",
+      state: "idle",
+      kind: "subagent",
+      live: false,
+      children: [],
+    },
+  });
+  render(<AppShell client={navClient()} />);
 
   await waitFor(() => expect(paneFor(child)?.slot).toBe("secondary"));
   expect(paneFor("local:owner")?.slot).toBe("main");
@@ -1204,7 +1291,7 @@ test("browser Back and Forward route notifications replace the primary through A
 test("rail activation updates the URL and a later Settings activation returns Settings to main", async () => {
   const user = userEvent.setup();
   window.history.pushState({}, "", "/settings");
-  render(<AppShell client={new FakeClient("ready")} />);
+  render(<AppShell client={navClient()} />);
   await screen.findByRole("navigation", { name: "Settings sections" });
   await screen.findByText("Session one");
 
@@ -1240,22 +1327,17 @@ test("rail activation updates the URL and a later Settings activation returns Se
 // refetch) against the real AppShell + DockHost, because the re-open only
 // happens with the route effect and the dock host both live.
 test("deleting the session the address bar names lands on welcome instead of re-opening its pane", async () => {
-  let treeBody: unknown = EMPTY_NAV_RESPONSE;
   vi.stubGlobal("fetch", (url: string) => {
-    if (url === NAV_URL) return Promise.resolve(jsonResponse(treeBody));
     if (url === "/api/sessions/local%3As1/delete") {
-      // The server deleted it: every later tree read is the one without it,
-      // exactly what confirmDeleteSession's own awaited refresh sees.
-      treeBody = EMPTY_NAV_RESPONSE;
       return Promise.resolve(jsonResponse({ deleted: ["s1"], skipped: [] }));
     }
-    return Promise.resolve(jsonResponse({}));
+    return navFetchHandler(url);
   });
 
   const user = userEvent.setup();
   window.history.pushState({}, "", "/s/local:s1");
   installLocationForRoute("local:s1");
-  render(<AppShell client={new FakeClient("ready")} />);
+  render(<AppShell client={navClient()} />);
   await screen.findByText(/loading transcript/i);
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" }));
 
@@ -1660,7 +1742,7 @@ test("a focused non-panel pane is re-focused to the routed nested session", asyn
 });
 
 test("successful Spawn navigation replaces Spawn with the created session and clears old secondary panes", async () => {
-  const fake = new FakeClient("ready");
+  const fake = navClient();
   fake.on("thread/start", () => threadStartResponse("local:created"));
   window.history.pushState({}, "", "/new");
   render(<AppShell client={fake} />);
@@ -2188,9 +2270,7 @@ test("kata 098n: on mobile a /thread/{ref} share link keeps its URL and its sing
 // afterwards, exactly as module evaluation leaves it for every other test in
 // this file.
 test("desktop boot does not issue a legacy whole-tree request", async () => {
-  const fetchMock = vi.fn((url: string) =>
-    Promise.resolve(jsonResponse(url === NAV_URL ? EMPTY_NAV_RESPONSE : {})),
-  );
+  const fetchMock = vi.fn((url: string) => Promise.resolve(jsonResponse(url === NAV_URL ? EMPTY_NAV_RESPONSE : {})));
   vi.stubGlobal("fetch", fetchMock);
 
   resetNotificationsForTests();

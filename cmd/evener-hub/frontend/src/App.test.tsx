@@ -112,7 +112,14 @@ function stubNavigationFetch(): void {
       throw new Error(`unexpected fetch in App.test: ${String(input)}`);
     }
     return Promise.resolve(
-      new Response(JSON.stringify(EMPTY_NAV_RESPONSE), { headers: { "Content-Type": "application/json", etag: "\"test\"", "X-Evener-Navigation-Generation": "test-generation", "X-Evener-Navigation-Revision": "1" } }),
+      new Response(JSON.stringify(EMPTY_NAV_RESPONSE), {
+        headers: {
+          "Content-Type": "application/json",
+          etag: '"test"',
+          "X-Evener-Navigation-Generation": "test-generation",
+          "X-Evener-Navigation-Revision": "1",
+        },
+      }),
     );
   });
 }
@@ -137,7 +144,14 @@ function stubDeferredNavigationFetch(): { requested: Promise<void>; release: () 
     requested,
     release: () => {
       releaseResponse(
-        new Response(JSON.stringify(EMPTY_NAV_RESPONSE), { headers: { "Content-Type": "application/json", etag: "\"test\"", "X-Evener-Navigation-Generation": "test-generation", "X-Evener-Navigation-Revision": "1" } }),
+        new Response(JSON.stringify(EMPTY_NAV_RESPONSE), {
+          headers: {
+            "Content-Type": "application/json",
+            etag: '"test"',
+            "X-Evener-Navigation-Generation": "test-generation",
+            "X-Evener-Navigation-Revision": "1",
+          },
+        }),
       );
     },
   };
@@ -299,7 +313,7 @@ test("initiates and settles the welcome navigation load without an error", async
     protocolVersion: "evener-appwire-v3",
     sourceId: "fake",
     features: {} as never,
-    navigation: { version: 1, generationId: "app-generation", sequence: 0 },
+    navigation: { version: 1, generationId: "test-generation", sequence: 0 },
   }));
   const navFetch = stubDeferredNavigationFetch();
   render(<AppShell client={client} />);
