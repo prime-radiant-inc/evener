@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"maps"
 	"slices"
 	"sync/atomic"
 	"testing"
@@ -100,6 +101,106 @@ func TestCallModelPanicAfterConsumeResetsTransferredPreview(t *testing.T) {
 	}
 	if reset != 1 {
 		t.Fatalf("panic cleanup reset count=%d events=%v", reset, got)
+	}
+}
+
+func TestCallModelWithFallbackUnionsPrimaryAndFallbackPreviewIDs(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		fallbackID string
+		want       []string
+	}{
+		{name: "fallback without preview", want: []string{"primary-call"}},
+		{name: "distinct fallback preview", fallbackID: "fallback-call", want: []string{"fallback-call", "primary-call"}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var streams atomic.Int32
+			client := llm.NewClient()
+			client.Register(&streamingAdapter{name: "openai", streamScript: func(st *llm.ChanStream) {
+				if streams.Add(1) == 1 {
+					call := communicateCall("primary-call", "primary")
+					st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &llm.ToolCallData{ID: call.ID, Name: call.Name}})
+					st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &llm.ToolCallData{ID: call.ID, Arguments: call.Arguments}})
+					st.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.ErrorFromHTTPStatus("openai", 403, "fallback", nil, nil)})
+					return
+				}
+				if tc.fallbackID != "" {
+					call := communicateCall(tc.fallbackID, "fallback")
+					st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &llm.ToolCallData{ID: call.ID, Name: call.Name}})
+					st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &llm.ToolCallData{ID: call.ID, Arguments: call.Arguments}})
+				}
+				finish := llm.FinishReason{Reason: llm.FinishReasonToolCalls}
+				st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
+			}})
+			sess, err := NewSession(client, NewOpenAIProfile("gpt-primary"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{ModelFallbacks: []string{"gpt-fallback"}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			resp, _, _, err := sess.callModelWithFallback(context.Background(), NewOpenAIProfile("gpt-primary"), llm.Request{Provider: "openai", Model: "gpt-primary", Messages: []llm.Message{llm.User("run")}}, "", 0)
+			if err != nil {
+				t.Fatalf("fallback call: %v", err)
+			}
+			if !slices.Equal(resp.CommunicatePreviewCallIDs, tc.want) {
+				t.Fatalf("preview IDs=%v want=%v", resp.CommunicatePreviewCallIDs, tc.want)
+			}
+		})
+	}
+}
+
+func TestCallModelWithFallbackPanicResetsTransferredPrimaryExactlyOnce(t *testing.T) {
+	var streams, hooks atomic.Int32
+	client := llm.NewClient()
+	client.Register(&streamingAdapter{name: "openai", streamScript: func(st *llm.ChanStream) {
+		if streams.Add(1) == 1 {
+			call := communicateCall("primary-call", "primary")
+			st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &llm.ToolCallData{ID: call.ID, Name: call.Name}})
+			st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &llm.ToolCallData{ID: call.ID, Arguments: call.Arguments}})
+			st.Send(llm.StreamEvent{Type: llm.StreamEventError, Err: llm.ErrorFromHTTPStatus("openai", 403, "fallback", nil, nil)})
+			return
+		}
+		call := communicateCall("fallback-call", "fallback")
+		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &llm.ToolCallData{ID: call.ID, Name: call.Name}})
+		st.Send(llm.StreamEvent{Type: llm.StreamEventToolCallDelta, ToolCall: &llm.ToolCallData{ID: call.ID, Arguments: call.Arguments}})
+		finish := llm.FinishReason{Reason: llm.FinishReasonToolCalls}
+		st.Send(llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &finish})
+	}})
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-primary"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{ModelFallbacks: []string{"gpt-fallback"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	old := sessionCallModelAfterConsumeHook
+	sessionCallModelAfterConsumeHook = func() {
+		if hooks.Add(1) == 2 {
+			panic("fallback transfer")
+		}
+	}
+	t.Cleanup(func() { sessionCallModelAfterConsumeHook = old })
+	var got []events.SessionEvent
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		for ev := range sess.Events() {
+			got = append(got, ev)
+		}
+	}()
+	panicked := false
+	func() {
+		defer func() { panicked = recover() != nil }()
+		_, _, _, _ = sess.callModelWithFallback(context.Background(), NewOpenAIProfile("gpt-primary"), llm.Request{Provider: "openai", Model: "gpt-primary", Messages: []llm.Message{llm.User("run")}}, "", 0)
+	}()
+	sess.Close()
+	<-done
+	if !panicked {
+		t.Fatal("fallback call did not panic")
+	}
+	resets := map[string]int{}
+	for _, ev := range got {
+		if ev.Kind == events.EventCommunicatePreviewReset {
+			resets[ev.Data.(events.CommunicatePreviewResetData).CallID]++
+		}
+	}
+	if !maps.Equal(resets, map[string]int{"primary-call": 1, "fallback-call": 1}) {
+		t.Fatalf("exact reset counts=%v events=%v", resets, got)
 	}
 }
 

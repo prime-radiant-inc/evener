@@ -426,6 +426,10 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		if data.CallID == "" || p.provisionalCommunicateItems[data.CallID] != "" {
 			return nil
 		}
+		phase := p.communicatePhases[data.CallID]
+		if phase != communicatePhaseNone && phase != communicatePhaseClosed {
+			return nil
+		}
 		out := p.ensureTurn(event.Timestamp)
 		delete(p.communicateCommittedCalls, data.CallID)
 		p.communicatePhases[data.CallID] = communicatePhasePreview

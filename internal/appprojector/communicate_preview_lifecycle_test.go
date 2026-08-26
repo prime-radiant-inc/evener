@@ -116,6 +116,24 @@ func TestCommunicatePreviewDuplicateStartIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestCommunicatePreviewCommittedGenerationRejectsDuplicatePreviewStart(t *testing.T) {
+	p := NewAppEventProjector("th_1", "local:th_1")
+	p.Project(events.SessionEvent{Kind: events.EventCommunicatePreviewStart, Data: events.CommunicatePreviewStartData{CallID: "committed"}})
+	p.Project(events.SessionEvent{Kind: events.EventCommunicatePreviewDelta, Data: events.CommunicatePreviewDeltaData{CallID: "committed", Delta: "preview"}})
+	p.Project(events.SessionEvent{Kind: events.EventToolCallStart, Data: events.ToolCallStartData{ToolName: "communicate", CallID: "committed"}})
+	completed := p.Project(events.SessionEvent{Kind: events.EventCommunicate, Data: events.CommunicateData{CallID: "committed", Message: "final"}})
+	if len(completed) != 1 {
+		t.Fatalf("initial completion=%+v", completed)
+	}
+	if out := p.Project(events.SessionEvent{Kind: events.EventCommunicatePreviewStart, Data: events.CommunicatePreviewStartData{CallID: "committed"}}); len(out) != 0 {
+		t.Fatalf("duplicate preview start reopened committed generation: %+v", out)
+	}
+	p.Project(events.SessionEvent{Kind: events.EventToolCallEnd, Data: events.ToolCallEndData{ToolName: "communicate", CallID: "committed"}})
+	if out := p.Project(events.SessionEvent{Kind: events.EventCommunicatePreviewStart, Data: events.CommunicatePreviewStartData{CallID: "committed"}}); len(out) == 0 {
+		t.Fatal("next generation preview start was suppressed after tool end")
+	}
+}
+
 func TestCommunicatePreviewReuseAfterToolEndStartsNewGeneration(t *testing.T) {
 	p := NewAppEventProjector("th_1", "local:th_1")
 	p.Project(events.SessionEvent{Kind: events.EventToolCallStart, Data: events.ToolCallStartData{ToolName: "communicate", CallID: "reuse"}})
@@ -232,12 +250,12 @@ func TestCommunicateReplayCommitsWithoutLivePreview(t *testing.T) {
 func TestCommunicatePreviewSameCallIDStartsNewGeneration(t *testing.T) {
 	p := NewAppEventProjector("th_1", "local:th_1")
 	commit := func(message string) int {
-		p.Project(events.SessionEvent{Kind: events.EventToolCallStart, Data: events.ToolCallStartData{
-			ToolName: "communicate", CallID: "reused",
-		}})
 		p.Project(events.SessionEvent{Kind: events.EventCommunicatePreviewStart, Data: events.CommunicatePreviewStartData{CallID: "reused"}})
 		p.Project(events.SessionEvent{Kind: events.EventCommunicatePreviewDelta, Data: events.CommunicatePreviewDeltaData{CallID: "reused", Delta: message}})
-		return len(p.Project(events.SessionEvent{Kind: events.EventCommunicate, Data: events.CommunicateData{CallID: "reused", Message: message}}))
+		p.Project(events.SessionEvent{Kind: events.EventToolCallStart, Data: events.ToolCallStartData{ToolName: "communicate", CallID: "reused"}})
+		out := p.Project(events.SessionEvent{Kind: events.EventCommunicate, Data: events.CommunicateData{CallID: "reused", Message: message}})
+		p.Project(events.SessionEvent{Kind: events.EventToolCallEnd, Data: events.ToolCallEndData{ToolName: "communicate", CallID: "reused"}})
+		return len(out)
 	}
 	if got := commit("first"); got != 1 {
 		t.Fatalf("first commit notifications = %d, want 1", got)
