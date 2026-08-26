@@ -371,6 +371,10 @@ func (s *NavigationService) LegacyRepresentation(ctx context.Context, id string,
 		if err != nil {
 			return navigationRepresentation{}, fmt.Errorf("encode legacy navigation representation: %w", err)
 		}
+		// writeAPIJSON uses json.Encoder.Encode, whose legacy wire contract
+		// includes a trailing newline. Keep that framing byte in the cached
+		// representation without changing the structured navigation encodings.
+		encoded = append(encoded, '\n')
 		compressed, err := gzipNavigation(encoded)
 		if err != nil {
 			return navigationRepresentation{}, err

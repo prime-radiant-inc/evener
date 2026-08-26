@@ -122,6 +122,16 @@ func TestLegacyRepresentationCachesAndSeparatesShapes(t *testing.T) {
 	if _, err := json.Marshal(first.Object); err != nil {
 		t.Fatal(err)
 	}
+	if len(first.JSON) == 0 || first.JSON[len(first.JSON)-1] != '\n' {
+		start := len(first.JSON) - 8
+		if start < 0 {
+			start = 0
+		}
+		t.Fatalf("legacy JSON framing = %q, want trailing newline", first.JSON[start:])
+	}
+	if string(first.JSON) != string(second.JSON) {
+		t.Fatal("cached legacy encoding changed between requests")
+	}
 }
 
 func TestLegacyRepresentationRevisionAndConcurrentCoalescing(t *testing.T) {
