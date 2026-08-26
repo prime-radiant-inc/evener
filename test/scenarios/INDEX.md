@@ -431,12 +431,6 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   parent-source observer gets event payloads, never a cross-session
   read (renamed from `sidecar-test-triage-output-match`, kata
   `f9gn`).
-- `sidecar-handoff-packager-job-notification.md` - handoff sidecar
-  packages a completed delegate result from a `job.notification`
-  frame, and pins the observer read grant: the delivery mints a durable
-  read on the named job, the frame names the `read_transcript` call
-  that spends it, `job_status` stays denied, and the observer's own
-  callback jobs mint nothing.
 - `sidecar-feedback-governor-communicate.md` - loop governor reports
   repeated-tool-choice risk from an explicit caller frame.
 - `sidecar-quality-auditor-communicate.md` - quality auditor flags a

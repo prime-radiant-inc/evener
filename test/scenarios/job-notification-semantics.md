@@ -83,14 +83,13 @@ Run 1:
   `exit_code="0"`, and a nonzero `output_bytes`.
   <!-- pin: notification turns persist as kind STEERING transcript
        entries today; re-verify the persisted kind on shipped code. -->
-- Cardinality, delegate: EXACTLY ONE block for J2 with
-  `event="completed"`, `job_type="delegate"`, `status="completed"`,
-  and a `transcript_ref` attribute carrying the child ref. (`reason`
-  may be empty for a completed delegate — the attribute's presence,
-  not its value, is asserted.)
-- The `event` attribute equals the lifecycle kind and is never spelled
-  `type` ("Notifications" "Notification `event` must not be named
-  `type`"); `job_type` is the job class. An assistant turn
+- Cardinality, delegate: EXACTLY ONE `<delegate-notification
+  delegate_id="dlg_...">` block for J2 carrying the direct delegate's
+  terminal result and session transcript reference. It is not a job
+  notification and has no `job_id` or `job_type`.
+- The `event` attribute on shell notifications equals the lifecycle kind
+  and is never spelled `type` ("Notifications" "Notification `event`
+  must not be named `type`"); `job_type` is the shell job class. An assistant turn
   follows the notification turn(s), and the session returns to `idle`.
 - `jobs.jsonl` settle: for EACH of J1/J2, exactly one
   `job_notification_pending` and exactly one
