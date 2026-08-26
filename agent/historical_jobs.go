@@ -24,8 +24,19 @@ type HistoricalJobRecord struct {
 	OutputBytes      int64
 }
 
-func LoadSessionHistoricalJobRecordsWithDiagnostics(stateDir, sessionID string) (map[string]HistoricalJobRecord, jobstore.AuthorityDiagnostics, error) {
-	return loadSessionHistoricalJobRecordsWithDiagnostics(stateDir, sessionID)
+type HistoricalJobDiagnostics struct {
+	Incomplete      bool
+	Mismatches      []string
+	InvalidOwners   []string
+	LifecycleErrors []string
+	MissingOwners   []string
+	TornTails       []string
+	CorruptBranches []string
+}
+
+func LoadSessionHistoricalJobRecordsWithDiagnostics(stateDir, sessionID string) (map[string]HistoricalJobRecord, HistoricalJobDiagnostics, error) {
+	out, d, err := loadSessionHistoricalJobRecordsWithDiagnostics(stateDir, sessionID)
+	return out, HistoricalJobDiagnostics{Incomplete: d.Incomplete, Mismatches: d.Mismatches, InvalidOwners: d.InvalidOwners, LifecycleErrors: d.LifecycleErrors, MissingOwners: d.MissingOwners, TornTails: d.TornTails, CorruptBranches: d.CorruptBranches}, err
 }
 
 func LoadSessionHistoricalJobRecords(stateDir, sessionID string) (map[string]HistoricalJobRecord, error) {
