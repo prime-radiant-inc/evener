@@ -241,11 +241,6 @@ export function TurnBlock({
       renderedEntries.push(
         <div key={entry.id} {...viewAnchorFor(entry)}>
           <ItemRenderer
-            key={`${entry.id}:${threadFingerprintForItem(
-              item,
-              thread,
-              toolRendererFor(item.toolName ?? "").summarySuffix?.(item, thread),
-            )}`}
             item={item}
             turn={shownTurn}
             live={isItemLive(item)}
@@ -267,11 +262,6 @@ export function TurnBlock({
       renderedEntries.push(
         <div key={entry.id} className={CLASS.runContent} data-testid="run-content" {...viewAnchorFor(entry)}>
           <ItemRenderer
-            key={`${entry.id}:${threadFingerprintForItem(
-              item,
-              thread,
-              toolRendererFor(item.toolName ?? "").summarySuffix?.(item, thread),
-            )}`}
             item={item}
             turn={shownTurn}
             live={isItemLive(item)}
