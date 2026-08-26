@@ -1,10 +1,12 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -31,6 +33,94 @@ const (
 )
 
 var waiterInterruptDelegateID = regexp.MustCompile(`dlg_[A-Za-z0-9_-]+`)
+
+type waiterInterruptWriteObserverListener struct {
+	net.Listener
+	observe func([]byte)
+}
+
+func (l *waiterInterruptWriteObserverListener) Accept() (net.Conn, error) {
+	conn, err := l.Listener.Accept()
+	if err != nil {
+		return nil, err
+	}
+	return &waiterInterruptWriteObserverConn{Conn: conn, observe: l.observe}, nil
+}
+
+type waiterInterruptWriteObserverConn struct {
+	net.Conn
+	mu       sync.Mutex
+	buffer   []byte
+	upgraded bool
+	observe  func([]byte)
+}
+
+func (c *waiterInterruptWriteObserverConn) Write(p []byte) (int, error) {
+	n, err := c.Conn.Write(p)
+	if n == 0 {
+		return n, err
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.buffer = append(c.buffer, p[:n]...)
+	if !c.upgraded {
+		const handshakeEnd = "\r\n\r\n"
+		end := bytes.Index(c.buffer, []byte(handshakeEnd))
+		if end < 0 {
+			return n, err
+		}
+		c.buffer = c.buffer[end+len(handshakeEnd):]
+		c.upgraded = true
+	}
+	for {
+		payload, ok := waiterInterruptNextWebSocketPayload(&c.buffer)
+		if !ok {
+			break
+		}
+		c.observe(payload)
+	}
+	return n, err
+}
+
+func waiterInterruptNextWebSocketPayload(buffer *[]byte) ([]byte, bool) {
+	b := *buffer
+	if len(b) < 2 || b[0]&0x70 != 0 || b[0]&0x0f != 1 {
+		if len(b) > 0 {
+			*buffer = b[1:]
+		}
+		return nil, len(b) > 0
+	}
+	if b[1]&0x80 != 0 {
+		*buffer = b[1:]
+		return nil, true
+	}
+	length := int(b[1] & 0x7f)
+	header := 2
+	switch length {
+	case 126:
+		if len(b) < 4 {
+			return nil, false
+		}
+		length = int(b[2])<<8 | int(b[3])
+		header = 4
+	case 127:
+		if len(b) < 10 {
+			return nil, false
+		}
+		if b[2] != 0 || b[3] != 0 || b[4] != 0 || b[5] != 0 {
+			*buffer = b[1:]
+			return nil, true
+		}
+		length = int(b[6])<<24 | int(b[7])<<16 | int(b[8])<<8 | int(b[9])
+		header = 10
+	}
+	if len(b) < header+length {
+		return nil, false
+	}
+	payload := append([]byte(nil), b[header:header+length]...)
+	*buffer = b[header+length:]
+	return payload, true
+}
 
 type waiterInterruptAdapter struct {
 	initialTerminal    chan struct{}
@@ -156,27 +246,34 @@ func (s *waiterInterruptServer) SubmitNotification() {
 }
 
 type waiterInterruptDaemon struct {
-	adapter             *waiterInterruptAdapter
-	client              *appwire.Client
-	ctx                 context.Context
-	ref                 string
-	terminalClaimed     chan struct{}
-	positiveWaitSeen    chan struct{}
-	turnEnded           chan struct{}
-	sessionEndEntered   chan struct{}
-	releaseSessionEnd   chan struct{}
-	sessionEndProjected chan struct{}
-	releaseOnce         sync.Once
-	server              *waiterInterruptServer
-	stateDir            string
-	sessionID           string
-	interruptResponseID *atomic.Value
-	interruptResponse   chan struct{}
+	adapter                *waiterInterruptAdapter
+	client                 *appwire.Client
+	ctx                    context.Context
+	ref                    string
+	terminalClaimed        chan struct{}
+	positiveWaitSeen       chan struct{}
+	turnEnded              chan struct{}
+	sessionEndEntered      chan struct{}
+	releaseSessionEnd      chan struct{}
+	sessionEndProjected    chan struct{}
+	releaseOnce            sync.Once
+	server                 *waiterInterruptServer
+	stateDir               string
+	sessionID              string
+	interruptResponseID    *atomic.Value
+	interruptResponse      chan struct{}
+	processingReleased     *atomic.Bool
+	earlyInterruptResponse *atomic.Bool
 }
 
 func startWaiterInterruptDaemon(t *testing.T) *waiterInterruptDaemon {
 	t.Helper()
 	adapter := newWaiterInterruptAdapter()
+	var interruptResponseID atomic.Value
+	interruptResponseCompleted := make(chan struct{})
+	var interruptResponseOnce sync.Once
+	var processingReleased atomic.Bool
+	var earlyInterruptResponse atomic.Bool
 	positiveWaitSeen := make(chan struct{})
 	terminalClaimed := make(chan struct{})
 	turnEnded := make(chan struct{})
@@ -194,6 +291,27 @@ func startWaiterInterruptDaemon(t *testing.T) *waiterInterruptDaemon {
 	secondGenerationRunning := false
 
 	deps := defaultServeDeps()
+	listen := deps.listen
+	deps.listen = func(ctx context.Context, network, addr string) (net.Listener, error) {
+		listener, err := listen(ctx, network, addr)
+		if err != nil {
+			return nil, err
+		}
+		return &waiterInterruptWriteObserverListener{Listener: listener, observe: func(payload []byte) {
+			var message appwire.Message
+			if err := json.Unmarshal(payload, &message); err != nil || message.Kind() != appwire.MessageResponse {
+				return
+			}
+			id, _ := interruptResponseID.Load().(string)
+			if id == "" || message.IDString() != id {
+				return
+			}
+			if !processingReleased.Load() {
+				earlyInterruptResponse.Store(true)
+			}
+			interruptResponseOnce.Do(func() { close(interruptResponseCompleted) })
+		}}, nil
+	}
 	deps.ensureConfigDirs = func() error { return nil }
 	deps.seedMarketplaces = func() error { return nil }
 	deps.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
@@ -290,18 +408,6 @@ func startWaiterInterruptDaemon(t *testing.T) *waiterInterruptDaemon {
 		t.Fatalf("DialWebSocket: %v", err)
 	}
 	client := appwire.NewClient(transport)
-	var interruptResponseID atomic.Value
-	interruptResponseCompleted := make(chan struct{})
-	var interruptResponseOnce sync.Once
-	client.SetOrderedFrameHandler(func(message appwire.Message, err error) {
-		if err != nil {
-			return
-		}
-		id, _ := interruptResponseID.Load().(string)
-		if id != "" && message.IDString() == id {
-			interruptResponseOnce.Do(func() { close(interruptResponseCompleted) })
-		}
-	})
 	client.Start(context.WithoutCancel(ctx))
 	if _, err := client.Initialize(ctx, appwire.InitializeParams{
 		ClientInfo: appwire.ClientInfo{Name: "waiter-interrupt-test", Version: "test"},
@@ -315,8 +421,8 @@ func startWaiterInterruptDaemon(t *testing.T) *waiterInterruptDaemon {
 		if liveSession != nil {
 			liveSession.Close()
 		}
-		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 3*time.Second)
-		shutdownReq, requestErr := http.NewRequestWithContext(shutdownCtx, http.MethodPost, "http://"+entry.Address+"/shutdown", nil)
+		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+		shutdownReq, requestErr := http.NewRequestWithContext(cleanupCtx, http.MethodPost, "http://"+entry.Address+"/shutdown", nil)
 		var shutdownResp *http.Response
 		var shutdownErr error
 		if requestErr == nil {
@@ -327,33 +433,35 @@ func startWaiterInterruptDaemon(t *testing.T) *waiterInterruptDaemon {
 		if shutdownErr == nil {
 			shutdownResp.Body.Close()
 		}
-		shutdownCancel()
 		select {
 		case runErr := <-done:
 			if runErr != nil {
 				t.Errorf("runServeWithDeps: %v", runErr)
 			}
-		case <-ctx.Done():
-			t.Errorf("runServeWithDeps did not exit: %v", ctx.Err())
+		case <-cleanupCtx.Done():
+			t.Errorf("runServeWithDeps did not exit: %v", cleanupCtx.Err())
 		}
+		cleanupCancel()
 		cancel()
 	})
 	return &waiterInterruptDaemon{
-		adapter:             adapter,
-		client:              client,
-		ctx:                 ctx,
-		ref:                 appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String(),
-		terminalClaimed:     terminalClaimed,
-		positiveWaitSeen:    positiveWaitSeen,
-		turnEnded:           turnEnded,
-		sessionEndEntered:   sessionEndEntered,
-		releaseSessionEnd:   releaseSessionEnd,
-		sessionEndProjected: sessionEndProjected,
-		server:              waiterServer,
-		stateDir:            stateDir,
-		sessionID:           entry.SessionID,
-		interruptResponseID: &interruptResponseID,
-		interruptResponse:   interruptResponseCompleted,
+		adapter:                adapter,
+		client:                 client,
+		ctx:                    ctx,
+		ref:                    appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String(),
+		terminalClaimed:        terminalClaimed,
+		positiveWaitSeen:       positiveWaitSeen,
+		turnEnded:              turnEnded,
+		sessionEndEntered:      sessionEndEntered,
+		releaseSessionEnd:      releaseSessionEnd,
+		sessionEndProjected:    sessionEndProjected,
+		server:                 waiterServer,
+		stateDir:               stateDir,
+		sessionID:              entry.SessionID,
+		interruptResponseID:    &interruptResponseID,
+		interruptResponse:      interruptResponseCompleted,
+		processingReleased:     &processingReleased,
+		earlyInterruptResponse: &earlyInterruptResponse,
 	}
 }
 
@@ -446,11 +554,15 @@ func TestRunServeInterruptSettlesClaimedPositiveWaitDelegateSend(t *testing.T) {
 		t.Fatal("TurnInterrupt response completed before runnerDone barrier release")
 	default:
 	}
+	daemon.processingReleased.Store(true)
 	daemon.server.releaseProcessingBarrier()
 	select {
 	case <-daemon.interruptResponse:
 	case <-interruptCtx.Done():
 		t.Fatalf("TurnInterrupt response did not complete after runnerDone barrier release: %v", interruptCtx.Err())
+	}
+	if daemon.earlyInterruptResponse.Load() {
+		t.Fatal("TurnInterrupt response write completed before processing release")
 	}
 	select {
 	case err := <-interruptResult:
@@ -478,14 +590,16 @@ func TestRunServeInterruptSettlesClaimedPositiveWaitDelegateSend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadTurnsList: %v", err)
 	}
-	terminal := false
+	startedCount := 0
+	startedStatus := ""
 	for _, turn := range turns.Data {
 		if turn.ID == started.Turn.ID {
-			terminal = turn.Status == "interrupted"
+			startedCount++
+			startedStatus = turn.Status
 		}
 	}
-	if terminal {
-		t.Fatalf("turn %q terminalized before its SESSION_END projection was released: %#v", started.Turn.ID, turns.Data)
+	if startedCount != 1 || startedStatus != "inProgress" {
+		t.Fatalf("started turn was not exactly once and inProgress before SESSION_END projection: count=%d status=%q turns=%#v", startedCount, startedStatus, turns.Data)
 	}
 	stoppedBeforeProjection := daemon.mutationSnapshot(t)
 	interruptBeforeProjection := stoppedBeforeProjection.Journal[interrupt.ClientMutationID]
@@ -500,7 +614,7 @@ func TestRunServeInterruptSettlesClaimedPositiveWaitDelegateSend(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ThreadTurnsList after SESSION_END projection: %v", err)
 	}
-	terminal = false
+	terminal := false
 	for _, turn := range turns.Data {
 		if turn.ID == started.Turn.ID {
 			terminal = turn.Status == "interrupted"
