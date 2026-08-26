@@ -651,6 +651,12 @@ export function analyzeDifferentialCapture(candidate, capture) {
         };
   const pixels = [];
   const maskKeys = new Set();
+  const maskBounds = {
+    left: Infinity,
+    top: Infinity,
+    right: -Infinity,
+    bottom: -Infinity,
+  };
   for (let y = imageBounds.top; y < imageBounds.bottom; y += 1) {
     for (let x = imageBounds.left; x < imageBounds.right; x += 1) {
       const black = read(images.black, x, y);
@@ -689,6 +695,10 @@ export function analyzeDifferentialCapture(candidate, capture) {
         probes: { black, white },
       });
       maskKeys.add(`${x}:${y}`);
+      if (x < maskBounds.left) maskBounds.left = x;
+      if (y < maskBounds.top) maskBounds.top = y;
+      if (x + 1 > maskBounds.right) maskBounds.right = x + 1;
+      if (y + 1 > maskBounds.bottom) maskBounds.bottom = y + 1;
     }
   }
   if (pixels.length === 0) return unresolved("missing-differential-mask");
@@ -716,12 +726,7 @@ export function analyzeDifferentialCapture(candidate, capture) {
   }
   const mask = {
     pixelCount: pixels.length,
-    bounds: {
-      left: Math.min(...pixels.map(({ x }) => x)),
-      top: Math.min(...pixels.map(({ y }) => y)),
-      right: Math.max(...pixels.map(({ x }) => x)) + 1,
-      bottom: Math.max(...pixels.map(({ y }) => y)) + 1,
-    },
+    bounds: maskBounds,
     runs,
   };
   const reliablePixels = pixels.filter(({ coverage }) => coverage >= 0.1);
