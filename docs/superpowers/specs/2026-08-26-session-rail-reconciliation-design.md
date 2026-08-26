@@ -45,6 +45,10 @@ These decisions remain product requirements from #338:
 - Live-faithful rendering is causal: no event, anchor, gap, total, or END cap
   is rendered before its timestamp is knowable. Ended sessions use their end as
   `now`, never a hidden future denominator.
+- Idle voids hatch only after ten real silent minutes, then grow to the live
+  now-line; for an ended session they stop at the known session end. This is a
+  live-faithful acceptance rule, distinct from the axis's ten-minute minimum
+  span.
 - The time axis is `[session start, max(now, start + 10 minutes)]`, continuously
   rescaled; turn-index mode normalizes only by turns revealed so far.
 - The rail reports “so far” totals and never `current / final` denominators.
@@ -114,7 +118,6 @@ landed.
 - Variable-height correction for unloaded placeholders after hydration. The
   96px estimate is the safe initial geometry; the virtualizer acceptance gate
   must define how replacement preserves key identity and visual anchoring.
-- A full-history representation for filtered/focused views.
 - Exact visual copy and placement of the degraded indicator, subject to the
   accessibility gate.
 - Whether a later performance optimization uses a persisted index. It must not
@@ -145,6 +148,40 @@ A count alone is not proof that every row can be loaded. A consumer that cannot
 obtain the prefix within its bounded request must retain the known global
 indices, show the unavailable/incomplete state, and never relabel the visible
 suffix as complete history.
+
+### Focused-view projection and initial position
+
+Focused/filtered views have a deliberately different projection: they use the
+ordered set of matching turns currently loaded (plus any pages explicitly
+requested for the focused target), not `fullTurnCount`. They therefore do not
+inflate a filtered list with an unowned global placeholder prefix. The rail
+labels this as a **focused projection**, and its count/turn-index axis is scoped
+to that projection; an exact global index remains available in the target
+metadata for navigation and diagnostics.
+
+Initial behavior is deterministic:
+
+- **Ordinary unfiltered tail open:** target global index `N - 1`; follow-live
+  starts on for a live session and off for an ended session.
+- **Focused target already loaded:** target the matching focused row exactly;
+  follow-live starts off, so opening a deep link or focused view never jumps
+  away from the requested turn.
+- **Focused target outside the loaded window:** request older pages for the
+  target before mounting the focused projection. If the target page arrives,
+  use the preceding loaded-target rule. If the bounded request is cancelled,
+  refused, or the target is unavailable, keep the focused projection at its
+  nearest known matching boundary, mark it incomplete/degraded, expose the
+  target-unavailable diagnostic, and keep follow off; never substitute the
+  session tail or claim the target was reached.
+- **Empty history or no matching focused turns:** render an empty projection,
+  no target, no scroll jump, and follow off until a new matching turn arrives
+  in a live session.
+
+The focused projection, page-first target resolution, and four outcomes above
+are owned by **P1/#457** and are mandatory P1 entry fixtures. P1 cannot enter
+with “focused behavior” merely deferred; its deterministic fixtures cover an
+unloaded target, loaded target, ordinary tail, and empty history, including the
+initial follow state.
 
 ### Job activity, continuation, and ordering contract
 
@@ -197,15 +234,36 @@ results remain cached at their terminal revision. A stale response cannot
 replace a newer hydration generation. No fixed polling is required by this
 contract. The turn lane and job lane can succeed or degrade independently.
 
-## Dependency and re-land matrix
+## Dependency DAG and phase-to-issue ownership
 
-| Order | Runtime child slice | Depends on | Must not claim |
-| --- | --- | --- | --- |
-| 1 | #448 bounded retained acquisition/scanners | Existing journal ordering and context plumbing | A bounded projection alone bounds input. |
-| 2 | #450 revisioned bounded-page consumer contract | #448 limits; #449 integrity diagnostics | A page or tree traversal is complete history. |
-| 3 | #451 live/degraded rail job lane | #450 contract and existing revision/hydration/coalescing machinery | One-shot cache or swallowed job errors are live fidelity. |
-| 4 | #457 transcript global-prefix/placeholder and virtualizer boundary | Transcript paging model; rail full-count semantics | Zero-height/null placeholders, shared VirtualList changes, or disabled dynamic sizing are fixes. |
-| 5 | #338 P0–P4 product slices | #448–#457 gates as mapped below | The spec PR or any single phase ships the epic. |
+The child issues are delivered by the phases below; they are not a separate
+total-order wave that must all merge before P0. A phase's **merged before**
+items are prerequisites supplied by an earlier phase or existing main. Its
+**owned delivery** is the runtime work that phase's PR supplies and verifies.
+
+```text
+existing journal/transcript primitives
+        ├──> P0 (#448 + #449, then #450)
+        │                 ├──> P1 (#457 + core rail)
+        │                 │        └──> P2 (responsive/a11y)
+        │                 └──> P3 (#451 + Comprehension View)
+        └──────────────────────────────> P3
+P2 ────────────────────────────────────> P3 ───> P4
+```
+
+| Phase / owner | Must already be merged before entry | Owned delivery and required evidence |
+| --- | --- | --- |
+| P0 / #338 foundation slice | Existing journal ordering, context plumbing, transcript paging primitives, and #449 contract decision accepted | #448 bounded scanners and traversal acquisition; #449 integrity diagnostics; then #450 revisioned bounded-page consumer. Fixtures prove cancellation/raw limits, owner authority, continuations, revision restart, and completeness. |
+| P1 / #338 rail + #457 | P0's #448/#449/#450 contracts and pure model; existing dynamic `VirtualList` and paging seam | #457 global-prefix/index, fixed-placeholder, and measurement boundary; rail in both panes; focused projection/initial behavior. Fixtures cover loaded/unloaded focused target, ordinary tail, empty history, summary/page race, and no virtualizer recursion. #451 is not required to enter P1. |
+| P2 / #338 responsive slice | P1 exit, including #457 evidence | Container bands, a11y, reduced motion, and geometry/overflow/tap-target guards. |
+| P3 / #338 + #451 | P2 exit; P0's #450 revision contract; existing revisioned `jobs/treeUpdated` and hydration/coalescing machinery | #451 live/degraded job lane plus Comprehension View. Fixtures cover refresh, reconnect, coalescing, ended cache, job-only failure, and degraded child lanes. #457 is already merged through P1, but is not a dependency of #451. |
+| P4 / #338 graduation | P3 exit and all runtime evidence published | User legend/settings copy; docs and generated/link gates. |
+
+Thus the required issue ordering is **#448 → #450 → #451** where the job
+consumer depends on the bounded-page contract; #449 supplies integrity inputs
+alongside P0. **#457 is on the independent transcript/P1 path**, after P0's
+global-count contract and before P2/P3, not behind #451. No phase claims that
+the design PR or a single child slice ships #338.
 
 #459 heartbeat work is separate and already present at the audited base; it is
 not a substitute for #448, #451, or #457. The rail re-land must keep the
@@ -213,20 +271,23 @@ heartbeat/socket boundary separate.
 
 ## Phased entry and exit gates
 
-Every phase is a separately reviewable runtime PR. Entry means its dependencies
-are merged and its acceptance fixtures are available. Exit requires the listed
+Every phase is a separately reviewable runtime PR. Entry means the “must already
+be merged” items in the DAG are merged and that phase's owned fixtures are
+available. Exit requires the listed
 focused tests plus applicable repository gates; no phase advances on a
 swallowed warning or an incomplete result mislabeled green.
 
 ### P0 — foundations and contracts (no UI)
 
-**Entry:** #448 acquisition design is accepted; revision/integrity fields from
-#450/#449 are specified; fixtures include large journals, continuations,
+**Entry:** Existing journal/transcript primitives are available; #448
+acquisition and #449 integrity contracts are accepted; #450 revision fields
+are specified (not yet delivered); fixtures include large journals, continuations,
 changing revisions, torn tails, owner/forwarded conflicts, live and ended
 sessions.
 
-**Work:** bounded context-aware scanners; one shared delegate index per root;
-revisioned bounded-page result; `last_activity_at`; typed usage; pure rail
+**Owned delivery:** bounded context-aware scanners (#448); one shared delegate
+index per root; #449 diagnostics; then revisioned bounded-page result (#450);
+`last_activity_at`; typed usage; pure rail
 model/axis/ordering. The model must represent incomplete/degraded states and
 must never emit future events.
 
@@ -238,18 +299,22 @@ and parent/hysteresis ordering. No UI is mounted. `make test`, `make lint`, and
 
 ### P1 — rail scrollbar in both transcript panes
 
-**Entry:** P0 exit; transcript paging and global suffix mapping are available;
-#457's fixed-height placeholder regression is ready.
+**Entry:** P0/#448/#449/#450 exit; transcript paging and global suffix mapping
+are available. #457 is owned by this phase, not a pre-merged prerequisite.
 
-**Work:** rail mount, scroll synchronization, anchors, exact-target paging,
-follow arbitration, desktop flag default-on; keep loaded turns at stable global
-indices and use 96px `aria-hidden` placeholders for unloaded rows.
+**Owned delivery:** #457 global-prefix/index, fixed-placeholder, and
+virtualizer boundary; rail mount, scroll synchronization, anchors, exact-target
+paging, focused projection/initial behavior, follow arbitration, desktop flag
+default-on; keep loaded turns at stable global indices and use 96px `aria-hidden`
+placeholders for unloaded rows.
 
 **Exit:** drag ratio is 1.000 in turn-index mode; anchors page and land exactly;
 summary-before-page and page-before-summary both render; large ended sessions
 survive automatic prepend with no maximum-depth error/error boundary; dynamic
-variable-height measurement remains enabled; focused/read-only/live controls
-pass; overflow and token-contract guards pass.
+variable-height measurement remains enabled; focused fixtures pass for loaded and
+unloaded targets, ordinary tail, and empty history with the specified initial
+positions/follow states; read-only/live controls pass; overflow and
+token-contract guards pass.
 
 ### P2 — responsive and accessible rail
 
@@ -264,11 +329,13 @@ remains draggable and exposes the locked encodings.
 
 ### P3 — Comprehension View
 
-**Entry:** P1/P2 and live/degraded job lane contract are green.
+**Entry:** P1/P2 and P0's #450 contract are green; #451 is owned by this phase
+and is not a pre-merged prerequisite. Existing revision/hydration/coalescing
+machinery is available.
 
-**Work:** overlay via the existing OverlayPanel pattern; refcounted parent and
-subagent hydration; aligned shared clock; ordering/hysteresis/FLIP; exact
-click-through.
+**Owned delivery:** #451 live/degraded job lane; overlay via the existing
+OverlayPanel pattern; refcounted parent and subagent hydration; aligned shared
+clock; ordering/hysteresis/FLIP; exact click-through.
 
 **Exit:** overlay focus/Escape/aria-modal tests, parent-leftmost and hysteresis
 unit tests, reconnect/live refresh tests, aligned now-line test, exact
@@ -303,9 +370,14 @@ from this spec PR.
 - [ ] Resource limits apply during acquisition and cancellation is checked
       between records.
 - [ ] Unloaded measured rows have fixed nonzero geometry; filtered/focused views
-      are not inflated without a defined projection.
-- [ ] #448, #450, #451, and #457 remain separate reviewable dependencies; #459
-      heartbeat work is not folded into this contract.
+      use the defined focused projection and are not inflated by full count.
+- [ ] Focused initial fixtures pin loaded/unloaded target, tail, empty history,
+      initial position, and follow state.
+- [ ] The dependency DAG assigns #448/#449/#450 to P0, #457 to P1, #451 to P3,
+      and states merged prerequisites versus owned delivery; #459 heartbeat work
+      is not folded into this contract.
+- [ ] Idle-void fixtures prove no hatch before ten silent minutes, hatch at the
+      threshold, growth to the live now-line, and ended-session cap at known end.
 - [ ] Later runtime PRs own their focused backend, unit, component, and browser
       evidence; this spec PR does not invent executable TDD or claim those tests
       ran.
