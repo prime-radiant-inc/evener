@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -31,6 +32,53 @@ const (
 )
 
 var waiterInterruptDelegateID = regexp.MustCompile(`dlg_[A-Za-z0-9_-]+`)
+
+type waiterMemoryAddr struct{}
+
+func (waiterMemoryAddr) Network() string { return "tcp" }
+func (waiterMemoryAddr) String() string  { return "waiter.test:80" }
+
+type waiterMemoryListener struct {
+	connections chan net.Conn
+	closed      chan struct{}
+	once        sync.Once
+}
+
+func newWaiterMemoryListener() *waiterMemoryListener {
+	return &waiterMemoryListener{connections: make(chan net.Conn), closed: make(chan struct{})}
+}
+
+func (l *waiterMemoryListener) Accept() (net.Conn, error) {
+	select {
+	case conn := <-l.connections:
+		return conn, nil
+	case <-l.closed:
+		return nil, net.ErrClosed
+	}
+}
+
+func (l *waiterMemoryListener) Close() error {
+	l.once.Do(func() { close(l.closed) })
+	return nil
+}
+
+func (l *waiterMemoryListener) Addr() net.Addr { return waiterMemoryAddr{} }
+
+func (l *waiterMemoryListener) DialContext(ctx context.Context, _, _ string) (net.Conn, error) {
+	client, server := net.Pipe()
+	select {
+	case l.connections <- server:
+		return client, nil
+	case <-ctx.Done():
+		_ = client.Close()
+		_ = server.Close()
+		return nil, ctx.Err()
+	case <-l.closed:
+		_ = client.Close()
+		_ = server.Close()
+		return nil, net.ErrClosed
+	}
+}
 
 type waiterInterruptAdapter struct {
 	initialTerminal    chan struct{}
@@ -122,9 +170,30 @@ func (a *waiterInterruptAdapter) Stream(context.Context, llm.Request) (llm.Strea
 
 type waiterInterruptServer struct {
 	*server.Server
-	notification chan struct{}
-	armed        atomic.Bool
-	once         sync.Once
+	notification           chan struct{}
+	armed                  atomic.Bool
+	processingBarrierArmed atomic.Bool
+	processingFalseEntered chan struct{}
+	releaseProcessingFalse chan struct{}
+	processingBarrierOnce  sync.Once
+	processingReleaseOnce  sync.Once
+	once                   sync.Once
+}
+
+func (s *waiterInterruptServer) SetProcessing(processing bool) {
+	s.Server.SetProcessing(processing)
+	if !processing && s.processingBarrierArmed.Load() {
+		s.processingBarrierOnce.Do(func() { close(s.processingFalseEntered) })
+		<-s.releaseProcessingFalse
+	}
+}
+
+func (s *waiterInterruptServer) armProcessingBarrier() {
+	s.processingBarrierArmed.Store(true)
+}
+
+func (s *waiterInterruptServer) releaseProcessingBarrier() {
+	s.processingReleaseOnce.Do(func() { close(s.releaseProcessingFalse) })
 }
 
 func (s *waiterInterruptServer) SubmitNotification() {
@@ -135,16 +204,20 @@ func (s *waiterInterruptServer) SubmitNotification() {
 }
 
 type waiterInterruptDaemon struct {
-	adapter          *waiterInterruptAdapter
-	client           *appwire.Client
-	ctx              context.Context
-	ref              string
-	terminalClaimed  chan struct{}
-	positiveWaitSeen chan struct{}
-	turnEnded        chan struct{}
-	server           *waiterInterruptServer
-	stateDir         string
-	sessionID        string
+	adapter             *waiterInterruptAdapter
+	client              *appwire.Client
+	ctx                 context.Context
+	ref                 string
+	terminalClaimed     chan struct{}
+	positiveWaitSeen    chan struct{}
+	turnEnded           chan struct{}
+	sessionEndEntered   chan struct{}
+	releaseSessionEnd   chan struct{}
+	sessionEndProjected chan struct{}
+	releaseOnce         sync.Once
+	server              *waiterInterruptServer
+	stateDir            string
+	sessionID           string
 }
 
 func startWaiterInterruptDaemon(t *testing.T) *waiterInterruptDaemon {
@@ -153,7 +226,12 @@ func startWaiterInterruptDaemon(t *testing.T) *waiterInterruptDaemon {
 	positiveWaitSeen := make(chan struct{})
 	terminalClaimed := make(chan struct{})
 	turnEnded := make(chan struct{})
+	sessionEndEntered := make(chan struct{})
+	releaseSessionEnd := make(chan struct{})
+	sessionEndProjected := make(chan struct{})
 	var turnEndedOnce sync.Once
+	var sessionEndEnteredOnce sync.Once
+	var sessionEndProjectedOnce sync.Once
 	var positiveWaitOnce sync.Once
 	var initialTerminalOnce sync.Once
 	var terminalOnce sync.Once
@@ -162,6 +240,8 @@ func startWaiterInterruptDaemon(t *testing.T) *waiterInterruptDaemon {
 	secondGenerationRunning := false
 
 	deps := defaultServeDeps()
+	memoryListener := newWaiterMemoryListener()
+	deps.listen = func(context.Context, string, string) (net.Listener, error) { return memoryListener, nil }
 	deps.ensureConfigDirs = func() error { return nil }
 	deps.seedMarketplaces = func() error { return nil }
 	deps.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
@@ -186,12 +266,24 @@ func startWaiterInterruptDaemon(t *testing.T) *waiterInterruptDaemon {
 	var waiterServer *waiterInterruptServer
 	deps.newServer = func(cfg server.ServerConfig) serveServer {
 		observedServer = server.NewServer(cfg)
-		waiterServer = &waiterInterruptServer{Server: observedServer, notification: make(chan struct{})}
+		waiterServer = &waiterInterruptServer{
+			Server:                 observedServer,
+			notification:           make(chan struct{}),
+			processingFalseEntered: make(chan struct{}),
+			releaseProcessingFalse: make(chan struct{}),
+		}
 		return waiterServer
 	}
 	deps.bridge = func(_ serveServer, session *agent.Session, observer func(events.SessionEvent), onDrained func()) {
 		session.ConsumeEventsLossless(func(event events.SessionEvent) {
+			if data, ok := event.Data.(events.SessionEndData); ok && data.Interrupted {
+				sessionEndEnteredOnce.Do(func() { close(sessionEndEntered) })
+				<-releaseSessionEnd
+			}
 			server.BridgeEvent(observedServer, event, observer)
+			if data, ok := event.Data.(events.SessionEndData); ok && data.Interrupted {
+				sessionEndProjectedOnce.Do(func() { close(sessionEndProjected) })
+			}
 			switch event.Kind {
 			case events.EventToolCallStart:
 				if data, ok := event.Data.(events.ToolCallStartData); ok && data.ToolName == "delegate_send" {
@@ -224,18 +316,20 @@ func startWaiterInterruptDaemon(t *testing.T) *waiterInterruptDaemon {
 	stateDir := t.TempDir()
 	done := make(chan error, 1)
 	go func() {
-		done <- runServeWithDeps([]string{
+		runErr := runServeWithDeps([]string{
 			"--model", "openai/gpt-test",
 			"--addr", "127.0.0.1:0",
 			"--dir", t.TempDir(),
 			"--state-dir", stateDir,
 			"--run-dir", runDir,
 		}, deps)
+		done <- runErr
 	}()
 
 	entry := waitForServeTestRendezvous(t, runDir)
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	transport, err := appwire.DialWebSocket(ctx, "ws://"+entry.Address+"/rpc", http.DefaultClient)
+	httpClient := &http.Client{Transport: &http.Transport{DialContext: memoryListener.DialContext}}
+	transport, err := appwire.DialWebSocket(ctx, "ws://"+entry.Address+"/rpc", httpClient)
 	if err != nil {
 		cancel()
 		t.Fatalf("DialWebSocket: %v", err)
@@ -254,7 +348,7 @@ func startWaiterInterruptDaemon(t *testing.T) *waiterInterruptDaemon {
 		if liveSession != nil {
 			liveSession.Close()
 		}
-		shutdownResp, shutdownErr := http.Post("http://"+entry.Address+"/shutdown", "", nil)
+		shutdownResp, shutdownErr := httpClient.Post("http://"+entry.Address+"/shutdown", "", nil)
 		if shutdownErr == nil {
 			shutdownResp.Body.Close()
 		}
@@ -269,17 +363,24 @@ func startWaiterInterruptDaemon(t *testing.T) *waiterInterruptDaemon {
 		cancel()
 	})
 	return &waiterInterruptDaemon{
-		adapter:          adapter,
-		client:           client,
-		ctx:              ctx,
-		ref:              appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String(),
-		terminalClaimed:  terminalClaimed,
-		positiveWaitSeen: positiveWaitSeen,
-		turnEnded:        turnEnded,
-		server:           waiterServer,
-		stateDir:         stateDir,
-		sessionID:        entry.SessionID,
+		adapter:             adapter,
+		client:              client,
+		ctx:                 ctx,
+		ref:                 appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String(),
+		terminalClaimed:     terminalClaimed,
+		positiveWaitSeen:    positiveWaitSeen,
+		turnEnded:           turnEnded,
+		sessionEndEntered:   sessionEndEntered,
+		releaseSessionEnd:   releaseSessionEnd,
+		sessionEndProjected: sessionEndProjected,
+		server:              waiterServer,
+		stateDir:            stateDir,
+		sessionID:           entry.SessionID,
 	}
+}
+
+func (d *waiterInterruptDaemon) releaseInterruptedSessionEnd() {
+	d.releaseOnce.Do(func() { close(d.releaseSessionEnd) })
 }
 
 type waiterInterruptMutationSnapshot struct {
@@ -314,8 +415,17 @@ func awaitWaiterInterruptSignal(ctx context.Context, t *testing.T, signal <-chan
 	}
 }
 
+func waiterInterruptTurnStatuses(turns []appwire.Turn) []string {
+	statuses := make([]string, 0, len(turns))
+	for _, turn := range turns {
+		statuses = append(statuses, turn.ID+"="+string(turn.Status))
+	}
+	return statuses
+}
+
 func TestRunServeInterruptSettlesClaimedPositiveWaitDelegateSend(t *testing.T) {
 	daemon := startWaiterInterruptDaemon(t)
+	defer daemon.releaseInterruptedSessionEnd()
 	started, err := daemon.client.TurnStart(daemon.ctx, appwire.TurnStartParams{
 		ClientMutationID: "waiter-interrupt-turn",
 		Ref:              daemon.ref,
@@ -343,9 +453,26 @@ func TestRunServeInterruptSettlesClaimedPositiveWaitDelegateSend(t *testing.T) {
 	interruptCtx, cancelInterrupt := context.WithTimeout(daemon.ctx, 3*time.Second)
 	defer cancelInterrupt()
 	interrupt := appwire.TurnInterruptParams{ClientMutationID: "stop-claimed-waiter", Ref: daemon.ref}
-	if err := daemon.client.TurnInterrupt(interruptCtx, interrupt); err != nil {
-		t.Fatalf("TurnInterrupt did not settle the claimed inline waiter and runner: %v", err)
+	daemon.server.armProcessingBarrier()
+	defer daemon.server.releaseProcessingBarrier()
+	interruptResult := make(chan error, 1)
+	go func() { interruptResult <- daemon.client.TurnInterrupt(interruptCtx, interrupt) }()
+	awaitWaiterInterruptSignal(daemon.ctx, t, daemon.server.processingFalseEntered, "runner SetProcessing(false) barrier")
+	select {
+	case err := <-interruptResult:
+		t.Fatalf("TurnInterrupt returned before runnerDone barrier release: %v", err)
+	default:
 	}
+	daemon.server.releaseProcessingBarrier()
+	select {
+	case err := <-interruptResult:
+		if err != nil {
+			t.Fatalf("TurnInterrupt did not settle the claimed inline waiter and runner: %v", err)
+		}
+	case <-interruptCtx.Done():
+		t.Fatalf("TurnInterrupt did not return after runnerDone barrier release: %v", interruptCtx.Err())
+	}
+	awaitWaiterInterruptSignal(daemon.ctx, t, daemon.sessionEndEntered, "interrupted SESSION_END bridge entry")
 	select {
 	case <-daemon.turnEnded:
 	default:
@@ -361,9 +488,32 @@ func TestRunServeInterruptSettlesClaimedPositiveWaitDelegateSend(t *testing.T) {
 			terminal = turn.Status == "interrupted"
 		}
 	}
-	if !terminal {
-		t.Fatalf("turn %q was not terminalized as interrupted: %#v", started.Turn.ID, turns.Data)
+	if terminal {
+		t.Fatalf("turn %q terminalized before its SESSION_END projection was released: %#v", started.Turn.ID, turns.Data)
 	}
+	stoppedBeforeProjection := daemon.mutationSnapshot(t)
+	interruptBeforeProjection := stoppedBeforeProjection.Journal[interrupt.ClientMutationID]
+	t.Logf("before SESSION_END projection: turns=%v interrupt=%#v fence=%s", waiterInterruptTurnStatuses(turns.Data), interruptBeforeProjection, stoppedBeforeProjection.InterruptFence)
+	if len(stoppedBeforeProjection.InterruptFence) != 0 || interruptBeforeProjection.OperationState != "terminal" ||
+		interruptBeforeProjection.ExecutionState != "interrupted" {
+		t.Fatalf("interrupt was not durably terminal before projection: %#v", stoppedBeforeProjection)
+	}
+	daemon.releaseInterruptedSessionEnd()
+	awaitWaiterInterruptSignal(daemon.ctx, t, daemon.sessionEndProjected, "interrupted SESSION_END projection")
+	turns, err = daemon.client.ThreadTurnsList(daemon.ctx, appwire.ThreadTurnsListParams{Ref: daemon.ref})
+	if err != nil {
+		t.Fatalf("ThreadTurnsList after SESSION_END projection: %v", err)
+	}
+	terminal = false
+	for _, turn := range turns.Data {
+		if turn.ID == started.Turn.ID {
+			terminal = turn.Status == "interrupted"
+		}
+	}
+	if !terminal {
+		t.Fatalf("turn %q was not terminalized after SESSION_END projection: %#v", started.Turn.ID, turns.Data)
+	}
+	t.Logf("after SESSION_END projection: turns=%v", waiterInterruptTurnStatuses(turns.Data))
 	if err := daemon.client.TurnInterrupt(daemon.ctx, interrupt); err != nil {
 		t.Fatalf("replay terminal interrupt: %v", err)
 	}
