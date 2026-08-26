@@ -70,6 +70,17 @@ function preset(level: "chat" | "intent" | "tools" | "activity" | "full"): Trans
   return makeTranscriptDisplayConfig({ kind: "preset", level });
 }
 
+function deferred<T>(): {
+  promise: Promise<T>;
+  resolve(value: T): void;
+} {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((next) => {
+    resolve = next;
+  });
+  return { promise, resolve };
+}
+
 beforeEach(() => {
   storage.clear();
   // @ts-expect-error MemoryStorage is the deterministic browser storage seam.
@@ -189,6 +200,79 @@ describe("effective transcript display state", () => {
     expect(transcriptDisplayStore.getState().hub.desktop?.config).toEqual(preset("activity"));
   });
 
+  test("ignores a deferred refresh and notification after the active client closes", async () => {
+    const client = new FakeClient("ready");
+    const pending = deferred<{
+      desktop: { revision: number; config: TranscriptDisplayConfigV1 };
+      mobile: { revision: number; config: TranscriptDisplayConfigV1 };
+    }>();
+    client.on("evener/settings/transcriptDisplay/get", () => pending.promise);
+    connectionStore.getState().connect(client);
+    connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+    const refresh = transcriptDisplayStore.getState().refreshHubDefaults();
+    client.emitStateChange("closed");
+    client.emitNotification({
+      method: "evener/settings/transcriptDisplay/changed",
+      params: { layout: "desktop", revision: 9, config: toWireConfig(preset("full")) },
+    });
+    pending.resolve({
+      desktop: { revision: 9, config: preset("full") },
+      mobile: { revision: 9, config: shippedMobileConfig },
+    });
+    await refresh;
+    expect(transcriptDisplayStore.getState().hub.desktop).toBeUndefined();
+    expect(transcriptDisplayStore.getState().hubSupport).toBe("unknown");
+  });
+
+  test("ignores an older ready-generation refresh and PATCH completion", async () => {
+    const client = new FakeClient("idle");
+    const notificationRegistration = vi.spyOn(client, "onNotification");
+    const firstRefresh = deferred<{
+      desktop: { revision: number; config: TranscriptDisplayConfigV1 };
+      mobile: { revision: number; config: TranscriptDisplayConfigV1 };
+    }>();
+    const pendingPatch = deferred<{
+      layout: "desktop";
+      revision: number;
+      config: TranscriptDisplayConfigV1;
+    }>();
+    let getCalls = 0;
+    client.on("evener/settings/transcriptDisplay/get", () => {
+      getCalls += 1;
+      if (getCalls === 1) return firstRefresh.promise;
+      return {
+        desktop: { revision: 2, config: preset("activity") },
+        mobile: { revision: 2, config: shippedMobileConfig },
+      };
+    });
+    client.on("evener/settings/transcriptDisplay/patch", () => pendingPatch.promise);
+    connectionStore.getState().connect(client);
+    connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+    client.emitReady();
+    const firstGeneration = transcriptDisplayStore.getState().refreshHubDefaults();
+    const oldNotificationHandler = notificationRegistration.mock.calls[0]?.[0];
+    client.emitStateChange("reconnecting");
+    const secondGeneration = waitForHubRevision(2);
+    client.emitReady();
+    await secondGeneration;
+    oldNotificationHandler?.({
+      method: "evener/settings/transcriptDisplay/changed",
+      params: { layout: "desktop", revision: 9, config: toWireConfig(preset("full")) },
+    });
+    expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: preset("activity") });
+    const patch = transcriptDisplayStore.getState().patchHubDefault("desktop", preset("full"));
+    client.emitStateChange("reconnecting");
+    firstRefresh.resolve({
+      desktop: { revision: 1, config: preset("chat") },
+      mobile: { revision: 1, config: shippedMobileConfig },
+    });
+    pendingPatch.resolve({ layout: "desktop", revision: 3, config: preset("full") });
+    await firstGeneration;
+    await patch;
+    expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: preset("activity") });
+    expect(transcriptDisplayStore.getState().drafts.desktop).toEqual(preset("full"));
+  });
+
   test("does not issue transcript RPCs to an older hub with no capability field", async () => {
     const client = new FakeClient("ready");
     client.on("evener/settings/transcriptDisplay/get", () => {
@@ -254,12 +338,38 @@ test("migration runs before local load, keeps old keys, and dual-writes literal 
   expect(storage.getItem("evener.prefs.transcriptRoundTimings")).toBe("0");
   expect(storage.getItem("evener.prefs.transcriptTokenCounts")).toBe("1");
 
-  transcriptDisplayStore
-    .getState()
-    .setLocal(
-      "desktop",
-      makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { roundTimings: true, promptEvents: true }),
-    );
+  const desktopEdited = makeTranscriptDisplayConfig(
+    { kind: "preset", level: "full" },
+    { roundTimings: true, promptEvents: true },
+  );
+  const mobileEdited = makeTranscriptDisplayConfig(
+    { kind: "preset", level: "chat" },
+    { tokenCounts: true, estimatedCost: true, hookExits: "all" },
+  );
+  transcriptDisplayStore.getState().setLocal("desktop", desktopEdited);
+  expect(legacyKeys.map((key) => storage.getItem(key))).toEqual(["1", "0", "0", "0", "1", "0"]);
+  transcriptDisplayStore.getState().setLocal("mobile", mobileEdited);
+  expect(legacyKeys.map((key) => storage.getItem(key))).toEqual(["0", "1", "1", "0", "0", "1"]);
+});
+
+test("clearLocal removes the persisted key, broadcasts null, follows the hub, and dual-writes its flags", () => {
+  vi.stubGlobal("BroadcastChannel", FakeBroadcastChannel);
+  resetTranscriptDisplayStoreForTests();
+  initTranscriptDisplay();
+  const active = FakeBroadcastChannel.instances.at(-1);
+  if (active === undefined) throw new Error("test BroadcastChannel was not created");
+  const hub = makeTranscriptDisplayConfig(
+    { kind: "preset", level: "activity" },
+    { roundTimings: true, promptEvents: true },
+  );
+  transcriptDisplayStore.getState().applyHubChange({ layout: "desktop", revision: 4, config: hub });
+  transcriptDisplayStore.getState().setLocal("desktop", preset("full"));
+  transcriptDisplayStore.getState().clearLocal("desktop");
+
+  expect(storage.getItem(desktopKey)).toBeNull();
+  expect(transcriptDisplayStore.getState().local.desktop).toBeUndefined();
+  expect(transcriptDisplayStore.getState().effective("desktop")).toEqual(hub);
+  expect(active.posted.at(-1)).toMatchObject({ config: null, fingerprint: null, layout: "desktop" });
   expect(legacyKeys.map((key) => storage.getItem(key))).toEqual(["1", "0", "0", "0", "1", "0"]);
 });
 

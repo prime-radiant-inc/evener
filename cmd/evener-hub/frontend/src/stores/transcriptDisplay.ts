@@ -100,6 +100,8 @@ let wiredClient: AppwireClientLike | null = null;
 let unwireNotification: (() => void) | null = null;
 let unwireReady: (() => void) | null = null;
 let clientEpoch = 0;
+let activeReadyClient: AppwireClientLike | null = null;
+let activeReadyEpoch = -1;
 let refreshSerial = 0;
 let patchSerial = 0;
 const patchTokens = new Map<ViewportClass, number>();
@@ -280,8 +282,35 @@ function currentClient(): AppwireClientLike | null {
   return connectionStore.getState().client;
 }
 
-function isCurrentClient(client: AppwireClientLike, epoch: number): boolean {
-  return wiredClient === client && clientEpoch === epoch && connectionStore.getState().client === client;
+function isCurrentReady(client: AppwireClientLike, epoch: number): boolean {
+  return (
+    wiredClient === client &&
+    activeReadyClient === client &&
+    activeReadyEpoch === epoch &&
+    clientEpoch === epoch &&
+    connectionStore.getState().client === client &&
+    client.state === "ready"
+  );
+}
+
+function invalidateReadyGeneration(): void {
+  activeReadyClient = null;
+  activeReadyEpoch = -1;
+  clientEpoch += 1;
+  unwireNotification?.();
+  unwireNotification = null;
+}
+
+function beginReadyGeneration(client: AppwireClientLike): number {
+  activeReadyClient = client;
+  activeReadyEpoch = ++clientEpoch;
+  const epoch = activeReadyEpoch;
+  unwireNotification?.();
+  unwireNotification = client.onNotification((notification) => {
+    if (!isCurrentReady(client, epoch)) return;
+    onNotification(notification);
+  });
+  return epoch;
 }
 
 function setSupportFromConnection(): void {
@@ -312,43 +341,42 @@ function onNotification(notification: AnyNotification): void {
 }
 
 async function refreshFor(client: AppwireClientLike, epoch: number): Promise<void> {
-  if (!isCurrentClient(client, epoch) || client.state !== "ready" || currentSupport() !== "supported") return;
+  if (!isCurrentReady(client, epoch) || currentSupport() !== "supported") return;
   const serial = ++refreshSerial;
   transcriptDisplayStore.setState({ hubLoading: true, hubError: null });
   try {
     const result = await client.request("evener/settings/transcriptDisplay/get", {});
-    if (!isCurrentClient(client, epoch) || serial !== refreshSerial || currentSupport() !== "supported") return;
+    if (!isCurrentReady(client, epoch) || serial !== refreshSerial || currentSupport() !== "supported") return;
     const defaults = fromWireDefaults(result);
     if (defaults === undefined) throw new Error("Hub returned malformed transcript display defaults");
     applyHubDefault("desktop", defaults.desktop);
     applyHubDefault("mobile", defaults.mobile);
   } catch (error) {
-    if (isCurrentClient(client, epoch) && serial === refreshSerial) {
+    if (isCurrentReady(client, epoch) && serial === refreshSerial) {
       transcriptDisplayStore.setState({ hubError: error instanceof Error ? error.message : String(error) });
     }
   } finally {
-    if (isCurrentClient(client, epoch) && serial === refreshSerial)
+    if (isCurrentReady(client, epoch) && serial === refreshSerial)
       transcriptDisplayStore.setState({ hubLoading: false });
   }
 }
 
 function rewireClient(client: AppwireClientLike): void {
   if (client === wiredClient) return;
-  clientEpoch += 1;
-  const epoch = clientEpoch;
+  invalidateReadyGeneration();
   unwireNotification?.();
   unwireReady?.();
   unwireNotification = null;
   unwireReady = null;
   wiredClient = client;
-  unwireNotification = client.onNotification((notification) => {
-    if (wiredClient !== client || clientEpoch !== epoch) return;
-    onNotification(notification);
-  });
   unwireReady = client.onReady(() => {
+    const epoch = beginReadyGeneration(client);
     void refreshFor(client, epoch);
   });
-  if (client.state === "ready") void refreshFor(client, epoch);
+  if (client.state === "ready") {
+    const epoch = beginReadyGeneration(client);
+    void refreshFor(client, epoch);
+  }
 }
 
 function onConnectionChange(
@@ -356,13 +384,21 @@ function onConnectionChange(
   previous: ReturnType<typeof connectionStore.getState>,
 ): void {
   if (state.client !== wiredClient && state.client !== null) rewireClient(state.client);
+  if (
+    state.client === wiredClient &&
+    previous.client === state.client &&
+    previous.state === "ready" &&
+    state.state !== "ready"
+  ) {
+    invalidateReadyGeneration();
+  }
   if (state.client === null && wiredClient !== null) {
+    invalidateReadyGeneration();
     unwireNotification?.();
     unwireReady?.();
     unwireNotification = null;
     unwireReady = null;
     wiredClient = null;
-    clientEpoch += 1;
   }
   setSupportFromConnection();
   if (
@@ -371,7 +407,7 @@ function onConnectionChange(
     previous.features?.transcriptDisplaySettings !== true &&
     state.client?.state === "ready"
   ) {
-    void refreshFor(state.client, clientEpoch);
+    if (activeReadyClient === state.client) void refreshFor(state.client, activeReadyEpoch);
   }
 }
 
@@ -423,17 +459,19 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
     },
     refreshHubDefaults: async () => {
       const client = currentClient();
-      if (client === null || client !== wiredClient) return;
-      await refreshFor(client, clientEpoch);
+      if (client === null || client !== wiredClient || activeReadyClient !== client) return;
+      await refreshFor(client, activeReadyEpoch);
     },
     patchHubDefault: async (layout, input) => {
       const state = transcriptDisplayStore.getState();
       const client = currentClient();
+      const generation = client === activeReadyClient ? activeReadyEpoch : -1;
       if (
         state.hubSupport !== "supported" ||
         currentSupport() !== "supported" ||
         client === null ||
         client !== wiredClient ||
+        generation < 0 ||
         client.state !== "ready"
       ) {
         transcriptDisplayStore.setState({ hubError: "Hub transcript display settings are unavailable." });
@@ -450,7 +488,7 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
           expectedRevision: confirmed.revision,
           config: toWireConfig(config),
         });
-        if (patchTokens.get(layout) !== token || !isCurrentClient(client, clientEpoch)) return;
+        if (patchTokens.get(layout) !== token || !isCurrentReady(client, generation)) return;
         const canonicalConfig = fromWireConfig(result.config);
         if (!isLayout(result.layout) || canonicalConfig === undefined || !Number.isSafeInteger(result.revision))
           throw new Error("Hub returned malformed transcript display PATCH response");
@@ -459,7 +497,7 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
         delete drafts[layout];
         transcriptDisplayStore.setState({ drafts, hubError: null });
       } catch (error) {
-        if (patchTokens.get(layout) !== token || !isCurrentClient(client, clientEpoch)) return;
+        if (patchTokens.get(layout) !== token || !isCurrentReady(client, generation)) return;
         const canonical = conflictCurrent(error, layout);
         if (canonical !== undefined) applyHubDefault(layout, canonical);
         const drafts = { ...transcriptDisplayStore.getState().drafts };
@@ -517,12 +555,14 @@ export function initTranscriptDisplay(): void {
 export function resetTranscriptDisplayStoreForTests(): void {
   detachBrowserSync();
   initialized = false;
-  wiredClient = null;
+  invalidateReadyGeneration();
   unwireNotification?.();
   unwireReady?.();
   unwireNotification = null;
   unwireReady = null;
-  clientEpoch += 1;
+  activeReadyClient = null;
+  activeReadyEpoch = -1;
+  wiredClient = null;
   refreshSerial += 1;
   patchTokens.clear();
   transcriptDisplayStore.setState({ ...initialState() });

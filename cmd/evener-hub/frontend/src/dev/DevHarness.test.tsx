@@ -1,10 +1,17 @@
-import { act, cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { FakeClient } from "../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
+import type { InitializeResponse, Thread, ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
 import { resetThreadsStoreForTests } from "../stores/threads";
+import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../stores/transcriptDisplay";
+import {
+  type HubTranscriptDisplayDefault,
+  shippedDesktopConfig,
+  shippedMobileConfig,
+  toWireDefaults,
+} from "../transcriptDisplay/config";
 import { DevHarness } from "./DevHarness";
 
 // Mirrors the fixture helpers in ../stores/threads.test.ts (duplicated
@@ -62,12 +69,15 @@ function connectFakeClient(): FakeClient {
 }
 
 beforeEach(() => {
-  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  connectionStore.setState({ state: "idle", serverInfo: undefined, features: undefined, client: null });
+  resetTranscriptDisplayStoreForTests();
   resetThreadsStoreForTests();
 });
 
 afterEach(() => {
   cleanup();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, features: undefined, client: null });
+  resetTranscriptDisplayStoreForTests();
 });
 
 describe("DevHarness", () => {
@@ -159,5 +169,47 @@ describe("DevHarness", () => {
 
     expect(screen.getByText(/"pendingText"/)).toBeTruthy();
     expect(screen.getByText(/hello websockets/)).toBeTruthy();
+  });
+
+  test("publishes the initialize response and refreshes transcript defaults for an injected harness client", async () => {
+    const fake = new FakeClient("ready");
+    const scripted: InitializeResponse = {
+      serverInfo: { name: "dev-harness-hub", version: "2.0.0" },
+      protocolVersion: "evener-appwire-v3",
+      sourceId: "dev-harness-test",
+      features: {
+        threadList: false,
+        threadTurnsList: false,
+        turnStart: false,
+        turnSteer: false,
+        threadClear: false,
+        threadShutdown: false,
+        forkFromTurn: false,
+        tasks: false,
+        transcriptList: false,
+        modelList: false,
+        directoryComplete: false,
+        auth: false,
+        transcriptDisplaySettings: true,
+      },
+    };
+    const defaults: Readonly<Record<"desktop" | "mobile", HubTranscriptDisplayDefault>> = {
+      desktop: { revision: 7, config: shippedDesktopConfig },
+      mobile: { revision: 8, config: shippedMobileConfig },
+    };
+    fake.scriptConnect(() => scripted);
+    fake.on("thread/list", () => ({ data: [] }));
+    fake.on("evener/settings/transcriptDisplay/get", () => toWireDefaults(defaults));
+
+    render(<DevHarness client={fake} />);
+
+    await waitFor(() => {
+      expect(connectionStore.getState().serverInfo).toEqual(scripted.serverInfo);
+      expect(connectionStore.getState().features).toEqual(scripted.features);
+      expect(transcriptDisplayStore.getState().hubSupport).toBe("supported");
+      expect(transcriptDisplayStore.getState().hub.desktop?.revision).toBe(7);
+      expect(transcriptDisplayStore.getState().hub.mobile?.revision).toBe(8);
+    });
+    expect(fake.calls.filter((call) => call.method === "evener/settings/transcriptDisplay/get")).toHaveLength(1);
   });
 });
