@@ -382,8 +382,8 @@ func TestPersistToolResults_VisionErrorDoesNotClaimSuccessfulUsage(t *testing.T)
 	}}); err != nil {
 		t.Fatalf("persistToolResults: %v", err)
 	}
-	if steered := sess.drainSteering(); len(steered) != 1 || !strings.Contains(steered[0].Text, "vision failed") {
-		t.Fatalf("failed vision call steering = %#v, want one unavailable message", steered)
+	if steered := sess.drainSteering(); len(steered) != 1 || steered[0].Text != "Vision is unavailable for \"/tmp/a.png\" because the vision provider failed. Use OCR or inspect the source data, or continue without vision." {
+		t.Fatalf("failed vision call steering = %#v, want fixed sanitized message", steered)
 	}
 }
 
@@ -488,8 +488,8 @@ func TestDescribeImage_ParentCancellationDoesNotSteerUnavailable(t *testing.T) {
 		t.Fatal("vision call did not start")
 	}
 	cancel()
-	if err := <-done; err != nil {
-		t.Fatalf("persistToolResults: %v", err)
+	if err := <-done; !errors.Is(err, context.Canceled) {
+		t.Fatalf("persistToolResults error = %v, want context.Canceled", err)
 	}
 	select {
 	case <-canceled:

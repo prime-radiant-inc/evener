@@ -96,6 +96,23 @@ type steeringMessage struct {
 	// TaskCompletion carries typed dependency state for tasks-done steering so
 	// consumers do not need to parse the system-reminder prose.
 	TaskCompletion *events.TaskCompletionSteeringData `json:"task_completion,omitempty"`
+	turnOwner      *struct{ _ byte }                  `json:"-"`
+}
+
+func (s *Session) removeTurnOwnedSteering(owner *struct{ _ byte }) {
+	if owner == nil {
+		return
+	}
+	s.mu.Lock()
+	for i := len(s.steeringQueue) - 1; i >= 0; i-- {
+		if s.steeringQueue[i].turnOwner == owner {
+			s.steeringQueue = append(s.steeringQueue[:i], s.steeringQueue[i+1:]...)
+			s.mu.Unlock()
+			s.persistQueuesSnapshot()
+			return
+		}
+	}
+	s.mu.Unlock()
 }
 
 func steeringInjectedDataFromMessage(msg steeringMessage) events.SteeringInjectedData {

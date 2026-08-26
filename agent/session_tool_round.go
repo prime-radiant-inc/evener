@@ -270,11 +270,24 @@ func (s *Session) persistToolResults(ctx context.Context, calls []llm.ToolCallDa
 				}
 			}
 			if vision.outcome == visionSideChannelOwnedTimeout || vision.outcome == visionSideChannelProviderFailure {
+				owner := &struct{ _ byte }{}
+				queued := false
 				if abortErr := s.withResponseSideEffects(ctx, func() {
-					s.SteerKind(visionFailureSteering(path, vision), events.SteeringKindImageDescription)
+					queued = s.trySteerMessage(steeringMessage{Text: visionFailureSteering(path, vision), Kind: events.SteeringKindImageDescription, turnOwner: owner})
 				}); abortErr != nil {
+					if queued {
+						s.removeTurnOwnedSteering(owner)
+					}
 					return abortErr
 				}
+				if err := ctx.Err(); err != nil {
+					if queued {
+						s.removeTurnOwnedSteering(owner)
+					}
+					return err
+				}
+			} else if vision.outcome == visionSideChannelParentCanceled {
+				return ctx.Err()
 			} else if vision.description != "" {
 				desc := vision.description + "\n" + formatVisionSideChannelStats(vision)
 				// Include the file path so the agent can correlate descriptions to

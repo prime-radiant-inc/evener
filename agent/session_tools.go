@@ -8,6 +8,7 @@ import (
 	"maps"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -280,6 +281,8 @@ const (
 	visionSideChannelTimeout = 2 * time.Minute
 )
 
+var visionSideChannelTimeoutCause = errors.New("vision side-channel deadline")
+
 func (s *Session) visionSideChannelDuration() time.Duration {
 	if timeout := s.cfg.testOnly.visionSideChannelTimeout; timeout > 0 {
 		return timeout
@@ -336,7 +339,7 @@ func visionUnavailableSteering(path string) string {
 	if path == "" {
 		return "Vision is unavailable. Use OCR or inspect the source data, or continue without vision."
 	}
-	return fmt.Sprintf("Vision is unavailable for %s. Use OCR or inspect the source data, or continue without vision.", path)
+	return fmt.Sprintf("Vision is unavailable for %s. Use OCR or inspect the source data, or continue without vision.", strconv.Quote(path))
 }
 
 func visionFailureSteering(path string, result visionSideChannelResult) string {
@@ -344,7 +347,7 @@ func visionFailureSteering(path string, result visionSideChannelResult) string {
 		if path == "" {
 			return fmt.Sprintf("Vision is unavailable because the vision provider failed: %v. Use OCR or inspect the source data, or continue without vision.", result.err)
 		}
-		return fmt.Sprintf("Vision is unavailable for %s because the vision provider failed: %v. Use OCR or inspect the source data, or continue without vision.", path, result.err)
+		return fmt.Sprintf("Vision is unavailable for %s because the vision provider failed. Use OCR or inspect the source data, or continue without vision.", strconv.Quote(path))
 	}
 	return visionUnavailableSteering(path)
 }
@@ -426,7 +429,7 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	s.mu.Unlock()
 
 	visionTimeout := s.visionSideChannelDuration()
-	visionCtx, cancel := context.WithTimeout(ctx, visionTimeout)
+	visionCtx, cancel := context.WithTimeoutCause(ctx, visionTimeout, visionSideChannelTimeoutCause)
 	defer cancel()
 	req := llm.Request{
 		Model:    profile.Model(),
@@ -464,14 +467,19 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	elapsed = max(elapsed, 0)
 	if err != nil {
 		outcome := visionSideChannelProviderFailure
-		if ctx.Err() != nil {
+		cause := context.Cause(visionCtx)
+		if errors.Is(cause, visionSideChannelTimeoutCause) {
+			outcome = visionSideChannelOwnedTimeout
+		} else if ctx.Err() != nil {
 			// Parent cancellation owns races with the side-channel deadline. This
 			// prevents a stale unavailable steering message after a canceled turn.
 			outcome = visionSideChannelParentCanceled
 		} else if errors.Is(visionCtx.Err(), context.DeadlineExceeded) {
 			outcome = visionSideChannelOwnedTimeout
 		}
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("vision side-channel failed: %v", err)})
+		if outcome != visionSideChannelParentCanceled {
+			s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("vision side-channel failed: %v", err)})
+		}
 		return visionSideChannelResult{elapsed: elapsed, outcome: outcome, err: err}
 	}
 
