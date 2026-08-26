@@ -71,7 +71,7 @@ func (s *FavoriteStore) Set(kind, id string, favorited bool, now time.Time) erro
 	if favorited {
 		flag = 1
 	}
-	for attempt := range 8 {
+	for range 8 {
 		db, err := s.open()
 		if err != nil {
 			if isSQLiteRetryable(err) {
@@ -105,7 +105,7 @@ func (s *FavoriteStore) Delete(kind, id string) error {
 	if s.dbPath == "" {
 		return nil
 	}
-	for attempt := range 8 {
+	for range 8 {
 		db, err := s.open()
 		if err != nil {
 			if isSQLiteRetryable(err) {

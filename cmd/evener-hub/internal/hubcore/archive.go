@@ -94,7 +94,7 @@ func (s *ArchiveStore) Set(kind, id string, archived bool, now time.Time) error 
 	if archived {
 		flag = 1
 	}
-	for attempt := range 8 {
+	for range 8 {
 		db, err := s.open()
 		if err != nil {
 			if isSQLiteRetryable(err) {
@@ -160,7 +160,7 @@ func (s *ArchiveStore) Delete(kind, id string) error {
 	if s.dbPath == "" {
 		return nil
 	}
-	for attempt := range 8 {
+	for range 8 {
 		db, err := s.open()
 		if err != nil {
 			if isSQLiteRetryable(err) {
