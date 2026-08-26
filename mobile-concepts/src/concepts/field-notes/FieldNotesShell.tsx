@@ -133,7 +133,11 @@ export function FieldNotesShell({
             </div>
           </div>
           <div className="fn-topbar__actions">
-            <button type="button" onClick={onOpenConceptSwitcher}>
+            <button
+              type="button"
+              data-concept-switch-trigger="true"
+              onClick={onOpenConceptSwitcher}
+            >
               <Icon name="switch" decorative />
               <span>Switch concept</span>
             </button>

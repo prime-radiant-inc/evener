@@ -351,6 +351,31 @@ describe("createNavigationController", () => {
     controller.dispose();
   });
 
+  it("coalesces pending owned Back requests but preserves every host Back at depth zero", () => {
+    const store = createStore();
+    const controller = createNavigationController(store, window);
+    controller.dispatch({
+      type: "openSession",
+      sessionId: "session-native-client",
+    });
+    const back = vi.spyOn(window.history, "back").mockImplementation(() => {});
+
+    controller.dispatch({ type: "goBack" });
+    controller.dispatch({ type: "goBack" });
+    controller.dispatch({ type: "goBack" });
+
+    expect(back).toHaveBeenCalledTimes(1);
+    expect(store.getState().route.kind).toBe("conversation");
+
+    window.dispatchEvent(new PopStateEvent("popstate", { state: owned(0) }));
+    expect(store.getState().route).toEqual({ kind: "root", tab: "sessions" });
+
+    controller.dispatch({ type: "goBack" });
+    controller.dispatch({ type: "goBack" });
+    expect(back).toHaveBeenCalledTimes(3);
+    controller.dispose();
+  });
+
   it("records Voice End without double-popping on its following browser Back", () => {
     const store = createStore();
     const controller = createNavigationController(store, window);
