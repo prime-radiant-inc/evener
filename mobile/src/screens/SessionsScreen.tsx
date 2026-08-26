@@ -21,11 +21,12 @@
  * store is provided, the screen shows the roster list; otherwise it falls back
  * to the honest empty state.
  */
-import { type JSX, useEffect } from "react";
+import { type JSX, useEffect, useState } from "react";
 import { Empty, ErrorState, Loading } from "../ui/States";
 import { type StatusKind, StatusMark } from "../ui/StatusMark";
 import "./SessionsScreen.css";
 import type { RosterEntry, RosterService } from "../services/roster";
+import { createRosterStore } from "../state/roster";
 import type {
   ConnectionStore,
   NavigationStore,
@@ -67,6 +68,10 @@ export function SessionsScreen({
   rosterStore,
   navigation,
 }: SessionsScreenProps): JSX.Element {
+  // Keep the Zustand selector hook unconditional. Production service wiring is
+  // asynchronous, so rosterStore changes from undefined to a live store after
+  // the first render; conditional selectors would violate React's hook order.
+  const [fallbackRosterStore] = useState(createRosterStore);
   const status = connection((s) => s.status);
   const profiles = connection((s) => s.profiles);
   const activeProfileId = connection((s) => s.activeProfileId);
@@ -92,13 +97,12 @@ export function SessionsScreen({
 
   // Load the roster on mount when a roster service and store are provided.
   const hasRoster = rosterService !== undefined && rosterStore !== undefined;
-  const rosterLoading = hasRoster ? rosterStore((s) => s.loading) : false;
-  const rosterError = hasRoster ? rosterStore((s) => s.error) : null;
-  const searchTerm = hasRoster ? rosterStore((s) => s.searchTerm) : "";
-  const groupedEntries = hasRoster
-    ? rosterStore((s) => s.groupedEntries)
-    : { needsYou: [], running: [], recent: [] };
-  const entries = hasRoster ? rosterStore((s) => s.entries) : [];
+  const activeRosterStore = rosterStore ?? fallbackRosterStore;
+  const rosterLoading = activeRosterStore((s) => s.loading);
+  const rosterError = activeRosterStore((s) => s.error);
+  const searchTerm = activeRosterStore((s) => s.searchTerm);
+  const groupedEntries = activeRosterStore((s) => s.groupedEntries);
+  const entries = activeRosterStore((s) => s.entries);
 
   useEffect(() => {
     if (hasRoster && rosterService !== undefined && rosterStore !== undefined) {
