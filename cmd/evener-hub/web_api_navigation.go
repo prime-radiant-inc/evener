@@ -6,6 +6,7 @@ import (
 	"math"
 	"net/http"
 	"net/url"
+	"path"
 	"strconv"
 	"strings"
 	"time"
@@ -37,7 +38,19 @@ func (s *WebServer) navigationRawPathGuard(next http.Handler) http.Handler {
 }
 
 func isNavigationRequestPath(r *http.Request) bool {
-	return strings.HasPrefix(r.URL.Path, navigationPathPrefix) || strings.HasPrefix(r.URL.RawPath, navigationPathPrefix)
+	// Check both representations: URL.Path is decoded by net/http while RawPath
+	// preserves escaped separators. The raw clean candidate is only a guard
+	// classifier; routing below still matches the untouched escaped path.
+	for _, candidate := range []string{r.URL.Path, r.URL.RawPath, r.URL.EscapedPath()} {
+		if candidate == "" {
+			continue
+		}
+		cleaned := path.Clean(candidate)
+		if cleaned == navigationPathPrefix || strings.HasPrefix(cleaned, navigationPathPrefix+"/") {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *WebServer) handleNavigation(w http.ResponseWriter, r *http.Request) {
@@ -78,8 +91,8 @@ func (s *WebServer) handleNavigation(w http.ResponseWriter, r *http.Request) {
 		status = navigationHTTPError(w, err)
 		return
 	}
-	encoding = navigationContentEncoding(r.Header.Get("Accept-Encoding"))
-	conditional = navigationETagMatches(r.Header.Get("If-None-Match"), representation.ETag)
+	encoding = navigationContentEncodingValues(r.Header.Values("Accept-Encoding"))
+	conditional = navigationETagMatchesValues(r.Header.Values("If-None-Match"), representation.ETag)
 	uncompressed = len(representation.JSON)
 	if encoding == "gzip" {
 		transferred = len(representation.Gzip)
@@ -341,20 +354,19 @@ func navigationUint32(value string) (uint32, error) {
 // invariant checks before headers so callers can map a broken representation to
 // a 5xx without leaking validators.
 func writeNavigationRepresentation(w http.ResponseWriter, r *http.Request, representation navigationRepresentation) (int, error) {
-	encoding := navigationContentEncoding(r.Header.Get("Accept-Encoding"))
+	encoding := navigationContentEncodingValues(r.Header.Values("Accept-Encoding"))
 	body := representation.JSON
 	if encoding == "gzip" {
 		body = representation.Gzip
 	}
-	if len(body) == 0 || representation.ETag == "" || representation.Generation == "" {
+	if len(representation.JSON) == 0 || len(representation.Gzip) == 0 || len(body) == 0 || representation.ETag == "" || representation.Generation == "" {
 		return 0, fmt.Errorf("invalid navigation representation")
 	}
 	status := http.StatusOK
-	if navigationETagMatches(r.Header.Get("If-None-Match"), representation.ETag) {
+	if navigationETagMatchesValues(r.Header.Values("If-None-Match"), representation.ETag) {
 		status = http.StatusNotModified
 	}
 	headers := w.Header()
-	headers.Set("Content-Type", "application/json")
 	headers.Set("Cache-Control", "private, no-cache")
 	headers.Set("Vary", "Accept-Encoding")
 	headers.Set("ETag", representation.ETag)
@@ -366,10 +378,10 @@ func writeNavigationRepresentation(w http.ResponseWriter, r *http.Request, repre
 		headers.Del("Content-Encoding")
 	}
 	if status == http.StatusNotModified {
-		headers.Set("Content-Length", "0")
 		w.WriteHeader(status)
 		return status, nil
 	}
+	headers.Set("Content-Type", "application/json")
 	headers.Set("Content-Length", strconv.Itoa(len(body)))
 	w.WriteHeader(status)
 	_, _ = w.Write(body)
@@ -377,39 +389,48 @@ func writeNavigationRepresentation(w http.ResponseWriter, r *http.Request, repre
 }
 
 func navigationContentEncoding(header string) string {
-	if header == "" {
+	return navigationContentEncodingValues([]string{header})
+}
+
+func navigationContentEncodingValues(headers []string) string {
+	if len(headers) == 0 {
 		return "identity"
 	}
 	gzipQ, wildcardQ := -1.0, -1.0
 	gzipSeen := false
-	for _, coding := range strings.Split(header, ",") {
-		parts := strings.Split(coding, ";")
-		name := strings.ToLower(strings.TrimSpace(parts[0]))
-		if name == "" {
-			return "identity"
-		}
-		quality := 1.0
-		seenQ := false
-		for _, parameter := range parts[1:] {
-			key, value, ok := strings.Cut(strings.TrimSpace(parameter), "=")
-			if !ok || strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" || !strings.EqualFold(strings.TrimSpace(key), "q") || seenQ {
+	for _, header := range headers {
+		for _, coding := range strings.Split(header, ",") {
+			if strings.TrimSpace(coding) == "" {
+				continue
+			}
+			parts := strings.Split(coding, ";")
+			name := strings.ToLower(strings.TrimSpace(parts[0]))
+			if name == "" {
 				return "identity"
 			}
-			parsed, ok := navigationQuality(strings.TrimSpace(value))
-			if !ok {
-				return "identity"
+			quality := 1.0
+			seenQ := false
+			for _, parameter := range parts[1:] {
+				key, value, ok := strings.Cut(strings.TrimSpace(parameter), "=")
+				if !ok || strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" || !strings.EqualFold(strings.TrimSpace(key), "q") || seenQ {
+					return "identity"
+				}
+				parsed, ok := navigationQuality(strings.TrimSpace(value))
+				if !ok {
+					return "identity"
+				}
+				quality, seenQ = parsed, true
 			}
-			quality, seenQ = parsed, true
-		}
-		switch name {
-		case "gzip":
-			gzipSeen = true
-			if quality > gzipQ {
-				gzipQ = quality
-			}
-		case "*":
-			if quality > wildcardQ {
-				wildcardQ = quality
+			switch name {
+			case "gzip":
+				gzipSeen = true
+				if quality > gzipQ {
+					gzipQ = quality
+				}
+			case "*":
+				if quality > wildcardQ {
+					wildcardQ = quality
+				}
 			}
 		}
 	}
@@ -430,7 +451,7 @@ func navigationQuality(value string) (float64, bool) {
 		parsed, err := strconv.ParseFloat(value, 64)
 		return parsed, err == nil
 	}
-	if len(value) < 3 || value[1] != '.' || (value[0] != '0' && value[0] != '1') || len(value) > 5 {
+	if len(value) < 2 || value[1] != '.' || (value[0] != '0' && value[0] != '1') || len(value) > 5 {
 		return 0, false
 	}
 	for _, r := range value[2:] {
@@ -446,20 +467,29 @@ func navigationQuality(value string) (float64, bool) {
 }
 
 func navigationETagMatches(header, etag string) bool {
-	for _, candidate := range strings.Split(header, ",") {
-		candidate = strings.TrimSpace(candidate)
-		if candidate == "*" {
-			return true
-		}
-		if strings.HasPrefix(candidate, "W/") {
-			candidate = strings.TrimPrefix(candidate, "W/")
-		}
-		comparison := etag
-		if strings.HasPrefix(comparison, "W/") {
-			comparison = strings.TrimPrefix(comparison, "W/")
-		}
-		if candidate != "" && candidate == comparison {
-			return true
+	return navigationETagMatchesValues([]string{header}, etag)
+}
+
+func navigationETagMatchesValues(headers []string, etag string) bool {
+	for _, header := range headers {
+		for _, candidate := range strings.Split(header, ",") {
+			candidate = strings.TrimSpace(candidate)
+			if candidate == "" {
+				continue
+			}
+			if candidate == "*" {
+				return true
+			}
+			if strings.HasPrefix(candidate, "W/") {
+				candidate = strings.TrimPrefix(candidate, "W/")
+			}
+			comparison := etag
+			if strings.HasPrefix(comparison, "W/") {
+				comparison = strings.TrimPrefix(comparison, "W/")
+			}
+			if candidate == comparison {
+				return true
+			}
 		}
 	}
 	return false

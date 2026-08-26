@@ -3,7 +3,10 @@ package hub
 import (
 	"bytes"
 	"compress/gzip"
+	"context"
+	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -58,13 +61,13 @@ func TestNavigationManifestConditionalGzipHTTP(t *testing.T) {
 	if second.Code != http.StatusNotModified || second.Body.Len() != 0 {
 		t.Fatalf("conditional response=%d bytes=%d", second.Code, second.Body.Len())
 	}
-	for _, header := range []string{"ETag", "Vary", "Cache-Control", "Content-Type", "X-Evener-Navigation-Generation", "X-Evener-Navigation-Revision", "Content-Encoding", "Content-Length"} {
+	for _, header := range []string{"ETag", "Vary", "Cache-Control", "X-Evener-Navigation-Generation", "X-Evener-Navigation-Revision", "Content-Encoding"} {
 		if second.Header().Get(header) == "" {
 			t.Fatalf("304 omitted %s: %v", header, second.Header())
 		}
 	}
-	if second.Header().Get("Content-Length") != "0" {
-		t.Fatalf("304 Content-Length=%q", second.Header().Get("Content-Length"))
+	if second.Header().Get("Content-Length") != "" || second.Header().Get("Content-Type") != "" {
+		t.Fatalf("304 has representation-only headers: %v", second.Header())
 	}
 }
 
@@ -140,6 +143,39 @@ func TestNavigationCanonicalPathAndValidationHTTP(t *testing.T) {
 	}
 }
 
+func TestNavigationPathAndPaginationBounds(t *testing.T) {
+	for _, test := range []struct {
+		name   string
+		target string
+		wantOK bool
+	}{
+		{"encoded slash", "/api/navigation/projects/" + url.PathEscape("a/b"), true},
+		{"invalid utf8", "/api/navigation/projects/%FF", false},
+		{"identity bound", "/api/navigation/projects/" + strings.Repeat("a", maxNavigationIdentityBytes+1), false},
+		{"uint32 max", "/api/navigation/sections/live?offset=4294967295&limit=50", true},
+		{"uint32 overflow", "/api/navigation/sections/live?offset=4294967296", false},
+		{"section limit", "/api/navigation/sections/live?limit=51", false},
+		{"catalog limit", "/api/navigation/catalogs/projects?limit=101", false},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			key, _, err := parseNavigationRequest(httptest.NewRequest(http.MethodGet, test.target, nil))
+			if (err == nil) != test.wantOK {
+				t.Fatalf("target=%q key=%+v err=%v", test.target, key, err)
+			}
+		})
+	}
+	web := newNavigationHTTPTestServer(t)
+	for _, target := range []string{
+		"/api/navigation/pin-sections/absent",
+		"/api/navigation/sessions/local:01ARZ3NDEKTSV4RRFFQ69G5FAA",
+	} {
+		response := requestNavigation(t, web, target, "", "")
+		if response.Code != http.StatusNotFound || strings.Contains(response.Body.String(), "absent") {
+			t.Fatalf("target=%q status=%d body=%q", target, response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestNavigationRepresentationHeaderMatrix(t *testing.T) {
 	representation := navigationRepresentation{
 		JSON:       []byte(`{"identity":true}`),
@@ -157,7 +193,7 @@ func TestNavigationRepresentationHeaderMatrix(t *testing.T) {
 		{"gzip", "br, gzip;q=0.5", "", "gzip", http.StatusOK, "10"},
 		{"gzip-zero", "gzip;q=0, *;q=1", "", "", http.StatusOK, "17"},
 		{"wildcard", "*;q=0.1", "", "gzip", http.StatusOK, "10"},
-		{"weak-304", "gzip", `"nav-test"`, "gzip", http.StatusNotModified, "0"},
+		{"weak-304", "gzip", `"nav-test"`, "gzip", http.StatusNotModified, ""},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			req := httptest.NewRequest(http.MethodGet, "/api/navigation", nil)
@@ -174,8 +210,14 @@ func TestNavigationRepresentationHeaderMatrix(t *testing.T) {
 			if got := response.Header().Get("Content-Length"); got != test.length {
 				t.Fatalf("Content-Length=%q want %q", got, test.length)
 			}
+			if response.Header().Get("X-Evener-Navigation-Sequence") != "" {
+				t.Fatalf("response leaked sequence: %v", response.Header())
+			}
 			if test.status == http.StatusNotModified && response.Body.Len() != 0 {
 				t.Fatalf("304 wrote %d bytes", response.Body.Len())
+			}
+			if test.status == http.StatusNotModified && response.Header().Get("Content-Type") != "" {
+				t.Fatalf("304 Content-Type=%q", response.Header().Get("Content-Type"))
 			}
 		})
 	}
@@ -199,6 +241,26 @@ func TestNavigationAuthIsolationHTTP(t *testing.T) {
 	web.Handler().ServeHTTP(response, request)
 	if response.Code != http.StatusOK {
 		t.Fatalf("authenticated status=%d", response.Code)
+	}
+}
+
+func TestNavigationTwoServerAuthIsolationHTTP(t *testing.T) {
+	sourceA := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	sourceB := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	webA := &WebServer{navigation: newTestNavigationService(t, sourceA)}
+	webB := &WebServer{navigation: newTestNavigationService(t, sourceB)}
+	webA.cfg.AuthToken, webB.cfg.AuthToken = "token-a", "token-b"
+	request := httptest.NewRequest(http.MethodGet, "/api/navigation", nil)
+	request.Header.Set("Authorization", "Bearer token-a")
+	response := httptest.NewRecorder()
+	webA.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusOK || sourceA.captureCount() != 1 || sourceB.captureCount() != 0 {
+		t.Fatalf("server A status=%d captures=(%d,%d)", response.Code, sourceA.captureCount(), sourceB.captureCount())
+	}
+	response = httptest.NewRecorder()
+	webB.Handler().ServeHTTP(response, request)
+	if response.Code != http.StatusUnauthorized || sourceB.captureCount() != 0 {
+		t.Fatalf("server B status=%d captures=%d", response.Code, sourceB.captureCount())
 	}
 }
 
@@ -238,5 +300,168 @@ func TestNavigationCanonicalEscapeUsesStandardLibrary(t *testing.T) {
 	}
 	if strings.Contains(escaped, "+") && strings.Contains(key.ProjectKey, " ") {
 		t.Fatalf("path plus was converted to space")
+	}
+}
+
+func TestNavigationRepeatedHeadersAndMissingEncodings(t *testing.T) {
+	representation := navigationRepresentation{
+		JSON:       []byte(`{"identity":true}`),
+		Gzip:       []byte("gzip-bytes"),
+		ETag:       `W/"nav-test"`,
+		Generation: "00112233445566778899aabbccddeeff",
+		Revision:   7,
+	}
+	req := httptest.NewRequest(http.MethodGet, "/api/navigation", nil)
+	req.Header.Add("Accept-Encoding", " , br")
+	req.Header.Add("Accept-Encoding", "gzip;q=1.")
+	req.Header.Add("If-None-Match", " , \"other\",")
+	req.Header.Add("If-None-Match", `W/"nav-test"`)
+	response := httptest.NewRecorder()
+	status, err := writeNavigationRepresentation(response, req, representation)
+	if err != nil || status != http.StatusNotModified || response.Header().Get("Content-Encoding") != "gzip" {
+		t.Fatalf("status=%d err=%v headers=%v", status, err, response.Header())
+	}
+
+	for _, broken := range []navigationRepresentation{
+		{Gzip: representation.Gzip, ETag: representation.ETag, Generation: representation.Generation},
+		{JSON: representation.JSON, ETag: representation.ETag, Generation: representation.Generation},
+	} {
+		response := httptest.NewRecorder()
+		if _, err := writeNavigationRepresentation(response, httptest.NewRequest(http.MethodGet, "/api/navigation", nil), broken); err == nil {
+			t.Fatal("missing cached encoding was accepted")
+		}
+	}
+}
+
+func TestNavigationMethodAndErrorMappingHTTP(t *testing.T) {
+	web := newNavigationHTTPTestServer(t)
+	for _, method := range []string{http.MethodPost, http.MethodHead, http.MethodOptions} {
+		req := httptest.NewRequest(method, "/api/navigation", nil)
+		response := httptest.NewRecorder()
+		web.Handler().ServeHTTP(response, req)
+		if response.Code != http.StatusMethodNotAllowed || response.Header().Get("Allow") != http.MethodGet {
+			t.Fatalf("%s status=%d allow=%q", method, response.Code, response.Header().Get("Allow"))
+		}
+	}
+	for _, test := range []struct {
+		err  error
+		want int
+	}{
+		{navigationUnavailable(context.Canceled), http.StatusServiceUnavailable},
+		{navigationUnavailable(context.DeadlineExceeded), http.StatusServiceUnavailable},
+		{navigationNotFoundError{}, http.StatusNotFound},
+		{errors.New("broken"), http.StatusInternalServerError},
+	} {
+		response := httptest.NewRecorder()
+		if got := navigationHTTPError(response, test.err); got != test.want || response.Code != test.want {
+			t.Fatalf("error=%v status=%d response=%d", test.err, got, response.Code)
+		}
+	}
+}
+
+func TestNavigationServiceDeadlineIsTypedUnavailable(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	source.entered = make(chan struct{})
+	source.release = make(chan struct{})
+	service := newTestNavigationService(t, source)
+	ctx, cancel := context.WithTimeout(t.Context(), time.Millisecond)
+	defer cancel()
+	_, err := service.Representation(ctx, navigationResourceKey{Kind: navigationResourceManifest})
+	close(source.release)
+	var unavailable navigationAvailabilityError
+	if !errors.As(err, &unavailable) || unavailable.StatusCode() != http.StatusServiceUnavailable || !errors.Is(err, context.DeadlineExceeded) {
+		t.Fatalf("deadline error=%v", err)
+	}
+}
+
+func TestNavigationRepresentationVersionsSemanticKeyAtomically(t *testing.T) {
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	service := newTestNavigationService(t, source)
+	representation, err := service.Representation(t.Context(), navigationResourceKey{
+		Kind:       navigationResourceManifest,
+		Generation: "caller-must-not-version",
+		Revision:   99,
+	})
+	if err != nil || representation.Generation == "caller-must-not-version" || representation.Revision == 99 {
+		t.Fatalf("representation=%+v err=%v", representation, err)
+	}
+}
+
+func TestNavigationMetricsStatusCoverageHTTP(t *testing.T) {
+	web := newNavigationHTTPTestServer(t)
+	var mu sync.Mutex
+	var events []navigationMetricEvent
+	web.navigationMetrics = &navigationMetricFunc{fn: func(event navigationMetricEvent) {
+		mu.Lock()
+		events = append(events, event)
+		mu.Unlock()
+	}}
+	first := requestNavigation(t, web, "/api/navigation", "", "")
+	if first.Code != http.StatusOK {
+		t.Fatal(first.Code)
+	}
+	if second := requestNavigation(t, web, "/api/navigation", "", first.Header().Get("ETag")); second.Code != http.StatusNotModified {
+		t.Fatal(second.Code)
+	}
+	if bad := requestNavigation(t, web, "/api/navigation?unexpected=1", "", ""); bad.Code != http.StatusBadRequest {
+		t.Fatal(bad.Code)
+	}
+	broken := &WebServer{}
+	broken.navigationMetrics = web.navigationMetrics
+	if failure := requestNavigation(t, broken, "/api/navigation", "", ""); failure.Code != http.StatusInternalServerError {
+		t.Fatal(failure.Code)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	statuses := map[int]bool{}
+	for _, event := range events {
+		statuses[event.Status] = true
+	}
+	for _, status := range []int{http.StatusOK, http.StatusNotModified, http.StatusBadRequest, http.StatusInternalServerError} {
+		if !statuses[status] {
+			t.Fatalf("events do not include %d: %+v", status, events)
+		}
+	}
+}
+
+func TestNavigationStandardServer304HTTP(t *testing.T) {
+	listener, err := net.Listen("tcp4", "127.0.0.1:0")
+	if err != nil {
+		t.Skipf("network listener unavailable: %v", err)
+	}
+	web := newNavigationHTTPTestServer(t)
+	server := &http.Server{Handler: web.Handler()}
+	go func() { _ = server.Serve(listener) }()
+	defer server.Close()
+	client := &http.Client{Transport: &http.Transport{DisableCompression: true}}
+	request, err := http.NewRequest(http.MethodGet, "http://"+listener.Addr().String()+"/api/navigation", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Accept-Encoding", "gzip")
+	first, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	etag := first.Header.Get("ETag")
+	_ = first.Body.Close()
+	request, err = http.NewRequest(http.MethodGet, "http://"+listener.Addr().String()+"/api/navigation", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Accept-Encoding", "gzip")
+	request.Header.Set("If-None-Match", etag)
+	second, err := client.Do(request)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer second.Body.Close()
+	if second.StatusCode != http.StatusNotModified || second.Header.Get("Content-Type") != "" || second.Header.Get("Content-Length") != "" {
+		t.Fatalf("standard 304 status=%d headers=%v", second.StatusCode, second.Header)
+	}
+	for _, header := range []string{"Cache-Control", "Vary", "ETag", "X-Evener-Navigation-Generation", "X-Evener-Navigation-Revision", "Content-Encoding"} {
+		if second.Header.Get(header) == "" {
+			t.Fatalf("standard 304 omitted %s: %v", header, second.Header)
+		}
 	}
 }

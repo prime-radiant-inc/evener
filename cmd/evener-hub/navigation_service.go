@@ -242,8 +242,9 @@ func (s *NavigationService) Stats() navigationServiceStats {
 	return stats
 }
 
-// CurrentRevision is assertion-oriented. HTTP must use VersionedKey, which
-// reads generation and semantic revision under one lock after a coherent build.
+// CurrentRevision is assertion-oriented. HTTP must pass a semantic, unversioned
+// key directly to Representation, which captures its version and projection in
+// one transaction; a VersionedKey then Representation sequence is racy.
 func (s *NavigationService) CurrentRevision(key navigationResourceKey) uint64 {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -310,7 +311,7 @@ func (s *NavigationService) Representation(ctx context.Context, key navigationRe
 			SizeEstimate: int64(len(encoded) + len(compressed)),
 		}, nil
 	})
-	if err != nil && errors.Is(err, context.Canceled) {
+	if err != nil && (errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded)) {
 		return navigationRepresentation{}, navigationUnavailable(err)
 	}
 	return representation, err

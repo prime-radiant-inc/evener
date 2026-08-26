@@ -11,7 +11,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/envvars"
 )
 
@@ -132,6 +134,46 @@ func TestHTTPRequestRecorderRedactsNavigationAtCreation(t *testing.T) {
 	for _, forbidden := range []string{"private-key", "query-secret", "body-secret", "header-secret", "cookie-secret", "%252F"} {
 		if strings.Contains(string(encoded), forbidden) {
 			t.Fatalf("redacted recording contains %q: %s", forbidden, encoded)
+		}
+	}
+}
+
+func TestHTTPRequestRecorderRedactsDirtyNavigationCandidates(t *testing.T) {
+	t.Setenv(envvars.EVENERRecordHTTP.Name, "1")
+	root := t.TempDir()
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	web := &WebServer{
+		cfg:        hubcore.WebConfig{HubStateRoot: root, AuthToken: "guard-token"},
+		navigation: newTestNavigationService(t, source),
+	}
+	for _, target := range []string{"/api//navigation?raw=secret", "/api/./navigation?raw=secret", "/x/../api/navigation?raw=secret"} {
+		request := httptest.NewRequest(http.MethodGet, target, nil)
+		response := httptest.NewRecorder()
+		web.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusUnauthorized || response.Header().Get("Location") != "" {
+			t.Fatalf("unauthorized %s status=%d location=%q", target, response.Code, response.Header().Get("Location"))
+		}
+		request.Header.Set("Authorization", "Bearer guard-token")
+		response = httptest.NewRecorder()
+		web.Handler().ServeHTTP(response, request)
+		if response.Code != http.StatusNotFound || response.Header().Get("Location") != "" {
+			t.Fatalf("authenticated %s status=%d location=%q", target, response.Code, response.Header().Get("Location"))
+		}
+	}
+	records := readHTTPRecordings(t, filepath.Join(root, "hub-http.jsonl"))
+	if len(records) != 6 {
+		t.Fatalf("records=%d", len(records))
+	}
+	for _, record := range records {
+		if record.Path != "navigation/unknown" || record.Query != "" || record.Body != "" || len(record.Headers) != 0 {
+			t.Fatalf("dirty navigation record leaked: %+v", record)
+		}
+		encoded, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Contains(string(encoded), "secret") || strings.Contains(string(encoded), "../") {
+			t.Fatalf("dirty navigation record contains raw input: %s", encoded)
 		}
 	}
 }
