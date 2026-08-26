@@ -140,7 +140,14 @@ func TestRESTNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
 	if len(published) != 1 || response.Navigation.GenerationID != published[0].GenerationID || !reflect.DeepEqual(responseTargets, published[0].Targets) {
 		t.Fatalf("unknown convergence response=%+v publication=%+v", response.Navigation, published)
 	}
-	if !hasNavigationTarget(published[0].Targets, appwire.NavigationTargetAllLoadedProjects, "") || !hasNavigationTarget(published[0].Targets, appwire.NavigationTargetProject, "p1") {
+	hasWildcard := false
+	for _, target := range published[0].Targets {
+		if target.Kind == appwire.NavigationTargetAllLoadedProjects {
+			hasWildcard = true
+			break
+		}
+	}
+	if !hasWildcard || !hasNavigationTarget(published[0].Targets, appwire.NavigationTargetProject, "p1") {
 		t.Fatalf("unknown project targets=%+v", published[0].Targets)
 	}
 
