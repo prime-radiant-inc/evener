@@ -91,6 +91,7 @@ function readyClient(configure?: (fake: FakeClient) => void): FakeClient {
   fake.on("evener/projects/recent", () => ({ data: [] }));
   fake.on("evener/paths/complete", () => ({ data: [] }));
   fake.on("evener/path/validate", () => ({ path: "", valid: true }));
+  fake.on("evener/plugin/preview", () => ({ plugins: [] }));
   fake.on("thread/start", () => startResponse("local:abc123"));
   configure?.(fake);
   return fake;
@@ -468,6 +469,19 @@ test("a full submit sends the cwd, prompt, and access-mode sandbox, then routes 
   });
   // Sticky defaults persist the working dir globally on submit (floor §1.9).
   expect(localStorage.getItem("evener-hub.spawn-defaults.global.working_dir")).toBe("/tmp/project");
+});
+
+test("Spawn preview omits enabledPlugins while selection remains untouched", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toEqual({
+      cwd: "/tmp/project",
+    }),
+  );
 });
 
 // A blank prompt starts a DORMANT session, exactly as the placeholder

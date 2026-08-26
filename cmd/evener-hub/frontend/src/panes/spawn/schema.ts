@@ -24,7 +24,9 @@ export type AdvancedValues = Record<string, AdvancedFieldValue>;
 // Filters the schema to the options the spawn advanced panel offers (floor
 // §1.11): perLaunch options whose evener driver support is not explicitly false.
 export function perLaunchEvenerOptions(schema: LaunchOptionSchemaResponse): LaunchOption[] {
-  return schema.options.filter((opt) => opt.perLaunch && opt.driverSupport?.evener !== false);
+  return schema.options.filter(
+    (opt) => opt.kind !== "pluginSelection" && opt.perLaunch && opt.driverSupport?.evener !== false,
+  );
 }
 
 // Builds the launch overrides from the advanced form state (floor §1.11,

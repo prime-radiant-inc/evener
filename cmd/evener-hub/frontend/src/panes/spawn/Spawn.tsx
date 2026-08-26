@@ -21,6 +21,7 @@ import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption } from "../../p
 import { useClient } from "../../shell/clientContext";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
+import { useExtensionsStore } from "../../stores/extensions";
 import {
   Button,
   ConfirmDialog,
@@ -54,6 +55,7 @@ import { resolveHeadBranch } from "./branch";
 import { harnessUsesEvenerModels } from "./harnessModels";
 import { MobileSettingRows } from "./MobileSettingRows";
 import { ModelField } from "./ModelField";
+import { type PluginSelectionState, reconcilePluginSelection, withPluginSelection } from "./pluginSelectionState";
 import { createDir, preflightDir } from "./preflight";
 import { perLaunchEvenerOptions, resolveScalars } from "./schema";
 import styles from "./spawn.module.css";
@@ -66,6 +68,7 @@ import {
 } from "./spawnDefaults";
 import { startThread } from "./startThread";
 import { readUrlPrefill } from "./urlPrefill";
+import { usePluginPreview } from "./usePluginPreview";
 
 // No route params: /new resolves to spawn with an empty param object; the
 // ?dir=/?prompt= prefill is read from window.location.search, not params.
@@ -143,6 +146,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const [harnesses, setHarnesses] = useState<HarnessDescriptor[]>([]);
   const [schemaOptions, setSchemaOptions] = useState<LaunchOption[]>([]);
   const [advancedOverrides, setAdvancedOverrides] = useState<LaunchConfigLayer>({});
+  const [pluginSelection, setPluginSelection] = useState<PluginSelectionState>({ mode: "default" });
   const [staleNotice, setStaleNotice] = useState<string | null>(null);
   const [createDialogPath, setCreateDialogPath] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -167,6 +171,8 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // The hub's resolved default model for this cwd ("" until resolve confirms
   // one): what the Effort ladder keys off while Model reads "(default)".
   const [resolvedDefaultModel, setResolvedDefaultModel] = useState("");
+  const pluginRevision = useExtensionsStore((state) => state.pluginRevision);
+  const combinedOverrides = withPluginSelection(advancedOverrides, pluginSelection);
 
   // Attachments reuse the composer's staged-image pipeline via a TextEditor
   // bridge over the prompt textarea (see Composer.tsx's own bridge for the
@@ -270,9 +276,26 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     [client],
   );
   const resolveConfig = useCallback(
-    (overrides: LaunchConfigLayer) => client.request("evener/launch/resolve", { cwd, launchOverrides: overrides }),
-    [client, cwd],
+    (overrides: LaunchConfigLayer) =>
+      client.request("evener/launch/resolve", {
+        cwd,
+        launchOverrides: withPluginSelection(overrides, pluginSelection),
+      }),
+    [client, cwd, pluginSelection],
   );
+
+  const pluginPreview = usePluginPreview({
+    client,
+    cwd,
+    launchOverrides: combinedOverrides,
+    pluginRevision,
+  });
+
+  useEffect(() => {
+    const state = pluginPreview.state;
+    if (state.status !== "ready") return;
+    setPluginSelection((previous) => reconcilePluginSelection(previous, state.response));
+  }, [pluginPreview.state]);
 
   // Mount: URL prefill + sticky defaults (synchronous), then the async catalogs
   // (harnesses, advanced schema) and the stale-model sweep.
@@ -579,7 +602,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // The advanced schema's sandbox wins over the access-mode chip (floor §1.8);
     // its model/reasoningEffort win over the chips (floor §1.11) - resolveScalars
     // hoists them into the top-level fields the daemon prefers over overrides.
-    const overrides = advancedOverrides;
+    const overrides = combinedOverrides;
     const scalars = resolveScalars({ model, reasoningEffort }, overrides);
     // Snapshot before the await (mirrors Composer.tsx's submitAction) so an
     // attachment staged WHILE this request is in flight isn't in the set
@@ -616,6 +639,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // one-shot prompt/attachments reset.
     updatePrompt("");
     attachments.clearSubmitted(submittedMarkers);
+    setPluginSelection({ mode: "default" });
     // Same defect class: both callers set busy=true before awaiting this
     // function but only their OWN catch blocks ever reset it back to false,
     // so a success fell through with the button stuck disabled/"Starting…"
@@ -710,7 +734,6 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     harnesses.length > 0
       ? harnesses.map((h) => ({ value: h.id, label: h.label }))
       : [{ value: "evener", label: "evener" }];
-
   return (
     <PaneScaffold title="Start an agent" mobileTitle="new">
       <div className={CLASS.form}>
