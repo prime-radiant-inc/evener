@@ -11,34 +11,52 @@ const CLASS = {
   body: requireClass(styles.body, "disclosure.module.css", "body"),
 };
 
-export interface DisclosureProps {
-  /** Stable key; open/closed state survives remount because it lives in the
-   * disclosureStore under this id, not in component-local useState. */
-  id: string;
-  /** The always-visible summary row content. */
+interface DisclosureCommonProps {
   summary: ReactNode;
-  /** The collapsible body. */
   children: ReactNode;
-  /** Fallback used only when the store has no entry for this id (default false). */
-  defaultOpen?: boolean;
+  disabled?: boolean;
   "data-testid"?: string;
 }
 
-// Disclosure is the store-backed, rotating-chevron disclosure primitive
-// (yt2q, §4.1). It mirrors ToolCallItem.tsx's controlled-<details> behavior
-// (preventDefault on the native summary, drive `open` from state) but sources
-// open/closed state from disclosureStore keyed by `id`, so the expansion
-// survives the VirtualList/dockview remount that would reset a local useState.
-export function Disclosure({ id, summary, children, defaultOpen = false, ...rest }: DisclosureProps) {
-  const open = isDisclosureOpen(id, defaultOpen);
+type DisclosureStateProps =
+  | { id: string; defaultOpen?: boolean; open?: never; onOpenChange?: never }
+  | { open: boolean; onOpenChange(open: boolean): void; id?: never; defaultOpen?: never };
+
+export type DisclosureProps = DisclosureCommonProps & DisclosureStateProps;
+
+type StoreBackedDisclosureProps = DisclosureCommonProps & {
+  id: string;
+  defaultOpen?: boolean;
+};
+
+type ControlledDisclosureProps = DisclosureCommonProps & {
+  open: boolean;
+  onOpenChange(open: boolean): void;
+};
+
+interface DisclosureViewProps extends DisclosureCommonProps {
+  open: boolean;
+  requestToggle(): void;
+}
+
+function DisclosureView({
+  summary,
+  children,
+  disabled = false,
+  open,
+  requestToggle,
+  "data-testid": testId,
+}: DisclosureViewProps) {
   return (
-    <details className={CLASS.details} open={open} data-testid={rest["data-testid"]}>
+    <details className={CLASS.details} open={open} data-testid={testId}>
       {/* biome-ignore lint/a11y/noStaticElementInteractions: <summary> is natively keyboard-operable; see ToolCallItem.tsx */}
       <summary
         className={CLASS.summary}
-        onClick={(e) => {
-          e.preventDefault();
-          toggleDisclosure(id, defaultOpen);
+        aria-disabled={disabled || undefined}
+        tabIndex={disabled ? -1 : undefined}
+        onClick={(event) => {
+          event.preventDefault();
+          if (!disabled) requestToggle();
         }}
       >
         <span className={CLASS.chevron} aria-hidden="true" data-open={open ? "true" : "false"}>
@@ -49,4 +67,21 @@ export function Disclosure({ id, summary, children, defaultOpen = false, ...rest
       {open && <div className={CLASS.body}>{children}</div>}
     </details>
   );
+}
+
+function StoreBackedDisclosure(props: StoreBackedDisclosureProps) {
+  const fallback = props.defaultOpen ?? false;
+  const open = isDisclosureOpen(props.id, fallback);
+  return <DisclosureView {...props} open={open} requestToggle={() => toggleDisclosure(props.id, fallback)} />;
+}
+
+function ControlledDisclosure(props: ControlledDisclosureProps) {
+  return <DisclosureView {...props} open={props.open} requestToggle={() => props.onOpenChange(!props.open)} />;
+}
+
+export function Disclosure(props: DisclosureProps) {
+  if ("open" in props) {
+    return <ControlledDisclosure {...(props as ControlledDisclosureProps)} />;
+  }
+  return <StoreBackedDisclosure {...(props as StoreBackedDisclosureProps)} />;
 }
