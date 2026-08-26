@@ -14,12 +14,16 @@ import (
 
 type modelAvailabilityAdapter struct {
 	fakeAdapter
-	models []llm.ModelInfo
-	calls  atomic.Int32
+	models  []llm.ModelInfo
+	calls   atomic.Int32
+	observe func(context.Context)
 }
 
-func (a *modelAvailabilityAdapter) ListModels(context.Context) ([]llm.ModelInfo, error) {
+func (a *modelAvailabilityAdapter) ListModels(ctx context.Context) ([]llm.ModelInfo, error) {
 	a.calls.Add(1)
+	if a.observe != nil {
+		a.observe(ctx)
+	}
 	return append([]llm.ModelInfo(nil), a.models...), nil
 }
 
@@ -49,5 +53,35 @@ func TestNewSessionReusesValidatedModelsAndBoundsDelegateSchema(t *testing.T) {
 	}
 	if !sess.reg.RegisteredNames()["model_list"] {
 		t.Fatal("model_list is not registered when the verified choices do not fit in the bounded schema description")
+	}
+}
+
+func TestNewSessionEnumeratesOtherProvidersUnderLifetimeContext(t *testing.T) {
+	type ownerContextKey struct{}
+	const ownerMarker = "one-shot-run"
+
+	selected := &modelAvailabilityAdapter{models: []llm.ModelInfo{{ID: "gpt-5.5"}}}
+	selected.name = "openai"
+	var inheritedOwner atomic.Bool
+	other := &modelAvailabilityAdapter{
+		models: []llm.ModelInfo{{ID: "claude-opus-4-6"}},
+		observe: func(ctx context.Context) {
+			inheritedOwner.Store(ctx.Value(ownerContextKey{}) == ownerMarker)
+		},
+	}
+	other.name = "anthropic"
+	client := llm.NewClient()
+	client.Register(selected)
+	client.Register(other)
+	owner := context.WithValue(context.Background(), ownerContextKey{}, ownerMarker)
+
+	sess, err := NewSession(client, NewOpenAIProfile("gpt-5.5"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{LifetimeContext: owner})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	if !inheritedOwner.Load() {
+		t.Fatal("other-provider model enumeration did not inherit the session lifetime context")
 	}
 }
