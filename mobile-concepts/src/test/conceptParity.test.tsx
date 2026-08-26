@@ -18,7 +18,7 @@ import {
   createNavigationController,
   type NavigationController,
 } from "../core/history";
-import type { ConceptId, Route } from "../core/model";
+import type { ConceptId, Route, ScenarioId } from "../core/model";
 import { defaultPreferences, preferenceStorageKey } from "../core/persistence";
 import { getPlatformPrimitives } from "../core/platform";
 import {
@@ -41,11 +41,37 @@ interface Harness {
 }
 
 const controllers: NavigationController[] = [];
+const pendingPopstateWaiters = new Set<() => void>();
 const conceptLabels: Record<ConceptId, string> = {
   stillwater: "Stillwater",
   constellation: "Constellation",
   "field-notes": "Field Notes",
 };
+type AlternateQuestionResolution = "fallback" | "decide" | "skip";
+
+function permitsResolution(
+  question: (typeof canonicalFixture.questions)[number],
+  resolution: AlternateQuestionResolution,
+): boolean {
+  if (resolution === "fallback") return question.allowFallback;
+  if (resolution === "decide") return question.allowDecide;
+  return question.allowSkip;
+}
+
+const canonicalQuestionResolutionPairs = canonicalFixture.questions.flatMap(
+  (question) =>
+    (["fallback", "decide", "skip"] as const).flatMap((resolution) =>
+      permitsResolution(question, resolution) ? [{ question, resolution }] : [],
+    ),
+);
+const questionResolutionCases = Object.values(conceptRegistry).flatMap(
+  (module) =>
+    canonicalQuestionResolutionPairs.map(({ question, resolution }) => ({
+      module,
+      question,
+      resolution,
+    })),
+);
 
 function memoryStorage(concept: ConceptId, scenario = "baseline") {
   const values = new Map<string, string>([
@@ -63,7 +89,7 @@ function memoryStorage(concept: ConceptId, scenario = "baseline") {
 
 function renderHarness(
   module: ConceptModule,
-  scenario: "baseline" | "question" | "voice" = "baseline",
+  scenario: ScenarioId = "baseline",
 ): Harness {
   const store = createPrototypeStore({
     platform: "ios",
@@ -114,15 +140,23 @@ function action(scope: ParentNode, name: string): HTMLButtonElement {
 
 function nextPopState(): Promise<PopStateEvent> {
   return new Promise((resolve, reject) => {
-    const timeout = window.setTimeout(() => {
+    let settled = false;
+    const cancel = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
       window.removeEventListener("popstate", onPopState);
+      pendingPopstateWaiters.delete(cancel);
+    };
+    const timeout = window.setTimeout(() => {
+      cancel();
       reject(new Error("timed out awaiting real popstate"));
     }, 1_000);
     const onPopState = (event: PopStateEvent) => {
-      window.clearTimeout(timeout);
-      window.removeEventListener("popstate", onPopState);
+      cancel();
       resolve(event);
     };
+    pendingPopstateWaiters.add(cancel);
     window.addEventListener("popstate", onPopState);
   });
 }
@@ -205,9 +239,23 @@ function fillNewSession(projectPath: string, prompt: string): void {
 
 beforeEach(() => window.history.replaceState(null, "", "/"));
 afterEach(() => {
-  cleanup();
-  for (const controller of controllers.splice(0)) controller.dispose();
-  vi.restoreAllMocks();
+  for (const cancel of [...pendingPopstateWaiters]) cancel();
+  const errors: unknown[] = [];
+  const attempt = (operation: () => void) => {
+    try {
+      operation();
+    } catch (error) {
+      errors.push(error);
+    }
+  };
+  attempt(cleanup);
+  for (const controller of controllers.splice(0)) {
+    attempt(() => controller.dispose());
+  }
+  attempt(() => vi.restoreAllMocks());
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "parity cleanup failed");
+  }
 });
 
 describe("cross-concept behavioral parity", () => {
@@ -446,7 +494,27 @@ describe("cross-concept behavioral parity", () => {
         target: { value: "Preserve this cross-concept draft" },
       });
 
-      // Switching out and back preserves all interaction state and the focused item.
+      const preservedWorkIds = [
+        "work-task-shell",
+        "work-subagent-navigation",
+        "work-job-route-matrix",
+      ] as const;
+      fireEvent.click(screen.getByRole("button", { name: "Work" }));
+      await waitFor(() => expect(main("work")).toBeVisible());
+      for (const nodeId of preservedWorkIds) {
+        fireEvent.click(
+          domainControl(main("work"), `[data-work-node-id="${nodeId}"]`),
+        );
+        expect(store.getState().expandedWorkIds).toContain(nodeId);
+      }
+      await clickBack({
+        kind: "conversation",
+        sessionId: "session-native-client",
+        focusItemId: tool.id,
+      });
+
+      // Switching out and back preserves all interaction state and both
+      // disclosure sets, including the controls after Work is revisited.
       const conceptIds = Object.keys(conceptRegistry) as ConceptId[];
       const alternate = conceptIds.find((id) => id !== module.id);
       expect(alternate).toBeDefined();
@@ -462,6 +530,7 @@ describe("cross-concept behavioral parity", () => {
         draft: afterSwitch.draft,
         answers: afterSwitch.answers,
         expandedToolIds: [...afterSwitch.expandedToolIds],
+        expandedWorkIds: [...afterSwitch.expandedWorkIds],
       }).toEqual({
         route: beforeSwitch.route,
         scenario: beforeSwitch.scenario,
@@ -469,6 +538,7 @@ describe("cross-concept behavioral parity", () => {
         draft: beforeSwitch.draft,
         answers: beforeSwitch.answers,
         expandedToolIds: [...beforeSwitch.expandedToolIds],
+        expandedWorkIds: [...beforeSwitch.expandedWorkIds],
       });
       expect(
         document.querySelector(
@@ -480,6 +550,26 @@ describe("cross-concept behavioral parity", () => {
           screen.getByRole("button", { name: "Switch concept" }),
         ).toHaveFocus(),
       );
+      fireEvent.click(screen.getByRole("button", { name: "Work" }));
+      await waitFor(() => expect(main("work")).toBeVisible());
+      for (const nodeId of preservedWorkIds) {
+        const node = canonicalFixture.work.find(({ id }) => id === nodeId);
+        expect(node).toBeDefined();
+        if (!node) continue;
+        const wrapper = main("work").querySelector(
+          `[data-work-node-id="${nodeId}"]`,
+        );
+        expect(wrapper).toBeInstanceOf(HTMLElement);
+        if (!(wrapper instanceof HTMLElement)) continue;
+        expect(
+          within(wrapper).getByRole("button", { name: node.title }),
+        ).toHaveAttribute("aria-expanded", "true");
+      }
+      await clickBack({
+        kind: "conversation",
+        sessionId: "session-native-client",
+        focusItemId: tool.id,
+      });
 
       // Recent-project success, reset, then typed-project failure with form preservation.
       await clickBack({ kind: "root", tab: "search" });
@@ -603,16 +693,145 @@ describe("cross-concept behavioral parity", () => {
     20_000,
   );
 
-  it.each(
-    Object.values(conceptRegistry).flatMap((module) =>
-      (["fallback", "decide", "skip"] as const).map((resolution) => ({
-        module,
-        resolution,
-      })),
-    ),
-  )(
-    "$module.id reaches the $resolution question outcome",
-    async ({ module, resolution }) => {
+  it.each(Object.values(conceptRegistry))(
+    "$id enforces the identical offline read-only flow and Retry recovery",
+    async (module) => {
+      const { controller, store } = renderHarness(module, "offline");
+      const sessionsMain = main("sessions");
+      expect(
+        sessionsMain.querySelector('[data-offline-policy="read-only"]'),
+      ).toHaveAttribute("role", "status");
+      expect(screen.getByText("Native mobile client")).toBeVisible();
+
+      fireEvent.click(
+        domainControl(
+          sessionsMain,
+          '[data-session-id="session-native-client"]',
+        ),
+      );
+      await waitFor(() => expect(main("conversation")).toBeVisible());
+      expect(screen.getByText("Inspect fixture schema")).toBeVisible();
+      const composer = screen.getByRole("textbox", { name: "Message" });
+      const composerBefore = {
+        draft: store.getState().draft,
+        composerMode: store.getState().composerMode,
+        syntheticTurn: store.getState().syntheticTurn,
+      };
+      expect(composer).toBeDisabled();
+      const submitMessage = screen.getByRole("button", {
+        name: "Submit message",
+      });
+      expect(submitMessage).toBeDisabled();
+      controller.dispatch({ type: "submitComposer" });
+      expect({
+        draft: store.getState().draft,
+        composerMode: store.getState().composerMode,
+        syntheticTurn: store.getState().syntheticTurn,
+      }).toEqual(composerBefore);
+      await clickBack({ kind: "root", tab: "sessions" });
+
+      fireEvent.click(
+        domainControl(
+          main("sessions"),
+          '[data-session-id="session-mobile-release"]',
+        ),
+      );
+      await waitFor(() => expect(main("conversation")).toBeVisible());
+      const questionForm = main("conversation").querySelector(
+        'form[data-question-id="question-release-focus"]',
+      );
+      expect(questionForm).toBeInstanceOf(HTMLFormElement);
+      if (!(questionForm instanceof HTMLFormElement)) return;
+      const option = within(questionForm).getByRole("radio", {
+        name: "Navigation",
+      });
+      const fallback = within(questionForm).getByRole("button", {
+        name: /fallback/i,
+      });
+      expect(option).toBeDisabled();
+      expect(fallback).toBeDisabled();
+      controller.dispatch({
+        type: "resolveQuestion",
+        questionId: "question-release-focus",
+        resolution: "fallback",
+      });
+      expect(
+        store.getState().answers["question-release-focus"],
+      ).toBeUndefined();
+      await clickBack({ kind: "root", tab: "sessions" });
+
+      fireEvent.click(screen.getByRole("button", { name: "New Session" }));
+      const project = canonicalFixture.recentProjects[0];
+      expect(project).toBeDefined();
+      if (!project) return;
+      fillNewSession(project.path, "Offline draft remains local");
+      expect(selectNewSessionValidity(store.getState())).toBe(true);
+      const start = screen.getByRole("button", { name: "Start session" });
+      expect(start).toBeDisabled();
+      controller.dispatch({ type: "submitNewSession" });
+      expect(store.getState().newSession.outcome).toBe("editing");
+
+      fireEvent.click(screen.getByRole("button", { name: "Settings" }));
+      fireEvent.change(screen.getByRole("combobox", { name: "Appearance" }), {
+        target: { value: "dark" },
+      });
+      fireEvent.click(
+        screen.getByRole("checkbox", { name: "Speak responses" }),
+      );
+      expect(store.getState()).toMatchObject({
+        appearance: "dark",
+        voicePreferences: { speakResponses: false },
+      });
+
+      fireEvent.click(screen.getByRole("button", { name: "Sessions" }));
+      fireEvent.click(
+        domainControl(
+          main("sessions"),
+          '[data-session-id="session-native-client"]',
+        ),
+      );
+      await waitFor(() => expect(main("conversation")).toBeVisible());
+      fireEvent.click(screen.getByRole("button", { name: "Voice" }));
+      await waitFor(() => expect(main("voice")).toBeVisible());
+      const voiceBefore = store.getState().voice;
+      const listening = screen.getByRole("button", {
+        name: "Set voice state: listening",
+      });
+      const stop = screen.getByRole("button", { name: "Stop" });
+      expect(listening).toBeDisabled();
+      expect(stop).toBeDisabled();
+      controller.dispatch({ type: "setVoiceState", state: "listening" });
+      controller.dispatch({ type: "stopVoice" });
+      expect(store.getState().voice).toEqual(voiceBefore);
+
+      const recovered = nextPopState();
+      fireEvent.click(
+        within(
+          main("voice").querySelector(
+            '[data-offline-policy="read-only"]',
+          ) as HTMLElement,
+        ).getByRole("button", { name: "Retry" }),
+      );
+      await recovered;
+      await waitFor(() => expect(main("sessions")).toBeVisible());
+      expect(store.getState().scenario).toBe("baseline");
+      expect(
+        main("sessions").querySelector('[data-offline-policy="read-only"]'),
+      ).not.toBeInTheDocument();
+      fireEvent.click(
+        domainControl(
+          main("sessions"),
+          '[data-session-id="session-native-client"]',
+        ),
+      );
+      await waitFor(() => expect(main("conversation")).toBeVisible());
+      expect(screen.getByRole("textbox", { name: "Message" })).toBeEnabled();
+    },
+  );
+
+  it.each(questionResolutionCases)(
+    "$module.id reaches $question.id:$resolution",
+    async ({ module, question, resolution }) => {
       const { store } = renderHarness(module, "question");
       fireEvent.click(
         domainControl(
@@ -621,15 +840,6 @@ describe("cross-concept behavioral parity", () => {
         ),
       );
       await waitFor(() => expect(main("conversation")).toBeVisible());
-      const question = canonicalFixture.questions.find((candidate) =>
-        resolution === "skip"
-          ? candidate.allowSkip
-          : candidate[
-              `allow${resolution === "decide" ? "Decide" : "Fallback"}`
-            ],
-      );
-      expect(question).toBeDefined();
-      if (!question) return;
       const form = main("conversation").querySelector(
         `form[data-question-id="${question.id}"]`,
       );
@@ -660,4 +870,28 @@ describe("cross-concept behavioral parity", () => {
       ).toHaveAttribute("role", "status");
     },
   );
+
+  it("locks all five permitted question-resolution pairs across three concepts", () => {
+    expect(
+      canonicalQuestionResolutionPairs.map(
+        ({ question, resolution }) => `${question.id}:${resolution}`,
+      ),
+    ).toEqual([
+      "question-release-focus:fallback",
+      "question-release-focus:decide",
+      "question-release-checks:fallback",
+      "question-release-checks:decide",
+      "question-release-checks:skip",
+    ]);
+    expect(canonicalQuestionResolutionPairs).toHaveLength(5);
+    expect(questionResolutionCases).toHaveLength(15);
+    expect(
+      new Set(
+        questionResolutionCases.map(
+          ({ module, question, resolution }) =>
+            `${module.id}:${question.id}:${resolution}`,
+        ),
+      ),
+    ).toHaveLength(15);
+  });
 });

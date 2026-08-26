@@ -8,6 +8,7 @@ import {
 } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { StoreApi } from "zustand/vanilla";
+import { App } from "../app/App";
 import { LabControls } from "../app/LabControls";
 import { RootApp } from "../app/RootApp";
 import type { ConceptModule } from "../concepts/contract";
@@ -19,9 +20,13 @@ import {
 } from "../core/history";
 import type { Platform } from "../core/model";
 import { defaultPreferences, preferenceStorageKey } from "../core/persistence";
-import { getPlatformPrimitives } from "../core/platform";
+import {
+  getPlatformPrimitives,
+  type PlatformDetectionInput,
+} from "../core/platform";
 import {
   createPrototypeStore,
+  type PreferenceStorage,
   PrototypeProvider,
   type PrototypeStore,
 } from "../core/store";
@@ -36,6 +41,25 @@ const semanticCases: SemanticCase[] = Object.values(conceptRegistry).flatMap(
     (["ios", "android"] as const).map((platform) => ({ module, platform })),
 );
 const controllers: NavigationController[] = [];
+const pendingPopstateWaiters = new Set<() => void>();
+
+function literalMinimumTarget(platform: Platform): "44" | "48" {
+  return platform === "ios" ? "44" : "48";
+}
+
+function persistedStorage(module: ConceptModule): PreferenceStorage {
+  const values = new Map<string, string>([
+    [
+      preferenceStorageKey,
+      JSON.stringify({ ...defaultPreferences, concept: module.id }),
+    ],
+  ]);
+  return {
+    getItem: (key) => values.get(key) ?? null,
+    setItem: (key, value) => values.set(key, value),
+    removeItem: (key) => values.delete(key),
+  };
+}
 
 function renderHarness({
   module,
@@ -94,15 +118,23 @@ function domainControl(scope: ParentNode, selector: string): HTMLElement {
 
 function nextPopState(): Promise<PopStateEvent> {
   return new Promise((resolve, reject) => {
-    const timeout = window.setTimeout(() => {
+    let settled = false;
+    const cancel = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
       window.removeEventListener("popstate", onPopState);
+      pendingPopstateWaiters.delete(cancel);
+    };
+    const timeout = window.setTimeout(() => {
+      cancel();
       reject(new Error("timed out awaiting semantic-contract popstate"));
     }, 1_000);
     const onPopState = (event: PopStateEvent) => {
-      window.clearTimeout(timeout);
-      window.removeEventListener("popstate", onPopState);
+      cancel();
       resolve(event);
     };
+    pendingPopstateWaiters.add(cancel);
     window.addEventListener("popstate", onPopState);
   });
 }
@@ -152,32 +184,46 @@ function expectRootNavigation(
   ).toHaveAttribute("aria-current", "page");
 }
 
-function expectIconOnlyNames(scope: ParentNode = document): void {
-  const iconOnly = Array.from(
-    scope.querySelectorAll<HTMLButtonElement>("button"),
-  )
+function iconOnlyButtons(scope: ParentNode): HTMLButtonElement[] {
+  return Array.from(scope.querySelectorAll<HTMLButtonElement>("button"))
     .filter((button) => button.querySelector("svg") !== null)
     .filter((button) => button.textContent?.trim() === "");
+}
+
+function expectIconOnlyNames(scope: ParentNode, expectedCount: number): void {
+  const iconOnly = iconOnlyButtons(scope);
+  expect(iconOnly).toHaveLength(expectedCount);
   for (const button of iconOnly) expect(button).toHaveAccessibleName();
 }
 
-function expectTargetHooks(
+function expectIconTargetHooks(
+  scope: ParentNode,
   platform: Platform,
-  scope: ParentNode = document,
+  expectedCount: number,
 ): void {
-  const minimumTarget = String(getPlatformPrimitives(platform).minimumTarget);
-  const surfaces = [
-    ...(scope instanceof Element && scope.matches("[data-minimum-target]")
-      ? [scope]
-      : []),
-    ...scope.querySelectorAll("[data-minimum-target]"),
-  ];
-  expect(surfaces.length).toBeGreaterThan(0);
-  for (const surface of surfaces) {
-    expect(surface).toHaveAttribute("data-minimum-target", minimumTarget);
+  const iconOnly = iconOnlyButtons(scope);
+  expect(iconOnly).toHaveLength(expectedCount);
+  for (const button of iconOnly) {
+    expect(button).toHaveAttribute(
+      "data-icon-target",
+      `${literalMinimumTarget(platform)}px`,
+    );
   }
-  for (const target of scope.querySelectorAll("[data-icon-target]")) {
-    expect(target).toHaveAttribute("data-icon-target", minimumTarget);
+}
+
+function expectConcreteTargetSurface(
+  surface: HTMLElement,
+  platform: Platform,
+  controls: readonly HTMLElement[],
+  expectedControlCount: number,
+): void {
+  expect(surface).toHaveAttribute(
+    "data-minimum-target",
+    literalMinimumTarget(platform),
+  );
+  expect(controls).toHaveLength(expectedControlCount);
+  for (const control of controls) {
+    expect(control).toHaveAccessibleName();
   }
 }
 
@@ -204,11 +250,38 @@ function expectStatusText(
   }
 }
 
-beforeEach(() => window.history.replaceState(null, "", "/"));
+beforeEach(() => {
+  window.history.replaceState(null, "", "/");
+  vi.stubGlobal("matchMedia", (query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+    addListener: vi.fn(),
+    removeListener: vi.fn(),
+    dispatchEvent: vi.fn(() => true),
+  }));
+});
 afterEach(() => {
-  cleanup();
-  for (const controller of controllers.splice(0)) controller.dispose();
-  vi.restoreAllMocks();
+  for (const cancel of [...pendingPopstateWaiters]) cancel();
+  const errors: unknown[] = [];
+  const attempt = (operation: () => void) => {
+    try {
+      operation();
+    } catch (error) {
+      errors.push(error);
+    }
+  };
+  attempt(cleanup);
+  for (const controller of controllers.splice(0)) {
+    attempt(() => controller.dispose());
+  }
+  attempt(() => vi.unstubAllGlobals());
+  attempt(() => vi.restoreAllMocks());
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "accessibility cleanup failed");
+  }
 });
 
 describe("semantic accessibility contract", () => {
@@ -222,8 +295,18 @@ describe("semantic accessibility contract", () => {
       expectUniqueIds();
       expectHeadingOrder(main("sessions"));
       expectRootNavigation("sessions");
-      expectIconOnlyNames();
-      expectTargetHooks(testCase.platform);
+      const conceptRoot = document.querySelector("[data-concept-root]");
+      expect(conceptRoot).toBeInstanceOf(HTMLElement);
+      if (!(conceptRoot instanceof HTMLElement)) return;
+      const rootNavigation = screen.getByRole("navigation", {
+        name: "Primary",
+      });
+      expectConcreteTargetSurface(
+        conceptRoot,
+        testCase.platform,
+        within(rootNavigation).getAllByRole("button"),
+        4,
+      );
       expectStatusText(
         main("sessions"),
         canonicalFixture.sessions.length,
@@ -247,7 +330,12 @@ describe("semantic accessibility contract", () => {
       expect(
         screen.getByRole("button", { name: "Close concept switcher" }),
       ).toHaveFocus();
-      expectTargetHooks(testCase.platform, conceptDialog);
+      expectConcreteTargetSurface(
+        conceptDialog,
+        testCase.platform,
+        within(conceptDialog).getAllByRole("button"),
+        4,
+      );
       const escaped = nextPopState();
       fireEvent.keyDown(conceptDialog, { key: "Escape" });
       await escaped;
@@ -266,7 +354,12 @@ describe("semantic accessibility contract", () => {
       expect(
         screen.getByRole("button", { name: "Close Lab Controls" }),
       ).toHaveFocus();
-      expectTargetHooks(testCase.platform, labDialog);
+      expectConcreteTargetSurface(
+        labDialog,
+        testCase.platform,
+        within(labDialog).getAllByRole("button"),
+        2,
+      );
       const labClosed = nextPopState();
       fireEvent.click(
         screen.getByRole("button", { name: "Close Lab Controls" }),
@@ -306,12 +399,22 @@ describe("semantic accessibility contract", () => {
       ).not.toBeInTheDocument();
       expectHeadingOrder(main("conversation"));
       expectUniqueIds();
-      expectIconOnlyNames(main("conversation"));
+      expectIconOnlyNames(main("conversation"), 1);
       const sessionTools = canonicalFixture.transcript.filter(
         (item) =>
           item.sessionId === "session-native-client" && item.kind === "tool",
       );
       expect(sessionTools).toHaveLength(2);
+      expectConcreteTargetSurface(
+        conceptRoot,
+        testCase.platform,
+        sessionTools.map((tool) =>
+          within(main("conversation")).getByRole("button", {
+            name: tool.kind === "tool" ? tool.label : "",
+          }),
+        ),
+        2,
+      );
       for (const tool of sessionTools) {
         if (tool.kind !== "tool") continue;
         const disclosure = within(main("conversation")).getByRole("button", {
@@ -329,6 +432,7 @@ describe("semantic accessibility contract", () => {
 
       fireEvent.click(screen.getByRole("button", { name: "Work" }));
       await waitFor(() => expect(main("work")).toBeVisible());
+      const workDisclosureControls: HTMLElement[] = [];
       for (const node of canonicalFixture.work.filter(
         ({ sessionId }) => sessionId === "session-native-client",
       )) {
@@ -340,6 +444,7 @@ describe("semantic accessibility contract", () => {
         const disclosure = within(wrapper).getByRole("button", {
           name: node.title,
         });
+        workDisclosureControls.push(disclosure);
         const controlledId = disclosure.getAttribute("aria-controls");
         expect(controlledId).toBeTruthy();
         expect(disclosure).toHaveAttribute("aria-expanded", "false");
@@ -349,6 +454,12 @@ describe("semantic accessibility contract", () => {
           document.getElementById(controlledId ?? "missing"),
         ).toHaveAttribute("aria-labelledby", disclosure.id);
       }
+      expectConcreteTargetSurface(
+        conceptRoot,
+        testCase.platform,
+        workDisclosureControls,
+        7,
+      );
       expectHeadingOrder(main("work"));
       expectUniqueIds();
       expectStatusText(
@@ -425,6 +536,19 @@ describe("semantic accessibility contract", () => {
         for (const option of question.options) {
           const control = within(form).getByRole(role, { name: option.label });
           expect(control).toHaveAccessibleName(option.label);
+          expect(control).toHaveAccessibleDescription(option.detail);
+          const descriptionIds =
+            control.getAttribute("aria-describedby")?.trim().split(/\s+/) ?? [];
+          expect(descriptionIds).toHaveLength(1);
+          const description = document.getElementById(
+            descriptionIds[0] ?? "missing-question-description",
+          );
+          expect(description).toHaveTextContent(option.detail);
+          expect(
+            main("conversation").querySelectorAll(
+              `#${descriptionIds[0] ?? "missing-question-description"}`,
+            ),
+          ).toHaveLength(1);
           expect(control).not.toBeChecked();
           const label = control.closest("label");
           expect(label).toHaveTextContent(option.detail);
@@ -460,8 +584,128 @@ describe("semantic accessibility contract", () => {
     10_000,
   );
 
+  it.each(semanticCases)(
+    "$module.id on $platform applies the literal pushed-control target hook",
+    async (testCase) => {
+      renderHarness(testCase);
+      const conceptRoot = document.querySelector("[data-concept-root]");
+      expect(conceptRoot).toBeInstanceOf(HTMLElement);
+      if (!(conceptRoot instanceof HTMLElement)) return;
+      expectConcreteTargetSurface(conceptRoot, testCase.platform, [], 0);
+      fireEvent.click(
+        domainControl(
+          main("sessions"),
+          '[data-session-id="session-native-client"]',
+        ),
+      );
+      await waitFor(() => expect(main("conversation")).toBeVisible());
+      expectIconOnlyNames(main("conversation"), 1);
+      expectIconTargetHooks(main("conversation"), testCase.platform, 1);
+    },
+  );
+
+  it.each(semanticCases)(
+    "$module.id on $platform dismisses both real-App dialogs by Escape and Close",
+    async ({ module, platform }) => {
+      const platformInput: PlatformDetectionInput = {
+        userAgent: "Task 6 semantic matrix",
+        allowOverride: true,
+        override: platform,
+        fallback: platform,
+      };
+      render(
+        <App
+          platformInput={platformInput}
+          storage={persistedStorage(module)}
+        />,
+      );
+      const routeMain = document.querySelector('main[data-route="sessions"]');
+      expect(routeMain).toBeInstanceOf(HTMLElement);
+      if (!(routeMain instanceof HTMLElement)) return;
+
+      const conceptOpener = within(routeMain).getByRole("button", {
+        name: "Switch concept",
+      });
+      conceptOpener.focus();
+      fireEvent.click(conceptOpener);
+      let dialog = screen.getByRole("dialog", { name: "Switch concept" });
+      expectConcreteTargetSurface(
+        dialog,
+        platform,
+        within(dialog).getAllByRole("button"),
+        4,
+      );
+      expect(
+        within(dialog).getByRole("button", {
+          name: "Close concept switcher",
+        }),
+      ).toHaveFocus();
+      let popped = nextPopState();
+      fireEvent.keyDown(dialog, { key: "Escape" });
+      await popped;
+      await waitFor(() => expect(conceptOpener).toHaveFocus());
+      expect(
+        screen.queryByRole("dialog", { name: "Switch concept" }),
+      ).not.toBeInTheDocument();
+
+      fireEvent.click(conceptOpener);
+      dialog = screen.getByRole("dialog", { name: "Switch concept" });
+      popped = nextPopState();
+      fireEvent.click(
+        within(dialog).getByRole("button", {
+          name: "Close concept switcher",
+        }),
+      );
+      await popped;
+      await waitFor(() => expect(conceptOpener).toHaveFocus());
+      expect(
+        screen.queryByRole("dialog", { name: "Switch concept" }),
+      ).not.toBeInTheDocument();
+
+      const labOpener = document.querySelector(".lab-controls-trigger");
+      expect(labOpener).toBeInstanceOf(HTMLButtonElement);
+      if (!(labOpener instanceof HTMLButtonElement)) return;
+      labOpener.focus();
+      fireEvent.click(labOpener);
+      dialog = screen.getByRole("dialog", { name: "Lab Controls" });
+      expectConcreteTargetSurface(
+        dialog,
+        platform,
+        within(dialog).getAllByRole("button"),
+        2,
+      );
+      expect(
+        within(dialog).getByRole("button", { name: "Close Lab Controls" }),
+      ).toHaveFocus();
+      popped = nextPopState();
+      fireEvent.keyDown(window, { key: "Escape" });
+      await popped;
+      await waitFor(() => expect(labOpener).toHaveFocus());
+      expect(
+        screen.queryByRole("dialog", { name: "Lab Controls" }),
+      ).not.toBeInTheDocument();
+
+      fireEvent.click(labOpener);
+      dialog = screen.getByRole("dialog", { name: "Lab Controls" });
+      popped = nextPopState();
+      fireEvent.click(
+        within(dialog).getByRole("button", { name: "Close Lab Controls" }),
+      );
+      await popped;
+      await waitFor(() => expect(labOpener).toHaveFocus());
+      expect(
+        screen.queryByRole("dialog", { name: "Lab Controls" }),
+      ).not.toBeInTheDocument();
+    },
+  );
+
   it("covers each concept and platform exactly once", () => {
-    expect(semanticCases).toHaveLength(Object.keys(conceptRegistry).length * 2);
+    expect(Object.keys(conceptRegistry)).toEqual([
+      "stillwater",
+      "constellation",
+      "field-notes",
+    ]);
+    expect(semanticCases).toHaveLength(6);
     expect(
       new Set(
         semanticCases.map(({ module, platform }) => `${module.id}:${platform}`),

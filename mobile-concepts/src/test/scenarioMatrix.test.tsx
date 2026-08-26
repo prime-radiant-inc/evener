@@ -11,6 +11,7 @@ import type {
   Appearance,
   ConceptId,
   Platform,
+  Route,
   ScenarioId,
   TextScale,
 } from "../core/model";
@@ -32,6 +33,66 @@ interface MatrixCase {
   scenario: ScenarioId;
   textScale: Extract<TextScale, "standard" | "accessibility">;
 }
+
+const literalConceptIds = [
+  "stillwater",
+  "constellation",
+  "field-notes",
+] as const satisfies readonly ConceptId[];
+const literalScenarioIds = [
+  "baseline",
+  "loading",
+  "empty",
+  "offline",
+  "error",
+  "needs-attention",
+  "multi-agent",
+  "question",
+  "completed",
+  "voice",
+  "long-content",
+] as const satisfies readonly ScenarioId[];
+const literalVoiceStates = [
+  "idle",
+  "ready",
+  "listening",
+  "processing",
+  "speaking",
+  "interrupted",
+  "denied",
+  "error",
+] as const;
+
+const routeByScenario: Readonly<Record<ScenarioId, Route>> = {
+  baseline: { kind: "root", tab: "sessions" },
+  loading: { kind: "root", tab: "search" },
+  empty: { kind: "root", tab: "new" },
+  offline: { kind: "root", tab: "settings" },
+  error: { kind: "conversation", sessionId: "session-native-client" },
+  "needs-attention": {
+    kind: "conversation",
+    sessionId: "session-mobile-release",
+  },
+  "multi-agent": { kind: "work", sessionId: "session-native-client" },
+  question: { kind: "conversation", sessionId: "session-mobile-release" },
+  completed: { kind: "conversation", sessionId: "session-pairing-pr" },
+  voice: { kind: "voice", sessionId: "session-native-client" },
+  "long-content": { kind: "root", tab: "sessions" },
+};
+
+const surfaceSelectorByScenario: Readonly<Record<ScenarioId, string>> = {
+  baseline: '[data-session-group-id="needs-you"]',
+  loading: '[data-screen-state="loading"]',
+  empty: '[data-screen-state="empty"]',
+  offline: '[data-offline-prototype="true"]',
+  error: '[data-screen-state="error"]',
+  "needs-attention": '[data-question-id="question-release-focus"]',
+  "multi-agent": "[data-work-usage]",
+  question: 'form[data-question-id="question-release-focus"]',
+  completed: '[aria-label="Transcript"]',
+  voice: "[data-voice-state]",
+  "long-content": '[data-session-id="session-native-client"]',
+};
 
 const matrixCases: MatrixCase[] = [];
 for (const module of Object.values(conceptRegistry)) {
@@ -108,6 +169,31 @@ function ConnectedMatrixRenderer({
   );
 }
 
+function navigateThroughController(
+  controller: NavigationController,
+  route: Route,
+): void {
+  switch (route.kind) {
+    case "gallery":
+      return;
+    case "root":
+      controller.dispatch({ type: "navigateRoot", tab: route.tab });
+      return;
+    case "conversation":
+      controller.dispatch({
+        type: "openSession",
+        sessionId: route.sessionId,
+        focusItemId: route.focusItemId,
+      });
+      return;
+    case "work":
+      controller.dispatch({ type: "openWork", sessionId: route.sessionId });
+      return;
+    case "voice":
+      controller.dispatch({ type: "openVoice", sessionId: route.sessionId });
+  }
+}
+
 function renderMatrixCase(testCase: MatrixCase) {
   const store = createPrototypeStore({
     platform: testCase.platform,
@@ -117,6 +203,7 @@ function renderMatrixCase(testCase: MatrixCase) {
   });
   const controller = createNavigationController(store, window);
   controllers.push(controller);
+  navigateThroughController(controller, routeByScenario[testCase.scenario]);
   render(
     <PrototypeProvider store={store}>
       <ConnectedMatrixRenderer
@@ -159,6 +246,12 @@ describe("scenario render matrix", () => {
         });
         const labs = screen.getAllByRole("button", { name: "Lab Controls" });
         const state = store.getState();
+        const expectedRoute = routeByScenario[testCase.scenario];
+        const expectedRouteName =
+          expectedRoute.kind === "root"
+            ? expectedRoute.tab
+            : expectedRoute.kind;
+        const routeMain = mains[0];
         expect({
           appearanceAttribute: root?.getAttribute("data-appearance"),
           conceptClass: root?.classList.contains(`concept-${testCase.concept}`),
@@ -168,9 +261,14 @@ describe("scenario render matrix", () => {
           motionAttribute: root?.getAttribute("data-reduced-motion"),
           platformAttribute: root?.getAttribute("data-platform"),
           projectionScenario: state.projection.id,
+          routeAttribute: routeMain?.getAttribute("data-route"),
+          routeState: state.route,
           rootCount: roots.length,
           scenarioState: state.scenario,
           switchConcept: switches.length,
+          surfaceCount: routeMain?.querySelectorAll(
+            surfaceSelectorByScenario[testCase.scenario],
+          ).length,
           textScaleState: state.textScale,
           uncaught,
         }).toEqual({
@@ -182,9 +280,12 @@ describe("scenario render matrix", () => {
           motionAttribute: String(testCase.reducedMotion),
           platformAttribute: testCase.platform,
           projectionScenario: testCase.scenario,
+          routeAttribute: expectedRouteName,
+          routeState: expectedRoute,
           rootCount: 1,
           scenarioState: testCase.scenario,
           switchConcept: 1,
+          surfaceCount: 1,
           textScaleState: testCase.textScale,
           uncaught: [],
         });
@@ -196,9 +297,12 @@ describe("scenario render matrix", () => {
   );
 
   it("covers the exact bounded cartesian product", () => {
-    expect(matrixCases).toHaveLength(
-      Object.keys(conceptRegistry).length * 2 * scenarioIds.length * 2 * 2 * 2,
+    expect(Object.keys(conceptRegistry)).toEqual(literalConceptIds);
+    expect(scenarioIds).toEqual(literalScenarioIds);
+    expect(canonicalFixture.voiceSteps.map(({ state }) => state)).toEqual(
+      literalVoiceStates,
     );
+    expect(matrixCases).toHaveLength(528);
     expect(
       new Set(
         matrixCases.map((testCase) =>
@@ -212,6 +316,24 @@ describe("scenario render matrix", () => {
           ]),
         ),
       ),
-    ).toHaveLength(matrixCases.length);
+    ).toHaveLength(528);
+    expect(
+      new Set(
+        literalScenarioIds.map((scenario) => {
+          const route = routeByScenario[scenario];
+          return route.kind === "root" ? route.tab : route.kind;
+        }),
+      ),
+    ).toEqual(
+      new Set([
+        "sessions",
+        "search",
+        "new",
+        "settings",
+        "conversation",
+        "work",
+        "voice",
+      ]),
+    );
   });
 });

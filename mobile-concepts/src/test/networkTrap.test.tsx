@@ -24,6 +24,7 @@ interface SavedDescriptor {
 const attempts: string[] = [];
 const savedDescriptors: SavedDescriptor[] = [];
 const controllers: NavigationController[] = [];
+const pendingPopstateWaiters = new Set<() => void>();
 
 function throwingSentinel(name: string): (...args: unknown[]) => never {
   return function sentinel() {
@@ -167,26 +168,47 @@ function installCapabilityTrap(): void {
 }
 
 function restoreCapabilityDescriptors(): void {
+  const errors: unknown[] = [];
   for (const saved of savedDescriptors.splice(0).reverse()) {
-    if (saved.descriptor) {
-      Object.defineProperty(saved.target, saved.key, saved.descriptor);
-    } else {
-      Reflect.deleteProperty(saved.target, saved.key);
+    try {
+      if (saved.descriptor) {
+        Object.defineProperty(saved.target, saved.key, saved.descriptor);
+      } else if (!Reflect.deleteProperty(saved.target, saved.key)) {
+        throw new Error(
+          `could not delete restored capability ${String(saved.key)}`,
+        );
+      }
+    } catch (error) {
+      errors.push(error);
     }
+  }
+  if (errors.length > 0) {
+    throw new AggregateError(
+      errors,
+      "capability descriptor restoration failed",
+    );
   }
 }
 
 function nextPopState(): Promise<PopStateEvent> {
   return new Promise((resolve, reject) => {
-    const timeout = window.setTimeout(() => {
+    let settled = false;
+    const cancel = () => {
+      if (settled) return;
+      settled = true;
+      window.clearTimeout(timeout);
       window.removeEventListener("popstate", onPopState);
+      pendingPopstateWaiters.delete(cancel);
+    };
+    const timeout = window.setTimeout(() => {
+      cancel();
       reject(new Error("timed out awaiting capability-smoke popstate"));
     }, 1_000);
     const onPopState = (event: PopStateEvent) => {
-      window.clearTimeout(timeout);
-      window.removeEventListener("popstate", onPopState);
+      cancel();
       resolve(event);
     };
+    pendingPopstateWaiters.add(cancel);
     window.addEventListener("popstate", onPopState);
   });
 }
@@ -215,10 +237,27 @@ async function back(): Promise<void> {
 
 beforeEach(() => window.history.replaceState(null, "", "/"));
 afterEach(() => {
-  cleanup();
-  for (const controller of controllers.splice(0)) controller.dispose();
-  restoreCapabilityDescriptors();
-  vi.restoreAllMocks();
+  const errors: unknown[] = [];
+  const attempt = (operation: () => void) => {
+    try {
+      operation();
+    } catch (error) {
+      errors.push(error);
+    }
+  };
+  try {
+    for (const cancel of [...pendingPopstateWaiters]) cancel();
+    attempt(cleanup);
+    for (const controller of controllers.splice(0)) {
+      attempt(() => controller.dispose());
+    }
+  } finally {
+    attempt(restoreCapabilityDescriptors);
+  }
+  attempt(() => vi.restoreAllMocks());
+  if (errors.length > 0) {
+    throw new AggregateError(errors, "runtime trap cleanup failed");
+  }
 });
 
 describe("runtime capability isolation", () => {
@@ -287,6 +326,9 @@ describe("runtime capability isolation", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "Voice" }));
     await waitFor(() => expect(main("voice")).toBeVisible());
+    expect(
+      main("voice").querySelectorAll('input[type="file"], input[capture]'),
+    ).toHaveLength(0);
     fireEvent.click(
       screen.getByRole("button", { name: "Set voice state: speaking" }),
     );
@@ -323,6 +365,9 @@ describe("runtime capability isolation", () => {
     await waitFor(() => expect(main("search")).toBeVisible());
 
     fireEvent.click(screen.getByRole("button", { name: "New Session" }));
+    expect(
+      main("new").querySelectorAll('input[type="file"], input[capture]'),
+    ).toHaveLength(0);
     const project = canonicalFixture.recentProjects[0];
     expect(project).toBeDefined();
     if (!project) return;
