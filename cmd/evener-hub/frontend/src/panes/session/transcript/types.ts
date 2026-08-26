@@ -7,6 +7,7 @@
 // (ToolCallItem, which dispatches into toolRenderers.ts).
 import type { ComponentType } from "react";
 import type { ItemModel, TurnModel } from "../../../protocol/model";
+import type { TranscriptRenderContextValue } from "../../../transcriptDisplay/renderContext";
 import { RawItemView } from "./RawItemView";
 
 export interface ItemRenderProps {
@@ -21,6 +22,9 @@ export interface ItemRenderProps {
   opensExchange?: boolean;
   // The session's short model/provider label, threaded from Session.tsx.
   agentLabel?: string;
+  // Context is threaded for memoized/custom renderers that prefer props; the
+  // built-in renderers consume the same value through TranscriptRenderContext.
+  renderContext?: TranscriptRenderContextValue;
 }
 
 const registry = new Map<string, ComponentType<ItemRenderProps>>();
@@ -64,6 +68,7 @@ export function ignoringTurn(prev: ItemRenderProps, next: ItemRenderProps): bool
     prev.live === next.live &&
     prev.sessionRef === next.sessionRef &&
     prev.opensExchange === next.opensExchange &&
-    prev.agentLabel === next.agentLabel
+    prev.agentLabel === next.agentLabel &&
+    prev.renderContext === next.renderContext
   );
 }

@@ -8,9 +8,16 @@
 // get tool calls rendered correctly.
 import "./ToolCallItem";
 import "./tools";
-import { useMemo } from "react";
-import type { ItemModel, TurnModel } from "../../../protocol/model";
+import { useMemo, useRef } from "react";
+import type { ItemModel, ThreadModel, TurnModel } from "../../../protocol/model";
 import { usePrefsStore } from "../../../stores/prefs";
+import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
+import { projectThread } from "../../../transcriptDisplay/projector";
+import {
+  createTranscriptRenderContext,
+  TranscriptRenderProvider,
+  useOptionalTranscriptRenderContext,
+} from "../../../transcriptDisplay/renderContext";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { SeenDivider } from "./flow/SeenDivider";
 import { rowRoleFor } from "./layoutRoles";
@@ -19,7 +26,6 @@ import { ToolCallCluster } from "./ToolCallCluster";
 import { TurnFailureEndCap } from "./TurnFailureEndCap";
 import { shouldGroup, toolRunFor } from "./toolGrouping";
 import { itemScopeKey } from "./tools/subagentModuleStore";
-import { visibleItems } from "./transcriptVisibility";
 import styles from "./turnblock.module.css";
 import { asTurnError } from "./turnFailure";
 import { itemRendererFor } from "./types";
@@ -78,6 +84,7 @@ export function TurnBlock({
   viewAnchorIndex,
   viewAnchorSourceIndexes,
 }: TurnBlockProps) {
+  const inheritedContext = useOptionalTranscriptRenderContext();
   // A failed turn carries a TurnError (only genuine failures do - the projector
   // sets it alongside status "failed", never on a completed or user-cancelled
   // turn); its presence is the signal to close the turn with a diagnostic
@@ -94,11 +101,56 @@ export function TurnBlock({
   const hookExitsAll = usePrefsStore((s) => s.transcript.hookExitsAll);
   const hookExitsNormal = usePrefsStore((s) => s.transcript.hookExitsNormal);
   const promptLoaded = usePrefsStore((s) => s.transcript.promptLoaded);
-  const shown = useMemo(
-    () => visibleItems(turn.items, { roundTimings, hookExitsAll, hookExitsNormal, promptLoaded }),
-    [turn.items, roundTimings, hookExitsAll, hookExitsNormal, promptLoaded],
+  // Until Task 8 moves every caller to TranscriptBody, this is the one and
+  // only compatibility adapter from the legacy preference record. Children
+  // consume the resulting context and never read prefs themselves.
+  const legacyConfig = useMemo(
+    () =>
+      makeTranscriptDisplayConfig(
+        { kind: "preset", level: "activity" },
+        {
+          roundTimings,
+          tokenCounts: false,
+          estimatedCost: false,
+          systemEvents: true,
+          promptEvents: promptLoaded,
+          hookExits: hookExitsAll ? "all" : hookExitsNormal ? "successful" : "none",
+        },
+      ),
+    [hookExitsAll, hookExitsNormal, promptLoaded, roundTimings],
   );
-  // Reuse the turn object outright when nothing is hidden (visibleItems is
+  const config = inheritedContext?.config ?? legacyConfig;
+  const projection = useMemo(
+    // projectThread only reads `turns`; the cast keeps this transition adapter
+    // local until TranscriptBody supplies a complete ThreadModel in Task 8.
+    () => projectThread({ turns: [turn] } as unknown as ThreadModel, config),
+    [config, turn],
+  );
+  const projectedTurn = projection.turns[0];
+  const projectedVisible = projectedTurn?.visibleItems;
+  const shown =
+    projectedVisible === undefined || projectedVisible.length === turn.items.length
+      ? turn.items
+      : [...projectedVisible];
+  const eligibleKey = projection.eligibleDisclosureIds.join("\0");
+  const eligibleCache = useRef<{ key: string; ids: readonly string[] } | undefined>(undefined);
+  if (eligibleCache.current?.key !== eligibleKey) {
+    eligibleCache.current = { key: eligibleKey, ids: [...projection.eligibleDisclosureIds] };
+  }
+  const eligibleDisclosureIds = eligibleCache.current.ids;
+  const renderContext = useMemo(
+    () =>
+      inheritedContext ??
+      createTranscriptRenderContext({
+        config,
+        metadata: config.advanced,
+        eligibleDisclosureIds,
+        surface: "live",
+        disclosureScope: `live:${sessionRef ?? "default"}`,
+      }),
+    [config, eligibleDisclosureIds, inheritedContext, sessionRef],
+  );
+  // Reuse the turn object outright when nothing is hidden (the projector's
   // identity-stable then), so the memoized renderers' `turn` prop churns no
   // more than it already did.
   const shownTurn = shown === turn.items ? turn : { ...turn, items: shown };
@@ -112,7 +164,7 @@ export function TurnBlock({
       "data-view-anchor-message": item.type === "userMessage" || item.type === "agentMessage",
     } as const;
   };
-  return (
+  const contextChild = (
     <>
       {showSeenDivider && <SeenDivider />}
       <div className={CLASS.turn} data-testid="turn-block" data-turn-id={turn.id}>
@@ -154,6 +206,7 @@ export function TurnBlock({
                   sessionRef={sessionRef}
                   opensExchange={exchangeOpeners?.has(item.id)}
                   agentLabel={agentLabel}
+                  renderContext={renderContext}
                 />
               </div>
             );
@@ -167,6 +220,7 @@ export function TurnBlock({
                 sessionRef={sessionRef}
                 opensExchange={exchangeOpeners?.has(item.id)}
                 agentLabel={agentLabel}
+                renderContext={renderContext}
               />
             </div>
           );
@@ -176,4 +230,5 @@ export function TurnBlock({
       </div>
     </>
   );
+  return <TranscriptRenderProvider value={renderContext}>{contextChild}</TranscriptRenderProvider>;
 }

@@ -13,10 +13,21 @@
 // the message (markdown) and concerns carry the signal; the plumbing facts stay
 // in the raw disclosure. The watch/observer glyph vocabulary (◌/↩) is replaced
 // by the uniform tone treatment.
-import { Fragment, useState } from "react";
+import { Fragment } from "react";
+import {
+  disclosureScopeForSession,
+  expandDetailsByDefault,
+  useTranscriptRenderContext,
+} from "../../../../transcriptDisplay/renderContext";
 import { Card, Chip, Markdown } from "../../../../widgets";
 import { AnsiTailBuffer, parseAnsiLines } from "../../../../widgets/codeblock/ansi";
 import { AnsiLineContent } from "../../../../widgets/codeblock/ansiLine";
+import {
+  disclosureDefault,
+  isDisclosureOpen,
+  scopedDisclosureId,
+  toggleDisclosure,
+} from "../../../../widgets/disclosure/disclosureStore";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { OpenTranscriptButton } from "../openTranscript";
 import styles from "./notificationcard.module.css";
@@ -148,7 +159,15 @@ export function NotificationCard({
   notification: ParsedNotification;
   sessionRef?: string;
 }) {
-  const [open, setOpen] = useState(false);
+  const context = useTranscriptRenderContext();
+  const { config } = context;
+  const disclosureScope = disclosureScopeForSession(context, sessionRef);
+  const notificationId = notification.delegateId ?? notification.jobId ?? notification.rawText;
+  const scopedNotificationId = `notification:${sessionRef ?? "default"}:${notificationId}`;
+  const disclosureKey = scopedDisclosureId(disclosureScope, scopedNotificationId);
+  const disclosureFallback =
+    expandDetailsByDefault(config) || disclosureDefault(disclosureScope, scopedNotificationId, false);
+  const open = isDisclosureOpen(disclosureKey, disclosureFallback);
   const chip = toneChip(notification.tone);
   const transcriptRef = isValidTranscriptRef(notification.transcriptRef) ? notification.transcriptRef : undefined;
   return (
@@ -162,7 +181,7 @@ export function NotificationCard({
         aria-expanded={open}
         onClick={(e) => {
           e.preventDefault();
-          setOpen((current) => !current);
+          toggleDisclosure(disclosureKey, disclosureFallback);
         }}
       >
         {chip && <Chip tone={chip.chipTone}>{chip.label}</Chip>}

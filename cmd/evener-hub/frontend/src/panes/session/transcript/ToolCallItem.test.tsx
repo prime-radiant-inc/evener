@@ -2,6 +2,8 @@
 
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
+import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
+import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import galleryStyles from "./flow/imagegallery.module.css";
 import { ToolCallItem } from "./ToolCallItem";
@@ -259,6 +261,42 @@ test("the disclosure trigger controls the mounted body by its stable ID", () => 
   const body = screen.getByTestId("tool-call-body");
   expect(body.id).toBe(trigger.getAttribute("aria-controls"));
   expect(trigger.getAttribute("aria-expanded")).toBe("true");
+});
+
+test("Full establishes one open baseline, preserves a later manual close, and opens new eligible rows", () => {
+  registerToolRenderer({ match: "tci_baseline", summary: () => "s", body: () => <div>body text</div> });
+  const activity = makeTranscriptDisplayConfig({ kind: "preset", level: "activity" });
+  const full = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
+  const first = item({ id: "baseline_first", toolName: "tci_baseline" });
+  const second = item({ id: "baseline_second", toolName: "tci_baseline" });
+  const renderBody = (config: typeof activity, items: ItemModel[]) => (
+    <TranscriptRenderProvider
+      config={config}
+      surface="readOnly"
+      disclosureScope="live:baseline"
+      eligibleDisclosureIds={items.map((entry) => entry.id)}
+    >
+      {items.map((entry) => (
+        <ToolCallItem key={entry.id} item={entry} turn={turn} live={false} />
+      ))}
+    </TranscriptRenderProvider>
+  );
+
+  const { rerender } = render(renderBody(activity, [first]));
+  expect(rowIsOpen()).toBe(false);
+  toggleRow();
+  toggleRow();
+  expect(rowIsOpen()).toBe(false);
+
+  rerender(renderBody(full, [first]));
+  expect(rowIsOpen()).toBe(true);
+  toggleRow();
+  expect(rowIsOpen()).toBe(false);
+
+  rerender(renderBody(full, [first, second]));
+  const rows = screen.getAllByTestId("tool-call-item");
+  expect(rowIsOpen(rows[0]!)).toBe(false);
+  expect(rowIsOpen(rows[1]!)).toBe(true);
 });
 
 test("clicking the summary manually expands a collapsed row", () => {

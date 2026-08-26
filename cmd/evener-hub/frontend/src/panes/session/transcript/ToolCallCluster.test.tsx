@@ -153,3 +153,17 @@ test("a shell-led cluster header leaves the command unstripped when sessionRef (
   render(<ToolCallCluster items={items} turn={turn} />);
   expect(screen.getByTestId("tool-row-summary").textContent).toBe("2 steps · Ran cd /Users/jesse/work && make test");
 });
+
+test("an expanded cluster stays open across a remount through the scoped store", () => {
+  const items = READ_ONLY_RUN_LED_BY_FETCH("https://example.com/page");
+  const { unmount } = render(<ToolCallCluster items={items} turn={turn} sessionRef="session_a" />);
+  const trigger = screen.getByTestId("tool-row-trigger");
+  fireEvent.click(trigger);
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByTestId("tool-call-cluster-body")).toBeTruthy();
+
+  unmount();
+  render(<ToolCallCluster items={items} turn={turn} sessionRef="session_a" />);
+  expect(screen.getAllByTestId("tool-row-trigger")[0]?.getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByTestId("tool-call-cluster-body")).toBeTruthy();
+});
