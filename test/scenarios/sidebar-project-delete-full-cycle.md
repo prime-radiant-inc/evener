@@ -48,14 +48,14 @@ Steps 1-4 and 6 are **browser-free** and carry every exact assertion. Only step
 5 needs a browser.
 
 1. **(a) Path-mismatch guard.** Spawn and let finish a session in `$W`; read
-   its project `key` and canonical `working_dir` back from `GET /api/tree` (see
+   its project `key` and canonical `working_dir` back from `GET /api/navigation` (see
    Sharp edges on symlink resolution). Then
    `POST /api/project/delete {"key":"<key>","working_dir":"$OTHER"}`.
 2. **(b) Live refusal.** Do **not** shut the session down. With it still live,
    `POST /api/project/delete {"key":"<key>","working_dir":"<real working_dir>"}`.
 3. **(c) Successful delete.** `POST /api/sessions/local:$SID/shutdown`, confirm
    the shutdown landed, then repeat step 2's exact POST.
-4. **(e) Tree no longer lists it.** `GET /api/tree`; `<key>` must be gone from
+4. **(e) Tree no longer lists it.** `GET /api/navigation`; `<key>` must be gone from
    `projects[]` — and not merely moved into `archived_projects[]` or
    `test_runs[]`.
 5. **(d) Open pane, then delete its project.** In `$W2`, spawn and let finish a
@@ -73,7 +73,7 @@ Steps 1-4 and 6 are **browser-free** and carry every exact assertion. Only step
    })
    ```
 6. **(f) Re-creation is not silent-archive.** Spawn a brand-new session at
-   `$W2`'s exact working dir. `GET /api/tree`; `$W2`'s project key must
+   `$W2`'s exact working dir. `GET /api/navigation`; `$W2`'s project key must
    reappear in `projects[]` containing only the new session.
 
 ## Expected
@@ -143,9 +143,9 @@ Steps 1-4 and 6 are **browser-free** and carry every exact assertion. Only step
   the way the single-session path does) is a product call, not a test failure;
   file it rather than asserting the old `/new` behaviour, which no version of
   this code performs.
-- **`mktemp -d` gives `/var/folders/…` on macOS; `/api/tree`'s `working_dir` is
+- **`mktemp -d` gives `/var/folders/…` on macOS; `/api/navigation`'s `working_dir` is
   symlink-resolved to `/private/var/folders/…`.** Always read `working_dir`
-  back from `/api/tree` before putting it in a delete POST. A raw shell
+  back from `/api/navigation` before putting it in a delete POST. A raw shell
   variable produces the *same* 400 as step 1's intentional mismatch, which will
   falsely validate step 1 for the wrong reason unless steps 2/3 separately
   prove the correct value works.

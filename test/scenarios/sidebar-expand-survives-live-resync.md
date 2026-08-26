@@ -2,7 +2,7 @@
 
 **What this covers**: the rail's per-row expand bookkeeping surviving a whole-
 tree refetch fired by unrelated live activity. Regression class: a notification
-anywhere on the hub re-fetches `/api/tree` and re-renders the tree — if the
+anywhere on the hub re-fetches `/api/navigation` and re-renders the tree — if the
 expand bookkeeping doesn't carry across that render, a project you deliberately
 opened silently collapses the moment something happens somewhere else.
 
@@ -11,9 +11,9 @@ The mechanism moved wholesale. There is no `doResync()` and no
 (`expandedOverrides`, `:164`, seeded from `localStorage` by `loadExpansion`),
 resolved per row by `overrideLookup` (`railNodes.ts:106-108`) and persisted on
 every toggle by `setExpanded` (`Rail.tsx:197-205`). The refetch is
-`treeStore.refresh()` (`stores/tree.ts:339-352`), scheduled on a 250ms debounce
+`navigationStore.getState().loadManifest()` (`stores/navigation/store.ts:339-352`), scheduled on a 250ms debounce
 by any of `thread/started`, `thread/closed`, `evener/attention/changed`,
-`evener/tree/changed` (`REFRESH_NOTIFICATIONS`, `stores/tree.ts:443-450,455-467`).
+`navigation invalidation` (`navigation invalidation`, `stores/navigation/store.ts:443-450,455-467`).
 Those two live in different stores and never touch each other, which is exactly
 the property this card exists to keep true.
 
@@ -60,7 +60,7 @@ entirely in the client bundle, so there is no REST-level counterpart to assert.
 
 1. Spawn a session in `$A` (`POST /api/spawn`), let its first turn finish, then
    `POST /api/sessions/local:$SID_A/shutdown`. Confirm over
-   `GET /api/tree` that `$A`'s project entry has no `default_expanded` field
+   `GET /api/navigation` that `$A`'s project entry has no `default_expanded` field
    (or `false`) and that you have its `key` and its server-canonical
    `working_dir` — read both back from the response, never from your shell
    variable (see Sharp edges).
@@ -83,13 +83,13 @@ entirely in the client bundle, so there is no REST-level counterpart to assert.
    `railNodes.ts:209-211`).
 5. **Arm a refetch counter, then cause live activity elsewhere.** There is no
    `seq` field to read any more, so count the store's own fetches
-   (`fetchTree` calls `fetch("/api/tree", …)`, `stores/tree.ts:186-190`):
+   (`loadManifest` calls `fetch("/api/navigation", …)`, `stores/navigation/store.ts:186-190`):
    ```javascript
    (() => {
      const orig = window.fetch;
      window.__treeFetches = 0;
      window.fetch = (...args) => {
-       if (String(args[0]).startsWith("/api/tree")) window.__treeFetches++;
+       if (String(args[0]).startsWith("/api/navigation")) window.__treeFetches++;
        return orig.apply(window, args);
      };
      return { port: location.port, armed: true };
@@ -141,11 +141,11 @@ entirely in the client bundle, so there is no REST-level counterpart to assert.
 
 - **`mktemp -d` on macOS gives `/var/folders/…` but the server reports
   `/private/var/folders/…`.** Project working dirs are symlink-resolved
-  (`identifier.ResolveProject`) before they ever reach `/api/tree`, so match
+  (`identifier.ResolveProject`) before they ever reach `/api/navigation`, so match
   projects by the `working_dir` the server hands back, not by your shell
   variable, or the key lookup silently comes up empty.
 - **This is a client-state card; there is no browser-free half.** The expand
-  map never leaves the browser — `/api/tree` carries only the server's
+  map never leaves the browser — `/api/navigation` carries only the server's
   `default_expanded` hint, and asserting on that would test a different thing
   entirely. A controller without Chrome can run step 1 and nothing else.
 - **A project with no children gets no `aria-expanded` attribute at all**
@@ -155,7 +155,7 @@ entirely in the client bundle, so there is no REST-level counterpart to assert.
   which is why the probe reports `hasAttr` separately.
 - **Don't try to force a refetch by hand.** There is no
   `window.EvenerSidebar.refresh()`; the only triggers are the four notification
-  methods in `REFRESH_NOTIFICATIONS` and the rail's own mount effect. Causing
+  methods in `navigation invalidation` and the rail's own mount effect. Causing
   real live activity is the point of step 5 anyway — a hand-poked refetch would
   not exercise the notification path this card guards.
 - The unit tests already cover the remount case in isolation

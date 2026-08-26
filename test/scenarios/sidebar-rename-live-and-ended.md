@@ -24,7 +24,7 @@ trigger (`button[aria-haspopup="menu"]`, accessible text
 `widgets/dialog/OverlayPanel.tsx:92-94`). The `Rename` button is disabled while
 the trimmed value is empty (`Rail.tsx:639`).
 
-**Navigation resource request counts are bounded** (`docs/superpowers/specs/2026-08-25-tree-transport-optimization-design.md`): a rename mutation triggers at most one request per affected loaded navigation representation (manifest, section page, project root); the idle rail issues zero navigation HTTP requests after hydration, and the rename mutation plus its matching `evener/tree/changed` notification do not duplicate a resource fetch.
+**Navigation resource request counts are bounded** (`docs/superpowers/specs/2026-08-25-tree-transport-optimization-design.md`): a rename mutation triggers at most one request per affected loaded navigation representation (manifest, section page, project root); the idle rail issues zero navigation HTTP requests after hydration, and the rename mutation plus its matching `navigation invalidation` notification do not duplicate a resource fetch.
 
 ## Pre-state
 
@@ -51,19 +51,19 @@ optimistic overlay.
    the POST until the follow-up refetch settles (`Rail.tsx:383-393,318-328`,
    applied by `railPending.ts:80-81`).
 3. **Snapshot again after the refetch settles** (~2s is ample; the mutation
-   awaits `treeStore.refresh()` and only then drops the overlay). Then
-   cross-check the server: `GET /api/tree` for the row's title, and the
+   awaits `navigationStore.getState().loadManifest()` and only then drops the overlay). Then
+   cross-check the server: `GET /api/navigation` for the row's title, and the
    session's persisted `<SID>.meta.json` for `name` / `name_source`.
 4. **Trigger a real compaction turn**:
    `POST /api/sessions/local:<SID>/compact`. Poll
    `GET /api/sessions/local:<SID>` until it settles, and record
    `context_used` (`hubapi/types.go:144`) before and after.
 5. Re-read the row's title in the browser. Do not force anything — a successful
-   rename broadcasts `evener/tree/changed` exactly once, either through
+   rename broadcasts `navigation invalidation` exactly once, either through
    `PastIndex.UpdateMeta`'s composed hook or the compensating
    `notifyTreeChanged` when that hook didn't fire
    (`web_api_rename.go:112-122` and `:136-153`), and the rail refetches on a
-   250ms debounce (`stores/tree.ts:443-450,455-467`). Re-read the meta file's
+   250ms debounce (`stores/navigation/store.ts:443-450,455-467`). Re-read the meta file's
    `name` / `name_source`.
 6. **On the separate ended session**, drive the REST path directly:
    `POST /api/sessions/local:<SID2>/rename` with body `{"name":"<new>"}`. No
@@ -77,7 +77,7 @@ optimistic overlay.
   old one — the optimistic overlay never rendered, and step 3 then cannot
   distinguish "the round trip worked" from "the overlay was never dropped".
 - **Step 3**: the title is *still* the new value after the refetch settles, and
-  `/api/tree` plus the meta file agree, with `"name_source":"user"`. That
+  `/api/navigation` plus the meta file agree, with `"name_source":"user"`. That
   agreement is what proves a real server round trip rather than an un-reverted
   optimistic echo. Falsify: the title snaps back — the POST was rejected and
   the overlay was dropped (a failure also toasts, `Couldn't rename session: …`,
@@ -133,7 +133,7 @@ optimistic overlay.
   (`web_workspace.go:91-105`); a local session — live or ended — gets
   `liveTitle` / `pastTitle`, which re-read the on-disk `meta.json` fresh
   (`web_workspace.go:112,175`, `web_format.go:132-157`). So the detail object's
-  `title` *should* now agree with `/api/tree` and the meta file. It is worth a
+  `title` *should* now agree with `/api/navigation` and the meta file. It is worth a
   spare glance during step 3: if it still reports a short id after a confirmed
   rename, that is a live regression worth its own kata. The remaining honest
   fallback is `hubcore.ShortID` when the past index has never seen the id at

@@ -195,7 +195,7 @@ Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) nee
    ```
    Cross-check the hub's own tree agrees, without a browser:
    ```bash
-   curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/tree" | jq --arg sid "$SID2" \
+   curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/navigation" | jq --arg sid "$SID2" \
      '[.live[], .needs_you[]] | map(select(.session_id == $sid)) | {states: map(.state), inNeedsYou: (map(.state) | length)}'
    ```
 
@@ -229,7 +229,7 @@ those pass instead of driving a live goal session here.
   the step-2 opt-in, which means a notification default was flipped back on.
 - **Step 4**: both the title prefix and the favicon dot clear, and `activity` leaves
   `your move`. The tab's own reply emits `thread/started`, which is on the tree store's
-  refresh-trigger list (`stores/tree.ts:443-451`), so this should land within a second —
+  refresh-trigger list (`stores/navigation/store.ts:443-451`), so this should land within a second —
   well inside the 6 s ceiling. Falsify: clearing consistently needs the full ~6 s, meaning
   the own-tab trigger regressed to the broadcast-only path (the 5 s attention-watcher tick,
   `cmd/evener-hub/main_background.go:50`); or it never clears at all.

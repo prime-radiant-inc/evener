@@ -1743,7 +1743,6 @@ export const NOTIFICATION_NAMES = [
   "evener/task/updated",
   "evener/sandbox/escalation/requested",
   "evener/sandbox/escalation/resolved",
-  "evener/tree/changed",
 ] as const;
 
 export type NotificationName = (typeof NOTIFICATION_NAMES)[number];
@@ -1897,7 +1896,6 @@ export interface NotificationTypes {
   "evener/task/updated": TaskUpdatedParams;
   "evener/sandbox/escalation/requested": SandboxEscalationRequested;
   "evener/sandbox/escalation/resolved": SandboxEscalationResolved;
-  "evener/tree/changed": EmptyParams;
 }
 
 export type AnyNotification = { [K in NotificationName]: { method: K; params: NotificationTypes[K] } }[NotificationName];
