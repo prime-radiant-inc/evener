@@ -1,0 +1,1005 @@
+/* Constellation live concept — fully scoped under .concept-constellation.
+   Adapted from the concept-lab prototype; prototype navigation, history,
+   search, settings, voice, lab, and synthetic controls are removed. Only
+   milestone presentation (sessions, conversation, work) and the non-color
+   relationship / attention / current-work semantics are preserved. */
+
+.concept-constellation {
+  --co-bg: #090d18;
+  --co-surface: #11192c;
+  --co-raised: #171f33;
+  --co-surface-strong: var(--co-raised);
+  --co-ink: #f2f4ff;
+  --co-muted: #9ca8c2;
+  --co-line: #303a57;
+  --co-control-line: #687795;
+  --co-accent: #7fe6c4;
+  --co-accent-ink: #07150f;
+  --co-violet: #8c7cf0;
+  --co-attention: #f1bf67;
+  --co-danger: #ff9c9c;
+  --co-user: #193e3a;
+  --co-focus: #a99cff;
+  position: relative;
+  display: grid;
+  width: 100%;
+  height: 100%;
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+  background:
+    radial-gradient(circle at 12% -10%, #243664 0, transparent 36rem),
+    radial-gradient(circle at 92% 12%, #211d47 0, transparent 30rem),
+    var(--co-bg);
+  color: var(--co-ink);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+  isolation: isolate;
+}
+
+.concept-constellation[data-appearance="light"] {
+  --co-bg: #f4f7fb;
+  --co-surface: #ffffff;
+  --co-raised: #e8eef7;
+  --co-surface-strong: var(--co-raised);
+  --co-ink: #111827;
+  --co-muted: #526078;
+  --co-line: #aab4c8;
+  --co-control-line: #65728a;
+  --co-accent: #176c59;
+  --co-accent-ink: #ffffff;
+  --co-violet: #6253cf;
+  --co-attention: #865400;
+  --co-danger: #a3313b;
+  --co-user: #d9f1e9;
+  --co-focus: #5141bd;
+  color-scheme: light;
+}
+
+.concept-constellation[data-appearance="dark"],
+:root[data-appearance="dark"] .concept-constellation {
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  .concept-constellation[data-appearance="system"] {
+    --co-bg: #f4f7fb;
+    --co-surface: #ffffff;
+    --co-raised: #e8eef7;
+    --co-surface-strong: var(--co-raised);
+    --co-ink: #111827;
+    --co-muted: #526078;
+    --co-line: #aab4c8;
+    --co-control-line: #65728a;
+    --co-accent: #176c59;
+    --co-accent-ink: #ffffff;
+    --co-violet: #6253cf;
+    --co-attention: #865400;
+    --co-danger: #a3313b;
+    --co-user: #d9f1e9;
+    --co-focus: #5141bd;
+    color-scheme: light;
+  }
+}
+
+.concept-constellation,
+.concept-constellation * {
+  box-sizing: border-box;
+}
+
+.concept-constellation button,
+.concept-constellation input,
+.concept-constellation textarea,
+.concept-constellation select {
+  font: inherit;
+}
+
+.concept-constellation button,
+.concept-constellation a,
+.concept-constellation input,
+.concept-constellation textarea,
+.concept-constellation select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.concept-constellation button {
+  color: inherit;
+}
+
+.concept-constellation svg {
+  width: 1.25rem;
+  height: 1.25rem;
+  flex: 0 0 auto;
+}
+
+.concept-constellation h1,
+.concept-constellation h2,
+.concept-constellation h3,
+.concept-constellation p,
+.concept-constellation dl,
+.concept-constellation dd {
+  margin: 0;
+}
+
+.concept-constellation .co-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  margin: -1px;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.concept-constellation .co-scroll {
+  width: 100%;
+  min-height: 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scroll-behavior: smooth;
+  scrollbar-gutter: stable;
+}
+
+.concept-constellation .co-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  min-width: 0;
+  padding: 0.75rem 1rem 0.8rem 1rem;
+  border-bottom: 1px solid var(--co-line);
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  background: color-mix(in srgb, var(--co-bg) 95%, transparent);
+}
+
+.concept-constellation .co-topbar__leading,
+.concept-constellation .co-topbar__actions,
+.concept-constellation .co-topbar__actions button,
+.concept-constellation .co-session-actions,
+.concept-constellation .co-session-actions button {
+  display: flex;
+  align-items: center;
+}
+
+.concept-constellation .co-topbar__leading {
+  min-width: 0;
+  align-items: flex-start;
+  gap: 0.4rem;
+}
+
+.concept-constellation .co-title-block {
+  min-width: 0;
+}
+
+.concept-constellation .co-title-block__kicker,
+.concept-constellation .co-eyebrow {
+  color: var(--co-accent);
+  font-size: 0.7rem;
+  font-weight: 760;
+  letter-spacing: 0.105em;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+
+.concept-constellation .co-title-block__kicker {
+  margin-bottom: 0.2rem;
+}
+
+.concept-constellation .co-title-block h1 {
+  max-width: 21ch;
+  font-size: clamp(1.8rem, 7vw, 2.65rem);
+  font-weight: 720;
+  letter-spacing: -0.045em;
+  line-height: 1.02;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.concept-constellation
+  .co-title-block
+  > p:last-child:not(.co-title-block__kicker) {
+  margin-top: 0.28rem;
+  color: var(--co-muted);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.concept-constellation .co-topbar__actions {
+  gap: 0.35rem;
+}
+
+.concept-constellation .co-topbar__actions button,
+.concept-constellation .co-icon-action,
+.concept-constellation .co-session-actions button,
+.concept-constellation .co-filter-row > button {
+  border: 1px solid var(--co-control-line);
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.concept-constellation .co-topbar__actions button {
+  display: inline-flex;
+  padding: 0 0.8rem;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+}
+
+.concept-constellation .co-icon-action {
+  display: grid;
+  padding: 0;
+  border-color: transparent;
+  place-items: center;
+}
+
+.concept-constellation .co-route-content {
+  width: min(100%, 58rem);
+  margin-inline: auto;
+  padding: 1rem;
+}
+
+/* ------------------------------- sessions -------------------------------- */
+
+.concept-constellation .co-filter-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+}
+
+.concept-constellation .co-filter-row label {
+  display: flex;
+  min-width: 0;
+  border: 1px solid var(--co-control-line);
+  border-radius: 0.8rem;
+  align-items: center;
+  background: var(--co-surface);
+}
+
+.concept-constellation .co-filter-row input {
+  width: 100%;
+  min-width: 0;
+  padding: 0 0.85rem;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--co-ink);
+}
+
+.concept-constellation .co-filter-row > button {
+  padding-inline: 1rem;
+}
+
+.concept-constellation .co-refresh-status {
+  display: flex;
+  min-height: 2.2rem;
+  margin: 0.45rem 0 1rem;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  color: var(--co-muted);
+  font-size: 0.78rem;
+}
+
+.concept-constellation .co-refresh-status[data-refresh-state="loading"] {
+  color: var(--co-accent);
+}
+
+.concept-constellation .co-refresh-status[data-refresh-state="ready"]::before {
+  content: "✓";
+}
+
+.concept-constellation .co-sessions,
+.concept-constellation .co-conversation,
+.concept-constellation .co-work-panel {
+  display: grid;
+  gap: 1.2rem;
+}
+
+.concept-constellation .co-session-group > header,
+.concept-constellation .co-work-list > header {
+  display: flex;
+  padding: 0 0.65rem 0.45rem;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.concept-constellation .co-session-group > header h2,
+.concept-constellation .co-work-list > header h2 {
+  font-size: 0.78rem;
+  font-weight: 780;
+  letter-spacing: 0.075em;
+  text-transform: uppercase;
+}
+
+.concept-constellation .co-inset-list,
+.concept-constellation .co-usage,
+.concept-constellation .co-session-summary,
+.concept-constellation .co-composer {
+  border: 1px solid var(--co-line);
+  border-radius: 0.9rem;
+  background: var(--co-surface);
+}
+
+.concept-constellation .co-session-row + .co-session-row {
+  border-top: 1px solid var(--co-line);
+}
+
+.concept-constellation .co-session-row button {
+  display: grid;
+  width: 100%;
+  padding: 0.75rem 0.8rem;
+  border: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.concept-constellation .co-session-row__copy,
+.concept-constellation .co-session-row__meta {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.concept-constellation .co-session-row__copy {
+  gap: 0.15rem;
+}
+
+.concept-constellation .co-session-row__copy strong {
+  font-size: 0.96rem;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.concept-constellation .co-session-row__copy > span,
+.concept-constellation .co-session-row__copy small,
+.concept-constellation .co-session-row__meta time {
+  color: var(--co-muted);
+  font-size: 0.75rem;
+}
+
+.concept-constellation .co-session-group > header > span,
+.concept-constellation .co-work-list > header > span {
+  color: var(--co-muted);
+  font-size: 0.75rem;
+}
+
+.concept-constellation .co-session-row__meta {
+  align-items: flex-end;
+  gap: 0.3rem;
+}
+
+.concept-constellation .co-relationship-rail,
+.concept-constellation .co-attention-signal {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.concept-constellation .co-relationship-rail {
+  margin-top: 0.25rem;
+  color: var(--co-accent);
+}
+
+.concept-constellation .co-connection-marker {
+  width: 1.15rem;
+  height: 0.5rem;
+  border-bottom: 1px solid currentColor;
+  border-left: 1px solid currentColor;
+  border-radius: 0 0 0 0.35rem;
+}
+
+.concept-constellation .co-attention-signal {
+  color: var(--co-attention);
+}
+
+.concept-constellation .co-attention-marker {
+  display: grid;
+  width: 1.15rem;
+  height: 1.15rem;
+  border: 1px solid currentColor;
+  border-radius: 0.35rem;
+  place-items: center;
+  font-size: 0.7rem;
+}
+
+.concept-constellation [data-state-label] {
+  display: inline-flex;
+}
+
+.concept-constellation [data-status-state] {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  font-size: 0.72rem;
+  font-weight: 720;
+}
+
+.concept-constellation [data-status-state] svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.concept-constellation [data-status-state="attention"] {
+  color: var(--co-attention);
+}
+
+.concept-constellation [data-status-state="running"],
+.concept-constellation [data-status-state="success"] {
+  color: var(--co-accent);
+}
+
+.concept-constellation [data-status-state="failed"] {
+  color: var(--co-danger);
+}
+
+.concept-constellation [data-status-state="idle"],
+.concept-constellation [data-status-state="unknown"] {
+  color: var(--co-muted);
+}
+
+.concept-constellation .co-inline-state {
+  padding: clamp(1.5rem, 7vw, 3.5rem) 1rem;
+  text-align: center;
+}
+
+.concept-constellation .co-inline-state h2 {
+  font-size: 1.25rem;
+}
+
+.concept-constellation .co-inline-state p {
+  max-width: 34rem;
+  margin: 0.45rem auto 0;
+  color: var(--co-muted);
+  line-height: 1.55;
+}
+
+.concept-constellation .co-roster-more {
+  color: var(--co-muted);
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+/* ----------------------------- conversation ------------------------------- */
+
+.concept-constellation .co-session-summary {
+  display: flex;
+  padding: 1rem;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.concept-constellation .co-work-heading h2,
+.concept-constellation .co-session-summary h2 {
+  margin-top: 0.25rem;
+  font-size: clamp(1.35rem, 4vw, 1.85rem);
+  letter-spacing: -0.025em;
+}
+
+.concept-constellation .co-work-heading p,
+.concept-constellation .co-session-summary p {
+  margin-top: 0.45rem;
+  color: var(--co-muted);
+  line-height: 1.6;
+}
+
+.concept-constellation .co-session-actions {
+  padding: 0;
+  border: 0;
+  margin: 0;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.concept-constellation .co-session-actions button {
+  padding-inline: 0.9rem;
+  gap: 0.4rem;
+}
+
+.concept-constellation .co-transcript {
+  display: grid;
+  width: min(100%, 46rem);
+  margin-inline: auto;
+  gap: 1.15rem;
+}
+
+.concept-constellation .co-transcript-item {
+  min-width: 0;
+  scroll-margin: 8rem;
+}
+
+.concept-constellation .co-transcript-item[data-focused="true"] {
+  border-radius: 0.7rem;
+  outline: 3px solid color-mix(in srgb, var(--co-focus) 55%, transparent);
+  outline-offset: 0.35rem;
+}
+
+.concept-constellation .co-transcript-item--assistant {
+  padding: 0.9rem 1rem;
+  border: 1px solid var(--co-line);
+  border-radius: 0.85rem;
+  background: var(--co-surface);
+}
+
+.concept-constellation .co-transcript-item--tool,
+.concept-constellation .co-attachment,
+.concept-constellation .co-transcript-error,
+.concept-constellation .co-transcript-question {
+  border-block: 1px solid var(--co-line);
+}
+
+.concept-constellation .co-transcript-item--tool {
+  padding-inline: 0.8rem;
+  border: 1px solid var(--co-line);
+  border-radius: 0.8rem;
+  background: var(--co-surface);
+}
+
+.concept-constellation .co-user-message {
+  width: fit-content;
+  max-width: min(85%, 34rem);
+  margin-left: auto;
+  padding: 0.7rem 0.9rem;
+  border-radius: 1rem 1rem 0.3rem 1rem;
+  background: var(--co-user);
+  line-height: 1.55;
+}
+
+.concept-constellation .co-assistant-message {
+  max-width: 68ch;
+  font-size: clamp(1rem, 2.2vw, 1.08rem);
+  line-height: 1.78;
+  white-space: pre-wrap;
+}
+
+.concept-constellation .co-transcript-item[data-streaming="true"] {
+  border-color: color-mix(in srgb, var(--co-accent) 48%, var(--co-line));
+}
+
+.concept-constellation .co-transcript-item[data-truncated="true"]::after {
+  content: " [truncated]";
+  color: var(--co-muted);
+  font-size: 0.72rem;
+}
+
+.concept-constellation [data-current-work="true"] {
+  position: relative;
+  border-color: color-mix(in srgb, var(--co-accent) 58%, var(--co-line));
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--co-accent) 14%, transparent),
+    0 0 1.5rem color-mix(in srgb, var(--co-violet) 13%, transparent);
+  animation: co-current-pulse 2.8s ease-in-out infinite;
+}
+
+.concept-constellation .co-tool-disclosure [data-disclosure-state] > button,
+.concept-constellation .co-work-node [data-disclosure-state] > button {
+  display: flex;
+  width: 100%;
+  padding: 0.7rem 0.15rem;
+  border: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-weight: 700;
+  text-align: left;
+}
+
+.concept-constellation [data-disclosure-state="expanded"] > button svg {
+  transform: rotate(90deg);
+}
+
+.concept-constellation .co-tool-detail,
+.concept-constellation .co-work-node__detail {
+  padding: 0.2rem 0.2rem 1rem;
+  color: var(--co-muted);
+}
+
+.concept-constellation .co-tool-detail dl,
+.concept-constellation .co-work-node__detail dl {
+  display: grid;
+  margin-top: 0.75rem;
+  gap: 0.75rem;
+}
+
+.concept-constellation .co-tool-detail dt,
+.concept-constellation .co-work-node__detail dt,
+.concept-constellation .co-usage dt {
+  color: var(--co-muted);
+  font-size: 0.68rem;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.concept-constellation .co-tool-detail dd,
+.concept-constellation .co-work-node__detail dd {
+  margin-top: 0.2rem;
+  color: var(--co-ink);
+  line-height: 1.5;
+}
+
+.concept-constellation .co-pending-mutation {
+  display: flex;
+  width: min(100%, 46rem);
+  margin-inline: auto;
+  padding: 0.65rem 0.8rem;
+  border-left: 3px solid var(--co-accent);
+  align-items: center;
+  gap: 0.7rem;
+  background: var(--co-surface);
+  font-size: 0.82rem;
+}
+
+.concept-constellation .co-composer-error {
+  padding: 0.5rem 0.8rem;
+  border: 1px solid color-mix(in srgb, var(--co-danger) 50%, var(--co-line));
+  border-radius: 0.65rem;
+  background: color-mix(in srgb, var(--co-danger) 8%, transparent);
+  color: var(--co-danger);
+  font-size: 0.8rem;
+}
+
+.concept-constellation .co-primary-action {
+  border: 0;
+  border-radius: 0.75rem;
+  background: var(--co-accent);
+  color: var(--co-accent-ink);
+  cursor: pointer;
+  font-weight: 760;
+}
+
+.concept-constellation .co-primary-action:disabled,
+.concept-constellation button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.concept-constellation .co-composer {
+  position: relative;
+  display: grid;
+  width: min(100%, 46rem);
+  margin-inline: auto;
+  padding: 0.65rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.45rem;
+}
+
+.concept-constellation .co-composer__modes {
+  display: flex;
+  padding: 0;
+  border: 0;
+  margin: 0;
+  grid-column: 1 / -1;
+  gap: 0.3rem;
+}
+
+.concept-constellation .co-composer__modes button {
+  padding: 0.3rem 0.75rem;
+  border: 1px solid var(--co-control-line);
+  border-radius: 999px;
+  background: transparent;
+}
+
+.concept-constellation .co-composer__modes button[aria-pressed="true"] {
+  border-color: var(--co-accent);
+  background: color-mix(in srgb, var(--co-accent) 12%, var(--co-surface));
+  color: var(--co-accent);
+}
+
+.concept-constellation .co-composer label {
+  min-width: 0;
+}
+
+.concept-constellation .co-composer textarea {
+  width: 100%;
+  min-height: 3rem;
+  padding: 0.65rem;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  resize: vertical;
+}
+
+.concept-constellation .co-composer__submit {
+  display: grid;
+  width: 3rem;
+  padding: 0;
+  place-items: center;
+}
+
+.concept-constellation .co-composer__submit span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  clip-path: inset(50%);
+  overflow: hidden;
+}
+
+/* --------------------------------- work ---------------------------------- */
+
+.concept-constellation .co-work-panel {
+  padding-bottom: 1rem;
+}
+
+.concept-constellation .co-work-heading {
+  padding: 0.5rem 0.6rem;
+  max-width: 44rem;
+}
+
+.concept-constellation .co-work-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.concept-constellation .co-work-node {
+  border: 1px solid var(--co-line);
+  border-radius: 0.75rem;
+  background: var(--co-surface);
+}
+
+.concept-constellation .co-work-tree {
+  display: grid;
+  padding: 0;
+  margin: 0;
+  gap: 0.5rem;
+  list-style: none;
+}
+
+.concept-constellation .co-work-tree > li {
+  min-width: 0;
+}
+
+.concept-constellation .co-work-tree .co-work-tree {
+  padding-left: clamp(0.7rem, 4vw, 1.5rem);
+  margin-top: 0.5rem;
+  border-left: 1px solid
+    color-mix(in srgb, var(--co-violet) 55%, var(--co-line));
+}
+
+.concept-constellation .co-work-tree .co-work-tree > li {
+  position: relative;
+}
+
+.concept-constellation .co-work-tree .co-work-tree > li::before {
+  position: absolute;
+  top: 1.25rem;
+  left: calc(clamp(0.7rem, 4vw, 1.5rem) * -1);
+  width: clamp(0.7rem, 4vw, 1.5rem);
+  border-top: 1px solid color-mix(in srgb, var(--co-violet) 55%, var(--co-line));
+  content: "";
+}
+
+.concept-constellation .co-work-node__context {
+  padding: 0.55rem 0.8rem 0;
+  color: var(--co-muted);
+  font-size: 0.68rem;
+  font-weight: 690;
+  letter-spacing: 0.035em;
+}
+
+.concept-constellation .co-work-node [data-disclosure-state] > button,
+.concept-constellation .co-work-node__detail {
+  padding-inline: 0.8rem;
+}
+
+.concept-constellation .co-work-node__detail dl {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.concept-constellation .co-work-node__detail p {
+  margin-top: 0.75rem;
+  color: var(--co-ink);
+  line-height: 1.5;
+}
+
+.concept-constellation .co-usage {
+  padding: 1rem;
+}
+
+.concept-constellation .co-usage dl {
+  display: grid;
+  margin-top: 0.85rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.concept-constellation .co-usage dd {
+  margin-top: 0.15rem;
+  font-weight: 700;
+}
+
+.concept-constellation .co-context-meter {
+  height: 0.4rem;
+  margin-top: 1rem;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--co-surface-strong);
+}
+
+.concept-constellation .co-context-meter > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--co-accent);
+}
+
+/* --------------------------- reduced motion ------------------------------ */
+
+@keyframes co-current-pulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--co-accent) 12%, transparent),
+      0 0 1.1rem color-mix(in srgb, var(--co-violet) 10%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--co-accent) 24%, transparent),
+      0 0 1.8rem color-mix(in srgb, var(--co-violet) 20%, transparent);
+  }
+}
+
+.concept-constellation .co-route-enter {
+  animation: co-route-in 180ms ease-out both;
+}
+
+.concept-constellation [data-disclosure-state] > button svg {
+  transition: transform 150ms ease;
+}
+
+@keyframes co-route-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.3rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.concept-constellation[data-reduced-motion="true"] *,
+.concept-constellation[data-reduced-motion="true"] *::before,
+.concept-constellation[data-reduced-motion="true"] *::after,
+:root[data-reduced-motion="true"] .concept-constellation *,
+:root[data-reduced-motion="true"] .concept-constellation *::before,
+:root[data-reduced-motion="true"] .concept-constellation *::after {
+  scroll-behavior: auto;
+  animation: none;
+  transition: none;
+}
+
+.concept-constellation[data-text-scale="accessibility"] *,
+.concept-constellation[data-text-scale="accessibility"] *::before,
+.concept-constellation[data-text-scale="accessibility"] *::after {
+  animation: none;
+  scroll-behavior: auto;
+  transition: none;
+}
+
+.concept-constellation[data-text-scale="accessibility"] :is(.co-route-enter) {
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root .concept-constellation *,
+  :root .concept-constellation *::before,
+  :root .concept-constellation *::after {
+    scroll-behavior: auto;
+    animation: none;
+    transition: none;
+  }
+}
+
+@media (forced-colors: active) {
+  .concept-constellation {
+    background: Canvas;
+    color: CanvasText;
+    forced-color-adjust: auto;
+  }
+
+  .concept-constellation .co-connection-marker,
+  .concept-constellation .co-attention-marker,
+  .concept-constellation [data-current-work="true"] {
+    border-color: currentColor;
+    box-shadow: none;
+    forced-color-adjust: none;
+  }
+
+  .concept-constellation .co-attention-signal,
+  .concept-constellation .co-relationship-rail,
+  .concept-constellation [data-status-state] {
+    color: CanvasText;
+  }
+}
+
+.concept-constellation :is(button, a, input, textarea, select):focus-visible {
+  outline: 3px solid var(--co-focus);
+  outline-offset: 2px;
+}
+
+/* ------------------------------ responsive ------------------------------- */
+
+@media (max-width: 44rem) {
+  .concept-constellation
+    .co-title-block
+    > p:last-child:not(.co-title-block__kicker) {
+    display: none;
+  }
+
+  .concept-constellation .co-topbar__actions button {
+    width: 44px;
+    padding: 0;
+    justify-content: center;
+  }
+
+  .concept-constellation .co-topbar__actions button span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    clip-path: inset(50%);
+    overflow: hidden;
+  }
+}
+
+@media (max-width: 31rem) {
+  .concept-constellation .co-route-content {
+    padding: 0.65rem;
+  }
+
+  .concept-constellation .co-topbar {
+    padding: 0.65rem;
+    gap: 0.3rem;
+  }
+
+  .concept-constellation .co-title-block__kicker {
+    display: none;
+  }
+
+  .concept-constellation .co-title-block h1 {
+    font-size: 1.45rem;
+  }
+
+  .concept-constellation .co-session-row button,
+  .concept-constellation .co-session-summary {
+    align-items: flex-start;
+    grid-template-columns: 1fr;
+  }
+
+  .concept-constellation .co-session-row__meta {
+    width: 100%;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .concept-constellation .co-session-summary {
+    flex-direction: column;
+  }
+
+  .concept-constellation .co-work-node__detail dl,
+  .concept-constellation .co-usage dl {
+    grid-template-columns: 1fr 1fr;
+  }
+}
