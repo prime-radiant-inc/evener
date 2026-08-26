@@ -3,6 +3,7 @@ package hubapi_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -32,6 +33,60 @@ func TestClientURLPreservesQueryString(t *testing.T) {
 	want := "http://127.0.0.1:9180/api/sessions/local:01ABC?include=details"
 	if got != want {
 		t.Fatalf("URL()=%q, want %q", got, want)
+	}
+}
+
+func TestNavigationConditionalGET(t *testing.T) {
+	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.EscapedPath() != "/api/navigation/projects/a%2Fb" {
+			t.Errorf("path: got %q", r.URL.EscapedPath())
+		}
+		if r.URL.Query().Get("tier") != "recent" || r.URL.Query().Get("offset") != "2" || r.URL.Query().Get("limit") != "5" {
+			t.Errorf("query: got %v", r.URL.Query())
+		}
+		if got := r.Header.Get("If-None-Match"); got != `"old"` {
+			t.Errorf("If-None-Match: got %q", got)
+		}
+		w.Header().Set("ETag", `"new"`)
+		_ = json.NewEncoder(w).Encode(hubapi.NavigationProjectPage{Key: "a/b", Tier: "recent"})
+	})
+	defer srv.Close()
+
+	got, err := client.NavigationProjectPage(context.Background(), "a/b", "recent", 2, 5, `"old"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.NotModified || got.ETag != `"new"` || got.Value.Key != "a/b" {
+		t.Fatalf("result = %+v", got)
+	}
+}
+
+func TestNavigationConditionalGETNotModifiedIsBodyless(t *testing.T) {
+	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("ETag", `"same"`)
+		w.WriteHeader(http.StatusNotModified)
+	})
+	defer srv.Close()
+
+	got, err := client.NavigationManifest(context.Background(), `"same"`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !got.NotModified || got.ETag != `"same"` {
+		t.Fatalf("result = %+v", got)
+	}
+}
+
+func TestNavigationHTTPErrorIsTyped(t *testing.T) {
+	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusNotFound)
+	})
+	defer srv.Close()
+
+	_, err := client.NavigationSessionLocation(context.Background(), "local:missing", "")
+	var httpErr *hubapi.HTTPError
+	if !errors.As(err, &httpErr) || httpErr.Status != http.StatusNotFound {
+		t.Fatalf("error = %v, want typed 404", err)
 	}
 }
 

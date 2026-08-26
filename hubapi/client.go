@@ -18,6 +18,22 @@ type Client struct {
 	httpClient *http.Client
 }
 
+// ConditionalResult is the result of a conditional navigation request.
+// Value is the zero value when NotModified is true.
+type ConditionalResult[T any] struct {
+	NotModified bool
+	ETag        string
+	Value       T
+}
+
+// HTTPError describes a non-successful HTTP response from the hub.
+type HTTPError struct {
+	Status int
+}
+
+func (e *HTTPError) Error() string   { return fmt.Sprintf("hub returned %d", e.Status) }
+func (e *HTTPError) StatusCode() int { return e.Status }
+
 func NewClient(base string, httpClient *http.Client) (*Client, error) {
 	if !strings.Contains(base, "://") {
 		base = "http://" + base
@@ -60,9 +76,103 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	}
 	defer resp.Body.Close() //nolint:errcheck // response body close on read path; error is not actionable
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		return fmt.Errorf("hub returned %d", resp.StatusCode)
+		return &HTTPError{Status: resp.StatusCode}
 	}
 	return json.NewDecoder(resp.Body).Decode(out)
+}
+
+func conditionalGet[T any](ctx context.Context, c *Client, target, etag string) (ConditionalResult[T], error) {
+	var result ConditionalResult[T]
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return result, err
+	}
+	if etag != "" {
+		req.Header.Set("If-None-Match", etag)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return result, err
+	}
+	defer resp.Body.Close() //nolint:errcheck // response body close is not actionable
+	result.ETag = resp.Header.Get("ETag")
+	if resp.StatusCode == http.StatusNotModified {
+		return ConditionalResult[T]{NotModified: true, ETag: result.ETag}, nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		return result, &HTTPError{Status: resp.StatusCode}
+	}
+	if err := json.NewDecoder(resp.Body).Decode(&result.Value); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+func navigationPath(path string, values url.Values) string {
+	if encoded := values.Encode(); encoded != "" {
+		return path + "?" + encoded
+	}
+	return path
+}
+
+func navigationSegment(value string) string { return url.PathEscape(value) }
+
+func navigationGet[T any](ctx context.Context, c *Client, path, etag string, query url.Values) (ConditionalResult[T], error) {
+	targetPath := navigationPath(path, query)
+	u := *c.baseURL
+	decoded, err := url.PathUnescape(strings.SplitN(targetPath, "?", 2)[0])
+	if err != nil {
+		return ConditionalResult[T]{}, err
+	}
+	u.Path = decoded
+	u.RawPath = strings.SplitN(targetPath, "?", 2)[0]
+	if encoded := query.Encode(); encoded != "" {
+		u.RawQuery = encoded
+	} else {
+		u.RawQuery = ""
+	}
+	return conditionalGet[T](ctx, c, u.String(), etag)
+}
+
+func (c *Client) NavigationManifest(ctx context.Context, etag string) (ConditionalResult[NavigationManifest], error) {
+	return navigationGet[NavigationManifest](ctx, c, "/api/navigation", etag, nil)
+}
+
+func (c *Client) NavigationSection(ctx context.Context, section string, offset, limit uint32, etag string) (ConditionalResult[NavigationSectionResource], error) {
+	return navigationGet[NavigationSectionResource](ctx, c, "/api/navigation/sections/"+navigationSegment(section), etag, navigationPageQuery(offset, limit))
+}
+
+func (c *Client) NavigationPinSections(ctx context.Context, offset, limit uint32, etag string) (ConditionalResult[NavigationPinSectionCatalog], error) {
+	return navigationGet[NavigationPinSectionCatalog](ctx, c, "/api/navigation/pin-sections", etag, navigationPageQuery(offset, limit))
+}
+
+func (c *Client) NavigationCatalog(ctx context.Context, catalog string, offset, limit uint32, etag string) (ConditionalResult[NavigationProjectCatalog], error) {
+	return navigationGet[NavigationProjectCatalog](ctx, c, "/api/navigation/catalogs/"+navigationSegment(catalog), etag, navigationPageQuery(offset, limit))
+}
+
+func (c *Client) NavigationProject(ctx context.Context, key, etag string) (ConditionalResult[NavigationProjectResource], error) {
+	return navigationGet[NavigationProjectResource](ctx, c, "/api/navigation/projects/"+navigationSegment(key), etag, nil)
+}
+
+func (c *Client) NavigationProjectPage(ctx context.Context, key, tier string, offset, limit uint32, etag string) (ConditionalResult[NavigationProjectPage], error) {
+	query := navigationPageQuery(offset, limit)
+	query.Set("tier", tier)
+	return navigationGet[NavigationProjectPage](ctx, c, "/api/navigation/projects/"+navigationSegment(key), etag, query)
+}
+
+func (c *Client) NavigationSessionLocation(ctx context.Context, ref, etag string) (ConditionalResult[NavigationSessionLocation], error) {
+	return navigationGet[NavigationSessionLocation](ctx, c, "/api/navigation/sessions/"+navigationSegment(ref), etag, nil)
+}
+
+func navigationPageQuery(offset, limit uint32) url.Values {
+	query := make(url.Values)
+	if offset != 0 {
+		query.Set("offset", fmt.Sprintf("%d", offset))
+	}
+	if limit != 0 {
+		query.Set("limit", fmt.Sprintf("%d", limit))
+	}
+	return query
 }
 
 func (c *Client) post(ctx context.Context, path string, body any, out any) error {
