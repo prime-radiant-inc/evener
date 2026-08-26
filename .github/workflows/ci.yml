@@ -62,17 +62,37 @@ jobs:
       - name: Fuzz gap check (every decode/parse package has a target — static, fast)
         run: make fuzz-gap-check
 
-  race:
+  race-root:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
 
       - uses: ./.github/actions/setup-toolchain
 
-      - name: Test (race detector — the permanent -race gate, all go.work modules)
-        run: make test-race
+      - name: Test (race detector — root module)
+        run: make test-race RACE_SCOPE=root
 
-  tests-and-fuzz:
+  race-modules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-toolchain
+
+      - name: Test (race detector — non-root go.work modules)
+        run: make test-race RACE_SCOPE=nonroot
+
+  tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-toolchain
+
+      - name: Deterministic tests (full root suite; frontend covered by web job)
+        run: ROOT_FULL=1 WEB=0 make test
+
+  dev-tooling:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -88,11 +108,15 @@ jobs:
       - name: Install golangci-lint for dev-tooling self-tests
         run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" "v${{ steps.golangci-version.outputs.version }}"
 
-      - name: Deterministic tests (full root suite; frontend covered by web job)
-        run: ROOT_FULL=1 WEB=0 make test
-
       - name: Dev-tooling self-test wave (scripts/*-selftest.sh — tooling, not the product)
         run: make test-dev-tooling
+
+  fuzz:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: ./.github/actions/setup-toolchain
 
       - name: Fuzz seed-corpus replay (committed crashers — no search, deterministic)
         run: make fuzz
@@ -100,7 +124,7 @@ jobs:
   snapshot-artifacts:
     name: Build snapshot artifacts
     if: github.event_name == 'pull_request'
-    needs: [static, race, tests-and-fuzz, web]
+    needs: [static, race-root, race-modules, tests, dev-tooling, fuzz, web]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
