@@ -46,6 +46,7 @@ import {
   devtoolsHttpURL,
   evaluate,
   navigateTo,
+  realizedViewport,
   waitForFonts,
   waitForHttp,
 } from "../browserGuardCdp.mjs";
@@ -57,17 +58,45 @@ const FRONTEND = path.resolve(path.dirname(fileURLToPath(import.meta.url)), ".."
 // reading measure and STOPS growing - which is exactly where a few px of
 // escape at the right edge shows up. A width sweep that skipped the wide end
 // would have missed the original bug entirely.
-const DEFAULT_WIDTHS = [390, 700, 1024, 1400];
+const DEFAULT_WIDTHS = [390, 700, 899, 900, 1024, 1400];
 
 async function measureAt(cdpEndpoint, url, width) {
   const page = await connectPage(cdpEndpoint);
   const { send } = page;
   try {
     await applyViewport(send, { width, height: 900, mobile: width < 900 });
+    await send(
+      "Emulation.setTouchEmulationEnabled",
+      width < 900 ? { enabled: true, maxTouchPoints: 1 } : { enabled: false },
+    );
     await navigateTo(page, url);
 
     const host = await evaluate(send, "location.host");
     if (String(host).includes("9180")) throw new Error("refusing: this eval landed on the shared evener-hub port");
+    const viewport = await realizedViewport(send);
+    const realizedLayout = await evaluate(
+      send,
+      "JSON.stringify({ mobile: matchMedia('(max-width: 899px)').matches, viewportMeta: document.querySelector('meta[name=viewport]')?.content ?? null })",
+    ).then((json) => JSON.parse(json));
+    const expectedMobile = width < 900;
+    const realizedWidths = [
+      ["window.innerWidth", viewport.windowInnerWidth],
+      ["document.documentElement.clientWidth", viewport.documentClientWidth],
+      ["window.visualViewport.width", viewport.visualViewportWidth],
+    ];
+    const wrongWidth = realizedWidths.find(([, actual]) => actual !== width);
+    if (wrongWidth) {
+      throw new Error(
+        `${width}px realized viewport mismatch: ${wrongWidth[0]}=${wrongWidth[1]}, expected ${width}; ` +
+          `meta=${JSON.stringify(realizedLayout.viewportMeta)}`,
+      );
+    }
+    if (realizedLayout.mobile !== expectedMobile) {
+      throw new Error(
+        `${width}px realized layout mode mismatch: mobile=${realizedLayout.mobile}, expected ${expectedMobile}; ` +
+          `innerWidth=${viewport.windowInnerWidth}, meta=${JSON.stringify(realizedLayout.viewportMeta)}`,
+      );
+    }
 
     // Delegate cards update from layout effects and the virtualizer measures
     // rows post-mount, so await the real tree settling before measurement.
@@ -107,8 +136,9 @@ async function measureAt(cdpEndpoint, url, width) {
 
     const detail = url.includes("settings=1") ? null : await evaluate(send, "window.inspectDetail()\n");
     const measured = await evaluate(send, "JSON.stringify(window.measure())");
-    return { ...JSON.parse(measured), exceptionSafety, detail };
+    return { ...JSON.parse(measured), exceptionSafety, detail, viewport: { ...viewport, mobile: realizedLayout.mobile } };
   } finally {
+    await send("Emulation.setTouchEmulationEnabled", { enabled: false }).catch(() => {});
     await clearViewportOverride(send);
     page.close();
   }
@@ -198,10 +228,22 @@ function assertDetail(result, width) {
   if (!detail?.open) failures.push("Detail trigger did not open its production portal/sheet");
   if (!detail?.portalContained) failures.push(`Detail portal/sheet escapes the viewport: ${JSON.stringify(detail?.panel)}`);
   if ((detail?.horizontalOverflowCount ?? 1) !== 0) {
-    failures.push(`Detail control has ${detail?.horizontalOverflowCount ?? "unknown"} horizontal overflow element(s)`);
+    failures.push(
+      `Detail control has ${detail?.horizontalOverflowCount ?? "unknown"} horizontal overflow element(s): ${JSON.stringify(detail?.overflowElements)}`,
+    );
   }
-  if (width < 900 && !detail?.fieldsetStacked) failures.push("Mobile Detail fieldsets are not stacked");
-  if (width < 900) {
+  const mobile = result.viewport?.mobile === true;
+  if (detail?.mobile !== mobile) failures.push(`Detail layout mode is ${detail?.mobile}, realized viewport mode is ${mobile}`);
+  if (detail?.fieldsetsFound !== 3) failures.push(`Detail Advanced rendered ${detail?.fieldsetsFound ?? "unknown"} fieldsets, expected 3`);
+  const expectedTargets = mobile ? 20 : 19;
+  if ((detail?.targets?.length ?? 0) !== expectedTargets) {
+    failures.push(`Detail mounted ${detail?.targets?.length ?? "unknown"} interactive targets, expected ${expectedTargets}`);
+  }
+  if (!detail?.popoverAnchored && !mobile) failures.push("Desktop Detail popover is not spatially anchored to its trigger");
+  if (!detail?.sheetBottomAnchored && mobile) failures.push("Mobile Detail sheet is not bottom-anchored");
+  if (mobile && (detail?.panel?.width ?? 0) <= 34 * 16 && !detail?.fieldsetStacked)
+    failures.push("Mobile Detail fieldsets are not stacked in the narrow sheet");
+  if (mobile) {
     const undersized = (detail?.targetHeights ?? []).filter((height) => height < 44 - 0.5);
     if (undersized.length > 0) failures.push(`Mobile Detail target(s) are below 44px: ${undersized.join(", ")}`);
   }
@@ -211,6 +253,7 @@ function assertDetail(result, width) {
 function assertSettings(result) {
   const failures = [];
   if (result.cardsFound !== 2) failures.push(`expected two production Settings cards, found ${result.cardsFound}`);
+  if (result.previewsFound !== 2) failures.push(`expected two production Settings previews, found ${result.previewsFound}`);
   if (!result.cardsStacked) failures.push("Settings Desktop/Mobile cards are not stacked");
   if (result.cardOverflowCount !== 0) failures.push(`Settings card overflow count is ${result.cardOverflowCount}`);
   if (result.previewOverflowCount !== 0) failures.push(`Settings preview overflow count is ${result.previewOverflowCount}`);
@@ -370,7 +413,7 @@ async function main() {
             `${result.footer.statusScrollWidth}px in ${result.footer.statusClientWidth}px`,
         );
       }
-      if (result.footer.modelClientWidth <= 0) {
+      if (!result.viewport.mobile && result.footer.modelClientWidth <= 0) {
         widthFailed = true;
         console.log(`${width}px ... FAIL - pressured footer model has zero visible width`);
       }
