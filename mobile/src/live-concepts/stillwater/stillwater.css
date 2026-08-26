@@ -1,0 +1,940 @@
+.concept-stillwater {
+  --sw-bg: #fbfcfb;
+  --sw-surface: #eef3f0;
+  --sw-surface-strong: #e4ece7;
+  --sw-ink: #17221e;
+  --sw-muted: #59645f;
+  --sw-line: #dce4df;
+  --sw-control-line: #77867e;
+  --sw-accent: #18775f;
+  --sw-accent-ink: #ffffff;
+  --sw-attention: #9a5b12;
+  --sw-danger: #a23932;
+  --sw-user: #dcefe8;
+  --sw-focus: #0b6952;
+  position: relative;
+  display: grid;
+  width: 100%;
+  height: var(--visual-viewport-height, 100dvh);
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+  background: var(--sw-bg);
+  color: var(--sw-ink);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+  isolation: isolate;
+}
+
+.concept-stillwater[data-appearance="light"] {
+  color-scheme: light;
+}
+
+.concept-stillwater[data-appearance="dark"],
+:root[data-appearance="dark"] .concept-stillwater {
+  --sw-bg: #101612;
+  --sw-surface: #19221d;
+  --sw-surface-strong: #233029;
+  --sw-ink: #edf5f1;
+  --sw-muted: #afbeb6;
+  --sw-line: #35443c;
+  --sw-control-line: #687a70;
+  --sw-accent: #72d6b6;
+  --sw-accent-ink: #0d1b16;
+  --sw-attention: #f0b568;
+  --sw-danger: #ff9b93;
+  --sw-user: #26473d;
+  --sw-focus: #9ce6cd;
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: dark) {
+  .concept-stillwater[data-appearance="system"] {
+    --sw-bg: #101612;
+    --sw-surface: #19221d;
+    --sw-surface-strong: #233029;
+    --sw-ink: #edf5f1;
+    --sw-muted: #afbeb6;
+    --sw-line: #35443c;
+    --sw-control-line: #687a70;
+    --sw-accent: #72d6b6;
+    --sw-accent-ink: #0d1b16;
+    --sw-attention: #f0b568;
+    --sw-danger: #ff9b93;
+    --sw-user: #26473d;
+    --sw-focus: #9ce6cd;
+    color-scheme: dark;
+  }
+}
+
+.concept-stillwater,
+.concept-stillwater * {
+  box-sizing: border-box;
+}
+
+.concept-stillwater button,
+.concept-stillwater input,
+.concept-stillwater textarea,
+.concept-stillwater select {
+  font: inherit;
+}
+
+.concept-stillwater button,
+.concept-stillwater a,
+.concept-stillwater input,
+.concept-stillwater textarea,
+.concept-stillwater select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.concept-stillwater button {
+  color: inherit;
+}
+
+.concept-stillwater svg {
+  width: 1.25rem;
+  height: 1.25rem;
+  flex: 0 0 auto;
+}
+
+.concept-stillwater h1,
+.concept-stillwater h2,
+.concept-stillwater h3,
+.concept-stillwater p,
+.concept-stillwater dl,
+.concept-stillwater dd {
+  margin: 0;
+}
+
+.concept-stillwater .sw-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  margin: -1px;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.concept-stillwater .sw-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  min-width: 0;
+  padding: max(0.75rem, var(--safe-area-top)) max(1rem, var(--safe-area-right))
+    0.8rem max(1rem, var(--safe-area-left));
+  border-bottom: 1px solid var(--sw-line);
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  background: color-mix(in srgb, var(--sw-bg) 95%, transparent);
+}
+
+.concept-stillwater .sw-topbar__leading,
+.concept-stillwater .sw-topbar__actions,
+.concept-stillwater .sw-topbar__actions button,
+.concept-stillwater .sw-session-actions,
+.concept-stillwater .sw-session-actions button {
+  display: flex;
+  align-items: center;
+}
+
+.concept-stillwater .sw-topbar__leading {
+  min-width: 0;
+  align-items: flex-start;
+  gap: 0.4rem;
+}
+
+.concept-stillwater .sw-title-block {
+  min-width: 0;
+}
+
+.concept-stillwater .sw-title-block__kicker,
+.concept-stillwater .sw-eyebrow {
+  color: var(--sw-accent);
+  font-size: 0.7rem;
+  font-weight: 760;
+  letter-spacing: 0.105em;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+
+.concept-stillwater .sw-title-block__kicker {
+  margin-bottom: 0.2rem;
+}
+
+.concept-stillwater .sw-title-block h1 {
+  max-width: 21ch;
+  font-size: clamp(1.8rem, 7vw, 2.65rem);
+  font-weight: 720;
+  letter-spacing: -0.045em;
+  line-height: 1.02;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.concept-stillwater
+  .sw-title-block
+  > p:last-child:not(.sw-title-block__kicker) {
+  margin-top: 0.28rem;
+  color: var(--sw-muted);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.concept-stillwater .sw-topbar__actions {
+  gap: 0.35rem;
+}
+
+.concept-stillwater .sw-topbar__actions button,
+.concept-stillwater .sw-icon-action,
+.concept-stillwater .sw-session-actions button,
+.concept-stillwater .sw-filter-row > button,
+.concept-stillwater .sw-composer-status button,
+.concept-stillwater .sw-question-actions button {
+  border: 1px solid var(--sw-control-line);
+  border-radius: 999px;
+  background: transparent;
+  cursor: pointer;
+}
+
+.concept-stillwater .sw-topbar__actions button {
+  display: inline-flex;
+  padding: 0 0.8rem;
+  align-items: center;
+  gap: 0.4rem;
+  white-space: nowrap;
+}
+
+.concept-stillwater .sw-icon-action {
+  display: grid;
+  padding: 0;
+  border-color: transparent;
+  place-items: center;
+}
+
+.concept-stillwater .sw-scroll {
+  width: 100%;
+  min-height: 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scroll-behavior: smooth;
+  scrollbar-gutter: stable;
+}
+
+.concept-stillwater .sw-route-content {
+  width: min(100%, 58rem);
+  margin-inline: auto;
+  padding: 1rem max(1rem, var(--safe-area-right))
+    calc(1.5rem + var(--keyboard-inset)) max(1rem, var(--safe-area-left));
+}
+
+.concept-stillwater .sw-filter-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+}
+
+.concept-stillwater .sw-filter-row label {
+  display: flex;
+  min-width: 0;
+  border: 1px solid var(--sw-control-line);
+  border-radius: 0.8rem;
+  align-items: center;
+  background: var(--sw-surface);
+}
+
+.concept-stillwater .sw-filter-row input {
+  width: 100%;
+  min-width: 0;
+  padding: 0 0.85rem;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--sw-ink);
+}
+
+.concept-stillwater .sw-filter-row > button {
+  padding-inline: 1rem;
+}
+
+.concept-stillwater .sw-refresh-status {
+  display: flex;
+  min-height: 2.2rem;
+  margin: 0.45rem 0 1rem;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  color: var(--sw-muted);
+  font-size: 0.78rem;
+}
+
+.concept-stillwater .sw-sessions,
+.concept-stillwater .sw-work-panel,
+.concept-stillwater .sw-conversation {
+  display: grid;
+  gap: 1.2rem;
+}
+
+.concept-stillwater .sw-session-group > header,
+.concept-stillwater .sw-work-list > header {
+  display: flex;
+  padding: 0 0.65rem 0.45rem;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.concept-stillwater .sw-session-group > header h2,
+.concept-stillwater .sw-work-list > header h2 {
+  font-size: 0.78rem;
+  font-weight: 780;
+  letter-spacing: 0.075em;
+  text-transform: uppercase;
+}
+
+.concept-stillwater .sw-session-group > header > span,
+.concept-stillwater .sw-work-list > header > span {
+  color: var(--sw-muted);
+  font-size: 0.75rem;
+}
+
+.concept-stillwater .sw-inset-list,
+.concept-stillwater .sw-question-card,
+.concept-stillwater .sw-usage,
+.concept-stillwater .sw-session-summary,
+.concept-stillwater .sw-composer {
+  border: 1px solid var(--sw-line);
+  border-radius: 0.9rem;
+  background: var(--sw-surface);
+}
+
+.concept-stillwater .sw-session-row + .sw-session-row {
+  border-top: 1px solid var(--sw-line);
+}
+
+.concept-stillwater .sw-session-row button {
+  display: grid;
+  width: 100%;
+  padding: 0.75rem 0.8rem;
+  border: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.concept-stillwater .sw-session-row__copy,
+.concept-stillwater .sw-session-row__meta {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.concept-stillwater .sw-session-row__copy {
+  gap: 0.15rem;
+}
+
+.concept-stillwater .sw-session-row__copy strong {
+  font-size: 0.96rem;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.concept-stillwater .sw-session-row__copy > span,
+.concept-stillwater .sw-session-row__copy small,
+.concept-stillwater .sw-session-row__meta time {
+  color: var(--sw-muted);
+  font-size: 0.75rem;
+}
+
+.concept-stillwater .sw-session-row__meta {
+  align-items: flex-end;
+  gap: 0.3rem;
+}
+
+.concept-stillwater [data-status-state] {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  font-size: 0.72rem;
+  font-weight: 720;
+}
+
+.concept-stillwater [data-status-state] svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.concept-stillwater [data-status-state="attention"] {
+  color: var(--sw-attention);
+}
+
+.concept-stillwater [data-status-state="running"],
+.concept-stillwater [data-status-state="complete"] {
+  color: var(--sw-accent);
+}
+
+.concept-stillwater [data-status-state="failed"] {
+  color: var(--sw-danger);
+}
+
+.concept-stillwater [data-status-state="waiting"],
+.concept-stillwater [data-status-state="idle"],
+.concept-stillwater [data-status-state="unknown"] {
+  color: var(--sw-muted);
+}
+
+.concept-stillwater .sw-banner {
+  display: flex;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid color-mix(in srgb, var(--sw-attention) 42%, var(--sw-line));
+  border-radius: 0.75rem;
+  align-items: center;
+  gap: 0.65rem;
+  background: color-mix(in srgb, var(--sw-attention) 9%, var(--sw-bg));
+  color: var(--sw-ink);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.concept-stillwater .sw-inline-state,
+.concept-stillwater [data-screen-state] {
+  padding: clamp(1.5rem, 7vw, 3.5rem) 1rem;
+  text-align: center;
+}
+
+.concept-stillwater .sw-inline-state h2,
+.concept-stillwater [data-screen-state] h2 {
+  font-size: 1.25rem;
+}
+
+.concept-stillwater .sw-inline-state p,
+.concept-stillwater [data-screen-state] p {
+  max-width: 34rem;
+  margin: 0.45rem auto 0;
+  color: var(--sw-muted);
+  line-height: 1.55;
+}
+
+.concept-stillwater .sw-session-summary {
+  display: flex;
+  padding: 1rem;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.concept-stillwater .sw-session-summary h2,
+.concept-stillwater .sw-work-heading h2 {
+  margin-top: 0.25rem;
+  font-size: clamp(1.35rem, 4vw, 1.85rem);
+  letter-spacing: -0.025em;
+}
+
+.concept-stillwater .sw-session-summary p,
+.concept-stillwater .sw-work-heading p {
+  margin-top: 0.45rem;
+  color: var(--sw-muted);
+  line-height: 1.6;
+}
+
+.concept-stillwater .sw-session-actions {
+  padding: 0;
+  border: 0;
+  margin: 0;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.concept-stillwater .sw-session-actions button {
+  padding-inline: 0.9rem;
+  gap: 0.4rem;
+}
+
+.concept-stillwater .sw-transcript {
+  display: grid;
+  width: min(100%, 46rem);
+  margin-inline: auto;
+  gap: 1.15rem;
+}
+
+.concept-stillwater .sw-transcript-item {
+  min-width: 0;
+  scroll-margin: 8rem;
+}
+
+.concept-stillwater .sw-transcript-item[data-focused="true"] {
+  border-radius: 0.7rem;
+  outline: 3px solid color-mix(in srgb, var(--sw-focus) 55%, transparent);
+  outline-offset: 0.35rem;
+}
+
+.concept-stillwater .sw-user-message {
+  width: fit-content;
+  max-width: min(85%, 34rem);
+  margin-left: auto;
+  padding: 0.7rem 0.9rem;
+  border-radius: 1rem 1rem 0.3rem 1rem;
+  background: var(--sw-user);
+  line-height: 1.55;
+}
+
+.concept-stillwater .sw-assistant-message {
+  max-width: 68ch;
+  font-size: clamp(1rem, 2.2vw, 1.08rem);
+  line-height: 1.78;
+  white-space: pre-wrap;
+}
+
+.concept-stillwater .sw-tool-disclosure,
+.concept-stillwater .sw-attachment,
+.concept-stillwater .sw-transcript-error {
+  border-block: 1px solid var(--sw-line);
+}
+
+.concept-stillwater .sw-tool-disclosure [data-disclosure-state] > button,
+.concept-stillwater .sw-work-node [data-disclosure-state] > button {
+  display: flex;
+  width: 100%;
+  padding: 0.7rem 0.15rem;
+  border: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-weight: 700;
+  text-align: left;
+}
+
+.concept-stillwater [data-disclosure-state="expanded"] > button svg {
+  transform: rotate(90deg);
+}
+
+.concept-stillwater .sw-tool-detail,
+.concept-stillwater .sw-work-node__detail {
+  padding: 0.2rem 0.2rem 1rem;
+  color: var(--sw-muted);
+}
+
+.concept-stillwater .sw-tool-detail dl,
+.concept-stillwater .sw-work-node__detail dl {
+  display: grid;
+  margin-top: 0.75rem;
+  gap: 0.75rem;
+}
+
+.concept-stillwater .sw-tool-detail dt,
+.concept-stillwater .sw-work-node__detail dt,
+.concept-stillwater .sw-usage dt {
+  color: var(--sw-muted);
+  font-size: 0.68rem;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.concept-stillwater .sw-tool-detail dd,
+.concept-stillwater .sw-work-node__detail dd {
+  margin-top: 0.2rem;
+  color: var(--sw-ink);
+  line-height: 1.5;
+}
+
+.concept-stillwater .sw-tool-detail pre {
+  max-width: 100%;
+  margin: 0;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+}
+
+.concept-stillwater .sw-attachment,
+.concept-stillwater .sw-transcript-error {
+  padding: 0.8rem 0.2rem;
+}
+
+.concept-stillwater .sw-attachment h3,
+.concept-stillwater .sw-transcript-error h3 {
+  margin-top: 0.25rem;
+  font-size: 0.95rem;
+}
+
+.concept-stillwater .sw-attachment p:last-child,
+.concept-stillwater .sw-transcript-error p {
+  margin-top: 0.35rem;
+  color: var(--sw-muted);
+  line-height: 1.5;
+}
+
+.concept-stillwater .sw-question-card {
+  padding: 1rem;
+}
+
+.concept-stillwater .sw-question-card fieldset {
+  padding: 0;
+  border: 0;
+  margin: 0;
+}
+
+.concept-stillwater .sw-question-card legend {
+  display: grid;
+  width: 100%;
+  margin-bottom: 0.75rem;
+  gap: 0.25rem;
+  font-size: 1.12rem;
+  font-weight: 720;
+  line-height: 1.35;
+}
+
+.concept-stillwater .sw-question-options {
+  border-block: 1px solid var(--sw-line);
+}
+
+.concept-stillwater .sw-question-option {
+  display: grid;
+  padding: 0.7rem 0;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.7rem;
+  cursor: pointer;
+}
+
+.concept-stillwater .sw-question-option + .sw-question-option {
+  border-top: 1px solid var(--sw-line);
+}
+
+.concept-stillwater .sw-question-option input {
+  width: 1.2rem;
+  height: 1.2rem;
+  accent-color: var(--sw-accent);
+}
+
+.concept-stillwater .sw-question-option > span {
+  display: grid;
+  gap: 0.12rem;
+}
+
+.concept-stillwater .sw-question-option small {
+  color: var(--sw-muted);
+  font-size: 0.72rem;
+}
+
+.concept-stillwater .sw-question-actions {
+  display: flex;
+  margin-top: 0.8rem;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.concept-stillwater .sw-question-actions button {
+  padding-inline: 0.85rem;
+}
+
+.concept-stillwater .sw-primary-action {
+  border: 0;
+  border-radius: 0.75rem;
+  background: var(--sw-accent);
+  color: var(--sw-accent-ink);
+  cursor: pointer;
+  font-weight: 760;
+}
+
+.concept-stillwater .sw-primary-action:disabled,
+.concept-stillwater button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.concept-stillwater .sw-field {
+  display: grid;
+  gap: 0.35rem;
+  color: var(--sw-muted);
+  font-size: 0.78rem;
+  font-weight: 690;
+}
+
+.concept-stillwater .sw-field textarea {
+  width: 100%;
+  padding: 0.7rem 0.75rem;
+  border: 1px solid var(--sw-control-line);
+  border-radius: 0.65rem;
+  outline: 0;
+  background: var(--sw-bg);
+  color: var(--sw-ink);
+}
+
+.concept-stillwater .sw-composer textarea {
+  min-height: 5.5rem;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.concept-stillwater .sw-composer-status {
+  display: flex;
+  width: min(100%, 46rem);
+  margin-inline: auto;
+  padding: 0.65rem 0.8rem;
+  border-left: 3px solid var(--sw-accent);
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.7rem;
+  background: var(--sw-surface);
+  font-size: 0.82rem;
+}
+
+.concept-stillwater .sw-composer {
+  position: relative;
+  display: grid;
+  width: min(100%, 46rem);
+  margin-inline: auto;
+  padding: 0.65rem;
+  grid-template-rows: auto auto;
+  gap: 0.45rem;
+}
+
+.concept-stillwater .sw-composer__modes {
+  display: flex;
+  padding: 0;
+  border: 0;
+  margin: 0;
+  gap: 0.3rem;
+}
+
+.concept-stillwater .sw-composer__modes button {
+  padding: 0.3rem 0.75rem;
+  border: 1px solid var(--sw-control-line);
+  border-radius: 999px;
+  background: transparent;
+}
+
+.concept-stillwater .sw-composer__modes button[aria-pressed="true"] {
+  border-color: var(--sw-accent);
+  background: color-mix(in srgb, var(--sw-accent) 12%, var(--sw-surface));
+  color: var(--sw-accent);
+}
+
+.concept-stillwater .sw-composer label {
+  min-width: 0;
+}
+
+.concept-stillwater .sw-composer textarea {
+  width: 100%;
+  min-height: 3rem;
+  padding: 0.65rem;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+}
+
+.concept-stillwater .sw-work-panel {
+  padding-bottom: 1rem;
+}
+
+.concept-stillwater .sw-work-heading {
+  padding: 0.5rem 0.6rem;
+  max-width: 44rem;
+}
+
+.concept-stillwater .sw-work-tasks {
+  display: flex;
+  gap: 1rem;
+  color: var(--sw-muted);
+  font-size: 0.8rem;
+}
+
+.concept-stillwater .sw-work-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.concept-stillwater .sw-work-node {
+  border: 1px solid var(--sw-line);
+  border-radius: 0.75rem;
+  background: var(--sw-surface);
+}
+
+.concept-stillwater .sw-work-tree {
+  display: grid;
+  padding: 0;
+  margin: 0;
+  gap: 0.5rem;
+  list-style: none;
+}
+
+.concept-stillwater .sw-work-tree .sw-work-tree {
+  padding-left: clamp(0.7rem, 4vw, 1.5rem);
+  margin-top: 0.5rem;
+  border-left: 1px solid var(--sw-line);
+}
+
+.concept-stillwater .sw-work-tree > li {
+  min-width: 0;
+}
+
+.concept-stillwater .sw-work-node [data-disclosure-state] > button,
+.concept-stillwater .sw-work-node__detail {
+  padding-inline: 0.8rem;
+}
+
+.concept-stillwater .sw-work-node__detail dl {
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+}
+
+.concept-stillwater .sw-work-node__detail p {
+  margin-top: 0.75rem;
+  color: var(--sw-ink);
+  line-height: 1.5;
+}
+
+.concept-stillwater .sw-usage {
+  padding: 1rem;
+}
+
+.concept-stillwater .sw-usage dl {
+  display: grid;
+  margin-top: 0.85rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.concept-stillwater .sw-usage dd {
+  margin-top: 0.15rem;
+  font-weight: 700;
+}
+
+.concept-stillwater .sw-roster-more {
+  color: var(--sw-muted);
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+.concept-stillwater .sw-older-available {
+  color: var(--sw-muted);
+  font-size: 0.78rem;
+  text-align: center;
+}
+
+.concept-stillwater :is(button, a, input, textarea, select):focus-visible {
+  outline: 3px solid var(--sw-focus);
+  outline-offset: 2px;
+}
+
+.concept-stillwater [data-disclosure-state] > button svg {
+  transition: transform 150ms ease;
+}
+
+@keyframes sw-route-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.3rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.concept-stillwater[data-reduced-motion="true"] *,
+.concept-stillwater[data-reduced-motion="true"] *::before,
+.concept-stillwater[data-reduced-motion="true"] *::after,
+:root[data-reduced-motion="true"] .concept-stillwater *,
+:root[data-reduced-motion="true"] .concept-stillwater *::before,
+:root[data-reduced-motion="true"] .concept-stillwater *::after {
+  scroll-behavior: auto;
+  animation: none;
+  transition: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root .concept-stillwater *,
+  :root .concept-stillwater *::before,
+  :root .concept-stillwater *::after {
+    scroll-behavior: auto;
+    animation: none;
+    transition: none;
+  }
+}
+
+@media (max-width: 44rem) {
+  .concept-stillwater
+    .sw-title-block
+    > p:last-child:not(.sw-title-block__kicker) {
+    display: none;
+  }
+
+  .concept-stillwater .sw-topbar__actions button {
+    width: var(--sw-target, 44px);
+    padding: 0;
+    justify-content: center;
+  }
+
+  .concept-stillwater .sw-topbar__actions button span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    clip-path: inset(50%);
+    overflow: hidden;
+  }
+}
+
+@media (max-width: 31rem) {
+  .concept-stillwater .sw-route-content {
+    padding-right: max(0.65rem, var(--safe-area-right));
+    padding-left: max(0.65rem, var(--safe-area-left));
+  }
+
+  .concept-stillwater .sw-topbar {
+    padding-right: max(0.65rem, var(--safe-area-right));
+    padding-left: max(0.65rem, var(--safe-area-left));
+    gap: 0.3rem;
+  }
+
+  .concept-stillwater .sw-title-block__kicker {
+    display: none;
+  }
+
+  .concept-stillwater .sw-title-block h1 {
+    font-size: 1.45rem;
+  }
+
+  .concept-stillwater .sw-session-row button,
+  .concept-stillwater .sw-session-summary,
+  .concept-stillwater .sw-banner,
+  .concept-stillwater .sw-composer-status {
+    align-items: flex-start;
+    grid-template-columns: 1fr;
+  }
+
+  .concept-stillwater .sw-session-row__meta {
+    width: 100%;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .concept-stillwater .sw-session-summary,
+  .concept-stillwater .sw-banner,
+  .concept-stillwater .sw-composer-status {
+    flex-direction: column;
+  }
+
+  .concept-stillwater .sw-work-node__detail dl,
+  .concept-stillwater .sw-usage dl {
+    grid-template-columns: 1fr 1fr;
+  }
+
+  .concept-stillwater .sw-question-option {
+    grid-template-columns: auto minmax(0, 1fr);
+  }
+}
