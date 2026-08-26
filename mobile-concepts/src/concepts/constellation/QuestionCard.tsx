@@ -72,30 +72,34 @@ export function QuestionCard({ question, state, dispatch }: QuestionCardProps) {
           <span>{question.prompt}</span>
         </legend>
         <div className="co-question-options">
-          {question.options.map((option) => (
-            <label className="co-question-option" key={option.id}>
-              <input
-                type={question.mode === "single" ? "radio" : "checkbox"}
-                name={`question-${question.id}`}
-                aria-label={option.label}
-                checked={selectedOptionIds.includes(option.id)}
-                disabled={!canMutate}
-                onChange={(event) =>
-                  dispatch({
-                    type: "setQuestionOption",
-                    questionId: question.id,
-                    optionId: option.id,
-                    selected: event.currentTarget.checked,
-                  })
-                }
-              />
-              <span>
-                <strong>{option.label}</strong>
-                <small>{option.detail}</small>
-              </span>
-              {option.recommended ? <em>Recommended</em> : null}
-            </label>
-          ))}
+          {question.options.map((option) => {
+            const detailId = `question-${question.id}-option-${option.id}-detail`;
+            return (
+              <label className="co-question-option" key={option.id}>
+                <input
+                  type={question.mode === "single" ? "radio" : "checkbox"}
+                  name={`question-${question.id}`}
+                  aria-label={option.label}
+                  aria-describedby={detailId}
+                  checked={selectedOptionIds.includes(option.id)}
+                  disabled={!canMutate}
+                  onChange={(event) =>
+                    dispatch({
+                      type: "setQuestionOption",
+                      questionId: question.id,
+                      optionId: option.id,
+                      selected: event.currentTarget.checked,
+                    })
+                  }
+                />
+                <span>
+                  <strong>{option.label}</strong>
+                  <small id={detailId}>{option.detail}</small>
+                </span>
+                {option.recommended ? <em>Recommended</em> : null}
+              </label>
+            );
+          })}
         </div>
       </fieldset>
 

@@ -40,6 +40,7 @@ export function StillwaterShell({
   children,
 }: StillwaterShellProps) {
   const activeTab = state.route.kind === "root" ? state.route.tab : null;
+  const iconTarget = `${primitives.minimumTarget}px`;
   return (
     <div
       className="concept-stillwater"
@@ -65,6 +66,13 @@ export function StillwaterShell({
                 className="sw-icon-action"
                 type="button"
                 aria-label={pushed === "close" ? "Close" : "Back"}
+                data-icon-target={iconTarget}
+                style={{
+                  width: iconTarget,
+                  minWidth: iconTarget,
+                  height: iconTarget,
+                  minHeight: iconTarget,
+                }}
                 onClick={() => dispatch({ type: "goBack" })}
               >
                 <Icon name={pushed === "close" ? "close" : "back"} decorative />
