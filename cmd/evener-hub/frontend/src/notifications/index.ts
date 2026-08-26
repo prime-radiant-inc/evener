@@ -14,6 +14,7 @@
 
 import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
+import { initNavigation, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { prefsStore } from "../stores/prefs";
 import { treeStore } from "../stores/tree";
 import { type AttentionEntry, detectFires, snapshotFromTree } from "./attention";
@@ -36,7 +37,7 @@ let sawReady = false;
 const subscriptions: Array<() => void> = [];
 
 function currentSummary() {
-  return treeStore.getState().tree?.attentionSummary ?? null;
+  return navigationStore.getState().attention.summary ?? treeStore.getState().tree?.attentionSummary ?? null;
 }
 
 // Title base tracks the focused pane; both channels read their pref straight
@@ -88,6 +89,26 @@ export function initNotifications(): void {
 
   electLeader();
 
+  // Navigation is authoritative when the handshake advertises it. The
+  // microtask lets AppShell wire its client during the same mount before the
+  // migration-only tree fallback is considered.
+  queueMicrotask(() => {
+    const client = connectionStore.getState().client;
+    if (client) initNavigation(client);
+    else if (treeStore.getState().tree === null) void treeStore.getState().ensureLoaded();
+  });
+
+  subscriptions.push(
+    connectionStore.subscribe((state, prev) => {
+      if (state.client && state.client !== prev.client) initNavigation(state.client);
+    }),
+  );
+  subscriptions.push(
+    navigationStore.subscribe((state, prev) => {
+      if (state.attention !== prev.attention) applyCounts();
+    }),
+  );
+
   // React to a tree snapshot only when the tree reference actually changes —
   // never on a bare loading/error transition, whose null-tree snapshot would
   // otherwise corrupt the baseline into "everything just appeared."
@@ -126,7 +147,8 @@ export function initNotifications(): void {
         return;
       }
       rebaselinePending = true;
-      void treeStore.getState().refresh();
+      const client = connectionStore.getState().client;
+      if (!client || navigationStore.getState().capability === null) void treeStore.getState().refresh();
     }),
   );
 
@@ -154,4 +176,5 @@ export function resetNotificationsForTests(): void {
   prevSnapshot = null;
   rebaselinePending = false;
   sawReady = false;
+  resetNavigationStoreForTests();
 }
