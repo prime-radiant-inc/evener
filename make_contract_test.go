@@ -83,6 +83,11 @@ func TestMakeMergeApprovalGateIsOrderedAndFailClosed(t *testing.T) {
 	if len(recipeLines) != 4 {
 		t.Fatalf("merge-approval-gate has %d recipe lines, want four: %q", len(recipeLines), gate)
 	}
+	thirdFields := strings.Fields(recipeLines[2])
+	if len(thirdFields) < 3 || thirdFields[0] != "ROOT_FULL=1" ||
+		thirdFields[1] != "$(MAKE)" || thirdFields[2] != "test" {
+		t.Fatalf("third merge phase is not exactly ROOT_FULL=1 recursive test: %q", recipeLines[2])
+	}
 	for i, line := range recipeLines {
 		trimmed := strings.TrimSpace(line)
 		control := strings.TrimPrefix(trimmed, "@")
