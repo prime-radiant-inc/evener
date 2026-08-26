@@ -178,6 +178,65 @@ func TestHTTPRequestRecorderRedactsDirtyNavigationCandidates(t *testing.T) {
 	}
 }
 
+func TestHTTPRequestRecorderRedactsPrefixAdjacentNavigation(t *testing.T) {
+	t.Setenv(envvars.EVENERRecordHTTP.Name, "1")
+	root := t.TempDir()
+	web := &WebServer{
+		cfg:        hubcore.WebConfig{HubStateRoot: root, AuthToken: "guard-token"},
+		navigation: newTestNavigationService(t, newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())),
+	}
+	for _, target := range []string{"/api/navigation-secret/private-path?query-secret=1", "/api/navigationevil/private-path?query-secret=1"} {
+		for _, authorization := range []string{"", "Bearer guard-token"} {
+			request := httptest.NewRequest(http.MethodPost, target, strings.NewReader("body-secret"))
+			request.Header.Set("Authorization", authorization)
+			request.Header.Set("Cookie", "session=cookie-secret")
+			response := httptest.NewRecorder()
+			web.Handler().ServeHTTP(response, request)
+			want := http.StatusUnauthorized
+			if authorization != "" {
+				want = http.StatusMethodNotAllowed
+			}
+			if response.Code != want || response.Header().Get("Location") != "" {
+				t.Fatalf("target=%q authorization=%q status=%d location=%q", target, authorization, response.Code, response.Header().Get("Location"))
+			}
+		}
+	}
+	records := readHTTPRecordings(t, filepath.Join(root, "hub-http.jsonl"))
+	if len(records) != 4 {
+		t.Fatalf("records=%d", len(records))
+	}
+	for _, record := range records {
+		if record.Path != "navigation/unknown" || record.Query != "" || record.Body != "" || len(record.Headers) != 0 {
+			t.Fatalf("prefix-adjacent record leaked: %+v", record)
+		}
+		encoded, err := json.Marshal(record)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, secret := range []string{"private-path", "query-secret", "body-secret", "cookie-secret", "guard-token"} {
+			if strings.Contains(string(encoded), secret) {
+				t.Fatalf("record contains %q: %s", secret, encoded)
+			}
+		}
+	}
+}
+
+func TestHTTPRequestRecorderKeepsNavigationNearMissBehavior(t *testing.T) {
+	t.Setenv(envvars.EVENERRecordHTTP.Name, "1")
+	root := t.TempDir()
+	request := httptest.NewRequest(http.MethodPost, "/api/navigatio/ordinary?x=1", strings.NewReader("ordinary-body"))
+	newHTTPRequestRecorder(root)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		if string(body) != "ordinary-body" {
+			t.Fatalf("downstream body=%q", body)
+		}
+	})).ServeHTTP(httptest.NewRecorder(), request)
+	records := readHTTPRecordings(t, filepath.Join(root, "hub-http.jsonl"))
+	if len(records) != 1 || records[0].Path != "/api/navigatio/ordinary" || records[0].Query != "x=1" || records[0].Body != "ordinary-body" {
+		t.Fatalf("near-miss behavior changed: %+v", records)
+	}
+}
+
 // Oversized bodies are capped, not buffered without bound, and the downstream
 // handler still sees the full body.
 func TestHTTPRecorderCapsBody(t *testing.T) {

@@ -45,6 +45,12 @@ func isNavigationRequestPath(r *http.Request) bool {
 		if candidate == "" {
 			continue
 		}
+		// Prefix-adjacent malformed paths must be redacted too. They may not be a
+		// routable navigation resource, but the recorder runs before auth and must
+		// never retain a path that embeds a navigation-looking secret.
+		if strings.HasPrefix(candidate, navigationPathPrefix) {
+			return true
+		}
 		cleaned := path.Clean(candidate)
 		if cleaned == navigationPathPrefix || strings.HasPrefix(cleaned, navigationPathPrefix+"/") {
 			return true
