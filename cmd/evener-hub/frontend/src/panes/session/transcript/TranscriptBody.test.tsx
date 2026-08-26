@@ -428,10 +428,17 @@ describe("TranscriptBody", () => {
       <TranscriptBody model={askBefore} config={preset("tools")} surface="preview" disclosureScope="ordinary:ask" />,
     );
     expect(screen.getByTestId("tool-row-summary").textContent).toContain("Asked: [Mode]");
+    const askDetails = screen.getByTestId("tool-call-item");
+    const askSummary = screen.getByTestId("tool-row");
+    askSummary.focus();
+    expect(document.activeElement).toBe(askSummary);
     rerender(
       <TranscriptBody model={askAfter} config={preset("tools")} surface="preview" disclosureScope="ordinary:ask" />,
     );
     expect(screen.getByTestId("tool-row-summary").textContent).toContain("answered: Fast");
+    expect(screen.getByTestId("tool-call-item")).toBe(askDetails);
+    expect(screen.getByTestId("tool-row")).toBe(askSummary);
+    expect(document.activeElement).toBe(askSummary);
 
     const delegateItem = {
       id: "ordinary_delegate",
