@@ -3,7 +3,11 @@
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import { afterEach, expect, test, vi } from "vitest";
 import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
-import { TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
+import {
+  createTranscriptRenderContext,
+  defaultDisclosureScope,
+  TranscriptRenderProvider,
+} from "../../../transcriptDisplay/renderContext";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
 import galleryStyles from "./flow/imagegallery.module.css";
 import { ToolCallItem } from "./ToolCallItem";
@@ -297,6 +301,21 @@ test("Full establishes one open baseline, preserves a later manual close, and op
   const rows = screen.getAllByTestId("tool-call-item");
   expect(rowIsOpen(rows[0]!)).toBe(false);
   expect(rowIsOpen(rows[1]!)).toBe(true);
+});
+
+test("omitted disclosure scopes remain isolated by live, readOnly, and preview surfaces", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "activity" });
+  const live = createTranscriptRenderContext({ config, surface: "live" });
+  const readOnly = createTranscriptRenderContext({ config, surface: "readOnly" });
+  const preview = createTranscriptRenderContext({ config, surface: "preview" });
+
+  expect(live.disclosureScope).toBe(defaultDisclosureScope("live"));
+  expect(readOnly.disclosureScope).toBe(defaultDisclosureScope("readOnly"));
+  expect(preview.disclosureScope).toBe(defaultDisclosureScope("preview"));
+  expect(new Set([live.disclosureScope, readOnly.disclosureScope, preview.disclosureScope]).size).toBe(3);
+  expect(createTranscriptRenderContext({ config, surface: "live", sessionRef: "session_a" }).disclosureScope).not.toBe(
+    createTranscriptRenderContext({ config, surface: "live", sessionRef: "session_b" }).disclosureScope,
+  );
 });
 
 test("clicking the summary manually expands a collapsed row", () => {

@@ -10,13 +10,22 @@ import { createStore } from "zustand/vanilla";
 interface DisclosureState {
   /** Explicit reader choices. Defaults are kept separately so a display
    * configuration cannot fight a manual toggle on every render. */
-  open: Map<string, boolean>;
+  open: Map<string, ExplicitChoice>;
   baselines: Map<string, DisclosureBaseline>;
+  revision: number;
+}
+
+interface ExplicitChoice {
+  open: boolean;
+  revision: number;
+  baselineGeneration: number | undefined;
 }
 
 interface DisclosureBaseline {
   open: boolean;
   ids: Set<string>;
+  generation: number;
+  startedRevision: number;
 }
 
 const SCOPE_SEPARATOR = "\0";
@@ -26,7 +35,7 @@ export function scopedDisclosureId(scope: string, id: string): string {
   return `${scope}${SCOPE_SEPARATOR}${id}`;
 }
 
-const store = createStore<DisclosureState>(() => ({ open: new Map(), baselines: new Map() }));
+const store = createStore<DisclosureState>(() => ({ open: new Map(), baselines: new Map(), revision: 0 }));
 
 /** Reactive: re-renders the caller when this id's open state changes. This IS
  * a custom hook (it rides zustand's useStore, exactly as useSubagentRows does);
@@ -35,20 +44,39 @@ const store = createStore<DisclosureState>(() => ({ open: new Map(), baselines: 
  * a use- prefix, so biome's hook-name heuristic can't recognize it as a hook. */
 export function isDisclosureOpen(id: string, fallback: boolean): boolean {
   // biome-ignore lint/correctness/useHookAtTopLevel: custom hook wrapping useStore; called unconditionally at the top of Disclosure's render, only the non-use- name defeats the heuristic
-  return useStore(store, (s) => s.open.get(id) ?? fallback);
+  return useStore(store, (s) => s.open.get(id)?.open ?? fallback);
 }
 
 export function setDisclosureOpen(id: string, open: boolean): void {
   store.setState((s) => {
     const next = new Map(s.open);
-    next.set(id, open);
-    return { open: next };
+    const baseline = baselineForId(s.baselines, id);
+    const revision = s.revision + 1;
+    next.set(id, {
+      open,
+      revision,
+      baselineGeneration: baseline?.generation,
+    });
+    return { open: next, revision };
   });
 }
 
 export function toggleDisclosure(id: string, fallback: boolean): void {
-  const current = store.getState().open.get(id) ?? fallback;
+  const current = store.getState().open.get(id)?.open ?? fallback;
   setDisclosureOpen(id, !current);
+}
+
+function baselineForId(baselines: ReadonlyMap<string, DisclosureBaseline>, id: string): DisclosureBaseline | undefined {
+  let match: DisclosureBaseline | undefined;
+  let matchLength = -1;
+  for (const [scope, baseline] of baselines) {
+    const prefixLength = scope.length + SCOPE_SEPARATOR.length;
+    if (id.startsWith(`${scope}${SCOPE_SEPARATOR}`) && prefixLength > matchLength) {
+      match = baseline;
+      matchLength = prefixLength;
+    }
+  }
+  return match;
 }
 
 /**
@@ -63,12 +91,21 @@ export function beginDisclosureBaseline(scope: string, ids: readonly string[], o
   store.setState((state) => {
     const previous = state.baselines.get(scope);
     const enteringOpenBaseline = open && previous?.open !== true;
+    const generation = enteringOpenBaseline ? (previous?.generation ?? 0) + 1 : (previous?.generation ?? 0);
+    const startedRevision = enteringOpenBaseline ? state.revision : (previous?.startedRevision ?? state.revision);
     const nextOpen = new Map(state.open);
-    if (enteringOpenBaseline) {
-      for (const id of ids) nextOpen.delete(scopedDisclosureId(scope, id));
+    if (open) {
+      for (const id of ids) {
+        const key = scopedDisclosureId(scope, id);
+        const choice = nextOpen.get(key);
+        // A false value written before this Full baseline (or before a newly
+        // eligible id joined it) is stale. A true value is an explicit open
+        // and survives every baseline transition.
+        if (choice?.open === false && choice.revision <= startedRevision) nextOpen.delete(key);
+      }
     }
     const baselines = new Map(state.baselines);
-    baselines.set(scope, { open, ids: new Set(ids) });
+    baselines.set(scope, { open, ids: new Set(ids), generation, startedRevision });
     return { open: nextOpen, baselines };
   });
 }
@@ -94,5 +131,5 @@ export function clearDisclosureScope(scope: string): void {
 }
 
 export function resetDisclosureStoreForTests(): void {
-  store.setState({ open: new Map(), baselines: new Map() });
+  store.setState({ open: new Map(), baselines: new Map(), revision: 0 });
 }
