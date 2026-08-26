@@ -24,29 +24,41 @@ function renderSwitcher(platform: "ios" | "android" = "ios") {
   });
   const dispatch = vi.fn();
   const onClose = vi.fn();
-  const opener = document.createElement("button");
-  opener.textContent = "Switch concept";
-  document.body.append(opener);
-  opener.focus();
-
-  return {
-    dispatch,
-    onClose,
-    opener,
-    ...render(
+  const ui = (open: boolean) => (
+    <div>
+      <button type="button" data-concept-switch-trigger="true">
+        Switch concept
+      </button>
       <PrototypeProvider store={store}>
         <ConceptSwitcher
-          open
+          open={open}
           dispatch={dispatch}
           onClose={onClose}
           primitives={getPlatformPrimitives(platform)}
         />
-      </PrototypeProvider>,
-    ),
+      </PrototypeProvider>
+    </div>
+  );
+  const view = render(ui(true));
+  const opener = view.container.querySelector<HTMLButtonElement>(
+    "[data-concept-switch-trigger='true']",
+  );
+  if (!opener) throw new Error("switcher test opener was not rendered");
+  return {
+    dispatch,
+    onClose,
+    opener,
+    closeSwitcher: () => view.rerender(ui(false)),
+    ...view,
   };
 }
 
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  expect(
+    document.querySelector("[data-concept-switch-trigger='true']"),
+  ).toBeNull();
+});
 
 describe("ConceptSwitcher", () => {
   it("renders shared metadata in a platform sheet with real modal semantics and initial focus", async () => {
@@ -66,7 +78,7 @@ describe("ConceptSwitcher", () => {
     );
   });
 
-  it("traps Tab, delegates Close, and dispatches selection before closing", async () => {
+  it("traps Tab and makes selection plus every repeated close request idempotent", async () => {
     const { dispatch, onClose } = renderSwitcher();
     const close = screen.getByRole("button", {
       name: "Close concept switcher",
@@ -88,13 +100,22 @@ describe("ConceptSwitcher", () => {
       concept: "field-notes",
     });
     expect(onClose).toHaveBeenCalledOnce();
+    expect(close).toBeDisabled();
+    for (const choice of screen.getAllByRole("button", { name: /^Select / })) {
+      expect(choice).toBeDisabled();
+    }
 
     fireEvent.click(close);
-    expect(onClose).toHaveBeenCalledTimes(2);
+    fireEvent.keyDown(screen.getByRole("dialog", { name: "Switch concept" }), {
+      key: "Escape",
+    });
+    fireEvent.click(fieldNotes);
+    expect(dispatch).toHaveBeenCalledTimes(1);
+    expect(onClose).toHaveBeenCalledOnce();
   });
 
   it("keeps focus inside while open and restores the invoking opener on close", async () => {
-    const { opener, rerender } = renderSwitcher();
+    const { opener, closeSwitcher } = renderSwitcher();
     const close = screen.getByRole("button", {
       name: "Close concept switcher",
     });
@@ -103,7 +124,7 @@ describe("ConceptSwitcher", () => {
     opener.focus();
     expect(close).toHaveFocus();
 
-    rerender(null);
+    closeSwitcher();
     await waitFor(() => expect(opener).toHaveFocus());
   });
 });

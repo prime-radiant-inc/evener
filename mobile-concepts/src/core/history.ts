@@ -98,6 +98,7 @@ export function createNavigationController(
 ): NavigationController {
   let ownedDepth = 0;
   let pendingRoutePops = 0;
+  let pendingBack = false;
   let suppressHistory = false;
   let reconcilingRoot = false;
   let disposed = false;
@@ -106,12 +107,14 @@ export function createNavigationController(
   const replaceRoot = () => {
     ownedDepth = 0;
     pendingRoutePops = 0;
+    pendingBack = false;
     reconcilingRoot = false;
     historyTarget.history.replaceState(historyState(0), "");
   };
 
   const reconcileRoot = () => {
     pendingRoutePops = 0;
+    pendingBack = false;
     if (ownedDepth === 0) {
       replaceRoot();
       return;
@@ -175,6 +178,7 @@ export function createNavigationController(
   };
 
   const onPopState = (event: PopStateEvent) => {
+    pendingBack = false;
     if (reconcilingRoot) {
       if (isConceptHistoryState(event.state) && event.state.depth === 0) {
         replaceRoot();
@@ -205,12 +209,16 @@ export function createNavigationController(
 
   const dispatchAction = (action: PrototypeAction) => {
     if (disposed) return;
-    if (reconcilingRoot) {
-      deferredActions.push(action);
+    if (action.type === "goBack") {
+      if (ownedDepth > 0) {
+        if (pendingBack || reconcilingRoot) return;
+        pendingBack = true;
+      }
+      historyTarget.history.back();
       return;
     }
-    if (action.type === "goBack") {
-      historyTarget.history.back();
+    if (reconcilingRoot) {
+      deferredActions.push(action);
       return;
     }
     reduce(action);
@@ -224,6 +232,7 @@ export function createNavigationController(
     dispose() {
       if (disposed) return;
       disposed = true;
+      pendingBack = false;
       historyTarget.removeEventListener("popstate", onPopState);
     },
   };

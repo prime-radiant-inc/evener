@@ -1,4 +1,10 @@
-import { type KeyboardEvent, useCallback, useEffect, useRef } from "react";
+import {
+  type KeyboardEvent,
+  useCallback,
+  useEffect,
+  useRef,
+  useState,
+} from "react";
 import type { ConceptId } from "../core/model";
 import type { PlatformPrimitives } from "../core/platform";
 import type { PrototypeAction } from "../core/state";
@@ -9,10 +15,8 @@ const focusableSelector =
   "button:not([disabled]):not([tabindex='-1']), input:not([disabled]):not([tabindex='-1']), select:not([disabled]):not([tabindex='-1']), textarea:not([disabled]):not([tabindex='-1']), [href]:not([tabindex='-1']), [tabindex]:not([tabindex='-1'])";
 
 function currentConceptSwitcherOpener(): HTMLElement | null {
-  return (
-    Array.from(document.querySelectorAll<HTMLElement>("button")).find(
-      (button) => button.textContent?.trim() === "Switch concept",
-    ) ?? null
+  return document.querySelector<HTMLElement>(
+    "[data-concept-switch-trigger='true']",
   );
 }
 
@@ -34,6 +38,8 @@ export function ConceptSwitcher({
   const closeRef = useRef<HTMLButtonElement>(null);
   const previousFocusRef = useRef<HTMLElement | null>(null);
   const wasOpenRef = useRef(false);
+  const closingRef = useRef(false);
+  const [closing, setClosing] = useState(false);
 
   const restoreFocus = useCallback(() => {
     const previous = previousFocusRef.current;
@@ -44,9 +50,22 @@ export function ConceptSwitcher({
     previousFocusRef.current = null;
   }, []);
 
+  const resetClosing = useCallback(() => {
+    closingRef.current = false;
+    setClosing(false);
+  }, []);
+
+  const beginClosing = useCallback(() => {
+    if (closingRef.current) return false;
+    closingRef.current = true;
+    setClosing(true);
+    return true;
+  }, []);
+
   useEffect(() => {
     if (open) {
       if (!wasOpenRef.current) {
+        resetClosing();
         const activeElement =
           document.activeElement instanceof HTMLElement
             ? document.activeElement
@@ -64,11 +83,13 @@ export function ConceptSwitcher({
     if (!wasOpenRef.current) return;
     wasOpenRef.current = false;
     restoreFocus();
-  }, [open, restoreFocus]);
+    resetClosing();
+  }, [open, resetClosing, restoreFocus]);
 
   useEffect(
     () => () => {
       if (wasOpenRef.current) restoreFocus();
+      closingRef.current = false;
     },
     [restoreFocus],
   );
@@ -90,15 +111,20 @@ export function ConceptSwitcher({
   if (!open) return null;
 
   const onSelect = (concept: ConceptId) => {
+    if (!beginClosing()) return;
     dispatch({ type: "selectConcept", concept });
     onClose();
+  };
+
+  const requestClose = () => {
+    if (beginClosing()) onClose();
   };
 
   const handleKeyDown = (event: KeyboardEvent<HTMLElement>) => {
     if (event.key === "Escape") {
       event.preventDefault();
       event.stopPropagation();
-      onClose();
+      requestClose();
       return;
     }
     if (event.key !== "Tab") return;
@@ -131,6 +157,8 @@ export function ConceptSwitcher({
         data-elevation={primitives.elevation}
         data-safe-area={primitives.safeArea}
         data-minimum-target={primitives.minimumTarget}
+        data-closing={closing}
+        aria-busy={closing}
         onKeyDown={handleKeyDown}
       >
         <header className="concept-switcher__header">
@@ -143,13 +171,18 @@ export function ConceptSwitcher({
             ref={closeRef}
             type="button"
             aria-label="Close concept switcher"
-            onClick={onClose}
+            disabled={closing}
+            onClick={requestClose}
           >
             Close
           </button>
         </header>
         <div className="concept-switcher__grid">
-          <ConceptCards selectedConcept={selectedConcept} onSelect={onSelect} />
+          <ConceptCards
+            selectedConcept={selectedConcept}
+            disabled={closing}
+            onSelect={onSelect}
+          />
         </div>
       </section>
     </div>

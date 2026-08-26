@@ -14,12 +14,14 @@ interface ConceptCardsProps {
   selectedConcept: ConceptId | null;
   onSelect(concept: ConceptId): void;
   galleryFocusTarget?: boolean;
+  disabled?: boolean;
 }
 
 export function ConceptCards({
   selectedConcept,
   onSelect,
   galleryFocusTarget = false,
+  disabled = false,
 }: ConceptCardsProps) {
   return conceptIds.map((conceptId) => {
     const metadata = conceptMetadata[conceptId];
@@ -49,6 +51,7 @@ export function ConceptCards({
               : undefined
           }
           aria-pressed={selected}
+          disabled={disabled}
           onClick={() => onSelect(conceptId)}
         >
           Select {metadata.name}
