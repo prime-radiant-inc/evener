@@ -495,7 +495,7 @@ func TestNavigationPerformanceBudgets(t *testing.T) {
 		mandatoryUncompressedFraction = 0.15 // ≤ 15% of legacy uncompressed JSON
 		mandatoryGzipFraction         = 0.10 // ≤ 10% of legacy transferred bytes
 		expandedGzipFraction          = 0.35 // ≤ 35% of legacy transferred bytes
-		warmAllocsFraction           = 0.20 // ≤ 20% of legacy B/op
+		warmAllocsFraction            = 0.20 // ≤ 20% of legacy B/op
 	)
 
 	t.Run("mandatory_hydration_uncompressed_json", func(t *testing.T) {
@@ -586,4 +586,3 @@ func TestNavigationPerformanceBudgets(t *testing.T) {
 }
 
 // min is a builtin in Go 1.21+; no local definition needed.
-

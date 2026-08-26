@@ -5,8 +5,6 @@ package hub
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
 	"testing"
 	"time"
@@ -162,7 +160,7 @@ func FuzzExactLifecycleTree(f *testing.F) {
 			}
 			return 0
 		}
-		structured := NewWebServer(hubcore.WebConfig{Roster: structuredRoster, Favorite: fav})
+		_ = NewWebServer(hubcore.WebConfig{Roster: structuredRoster, Favorite: fav})
 		hubNavigationInputs = oldNavigation
 		hubTreeAttentionRank = oldRank
 

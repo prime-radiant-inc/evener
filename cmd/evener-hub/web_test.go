@@ -100,7 +100,6 @@ func (s *WebServer) injectMetasForTest(metas []schema.SessionMeta) {
 	s.cfg.Past = idx
 }
 
-
 func TestWebAPIUpgradeRunsSelfUpdater(t *testing.T) {
 	var got selfupdate.Options
 	previous := runHubSelfUpgrade

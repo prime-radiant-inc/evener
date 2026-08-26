@@ -35,7 +35,6 @@ const (
 	legacyNavigationNow                = "2026-08-25T20:00:00Z"
 )
 
-
 func newNavigationBenchmarkFixture(tb testing.TB) *WebServer {
 	tb.Helper()
 	root := tb.TempDir()

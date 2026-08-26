@@ -145,7 +145,12 @@ function navigationResponse(url: string): Response | null {
   if (url === "/api/navigation" || url === "/api/navigation/") {
     return new Response(JSON.stringify(NAVIGATION_MANIFEST), {
       status: 200,
-      headers: { "content-type": "application/json", etag: '"shellguard-etag"' },
+      headers: {
+        "content-type": "application/json",
+        etag: '"shellguard-etag"',
+        "X-Evener-Navigation-Generation": "shellguard-generation",
+        "X-Evener-Navigation-Revision": "1",
+      },
     });
   }
   return null;

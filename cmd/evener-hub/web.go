@@ -27,8 +27,8 @@ type WebServer struct {
 	appRPC            *appserver.Server
 	navigation        *NavigationService
 	navigationMetrics navigationMetricSink
-	sources         *appsource.Registry
-	startedAt       time.Time
+	sources           *appsource.Registry
+	startedAt         time.Time
 
 	// lastGoodThreads retains each remote source's most recent successful
 	// ListThreads result so a transient list failure doesn't blank that

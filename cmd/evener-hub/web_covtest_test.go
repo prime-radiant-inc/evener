@@ -876,7 +876,6 @@ func TestCovWebassetsHandlerTraversal(t *testing.T) {
 	}
 }
 
-
 // --- web_api_project_delete.go: appendProjectDeleteLiveSkip ---
 
 // TestCovAppendProjectDeleteLiveSkip covers the helper.
