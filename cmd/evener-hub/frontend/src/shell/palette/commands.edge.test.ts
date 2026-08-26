@@ -6,7 +6,13 @@
 import { afterEach, expect, test, vi } from "vitest";
 import type { CommandDescriptor } from "../../protocol/types.gen";
 import type { Command } from "./commands";
-import { copyToClipboard, rememberableId, sessionScopedHandoffMatch, slashCommandInvocation } from "./commands";
+import {
+  copyToClipboard,
+  rememberableId,
+  sessionScopedHandoffMatch,
+  slashCommandInvocation,
+  visibleCatalogCommands,
+} from "./commands";
 
 // --- copyToClipboard ---
 
@@ -135,4 +141,34 @@ test("sessionScopedHandoffMatch returns true when first token matches a catalog 
 
 test("sessionScopedHandoffMatch returns false when no command matches", () => {
   expect(sessionScopedHandoffMatch("/nonexistent", [])).toBe(false);
+});
+
+// --- visibleCatalogCommands ---
+
+const CATALOG: CommandDescriptor[] = [
+  { name: "review", source: "plugin", pluginName: "enabled" },
+  { name: "review", source: "plugin", pluginName: "excluded" },
+  { name: "status", source: "builtin" },
+  { name: "whoami", source: "user" },
+];
+
+test("visibleCatalogCommands keeps the global catalog when there is no active session", () => {
+  expect(visibleCatalogCommands(CATALOG, undefined)).toEqual(CATALOG);
+});
+
+test("visibleCatalogCommands filters plugin commands to loaded names and preserves duplicates and globals", () => {
+  expect(visibleCatalogCommands(CATALOG, new Set(["enabled"]))).toEqual([CATALOG[0], CATALOG[2], CATALOG[3]]);
+});
+
+test("visibleCatalogCommands fails closed for unavailable diagnostics", () => {
+  expect(visibleCatalogCommands(CATALOG, null)).toEqual([CATALOG[2], CATALOG[3]]);
+});
+
+test("visibleCatalogCommands does not mutate the command catalog or its command descriptors", () => {
+  const input = CATALOG.map((command) => ({ ...command }));
+  const before = input.map((command) => ({ ...command }));
+
+  visibleCatalogCommands(input, new Set(["enabled"]));
+
+  expect(input).toEqual(before);
 });

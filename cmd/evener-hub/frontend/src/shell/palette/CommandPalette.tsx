@@ -7,6 +7,7 @@
 // panel - all ported from search.js, adapted to React state instead of
 // imperative innerHTML.
 import { type KeyboardEvent, useEffect, useMemo, useRef, useState } from "react";
+import { useStore } from "zustand";
 import { requestComposerFocus } from "../../panes/session/composer/composerFocus";
 import { requestQuoteInsert } from "../../panes/session/composer/quoteInsert";
 import { errorText, isHubLaunchError } from "../../protocol/errors";
@@ -31,6 +32,7 @@ import {
   rememberableId,
   type ScopedCommand,
   sessionScopedHandoffMatch,
+  visibleCatalogCommands,
 } from "./commands";
 import { computeMode } from "./mode";
 import { buildPaletteContext, focusedModel } from "./paletteContext";
@@ -91,6 +93,10 @@ interface HelpRow {
   keys: string[];
   desc: string;
 }
+
+type ThreadDiagnosticsModel = {
+  diagnostics?: { plugins?: { name: string }[] } | null;
+};
 
 // UX fix: rebuilt from a stale, hand-rolled §2.8 list (search.js:697-705,
 // palette-only, whose Enter/Shift+Enter/Mod+Enter row was never accurate for
@@ -241,6 +247,19 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
   // focusedModel(), so turn-state guards stay current. (buildPaletteContext is
   // a stable module import, so the empty dep array needs no suppression.)
   const ctx = useMemo(() => buildPaletteContext(), []);
+  const activeThread = useStore(threadsStore, (state) =>
+    ctx.sessionRef !== null ? state.threads.get(ctx.sessionRef) : undefined,
+  );
+  const activePluginNames = useMemo<ReadonlySet<string> | null | undefined>(() => {
+    if (ctx.sessionRef === null) return undefined;
+    const diagnostics = (activeThread as ThreadDiagnosticsModel | undefined)?.diagnostics;
+    if (!diagnostics?.plugins) return null;
+    return new Set(diagnostics.plugins.map((plugin) => plugin.name));
+  }, [activeThread, ctx.sessionRef]);
+  const visibleCatalog = useMemo(
+    () => visibleCatalogCommands(catalogCommands, activePluginNames),
+    [activePluginNames, catalogCommands],
+  );
   const mode = computeMode({ query, hasSelectedCommand: selectedCommand !== null });
 
   const ui: PaletteUi = {
@@ -346,10 +365,10 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
         selectedCommand,
         enumItems,
         showingHelp,
-        catalogCommands,
+        catalogCommands: visibleCatalog,
         needsYouNodes,
       }),
-    [mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp, catalogCommands, needsYouNodes],
+    [mode, query, ctx, searchResp, selectedCommand, enumItems, showingHelp, visibleCatalog, needsYouNodes],
   );
 
   // Reset the active row whenever the row list is rebuilt (§2.3/§2.4:
@@ -532,7 +551,7 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
       // The typed name prefixes a session-scoped command (built-in or
       // plugin): hand off to the composer rather than falling through to a
       // raw send - see activateHandoff's own doc comment.
-      if (sessionScopedHandoffMatch(query, catalogCommands)) {
+      if (sessionScopedHandoffMatch(query, visibleCatalog)) {
         activateHandoff();
         return;
       }
