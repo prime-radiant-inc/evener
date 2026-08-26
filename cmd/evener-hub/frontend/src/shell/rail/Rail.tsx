@@ -963,10 +963,15 @@ function NavigationRail({
   ];
   const resourceLoading = [...resourcesState.values()].some((resource) => resource.loading);
   const loading =
-    legacySource?.loading ?? (navigationMode === "v1" && (!manifest || manifest.loading || resourceLoading));
+    legacySource?.loading ??
+    (navigationMode === "unknown" || (navigationMode === "v1" && (!manifest || manifest.loading || resourceLoading)));
   const manifestError = manifest?.error ? errorText(manifest.error) : null;
   const resourceError = [...resourcesState.values()].find((resource) => resource.error)?.error;
-  const loadError = legacySource?.error ?? manifestError ?? (resourceError ? errorText(resourceError) : null);
+  const loadError =
+    legacySource?.error ??
+    manifestError ??
+    (resourceError ? errorText(resourceError) : null) ??
+    (navigationMode === "error" ? "Navigation resources are unavailable" : null);
   const displayed = nonEmpty(resources);
   const needsYou = legacySource?.needsYou ?? attention?.needsYou ?? manifest?.data?.attentionSummary.needsYou ?? 0;
   return (
