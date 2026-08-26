@@ -1,74 +1,67 @@
-import type {
-  NavigationInvalidationTarget,
-  NavigationProjectPage,
-  NavigationProjectResource,
-  NavigationProjectSummary,
-} from "../../protocol/types.gen";
+import type { NavigationInvalidationTarget } from "../../protocol/types.gen";
 
 export type ResourceKey =
-  | "manifest"
-  | `section:${string}`
-  | `pin_catalog:${string}`
-  | `pin_section:${string}`
-  | `catalog:${string}`
-  | `project:${string}`
-  | `project_page:${string}:${string}:${number}`;
+  | { kind: "manifest" }
+  | { kind: "section"; section: "live" | "needs-you"; offset: number; limit: number }
+  | { kind: "pin_catalog"; offset: number; limit: number }
+  | { kind: "pin_section"; sectionId: string; offset: number; limit: number }
+  | { kind: "catalog"; catalog: "projects" | "archived-projects" | "test-runs"; offset: number; limit: number }
+  | { kind: "project"; projectKey: string }
+  | { kind: "project_page"; projectKey: string; tier: "current" | "recent" | "archived"; offset: number; limit: number }
+  | { kind: "location"; ref: string };
 
-export type ResourceValue = NavigationProjectSummary[] | NavigationProjectPage | NavigationProjectResource | unknown;
+export interface ResourceState<T = unknown> {
+  readonly key: ResourceKey;
+  readonly data: T | null;
+  readonly loadedRevision: number | null;
+  readonly targetRevision: number | null;
+  readonly etag: string | null;
+  readonly loading: boolean;
+  readonly stale: boolean;
+  readonly error: unknown | null;
+  readonly generationID: string;
+}
 
-export interface ResourceState<T = ResourceValue> {
-  key: ResourceKey;
-  data?: T;
-  error?: unknown;
-  loadedRevision: number;
-  targetRevision: number;
-  etag?: string;
-  loading: boolean;
+export interface NavigationResponse<T = unknown> {
+  status: 200 | 304;
   generationID: string;
-}
-
-export type NavigationRequest<T = ResourceValue> = (
-  signal: AbortSignal,
-  etag?: string,
-) => Promise<NavigationResponse<T>>;
-
-export interface NavigationResponse<T = ResourceValue> {
-  status: number;
-  revision?: number;
-  generationID?: string;
-  generation_id?: string;
-  etag?: string;
+  revision: number;
+  etag: string;
   data?: T;
-  value?: T;
 }
 
-export type ResourceListener = (key: ResourceKey, state: ResourceState) => void;
+export type NavigationRequest<T = unknown> = (
+  signal: AbortSignal,
+  etag: string | null,
+) => Promise<NavigationResponse<T>>;
+export type ResourceListener = (state: ResourceState) => void;
 
 export function resourceKey(target: NavigationInvalidationTarget): ResourceKey | undefined {
   switch (target.kind) {
     case "manifest":
-      return "manifest";
+      return { kind: "manifest" };
     case "section":
-      return target.section ? `section:${target.section}` : undefined;
+      return target.section === "live" || target.section === "needs-you"
+        ? { kind: "section", section: target.section, offset: 0, limit: 50 }
+        : undefined;
     case "pin_catalog":
-      return target.catalog ? `pin_catalog:${target.catalog}` : undefined;
+      return { kind: "pin_catalog", offset: 0, limit: 50 };
     case "pin_section":
-      return target.sectionId ? `pin_section:${target.sectionId}` : undefined;
+      return target.sectionId ? { kind: "pin_section", sectionId: target.sectionId, offset: 0, limit: 50 } : undefined;
     case "catalog":
-      return target.catalog ? `catalog:${target.catalog}` : undefined;
+      return target.catalog === "projects" || target.catalog === "archived-projects" || target.catalog === "test-runs"
+        ? { kind: "catalog", catalog: target.catalog, offset: 0, limit: 50 }
+        : undefined;
     case "project":
-      return target.projectKey ? `project:${target.projectKey}` : undefined;
+      return target.projectKey ? { kind: "project", projectKey: target.projectKey } : undefined;
     default:
       return undefined;
   }
 }
 
-export function projectKeyFromResource(key: ResourceKey): string | undefined {
-  if (key.startsWith("project:")) return key.slice("project:".length);
-  if (key.startsWith("project_page:")) return key.split(":")[1];
-  return undefined;
+export function keyID(key: ResourceKey): string {
+  return JSON.stringify(key);
 }
-
 export function isProjectResource(key: ResourceKey): boolean {
-  return key.startsWith("project:") || key.startsWith("project_page:");
+  return key.kind === "project" || key.kind === "project_page";
 }

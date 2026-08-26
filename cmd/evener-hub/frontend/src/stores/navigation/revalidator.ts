@@ -1,7 +1,7 @@
 import type { NavigationInvalidationTarget } from "../../protocol/types.gen";
 import {
   isProjectResource,
-  projectKeyFromResource,
+  keyID,
   resourceKey,
   type NavigationRequest,
   type NavigationResponse,
@@ -10,202 +10,207 @@ import {
   type ResourceState,
 } from "./types";
 
-interface Entry<T> {
-  state: ResourceState<T>;
-  request?: NavigationRequest<T>;
+type Entry = {
+  state: ResourceState;
+  request?: NavigationRequest;
   controller?: AbortController;
-  promise?: Promise<ResourceState<T>>;
+  promise?: Promise<ResourceState>;
   rerun: boolean;
-  forceToken: number;
-}
+  token: number;
+};
+const error = (message: string) => new Error(`navigation protocol: ${message}`);
 
-const generationOf = (response: NavigationResponse): string | undefined =>
-  response.generationID ?? response.generation_id;
-
-/** Coordinates conditional navigation reads without allowing old reads to win. */
 export class NavigationRevalidator {
-  private generationIDValue: string;
-  private readonly entries = new Map<ResourceKey, Entry<unknown>>();
+  private generation: string;
+  private readonly entries = new Map<string, Entry>();
   private readonly listeners = new Set<ResourceListener>();
-  private sequence = 0;
+  private token = 0;
+  private disposed = false;
 
   constructor(generationID = "") {
-    this.generationIDValue = generationID;
+    this.generation = generationID;
   }
-
   get generationID(): string {
-    return this.generationIDValue;
+    return this.generation;
   }
-
   subscribe(listener: ResourceListener): () => void {
+    if (this.disposed) return () => {};
     this.listeners.add(listener);
     return () => this.listeners.delete(listener);
   }
-
-  get<T = unknown>(key: ResourceKey): ResourceState<T> | undefined {
-    return this.entries.get(key)?.state as ResourceState<T> | undefined;
+  unsubscribe(listener: ResourceListener): void {
+    this.listeners.delete(listener);
   }
-
-  states(): ReadonlyMap<ResourceKey, ResourceState> {
-    return new Map([...this.entries].map(([key, entry]) => [key, entry.state]));
+  dispose(): void {
+    if (this.disposed) return;
+    this.disposed = true;
+    for (const e of this.entries.values()) e.controller?.abort();
+    this.entries.clear();
+    this.listeners.clear();
+  }
+  get<T = unknown>(key: ResourceKey): ResourceState<T> | undefined {
+    return this.entries.get(keyID(key))?.state as ResourceState<T> | undefined;
+  }
+  states(): ReadonlyMap<string, ResourceState> {
+    return new Map([...this.entries].map(([id, e]) => [id, e.state]));
   }
 
   invalidate(target: NavigationInvalidationTarget): void {
+    if (this.disposed) return;
     if (target.kind === "all_loaded_projects") {
-      for (const [key, entry] of this.entries) {
-        if (isProjectResource(key)) this.raise(key, entry, undefined, true);
-      }
+      for (const e of this.entries.values()) if (isProjectResource(e.state.key)) this.raise(e, undefined);
       return;
     }
-    const key = resourceKey(target);
-    if (!key) return; // Unknown/incomplete advertised targets fail closed.
-    const entry = this.entries.get(key);
-    if (!entry) return; // Invalidations do not create an unrequested resource.
-    this.raise(key, entry, target.revision, false);
+    const mapped = resourceKey(target);
+    if (!mapped) return;
+    for (const e of this.entries.values()) if (matches(e.state.key, mapped)) this.raise(e, target.revision);
   }
 
   force(keys: Iterable<ResourceKey>): void {
+    if (this.disposed) return;
     for (const key of keys) {
-      const entry = this.entry(key);
-      this.raise(key, entry, undefined, true);
+      const e = this.entries.get(keyID(key));
+      if (e) this.raise(e, undefined, true);
     }
   }
 
   resetGeneration(generationID: string): void {
-    if (generationID === this.generationIDValue) return;
-    this.generationIDValue = generationID;
-    this.sequence = 0;
-    for (const entry of this.entries.values()) {
-      entry.controller?.abort();
-      entry.controller = undefined;
-      entry.promise = undefined;
-      entry.request = undefined;
-      entry.rerun = false;
-      entry.state = {
-        ...entry.state,
+    if (this.disposed || generationID === this.generation) return;
+    this.generation = generationID;
+    for (const e of this.entries.values()) {
+      e.controller?.abort();
+      e.rerun = Boolean(e.promise);
+      e.state = snapshot({
+        ...e.state,
         generationID,
-        loadedRevision: -1,
-        targetRevision: 0,
-        data: undefined,
-        error: undefined,
-        loading: false,
-      };
-      this.emit(entry.state.key, entry.state);
+        loadedRevision: null,
+        targetRevision: null,
+        etag: null,
+        stale: true,
+        loading: Boolean(e.promise),
+        error: null,
+      });
+      this.emit(e.state);
+      if (!e.promise && e.request) void this.start(e);
     }
   }
 
-  load<T>(key: ResourceKey, request: NavigationRequest<T>): Promise<ResourceState<T>> {
-    const entry = this.entry<T>(key);
-    entry.request = request;
-    if (entry.promise) return entry.promise as Promise<ResourceState<T>>;
-    if (entry.state.loadedRevision >= entry.state.targetRevision && entry.state.data !== undefined) {
-      return Promise.resolve(entry.state as ResourceState<T>);
-    }
-    return this.start(entry as Entry<T>) as Promise<ResourceState<T>>;
-  }
-
-  private entry<T>(key: ResourceKey): Entry<T> {
-    let found = this.entries.get(key) as Entry<T> | undefined;
-    if (!found) {
-      found = {
-        state: {
+  load<T = unknown>(key: ResourceKey, request: NavigationRequest<T>): Promise<ResourceState<T>> {
+    if (this.disposed) return Promise.reject(error("revalidator disposed"));
+    let e = this.entries.get(keyID(key));
+    if (!e) {
+      e = {
+        state: snapshot({
           key,
-          loadedRevision: -1,
-          targetRevision: 0,
+          data: null,
+          loadedRevision: null,
+          targetRevision: null,
+          etag: null,
           loading: false,
-          generationID: this.generationIDValue,
-        },
+          stale: true,
+          error: null,
+          generationID: this.generation,
+        }),
         rerun: false,
-        forceToken: 0,
+        token: 0,
       };
-      this.entries.set(key, found as Entry<unknown>);
+      this.entries.set(keyID(key), e);
     }
-    return found;
+    e.request = request as NavigationRequest;
+    if (e.promise) return e.promise as Promise<ResourceState<T>>;
+    if (!e.state.stale && e.state.data !== null) return Promise.resolve(e.state as ResourceState<T>);
+    return this.start(e) as Promise<ResourceState<T>>;
   }
 
-  private raise(key: ResourceKey, entry: Entry<unknown>, revision: number | undefined, force: boolean): void {
-    const next = force
-      ? Math.max(entry.state.targetRevision + 1, ++this.sequence)
-      : (revision ?? entry.state.targetRevision);
-    if (!force && next <= entry.state.targetRevision) return;
-    entry.state = { ...entry.state, targetRevision: next, error: undefined };
-    this.emit(key, entry.state);
-    if (entry.promise) {
-      entry.rerun = true;
-      entry.controller?.abort();
-    }
+  private raise(e: Entry, revision?: number, forced = false): void {
+    const target = forced ? null : Math.max(e.state.targetRevision ?? -1, revision ?? -1);
+    if (!forced && target === e.state.targetRevision && e.state.stale) return;
+    e.token = forced ? ++this.token : e.token;
+    e.state = snapshot({ ...e.state, targetRevision: target, stale: true, error: null });
+    this.emit(e.state);
+    if (e.promise) e.rerun = true;
+    else if (e.request) void this.start(e);
   }
 
-  private start<T>(entry: Entry<T>): Promise<ResourceState<T>> {
-    const request = entry.request as NavigationRequest<T> | undefined;
-    if (!request) return Promise.resolve(entry.state);
+  private start(e: Entry): Promise<ResourceState> {
+    if (!e.request || this.disposed) return Promise.resolve(e.state);
     const controller = new AbortController();
-    entry.controller = controller;
-    entry.state = { ...entry.state, loading: true, error: undefined };
-    this.emit(entry.state.key, entry.state);
-    const requestedGeneration = this.generationIDValue;
-    const requestedTarget = entry.state.targetRevision;
-    const promise = request(controller.signal, entry.state.etag)
-      .then((response) => this.finish(entry, response, requestedGeneration, requestedTarget))
-      .catch((error) => {
-        if (entry.state.generationID === requestedGeneration && !controller.signal.aborted) {
-          entry.state = { ...entry.state, loading: false, error };
-          this.emit(entry.state.key, entry.state);
+    e.controller = controller;
+    const generation = this.generation;
+    const target = e.state.targetRevision;
+    const request = e.request;
+    e.state = snapshot({ ...e.state, loading: true, error: null });
+    this.emit(e.state);
+    const p = request(controller.signal, e.state.etag)
+      .then((response) => {
+        if (generation !== this.generation) return e.state;
+        try {
+          validate(response, generation, e.state.etag);
+        } catch (cause) {
+          return this.fail(e, cause);
         }
-        return entry.state;
+        if (response.revision < (e.state.loadedRevision ?? -1) || response.revision < (e.state.targetRevision ?? -1)) {
+          e.rerun = true;
+          return this.fail(e, error("late or below-target response"));
+        }
+        const data = response.status === 304 ? e.state.data : response.data;
+        e.state = snapshot({
+          ...e.state,
+          data: data ?? null,
+          loadedRevision: response.revision,
+          targetRevision: response.revision,
+          etag: response.etag,
+          stale: false,
+          loading: false,
+          error: null,
+        });
+        this.emit(e.state);
+        return e.state;
       })
+      .catch((cause) => (controller.signal.aborted ? e.state : this.fail(e, cause)))
       .then((state) => {
-        if (entry.controller === controller) {
-          entry.controller = undefined;
-          entry.promise = undefined;
-          if (entry.rerun) {
-            entry.rerun = false;
-            void this.start(entry);
+        if (e.promise === p) {
+          e.promise = undefined;
+          e.controller = undefined;
+          if (e.rerun) {
+            e.rerun = false;
+            void this.start(e);
           }
         }
         return state;
       });
-    entry.promise = promise;
-    return promise;
+    e.promise = p;
+    return p;
   }
-
-  private finish<T>(
-    entry: Entry<T>,
-    response: NavigationResponse<T>,
-    generation: string,
-    target: number,
-  ): ResourceState<T> {
-    const responseGeneration = generationOf(response);
-    if (
-      generation !== this.generationIDValue ||
-      (responseGeneration !== undefined && responseGeneration !== generation)
-    ) {
-      return entry.state;
-    }
-    const revision = response.revision ?? target;
-    if (revision < entry.state.loadedRevision || target < entry.state.targetRevision) {
-      entry.state = { ...entry.state, loading: false };
-      this.emit(entry.state.key, entry.state);
-      return entry.state;
-    }
-    const data = response.data ?? response.value;
-    entry.state = {
-      ...entry.state,
-      loading: false,
-      loadedRevision: response.status === 304 ? Math.max(entry.state.loadedRevision, revision) : revision,
-      targetRevision: Math.max(entry.state.targetRevision, revision),
-      etag: response.etag ?? entry.state.etag,
-      ...(response.status === 304 || data === undefined ? {} : { data }),
-      error: undefined,
-      generationID: generation,
-    };
-    this.emit(entry.state.key, entry.state);
-    return entry.state;
+  private fail(e: Entry, cause: unknown): ResourceState {
+    e.state = snapshot({ ...e.state, loading: false, stale: true, error: cause });
+    this.emit(e.state);
+    return e.state;
   }
-
-  private emit(key: ResourceKey, state: ResourceState): void {
-    for (const listener of this.listeners) listener(key, state);
+  private emit(state: ResourceState): void {
+    if (!this.disposed) for (const listener of this.listeners) listener(state);
   }
 }
 
-export { projectKeyFromResource };
+function snapshot(state: ResourceState): ResourceState {
+  return Object.freeze({ ...state });
+}
+function matches(a: ResourceKey, b: ResourceKey): boolean {
+  if (a.kind !== b.kind) return false;
+  if (a.kind === "project" && b.kind === "project") return a.projectKey === b.projectKey;
+  if (a.kind === "project_page" && b.kind === "project") return a.projectKey === b.projectKey;
+  return (
+    JSON.stringify(a) === JSON.stringify(b) ||
+    (a.kind === b.kind &&
+      (a.kind === "section" || a.kind === "catalog" || a.kind === "pin_catalog" || a.kind === "pin_section"))
+  );
+}
+function validate(response: NavigationResponse, generation: string, oldETag: string | null): void {
+  if (!response || (response.status !== 200 && response.status !== 304)) throw error("status must be 200 or 304");
+  if (response.generationID !== generation) throw error("generation mismatch");
+  if (!Number.isSafeInteger(response.revision) || response.revision < 0) throw error("revision mismatch");
+  if (!response.etag) throw error("missing ETag");
+  if (response.status === 304 && (response.data !== undefined || oldETag === null || response.etag !== oldETag))
+    throw error("contradictory 304");
+  if (response.status === 200 && response.data === undefined) throw error("200 requires body");
+}

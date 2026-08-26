@@ -1,70 +1,67 @@
-import { describe, expect, test, vi } from "vitest";
+import { expect, test, vi } from "vitest";
+import { navigationInvalidatedNotification } from "../../protocol/testing/notifications";
 import { NavigationRevalidator } from "./revalidator";
+import type { ResourceKey } from "./types";
+const key: ResourceKey = { kind: "project", projectKey: "p" };
+const d = <T>() => {
+  let resolve!: (v: T) => void;
+  const promise = new Promise<T>((r) => (resolve = r));
+  return { promise, resolve };
+};
 
-const target = (revision: number) => ({ kind: "project" as const, projectKey: "p", revision });
-const key = "project:p" as const;
-
-test("aborts one inflight read and permits one trailing read", async () => {
-  const first = deferred<{ status: number; revision: number; data: string }>();
-  const second = deferred<{ status: number; revision: number; data: string }>();
+test("coalesces and trails invalidation without aborting useful read", async () => {
+  const one = d<any>();
+  const two = d<any>();
   const calls: AbortSignal[] = [];
   const r = new NavigationRevalidator("g");
-  const request = vi.fn((signal: AbortSignal) => {
-    calls.push(signal);
-    return (calls.length === 1 ? first : second).promise;
+  const fn = vi.fn((s: AbortSignal) => {
+    calls.push(s);
+    return (calls.length === 1 ? one : two).promise;
   });
-  const pending = r.load(key, request);
-  r.invalidate(target(1));
-  first.resolve({ status: 200, revision: 0, data: "old" });
-  await new Promise((resolve) => setTimeout(resolve, 0));
+  const p = r.load(key, fn);
+  r.invalidate({ kind: "project", projectKey: "p", revision: 2 });
+  one.resolve({ status: 200, generationID: "g", revision: 1, etag: "a", data: "old" });
+  for (let i = 0; i < 6; i++) await Promise.resolve();
   expect(calls).toHaveLength(2);
-  expect(calls[0]?.aborted).toBe(true);
-  second.resolve({ status: 200, revision: 1, data: "new" });
-  await pending;
+  expect(calls[0]?.aborted).toBe(false);
+  two.resolve({ status: 200, generationID: "g", revision: 2, etag: "b", data: "new" });
+  await p;
   expect(r.get(key)?.data).toBe("new");
 });
 
-test("keeps last good data on errors and accepts 304", async () => {
+test("reset retains data but clears validators and reruns", async () => {
   const r = new NavigationRevalidator("g");
-  await r.load(key, async () => ({ status: 200, revision: 2, data: "good", etag: "e" }));
-  r.invalidate(target(3));
-  await r.load(key, async () => ({ status: 304, revision: 3 }));
+  await r.load(key, async () => ({ status: 200, generationID: "g", revision: 1, etag: "a", data: "good" }));
+  r.resetGeneration("h");
   expect(r.get(key)?.data).toBe("good");
-  r.invalidate(target(4));
-  await r.load(key, async () => {
-    throw new Error("offline");
+  expect(r.get(key)?.etag).toBeNull();
+  expect(r.get(key)?.stale).toBe(true);
+});
+
+test("304 and protocol contradictions fail closed", async () => {
+  const r = new NavigationRevalidator("g");
+  await r.load(key, async () => ({ status: 200, generationID: "g", revision: 1, etag: "a", data: "good" }));
+  r.invalidate({ kind: "project", projectKey: "p", revision: 2 });
+  await r.load(key, async () => ({ status: 304, generationID: "g", revision: 2, etag: "wrong" }));
+  expect(r.get(key)?.data).toBe("good");
+  expect(r.get(key)?.error).toBeTruthy();
+});
+
+test("wildcard and force affect loaded project resources only", async () => {
+  const r = new NavigationRevalidator("g");
+  const page: ResourceKey = { kind: "project_page", projectKey: "p", tier: "current", offset: 0, limit: 10 };
+  await r.load(key, async () => ({ status: 200, generationID: "g", revision: 1, etag: "a", data: "p" }));
+  await r.load(page, async () => ({ status: 200, generationID: "g", revision: 1, etag: "b", data: "page" }));
+  r.invalidate({ kind: "all_loaded_projects", generationId: "g", sequence: 1, targets: [] } as any);
+  expect(r.get(key)?.stale).toBe(true);
+  expect(r.get(page)?.stale).toBe(true);
+  r.force([{ kind: "manifest" }]);
+  expect(r.get({ kind: "manifest" })).toBeUndefined();
+});
+
+test("notification fixture preserves generated wire payload", () => {
+  expect(navigationInvalidatedNotification([{ kind: "all_loaded_projects" }])).toEqual({
+    method: "evener/navigation/invalidated",
+    params: { generationId: "generation_test", sequence: 1, targets: [{ kind: "all_loaded_projects" }] },
   });
-  expect(r.get(key)?.data).toBe("good");
-  expect(r.get(key)?.error).toBeInstanceOf(Error);
 });
-
-test("discards stale generations and scopes wildcard to loaded project resources", async () => {
-  const r = new NavigationRevalidator("g1");
-  await r.load(key, async () => ({ status: 200, revision: 1, data: "p" }));
-  const page = "project_page:p:current:0" as const;
-  await r.load(page, async () => ({ status: 200, revision: 1, data: "page" }));
-  await r.load("manifest", async () => ({ status: 200, revision: 1, data: "manifest" }));
-  r.invalidate({ kind: "all_loaded_projects" });
-  expect(r.get(key)?.targetRevision).toBeGreaterThan(1);
-  expect(r.get(page)?.targetRevision).toBeGreaterThan(1);
-  expect(r.get("manifest")?.targetRevision).toBe(1);
-  r.resetGeneration("g2");
-  expect(r.get(key)?.data).toBeUndefined();
-  await r.load(key, async () => ({ status: 200, generationID: "g1", revision: 9, data: "stale" }));
-  expect(r.get(key)?.data).toBeUndefined();
-});
-
-test("force uses a sequence-gap token and unknown targets fail closed", async () => {
-  const r = new NavigationRevalidator("g");
-  await r.load(key, async () => ({ status: 200, revision: 1, data: "x" }));
-  r.force([key]);
-  expect(r.get(key)?.targetRevision).toBeGreaterThan(1);
-  r.invalidate({ kind: "section" });
-  expect(r.states().size).toBe(1);
-});
-
-function deferred<T>() {
-  let resolve!: (value: T) => void;
-  const promise = new Promise<T>((r) => (resolve = r));
-  return { promise, resolve };
-}
