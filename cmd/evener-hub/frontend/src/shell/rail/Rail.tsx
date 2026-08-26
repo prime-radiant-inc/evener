@@ -217,6 +217,10 @@ export interface RailProps {
 interface NavigationRailProps extends RailProps {
   legacySource?: RailDataSource;
 }
+interface RevealRequestGuard {
+  target: string;
+  token: symbol;
+}
 
 function relativeAge(updatedAt?: string): string | undefined {
   if (!updatedAt) return undefined;
@@ -526,8 +530,8 @@ function NavigationRail({
     [base, pending],
   );
   const isExpanded = useMemo(() => overrideLookup(expandedOverrides), [expandedOverrides]);
-  const revealLookupInFlight = useRef<string | null>(null);
-  const revealResourceRequests = useRef(new Set<string>());
+  const revealLookupInFlight = useRef<RevealRequestGuard | null>(null);
+  const revealResourceRequests = useRef(new Map<string, RevealRequestGuard>());
   const revealCompletedTarget = useRef<string | null>(null);
   const revealRequestTarget = useRef<string | null>(null);
 
@@ -539,13 +543,28 @@ function NavigationRail({
     revealCompletedTarget.current = null;
   }, [revealTarget]);
 
-  const requestRevealResource = useCallback((key: string, request: Promise<unknown> | undefined): void => {
-    if (!request || revealResourceRequests.current.has(key)) return;
-    revealResourceRequests.current.add(key);
-    void request.catch(() => {
-      revealResourceRequests.current.delete(key);
-    });
-  }, []);
+  const requestRevealResource = useCallback(
+    (target: string, key: string, request: () => Promise<unknown> | undefined): void => {
+      if (revealRequestTarget.current !== target || revealResourceRequests.current.has(key)) return;
+      const guard: RevealRequestGuard = { target, token: Symbol(key) };
+      revealResourceRequests.current.set(key, guard);
+      let result: Promise<unknown> | undefined;
+      try {
+        result = request();
+      } catch (error) {
+        result = Promise.reject(error);
+      }
+      if (!result) {
+        if (revealResourceRequests.current.get(key) === guard) revealResourceRequests.current.delete(key);
+        return;
+      }
+      void result.catch(() => {
+        if (revealRequestTarget.current !== target || revealResourceRequests.current.get(key) !== guard) return;
+        revealResourceRequests.current.delete(key);
+      });
+    },
+    [],
+  );
   const consumeReveal = useCallback(() => {
     if (!revealTarget || revealCompletedTarget.current === revealTarget) return;
     revealCompletedTarget.current = revealTarget;
@@ -641,16 +660,25 @@ function NavigationRail({
       },
     );
     if (!location) {
-      if (revealLookupInFlight.current !== revealTarget) {
-        revealLookupInFlight.current = revealTarget;
-        requestRevealResource(
-          `location:${revealTarget}`,
-          Promise.resolve(navigationStore.getState().lookupLocation(revealTarget)),
-        );
+      if (revealLookupInFlight.current?.target !== revealTarget) {
+        const target = revealTarget;
+        const guard: RevealRequestGuard = { target, token: Symbol(`location:${target}`) };
+        revealLookupInFlight.current = guard;
+        let request: Promise<unknown>;
+        try {
+          request = Promise.resolve(navigationStore.getState().lookupLocation(target));
+        } catch (error) {
+          request = Promise.reject(error);
+        }
+        void request
+          .catch(() => undefined)
+          .finally(() => {
+            if (revealRequestTarget.current === target && revealLookupInFlight.current === guard)
+              revealLookupInFlight.current = null;
+          });
       }
       return;
     }
-    revealLookupInFlight.current = null;
     if (!location.session) {
       consumeReveal();
       return;
@@ -662,33 +690,21 @@ function NavigationRail({
         return;
       }
       const catalog = location.tier === "archived" ? "archived_projects" : "projects";
-      if (!revealResourceRequests.current.has(`catalog:${catalog}`)) {
-        requestRevealResource(`catalog:${catalog}`, Promise.resolve(navigationStore.getState().loadCatalog(catalog)));
-      }
-      if (!revealResourceRequests.current.has(`project:${location.project_key}`)) {
-        requestRevealResource(
-          `project:${location.project_key}`,
-          Promise.resolve(navigationStore.getState().loadProject(location.project_key)),
-        );
-      }
+      requestRevealResource(revealTarget, `catalog:${catalog}`, () => navigationStore.getState().loadCatalog(catalog));
+      requestRevealResource(revealTarget, `project:${location.project_key}`, () =>
+        navigationStore.getState().loadProject(location.project_key as string),
+      );
       return;
     }
     if (location.pin_section_id) {
-      if (!revealResourceRequests.current.has("pin_catalog")) {
-        requestRevealResource("pin_catalog", Promise.resolve(navigationStore.getState().loadPinCatalog()));
-      }
-      if (!revealResourceRequests.current.has(`pin:${location.pin_section_id}`)) {
-        requestRevealResource(
-          `pin:${location.pin_section_id}`,
-          Promise.resolve(navigationStore.getState().loadPinSection(location.pin_section_id)),
-        );
-      }
+      requestRevealResource(revealTarget, "pin_catalog", () => navigationStore.getState().loadPinCatalog());
+      requestRevealResource(revealTarget, `pin:${location.pin_section_id}`, () =>
+        navigationStore.getState().loadPinSection(location.pin_section_id as string),
+      );
       return;
     }
     const section = location.tier === "needs_you" ? "needs_you" : "live";
-    if (!revealResourceRequests.current.has(`section:${section}`)) {
-      requestRevealResource(`section:${section}`, Promise.resolve(navigationStore.getState().loadSection(section)));
-    }
+    requestRevealResource(revealTarget, `section:${section}`, () => navigationStore.getState().loadSection(section));
   }, [revealTarget, resources, expandedOverrides, consumeReveal, setExpanded, legacySource, requestRevealResource]);
 
   function handleToggle(node: RailNode) {

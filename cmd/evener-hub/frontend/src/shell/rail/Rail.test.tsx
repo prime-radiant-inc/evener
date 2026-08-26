@@ -1,6 +1,11 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
-import type { NavigationManifest, NavigationProjectResource, NavigationSessionSummary } from "../../protocol/types.gen";
+import type {
+  NavigationInvalidatedPayload,
+  NavigationManifest,
+  NavigationProjectResource,
+  NavigationSessionSummary,
+} from "../../protocol/types.gen";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { keyID, type ResourceKey, type ResourceState } from "../../stores/navigation/types";
 import { threadsStore } from "../../stores/threads";
@@ -56,6 +61,15 @@ function jsonResponse(body: unknown, status = 200): Response {
     statusText: status === 200 ? "OK" : "Error",
     json: () => Promise.resolve(body),
   } as Response;
+}
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 function installState(resources: ResourceState[] = [], m = manifest()) {
   navigationStore.setState({
@@ -254,6 +268,89 @@ describe("resource-backed Rail", () => {
     expect(lookupLocation).toHaveBeenCalledWith("deep-ref");
     expect(consumed).not.toHaveBeenCalled();
   });
+  test("retries a failed deferred location lookup for the same reveal target", async () => {
+    const firstLookup = deferred<unknown>();
+    const lookupLocation = vi.fn().mockReturnValueOnce(firstLookup.promise).mockResolvedValueOnce(undefined);
+    installState([sectionResource("live", [summary({ ref: "live", title: "Live" })])]);
+    navigationStore.setState({ lookupLocation });
+    render(<Rail revealTarget="retry-ref" />);
+    await act(async () => undefined);
+    expect(lookupLocation).toHaveBeenCalledTimes(1);
+
+    await act(async () => {
+      firstLookup.reject(new Error("offline"));
+      await firstLookup.promise.catch(() => undefined);
+    });
+    act(() => {
+      navigationStore.setState({ resources: new Map(navigationStore.getState().resources) });
+    });
+    await act(async () => undefined);
+
+    expect(lookupLocation).toHaveBeenCalledTimes(2);
+    expect(lookupLocation).toHaveBeenLastCalledWith("retry-ref");
+  });
+  test("an old target's rejected resource request cannot clear the newer target's same-key guard", async () => {
+    const oldRequest = deferred<unknown>();
+    const currentRequest = deferred<unknown>();
+    const loadSection = vi
+      .fn()
+      .mockReturnValueOnce(oldRequest.promise)
+      .mockReturnValueOnce(currentRequest.promise)
+      .mockResolvedValue(undefined);
+    const oldLocation = resource(
+      { kind: "location", ref: "old-ref" },
+      {
+        generation_id: "g1",
+        revision: 1,
+        ref: "old-ref",
+        top_level_ref: "old-ref",
+        top_level: true,
+        tier: "live",
+        session: summary({ ref: "old-ref" }),
+      },
+    );
+    const currentLocation = resource(
+      { kind: "location", ref: "current-ref" },
+      {
+        generation_id: "g1",
+        revision: 1,
+        ref: "current-ref",
+        top_level_ref: "current-ref",
+        top_level: true,
+        tier: "live",
+        session: summary({ ref: "current-ref" }),
+      },
+    );
+    installState([oldLocation, currentLocation]);
+    navigationStore.setState({ loadSection });
+    const view = render(<Rail revealTarget="old-ref" />);
+    await act(async () => undefined);
+    expect(loadSection).toHaveBeenCalledTimes(1);
+
+    view.rerender(<Rail revealTarget="current-ref" />);
+    await act(async () => undefined);
+    expect(loadSection).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      oldRequest.reject(new Error("old request failed"));
+      await oldRequest.promise.catch(() => undefined);
+    });
+    act(() => {
+      navigationStore.setState({ resources: new Map(navigationStore.getState().resources) });
+    });
+    await act(async () => undefined);
+    expect(loadSection).toHaveBeenCalledTimes(2);
+
+    await act(async () => {
+      currentRequest.reject(new Error("current request failed"));
+      await currentRequest.promise.catch(() => undefined);
+    });
+    act(() => {
+      navigationStore.setState({ resources: new Map(navigationStore.getState().resources) });
+    });
+    await act(async () => undefined);
+    expect(loadSection).toHaveBeenCalledTimes(3);
+  });
   test("routes empty-model location reveals to pin catalog/section and needs-you resources", async () => {
     const loadPinCatalog = vi.fn().mockResolvedValue(undefined);
     const loadPinSection = vi.fn().mockResolvedValue(undefined);
@@ -299,8 +396,15 @@ describe("resource-backed Rail", () => {
     expect(loadSection).toHaveBeenCalledWith("needs_you");
   });
   test("scrolls and consumes a rendered reveal target exactly once across resource updates", async () => {
-    const scroll = vi.fn();
-    HTMLElement.prototype.scrollIntoView = scroll;
+    const originalScroll = Object.getOwnPropertyDescriptor(HTMLElement.prototype, "scrollIntoView");
+    if (!originalScroll) {
+      Object.defineProperty(HTMLElement.prototype, "scrollIntoView", {
+        configurable: true,
+        value: () => undefined,
+        writable: true,
+      });
+    }
+    const scroll = vi.spyOn(HTMLElement.prototype, "scrollIntoView").mockImplementation(() => undefined);
     const location = resource(
       { kind: "location", ref: "target" },
       {
@@ -315,24 +419,30 @@ describe("resource-backed Rail", () => {
     );
     installState([location]);
     const consumed = vi.fn();
-    const view = render(<Rail revealTarget="target" onRevealConsumed={consumed} />);
-    await act(async () => undefined);
-    expect(consumed).toHaveBeenCalledTimes(0);
-    const live = sectionResource("live", [summary({ ref: "target", title: "Target" })]);
-    const nextResources = new Map<string, ResourceState>([
-      [keyID(location.key), location],
-      [keyID(live.key), live],
-    ]);
-    navigationStore.setState({ resources: nextResources });
-    await act(async () => undefined);
-    navigationStore.setState({ attention: { changed: [], summary: { needsYou: 0, error: 0, working: 0 } } });
-    await act(async () => undefined);
-    expect(scroll).toHaveBeenCalledTimes(1);
-    expect(consumed).toHaveBeenCalledTimes(1);
-    view.rerender(<Rail revealTarget="target" onRevealConsumed={consumed} />);
-    await act(async () => undefined);
-    expect(scroll).toHaveBeenCalledTimes(1);
-    expect(consumed).toHaveBeenCalledTimes(1);
+    try {
+      const view = render(<Rail revealTarget="target" onRevealConsumed={consumed} />);
+      await act(async () => undefined);
+      expect(consumed).toHaveBeenCalledTimes(0);
+      const live = sectionResource("live", [summary({ ref: "target", title: "Target" })]);
+      const nextResources = new Map<string, ResourceState>([
+        [keyID(location.key), location],
+        [keyID(live.key), live],
+      ]);
+      navigationStore.setState({ resources: nextResources });
+      await act(async () => undefined);
+      navigationStore.setState({ attention: { changed: [], summary: { needsYou: 0, error: 0, working: 0 } } });
+      await act(async () => undefined);
+      expect(scroll).toHaveBeenCalledTimes(1);
+      expect(consumed).toHaveBeenCalledTimes(1);
+      view.rerender(<Rail revealTarget="target" onRevealConsumed={consumed} />);
+      await act(async () => undefined);
+      expect(scroll).toHaveBeenCalledTimes(1);
+      expect(consumed).toHaveBeenCalledTimes(1);
+    } finally {
+      scroll.mockRestore();
+      if (originalScroll) Object.defineProperty(HTMLElement.prototype, "scrollIntoView", originalScroll);
+      else delete (HTMLElement.prototype as Partial<HTMLElement>).scrollIntoView;
+    }
   });
   test("authoritative missing reveal consumes once and a changed target re-arms", async () => {
     const consumed = vi.fn();
@@ -430,6 +540,38 @@ describe("resource-backed Rail", () => {
     expect(screen.getByText("Rejectable")).toBeTruthy();
     expect(getToasts().some((toast) => /Couldn't update archive state/i.test(toast.text))).toBe(true);
   });
+  test("operates the rendered resource-backed tree with keyboard focus, activation, and toggle", () => {
+    window.history.replaceState({}, "", "/");
+    const child = summary({ ref: "local:child", session_id: "child", title: "Keyboard child" });
+    const cluster = summary({
+      ref: "local:cluster",
+      session_id: "cluster",
+      title: "Keyboard cluster",
+      kind: "cluster",
+      children: [child],
+    });
+    installState([sectionResource("live", [cluster])]);
+    render(<Rail />);
+
+    const clusterRow = screen.getByRole("treeitem", { name: /keyboard cluster/i });
+    act(() => clusterRow.focus());
+    expect(document.activeElement).toBe(clusterRow);
+    expect(clusterRow.getAttribute("aria-expanded")).toBe("false");
+
+    fireEvent.keyDown(clusterRow, { key: "ArrowRight" });
+    expect(clusterRow.getAttribute("aria-expanded")).toBe("true");
+    const childRow = screen.getByRole("treeitem", { name: /keyboard child/i });
+    fireEvent.keyDown(clusterRow, { key: "ArrowRight" });
+    expect(document.activeElement).toBe(childRow);
+
+    fireEvent.keyDown(childRow, { key: "Enter" });
+    expect(window.location.pathname).toBe("/s/local%3Achild");
+    fireEvent.keyDown(childRow, { key: "ArrowLeft" });
+    expect(document.activeElement).toBe(clusterRow);
+    fireEvent.keyDown(clusterRow, { key: "ArrowLeft" });
+    expect(clusterRow.getAttribute("aria-expanded")).toBe("false");
+    expect(screen.queryByRole("treeitem", { name: /keyboard child/i })).toBeNull();
+  });
   test("routes rename through the rendered session menu and dialog", async () => {
     const applyNavigationMutation = vi.fn().mockResolvedValue(undefined);
     installState([sectionResource("live", [summary({ title: "Rename me", rename: true })])]);
@@ -507,21 +649,18 @@ describe("resource-backed Rail", () => {
     );
     expect(applyNavigationMutation).toHaveBeenCalledTimes(2);
   });
-  test("registers shutdown invalidation before AppWire action and ignores unrelated events", async () => {
-    let resolveEvent!: (payload: {
-      generationId: string;
-      sequence: number;
-      targets: [{ kind: "project"; projectKey: string; revision: number }];
-    }) => void;
-    const event = new Promise<{
-      generationId: string;
-      sequence: number;
-      targets: [{ kind: "project"; projectKey: string; revision: number }];
-    }>((resolve) => {
-      resolveEvent = resolve;
+  test("keeps AppWire shutdown pending through unrelated invalidation and until relevant target authority", async () => {
+    const event = deferred<NavigationInvalidatedPayload>();
+    const targetAuthority = deferred<void>();
+    let invalidationPredicate: ((payload: NavigationInvalidatedPayload) => boolean) | undefined;
+    const awaitNavigationInvalidation = vi.fn((predicate?: (payload: NavigationInvalidatedPayload) => boolean) => {
+      invalidationPredicate = predicate;
+      return { promise: event.promise, cancel: vi.fn() };
     });
-    const awaitNavigationInvalidation = vi.fn(() => ({ promise: event, cancel: vi.fn() }));
-    const awaitNavigationTargets = vi.fn().mockResolvedValue(undefined);
+    const deliverInvalidation = (payload: NavigationInvalidatedPayload) => {
+      if (invalidationPredicate?.(payload)) event.resolve(payload);
+    };
+    const awaitNavigationTargets = vi.fn(() => targetAuthority.promise);
     const shutdown = vi.fn().mockResolvedValue(undefined);
     installState([
       catalogResource([{ key: "p", name: "Project", session_count: 1 }]),
@@ -537,9 +676,30 @@ describe("resource-backed Rail", () => {
     await act(async () => undefined);
     expect(awaitNavigationInvalidation).toHaveBeenCalledTimes(1);
     expect(shutdown).toHaveBeenCalledWith("local:a");
-    resolveEvent({ generationId: "g1", sequence: 2, targets: [{ kind: "project", projectKey: "p", revision: 2 }] });
+    deliverInvalidation({
+      generationId: "g1",
+      sequence: 2,
+      targets: [{ kind: "pin_section", sectionId: "other", revision: 2 }],
+    });
+    await act(async () => undefined);
+    expect(awaitNavigationTargets).not.toHaveBeenCalled();
+    expect(screen.getByText("Shut down this session?")).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Shut down" }).hasAttribute("disabled")).toBe(true);
+
+    deliverInvalidation({
+      generationId: "g1",
+      sequence: 3,
+      targets: [{ kind: "project", projectKey: "p", revision: 2 }],
+    });
     await act(async () => undefined);
     expect(awaitNavigationTargets).toHaveBeenCalledWith([{ kind: "project", projectKey: "p", revision: 2 }], "g1");
+    expect(screen.getByText("Shut down this session?")).toBeTruthy();
+
+    await act(async () => {
+      targetAuthority.resolve(undefined);
+      await targetAuthority.promise;
+    });
+    expect(screen.queryByText("Shut down this session?")).toBeNull();
   });
   test("routes pin-section rename and delete dialogs through receipts and durable member count", async () => {
     const applyNavigationMutation = vi.fn().mockResolvedValue(undefined);
