@@ -28,7 +28,7 @@ test("group opacity composites foreground and own background as one surface", ()
   });
 });
 
-test("paint stabilization awaits finite animations and freezes infinite ones", async () => {
+test("paint stabilization awaits finite animations and paint frames", async () => {
   let resolveFinite;
   const finite = {
     currentTime: 0,
@@ -41,25 +41,12 @@ test("paint stabilization awaits finite animations and freezes infinite ones", a
     }),
     playState: "running",
   };
-  const infinite = {
-    currentTime: 20,
-    effect: {
-      getComputedTiming: () => ({ endTime: Infinity }),
-      getTiming: () => ({ iterations: Infinity }),
-    },
-    finished: new Promise(() => {}),
-    pauseCalled: false,
-    pause() {
-      this.pauseCalled = true;
-    },
-    playState: "running",
-  };
   let frames = 0;
   let settled = false;
   const pending = stabilizePagePaint(
     {
       fonts: { ready: Promise.resolve() },
-      getAnimations: () => [finite, infinite],
+      getAnimations: () => [finite],
     },
     () => {
       frames += 1;
@@ -70,13 +57,99 @@ test("paint stabilization awaits finite animations and freezes infinite ones", a
     return value;
   });
   await Promise.resolve();
-  assert.equal(infinite.pauseCalled, true);
-  assert.equal(infinite.currentTime, 0);
   assert.equal(settled, false);
   resolveFinite();
   const evidence = await pending;
-  assert.deepEqual(evidence, { finiteAwaited: 1, infiniteFrozen: 1 });
+  assert.deepEqual(evidence, {
+    finiteAwaited: 1,
+    finiteForced: [],
+    infiniteStabilized: [],
+    capabilityFailures: [],
+  });
   assert.equal(frames, 2);
+});
+
+test("infinite animation selects and records a visible representative phase", async () => {
+  const target = { id: "voice-control", tagName: "BUTTON" };
+  const animation = {
+    animationName: "voice-pulse",
+    currentTime: 20,
+    effect: {
+      target,
+      getComputedTiming: () => ({ endTime: Infinity }),
+      getTiming: () => ({ duration: 100, iterations: Infinity }),
+    },
+    pause() {},
+    playState: "running",
+  };
+  const snapshot = (element) => ({
+    element: element.id,
+    visible: animation.currentTime >= 50,
+    opacity: animation.currentTime >= 50 ? 1 : 0,
+    rect:
+      animation.currentTime >= 50
+        ? { left: 5, top: 6, right: 49, bottom: 50, width: 44, height: 44 }
+        : { left: 5, top: 6, right: 5, bottom: 6, width: 0, height: 0 },
+  });
+  const evidence = await stabilizePagePaint(
+    { fonts: { ready: Promise.resolve() }, getAnimations: () => [animation] },
+    () => Promise.resolve(),
+    snapshot,
+  );
+  assert.equal(animation.currentTime, 50);
+  assert.deepEqual(evidence.infiniteStabilized[0], {
+    identity: "voice-pulse",
+    affectedElement: "voice-control",
+    before: {
+      element: "voice-control",
+      visible: false,
+      opacity: 0,
+      rect: { left: 5, top: 6, right: 5, bottom: 6, width: 0, height: 0 },
+    },
+    after: {
+      element: "voice-control",
+      visible: true,
+      opacity: 1,
+      rect: { left: 5, top: 6, right: 49, bottom: 50, width: 44, height: 44 },
+    },
+    chosenTime: 50,
+  });
+});
+
+test("paused finite animation is forced terminal without awaiting finished", async () => {
+  const target = { id: "route-panel", tagName: "SECTION" };
+  const animation = {
+    animationName: "route-enter",
+    currentTime: 10,
+    playbackRate: 0,
+    playState: "paused",
+    effect: {
+      target,
+      getComputedTiming: () => ({ endTime: 120 }),
+      getTiming: () => ({ duration: 120, iterations: 1 }),
+    },
+    finished: new Promise(() => {}),
+    pause() {},
+  };
+  const evidence = await stabilizePagePaint(
+    { fonts: { ready: Promise.resolve() }, getAnimations: () => [animation] },
+    () => Promise.resolve(),
+    () => ({
+      visible: true,
+      opacity: 1,
+      rect: {
+        left: 0,
+        top: 0,
+        right: 100,
+        bottom: 100,
+        width: 100,
+        height: 100,
+      },
+    }),
+  );
+  assert.equal(animation.currentTime, 120);
+  assert.equal(evidence.finiteAwaited, 0);
+  assert.equal(evidence.finiteForced[0].chosenTime, 120);
 });
 
 test("DOM paint extraction retains candidate and ancestor group opacity", () => {
@@ -227,4 +300,26 @@ test("rendered sampling resolves image paint and checks both focus surfaces", ()
     inside: [[10, 10]],
     outside: [[8, 8]],
   });
+});
+
+test("rendered fallback refuses non-unit group opacity instead of double-compositing", () => {
+  const pair = applyRenderedSamples(
+    {
+      id: "faded-image-text",
+      kind: "text",
+      minimum: 4.5,
+      raw: {
+        foreground: "rgb(255, 255, 255)",
+        candidateOpacity: 0.5,
+        ancestorOpacities: [1],
+        backgrounds: [
+          { color: "transparent", image: "url(local.png)", opacity: 0.5 },
+        ],
+      },
+      unsupported: "background-image",
+    },
+    { inside: [{ red: 0, green: 0, blue: 0, alpha: 1 }], outside: [] },
+  );
+  assert.equal(pair.unsupported, "rendered-group-opacity");
+  assert.equal(pair.ratio, undefined);
 });

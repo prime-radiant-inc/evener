@@ -79,12 +79,20 @@ export async function runOwnedCleanup(primaryError, operations) {
     try {
       await operation();
     } catch (error) {
-      errors.push(error);
+      if (error instanceof AggregateError) errors.push(...error.errors);
+      else errors.push(error);
     }
   }
   if (errors.length > 1)
     throw new AggregateError(errors, "owned operation and cleanup failed");
   if (errors.length === 1) throw errors[0];
+}
+
+export async function closePageTarget(browser, page, targetId, primaryError) {
+  return runOwnedCleanup(primaryError, [
+    () => browser.send("Target.closeTarget", { targetId }),
+    () => page.close(),
+  ]);
 }
 
 export async function withOwnedCleanup(operation, cleanups) {
@@ -201,8 +209,7 @@ export async function startChrome(options = {}) {
       return {
         ...page,
         async close() {
-          await browser.send("Target.closeTarget", { targetId: target.id });
-          await page.close().catch(() => {});
+          await closePageTarget(browser, page, target.id);
         },
       };
     },
