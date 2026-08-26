@@ -6,6 +6,7 @@ import {
 } from "../panes/session/transcript/flow/transcriptViewRegistry";
 import { WireError } from "../protocol/errors";
 import { FakeClient } from "../protocol/testing/fakeClient";
+import type { TranscriptDisplayPatchResponse } from "../protocol/types.gen";
 import {
   encodeLocalConfig,
   makeTranscriptDisplayConfig,
@@ -180,6 +181,24 @@ describe("effective transcript display state", () => {
     unregister();
   });
 
+  test("announces semantically effective changes even when the concise summary repeats", () => {
+    const announce = vi.fn();
+    const unregister = registerTranscriptView({
+      id: "announcement-pane",
+      capture: vi.fn(() => viewSnapshot("announcement-pane")),
+      restore: vi.fn(),
+      focusDetailTrigger: vi.fn(),
+      announce,
+    });
+    const timings = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }, { roundTimings: true });
+    const tokens = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }, { tokenCounts: true });
+    transcriptDisplayStore.getState().setLocal("desktop", timings);
+    transcriptDisplayStore.getState().setLocal("desktop", tokens);
+    expect(announce).toHaveBeenNthCalledWith(1, "Tools · 1 advanced");
+    expect(announce).toHaveBeenNthCalledWith(2, "Tools · 1 advanced");
+    unregister();
+  });
+
   test("captures a breakpoint transition even when both layout configurations are identical", () => {
     const events: string[] = [];
     const unregister = registerTranscriptView({
@@ -274,6 +293,92 @@ describe("effective transcript display state", () => {
     expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 4, config: preset("full") });
     expect(transcriptDisplayStore.getState().hubError).toBe("revision conflict");
   });
+
+  test("rejects every malformed PATCH success without changing hub state or clearing the draft", async () => {
+    const client = new FakeClient("ready");
+    const confirmed = preset("tools");
+    const requested = preset("activity");
+    let response = { layout: "mobile", revision: 2, config: toWireConfig(requested) } as TranscriptDisplayPatchResponse;
+    client.on("evener/settings/transcriptDisplay/get", () => ({
+      desktop: { revision: 1, config: toWireConfig(confirmed) },
+      mobile: { revision: 1, config: toWireConfig(shippedMobileConfig) },
+    }));
+    client.on("evener/settings/transcriptDisplay/patch", () => response);
+    connectionStore.getState().connect(client);
+    connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+    await transcriptDisplayStore.getState().refreshHubDefaults();
+
+    const invalidResponses: unknown[] = [
+      { layout: "mobile", revision: 2, config: toWireConfig(requested) },
+      { layout: "desktop", revision: -1, config: toWireConfig(requested) },
+      { layout: "desktop", revision: 1.5, config: toWireConfig(requested) },
+      { layout: "desktop", revision: Number.MAX_SAFE_INTEGER + 1, config: toWireConfig(requested) },
+      { layout: "desktop", revision: 0, config: toWireConfig(requested) },
+      { layout: "desktop", revision: 3, config: toWireConfig(requested) },
+      { layout: "desktop", revision: 2, config: toWireConfig(requested), extra: true },
+      { layout: "desktop", revision: 2 },
+      { layout: "desktop", revision: 2, config: { version: 1, content: { kind: "preset", level: "wat" } } },
+      null,
+      "not an object",
+    ];
+    for (const invalid of invalidResponses) {
+      response = invalid as TranscriptDisplayPatchResponse;
+      await expect(transcriptDisplayStore.getState().patchHubDefault("desktop", requested)).rejects.toThrow(
+        "malformed",
+      );
+      expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 1, config: confirmed });
+      expect(transcriptDisplayStore.getState().drafts.desktop).toEqual(requested);
+    }
+
+    response = { layout: "desktop", revision: 1, config: toWireConfig(confirmed) };
+    await transcriptDisplayStore.getState().patchHubDefault("desktop", confirmed);
+    expect(transcriptDisplayStore.getState().drafts.desktop).toBeUndefined();
+    expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 1, config: confirmed });
+
+    response = { layout: "desktop", revision: 2, config: toWireConfig(preset("full")) };
+    await transcriptDisplayStore.getState().patchHubDefault("desktop", preset("full"));
+    expect(transcriptDisplayStore.getState().hub.desktop).toEqual({ revision: 2, config: preset("full") });
+  });
+
+  test.each(["desktop-first", "mobile-first"] as const)(
+    "keeps cross-layout acknowledgements independent when %s settles",
+    async (order) => {
+      const client = new FakeClient("ready");
+      const desktop = preset("activity");
+      const mobile = preset("full");
+      const desktopResponse = deferred<TranscriptDisplayPatchResponse>();
+      let rejectMobile!: (error: Error) => void;
+      const mobileResponse = new Promise<TranscriptDisplayPatchResponse>((_, reject) => {
+        rejectMobile = reject;
+      });
+      client.on("evener/settings/transcriptDisplay/get", () => ({
+        desktop: { revision: 1, config: toWireConfig(preset("tools")) },
+        mobile: { revision: 1, config: toWireConfig(preset("intent")) },
+      }));
+      client.on("evener/settings/transcriptDisplay/patch", (params) =>
+        params.layout === "desktop" ? desktopResponse.promise : mobileResponse,
+      );
+      connectionStore.getState().connect(client);
+      connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+      await transcriptDisplayStore.getState().refreshHubDefaults();
+      const desktopPatch = transcriptDisplayStore.getState().patchHubDefault("desktop", desktop);
+      const mobilePatch = transcriptDisplayStore.getState().patchHubDefault("mobile", mobile);
+      if (order === "desktop-first") {
+        desktopResponse.resolve({ layout: "desktop", revision: 2, config: toWireConfig(desktop) });
+        await desktopPatch;
+        rejectMobile(new Error("mobile failed"));
+      } else {
+        rejectMobile(new Error("mobile failed"));
+        await expect(mobilePatch).rejects.toThrow("mobile failed");
+        desktopResponse.resolve({ layout: "desktop", revision: 2, config: toWireConfig(desktop) });
+      }
+      await expect(mobilePatch).rejects.toThrow("mobile failed");
+      await desktopPatch;
+      expect(transcriptDisplayStore.getState().hub.desktop?.config).toEqual(desktop);
+      expect(transcriptDisplayStore.getState().hubErrors.desktop).toBeUndefined();
+      expect(transcriptDisplayStore.getState().hubErrors.mobile).toBe("mobile failed");
+    },
+  );
 
   test("ignores stale and equal-revision notifications", () => {
     const current = preset("tools");

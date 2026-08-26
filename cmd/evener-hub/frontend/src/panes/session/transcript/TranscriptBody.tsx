@@ -369,6 +369,7 @@ export function TranscriptBody({
       surface={surface}
       sessionRef={sessionRef}
       disclosureScope={disclosureScope}
+      thread={model}
     >
       {content}
     </TranscriptRenderProvider>

@@ -16,6 +16,8 @@ import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { keyID } from "../../stores/navigation/types";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
+import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
+import { makeTranscriptDisplayConfig } from "../../transcriptDisplay/config";
 import { Toast } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
@@ -333,6 +335,11 @@ test("keeps the live Detail control reachable above the transcript", async () =>
   expect(screen.getByRole("radio", { name: "Tools" })).toBeTruthy();
   await user.click(screen.getByRole("button", { name: "Edit hub defaults" }));
   expect(window.location.pathname).toBe("/settings/transcript");
+  transcriptDisplayStore.setState({ viewport: "desktop" });
+  transcriptDisplayStore.getState().setLocal("desktop", makeTranscriptDisplayConfig({ kind: "preset", level: "full" }));
+  await waitFor(() =>
+    expect(screen.getByTestId("transcript-view-announcement").textContent).toContain("Transcript detail: Full"),
+  );
 });
 
 test("falls back to the raw ref as the title when the thread has no name yet", async () => {

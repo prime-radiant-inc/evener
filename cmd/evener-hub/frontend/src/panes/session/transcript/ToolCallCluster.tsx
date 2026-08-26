@@ -4,6 +4,7 @@ import { useThreadsStore } from "../../../stores/threads";
 import {
   disclosureScopeForSession,
   expandDetailsByDefault,
+  useOptionalTranscriptRenderContext,
   useTranscriptRenderContext,
 } from "../../../transcriptDisplay/renderContext";
 import {
@@ -64,13 +65,21 @@ function clusterHeader(
 export function ToolCallCluster({ items, turn, sessionRef }: ToolCallClusterProps) {
   const bodyId = useId();
   const context = useTranscriptRenderContext();
+  const optionalContext = useOptionalTranscriptRenderContext();
+  // Direct cluster tests render this leaf without TranscriptBody. Production
+  // clusters are always provider-backed, including isolated previews.
+  const legacyCwd =
+    optionalContext === null
+      ? // biome-ignore lint/correctness/useHookAtTopLevel: compatibility fallback is fixed for a mounted leaf
+        useThreadsStore((state) => (sessionRef === undefined ? undefined : state.threads.get(sessionRef)?.cwd))
+      : undefined;
   const { config } = context;
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
   // Same by-ref selector ToolCallItem.tsx's own summaryCwd/openBesideCwd use
   // (copied from fileOpenBeside.tsx) - snapshot-only ThreadModel state, so a
   // shell-led folded cluster's header strips its redundant "cd <cwd> && "
   // prefix exactly like the per-call row does.
-  const cwd = useThreadsStore((s) => (sessionRef !== undefined ? s.threads.get(sessionRef)?.cwd : undefined));
+  const cwd = context.thread?.cwd ?? legacyCwd;
   const header = clusterHeader(items, cwd);
   const clusterId = leadItem(items).id;
   const disclosureKey = scopedDisclosureId(disclosureScope, clusterId);

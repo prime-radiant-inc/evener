@@ -53,6 +53,7 @@ export function TranscriptSection() {
   const local = useTranscriptDisplayStore((state) => state.local);
   const hubLoading = useTranscriptDisplayStore((state) => state.hubLoading);
   const hubError = useTranscriptDisplayStore((state) => state.hubError);
+  const hubErrors = useTranscriptDisplayStore((state) => state.hubErrors);
   const storageWarning = useTranscriptDisplayStore((state) => state.storageWarning);
   const hubSupport = useTranscriptDisplayStore((state) => state.hubSupport);
   const [pending, setPending] = useState<PendingSaves>({});
@@ -69,21 +70,31 @@ export function TranscriptSection() {
     saveOperations.current[layout] = operation;
     setPending((current) => ({ ...current, [layout]: { state: "saving", config } }));
     try {
-      await transcriptDisplayStore.getState().patchHubDefault(layout, config);
-      if (saveOperations.current[layout] !== operation) return;
-      // Unsupported hubs return without a rejected promise so the store can
-      // remain usable by local-view consumers. A Settings mutation must not
-      // claim success in that case.
-      const state = transcriptDisplayStore.getState();
-      const confirmed = state.hub[layout] ?? shippedDefault(layout);
-      const acknowledged =
-        state.hubSupport === "supported" &&
-        state.hubError === null &&
-        state.drafts[layout] === undefined &&
-        configFingerprint(confirmed.config) === configFingerprint(config);
-      if (!acknowledged) {
-        throw new Error(state.hubError ?? "Hub did not acknowledge this transcript display default.");
+      const confirmedBefore = confirmedFor(layout, transcriptDisplayStore.getState().hub);
+      const canonical = await transcriptDisplayStore.getState().patchHubDefault(layout, config);
+      if (
+        canonical.revision === confirmedBefore.revision &&
+        configFingerprint(canonical.config) !== configFingerprint(config)
+      ) {
+        throw new Error("Hub did not acknowledge this transcript display default.");
       }
+      if (saveOperations.current[layout] !== operation) {
+        const currentDraft = transcriptDisplayStore.getState().drafts[layout];
+        if (currentDraft !== undefined) {
+          setPending((current) => ({
+            ...current,
+            [layout]: {
+              state: "error",
+              config: currentDraft,
+              error: "Hub did not acknowledge this transcript display default.",
+            },
+          }));
+        }
+        return;
+      }
+      // patchHubDefault returns only a fully validated canonical response for
+      // this layout. Do not inspect store-wide errors: another layout may be
+      // settling concurrently.
       setPending((current) => ({ ...current, [layout]: { state: "idle" } }));
       // A success toast is deliberately after the request and canonical
       // response have settled; a draft is never described as saved.
@@ -161,7 +172,7 @@ export function TranscriptSection() {
               draft={drafts[layout]}
               localOverride={local[layout]}
               saveState={state?.state ?? "idle"}
-              error={state?.error}
+              error={state?.error ?? hubErrors[layout]}
               disabled={disabled}
               onChange={(config) => void save(layout, config)}
               onRetry={() => retry(layout)}

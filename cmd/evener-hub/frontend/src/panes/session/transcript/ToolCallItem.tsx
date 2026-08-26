@@ -12,6 +12,7 @@ import { useThreadsStore } from "../../../stores/threads";
 import {
   disclosureScopeForSession,
   expandDetailsByDefault,
+  useOptionalTranscriptRenderContext,
   useTranscriptRenderContext,
 } from "../../../transcriptDisplay/renderContext";
 import { type CadenceState, StatusDot } from "../../../widgets";
@@ -103,6 +104,16 @@ function delegateStatusForOutput(
 // already-settled tool call.
 export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef, projectedSummary }: ItemRenderProps) {
   const context = useTranscriptRenderContext();
+  const optionalContext = useOptionalTranscriptRenderContext();
+  // Direct leaf tests predate the shared provider. Keep that compatibility
+  // seam, but production TranscriptBody (including previews) always supplies a
+  // context and therefore never subscribes to threadsStore.
+  const legacyThread =
+    optionalContext === null
+      ? // biome-ignore lint/correctness/useHookAtTopLevel: compatibility fallback is fixed for a mounted leaf; production bodies always provide context
+        useThreadsStore((state) => state.threads.get(sessionRef ?? ""))
+      : undefined;
+  const thread = context.thread ?? legacyThread;
   const { config } = context;
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
   const descriptor = toolRendererFor(item.toolName ?? "");
@@ -114,10 +125,9 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef,
     isDelegate ? turnScopeKey(sessionRef, item.turnId) : "",
     isDelegate ? rowKeyForDelegateItem(item) : "",
   );
-  const stableDelegate = useThreadsStore((s) => {
+  const stableDelegate = thread?.delegates?.find((delegate) => {
     if (sessionRef === undefined || stableDelegateId === undefined) return undefined;
-    const owner = s.threads.get(sessionRef) ?? s.watchedThreads.get(sessionRef);
-    return owner?.delegates?.find((delegate) => delegate.delegateId === stableDelegateId);
+    return delegate.delegateId === stableDelegateId;
   });
   const delegateKind = delegateStatusForOutput(delegateOutput, delegateRow, stableDelegate, live);
   const delegateStatus = isDelegate ? <StatusDot state={DELEGATE_INDICATOR_STATE[delegateKind]} /> : undefined;
@@ -148,7 +158,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef,
   // the open-beside presence check just below, and summary()'s
   // ToolSummaryContext further down, which shell's own descriptor uses to
   // strip a redundant "cd <cwd> && " prefix from its summary.
-  const cwd = useThreadsStore((s) => (sessionRef !== undefined ? s.threads.get(sessionRef)?.cwd : undefined));
+  const cwd = thread?.cwd;
   const canOpenBeside = fileDocParams(openBesidePath, sessionRef, cwd) !== undefined;
   // The openBesidePath re-check is what fileDocParams already required to
   // return a value; stating it here narrows the type instead of asserting it,
@@ -203,9 +213,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef,
   // settled, already-collapsed row's summary updates the moment that later
   // reply lands, even though this memoized component would otherwise bail
   // on unchanged item/live/sessionRef props.
-  const summarySuffix = useThreadsStore((s) =>
-    descriptor.summarySuffix?.(item, sessionRef !== undefined ? s.threads.get(sessionRef) : undefined),
-  );
+  const summarySuffix = descriptor.summarySuffix?.(item, thread);
   // cwd (subscribed once above) is threaded into summary() as
   // ToolSummaryContext so shell's own descriptor can strip a redundant
   // "cd <cwd> && " prefix from its summary.
@@ -265,9 +273,7 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef,
   // landed still collapses the moment it does - autoDefault itself is only
   // ever a fallback, so recomputing what it feeds into here never re-fights
   // an explicit reader toggle (disclosureStore's own contract).
-  const superseded = useThreadsStore((s) =>
-    supersededBySuccess(item, sessionRef !== undefined ? s.threads.get(sessionRef) : undefined),
-  );
+  const superseded = supersededBySuccess(item, thread);
   const disclosureKey = scopedDisclosureId(disclosureScope, item.id);
   const bodyId = useId();
   const configDefault = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, item.id, false);
