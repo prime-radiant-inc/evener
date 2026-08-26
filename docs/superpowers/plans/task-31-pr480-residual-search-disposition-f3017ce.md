@@ -62,3 +62,14 @@ for `delegate`, `JobRecord`, `job_id`, `job.notification`, `job:`, `next job`, a
 supersession note or in dated design prose covered by that note. Scenario source
 citations use named headings/phrases, never line-number citations, per
 `test/scenarios/README.md` “Citing a contract”.
+
+## Parent residual-audit repair addendum
+
+The parent audit found two Important defects in the first repair commit
+`7a25f4daf`: the lifecycle list placed terminal delegate notification before
+child turns, and the recovery scenario left the malformed fragment `J4's row
+also has`. Both are corrected in the follow-up commit. The lifecycle now orders
+child turns, terminal outcome and `SubagentStop`, private/stable finalization,
+terminal `<delegate-notification>`, then reader/watcher release. The scenario's
+shell-row sentence now ends after `total_bytes`, with D4 fields deferred in a
+separate sentence to `subagent-list-and-output.md`.

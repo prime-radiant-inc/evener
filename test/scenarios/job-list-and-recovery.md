@@ -97,10 +97,9 @@ Turn 1:
   Falsification: J2 absent from either list, or present with a phantom
   status outside the canonical five.
 - Every shell entry carries the documented row fields: `job_id`, `type`,
-  `status`, `reason`, `started_at`, `total_bytes`; J4's row also has
-  Delegate D4 has its stable `delegate_id`, aggregate status, child session
-  `transcript_ref`, and resumability in the delegate listing, covered by
-  `subagent-list-and-output.md`. The byte counter on a
+  `status`, `reason`, `started_at`, `total_bytes`. Stable D4 fields and its
+  delegate listing are covered separately by `subagent-list-and-output.md`.
+  The byte counter on a
   `job_list` row is `total_bytes` (`agent/session_tools_jobs.go:1349`) —
   `output_bytes` is the `<job-notification>` attribute and a `job_status`
   field, and asserting it here would fail on a working build.
