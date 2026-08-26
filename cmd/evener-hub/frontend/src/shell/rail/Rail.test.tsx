@@ -3,8 +3,9 @@ import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { NavigationManifest, NavigationProjectResource, NavigationSessionSummary } from "../../protocol/types.gen";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { keyID, type ResourceKey, type ResourceState } from "../../stores/navigation/types";
+import { threadsStore } from "../../stores/threads";
 import { resetTreeStoreForTests, treeStore } from "../../stores/tree";
-import { resetToastStoreForTests } from "../../widgets/toast/store";
+import { getToasts, resetToastStoreForTests } from "../../widgets/toast/store";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import { adaptNavigationResources, Rail } from "./Rail";
 import { EXPANSION_STORAGE_KEY } from "./railExpansion";
@@ -47,6 +48,14 @@ function resource<T>(key: ResourceKey, data: T): ResourceState<T> {
     error: null,
     generationID: "g1",
   };
+}
+function jsonResponse(body: unknown, status = 200): Response {
+  return {
+    ok: status >= 200 && status < 300,
+    status,
+    statusText: status === 200 ? "OK" : "Error",
+    json: () => Promise.resolve(body),
+  } as Response;
 }
 function installState(resources: ResourceState[] = [], m = manifest()) {
   navigationStore.setState({
@@ -109,7 +118,10 @@ beforeEach(() => {
   resetWorkspaceStoreForTests();
   localStorage.clear();
 });
-afterEach(() => cleanup());
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe("resource-backed Rail", () => {
   test("renders loaded global and project resources without requesting /api/tree", () => {
@@ -168,6 +180,36 @@ describe("resource-backed Rail", () => {
     await act(async () => undefined);
     expect(loadSection).toHaveBeenCalledTimes(1);
     expect(loadSection).toHaveBeenCalledWith("live", 1, 50);
+  });
+  test("toasts a global overflow failure and permits a deterministic retry", async () => {
+    const loadSection = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(undefined);
+    installState([sectionResource("live", [summary({ title: "Live" })], 3)]);
+    navigationStore.setState({ loadSection });
+    render(<Rail />);
+    const older = screen.getByText("+3 older");
+    fireEvent.click(older);
+    await act(async () => undefined);
+    expect(getToasts().some((toast) => /Couldn't load older sessions/i.test(toast.text))).toBe(true);
+    fireEvent.click(older);
+    await act(async () => undefined);
+    expect(loadSection).toHaveBeenCalledTimes(2);
+  });
+  test("toasts a project overflow failure and retries the same canonical page", async () => {
+    const loadProjectPage = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(undefined);
+    installState([
+      catalogResource([{ key: "p", name: "Project", session_count: 3 }]),
+      projectResource("p", [summary({ title: "Current" })], 2),
+    ]);
+    navigationStore.setState({ loadProjectPage });
+    render(<Rail />);
+    fireEvent.click(screen.getByText("Project"));
+    const older = screen.getByText("+2 older");
+    fireEvent.click(older);
+    await act(async () => undefined);
+    expect(getToasts().some((toast) => /Couldn't load older sessions/i.test(toast.text))).toBe(true);
+    fireEvent.click(older);
+    await act(async () => undefined);
+    expect(loadProjectPage).toHaveBeenCalledTimes(2);
   });
   test("deduplicates overlapping pin pages and keeps the first descriptor count", () => {
     const duplicate = summary({ ref: "pin", title: "first" });
@@ -256,6 +298,62 @@ describe("resource-backed Rail", () => {
     await act(async () => undefined);
     expect(loadSection).toHaveBeenCalledWith("needs_you");
   });
+  test("scrolls and consumes a rendered reveal target exactly once across resource updates", async () => {
+    const scroll = vi.fn();
+    HTMLElement.prototype.scrollIntoView = scroll;
+    const location = resource(
+      { kind: "location", ref: "target" },
+      {
+        generation_id: "g1",
+        revision: 1,
+        ref: "target",
+        top_level_ref: "target",
+        top_level: true,
+        tier: "live",
+        session: summary({ ref: "target", title: "Target" }),
+      },
+    );
+    installState([location]);
+    const consumed = vi.fn();
+    const view = render(<Rail revealTarget="target" onRevealConsumed={consumed} />);
+    await act(async () => undefined);
+    expect(consumed).toHaveBeenCalledTimes(0);
+    const live = sectionResource("live", [summary({ ref: "target", title: "Target" })]);
+    const nextResources = new Map<string, ResourceState>([
+      [keyID(location.key), location],
+      [keyID(live.key), live],
+    ]);
+    navigationStore.setState({ resources: nextResources });
+    await act(async () => undefined);
+    navigationStore.setState({ attention: { changed: [], summary: { needsYou: 0, error: 0, working: 0 } } });
+    await act(async () => undefined);
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(consumed).toHaveBeenCalledTimes(1);
+    view.rerender(<Rail revealTarget="target" onRevealConsumed={consumed} />);
+    await act(async () => undefined);
+    expect(scroll).toHaveBeenCalledTimes(1);
+    expect(consumed).toHaveBeenCalledTimes(1);
+  });
+  test("authoritative missing reveal consumes once and a changed target re-arms", async () => {
+    const consumed = vi.fn();
+    const first = resource(
+      { kind: "location", ref: "missing" },
+      { generation_id: "g1", revision: 1, ref: "missing", top_level_ref: "missing", top_level: true },
+    );
+    const second = resource(
+      { kind: "location", ref: "missing-2" },
+      { generation_id: "g1", revision: 1, ref: "missing-2", top_level_ref: "missing-2", top_level: true },
+    );
+    installState([first, second]);
+    const view = render(<Rail revealTarget="missing" onRevealConsumed={consumed} />);
+    await act(async () => undefined);
+    view.rerender(<Rail revealTarget="missing" onRevealConsumed={consumed} />);
+    await act(async () => undefined);
+    expect(consumed).toHaveBeenCalledTimes(1);
+    view.rerender(<Rail revealTarget="missing-2" onRevealConsumed={consumed} />);
+    await act(async () => undefined);
+    expect(consumed).toHaveBeenCalledTimes(2);
+  });
   test("loads a project catalog and root from an empty-model project location", async () => {
     const loadCatalog = vi.fn().mockResolvedValue(undefined);
     const loadProject = vi.fn().mockResolvedValue(undefined);
@@ -295,6 +393,209 @@ describe("resource-backed Rail", () => {
     render(<Rail />);
     fireEvent.click(screen.getByText("Proj"));
     expect(localStorage.getItem(EXPANSION_STORAGE_KEY)).toContain("projectnode:p");
+  });
+  test("retains an archive overlay through REST response and removes it at target convergence", async () => {
+    let resolveConvergence!: () => void;
+    const convergence = new Promise<void>((resolve) => {
+      resolveConvergence = resolve;
+    });
+    const applyNavigationMutation = vi.fn(() => convergence);
+    installState([sectionResource("live", [summary({ title: "Archivable", rename: true })])]);
+    navigationStore.setState({ applyNavigationMutation });
+    vi.stubGlobal(
+      "fetch",
+      vi.fn().mockResolvedValue(
+        jsonResponse({
+          navigation: { generation_id: "g1", targets: [{ kind: "section", section: "live", revision: 2 }] },
+        }),
+      ),
+    );
+    render(<Rail />);
+    fireEvent.click(screen.getByRole("button", { name: /actions for archivable/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
+    await act(async () => undefined);
+    expect(screen.queryByText("Archivable")).toBeNull();
+    expect(applyNavigationMutation).toHaveBeenCalledTimes(1);
+    resolveConvergence();
+    await act(async () => undefined);
+    expect(screen.getByText("Archivable")).toBeTruthy();
+  });
+  test("rolls back a rejected REST archive and leaves the row visible with an error toast", async () => {
+    installState([sectionResource("live", [summary({ title: "Rejectable" })])]);
+    vi.stubGlobal("fetch", vi.fn().mockResolvedValue(jsonResponse({ error: "denied" }, 403)));
+    render(<Rail />);
+    fireEvent.click(screen.getByRole("button", { name: /actions for rejectable/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Archive" }));
+    await act(async () => undefined);
+    expect(screen.getByText("Rejectable")).toBeTruthy();
+    expect(getToasts().some((toast) => /Couldn't update archive state/i.test(toast.text))).toBe(true);
+  });
+  test("routes rename through the rendered session menu and dialog", async () => {
+    const applyNavigationMutation = vi.fn().mockResolvedValue(undefined);
+    installState([sectionResource("live", [summary({ title: "Rename me", rename: true })])]);
+    navigationStore.setState({ applyNavigationMutation });
+    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ navigation: { generation_id: "g1", targets: [] } }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Rail />);
+    fireEvent.click(screen.getByRole("button", { name: /actions for rename me/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Renamed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Rename" }));
+    await act(async () => undefined);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/sessions/local%3Aa/rename"),
+      expect.anything(),
+    );
+    expect(applyNavigationMutation).toHaveBeenCalledTimes(1);
+  });
+  test("routes project favorite through the rendered project menu", async () => {
+    const applyNavigationMutation = vi.fn().mockResolvedValue(undefined);
+    installState([catalogResource([{ key: "p", name: "Project", session_count: 0 }])]);
+    navigationStore.setState({ applyNavigationMutation });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValue(jsonResponse({ ok: true, navigation: { generation_id: "g1", targets: [] } }));
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Rail />);
+    fireEvent.click(screen.getByRole("button", { name: /actions for project/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Add to pinned" }));
+    await act(async () => undefined);
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/favorite",
+      expect.objectContaining({ body: JSON.stringify({ kind: "project", id: "p", favorited: true }) }),
+    );
+    expect(applyNavigationMutation).toHaveBeenCalledTimes(1);
+  });
+  test("routes unpin and delete through rendered session dialogs and receipt convergence", async () => {
+    const applyNavigationMutation = vi.fn().mockResolvedValue(undefined);
+    const row = summary({ title: "Pinned delete" });
+    installState([
+      resource(
+        { kind: "pin_catalog", offset: 0, limit: 100 },
+        { generation_id: "g1", revision: 1, pin_sections: [{ id: "pins", name: "Pins", count: 1 }], remaining: 0 },
+      ),
+      resource(
+        { kind: "pin_section", sectionId: "pins", offset: 0, limit: 50 },
+        { generation_id: "g1", revision: 1, sessions: [row], remaining: 0, truncated: false },
+      ),
+    ]);
+    navigationStore.setState({ applyNavigationMutation });
+    const fetchMock = vi
+      .fn()
+      .mockResolvedValueOnce(
+        jsonResponse({ ok: true, changed: true, navigation: { generation_id: "g1", targets: [] } }),
+      )
+      .mockResolvedValueOnce(
+        jsonResponse({ deleted: ["a"], skipped: [], navigation: { generation_id: "g1", targets: [] } }),
+      );
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Rail />);
+    fireEvent.click(screen.getByRole("button", { name: /actions for pinned delete/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Unpin" }));
+    await act(async () => undefined);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/session-pin?ref="),
+      expect.objectContaining({ method: "DELETE" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /actions for pinned delete/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete…" }));
+    fireEvent.click(screen.getByRole("button", { name: "Delete" }));
+    await act(async () => undefined);
+    expect(fetchMock).toHaveBeenCalledWith(
+      expect.stringContaining("/api/sessions/"),
+      expect.objectContaining({ method: "POST" }),
+    );
+    expect(applyNavigationMutation).toHaveBeenCalledTimes(2);
+  });
+  test("registers shutdown invalidation before AppWire action and ignores unrelated events", async () => {
+    let resolveEvent!: (payload: {
+      generationId: string;
+      sequence: number;
+      targets: [{ kind: "project"; projectKey: string; revision: number }];
+    }) => void;
+    const event = new Promise<{
+      generationId: string;
+      sequence: number;
+      targets: [{ kind: "project"; projectKey: string; revision: number }];
+    }>((resolve) => {
+      resolveEvent = resolve;
+    });
+    const awaitNavigationInvalidation = vi.fn(() => ({ promise: event, cancel: vi.fn() }));
+    const awaitNavigationTargets = vi.fn().mockResolvedValue(undefined);
+    const shutdown = vi.fn().mockResolvedValue(undefined);
+    installState([
+      catalogResource([{ key: "p", name: "Project", session_count: 1 }]),
+      projectResource("p", [summary({ title: "Shutdown me", live: true })]),
+    ]);
+    navigationStore.setState({ awaitNavigationInvalidation, awaitNavigationTargets });
+    threadsStore.setState({ shutdown });
+    render(<Rail />);
+    fireEvent.click(screen.getByText("Project"));
+    fireEvent.click(screen.getByRole("button", { name: /actions for shutdown me/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Shut down" }));
+    fireEvent.click(screen.getByRole("button", { name: "Shut down" }));
+    await act(async () => undefined);
+    expect(awaitNavigationInvalidation).toHaveBeenCalledTimes(1);
+    expect(shutdown).toHaveBeenCalledWith("local:a");
+    resolveEvent({ generationId: "g1", sequence: 2, targets: [{ kind: "project", projectKey: "p", revision: 2 }] });
+    await act(async () => undefined);
+    expect(awaitNavigationTargets).toHaveBeenCalledWith([{ kind: "project", projectKey: "p", revision: 2 }], "g1");
+  });
+  test("routes pin-section rename and delete dialogs through receipts and durable member count", async () => {
+    const applyNavigationMutation = vi.fn().mockResolvedValue(undefined);
+    installState([
+      resource(
+        { kind: "pin_catalog", offset: 0, limit: 100 },
+        { generation_id: "g1", revision: 1, pin_sections: [{ id: "pins", name: "Pins", count: 1 }], remaining: 0 },
+      ),
+      resource(
+        { kind: "pin_section", sectionId: "pins", offset: 0, limit: 50 },
+        { generation_id: "g1", revision: 1, sessions: [summary({ title: "Pinned" })], remaining: 0, truncated: false },
+      ),
+    ]);
+    navigationStore.setState({ applyNavigationMutation });
+    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
+      if (!init?.method) return jsonResponse([{ id: "pins", name: "Pins", member_count: 3 }]);
+      if (init.method === "PATCH")
+        return jsonResponse({
+          ok: true,
+          changed: true,
+          section: { id: "pins", name: "Renamed", member_count: 3 },
+          navigation: { generation_id: "g1", targets: [] },
+        });
+      return jsonResponse({
+        ok: true,
+        changed: true,
+        member_count: 3,
+        navigation: { generation_id: "g1", targets: [] },
+      });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+    render(<Rail />);
+    fireEvent.click(screen.getByRole("button", { name: /actions for pins/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
+    fireEvent.change(screen.getByLabelText("Section name"), { target: { value: "Renamed" } });
+    fireEvent.click(screen.getByRole("button", { name: "Rename section" }));
+    await act(async () => undefined);
+    fireEvent.click(screen.getByRole("button", { name: /actions for pins/i }));
+    fireEvent.click(screen.getByRole("menuitem", { name: "Delete" }));
+    await act(async () => undefined);
+    expect(screen.getByText(/unpin 3 sessions/i)).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Delete section" }));
+    await act(async () => undefined);
+    expect(fetchMock).toHaveBeenCalledWith("/api/pin-sections/pins", expect.objectContaining({ method: "DELETE" }));
+    expect(applyNavigationMutation).toHaveBeenCalledTimes(2);
+  });
+  test("shows a project root retry while retaining the summary row after a load error", async () => {
+    const loadProject = vi.fn().mockRejectedValue(new Error("offline"));
+    const rootError = { ...resource({ kind: "project", projectKey: "p" }, null), error: new Error("offline") };
+    installState([catalogResource([{ key: "p", name: "Retry project", session_count: 1 }]), rootError]);
+    navigationStore.setState({ loadProject });
+    render(<Rail />);
+    expect(screen.getByText("Retry project")).toBeTruthy();
+    fireEvent.click(screen.getByRole("button", { name: "Retry" }));
+    await act(async () => undefined);
+    expect(loadProject).toHaveBeenCalledWith("p");
   });
 });
 

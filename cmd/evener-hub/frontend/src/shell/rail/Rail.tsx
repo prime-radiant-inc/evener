@@ -528,6 +528,29 @@ function NavigationRail({
   const isExpanded = useMemo(() => overrideLookup(expandedOverrides), [expandedOverrides]);
   const revealLookupInFlight = useRef<string | null>(null);
   const revealResourceRequests = useRef(new Set<string>());
+  const revealCompletedTarget = useRef<string | null>(null);
+  const revealRequestTarget = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (revealRequestTarget.current === revealTarget) return;
+    revealRequestTarget.current = revealTarget ?? null;
+    revealLookupInFlight.current = null;
+    revealResourceRequests.current.clear();
+    revealCompletedTarget.current = null;
+  }, [revealTarget]);
+
+  const requestRevealResource = useCallback((key: string, request: Promise<unknown> | undefined): void => {
+    if (!request || revealResourceRequests.current.has(key)) return;
+    revealResourceRequests.current.add(key);
+    void request.catch(() => {
+      revealResourceRequests.current.delete(key);
+    });
+  }, []);
+  const consumeReveal = useCallback(() => {
+    if (!revealTarget || revealCompletedTarget.current === revealTarget) return;
+    revealCompletedTarget.current = revealTarget;
+    onRevealConsumed?.();
+  }, [revealTarget, onRevealConsumed]);
 
   useEffect(() => {
     if (navigationMode !== "v1") return;
@@ -592,9 +615,9 @@ function NavigationRail({
     const row = Array.from(bodyRef.current?.querySelectorAll<HTMLElement>("[data-session-ref]") ?? []).find(
       (element) => element.dataset.sessionRef === revealTarget,
     );
-    if (row) {
+    if (row && revealCompletedTarget.current !== revealTarget) {
       row.scrollIntoView({ block: "center", behavior: "smooth" });
-      onRevealConsumed?.();
+      consumeReveal();
       return;
     }
     const projectID = projectNodeIdForSessionRef(
@@ -607,7 +630,7 @@ function NavigationRail({
     }
     if (legacySource) {
       if (legacySource.loading) return;
-      onRevealConsumed?.();
+      consumeReveal();
       return;
     }
     const location = resourceData<{ project_key?: string; tier?: string; pin_section_id?: string; session?: unknown }>(
@@ -620,13 +643,16 @@ function NavigationRail({
     if (!location) {
       if (revealLookupInFlight.current !== revealTarget) {
         revealLookupInFlight.current = revealTarget;
-        void Promise.resolve(navigationStore.getState().lookupLocation(revealTarget)).catch(() => undefined);
+        requestRevealResource(
+          `location:${revealTarget}`,
+          Promise.resolve(navigationStore.getState().lookupLocation(revealTarget)),
+        );
       }
       return;
     }
     revealLookupInFlight.current = null;
     if (!location.session) {
-      onRevealConsumed?.();
+      consumeReveal();
       return;
     }
     if (location.project_key) {
@@ -637,32 +663,33 @@ function NavigationRail({
       }
       const catalog = location.tier === "archived" ? "archived_projects" : "projects";
       if (!revealResourceRequests.current.has(`catalog:${catalog}`)) {
-        revealResourceRequests.current.add(`catalog:${catalog}`);
-        void Promise.resolve(navigationStore.getState().loadCatalog(catalog)).catch(() => undefined);
+        requestRevealResource(`catalog:${catalog}`, Promise.resolve(navigationStore.getState().loadCatalog(catalog)));
       }
       if (!revealResourceRequests.current.has(`project:${location.project_key}`)) {
-        revealResourceRequests.current.add(`project:${location.project_key}`);
-        void Promise.resolve(navigationStore.getState().loadProject(location.project_key)).catch(() => undefined);
+        requestRevealResource(
+          `project:${location.project_key}`,
+          Promise.resolve(navigationStore.getState().loadProject(location.project_key)),
+        );
       }
       return;
     }
     if (location.pin_section_id) {
       if (!revealResourceRequests.current.has("pin_catalog")) {
-        revealResourceRequests.current.add("pin_catalog");
-        void Promise.resolve(navigationStore.getState().loadPinCatalog()).catch(() => undefined);
+        requestRevealResource("pin_catalog", Promise.resolve(navigationStore.getState().loadPinCatalog()));
       }
       if (!revealResourceRequests.current.has(`pin:${location.pin_section_id}`)) {
-        revealResourceRequests.current.add(`pin:${location.pin_section_id}`);
-        void Promise.resolve(navigationStore.getState().loadPinSection(location.pin_section_id)).catch(() => undefined);
+        requestRevealResource(
+          `pin:${location.pin_section_id}`,
+          Promise.resolve(navigationStore.getState().loadPinSection(location.pin_section_id)),
+        );
       }
       return;
     }
     const section = location.tier === "needs_you" ? "needs_you" : "live";
     if (!revealResourceRequests.current.has(`section:${section}`)) {
-      revealResourceRequests.current.add(`section:${section}`);
-      void Promise.resolve(navigationStore.getState().loadSection(section)).catch(() => undefined);
+      requestRevealResource(`section:${section}`, Promise.resolve(navigationStore.getState().loadSection(section)));
     }
-  }, [revealTarget, resources, expandedOverrides, onRevealConsumed, setExpanded, legacySource]);
+  }, [revealTarget, resources, expandedOverrides, consumeReveal, setExpanded, legacySource, requestRevealResource]);
 
   function handleToggle(node: RailNode) {
     if (node.kind === "loading") return;
