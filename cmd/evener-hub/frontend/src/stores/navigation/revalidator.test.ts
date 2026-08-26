@@ -278,3 +278,23 @@ test("listener cannot mutate nested key snapshots and dispose blocks abort-resis
   await request;
   expect(r.states().size).toBe(0);
 });
+
+test.each([
+  { status: 304, revision: 1, etag: "a" },
+  { status: 304, generationID: "g", etag: "a" },
+  { status: 304, generationID: "g", revision: 1 },
+  { status: 304, generationID: "wrong", revision: 1, etag: "a" },
+])("rejects each missing/contradictory 304 metadata %#", async (response) => {
+  const r = new NavigationRevalidator("g");
+  await r.load(key, async () => ({ status: 200, generationID: "g", revision: 1, etag: "a", data: "good" }));
+  r.invalidate({ kind: "project", projectKey: "p", revision: 2 });
+  await r.load(key, async () => response as any);
+  expect(r.get(key)?.data).toBe("good");
+  expect(r.get(key)?.stale).toBe(true);
+});
+
+test("rejects 304 without cache", async () => {
+  const noCache = new NavigationRevalidator("g");
+  await noCache.load(key, async () => ({ status: 304, generationID: "g", revision: 1, etag: "a" }));
+  expect(noCache.get(key)?.error).toBeTruthy();
+});
