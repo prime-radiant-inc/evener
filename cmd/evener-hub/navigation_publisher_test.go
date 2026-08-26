@@ -60,7 +60,7 @@ func TestNavigationPublisherLifecycleCoalescesReadinessAndBroadcastsFIFOOnce(t *
 		entered: make(chan struct{}, 1),
 		release: make(chan struct{}),
 	}
-	source.changeTitle("one")
+	source.changeTitle("first")
 	first, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
 	if err != nil {
 		t.Fatal(err)

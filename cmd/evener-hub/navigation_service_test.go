@@ -524,8 +524,13 @@ func TestNavigationServiceBuildErrorCompletesEveryAttachedTicket(t *testing.T) {
 
 func TestNavigationServicePendingEpochSurvivesCommitBeforeClear(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
-	source.captured = make(chan struct{}, 8)
 	service := newTestNavigationService(t, source)
+	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		t.Fatal(err)
+	}
+	source.mu.Lock()
+	source.captured = make(chan struct{}, 8)
+	source.mu.Unlock()
 	ctx, cancel := context.WithCancel(t.Context())
 	defer cancel()
 	previous := navigationPublicationCommittedLocked
@@ -557,7 +562,6 @@ func TestNavigationServicePendingEpochSurvivesCommitBeforeClear(t *testing.T) {
 		navigationPendingCleared = previousCleared
 	})
 	go service.Start(ctx)
-	waitNavigationSignal(t, source.captured, "initial scheduler snapshot")
 	source.changeTitle("first")
 	service.Invalidate(navigationChangeHint{Projects: []string{"p1"}})
 	waitNavigationSignal(t, commit, "first commit")
