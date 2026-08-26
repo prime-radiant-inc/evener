@@ -119,8 +119,8 @@ func TestLegacyTreeHTTPSummaryAndFullCachesAreIsolated(t *testing.T) {
 			t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
 		}
 	}
-	if full.Load() != 2 || source.captureCount() != 1 {
-		t.Fatalf("full projector=%d captures=%d, want two shapes and one source capture", full.Load(), source.captureCount())
+	if full.Load() != 1 || source.captureCount() != 1 {
+		t.Fatalf("full projector=%d captures=%d, want one full projection and one source capture", full.Load(), source.captureCount())
 	}
 	if !bytes.Equal(summaryFirst.Body.Bytes(), summarySecond.Body.Bytes()) || !bytes.Equal(fullFirst.Body.Bytes(), fullSecond.Body.Bytes()) {
 		t.Fatal("cached shape bytes changed")
