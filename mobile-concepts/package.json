@@ -6,6 +6,7 @@
   "scripts": {
     "build:browser": "tsc --noEmit --incremental false && vite build --mode browser-test",
     "check": "biome ci src && tsc --noEmit --incremental false",
+    "check:native": "node scripts/native-contract.mjs --source",
     "pretest": "node scripts/boundary.mjs",
     "test": "node --test scripts/*.test.mjs scripts/browser/*.test.mjs && vitest run --maxWorkers=4",
     "test:browser": "npm run build:browser && node scripts/concept-browser.mjs",

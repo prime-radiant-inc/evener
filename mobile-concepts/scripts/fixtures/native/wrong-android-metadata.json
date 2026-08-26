@@ -1,0 +1,9 @@
+{
+  "identifier": "com.primeradiant.evener.concepts.debug",
+  "displayName": "Evener",
+  "permissions": [
+    "android.permission.CAMERA",
+    "com.example.UNREVIEWED_PERMISSION"
+  ],
+  "signatureStatus": "signed"
+}
