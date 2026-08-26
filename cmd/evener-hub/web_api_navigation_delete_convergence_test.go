@@ -34,6 +34,9 @@ func assertDeleteNavigation(t *testing.T, web *WebServer, body []byte, kind appw
 	if len(events[0].Targets) != 1 || events[0].Targets[0].Kind != kind || events[0].Targets[0].ProjectKey != projectKey {
 		t.Fatalf("targets=%+v, want one %s target for %q", events[0].Targets, kind, projectKey)
 	}
+	if events[0].Targets[0].Revision == 0 {
+		t.Fatalf("scoped target has zero revision: %+v", events[0].Targets[0])
+	}
 	if replay := web.navigation.DrainPublications(); len(replay) != 0 {
 		t.Fatalf("second typed event=%+v", replay)
 	}
@@ -133,6 +136,10 @@ func TestRESTDeleteNavigationConvergence(t *testing.T) {
 		if len(noop.Deleted) != 0 || len(noop.Skipped) != 1 || noop.Skipped[0].ID != webTestSessionID || len(noop.Navigation.Targets) != 0 || len(web.navigation.DrainPublications()) != 0 {
 			t.Fatalf("no-op response/events=%+v", noop)
 		}
+		capability := web.navigation.Capability()
+		if capability == nil || noop.Navigation.GenerationID != capability.GenerationID {
+			t.Fatalf("no-op generation=%q capability=%+v", noop.Navigation.GenerationID, capability)
+		}
 	})
 
 	t.Run("project partial", func(t *testing.T) {
@@ -229,6 +236,10 @@ func TestRESTDeleteNavigationConvergence(t *testing.T) {
 		if len(firstResponse.Deleted) != 0 || len(firstResponse.Navigation.Targets) != 0 || len(web.navigation.DrainPublications()) != 0 {
 			t.Fatalf("first resumed response/events=%+v", firstResponse)
 		}
+		capability := web.navigation.Capability()
+		if capability == nil || firstResponse.Navigation.GenerationID != capability.GenerationID {
+			t.Fatalf("first resumed generation=%q capability=%+v", firstResponse.Navigation.GenerationID, capability)
+		}
 		removeProjectSessionDir = oldRemoveDir
 		if _, err := past.Rebuild(); err != nil {
 			t.Fatal(err)
@@ -294,6 +305,10 @@ func TestRESTDeleteNavigationConvergence(t *testing.T) {
 		if len(events[0].Targets) != 1 || events[0].Targets[0].Kind != appwire.NavigationTargetProject || events[0].Targets[0].ProjectKey != filepath.Base(stateDir) {
 			t.Fatalf("session targets=%+v", events[0].Targets)
 		}
+		if events[0].Targets[0].Revision == 0 {
+			t.Fatalf("session scoped target has zero revision: %+v", events[0].Targets[0])
+		}
+		changedGeneration := decoded.Navigation.GenerationID
 		rec, _ = postSessionDelete(t, web, webTestSessionID)
 		if rec.Code != http.StatusOK {
 			t.Fatal(rec.Code)
@@ -302,7 +317,7 @@ func TestRESTDeleteNavigationConvergence(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &repeat); err != nil {
 			t.Fatal(err)
 		}
-		if len(repeat.Deleted) != 0 || len(repeat.Navigation.Targets) != 0 || len(web.navigation.DrainPublications()) != 0 {
+		if len(repeat.Deleted) != 0 || len(repeat.Navigation.Targets) != 0 || repeat.Navigation.GenerationID != changedGeneration || len(web.navigation.DrainPublications()) != 0 {
 			t.Fatalf("session repeat=%+v", repeat)
 		}
 	})
