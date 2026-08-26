@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"bytes"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
@@ -9,6 +10,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"maps"
 	"sort"
 	"strings"
@@ -52,8 +54,14 @@ type activityContinuation struct {
 	Revision   uint64   `json:"revision"`
 	Source     string   `json:"source"`
 	Generation string   `json:"generation"`
-	Signature  string   `json:"signature"`
+	Signature  string   `json:"-"`
 	Path       []string `json:"path"`
+}
+
+type activityContinuationEnvelope struct {
+	Version   int    `json:"v"`
+	Payload   string `json:"p"`
+	Signature string `json:"s"`
 }
 
 type activityContinuationIdentity struct {
@@ -128,20 +136,25 @@ func encodeActivityContinuation(cont activityContinuation) string {
 	if cont.Version != activityContinuationV2 {
 		return ""
 	}
-	unsigned := cont
-	unsigned.Signature = ""
-	payload, err := json.Marshal(unsigned)
+	cont.Signature = ""
+	if cont.Path == nil {
+		cont.Path = []string{}
+	}
+	payload, err := json.Marshal(cont)
 	if err != nil {
 		return ""
 	}
 	mac := hmac.New(sha256.New, activityCursorSecret)
 	_, _ = mac.Write(payload)
-	cont.Signature = hex.EncodeToString(mac.Sum(nil))
-	payload, err = json.Marshal(cont)
+	envelope, err := json.Marshal(activityContinuationEnvelope{
+		Version:   activityContinuationV2,
+		Payload:   base64.RawURLEncoding.EncodeToString(payload),
+		Signature: hex.EncodeToString(mac.Sum(nil)),
+	})
 	if err != nil {
 		return ""
 	}
-	return base64.RawURLEncoding.EncodeToString(payload)
+	return base64.RawURLEncoding.EncodeToString(envelope)
 }
 
 func decodeActivityContinuation(token, expectedRoot string) (activityContinuation, error) {
@@ -156,9 +169,29 @@ func decodeActivityContinuation(token, expectedRoot string) (activityContinuatio
 	if err != nil {
 		return activityContinuation{}, activityContinuationRestartError("continuation encoding is invalid")
 	}
-	var cont activityContinuation
-	if err := json.Unmarshal(raw, &cont); err != nil {
+	var envelope activityContinuationEnvelope
+	if err := decodeStrictActivityObject(raw, &envelope, map[string]struct{}{"v": {}, "p": {}, "s": {}}, map[string]struct{}{"v": {}, "p": {}, "s": {}}); err != nil {
 		return activityContinuation{}, activityContinuationRestartError("continuation format is invalid")
+	}
+	if envelope.Version != activityContinuationV2 {
+		return activityContinuation{}, activityContinuationRestartError("unsupported continuation version")
+	}
+	if envelope.Payload == "" || envelope.Signature == "" {
+		return activityContinuation{}, activityContinuationRestartError("continuation authentication is incomplete")
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(envelope.Payload)
+	if err != nil {
+		return activityContinuation{}, activityContinuationRestartError("continuation payload encoding is invalid")
+	}
+	var cont activityContinuation
+	if err := decodeStrictActivityObject(payload, &cont, map[string]struct{}{"v": {}, "root": {}, "session": {}, "revision": {}, "source": {}, "generation": {}, "path": {}}, map[string]struct{}{"v": {}, "root": {}, "session": {}, "revision": {}, "source": {}, "generation": {}, "path": {}}); err != nil {
+		return activityContinuation{}, activityContinuationRestartError("continuation payload fields are invalid")
+	}
+	mac := hmac.New(sha256.New, activityCursorSecret)
+	_, _ = mac.Write(payload)
+	expected := hex.EncodeToString(mac.Sum(nil))
+	if !hmac.Equal([]byte(envelope.Signature), []byte(expected)) {
+		return activityContinuation{}, activityContinuationRestartError("continuation authentication failed")
 	}
 	if cont.Version != activityContinuationV2 {
 		return activityContinuation{}, activityContinuationRestartError("unsupported continuation version")
@@ -188,21 +221,58 @@ func decodeActivityContinuation(token, expectedRoot string) (activityContinuatio
 	if cont.Source != activitySourceLive && cont.Source != activitySourceHistorical || cont.Generation == "" {
 		return activityContinuation{}, activityContinuationRestartError("continuation identity is incomplete")
 	}
-	unsigned := cont
-	signature := unsigned.Signature
-	unsigned.Signature = ""
-	payload, err := json.Marshal(unsigned)
-	if err != nil {
-		return activityContinuation{}, activityContinuationRestartError("continuation cannot be authenticated")
-	}
-	mac := hmac.New(sha256.New, activityCursorSecret)
-	_, _ = mac.Write(payload)
-	expected := hex.EncodeToString(mac.Sum(nil))
-	if !hmac.Equal([]byte(signature), []byte(expected)) {
-		return activityContinuation{}, activityContinuationRestartError("continuation authentication failed")
-	}
 	cont.Path = append([]string(nil), cont.Path...)
 	return cont, nil
+}
+
+func decodeStrictActivityObject(raw []byte, dst any, allowed, required map[string]struct{}) error {
+	dec := json.NewDecoder(bytes.NewReader(raw))
+	tok, err := dec.Token()
+	if err != nil {
+		return err
+	}
+	if delim, ok := tok.(json.Delim); !ok || delim != '{' {
+		return fmt.Errorf("want object")
+	}
+	seen := make(map[string]struct{}, len(allowed))
+	for dec.More() {
+		keyTok, err := dec.Token()
+		if err != nil {
+			return err
+		}
+		key, ok := keyTok.(string)
+		if !ok {
+			return fmt.Errorf("want object key")
+		}
+		if _, ok := allowed[key]; !ok {
+			return fmt.Errorf("unknown field %q", key)
+		}
+		if _, ok := seen[key]; ok {
+			return fmt.Errorf("duplicate field %q", key)
+		}
+		seen[key] = struct{}{}
+		var value json.RawMessage
+		if err := dec.Decode(&value); err != nil {
+			return err
+		}
+		if bytes.Equal(bytes.TrimSpace(value), []byte("null")) {
+			return fmt.Errorf("null field %q", key)
+		}
+	}
+	if _, err := dec.Token(); err != nil {
+		return err
+	}
+	if _, err := dec.Token(); err != io.EOF {
+		return fmt.Errorf("trailing JSON")
+	}
+	for key := range required {
+		if _, ok := seen[key]; !ok {
+			return fmt.Errorf("missing field %q", key)
+		}
+	}
+	strict := json.NewDecoder(bytes.NewReader(raw))
+	strict.DisallowUnknownFields()
+	return strict.Decode(dst)
 }
 
 func activityContinuationRestartError(reason string) error {
@@ -245,16 +315,19 @@ func projectStableLiveActivityTree(clock *jobActivityClock, rootID string, load 
 func projectStableLiveActivityTreeAt(clock *jobActivityClock, rootID string, now time.Time, load func() (*activitySessionSnapshot, int, error)) (appwire.JobActivityTree, error) {
 	for range 8 {
 		before := activityCurrentRootRevision(clock)
+		if !clock.publicationStable() {
+			continue
+		}
 		snapshot, startDepth, err := load()
 		if err != nil {
 			return appwire.JobActivityTree{}, err
 		}
 		after := activityCurrentRootRevision(clock)
-		if before == after {
+		if before == after && clock.publicationStable() {
 			return projectBoundedActivityTree(*snapshot, rootID, startDepth, after, now, activityContinuationIdentity{Source: activitySourceLive, Generation: activityServingGeneration})
 		}
 	}
-	return appwire.JobActivityTree{}, errors.New("activity tree changed while snapshot was being built; retry")
+	return appwire.JobActivityTree{}, appwire.StaleContinuation("activity tree changed while snapshot was being built; restart from the root")
 }
 
 func activityCurrentRootRevision(clock *jobActivityClock) uint64 {
@@ -317,7 +390,7 @@ func validateActivityContinuationIdentity(cont activityContinuation, expected ac
 
 func validateActivityContinuationRevision(cont activityContinuation, current uint64) error {
 	if cont.Revision != current {
-		return appwire.Conflict(fmt.Sprintf("activity continuation revision %d is stale; restart from the root at revision %d", cont.Revision, current))
+		return appwire.StaleContinuation(fmt.Sprintf("activity continuation revision %d is stale; restart from the root at revision %d", cont.Revision, current))
 	}
 	return nil
 }

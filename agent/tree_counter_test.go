@@ -71,6 +71,22 @@ func TestTreeCounterReserveRelease(t *testing.T) {
 	}
 }
 
+func TestJobActivityClockPublicationBoundary(t *testing.T) {
+	t.Parallel()
+	c := newJobActivityClock("root")
+	if !c.publicationStable() {
+		t.Fatal("new clock must begin stable")
+	}
+	c.beginPublication()
+	if c.publicationStable() {
+		t.Fatal("clock must be unstable while a mutation is being published")
+	}
+	c.endPublication()
+	if !c.publicationStable() {
+		t.Fatal("clock must become stable after publication")
+	}
+}
+
 // TestTreeCounterSharedAcrossTree verifies that a child session's treeCounter
 // is the SAME pointer as the one threaded through the root's spawnConfig.
 // Reservations made on the root counter are visible via the child session's

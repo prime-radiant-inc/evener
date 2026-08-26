@@ -43,9 +43,11 @@ func LoadSessionJobActivityTree(stateDir, sessionID string, params appwire.JobsL
 	var snapshot *activitySessionSnapshot
 	var startDepth int
 	var err error
-	var readRevision uint64
-	snapshot, startDepth, readRevision, err = loadHistoricalContinuationConsistent(
-		func() (uint64, error) { return historicalActivityRevision(stateDir, sessionID) },
+	var readGeneration activityHistoricalGeneration
+	snapshot, startDepth, readGeneration, err = loadHistoricalContinuationConsistent(
+		func() (activityHistoricalGeneration, error) {
+			return historicalActivityRevision(stateDir, sessionID, strings.TrimSpace(params.Continuation) != "")
+		},
 		func() (*activitySessionSnapshot, int, error) { return loadActivitySnapshotForParams(root, params) },
 	)
 	if err != nil {
@@ -57,14 +59,7 @@ func LoadSessionJobActivityTree(stateDir, sessionID string, params appwire.JobsL
 	}
 	revision := activitySnapshotPersistedRevision(snapshot, rootRevisionID)
 	if strings.TrimSpace(params.Continuation) != "" {
-		revision = readRevision
-		// Older persisted roots may not have copied the shared tree revision into
-		// their own metadata. In that compatibility case, retain the bounded
-		// continuation branch's persisted revision rather than rejecting a valid
-		// cursor solely because the O(1) root generation is absent.
-		if revision == 0 {
-			revision = activitySnapshotPersistedRevision(snapshot, rootRevisionID)
-		}
+		revision = readGeneration.Revision
 		cont, err := decodeActivityContinuation(params.Continuation, sessionID)
 		if err != nil {
 			return appwire.JobActivityTree{}, err
@@ -79,35 +74,46 @@ func LoadSessionJobActivityTree(stateDir, sessionID string, params appwire.JobsL
 	return projectBoundedActivityTree(*snapshot, sessionID, startDepth, revision, time.Now().UTC(), activityContinuationIdentity{Source: activitySourceHistorical, Generation: activityServingGeneration})
 }
 
-func historicalActivityRevision(stateDir, sessionID string) (uint64, error) {
+type activityHistoricalGeneration struct {
+	Revision    uint64
+	Publication uint64
+}
+
+func historicalActivityRevision(stateDir, sessionID string, required bool) (activityHistoricalGeneration, error) {
 	meta, err := schema.LoadSessionMeta(stateDir, sessionID)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
-			return 0, nil
+			if required {
+				return activityHistoricalGeneration{}, activityContinuationRestartError("authoritative historical generation is unavailable")
+			}
+			return activityHistoricalGeneration{}, nil
 		}
-		return 0, err
+		return activityHistoricalGeneration{}, err
 	}
-	return activityRevisionFromMeta(meta), nil
+	if required && (meta.JobTreePublication == 0 || meta.JobTreePublication%2 != 0) {
+		return activityHistoricalGeneration{}, activityContinuationRestartError("authoritative historical publication is unavailable")
+	}
+	return activityHistoricalGeneration{Revision: activityRevisionFromMeta(meta), Publication: meta.JobTreePublication}, nil
 }
 
 func loadHistoricalContinuationConsistent(
-	readRevision func() (uint64, error),
+	readRevision func() (activityHistoricalGeneration, error),
 	load func() (*activitySessionSnapshot, int, error),
-) (*activitySessionSnapshot, int, uint64, error) {
+) (*activitySessionSnapshot, int, activityHistoricalGeneration, error) {
 	before, err := readRevision()
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, 0, activityHistoricalGeneration{}, err
 	}
 	snapshot, startDepth, err := load()
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, 0, activityHistoricalGeneration{}, err
 	}
 	after, err := readRevision()
 	if err != nil {
-		return nil, 0, 0, err
+		return nil, 0, activityHistoricalGeneration{}, err
 	}
-	if before != after {
-		return nil, 0, 0, activityContinuationRestartError("historical snapshot changed while it was being read")
+	if before != after || (before.Publication != 0 && before.Publication%2 != 0) || (after.Publication != 0 && after.Publication%2 != 0) {
+		return nil, 0, activityHistoricalGeneration{}, activityContinuationRestartError("historical snapshot changed while it was being read")
 	}
 	return snapshot, startDepth, before, nil
 }

@@ -13,6 +13,7 @@ import (
 type jobActivityClock struct {
 	rootSessionID string
 	revision      atomic.Uint64
+	publication   atomic.Uint64
 }
 
 func newJobActivityClock(rootSessionID string) *jobActivityClock {
@@ -42,6 +43,22 @@ func (c *jobActivityClock) ensureAtLeast(revision uint64) uint64 {
 			return revision
 		}
 	}
+}
+
+func (c *jobActivityClock) beginPublication() {
+	if c != nil {
+		c.publication.Add(1)
+	}
+}
+
+func (c *jobActivityClock) endPublication() {
+	if c != nil {
+		c.publication.Add(1)
+	}
+}
+
+func (c *jobActivityClock) publicationStable() bool {
+	return c != nil && c.publication.Load()%2 == 0
 }
 
 // defaultMaxConcurrentDelegateTurns is the default tree-wide cap on

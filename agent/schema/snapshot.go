@@ -234,6 +234,10 @@ type SessionMeta struct {
 	// exited activity-tree responses can report the same authoritative revision
 	// without inventing a synthetic counter from durable job records.
 	JobTreeRevision uint64 `json:"job_tree_revision,omitzero"`
+	// JobTreePublication is the even, stable seqlock value published after the
+	// root-scoped activity mutation and its durable event append. Odd or absent
+	// values are not valid continuation identities.
+	JobTreePublication uint64 `json:"job_tree_publication,omitzero"`
 }
 
 // CumulativeUsage is a deliberately lossy snapshot of an llm.Usage kept in

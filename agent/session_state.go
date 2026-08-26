@@ -132,11 +132,13 @@ func (s *Session) Meta() schema.SessionMeta {
 	}
 	jobTreeRootSessionID := ""
 	jobTreeRevision := uint64(0)
+	jobTreePublication := uint64(0)
 	if s.jobActivityClock != nil {
 		if s.jobActivityClock.rootSessionID != "" && s.jobActivityClock.rootSessionID != s.id {
 			jobTreeRootSessionID = s.jobActivityClock.rootSessionID
 		}
 		jobTreeRevision = s.jobActivityClock.revision.Load()
+		jobTreePublication = s.jobActivityClock.publication.Load()
 	}
 	return schema.SessionMeta{
 		ID:                       s.id,
@@ -170,6 +172,7 @@ func (s *Session) Meta() schema.SessionMeta {
 		CumulativeUsage:          cumulativeUsageSnapshot(s.contextMgr.CumulativeUsage()),
 		JobTreeRootSessionID:     jobTreeRootSessionID,
 		JobTreeRevision:          jobTreeRevision,
+		JobTreePublication:       jobTreePublication,
 		EnvContext:               s.envContextState,
 	}
 }

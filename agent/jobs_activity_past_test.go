@@ -67,12 +67,12 @@ func TestLoadHistoricalContinuationConsistentRejectsMutationWithoutDescendantTra
 	reads := 0
 	loaded := false
 	_, _, _, err := loadHistoricalContinuationConsistent(
-		func() (uint64, error) {
+		func() (activityHistoricalGeneration, error) {
 			reads++
 			if loaded {
-				return 2, nil
+				return activityHistoricalGeneration{Revision: 2, Publication: 4}, nil
 			}
-			return 1, nil
+			return activityHistoricalGeneration{Revision: 1, Publication: 2}, nil
 		},
 		func() (*activitySessionSnapshot, int, error) {
 			loaded = true
@@ -114,6 +114,26 @@ func TestLoadSessionJobActivityTree_PublicContinuationKeepsHistoricalGeneration(
 	}
 	if second.Revision != first.Revision {
 		t.Fatalf("continuation revision = %d, want %d", second.Revision, first.Revision)
+	}
+}
+
+func TestLoadSessionJobActivityTree_RejectsContinuationWithoutAuthoritativeMetadata(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootID := "rootnometa"
+	started := time.Unix(360, 0).UTC()
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind: jobstore.EventJobStarted, TS: started, JobID: "job_one", Type: jobstore.JobShell,
+		OwnerSessionID: rootID, VisibleToSession: rootID, StartedAt: &started,
+	})
+	token := encodeActivityContinuation(activityContinuation{
+		Version: activityContinuationV2, RootID: rootID, SessionID: rootID,
+		Revision: 0, Source: activitySourceHistorical, Generation: activityServingGeneration,
+	})
+	_, err := LoadSessionJobActivityTree(stateDir, rootID, appwire.JobsListParams{Continuation: token})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("metadata-less continuation error = %T %v, want typed stale restart", err, err)
 	}
 }
 
@@ -244,7 +264,7 @@ func savePastActivityMeta(t *testing.T, stateDir, sessionID, name string) {
 
 func savePastActivityMetaWithTreeRevision(t *testing.T, stateDir, sessionID, name, rootID string, revision uint64) {
 	t.Helper()
-	meta := schema.SessionMeta{ID: sessionID, ProfileID: "openai", Model: "gpt-5.2", Name: name, CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC(), JobTreeRevision: revision}
+	meta := schema.SessionMeta{ID: sessionID, ProfileID: "openai", Model: "gpt-5.2", Name: name, CreatedAt: time.Unix(1, 0).UTC(), UpdatedAt: time.Unix(1, 0).UTC(), JobTreeRevision: revision, JobTreePublication: 2}
 	if strings.TrimSpace(rootID) != "" {
 		meta.JobTreeRootSessionID = rootID
 	}

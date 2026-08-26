@@ -169,13 +169,16 @@ func seedPastSessionWithActivity(t *testing.T, childJobs int) (hubcore.WebConfig
 	now := time.Unix(1700000000, 0).UTC()
 	for sessionID, name := range map[string]string{rootID: "Root", childID: "Child"} {
 		if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
-			ID:        sessionID,
-			ProfileID: "openai",
-			Model:     "gpt-5",
-			Name:      name,
-			EnvInfo:   schema.EnvironmentInfo{WorkingDir: "/tmp/project"},
-			CreatedAt: now,
-			UpdatedAt: now,
+			ID:                   sessionID,
+			ProfileID:            "openai",
+			Model:                "gpt-5",
+			Name:                 name,
+			EnvInfo:              schema.EnvironmentInfo{WorkingDir: "/tmp/project"},
+			CreatedAt:            now,
+			UpdatedAt:            now,
+			JobTreeRootSessionID: rootID,
+			JobTreeRevision:      1,
+			JobTreePublication:   2,
 		}); err != nil {
 			t.Fatal(err)
 		}

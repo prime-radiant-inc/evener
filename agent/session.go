@@ -34,6 +34,16 @@ import (
 )
 
 func (s *Session) emitWithJobTreeRevision(kind events.EventKind, data events.EventData, p *provenance.Causal) {
+	mutating := s != nil && (kind == events.EventJobStarted || kind == events.EventJobFinished) && s.jobActivityClock != nil
+	publicationEnded := false
+	if mutating {
+		s.jobActivityClock.beginPublication()
+		defer func() {
+			if !publicationEnded {
+				s.jobActivityClock.endPublication()
+			}
+		}()
+	}
 	if s != nil {
 		if rootID, revision, ok := s.nextJobTreeRevision(kind); ok {
 			switch payload := data.(type) {
@@ -46,7 +56,21 @@ func (s *Session) emitWithJobTreeRevision(kind events.EventKind, data events.Eve
 				payload.TreeRevision = revision
 				data = payload
 			}
-			s.maybeAutoSave()
+			// The root publication is written after the event append below, while
+			// the shared clock remains odd. Readers therefore reject a page that
+			// overlaps this publication boundary.
+			publishRoot := func() {
+				s.publishJobTreeRevision(rootID, revision)
+				if mutating {
+					s.jobActivityClock.endPublication()
+					publicationEnded = true
+				}
+				s.maybeAutoSave()
+			}
+			if mutating {
+				s.markJobTreePublicationInProgress(rootID, revision)
+			}
+			defer publishRoot()
 		}
 	}
 	s.emitWithProvenance(kind, data, p)
@@ -57,6 +81,35 @@ func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bo
 		return "", 0, false
 	}
 	return s.jobActivityClock.nextRevision()
+}
+
+func (s *Session) publishJobTreeRevision(rootID string, revision uint64) {
+	if s == nil || s.stateDir == "" || s.jobActivityClock == nil || strings.TrimSpace(rootID) == "" {
+		return
+	}
+	s.writeJobTreePublication(rootID, revision, s.jobActivityClock.publication.Load()+1)
+}
+
+func (s *Session) markJobTreePublicationInProgress(rootID string, revision uint64) {
+	if s == nil || s.stateDir == "" || s.jobActivityClock == nil || strings.TrimSpace(rootID) == "" {
+		return
+	}
+	s.writeJobTreePublication(rootID, revision, s.jobActivityClock.publication.Load())
+}
+
+func (s *Session) writeJobTreePublication(rootID string, revision, publication uint64) {
+	meta, err := schema.LoadSessionMeta(s.stateDir, rootID)
+	if err != nil {
+		return
+	}
+	meta.JobTreeRootSessionID = rootID
+	meta.JobTreeRevision = revision
+	meta.JobTreePublication = publication
+	if fs := s.cfg.testOnly.metaFS; fs != nil {
+		_ = schema.SaveSessionMetaWithFS(fs, s.stateDir, meta)
+		return
+	}
+	_ = schema.SaveSessionMeta(s.stateDir, meta)
 }
 
 // Session holds the state for a single agent conversation, including its

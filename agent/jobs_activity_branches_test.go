@@ -1,7 +1,10 @@
 package agent
 
 import (
+	"crypto/hmac"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -591,6 +594,10 @@ func TestValidateActivityContinuationRevisionRequiresRestart(t *testing.T) {
 	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
 		t.Fatalf("revision mismatch error = %T %v, want conflict", err, err)
 	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok || data.EvenerErrorInfo != appwire.ErrorStaleContinuation || data.Cause != "restartFromRoot" {
+		t.Fatalf("revision mismatch data = %#v, want structured stale restart", wire.Data)
+	}
 	if !strings.Contains(wire.Message, "restart") {
 		t.Fatalf("revision mismatch message = %q, want restart guidance", wire.Message)
 	}
@@ -631,6 +638,27 @@ func TestActivityContinuationV2AuthenticatesIdentityAndRejectsLegacy(t *testing.
 	if err != nil || decoded.Source != cont.Source || decoded.Generation != cont.Generation {
 		t.Fatalf("v2 round trip = %+v, err=%v", decoded, err)
 	}
+	outerRaw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var outer activityContinuationEnvelope
+	if err := json.Unmarshal(outerRaw, &outer); err != nil {
+		t.Fatal(err)
+	}
+	payload, err := base64.RawURLEncoding.DecodeString(outer.Payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload = []byte(strings.Replace(string(payload), `"revision":0`, `"revision":1`, 1))
+	outer.Payload = base64.RawURLEncoding.EncodeToString(payload)
+	outerRaw, err = json.Marshal(outer)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := decodeActivityContinuation(base64.RawURLEncoding.EncodeToString(outerRaw), "root"); err == nil {
+		t.Fatal("semantic valid-JSON cursor tamper accepted")
+	}
 	raw, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil {
 		t.Fatal(err)
@@ -659,6 +687,30 @@ func TestActivityContinuationV2AuthenticatesIdentityAndRejectsLegacy(t *testing.
 	} {
 		if _, err := decodeActivityContinuation(base64.RawURLEncoding.EncodeToString([]byte(raw)), "root"); err == nil {
 			t.Fatalf("unsigned omitted/null revision continuation accepted: %s", raw)
+		}
+	}
+	signed := func(payload string) string {
+		mac := hmac.New(sha256.New, activityCursorSecret)
+		_, _ = mac.Write([]byte(payload))
+		envelope, err := json.Marshal(activityContinuationEnvelope{
+			Version:   activityContinuationV2,
+			Payload:   base64.RawURLEncoding.EncodeToString([]byte(payload)),
+			Signature: hex.EncodeToString(mac.Sum(nil)),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return base64.RawURLEncoding.EncodeToString(envelope)
+	}
+	for _, payload := range []string{
+		`{"v":2,"root":"root","session":"root","source":"historical","generation":"g","path":[]}`,
+		`{"v":2,"root":"root","session":"root","revision":null,"source":"historical","generation":"g","path":[]}`,
+		`{"v":2,"root":"root","session":"root","revision":0,"source":"historical","generation":"g","path":[],"extra":1}`,
+		`{"v":3,"root":"root","session":"root","revision":0,"source":"historical","generation":"g","path":[]}`,
+		`{"v":2,"root":"root","root":"root","session":"root","revision":0,"source":"historical","generation":"g","path":[]}`,
+	} {
+		if _, err := decodeActivityContinuation(signed(payload), "root"); err == nil {
+			t.Fatalf("authenticated malformed cursor accepted: %s", payload)
 		}
 	}
 }

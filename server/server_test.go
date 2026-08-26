@@ -1586,6 +1586,19 @@ func TestHandleAppJobsListStaleContinuationPreservesRecoveryData(t *testing.T) {
 	if !ok || data.EvenerErrorInfo != appwire.ErrorStaleContinuation || data.Cause != "restartFromRoot" || data.RetryDisposition != appwire.RetryDispositionAutomatic {
 		t.Fatalf("recovery data=%#v, want structured stale continuation", resp.Error.Error.Data)
 	}
+	wireBytes, err := json.Marshal(resp.Error.Error)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var roundTrip struct {
+		Data map[string]any `json:"data"`
+	}
+	if err := json.Unmarshal(wireBytes, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if roundTrip.Data["evenerErrorInfo"] != string(appwire.ErrorStaleContinuation) || roundTrip.Data["cause"] != "restartFromRoot" || roundTrip.Data["retryDisposition"] != string(appwire.RetryDispositionAutomatic) {
+		t.Fatalf("serialized recovery data=%#v, want stale restart discriminator", roundTrip.Data)
+	}
 }
 
 func TestHandleAppJobsOutputNilFunc(t *testing.T) {

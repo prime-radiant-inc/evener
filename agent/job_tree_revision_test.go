@@ -7,6 +7,7 @@ import (
 
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -48,10 +49,24 @@ func TestJobTreeRevisionSharedAcrossSpawnAndRestore(t *testing.T) {
 	if rootStarted.RootSessionID != root.ID() || rootStarted.TreeRevision != 1 {
 		t.Fatalf("root started=%+v, want root_session_id=%q revision=1", rootStarted, root.ID())
 	}
+	rootMeta, err := schema.LoadSessionMeta(stateDir, root.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootMeta.JobTreeRevision != 1 || rootMeta.JobTreePublication == 0 || rootMeta.JobTreePublication%2 != 0 {
+		t.Fatalf("root publication metadata = revision %d publication %d, want revision 1 and stable even publication", rootMeta.JobTreeRevision, rootMeta.JobTreePublication)
+	}
 
 	childStarted := createShellAndReadJobStarted(t, child, "printf child")
 	if childStarted.RootSessionID != root.ID() || childStarted.TreeRevision != 2 {
 		t.Fatalf("child started=%+v, want root_session_id=%q revision=2", childStarted, root.ID())
+	}
+	rootMeta, err = schema.LoadSessionMeta(stateDir, root.ID())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if rootMeta.JobTreeRevision != 2 || rootMeta.JobTreePublication == 0 || rootMeta.JobTreePublication%2 != 0 {
+		t.Fatalf("child mutation root publication = revision %d publication %d, want revision 2 and stable even publication", rootMeta.JobTreeRevision, rootMeta.JobTreePublication)
 	}
 
 	grandStarted := createShellAndReadJobStarted(t, grandchild, "printf grandchild")
