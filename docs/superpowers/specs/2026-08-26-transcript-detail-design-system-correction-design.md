@@ -1,7 +1,7 @@
 # Transcript detail design-system correction
 
 Date: 2026-08-26
-Status: Proposed — independent review complete; awaiting final approval
+Status: Approved
 Decision owner: Jesse
 Amends: `docs/superpowers/specs/2026-08-25-transcript-detail-configuration-design.md`
 
