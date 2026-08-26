@@ -34,12 +34,13 @@ type HistoricalJobDiagnostics struct {
 	MissingOwners   []string
 	TornTails       []string
 	CorruptBranches []string
+	Compatibility   []string
 }
 
 // LoadSessionHistoricalJobRecordsWithDiagnostics loads retained jobs and evidence.
 func LoadSessionHistoricalJobRecordsWithDiagnostics(stateDir, sessionID string) (map[string]HistoricalJobRecord, HistoricalJobDiagnostics, error) {
 	out, d, err := loadSessionHistoricalJobRecordsWithDiagnostics(stateDir, sessionID)
-	return out, HistoricalJobDiagnostics{Incomplete: d.Incomplete, Mismatches: d.Mismatches, InvalidOwners: d.InvalidOwners, LifecycleErrors: d.LifecycleErrors, MissingOwners: d.MissingOwners, TornTails: d.TornTails, CorruptBranches: d.CorruptBranches}, err
+	return out, HistoricalJobDiagnostics{Incomplete: d.Incomplete, Mismatches: d.Mismatches, InvalidOwners: d.InvalidOwners, LifecycleErrors: d.LifecycleErrors, MissingOwners: d.MissingOwners, TornTails: d.TornTails, CorruptBranches: d.CorruptBranches, Compatibility: d.Compatibility}, err
 }
 
 // LoadSessionHistoricalJobRecords loads one session's retained jobs.

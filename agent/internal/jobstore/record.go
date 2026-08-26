@@ -162,6 +162,7 @@ type WatchSendRecord struct {
 // JobRecord is the durable storage shape reconstructed from the job event log.
 type JobRecord struct {
 	JobID            string  `json:"job_id"`
+	DurableSeq       int64   `json:"-"`
 	Type             JobType `json:"type"`
 	Status           Status  `json:"status"`
 	Reason           string  `json:"reason,omitempty"`

@@ -86,12 +86,17 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool) (acti
 	for _, record := range jobRecords {
 		jobs = append(jobs, record)
 	}
-	sort.SliceStable(jobs, func(i, j int) bool { return jobs[i].StartedAt.Before(jobs[j].StartedAt) })
+	sort.SliceStable(jobs, func(i, j int) bool {
+		if jobs[i].StartedAt.Equal(jobs[j].StartedAt) {
+			return jobs[i].DurableSeq < jobs[j].DurableSeq
+		}
+		return jobs[i].StartedAt.Before(jobs[j].StartedAt)
+	})
 	stable, diagnostics, err := loadHistoricalStableActivity(stateDir, rootID, sessionID)
 	if err != nil {
 		return activityLoadedBase{}, err
 	}
-	activityDiagnostics := make([]string, 0, len(authorityDiagnostics.Mismatches)+len(authorityDiagnostics.TornTails)+len(authorityDiagnostics.CorruptBranches))
+	activityDiagnostics := make([]string, 0, len(authorityDiagnostics.Mismatches)+len(authorityDiagnostics.TornTails)+len(authorityDiagnostics.CorruptBranches)+len(authorityDiagnostics.InvalidOwners)+len(authorityDiagnostics.LifecycleErrors)+len(authorityDiagnostics.MissingOwners)+len(authorityDiagnostics.Compatibility))
 	for _, id := range authorityDiagnostics.Mismatches {
 		activityDiagnostics = append(activityDiagnostics, "job_authority_mismatch:"+id)
 	}
@@ -100,6 +105,18 @@ func loadHistoricalActivityBase(stateDir, sessionID string, required bool) (acti
 	}
 	for _, id := range authorityDiagnostics.CorruptBranches {
 		activityDiagnostics = append(activityDiagnostics, "job_branch_corrupt:"+id)
+	}
+	for _, id := range authorityDiagnostics.InvalidOwners {
+		activityDiagnostics = append(activityDiagnostics, "job_invalid_owner:"+id)
+	}
+	for _, reason := range authorityDiagnostics.LifecycleErrors {
+		activityDiagnostics = append(activityDiagnostics, "job_lifecycle_invalid:"+reason)
+	}
+	for _, id := range authorityDiagnostics.MissingOwners {
+		activityDiagnostics = append(activityDiagnostics, "job_owner_missing:"+id)
+	}
+	for _, id := range authorityDiagnostics.Compatibility {
+		activityDiagnostics = append(activityDiagnostics, "job_owner_compatibility:"+id)
 	}
 	return activityLoadedBase{snapshot: activitySessionSnapshot{
 		SessionID:       sessionID,

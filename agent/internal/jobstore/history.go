@@ -87,10 +87,12 @@ func MergeJournals(sources []JournalSource) (map[string]*JobRecord, AuthorityDia
 			if rec.OwnerSessionID != "" && parseErr != nil {
 				d.Compatibility = append(d.Compatibility, id)
 			}
-			owner := ownerID == src.SessionID && !damaged
-			if rec.OwnerSessionID != "" && parseErr == nil && embedded != rec.OwnerSessionID {
+			mismatch := rec.OwnerSessionID != "" && parseErr == nil && embedded != rec.OwnerSessionID
+			if mismatch {
 				d.InvalidOwners = append(d.InvalidOwners, id)
+				damaged = true
 			}
+			owner := ownerID == src.SessionID && !damaged
 			if rec.OwnerSessionID == "" && parseErr != nil {
 				d.Incomplete = true
 			}
@@ -121,12 +123,15 @@ func MergeJournals(sources []JournalSource) (map[string]*JobRecord, AuthorityDia
 				}
 			}
 			chosen.rec.Authority = AuthorityOwner
-			chosen.rec.Incomplete = len(d.LifecycleErrors) > 0
+			chosen.rec.Incomplete = chosen.damaged
 			out[id] = chosen.rec
 			continue
 		}
 		if len(forwarded) > 0 {
 			sort.SliceStable(forwarded, func(i, j int) bool {
+				if forwarded[i].damaged != forwarded[j].damaged {
+					return !forwarded[i].damaged
+				}
 				if forwarded[i].rec.Status.IsTerminal() != forwarded[j].rec.Status.IsTerminal() {
 					return forwarded[i].rec.Status.IsTerminal()
 				}
@@ -167,7 +172,9 @@ func lifecycleInvalidIDs(events []Event) map[string]bool {
 	bad := make(map[string]bool)
 	started := make(map[string]bool)
 	finished := make(map[string]bool)
-	for _, e := range events {
+	sorted := append([]Event(nil), events...)
+	sort.SliceStable(sorted, func(i, j int) bool { return sorted[i].Seq < sorted[j].Seq })
+	for _, e := range sorted {
 		switch e.Kind {
 		case EventJobStarted:
 			if e.JobID == "" || e.Type != JobShell || e.StartedAt == nil || started[e.JobID] {

@@ -51,12 +51,14 @@ func loadRetainedJobHistory(stateDir, rootSessionID string) (map[string]*jobstor
 		sources = append(sources, jobstore.JournalSource{SessionID: item.id, Root: item.root, Available: available, State: state, Events: events, Diagnostics: readDiag})
 		for _, event := range events {
 			if event.Kind == jobstore.EventJobStarted {
-				owner := event.OwnerSessionID
-				if owner == "" {
-					owner, _ = identifier.JobOwnerSessionID(event.JobID)
+				owners := []string{event.OwnerSessionID}
+				if embedded, err := identifier.JobOwnerSessionID(event.JobID); err == nil {
+					owners = append(owners, embedded)
 				}
-				if schema.ValidateSessionID(owner) == nil && owner != item.id && !seen[owner] {
-					queue = append(queue, pending{owner, false})
+				for _, owner := range owners {
+					if schema.ValidateSessionID(owner) == nil && owner != item.id && !seen[owner] {
+						queue = append(queue, pending{owner, false})
+					}
 				}
 			}
 		}

@@ -3,6 +3,8 @@ package jobstore
 import (
 	"testing"
 	"time"
+
+	"primeradiant.com/evener/identifier"
 )
 
 func TestMergeJournalsOwnerWinsRegardlessSourceOrder(t *testing.T) {
@@ -14,6 +16,17 @@ func TestMergeJournalsOwnerWinsRegardlessSourceOrder(t *testing.T) {
 		if err != nil || got["j1"].Status != StatusFailed || len(d.Mismatches) == 0 || d.Incomplete {
 			t.Fatalf("got=%+v diagnostics=%+v err=%v", got["j1"], d, err)
 		}
+	}
+}
+
+func TestMergeJournalsCanonicalMismatchIsDamagedFallback(t *testing.T) {
+	owner := "02wMz5TxvEMoJEDTDGOTil"
+	id := identifier.MustNewJobID(owner)
+	tm := time.Now().UTC()
+	forwarded := []Event{{Kind: EventJobStarted, Seq: 1, JobID: id, Type: JobShell, OwnerSessionID: "wrong", StartedAt: &tm}, {Kind: EventJobFinished, Seq: 2, JobID: id, Status: StatusCompleted}}
+	got, d, err := MergeJournals([]JournalSource{{SessionID: "root", Root: true, Available: true, Events: forwarded}})
+	if err != nil || got[id] == nil || got[id].Authority != AuthorityForwardedFallback || !got[id].Incomplete || len(d.InvalidOwners) == 0 {
+		t.Fatalf("got=%+v diagnostics=%+v err=%v", got[id], d, err)
 	}
 }
 
