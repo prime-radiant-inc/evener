@@ -1,13 +1,13 @@
-import type { NavigationInvalidationTarget, NavigationInvalidatedPayload } from "../../protocol/types.gen";
+import type { NavigationInvalidatedPayload, NavigationInvalidationTarget } from "../../protocol/types.gen";
 import {
   isProjectResource,
   keyID,
-  targetBase,
   type NavigationRequest,
   type NavigationResponse,
   type ResourceKey,
   type ResourceListener,
   type ResourceState,
+  targetBase,
 } from "./types";
 
 interface Entry {
@@ -196,6 +196,7 @@ export class NavigationRevalidator {
           e.rerun = true;
           return this.fail(e, protocolError("late, below-target, or superseded response"));
         }
+        e.rerun = false;
         e.state = frozen({
           ...e.state,
           data: response.status === 304 ? e.state.data : (response.data ?? null),
@@ -269,6 +270,6 @@ export function applyNavigationInvalidation(
     revalidator.resetGeneration(payload.generationId);
   }
   if (revalidator.acceptSequence(payload.sequence))
-    revalidator.force(revalidator.loadedKeys().filter((key) => isProjectResource(key)));
+    revalidator.force(revalidator.loadedKeys().filter((key) => key.kind !== "location"));
   for (const target of payload.targets) revalidator.invalidate(target);
 }

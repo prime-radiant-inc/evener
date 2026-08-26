@@ -1,7 +1,8 @@
 import { expect, test, vi } from "vitest";
 import { navigationInvalidatedNotification } from "../../protocol/testing/notifications";
 import { applyNavigationInvalidation, NavigationRevalidator } from "./revalidator";
-import { keyID, type ResourceKey } from "./types";
+import { keyID, type NavigationResponse, type ResourceKey } from "./types";
+
 const key: ResourceKey = { kind: "project", projectKey: "p" };
 const d = <T>() => {
   let resolve!: (v: T) => void;
@@ -10,8 +11,8 @@ const d = <T>() => {
 };
 
 test("coalesces and trails invalidation without aborting useful read", async () => {
-  const one = d<any>();
-  const two = d<any>();
+  const one = d<NavigationResponse>();
+  const two = d<NavigationResponse>();
   const calls: AbortSignal[] = [];
   const r = new NavigationRevalidator("g");
   const fn = vi.fn((s: AbortSignal) => {
@@ -52,7 +53,7 @@ test("wildcard and force affect loaded project resources only", async () => {
   const page: ResourceKey = { kind: "project_page", projectKey: "p", tier: "current", offset: 0, limit: 10 };
   await r.load(key, async () => ({ status: 200, generationID: "g", revision: 1, etag: "a", data: "p" }));
   await r.load(page, async () => ({ status: 200, generationID: "g", revision: 1, etag: "b", data: "page" }));
-  r.invalidate({ kind: "all_loaded_projects", generationId: "g", sequence: 1, targets: [] } as any);
+  r.invalidate({ kind: "all_loaded_projects" });
   expect(r.get(key)?.stale).toBe(true);
   expect(r.get(page)?.stale).toBe(true);
   r.force([{ kind: "manifest" }]);
@@ -145,17 +146,20 @@ test("deep snapshots resist nested mutation and listener failures do not poison 
   const input = { nested: { value: 1 } };
   await r.load(key, async () => ({ status: 200, generationID: "g", revision: 1, etag: "a", data: input }));
   input.nested.value = 9;
-  expect((r.get(key)?.data as typeof input).nested.value).toBe(1);
-  expect(() => ((r.get(key)?.data as typeof input).nested.value = 3)).toThrow();
-  expect(r.get(key)?.loading).toBe(false);
+  const retained = r.get(key);
+  expect(retained).toBeDefined();
+  const retainedData = retained?.data as typeof input;
+  expect(retainedData.nested.value).toBe(1);
+  expect(() => (retainedData.nested.value = 3)).toThrow();
+  expect(retained?.loading).toBe(false);
 });
 
 test("reset ignores abort-resistant old response and starts one fresh generation request", async () => {
-  const old = d<any>();
-  const fresh = d<any>();
+  const old = d<NavigationResponse>();
+  const fresh = d<NavigationResponse>();
   const calls: string[] = [];
   const r = new NavigationRevalidator("old");
-  const pending = r.load(key, (signal, etag) => {
+  const pending = r.load(key, (_signal, etag) => {
     calls.push(`${r.generationID}:${etag}`);
     return (calls.length === 1 ? old : fresh).promise;
   });
@@ -172,7 +176,7 @@ test("reset ignores abort-resistant old response and starts one fresh generation
 
 test("loadedKeys includes failed and inflight callbacks, but force never creates unseen entries", async () => {
   const r = new NavigationRevalidator("g");
-  const inflight = d<any>();
+  const inflight = d<NavigationResponse>();
   void r.load(key, () => inflight.promise);
   const failed: ResourceKey = { kind: "manifest" };
   await r.load(failed, async () => {
@@ -202,8 +206,8 @@ test.each([
 });
 
 test("force during a same-revision deferred request queues exactly one conditional trailing read", async () => {
-  const first = d<any>();
-  const second = d<any>();
+  const first = d<NavigationResponse>();
+  const second = d<NavigationResponse>();
   const etags: (string | null)[] = [];
   const r = new NavigationRevalidator("g");
   const request = vi.fn((_: AbortSignal, etag: string | null) => {
@@ -227,11 +231,11 @@ test("force during a same-revision deferred request queues exactly one condition
 });
 
 test("generation-mismatched payload resets and still applies its targets", async () => {
-  const old = d<any>();
-  const fresh = d<any>();
+  const old = d<NavigationResponse>();
+  const fresh = d<NavigationResponse>();
   const calls: string[] = [];
   const r = new NavigationRevalidator("old");
-  void r.load(key, (signal, etag) => {
+  void r.load(key, (_signal, etag) => {
     calls.push(`${r.generationID}:${etag}`);
     return (calls.length === 1 ? old : fresh).promise;
   });
@@ -267,7 +271,7 @@ test("sequence duplicates and reordering do not force, but a gap forces retained
 });
 
 test("listener cannot mutate nested key snapshots and dispose blocks abort-resistant settlement", async () => {
-  const pending = d<any>();
+  const pending = d<NavigationResponse>();
   const r = new NavigationRevalidator("g");
   r.subscribe((state) => {
     expect(() => ((state.key as { kind: string }).kind = "manifest")).toThrow();
@@ -288,7 +292,7 @@ test.each([
   const r = new NavigationRevalidator("g");
   await r.load(key, async () => ({ status: 200, generationID: "g", revision: 1, etag: "a", data: "good" }));
   r.invalidate({ kind: "project", projectKey: "p", revision: 2 });
-  await r.load(key, async () => response as any);
+  await r.load(key, async () => response as NavigationResponse);
   expect(r.get(key)?.data).toBe("good");
   expect(r.get(key)?.stale).toBe(true);
 });
@@ -300,7 +304,7 @@ test("rejects 304 without cache", async () => {
 });
 
 test("concurrent loads share one promise and one request", async () => {
-  const pending = d<any>();
+  const pending = d<NavigationResponse>();
   const request = vi.fn(() => pending.promise);
   const r = new NavigationRevalidator("g");
   const first = r.load(key, request);
@@ -321,7 +325,7 @@ test("idle invalidation starts exactly one request", async () => {
 });
 
 test("newer response does not create a trailing request", async () => {
-  const pending = d<any>();
+  const pending = d<NavigationResponse>();
   const request = vi.fn(() => pending.promise);
   const r = new NavigationRevalidator("g");
   const load = r.load(key, request);
@@ -334,8 +338,8 @@ test("newer response does not create a trailing request", async () => {
 });
 
 test("three or more midflight invalidations create one trailing request", async () => {
-  const first = d<any>();
-  const second = d<any>();
+  const first = d<NavigationResponse>();
+  const second = d<NavigationResponse>();
   const request = vi.fn((_: AbortSignal) => (request.mock.calls.length === 1 ? first : second).promise);
   const r = new NavigationRevalidator("g");
   const load = r.load(key, request);
@@ -351,8 +355,8 @@ test("three or more midflight invalidations create one trailing request", async 
 });
 
 test("reset aborts old signal once and keeps fresh loading/error/ETag ownership", async () => {
-  const old = d<any>();
-  const fresh = d<any>();
+  const old = d<NavigationResponse>();
+  const fresh = d<NavigationResponse>();
   const signals: AbortSignal[] = [];
   const aborts: number[] = [];
   const r = new NavigationRevalidator("old");
@@ -388,12 +392,19 @@ test("valid 304 sends stored validator and retains last-good state", async () =>
     return { status: 304, generationID: "g", revision: 2, etag: "a" };
   });
   expect(etags).toEqual(["a"]);
-  expect(r.get(key)).toMatchObject({ data: retained, loadedRevision: 2, targetRevision: 2, etag: "a", error: null, stale: false });
+  expect(r.get(key)).toMatchObject({
+    data: retained,
+    loadedRevision: 2,
+    targetRevision: 2,
+    etag: "a",
+    error: null,
+    stale: false,
+  });
 });
 
 test("late below-target response preserves last-good data and trailing ownership", async () => {
-  const first = d<any>();
-  const trailing = d<any>();
+  const first = d<NavigationResponse>();
+  const trailing = d<NavigationResponse>();
   const r = new NavigationRevalidator("g");
   await r.load(key, async () => ({ status: 200, generationID: "g", revision: 1, etag: "a", data: "good" }));
   const request = vi.fn(() => (request.mock.calls.length === 1 ? first : trailing).promise);
@@ -405,48 +416,59 @@ test("late below-target response preserves last-good data and trailing ownership
   expect(r.get(key)).toMatchObject({ data: "good", loadedRevision: 1, targetRevision: 3, loading: true, stale: true });
   trailing.resolve({ status: 200, generationID: "g", revision: 3, etag: "c", data: "best" });
   await load;
-  expect(r.get(key)).toMatchObject({ data: "best", loadedRevision: 3, etag: "c", error: null, loading: false, stale: false });
+  expect(r.get(key)).toMatchObject({
+    data: "best",
+    loadedRevision: 3,
+    etag: "c",
+    error: null,
+    loading: false,
+    stale: false,
+  });
 });
 
-test("wildcard and sequence gaps request only loaded project roots/pages with conditional ETags", async () => {
+test("wildcard and sequence gaps request their exact loaded scopes with conditional ETags", async () => {
+  const manifest: ResourceKey = { kind: "manifest" };
   const page: ResourceKey = { kind: "project_page", projectKey: "p", tier: "current", offset: 0, limit: 10 };
   const section: ResourceKey = { kind: "section", section: "live", offset: 0, limit: 10 };
   const catalog: ResourceKey = { kind: "catalog", catalog: "projects", offset: 0, limit: 10 };
   const location: ResourceKey = { kind: "location", ref: "here" };
   const calls: { key: ResourceKey; etag: string | null }[] = [];
   const r = new NavigationRevalidator("g");
-  for (const loaded of [key, page, section, catalog, location]) {
+  for (const loaded of [manifest, key, page, section, catalog, location]) {
     await r.load(loaded, async (_, etag) => {
       calls.push({ key: loaded, etag });
       return { status: 200, generationID: "g", revision: calls.length, etag: keyID(loaded), data: loaded.kind };
     });
   }
-  const initial = calls.length;
+  let start = calls.length;
   applyNavigationInvalidation(r, { generationId: "g", sequence: 1, targets: [{ kind: "all_loaded_projects" }] });
-  applyNavigationInvalidation(r, { generationId: "g", sequence: 3, targets: [] });
   for (let i = 0; i < 6; i++) await Promise.resolve();
-  expect(calls).toHaveLength(initial + 4);
-  expect(calls.slice(initial).map(({ key: loaded, etag }) => [loaded.kind, etag])).toEqual([
-    ["project", keyID(key)],
-    ["project_page", keyID(page)],
+  expect(calls.slice(start).map(({ key: loaded, etag }) => [loaded.kind, etag])).toEqual([
     ["project", keyID(key)],
     ["project_page", keyID(page)],
   ]);
-  expect(r.get(section)?.stale).toBe(false);
-  expect(r.get(catalog)?.stale).toBe(false);
+
+  start = calls.length;
+  applyNavigationInvalidation(r, { generationId: "g", sequence: 3, targets: [] });
+  for (let i = 0; i < 6; i++) await Promise.resolve();
+  expect(calls.slice(start).map(({ key: loaded, etag }) => [loaded.kind, etag])).toEqual([
+    ["manifest", keyID(manifest)],
+    ["project", keyID(key)],
+    ["project_page", keyID(page)],
+    ["section", keyID(section)],
+    ["catalog", keyID(catalog)],
+  ]);
   expect(r.get(location)?.stale).toBe(false);
-  expect(r.get({ kind: "manifest" })).toBeUndefined();
 });
 
-test("generation reset applies targets with one fresh request and at most one trailing target read", async () => {
-  const old = d<any>();
-  const fresh = d<any>();
-  const trailing = d<any>();
+test("generation reset applies targets and a satisfying fresh response needs no trailing read", async () => {
+  const old = d<NavigationResponse>();
+  const fresh = d<NavigationResponse>();
   const etags: (string | null)[] = [];
   const r = new NavigationRevalidator("old");
   const request = vi.fn((_: AbortSignal, etag: string | null) => {
     etags.push(etag);
-    return (etags.length === 1 ? old : etags.length === 2 ? fresh : trailing).promise;
+    return (etags.length === 1 ? old : fresh).promise;
   });
   const oldLoad = r.load(key, request);
   applyNavigationInvalidation(r, {
@@ -459,10 +481,17 @@ test("generation reset applies targets with one fresh request and at most one tr
   fresh.resolve({ status: 200, generationID: "new", revision: 5, etag: "fresh", data: "fresh" });
   old.resolve({ status: 200, generationID: "old", revision: 99, etag: "old", data: "old" });
   for (let i = 0; i < 7; i++) await Promise.resolve();
-  expect(request).toHaveBeenCalledTimes(3);
-  expect(etags).toEqual([null, null, "fresh"]);
-  trailing.resolve({ status: 304, generationID: "new", revision: 5, etag: "fresh" });
+  expect(request).toHaveBeenCalledTimes(2);
+  expect(etags).toEqual([null, null]);
   await oldLoad;
   for (let i = 0; i < 4; i++) await Promise.resolve();
-  expect(r.get(key)).toMatchObject({ generationID: "new", data: "fresh", loadedRevision: 5, targetRevision: 5, etag: "fresh", loading: false, error: null });
+  expect(r.get(key)).toMatchObject({
+    generationID: "new",
+    data: "fresh",
+    loadedRevision: 5,
+    targetRevision: 5,
+    etag: "fresh",
+    loading: false,
+    error: null,
+  });
 });
