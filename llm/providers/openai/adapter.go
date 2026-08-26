@@ -742,9 +742,11 @@ func (a *Adapter) completeViaChatCompletionsFallback(ctx context.Context, req ll
 }
 
 // Stream implements llm.ProviderAdapter. It tries the Responses API first; if
-// the stream closes with 200 OK but zero content events (a silent failure mode
-// observed for models that do not support /v1/responses), it automatically
-// falls back to /v1/chat/completions. Both failures are surfaced — never silent.
+// that stream closes cleanly with 200 OK but not one recognized Responses API
+// event (a silent failure mode observed for models that do not support
+// /v1/responses), it automatically falls back to /v1/chat/completions. A stream
+// that broke, stalled, or was cancelled is a transport failure and stays on the
+// Responses endpoint. Both failures are surfaced — never silent.
 func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	if a.Client == nil {
 		a.Client = &http.Client{Timeout: 0}
@@ -775,8 +777,8 @@ func (a *Adapter) Stream(ctx context.Context, req llm.Request) (llm.Stream, erro
 }
 
 // decodeStream proxies the Responses API stream in its own goroutine, watching
-// for the empty-stream sentinel. If the first Responses stream yields no content,
-// it retries that endpoint once before consulting Chat Completions fallback;
+// for the empty-stream sentinel. If the first Responses stream reports one, it
+// retries that endpoint once before consulting Chat Completions fallback;
 // otherwise it forwards Responses events verbatim. It owns closing the proxy
 // ChanStream and the underlying Responses stream.
 func (a *Adapter) decodeStream(out context.Context, proxy *llm.ChanStream, responsesStream llm.Stream, req llm.Request) {

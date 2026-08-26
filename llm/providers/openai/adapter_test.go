@@ -1126,6 +1126,226 @@ func TestStream_ResponsesContentThenMidStreamFailure_SurfacesCause(t *testing.T)
 	}
 }
 
+// TestStream_ResponsesStallBeforeContent_StaysOnResponses covers a Responses
+// stream that opens 200 OK, emits one event, then goes silent past the
+// configured StreamRead idle timeout. Silence is evidence about the network or
+// the provider's queue, never about which endpoints the model supports, so the
+// stall must terminate as a retryable stream error carrying the SSE read
+// timeout. Emitting the empty-stream sentinel instead retries Responses and
+// then hands the request to Chat Completions, which cannot serve a reasoning
+// model that also declares function tools (#484).
+func TestStream_ResponsesStallBeforeContent_StaysOnResponses(t *testing.T) {
+	var responsesHits, chatHits atomic.Int32
+	release := make(chan struct{})
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			responsesHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"type\":\"response.created\",\"sequence_number\":0}\n\n"))
+			if f, ok := w.(http.Flusher); ok {
+				f.Flush()
+			}
+			// Hold the connection open with nothing further to read: the
+			// decoder's idle timer, not the server, ends this stream.
+			select {
+			case <-release:
+			case <-r.Context().Done():
+			}
+		case "/v1/chat/completions":
+			chatHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	// Cleanups run last-registered-first: release the stalled handler before
+	// Close waits on it.
+	t.Cleanup(srv.Close)
+	t.Cleanup(func() { close(release) })
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), llm.Request{
+		Model:          "gpt-5.2",
+		Messages:       []llm.Message{llm.User("hi")},
+		AdapterTimeout: &llm.AdapterTimeout{StreamRead: 20 * time.Millisecond},
+	})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	_, streamErr := collectStreamEvents(t, stream)
+	if streamErr == nil {
+		t.Fatal("expected a StreamEventError after the stream stalled")
+	}
+	if !errors.Is(streamErr, llm.ErrSSEReadTimeout) {
+		t.Fatalf("stall error dropped the SSE read timeout cause: %v", streamErr)
+	}
+	if got := llm.Classify(streamErr); got != llm.ErrorClassRetryable {
+		t.Fatalf("Classify = %v, want retryable: %v", got, streamErr)
+	}
+	if got := responsesHits.Load(); got != 1 {
+		t.Fatalf("Responses hits = %d, want 1", got)
+	}
+	if got := chatHits.Load(); got != 0 {
+		t.Fatalf("Chat Completions hits = %d, want 0: %v", got, streamErr)
+	}
+}
+
+// endpointHits counts requests per endpoint so a test can prove whether the
+// adapter re-attempted Responses or handed the request to Chat Completions.
+type endpointHits struct{ responses, chat atomic.Int32 }
+
+// responsesEndpointServer serves body as the whole Responses stream and an
+// empty 200 SSE response on Chat Completions, counting hits on both.
+func responsesEndpointServer(t *testing.T, body string) (*Adapter, *endpointHits) {
+	t.Helper()
+	var hits endpointHits
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/responses":
+			hits.responses.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = io.WriteString(w, body)
+		case "/v1/chat/completions":
+			hits.chat.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+		default:
+			w.WriteHeader(http.StatusNotFound)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}, &hits
+}
+
+// TestStream_RecognizedResponsesEventThenClose_StaysOnResponses covers a
+// Responses stream that closes cleanly after an event this decoder recognizes
+// but before any content. An endpoint that does not implement the Responses API
+// cannot emit these events at all, so their presence proves it served the
+// request: the stream was truncated, which is not a verdict on the endpoint.
+// The window is widest at high reasoning effort, where a model can stream
+// lifecycle and reasoning events for a long time before the first content
+// event (#484).
+func TestStream_RecognizedResponsesEventThenClose_StaysOnResponses(t *testing.T) {
+	cases := []struct {
+		name  string
+		event string
+	}{
+		{"lifecycle created", `{"type":"response.created","sequence_number":0,"response":{"id":"resp_1"}}`},
+		{"reasoning item", `{"type":"response.output_item.added","sequence_number":12,"output_index":0,"item":{"id":"rs_1","type":"reasoning","summary":[]}}`},
+		{"function call item", `{"type":"response.output_item.added","output_index":0,"item":{"id":"fc_1","type":"function_call","call_id":"call_1","name":"shell"}}`},
+		{"message item", `{"type":"response.output_item.added","output_index":0,"item":{"id":"msg_1","type":"message","role":"assistant","content":[]}}`},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			a, hits := responsesEndpointServer(t, "data: "+tc.event+"\n\n")
+			stream, err := a.Stream(context.Background(), llm.Request{Model: "gpt-5.2", Messages: []llm.Message{llm.User("hi")}})
+			if err != nil {
+				t.Fatalf("Stream: %v", err)
+			}
+			defer stream.Close() //nolint:errcheck
+
+			_, streamErr := collectStreamEvents(t, stream)
+			if streamErr == nil {
+				t.Fatal("expected a StreamEventError for a stream that never completed")
+			}
+			if got := llm.Classify(streamErr); got != llm.ErrorClassRetryable {
+				t.Fatalf("Classify = %v, want retryable: %v", got, streamErr)
+			}
+			if got := hits.responses.Load(); got != 1 {
+				t.Fatalf("Responses hits = %d, want 1 (the sentinel's re-attempt means the event was read as an empty stream): %v", got, streamErr)
+			}
+			if got := hits.chat.Load(); got != 0 {
+				t.Fatalf("Chat Completions hits = %d, want 0: %v", got, streamErr)
+			}
+		})
+	}
+}
+
+// TestStream_ResponsesReadFailureBeforeContent_StaysOnResponses covers a
+// Responses stream whose connection breaks before any event arrives. A read
+// that fails says nothing about which endpoints the model supports — the
+// endpoint never got to answer — so this must terminate as a retryable stream
+// error carrying its cause. Only a stream that closes cleanly having produced
+// no recognized event is evidence about endpoint capability (#484).
+func TestStream_ResponsesReadFailureBeforeContent_StaysOnResponses(t *testing.T) {
+	var responsesHits, chatHits atomic.Int32
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/chat/completions" {
+			chatHits.Add(1)
+			w.Header().Set("Content-Type", "text/event-stream")
+			return
+		}
+		responsesHits.Add(1)
+		hj, ok := w.(http.Hijacker)
+		if !ok {
+			t.Errorf("ResponseWriter is not a Hijacker")
+			return
+		}
+		conn, bufrw, err := hj.Hijack()
+		if err != nil {
+			t.Errorf("hijack: %v", err)
+			return
+		}
+		defer conn.Close()
+		// Announce a chunked stream, then drop the socket without a single
+		// chunk: the body read fails before any event exists.
+		_, _ = bufrw.WriteString("HTTP/1.1 200 OK\r\nContent-Type: text/event-stream\r\nTransfer-Encoding: chunked\r\n\r\n")
+		_ = bufrw.Flush()
+	}))
+	t.Cleanup(srv.Close)
+
+	a := &Adapter{APIKey: "k", BaseURL: srv.URL, Client: srv.Client()}
+	stream, err := a.Stream(context.Background(), llm.Request{Model: "gpt-5.2", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	_, streamErr := collectStreamEvents(t, stream)
+	if streamErr == nil {
+		t.Fatal("expected a StreamEventError after the read failed")
+	}
+	if errors.Unwrap(streamErr) == nil {
+		t.Fatalf("surfaced stream error dropped the underlying read cause: %v", streamErr)
+	}
+	if got := responsesHits.Load(); got != 1 {
+		t.Fatalf("Responses hits = %d, want 1 (a broken read was read as an unsupported endpoint): %v", got, streamErr)
+	}
+	if got := chatHits.Load(); got != 0 {
+		t.Fatalf("Chat Completions hits = %d, want 0: %v", got, streamErr)
+	}
+}
+
+// TestStream_UnrecognizedEventThenClose_FallsBackToChatCompletions holds the
+// line on the other side of the sentinel. An event type this decoder does not
+// know is forwarded raw and proves nothing about the endpoint, so a 200 stream
+// carrying only one of those and then closing cleanly is still an empty stream:
+// it must retry Responses once and then hand the request to Chat Completions.
+// Widening "recognized" to any "response.*" string would silently disable the
+// fallback for genuinely unsupported endpoints, and this is the test that
+// notices.
+func TestStream_UnrecognizedEventThenClose_FallsBackToChatCompletions(t *testing.T) {
+	a, hits := responsesEndpointServer(t, "data: {\"type\":\"response.some_future_event\",\"detail\":\"x\"}\n\n")
+	stream, err := a.Stream(context.Background(), llm.Request{Model: "gpt-5.2", Messages: []llm.Message{llm.User("hi")}})
+	if err != nil {
+		t.Fatalf("Stream: %v", err)
+	}
+	defer stream.Close() //nolint:errcheck
+
+	_, streamErr := collectStreamEvents(t, stream)
+	if streamErr == nil {
+		t.Fatal("expected a StreamEventError from the Chat Completions fallback")
+	}
+	if got := hits.responses.Load(); got != 2 {
+		t.Fatalf("Responses hits = %d, want 2 (the sentinel's single re-attempt): %v", got, streamErr)
+	}
+	if got := hits.chat.Load(); got != 1 {
+		t.Fatalf("Chat Completions hits = %d, want 1 — the unsupported-endpoint fallback no longer fires: %v", got, streamErr)
+	}
+}
+
 func TestAdapter_Stream_CloseClosesResponsesStream(t *testing.T) {
 	requestDone := make(chan struct{})
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

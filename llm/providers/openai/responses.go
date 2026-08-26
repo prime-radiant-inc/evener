@@ -223,7 +223,8 @@ func openAICodexUnsupportedRequestField(key string) bool {
 }
 
 // streamResponses is the raw Responses API streaming path.
-// It emits errEmptyResponsesStream if the stream closes 200 OK with zero content.
+// It emits errEmptyResponsesStream if the stream closes 200 OK without any
+// evidence that the endpoint served the request.
 func (a *Adapter) streamResponses(ctx context.Context, req llm.Request) (llm.Stream, error) {
 	parentCtx := ctx
 	sctx, cancel := context.WithCancel(ctx)
@@ -578,11 +579,37 @@ func responsesInbandError(data []byte) error {
 	return inbandStreamError("responses.create(stream)", inband, raw)
 }
 
+// responsesAPIEventTypes are the event types this decoder recognizes as the
+// Responses API's own: the ones the decode switch below handles, plus the
+// lifecycle events OpenAI documents ahead of the first delta. An endpoint that
+// does not implement the Responses API cannot emit any of them, which is what
+// makes them proof that the endpoint served the request.
+//
+// Two deliberate exclusions keep that proof honest. An unrecognized
+// "response.*" type is not enough: it is forwarded raw precisely because this
+// decoder does not know what it is, so it cannot vouch for the endpoint. A bare
+// "error" envelope is not enough either — it is generic SSE, not this API. Both
+// leave the empty-stream sentinel armed.
+var responsesAPIEventTypes = map[string]struct{}{
+	"response.created":                       {},
+	"response.in_progress":                   {},
+	"response.content_part.added":            {},
+	"response.output_item.added":             {},
+	"response.output_item.done":              {},
+	"response.output_text.delta":             {},
+	"response.reasoning_summary_part.added":  {},
+	"response.reasoning_summary_text.delta":  {},
+	"response.function_call_arguments.delta": {},
+	"response.function_call_arguments.done":  {},
+	"response.completed":                     {},
+	"response.failed":                        {},
+}
+
 // decodeResponsesStream consumes the Responses API SSE stream in its own
 // goroutine: it translates each event into llm stream events and emits the final
 // accumulated Response on response.completed. It emits errEmptyResponsesStream if
-// the stream closes 200 OK with zero content. It owns closing the response body
-// and the ChanStream.
+// the stream closes cleanly, 200 OK, without a single recognized Responses API
+// event. It owns closing the response body and the ChanStream.
 func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.CancelFunc, resp *http.Response, s *llm.ChanStream, req llm.Request, _ []byte, attempt *transport.APIAttemptCapture) {
 	defer func() {
 		_ = resp.Body.Close()
@@ -594,9 +621,12 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 	reasoningStarted := false
 	finished := false
 	var finalEvent *llm.StreamEvent
-	// sentContent tracks whether any meaningful content event was emitted.
-	// If the stream closes without content, we emit errEmptyResponsesStream.
-	sentContent := false
+	// sawResponsesEvent records an event this decoder recognizes as belonging
+	// to the Responses API. It is the whole evidence the empty-stream sentinel
+	// rests on: an endpoint that does not implement the API cannot produce one,
+	// so seeing any of them proves the endpoint served this model — long before
+	// content arrives, which at high reasoning effort can take a while.
+	sawResponsesEvent := false
 	acc := newResponsesOutputAccumulator()
 
 	parseErr := llm.ParseSSE(sctx, resp.Body, func(ev llm.SSEEvent) error {
@@ -616,6 +646,9 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 		if typ == "" {
 			typ = ev.Event
 		}
+		if _, ok := responsesAPIEventTypes[typ]; ok {
+			sawResponsesEvent = true
+		}
 
 		switch typ {
 		case "response.output_item.added":
@@ -630,7 +663,6 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 			if delta == "" {
 				return nil
 			}
-			sentContent = true
 			if !textStarted {
 				textStarted = true
 				s.Send(llm.StreamEvent{Type: llm.StreamEventTextStart, TextID: textID})
@@ -641,7 +673,6 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 			if delta == "" {
 				return nil
 			}
-			sentContent = true
 			s.Send(llm.StreamEvent{Type: llm.StreamEventReasoningDelta, ReasoningDelta: delta})
 		case "response.reasoning_summary_part.added":
 			// Detailed reasoning arrives as multiple summary parts; separate
@@ -658,7 +689,6 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 				return nil
 			}
 			if !st.started {
-				sentContent = true
 				st.started = true
 				tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Type: "function"}
 				s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
@@ -674,7 +704,6 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 			switch {
 			case ok:
 				if !st.started {
-					sentContent = true
 					st.started = true
 					tc := llm.ToolCallData{ID: st.id, ItemID: st.itemID, Name: st.name, Type: "function"}
 					s.Send(llm.StreamEvent{Type: llm.StreamEventToolCallStart, ToolCall: &tc})
@@ -712,7 +741,6 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 				s.Send(llm.StreamEvent{Type: llm.StreamEventTextEnd, TextID: textID})
 				textStarted = false
 			}
-			sentContent = true
 			rp := r
 			event := llm.StreamEvent{Type: llm.StreamEventFinish, FinishReason: &r.Finish, Usage: &r.Usage, Response: &rp}
 			if attempt.Active() {
@@ -745,6 +773,11 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 	var terminalErr error
 	var fatal *transport.FatalStreamError
 	if !finished {
+		// Every read failure is handled before the empty-stream sentinel, so
+		// the sentinel can only fire for a stream that closed cleanly. A read
+		// that broke, timed out, or was cancelled is evidence about the
+		// transport; only a clean close with nothing recognized on it is
+		// evidence about what the endpoint implements.
 		switch {
 		case sctx.Err() != nil:
 			terminalErr = llm.WrapContextError("openai", sctx.Err())
@@ -752,14 +785,25 @@ func (a *Adapter) decodeResponsesStream(sctx context.Context, cancel context.Can
 			// The provider reported a structured failure in-band; the decoded,
 			// typed error is the stream's terminal error in its own right.
 			terminalErr = fatal.Err
-		case !sentContent:
-			// Stream closed 200 OK with zero content: model likely does not
-			// support /v1/responses. Signal the caller to try Chat Completions.
+		case errors.Is(parseErr, llm.ErrSSEReadTimeout):
+			// The stream went idle past the read timeout. Named separately from
+			// the read failures below because a stall is the one an operator
+			// most often has to tell apart from a broken connection.
+			terminalErr = llm.NewStreamError("openai", "openai responses stream stalled without completion", parseErr)
+		case parseErr != nil:
+			// The read failed. Surface its cause.
+			terminalErr = llm.NewStreamError("openai", "openai responses stream ended without completion", parseErr)
+		case !sawResponsesEvent:
+			// The stream closed cleanly, 200 OK, without a single event this
+			// decoder recognizes as the Responses API: the model likely does
+			// not support /v1/responses. Signal the caller to try Chat
+			// Completions.
 			terminalErr = errEmptyResponsesStream
 		default:
-			// Content was streamed, then the stream ended without completion —
-			// a genuine mid-stream read failure; surface its cause.
-			terminalErr = llm.NewStreamError("openai", "openai responses stream ended without completion", parseErr)
+			// The endpoint served real Responses events and then closed cleanly
+			// without response.completed — a truncated response, with no read
+			// error to report as its cause.
+			terminalErr = llm.NewStreamError("openai", "openai responses stream closed before response.completed", nil)
 		}
 	}
 	var response *llm.Response
