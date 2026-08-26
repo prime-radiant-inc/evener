@@ -1,18 +1,12 @@
-// The transcript surface: a realistic turn rendered through the REAL
-// TurnBlock skeleton (panes/session/transcript/TurnBlock.tsx), which is
-// itself the thing that dispatches every item through the real item- and
-// tool-renderer registries (types.ts/toolRenderers.ts) - so this section
-// exercises the actual dispatch path, not a hand-picked subset of
-// renderers. Fixture data only: a fabricated TurnModel/ItemModel[], no
-// store, no network. TurnBlock's own side-effect imports
-// ("./ToolCallItem", "./tools", "./messages" transitively) register every
-// renderer the moment TurnBlock itself is imported, exactly the way a real
-// SessionPane gets them.
+// The transcript surface uses the shared TranscriptBody with a realistic
+// fabricated model. It exercises the real item/tool renderer registries while
+// remaining isolated from stores and network.
 
 import { useEffect } from "react";
-import { TurnBlock } from "../../panes/session/transcript/TurnBlock";
+import { TranscriptBody } from "../../panes/session/transcript/TranscriptBody";
 import { itemScopeKey } from "../../panes/session/transcript/tools/subagentModuleStore";
-import type { ItemModel, TurnModel } from "../../protocol/model";
+import type { ItemModel, ThreadModel, TurnModel } from "../../protocol/model";
+import { makeTranscriptDisplayConfig } from "../../transcriptDisplay/config";
 import { setDisclosureOpen } from "../../widgets/disclosure/disclosureStore";
 import styles from "../gallery-section.module.css";
 import { ThemeFlip } from "../ThemeFlip";
@@ -224,7 +218,17 @@ const turn: TurnModel = {
   ],
 };
 
-const EXCHANGE_OPENERS = new Set(["agent_1"]);
+const model = {
+  ref: SESSION_REF,
+  threadId: "dev-thread",
+  name: "Transcript preview",
+  status: { type: "idle" },
+  modelProvider: "anthropic",
+  model: "claude",
+  askPending: false,
+  pendingEscalations: [],
+  turns: [turn],
+} as unknown as ThreadModel;
 
 // ToolCallItem's default-collapsed rule is a per-item disclosureStore entry
 // (widgets/disclosure/disclosureStore.ts), the same store the real pane
@@ -249,10 +253,16 @@ export default function TranscriptSurfaceSection() {
         One turn: a user message, a settled thought with a headed (step-rail) body, three shell calls (collapsed, forced
         open, and failed/auto-expanded), an edit diff row, a three-card subagent stack (failed / running / done), an
         unanswered ask_user card, and a follow-up agent message. Rendered through the real TurnBlock skeleton with a
-        fabricated TurnModel - no store, no network.
+        fabricated ThreadModel - no store, no network.
       </p>
       <ThemeFlip>
-        <TurnBlock turn={turn} sessionRef={SESSION_REF} exchangeOpeners={EXCHANGE_OPENERS} agentLabel="claude" />
+        <TranscriptBody
+          model={model}
+          config={makeTranscriptDisplayConfig({ kind: "preset", level: "full" }, { systemEvents: true })}
+          surface="preview"
+          disclosureScope="preview:dev-transcript"
+          sessionRef={SESSION_REF}
+        />
       </ThemeFlip>
     </section>
   );
