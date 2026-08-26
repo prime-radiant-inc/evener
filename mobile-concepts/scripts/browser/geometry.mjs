@@ -72,6 +72,119 @@ export function compositeColor(foreground, background) {
   };
 }
 
+export function composePaintGroups(foregroundValue, layers) {
+  let foreground = parseCssColor(foregroundValue);
+  if (!foreground) return { unsupported: "unparseable-foreground" };
+  let background = { red: 0, green: 0, blue: 0, alpha: 0 };
+  for (const layer of layers ?? []) {
+    if (layer.image && layer.image !== "none")
+      return { unsupported: "background-image", layer };
+    const paint = parseCssColor(layer.color);
+    if (!paint) return { unsupported: "unparseable-background", layer };
+    foreground = compositeColor(foreground, paint);
+    background = compositeColor(background, paint);
+    const opacity = Number(layer.opacity ?? 1);
+    foreground = { ...foreground, alpha: foreground.alpha * opacity };
+    background = { ...background, alpha: background.alpha * opacity };
+  }
+  if (foreground.alpha < 0.999 || background.alpha < 0.999)
+    return { unsupported: "transparent-background" };
+  return { foreground, background };
+}
+
+export function extractPaintStack(element, getStyle) {
+  const layers = [];
+  const pseudoPaint = [];
+  let current = element;
+  let index = 0;
+  while (current) {
+    const style = getStyle(current);
+    const owner =
+      current.id ||
+      current.getAttribute?.("data-testid") ||
+      current.tagName ||
+      (index === 0 ? "candidate" : `ancestor-${index}`);
+    layers.push({
+      color: style.backgroundColor,
+      image: style.backgroundImage,
+      opacity: Number(style.opacity ?? 1),
+      owner,
+    });
+    for (const pseudo of ["::before", "::after"]) {
+      const pseudoStyle = getStyle(current, pseudo);
+      if (
+        pseudoStyle &&
+        pseudoStyle.content !== "none" &&
+        (pseudoStyle.backgroundImage !== "none" ||
+          !["transparent", "rgba(0, 0, 0, 0)"].includes(
+            pseudoStyle.backgroundColor,
+          ))
+      ) {
+        pseudoPaint.push({
+          owner,
+          pseudo,
+          color: pseudoStyle.backgroundColor,
+          image: pseudoStyle.backgroundImage,
+        });
+      }
+    }
+    current = current.parentElement;
+    index += 1;
+  }
+  return {
+    layers,
+    pseudoPaint,
+    candidateOpacity: layers[0]?.opacity ?? 1,
+    ancestorOpacities: layers.slice(1).map(({ opacity }) => opacity),
+  };
+}
+
+export function selectFocusIndicator(before, after) {
+  const paints = [];
+  const outlineChanged =
+    (after.outlineStyle !== before.outlineStyle ||
+      after.outlineWidth !== before.outlineWidth ||
+      after.outlineColor !== before.outlineColor ||
+      after.outlineOffset !== before.outlineOffset) &&
+    after.outlineStyle !== "none" &&
+    Number.parseFloat(after.outlineWidth) > 0;
+  if (outlineChanged) {
+    paints.push({
+      source: "outline",
+      color: after.outlineColor,
+      width: Number.parseFloat(after.outlineWidth),
+      offset: Number.parseFloat(after.outlineOffset),
+    });
+  }
+  if (after.boxShadow !== before.boxShadow && after.boxShadow !== "none") {
+    for (const match of after.boxShadow.matchAll(/rgba?\([^)]*\)/g))
+      paints.push({ source: "box-shadow", color: match[0] });
+  }
+  return { changed: paints.length > 0, paints };
+}
+
+export async function stabilizePagePaint(documentTarget, frame) {
+  const animations = documentTarget.getAnimations({ subtree: true });
+  const finite = [];
+  let infiniteFrozen = 0;
+  for (const animation of animations) {
+    const timing = animation.effect?.getComputedTiming?.() ?? {};
+    const specified = animation.effect?.getTiming?.() ?? {};
+    if (timing.endTime === Infinity || specified.iterations === Infinity) {
+      animation.pause();
+      animation.currentTime = 0;
+      infiniteFrozen += 1;
+    } else if (animation.playState !== "finished") {
+      finite.push(animation.finished.catch(() => undefined));
+    }
+  }
+  await Promise.all(finite);
+  await documentTarget.fonts?.ready;
+  await frame();
+  await frame();
+  return { finiteAwaited: finite.length, infiniteFrozen };
+}
+
 function luminance(color) {
   const channel = (value) => {
     const normalized = value / 255;
@@ -92,35 +205,21 @@ function ratio(left, right) {
   return (Math.max(first, second) + 0.05) / (Math.min(first, second) + 0.05);
 }
 
-function resolveBackground(backgrounds) {
-  const relevant = [];
-  for (const layer of backgrounds ?? []) {
-    if (layer.image && layer.image !== "none") {
-      return { unsupported: "background-image", rawLayers: backgrounds };
-    }
-    const color = parseCssColor(layer.color);
-    if (!color)
-      return { unsupported: "unparseable-background", rawLayers: backgrounds };
-    const opacity = Number(layer.opacity ?? 1);
-    relevant.push({ ...color, alpha: color.alpha * opacity });
-    if (color.alpha * opacity >= 0.999) break;
-  }
-  let effective = { red: 0, green: 0, blue: 0, alpha: 0 };
-  for (const layer of relevant.reverse())
-    effective = compositeColor(layer, effective);
-  if (effective.alpha < 0.999)
-    return { unsupported: "transparent-background", rawLayers: backgrounds };
-  return { color: effective, rawLayers: backgrounds };
-}
-
 export function buildContrastMeasurements(candidates) {
   return candidates.map((candidate) => {
     const raw = {
       foreground: candidate.foreground,
       backgrounds: candidate.backgrounds,
+      insideBackgrounds: candidate.insideBackgrounds,
       before: candidate.before,
       after: candidate.after,
       source: candidate.source,
+      candidateOpacity: candidate.candidateOpacity,
+      ancestorOpacities: candidate.ancestorOpacities,
+      pseudoPaint: candidate.pseudoPaint,
+      geometry: candidate.geometry,
+      adjacent: candidate.adjacent,
+      paint: candidate.paint,
     };
     if (candidate.kind === "focus" && !candidate.changed) {
       return {
@@ -142,41 +241,98 @@ export function buildContrastMeasurements(candidates) {
         unsupported: "pseudo-paint",
       };
     }
-    const background = resolveBackground(candidate.backgrounds);
-    if (background.unsupported) {
+    const paint = composePaintGroups(
+      candidate.foreground,
+      candidate.backgrounds,
+    );
+    if (paint.unsupported) {
       return {
         id: candidate.id,
         kind: candidate.kind,
         minimum: candidate.minimum,
         changed: candidate.changed,
         raw,
-        unsupported: background.unsupported,
+        unsupported: paint.unsupported,
       };
     }
-    const foreground = parseCssColor(candidate.foreground);
-    if (!foreground) {
-      return {
-        id: candidate.id,
-        kind: candidate.kind,
-        minimum: candidate.minimum,
-        changed: candidate.changed,
-        raw,
-        unsupported: "unparseable-foreground",
-      };
-    }
-    foreground.alpha *= Number(candidate.opacity ?? 1);
-    const effectiveForeground = compositeColor(foreground, background.color);
     return {
       id: candidate.id,
       kind: candidate.kind,
       minimum: candidate.minimum,
       changed: candidate.changed,
       raw,
-      effectiveForeground,
-      effectiveBackground: background.color,
-      ratio: ratio(effectiveForeground, background.color),
+      effectiveForeground: paint.foreground,
+      effectiveBackground: paint.background,
+      ratio: ratio(paint.foreground, paint.background),
     };
   });
+}
+
+export function applyRenderedSamples(pair, renderedSamples) {
+  const foreground = parseCssColor(pair.raw?.foreground);
+  if (!foreground)
+    return { ...pair, unsupported: "unparseable-sampled-foreground" };
+  const distance = (color) =>
+    Math.hypot(
+      color.red - foreground.red,
+      color.green - foreground.green,
+      color.blue - foreground.blue,
+    );
+  const withoutForegroundPixels = (colors) => {
+    if (colors.length <= 1) return colors;
+    const maximum = Math.max(...colors.map(distance));
+    return colors.filter((color) => distance(color) >= maximum * 0.5);
+  };
+  let surfaces =
+    pair.kind === "focus"
+      ? [
+          ...withoutForegroundPixels(renderedSamples.inside ?? []),
+          ...withoutForegroundPixels(renderedSamples.outside ?? []),
+        ]
+      : pair.kind === "nontext"
+        ? (renderedSamples.outside ?? [])
+        : (renderedSamples.inside ?? []);
+  if (pair.kind === "text" && surfaces.length > 1) {
+    surfaces = withoutForegroundPixels(surfaces);
+  }
+  const unique = [
+    ...new Map(
+      surfaces.map((color) => [
+        [color.red, color.green, color.blue, color.alpha].join(":"),
+        color,
+      ]),
+    ).values(),
+  ];
+  if (unique.length === 0)
+    return { ...pair, unsupported: "missing-rendered-samples" };
+  const groupOpacity = [
+    pair.raw?.candidateOpacity ?? 1,
+    ...(pair.raw?.ancestorOpacities ?? []),
+  ].reduce((value, opacity) => value * Number(opacity), 1);
+  const sampledPairs = unique.map((background) => {
+    const effectiveForeground = compositeColor(
+      { ...foreground, alpha: foreground.alpha * groupOpacity },
+      background,
+    );
+    return {
+      background,
+      foreground: effectiveForeground,
+      ratio: ratio(effectiveForeground, background),
+    };
+  });
+  return {
+    ...pair,
+    unsupported: undefined,
+    ratio: Math.min(...sampledPairs.map((sample) => sample.ratio)),
+    sampledRatios: sampledPairs.map((sample) => sample.ratio),
+    sampledPairs,
+    raw: { ...pair.raw, renderedSamples },
+    sampling: {
+      method: "rendered-adjacent-pixels",
+      logic:
+        "Minimum contrast across sampled adjacent surfaces; WCAG 2.2 SC 1.4.3, 1.4.11, and focus SC 2.4.11 use 4.5:1/3:1 thresholds without averaging gradients.",
+    },
+  };
 }
 
 function pixel(value) {
@@ -312,11 +468,12 @@ export async function measurePage(client, options = {}) {
     client,
     `(() => {
     const platform = ${JSON.stringify(platform)};
+    const extractPaintStack = ${extractPaintStack.toString()};
     const visible = element => { const style=getComputedStyle(element),box=element.getBoundingClientRect(); return style.display!=="none"&&style.visibility!=="hidden"&&Number(style.opacity)>0&&box.width>0&&box.height>0&&!element.closest('[inert],[aria-hidden="true"]'); };
     const transparent = color => color==='transparent'||color==='rgba(0, 0, 0, 0)';
     const name = (element,index) => element.id||element.getAttribute("aria-label")||element.getAttribute("data-testid")||element.textContent?.trim().slice(0,80)||element.tagName.toLowerCase()+"-"+index;
     const rect = element => { const box=element.getBoundingClientRect(); return {left:box.left,right:box.right,top:box.top,bottom:box.bottom,width:box.width,height:box.height}; };
-    const backgrounds = element => { const result=[]; let current=element; while(current){const style=getComputedStyle(current);const before=getComputedStyle(current,'::before'),after=getComputedStyle(current,'::after');result.push({color:style.backgroundColor,image:style.backgroundImage,opacity:style.opacity,pseudo:(before.content!=="none"&&(before.backgroundImage!=="none"||before.backgroundColor!=="rgba(0, 0, 0, 0)"))||(after.content!=="none"&&(after.backgroundImage!=="none"||after.backgroundColor!=="rgba(0, 0, 0, 0)"))});current=current.parentElement;}return result;};
+    const backgrounds = element => extractPaintStack(element, (target,pseudo) => getComputedStyle(target,pseudo));
     const controls=[...document.querySelectorAll('button:not([disabled]),input:not([disabled]):not([type="hidden"]),select:not([disabled]),textarea:not([disabled]),a[href],[role="button"]')].filter(visible).map((element,index)=>{const target=element.matches('input[type="radio"],input[type="checkbox"]')?element.labels?.[0]??element:element;const box=rect(target);return{id:name(element,index),width:box.width,height:box.height,platform};});
     const ids=[...document.querySelectorAll('[id]')].map(element=>element.id);const duplicateIds=[...new Set(ids.filter((id,index)=>ids.indexOf(id)!==index))];
     const all=[...document.querySelectorAll('*')].filter(visible);
@@ -325,8 +482,8 @@ export async function measurePage(client, options = {}) {
     const fixedBottom=[...document.querySelectorAll('nav,[class*="composer"],[data-fixed-bottom]')].filter(element=>{const style=getComputedStyle(element);return visible(element)&&(style.position==='fixed'||style.position==='sticky');}).map((element,index)=>({id:name(element,index),bottom:rect(element).bottom}));
     const rootStyle=getComputedStyle(document.documentElement);const root={};for(const edge of ['top','right','bottom','left'])root[edge]=rootStyle.getPropertyValue('--safe-area-'+edge).trim();
     const ownerElements=[...document.querySelectorAll('[data-safe-area-owner],[data-safe-area-owner-top],[data-safe-area-owner-right],[data-safe-area-owner-bottom],[data-safe-area-owner-left]')].filter(visible);const owners=ownerElements.map((element,index)=>{const style=getComputedStyle(element),tokens=(element.getAttribute('data-safe-area-owner')||'').split(/[\\s,]+/).filter(Boolean),owned=new Set(tokens);for(const edge of ['top','right','bottom','left'])if(element.hasAttribute('data-safe-area-owner-'+edge))owned.add(edge);const values={top:style.paddingTop,right:style.paddingRight,bottom:style.paddingBottom,left:style.paddingLeft};const result={};for(const edge of owned)result[edge]=values[edge];return{id:name(element,index),edges:result};});
-    const text=[...document.querySelectorAll('h1,h2,h3,p,label,button:not([disabled]),a,input:not([disabled]),textarea:not([disabled]),select:not([disabled])')].filter(visible).map((element,index)=>{const style=getComputedStyle(element),layers=backgrounds(element);return{id:name(element,index),kind:'text',foreground:style.color,opacity:layers.reduce((value,layer)=>value*Number(layer.opacity),1),backgrounds:layers,minimum:parseFloat(style.fontSize)>=24||(parseFloat(style.fontSize)>=18.66&&Number(style.fontWeight)>=700)?3:4.5,pseudo:layers[0]?.pseudo};});
-    const nontext=[...document.querySelectorAll('button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),a[href]')].filter(visible).map((element,index)=>{const style=getComputedStyle(element),borderVisible=style.borderTopStyle!=='none'&&parseFloat(style.borderTopWidth)>0&&!transparent(style.borderTopColor),fillVisible=!transparent(style.backgroundColor),layers=backgrounds(element.parentElement);if(!borderVisible&&!fillVisible)return null;return{id:name(element,index),kind:'nontext',foreground:borderVisible?style.borderTopColor:style.backgroundColor,opacity:Number(style.opacity)*layers.reduce((value,layer)=>value*Number(layer.opacity),1),backgrounds:layers,minimum:3,source:borderVisible?'border':'fill'};}).filter(Boolean);
+    const text=[...document.querySelectorAll('h1,h2,h3,p,label,button:not([disabled]),a,input:not([disabled]):not([type="radio"]):not([type="checkbox"]),textarea:not([disabled]),select:not([disabled])')].filter(visible).map((element,index)=>{const style=getComputedStyle(element),stack=backgrounds(element);return{id:name(element,index),kind:'text',foreground:style.color,backgrounds:stack.layers,minimum:parseFloat(style.fontSize)>=24||(parseFloat(style.fontSize)>=18.66&&Number(style.fontWeight)>=700)?3:4.5,pseudo:stack.pseudoPaint.length>0,candidateOpacity:stack.candidateOpacity,ancestorOpacities:stack.ancestorOpacities,pseudoPaint:stack.pseudoPaint,geometry:rect(element)};});
+    const nontext=[...document.querySelectorAll('button:not([disabled]),input:not([disabled]),textarea:not([disabled]),select:not([disabled]),a[href]')].filter(visible).map((element,index)=>{const style=getComputedStyle(element),borderVisible=style.borderTopStyle!=='none'&&parseFloat(style.borderTopWidth)>0&&!transparent(style.borderTopColor),fillVisible=!transparent(style.backgroundColor),parentStack=backgrounds(element.parentElement);if(!borderVisible&&!fillVisible)return null;const layers=[{color:'transparent',image:'none',opacity:Number(style.opacity),owner:name(element,index)},...parentStack.layers];return{id:name(element,index),kind:'nontext',foreground:borderVisible?style.borderTopColor:style.backgroundColor,backgrounds:layers,minimum:3,source:borderVisible?'border':'fill',candidateOpacity:Number(style.opacity),ancestorOpacities:parentStack.layers.map(layer=>layer.opacity),pseudoPaint:backgrounds(element).pseudoPaint,geometry:rect(element)};}).filter(Boolean);
     return {devicePixelRatio,viewport:{width:innerWidth,height:innerHeight,visualWidth:visualViewport?.width??innerWidth,visualHeight:visualViewport?.height??innerHeight,visualTop:visualViewport?.offsetTop??0},document:{scrollWidth:document.documentElement.scrollWidth,clientWidth:document.documentElement.clientWidth},controls,duplicateIds,scrollers,primaryActions,fixedBottom,safe:{root,owners},contrastCandidates:[...text,...nontext]};
   })()`,
   );

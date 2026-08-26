@@ -4,8 +4,15 @@ import os from "node:os";
 import path from "node:path";
 import { preview } from "vite";
 import { evaluate, navigate } from "./browser/cdp.mjs";
-import { startChrome } from "./browser/chrome.mjs";
-import { assertGeometry, measurePage } from "./browser/geometry.mjs";
+import { startChrome, withOwnedCleanup } from "./browser/chrome.mjs";
+import {
+  applyRenderedSamples,
+  assertGeometry,
+  extractPaintStack,
+  measurePage,
+  selectFocusIndicator,
+  stabilizePagePaint,
+} from "./browser/geometry.mjs";
 
 const concepts = ["stillwater", "constellation", "field-notes"];
 const conceptNames = {
@@ -47,6 +54,13 @@ const sentinelSource = `(() => {
   for (const [name, methods] of Object.entries({ServiceWorkerRegistration:['showNotification','getNotifications'],PushManager:['subscribe','getSubscription','permissionState'],PushSubscription:['unsubscribe']})) { const C = trap(name); for (const method of methods) C.prototype[method] = trap(name + '.' + method); set(window, name, C); }
 })()`;
 
+async function stabilizePaint(client) {
+  return evaluate(
+    client,
+    `(${stabilizePagePaint.toString()})(document,()=>new Promise(resolve=>requestAnimationFrame(()=>resolve())))`,
+  );
+}
+
 function actionSource(concept, destination, textScale, variant = {}) {
   return `(async () => {
     const frame = () => new Promise(resolve => requestAnimationFrame(() => resolve()));
@@ -85,6 +99,7 @@ function actionSource(concept, destination, textScale, variant = {}) {
 }
 
 async function focusAudit(client) {
+  const stabilization = await stabilizePaint(client);
   const setup = await evaluate(
     client,
     `(() => {
@@ -111,17 +126,22 @@ async function focusAudit(client) {
       code: "Tab",
       windowsVirtualKeyCode: 9,
     });
+    await stabilizePaint(client);
     actual.push(
       await evaluate(
         client,
         `(() => {
+      const selectFocusIndicator=${selectFocusIndicator.toString()};
+      const extractPaintStack=${extractPaintStack.toString()};
       const e=document.activeElement,s=getComputedStyle(e),before=${JSON.stringify(setup)}.find(item=>item.id===e.dataset.browserFocusId)?.before;
       const after={outlineStyle:s.outlineStyle,outlineWidth:s.outlineWidth,outlineColor:s.outlineColor,outlineOffset:s.outlineOffset,boxShadow:s.boxShadow};
-      const outlineChanged=before&&(after.outlineStyle!==before.outlineStyle||after.outlineWidth!==before.outlineWidth||after.outlineColor!==before.outlineColor||after.outlineOffset!==before.outlineOffset)&&after.outlineStyle!=='none'&&parseFloat(after.outlineWidth)>0;
-      const shadowChanged=before&&after.boxShadow!==before.boxShadow&&after.boxShadow!=='none';
-      const shadowColor=after.boxShadow.match(/rgba?\\([^)]*\\)/)?.[0]??after.boxShadow;
-      const backgrounds=[];let current=e.parentElement;while(current){const style=getComputedStyle(current);backgrounds.push({color:style.backgroundColor,image:style.backgroundImage,opacity:style.opacity});current=current.parentElement;}
-      return{id:e.dataset.browserFocusId||'',subject:${JSON.stringify(setup)}.find(item=>item.id===e.dataset.browserFocusId)?.subject||e.tagName,visible:Boolean(outlineChanged||shadowChanged),candidate:{id:${JSON.stringify(setup)}.find(item=>item.id===e.dataset.browserFocusId)?.subject||e.tagName,kind:'focus',foreground:outlineChanged?after.outlineColor:shadowColor,backgrounds,minimum:3,changed:Boolean(outlineChanged||shadowChanged),before,after,source:outlineChanged?'outline':shadowChanged?'box-shadow':'none'}};
+      const indicator=selectFocusIndicator(before,after),subject=${JSON.stringify(setup)}.find(item=>item.id===e.dataset.browserFocusId)?.subject||e.tagName;
+      const outside=extractPaintStack(e.parentElement,(target,pseudo)=>getComputedStyle(target,pseudo));
+      const inside=extractPaintStack(e,(target,pseudo)=>getComputedStyle(target,pseudo));
+      const box=e.getBoundingClientRect(),geometry={left:box.left,right:box.right,top:box.top,bottom:box.bottom,width:box.width,height:box.height};
+      const candidates=indicator.paints.map((paint)=>({id:subject+' focus '+paint.source,kind:'focus',foreground:paint.color,backgrounds:[{color:'transparent',image:'none',opacity:Number(s.opacity),owner:subject},...outside.layers],insideBackgrounds:inside.layers,minimum:3,changed:true,before,after,source:paint.source,candidateOpacity:Number(s.opacity),ancestorOpacities:outside.layers.map(layer=>layer.opacity),geometry,paint}));
+      if(!indicator.changed)candidates.push({id:subject,kind:'focus',foreground:'transparent',backgrounds:outside.layers,minimum:3,changed:false,before,after,source:'none'});
+      return{id:e.dataset.browserFocusId||'',subject,visible:indicator.changed,candidates};
     })()`,
       ),
     );
@@ -151,13 +171,14 @@ async function focusAudit(client) {
       );
   }
   return {
-    focusCandidates: actual.map(({ candidate }) => candidate),
+    focusCandidates: actual.flatMap(({ candidates }) => candidates),
     focusOrder: actual.map((item, index) => ({
       id: item.subject,
       order: expected.indexOf(item.id) + 1,
       visible: item.visible,
       actualOrder: index + 1,
     })),
+    stabilization,
   };
 }
 
@@ -219,6 +240,46 @@ async function screenshot(client, file) {
     captureBeyondViewport: false,
   });
   await writeFile(file, Buffer.from(image.data, "base64"));
+  return image.data;
+}
+
+async function sampleRenderedContrast(client, screenshotData, pairs) {
+  const unresolved = pairs
+    .map((pair, index) => ({ index, pair }))
+    .filter(
+      ({ pair }) =>
+        (pair.unsupported || pair.kind === "focus") && pair.raw?.geometry,
+    )
+    .map(({ index, pair }) => ({
+      index,
+      geometry: pair.raw.geometry,
+      paint: pair.raw.paint,
+    }));
+  if (unresolved.length === 0) return pairs;
+  const samples = await evaluate(
+    client,
+    `(async()=>{
+      const image=new Image();
+      const loaded=new Promise((resolve,reject)=>{image.onload=resolve;image.onerror=()=>reject(new Error('screenshot decode failed'));});
+      image.src=${JSON.stringify(`data:image/png;base64,${screenshotData}`)};
+      await loaded;
+      const canvas=document.createElement('canvas');canvas.width=image.naturalWidth;canvas.height=image.naturalHeight;
+      const context=canvas.getContext('2d',{willReadFrequently:true});context.drawImage(image,0,0);
+      const scaleX=image.naturalWidth/innerWidth,scaleY=image.naturalHeight/innerHeight;
+      const color=(x,y)=>{const px=Math.max(0,Math.min(canvas.width-1,Math.round(x*scaleX))),py=Math.max(0,Math.min(canvas.height-1,Math.round(y*scaleY))),data=context.getImageData(px,py,1,1).data;return{red:data[0],green:data[1],blue:data[2],alpha:data[3]/255};};
+      const unique=values=>[...new Map(values.map(value=>[[value.red,value.green,value.blue,value.alpha].join(':'),value])).values()];
+      return ${JSON.stringify(unresolved)}.map(({index,geometry,paint})=>{
+        const {left,right,top,bottom}=geometry,inset=Math.max(2,Math.min(6,Math.min(geometry.width,geometry.height)/5)),distance=(paint?.offset??0)+(paint?.width??0)+1;
+        const insidePoints=[[left+inset,top+inset],[right-inset,top+inset],[left+inset,bottom-inset],[right-inset,bottom-inset],[(left+right)/2,top+inset],[(left+right)/2,bottom-inset],[left+inset,(top+bottom)/2],[right-inset,(top+bottom)/2]];
+        const outsidePoints=[[left-distance,top+inset],[right+distance,top+inset],[left-distance,bottom-inset],[right+distance,bottom-inset],[(left+right)/2,top-distance],[(left+right)/2,bottom+distance]];
+        return{index,inside:unique(insidePoints.map(([x,y])=>color(x,y))),outside:unique(outsidePoints.map(([x,y])=>color(x,y))),points:{inside:insidePoints,outside:outsidePoints},image:{width:image.naturalWidth,height:image.naturalHeight,scaleX,scaleY}};
+      });
+    })()`,
+  );
+  const byIndex = new Map(samples.map((sample) => [sample.index, sample]));
+  return pairs.map((pair, index) =>
+    byIndex.has(index) ? applyRenderedSamples(pair, byIndex.get(index)) : pair,
+  );
 }
 
 async function runCase({
@@ -251,7 +312,7 @@ async function runCase({
       offOrigin.push(event.request.url);
     }
   });
-  try {
+  return withOwnedCleanup(async () => {
     await setupPage(client, origin, viewport, safeArea);
     await navigate(client, `${origin}/${query}`);
     const state = await evaluate(
@@ -269,7 +330,13 @@ async function runCase({
       throw new Error(
         `platform mismatch: ${state.platform} != ${expectedPlatform}`,
       );
+    const preCollectionStabilization = await stabilizePaint(client);
     const focus = await focusAudit(client);
+    await evaluate(
+      client,
+      "document.body.tabIndex=-1;document.body.focus();document.body.removeAttribute('tabindex');true",
+    );
+    await stabilizePaint(client);
     const measurements = await measurePage(client, {
       platform: expectedPlatform,
       focusOrder: focus.focusOrder,
@@ -291,7 +358,6 @@ async function runCase({
         });
     }
     const route = state.route ?? destination;
-    const violations = assertGeometry(measurements, { route, safeArea });
     const identity = [
       String(caseIndex).padStart(3, "0"),
       concept,
@@ -310,7 +376,13 @@ async function runCase({
     ];
     const name = identity.join("-").replaceAll(/[^a-zA-Z0-9_.-]/g, "_");
     const file = path.join(outputDirectory, `${name}.png`);
-    await screenshot(client, file);
+    const screenshotData = await screenshot(client, file);
+    measurements.contrastPairs = await sampleRenderedContrast(
+      client,
+      screenshotData,
+      measurements.contrastPairs,
+    );
+    const violations = assertGeometry(measurements, { route, safeArea });
     const finalAudit = await evaluate(
       client,
       `({attempts:[...(window.__capabilityAttempts??[])],fileInputs:document.querySelectorAll('input[type="file"],input[capture]').length})`,
@@ -328,6 +400,10 @@ async function runCase({
       },
       measurements,
       capabilityFailures,
+      stabilization: {
+        preCollection: preCollectionStabilization,
+        focusStart: focus.stabilization,
+      },
       state,
       name,
       route,
@@ -335,9 +411,7 @@ async function runCase({
       screenshot: file,
       requestCount: requests.length,
     };
-  } finally {
-    await client.close();
-  }
+  }, [() => client.close()]);
 }
 
 async function cspCase(chrome, origin) {
@@ -351,7 +425,7 @@ async function cspCase(chrome, origin) {
   });
   const network = [];
   const targetRequests = new Set();
-  try {
+  return withOwnedCleanup(async () => {
     await new Promise((resolve, reject) => {
       server.once("error", reject);
       server.listen(0, "127.0.0.1", resolve);
@@ -429,10 +503,14 @@ async function cspCase(chrome, origin) {
       connections,
       network,
     };
-  } finally {
-    if (client) await client.close();
-    if (listening) await new Promise((resolve) => server.close(resolve));
-  }
+  }, [
+    async () => {
+      if (client) await client.close();
+    },
+    async () => {
+      if (listening) await new Promise((resolve) => server.close(resolve));
+    },
+  ]);
 }
 
 export async function runBrowserMatrix(options = {}) {
