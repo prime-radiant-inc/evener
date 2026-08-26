@@ -209,29 +209,12 @@ func TestPrepareToolCall_NestedSchemaErrors_NameRealFieldAndContainer(t *testing
 		}
 	})
 
-	t.Run("ask_user question header too long", func(t *testing.T) {
+	t.Run("ask_user accepts a long question header", func(t *testing.T) {
 		call := llm.ToolCallData{ID: "c2", Name: "ask_user",
 			Arguments: json.RawMessage(`{"questions":[{"header":"way too long for a chip label","question":"q","options":[{"label":"a","detail":"a"},{"label":"b","detail":"b"}]}]}`)}
 		res := prepareToolCall(call, reg.Get("ask_user"), []string{"ask_user"}, "ask_user", "")
-		want := "ask_user: argument \"questions[0].header\" exceeds maxLength (12). Value \"way too long for a chip label\" is 29 characters."
-		if res.PrevalErr != want {
-			t.Fatalf("PrevalErr =\n%s\nwant:\n%s", res.PrevalErr, want)
-		}
-		if strings.Contains(res.PrevalErr, "Required arguments") {
-			t.Fatalf("message must not include the generic required-arguments line: %q", res.PrevalErr)
-		}
-	})
-
-	// Issue #193 repro: a header exceeding the documented maxLength (12)
-	// must surface the actual constraint and value/length, not the misleading
-	// "Required arguments" message that claims question/options were missing.
-	t.Run("ask_user header Module & repo is 13 chars", func(t *testing.T) {
-		call := llm.ToolCallData{ID: "c3", Name: "ask_user",
-			Arguments: json.RawMessage(`{"questions":[{"header":"Module & repo","question":"q","options":[{"label":"a","detail":"a"},{"label":"b","detail":"b"}]}]}`)}
-		res := prepareToolCall(call, reg.Get("ask_user"), []string{"ask_user"}, "ask_user", "")
-		want := "ask_user: argument \"questions[0].header\" exceeds maxLength (12). Value \"Module & repo\" is 13 characters."
-		if res.PrevalErr != want {
-			t.Fatalf("PrevalErr =\n%s\nwant:\n%s", res.PrevalErr, want)
+		if res.PrevalErr != "" {
+			t.Fatalf("long header was rejected: %s", res.PrevalErr)
 		}
 	})
 

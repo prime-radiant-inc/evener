@@ -306,6 +306,24 @@ func TestAskUser_ValidCallPostsAckAndPending(t *testing.T) {
 	}
 }
 
+func TestAskUser_LongHeaderIsAcceptedAndPreserved(t *testing.T) {
+	t.Parallel()
+	sess := newAskTestSession(t, SessionConfig{})
+	args := askUserArgsValid()
+	const wantHeader = "Progress flavor"
+	args["questions"].([]any)[0].(map[string]any)["header"] = wantHeader
+
+	res := sess.reg.ExecuteCall(context.Background(), sess.env, askUserCall("c1", args))
+	if res.IsError {
+		t.Fatalf("ask_user with long header errored: %s", res.Output)
+	}
+	sess.mu.Lock()
+	defer sess.mu.Unlock()
+	if got := sess.askPending[0].Header; got != wantHeader {
+		t.Fatalf("pending header = %q, want %q", got, wantHeader)
+	}
+}
+
 func TestAskUser_OmittedHeaderUsesEmptyInternalHeader(t *testing.T) {
 	t.Parallel()
 	sess := newAskTestSession(t, SessionConfig{})
@@ -2122,6 +2140,19 @@ func TestAskUser_ShorthandDecodesToBatchEquivalent(t *testing.T) {
 	lastPending := sess.askPending[len(sess.askPending)-1]
 	if lastPending.Question != "Which datastore for the ingest path?" {
 		t.Fatalf("pending question = %q", lastPending.Question)
+	}
+}
+
+func TestAskUser_ShorthandSurvivesSessionPrevalidation(t *testing.T) {
+	t.Parallel()
+	sess := newAskTestSession(t, SessionConfig{})
+
+	res := sess.execTool(context.Background(), askUserCall("c1", askUserArgsShorthand()), "")
+	if res.IsError {
+		t.Fatalf("session ask_user shorthand errored: %s", res.FullOutput)
+	}
+	if got := sess.askPendingCount(); got != 1 {
+		t.Fatalf("askPendingCount = %d, want 1", got)
 	}
 }
 

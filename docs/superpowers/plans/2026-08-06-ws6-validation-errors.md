@@ -146,9 +146,10 @@ call-site proximity:
     `` `task_list: missing required argument "status" in updates[0].\nRequired arguments in updates[0]: id (integer), status (string).\nExample: {"action": "..."}` `` —
     confirm the exact `Example:` line against `minimalExample` on the
     *top-level* schema (unchanged behavior) before hardcoding it.
-  - `questions[0].header` too long (present, invalid) → exact want:
-    `` `ask_user: argument "questions[0].header" has the wrong type or value.\nRequired arguments in questions[0]: question (string), options (array).\nExample: {"questions": [...]}` `` —
-    same caveat: confirm the real `Example:` line before hardcoding.
+  - The former `questions[0].header` length reproduction is superseded: the
+    current `DefAskUser` schema intentionally has no hard header-length cap.
+    Generic bounded-string formatter coverage uses an independent constrained
+    fixture instead.
   - Regression case: flat top-level missing arg (existing behavior) still
     produces the unqualified `"Required arguments:"` line with no `"in "`
     text.

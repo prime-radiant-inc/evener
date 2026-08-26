@@ -690,8 +690,8 @@ func TestDefManageWorktreeDescriptionCarriesUsagePolicy(t *testing.T) {
 }
 
 // TestDefAskUserSchema locks the ask_user input schema to spec §4.2: questions
-// 1-4 per call, each with optional header (<=12 chars)/question/options (2-5 of
-// {label, detail, recommended?}), multi_select, why, and if_unanswered.
+// 1-4 per call, each with optional header/question/options (2-5 of {label,
+// detail, recommended?}), multi_select, why, and if_unanswered.
 func TestDefAskUserSchema(t *testing.T) {
 	def := DefAskUser()
 	if def.Name != "ask_user" {
@@ -717,8 +717,11 @@ func TestDefAskUserSchema(t *testing.T) {
 			t.Fatalf("missing question property %q", k)
 		}
 	}
-	if props["header"].(map[string]any)["maxLength"] != 12 {
-		t.Fatal("header maxLength != 12")
+	if props["header"].(map[string]any)["type"] != "string" {
+		t.Fatal("header is not a string")
+	}
+	if _, ok := props["header"].(map[string]any)["maxLength"]; ok {
+		t.Fatal("header must not have a hard maxLength")
 	}
 	opts := props["options"].(map[string]any)
 	if opts["minItems"] != 2 || opts["maxItems"] != 5 {

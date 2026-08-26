@@ -1,9 +1,8 @@
 // The [answers] reply composition (parity contracts-composer-queue-pending.md
-// §"Ask User"/test-ask-compose.js): byte-exact, golden-string tested, ported
-// verbatim from cmd/evener-hub/assets/renderer.js's composeAskAnswers/
-// askResolutionText/quoteGoString (renderer.js:6980-7031). This is not
-// cosmetic formatting - the composed text round-trips through the daemon's
-// own reply parser, so every character here is load-bearing.
+// §"Ask User"/test-ask-compose.js): byte-exact for the ordinary format and
+// golden-string tested against cmd/evener-hub/assets/renderer.js's
+// composeAskAnswers/askResolutionText/quoteGoString. Headers containing line
+// framing characters use JSON encoding so the composed text remains parseable.
 
 // AskResolution mirrors legacy's exactly-one-of-5-kinds rule (spec §4.3,
 // renderer.js:5874-5882): option (single or multi_select), free text,
@@ -18,7 +17,8 @@ export type AskResolution =
   | { kind: "skip" };
 
 // AskAnswerItem is the minimal shape composeAskAnswers needs from one
-// question: its header (for the "[Header]" tag), its current resolution,
+// question: its header (for the "[Header]" tag, JSON-encoded when it contains
+// framing characters), its current resolution,
 // its optional note, and - only for a fallback resolution - the model's own
 // if_unanswered text to embed verbatim.
 export interface AskAnswerItem {
@@ -29,7 +29,11 @@ export interface AskAnswerItem {
 }
 
 function askAnswerHeader(header: string | undefined, index: number): string {
-  return header ?? `Question ${index + 1}`;
+  const value = header ?? `Question ${index + 1}`;
+  if (!/[\]\r\n]/u.test(value)) return value;
+  return JSON.stringify(value)
+    .replace(/\u2028/g, "\\u2028")
+    .replace(/\u2029/g, "\\u2029");
 }
 
 // quoteGoString mirrors Go's %q escaping (renderer.js:6975-6994) exactly:

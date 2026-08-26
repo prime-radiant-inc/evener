@@ -130,7 +130,8 @@ func pendingAskQuestions(messages []transcript.ChatMessage) []askQuestion {
 // ---- Compose: the §4.3 [answers] reply, byte-exact with the web's port ---
 // (cmd/evener-hub/assets/renderer.js composeAskAnswers, golden-tested by
 // cmd/evener-hub/jstest/test-ask-compose.js). strconv.Quote IS Go's %q verb,
-// so — unlike the JS port — no hand-rolled escaping is needed here.
+// so — unlike the JS port — no hand-rolled escaping is needed for resolutions;
+// unsafe headers use encoding/json on both surfaces.
 
 // composeAskAnswers renders the [answers] reply: global numbering in
 // posting order, one resolution per line, every line carrying its header
@@ -139,13 +140,25 @@ func composeAskAnswers(questions []askQuestion) string {
 	lines := make([]string, 0, len(questions)+1)
 	lines = append(lines, "[answers]")
 	for i, q := range questions {
-		line := fmt.Sprintf("%d. [%s] → %s", i+1, q.Header, askResolutionText(q))
+		line := fmt.Sprintf("%d. [%s] → %s", i+1, answerHeader(q.Header), askResolutionText(q))
 		if note := strings.TrimSpace(q.Note); note != "" {
 			line += " — note: " + strconv.Quote(note)
 		}
 		lines = append(lines, line)
 	}
 	return strings.Join(lines, "\n")
+}
+
+func answerHeader(header string) string {
+	if strings.ContainsAny(header, "]\r\n") {
+		var b strings.Builder
+		encoder := json.NewEncoder(&b)
+		encoder.SetEscapeHTML(false)
+		if err := encoder.Encode(header); err == nil {
+			return strings.TrimSuffix(b.String(), "\n")
+		}
+	}
+	return header
 }
 
 // askResolutionText renders one question's resolution per spec §4.3's exact
