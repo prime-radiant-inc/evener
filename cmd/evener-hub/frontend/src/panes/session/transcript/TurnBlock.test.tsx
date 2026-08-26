@@ -324,6 +324,28 @@ test("with both hook toggles off, only a non-zero hook survives as a compact cri
   expect(screen.getByTestId("system-notice-failure")).toBeTruthy();
 });
 
+test("a blank-purpose critical tool uses the projected neutral summary without a raw command summary", () => {
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" });
+  const blankPurpose = item({
+    id: "critical-blank-purpose",
+    type: "commandExecution",
+    toolName: "shell",
+    argumentsJSON: JSON.stringify({ command: "echo should-not-be-recomputed" }),
+    description: "  ",
+    status: "completed",
+  });
+  const { rerender } = render(withConfig(config, <TurnBlock turn={turn([blankPurpose], {}, config)} />));
+
+  expect(screen.getAllByTestId("tool-call-item")).toHaveLength(1);
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Action summary unavailable");
+  expect(screen.queryByText("Ran echo should-not-be-recomputed")).toBeNull();
+
+  const tools = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  rerender(withConfig(tools, <TurnBlock turn={turn([blankPurpose], {}, tools)} />));
+  expect(screen.getAllByTestId("tool-call-item")).toHaveLength(1);
+  expect(screen.getByTestId("tool-row-summary").textContent).toBe("Action summary unavailable");
+});
+
 test("hookExitsAll renders full hook rows; hookExitsNormal keeps success rows plus a compact failure", () => {
   const items = [hookItem("clean", 0), hookItem("failed", 1)];
   const all = makeTranscriptDisplayConfig(

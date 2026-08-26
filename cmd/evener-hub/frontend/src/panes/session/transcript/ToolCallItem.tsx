@@ -101,7 +101,7 @@ function delegateStatusForOutput(
 // toolRenderers.ts's ToolRenderProps), so a fresh turn object on every
 // streaming delta targeting a DIFFERENT item must not re-render an
 // already-settled tool call.
-export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef }: ItemRenderProps) {
+export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef, projectedSummary }: ItemRenderProps) {
   const context = useTranscriptRenderContext();
   const { config } = context;
   const disclosureScope = disclosureScopeForSession(context, sessionRef);
@@ -209,8 +209,14 @@ export const ToolCallItem = memo(function ToolCallItem({ item, live, sessionRef 
   // cwd (subscribed once above) is threaded into summary() as
   // ToolSummaryContext so shell's own descriptor can strip a redundant
   // "cd <cwd> && " prefix from its summary.
-  const summary = descriptor.summary(item, { cwd }) + (summarySuffix ?? "");
-  const purpose = isDelegate ? delegatePurposeOf(item) : item.description;
+  const statedPurpose = statedPurposeOf(item);
+  const useProjectedSummary = projectedSummary !== undefined && statedPurpose === undefined;
+  const summary = useProjectedSummary ? projectedSummary : descriptor.summary(item, { cwd }) + (summarySuffix ?? "");
+  const purpose = isDelegate
+    ? delegatePurposeOf(item)
+    : projectedSummary !== undefined && statedPurpose !== undefined
+      ? projectedSummary
+      : item.description;
   // kata xw3t: the URL, if any, embedded in this row's own summary text -
   // web_fetch's only descriptor with one today. Read directly off the item
   // (not the thread model): unlike summarySuffix, nothing about which URL a

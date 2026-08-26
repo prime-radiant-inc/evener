@@ -46,6 +46,8 @@ export interface TurnBlockProps {
   // projected-entry granularity. The projector supplies each entry's stable
   // source index; this is the row index that contains it.
   viewAnchorIndex?: number;
+  /** Suppressed on a fragment that precedes a cross-turn intent group. */
+  showTurnSeparator?: boolean;
 }
 
 const CLASS = {
@@ -67,6 +69,58 @@ const CLASS = {
 // signal stays a direct, honest reflection of the wire's own status field.
 export function isItemLive(item: ItemModel): boolean {
   return item.status === "inProgress";
+}
+
+export function projectedEntryAnchor(entry: ProjectedEntry, viewAnchorIndex: number | undefined) {
+  if (viewAnchorIndex === undefined) return undefined;
+  return {
+    "data-view-anchor-id": entry.id,
+    "data-view-anchor-index": viewAnchorIndex,
+    "data-view-anchor-source-index": entry.sourceIndex,
+    "data-view-anchor-turn-id": entry.turnId,
+    "data-view-anchor-message": entry.kind === "item" && entry.isMessage,
+  } as const;
+}
+
+export interface ProjectedIntentGroupProps {
+  entries: readonly Extract<ProjectedEntry, { kind: "intent" }>[];
+  rowId?: string;
+  sourceTurnIds?: readonly string[];
+  viewAnchorIndex?: number;
+  showSeenDivider?: boolean;
+}
+
+export function ProjectedIntentGroup({
+  entries,
+  rowId,
+  sourceTurnIds = [],
+  viewAnchorIndex,
+  showSeenDivider = false,
+}: ProjectedIntentGroupProps) {
+  const { config } = useTranscriptRenderContext();
+  return (
+    <>
+      {showSeenDivider && <SeenDivider />}
+      <details
+        className={transcriptStyles.intentGroup}
+        data-testid="intent-group"
+        data-transcript-row-id={rowId}
+        data-transcript-source-turn-ids={sourceTurnIds.join(",") || undefined}
+        open={expandDetailsByDefault(config)}
+      >
+        <summary className={transcriptStyles.intentGroupSummary}>
+          {entries.length} action{entries.length === 1 ? "" : "s"}
+        </summary>
+        <div className={transcriptStyles.intentGroupItems}>
+          {entries.map((entry) => (
+            <div key={entry.id} className={transcriptStyles.intent} {...projectedEntryAnchor(entry, viewAnchorIndex)}>
+              {entry.rationale}
+            </div>
+          ))}
+        </div>
+      </details>
+    </>
+  );
 }
 
 function projectedForDirectTurn(turn: TurnModel): ProjectedTurn {
@@ -93,9 +147,9 @@ export function TurnBlock({
   agentLabel,
   showSeenDivider = false,
   viewAnchorIndex,
+  showTurnSeparator = true,
 }: TurnBlockProps) {
   const renderContext = useTranscriptRenderContext();
-  const { config } = renderContext;
   const projectedTurn = isProjectedTurn(turn) ? turn : projectedForDirectTurn(turn);
   const sourceTurn = projectedTurn.source;
   // A failed turn carries a TurnError (only genuine failures do - the projector
@@ -108,34 +162,7 @@ export function TurnBlock({
     visibleItems.length === sourceTurn.items.length &&
     visibleItems.every((item, index) => item === sourceTurn.items[index]);
   const shownTurn: TurnModel = allItemsVisible ? sourceTurn : { ...sourceTurn, items: [...visibleItems] };
-  const viewAnchorFor = (entry: ProjectedEntry) => {
-    if (viewAnchorIndex === undefined) return undefined;
-    return {
-      "data-view-anchor-id": entry.id,
-      "data-view-anchor-index": viewAnchorIndex,
-      "data-view-anchor-source-index": entry.sourceIndex,
-      "data-view-anchor-message": entry.kind === "item" && entry.isMessage,
-    } as const;
-  };
-  const renderIntentGroup = (entries: Extract<ProjectedEntry, { kind: "intent" }>[]) => (
-    <details
-      key={`intent-group:${entries[0]?.id}:${entries.at(-1)?.id}`}
-      className={transcriptStyles.intentGroup}
-      data-testid="intent-group"
-      open={expandDetailsByDefault(config)}
-    >
-      <summary className={transcriptStyles.intentGroupSummary}>
-        {entries.length} action{entries.length === 1 ? "" : "s"}
-      </summary>
-      <div className={transcriptStyles.intentGroupItems}>
-        {entries.map((entry) => (
-          <div key={entry.id} className={transcriptStyles.intent} {...viewAnchorFor(entry)}>
-            {entry.rationale}
-          </div>
-        ))}
-      </div>
-    </details>
-  );
+  const viewAnchorFor = (entry: ProjectedEntry) => projectedEntryAnchor(entry, viewAnchorIndex);
   const renderedEntries: ReactNode[] = [];
   for (let index = 0; index < projectedTurn.entries.length; index += 1) {
     const entry = projectedTurn.entries[index];
@@ -147,7 +174,13 @@ export function TurnBlock({
         const next = projectedTurn.entries[index];
         if (next?.kind === "intent") group.push(next);
       }
-      renderedEntries.push(renderIntentGroup(group));
+      renderedEntries.push(
+        <ProjectedIntentGroup
+          key={`intent-group:${group[0]?.id}:${group.at(-1)?.id}`}
+          entries={group}
+          viewAnchorIndex={viewAnchorIndex}
+        />,
+      );
       continue;
     }
     const item = entry.item;
@@ -178,6 +211,7 @@ export function TurnBlock({
             sessionRef={sessionRef}
             opensExchange={exchangeOpeners?.has(item.id)}
             agentLabel={agentLabel}
+            projectedSummary={entry.kind === "critical" ? entry.summary : undefined}
             renderContext={renderContext}
           />
         </div>,
@@ -192,6 +226,7 @@ export function TurnBlock({
             sessionRef={sessionRef}
             opensExchange={exchangeOpeners?.has(item.id)}
             agentLabel={agentLabel}
+            projectedSummary={entry.kind === "critical" ? entry.summary : undefined}
             renderContext={renderContext}
           />
         </div>,
@@ -204,7 +239,7 @@ export function TurnBlock({
       <div className={CLASS.turn} data-testid="turn-block" data-turn-id={sourceTurn.id}>
         {renderedEntries}
         {failure && <TurnFailureEndCap error={failure} turn={sourceTurn} sessionRef={sessionRef} />}
-        <TurnSeparator turn={sourceTurn} />
+        {showTurnSeparator && <TurnSeparator turn={sourceTurn} />}
       </div>
     </>
   );

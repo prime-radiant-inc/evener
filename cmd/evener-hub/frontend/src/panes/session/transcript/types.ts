@@ -25,6 +25,9 @@ export interface ItemRenderProps {
   // Context is threaded for memoized/custom renderers that prefer props; the
   // built-in renderers consume the same value through TranscriptRenderContext.
   renderContext?: TranscriptRenderContextValue;
+  // A projector-owned compact summary for a critical entry. When present,
+  // renderers must not reconstruct a routine summary from raw tool fields.
+  projectedSummary?: string;
 }
 
 const registry = new Map<string, ComponentType<ItemRenderProps>>();
@@ -69,6 +72,7 @@ export function ignoringTurn(prev: ItemRenderProps, next: ItemRenderProps): bool
     prev.sessionRef === next.sessionRef &&
     prev.opensExchange === next.opensExchange &&
     prev.agentLabel === next.agentLabel &&
+    prev.projectedSummary === next.projectedSummary &&
     prev.renderContext === next.renderContext
   );
 }
