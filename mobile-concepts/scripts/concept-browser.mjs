@@ -10,6 +10,7 @@ import {
   assertGeometry,
   extractPaintStack,
   measurePage,
+  mergeStabilizationEvidence,
   selectFocusIndicator,
   stabilizePagePaint,
 } from "./browser/geometry.mjs";
@@ -338,18 +339,18 @@ async function runCase({
       client,
       "document.body.tabIndex=-1;document.body.focus();document.body.removeAttribute('tabindex');true",
     );
-    await stabilizePaint(client);
+    const postFocusStabilization = await stabilizePaint(client);
     const measurements = await measurePage(client, {
       platform: expectedPlatform,
       focusOrder: focus.focusOrder,
       focusCandidates: focus.focusCandidates,
     });
-    const capabilityFailures = [
-      ...(preCollectionStabilization.capabilityFailures ?? []),
-      ...focus.stabilizations.flatMap(
-        (evidence) => evidence.capabilityFailures ?? [],
-      ),
-    ];
+    const mergedStabilization = mergeStabilizationEvidence({
+      preCollection: preCollectionStabilization,
+      focusSteps: focus.stabilizations,
+      postFocus: postFocusStabilization,
+    });
+    const capabilityFailures = [...mergedStabilization.capabilityFailures];
     if (viewport.visibleHeight) {
       const layoutHeight = viewport.layoutHeight ?? viewport.height;
       if (
@@ -407,11 +408,7 @@ async function runCase({
       },
       measurements,
       capabilityFailures,
-      stabilization: {
-        preCollection: preCollectionStabilization,
-        focusStart: focus.stabilization,
-        focusSteps: focus.stabilizations,
-      },
+      stabilization: mergedStabilization.stabilization,
       state,
       name,
       route,
