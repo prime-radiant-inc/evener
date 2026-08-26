@@ -4,6 +4,7 @@ import { fileURLToPath } from "node:url";
 import { act, cleanup, fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetTreeStoreForTests, treeStore } from "../../stores/tree";
 import { Toast } from "../../widgets";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
@@ -295,6 +296,8 @@ function defaultPostResponses(): Record<string, { status: number; body: unknown 
 }
 
 beforeEach(() => {
+  resetNavigationStoreForTests();
+  navigationStore.setState({ mode: "legacy" });
   resetTreeStoreForTests();
   resetWorkspaceStoreForTests();
   localStorage.clear();
@@ -395,6 +398,7 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  resetNavigationStoreForTests();
   resetToastStoreForTests();
   // The rail both writes the address bar (row activation) and now reads it
   // (the delete paths' dead-route rescue), so each test starts from a known

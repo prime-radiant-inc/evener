@@ -308,6 +308,57 @@ describe("counts apply unconditionally", () => {
     expect(fetchMock).not.toHaveBeenCalled();
   });
 
+  test("capability downgrade clears v1 attention and restores legacy tree authority", async () => {
+    prefsStore.getState().setNotification("title", true);
+    const client = new FakeClient("ready");
+    fetchMock.mockImplementation(async () => navigationManifest());
+    initNavigation(client, navigationCapability());
+    initNotifications();
+    await flushMicrotasks();
+    client.emitNotification({
+      method: "evener/attention/changed",
+      params: {
+        changed: [
+          { threadId: "a", title: "A", project: "", level: "needs_you", askPending: true, prevLevel: "" },
+          { threadId: "b", title: "B", project: "", level: "error", askPending: false, prevLevel: "" },
+        ],
+        summary: { needsYou: 1, error: 1, working: 0 },
+      },
+    });
+    expect(document.title).toBe("(2) evener hub");
+
+    treeStore.setState({ tree: treeOf([node("legacy", "errored")]) });
+    initNavigation(client, null);
+    await flushMicrotasks();
+
+    expect(navigationStore.getState().mode).toBe("legacy");
+    expect(navigationStore.getState().attention.summary).toBeNull();
+    expect(document.title).toBe("(1) evener hub");
+  });
+
+  test("v1 attention removes downgraded entries so a later escalation is a new edge", async () => {
+    armPrefs("all");
+    const client = new FakeClient("ready");
+    fetchMock.mockImplementation(async () => navigationManifest());
+    initNavigation(client, navigationCapability());
+    initNotifications();
+    await flushMicrotasks();
+
+    const change = (level: string, needsYou: number) =>
+      client.emitNotification({
+        method: "evener/attention/changed",
+        params: {
+          changed: [{ threadId: "a", title: "A", project: "", level, askPending: true, prevLevel: "" }],
+          summary: { needsYou, error: 0, working: level === "working" ? 1 : 0 },
+        },
+      });
+    change("needs_you", 1);
+    change("working", 0);
+    expect(fires()).toEqual({ os: 0, sound: 0 });
+    change("needs_you", 1);
+    expect(fires()).toEqual({ os: 1, sound: 1 });
+  });
+
   test("title + favicon update on a tree change even focused, even non-leader", async () => {
     prefsStore.getState().setNotification("title", true);
     prefsStore.getState().setNotification("favicon", true);

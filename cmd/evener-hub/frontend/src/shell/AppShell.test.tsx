@@ -1437,11 +1437,15 @@ test("nested deep-link waits for successful tree refresh on same pathname after 
     return Promise.resolve(jsonResponse(TREE_RESPONSE_WITH_NESTED_SESSION));
   });
   vi.stubGlobal("fetch", fetchMock);
+  resetNotificationsForTests();
+  initNotifications();
 
   window.history.pushState({}, "", "/s/local:sub1");
   render(<AppShell client={new FakeClient("ready")} />);
 
   expect(workspaceStore.getState().panes.find((pane) => pane.type === "session")).toBeUndefined();
+  await waitFor(() => expect(treeStore.getState().error).not.toBeNull());
+  expect(calls).toBe(1);
 
   await act(async () => {
     await treeStore.getState().refresh();

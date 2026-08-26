@@ -6,6 +6,7 @@ import {
   selectExpanded,
   selectGlobalRows,
   selectLocation,
+  selectPinSections,
   selectProjectPage,
   selectProjectResource,
 } from "./selectors";
@@ -13,8 +14,52 @@ import { initNavigation, navigationStore, resetNavigationStoreForTests } from ".
 import { capability, manifest } from "./testing";
 
 const generation = "generation_test";
+const completeSession = (value: Record<string, unknown>): Record<string, unknown> => ({
+  host_id: "local",
+  session_id: String(value.ref ?? "session"),
+  title: String(value.ref ?? "Session"),
+  project: "",
+  state: "idle",
+  kind: "session",
+  live: false,
+  ...value,
+  children: Array.isArray(value.children)
+    ? value.children.map((child) => completeSession(child as Record<string, unknown>))
+    : [],
+});
+const completeBody = (data: unknown, revision: number, gen: string): unknown => {
+  if (!data || typeof data !== "object" || Array.isArray(data)) return data;
+  const body: Record<string, unknown> = { ...(data as Record<string, unknown>), generation_id: gen, revision };
+  if (Array.isArray(body.sessions)) {
+    body.sessions = body.sessions.map((item) => completeSession(item as Record<string, unknown>));
+    body.truncated ??= false;
+  }
+  if (body.session && typeof body.session === "object") {
+    body.session = completeSession(body.session as Record<string, unknown>);
+    body.ref ??= (body.session as Record<string, unknown>).ref;
+    body.top_level_ref ??= body.ref;
+    body.top_level ??= true;
+  }
+  if (Array.isArray(body.pin_sections))
+    body.pin_sections = body.pin_sections.map((item) => ({ name: String(item.id), ...item }));
+  if (Array.isArray(body.projects))
+    body.projects = body.projects.map((item) => ({ name: String(item.key), session_count: 0, ...item }));
+  for (const tier of ["current", "recent", "archived"] as const) {
+    const value = body[tier];
+    if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+    const typed = value as Record<string, unknown>;
+    body[tier] = {
+      ...typed,
+      sessions: Array.isArray(typed.sessions)
+        ? typed.sessions.map((item) => completeSession(item as Record<string, unknown>))
+        : [],
+    };
+    body.truncated ??= false;
+  }
+  return body;
+};
 const json = (data: unknown, status = 200, etag = '"one"', revision = 1, gen = generation) =>
-  new Response(status === 304 ? null : JSON.stringify(data), {
+  new Response(status === 304 ? null : JSON.stringify(status === 200 ? completeBody(data, revision, gen) : data), {
     status,
     headers: {
       "content-type": "application/json",
@@ -87,7 +132,22 @@ test("routes encode identifiers, enforce limits, credentials and conditional ETa
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   await init((url, request) => {
     calls.push({ url, init: request });
-    return json(emptyManifest());
+    if (url === "/api/navigation") return json(emptyManifest());
+    if (url.includes("/sections/")) return json({ sessions: [], remaining: 0, truncated: false });
+    if (url.includes("pin-sections?") && !url.includes("a%2Fb")) return json({ pin_sections: [], remaining: 0 });
+    if (url.includes("pin-sections/a%2Fb")) return json({ sessions: [], remaining: 0, truncated: false });
+    if (url.includes("/catalogs/")) return json({ projects: [], remaining: 0 });
+    if (url.includes("?tier="))
+      return json({ key: "p/a ?", tier: "recent", offset: 6, sessions: [], remaining: 0, truncated: false });
+    if (url.includes("/projects/"))
+      return json({
+        key: "p/a ?",
+        current: { sessions: [], remaining: 0 },
+        recent: { sessions: [], remaining: 0 },
+        archived: { sessions: [], remaining: 0 },
+        truncated: false,
+      });
+    return json({ ref: "r/a ?", top_level_ref: "r/a ?", top_level: true });
   });
   const s = navigationStore.getState();
   await s.loadSection("needs_you", 3, 7);
@@ -163,6 +223,20 @@ test("non-200, non-JSON, and missing server headers become resource errors", asy
   mode = "etag";
   const etag = await navigationStore.getState().loadCatalog("projects");
   expect(etag.error).toBeTruthy();
+
+  const missingRevision = new Response(
+    JSON.stringify(completeBody({ sessions: [], remaining: 0, truncated: false }, 0, generation)),
+    {
+      status: 200,
+      headers: {
+        "content-type": "application/json",
+        "X-Evener-Navigation-Generation": generation,
+        etag: '"missing-revision"',
+      },
+    },
+  );
+  vi.mocked(fetch).mockResolvedValueOnce(missingRevision);
+  expect((await navigationStore.getState().loadPinSection("missing-revision")).error).toBeTruthy();
 });
 
 test("stale client completion cannot overwrite newer client", async () => {
@@ -181,6 +255,30 @@ test("stale client completion cannot overwrite newer client", async () => {
   await flush();
   expect(navigationStore.getState().clientGenerationID).toBe("new");
   expect(navigationStore.getState().manifest?.generationID).not.toBe("old");
+});
+
+test("a stale malformed response cannot poison or force the active client", async () => {
+  const old = deferred<Response>();
+  let activeManifestCalls = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((_url: string) => {
+      if (activeManifestCalls++ === 0) return old.promise;
+      return json(emptyManifest({ generation_id: "new" }), 200, '"new"', 1, "new");
+    }),
+  );
+  initNavigation(new FakeClient("ready"), capability("old"));
+  await flush();
+  initNavigation(new FakeClient("ready"), capability("new"));
+  await flush();
+  expect(activeManifestCalls).toBe(2);
+
+  old.resolve(json({}, 200, '"old"', 1, "old"));
+  await flush();
+
+  expect(navigationStore.getState().protocolError).toBeNull();
+  expect(activeManifestCalls).toBe(2);
+  expect(navigationStore.getState().clientGenerationID).toBe("new");
 });
 
 test("expanded and default projects hydrate complete tiers and post-action expansion", async () => {
@@ -204,12 +302,14 @@ test("expanded and default projects hydrate complete tiers and post-action expan
     if (url.includes("/projects/default")) return json(project("default"));
     return json({ sessions: [], remaining: 0 });
   });
-  expect(calls.some((x) => x.includes("projects/default?tier=current"))).toBe(true);
-  expect(calls.some((x) => x.includes("projects/default?tier=archived"))).toBe(true);
+  expect(calls.some((x) => x.includes("projects/default?tier="))).toBe(false);
   expect(calls.some((x) => x.includes("projects/closed"))).toBe(false);
   navigationStore.getState().setExpanded("closed", true);
   await flush();
   expect(calls.some((x) => x.includes("projects/closed"))).toBe(true);
+  expect(calls.some((x) => x.includes("projects/closed?tier="))).toBe(false);
+  await navigationStore.getState().loadProjectPage("default", "current", 0, 50);
+  expect(calls.some((x) => x.includes("projects/default?tier=current"))).toBe(true);
 });
 
 test("notification fencing rejects duplicate, wrong generation, and gaps while locations stay retained", async () => {
@@ -238,25 +338,73 @@ test("notification fencing rejects duplicate, wrong generation, and gaps while l
   expect(navigationStore.getState().lastSequence).toBe(before + 2);
 });
 
-test("selectors expose session rows, location, project/page resources and expansion", async () => {
+test("same-generation reconnect revalidates locations while a sequence gap intentionally does not", async () => {
+  const client = new FakeClient("ready");
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v3",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: capability(),
+  }));
+  let locationCalls = 0;
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string) => {
+      if (url === "/api/navigation") return json(emptyManifest());
+      locationCalls++;
+      return json({ ref: "x", top_level_ref: "x", top_level: true });
+    }),
+  );
+  initNavigation(client);
+  await flush();
+  await navigationStore.getState().lookupLocation("x");
+  expect(locationCalls).toBe(1);
+
+  client.emitNotification({
+    method: "evener/navigation/invalidated",
+    params: { generationId: generation, sequence: 2, targets: [] },
+  } as never);
+  await flush();
+  expect(locationCalls).toBe(1);
+
+  client.emitStateChange("reconnecting");
+  client.emitReady();
+  await flush();
+  expect(locationCalls).toBe(2);
+});
+
+test("selectors expose every loaded global/pin page, location, project/page resources and expansion", async () => {
   await init((url) => {
     if (url === "/api/navigation") return json(emptyManifest());
-    if (url.includes("sections/live")) return json({ sessions: [{ ref: "s", children: [] }], remaining: 0 });
+    if (url.includes("sections/live"))
+      return json({ sessions: [{ ref: url.includes("offset=50") ? "s2" : "s", children: [] }], remaining: 0 });
+    if (url.includes("pin-sections?"))
+      return json({ pin_sections: [{ id: "pin", name: "Pinned", count: 2 }], remaining: 0 });
+    if (url.includes("pin-sections/pin"))
+      return json({ sessions: [{ ref: url.includes("offset=50") ? "p2" : "p1", children: [] }], remaining: 0 });
     if (url.includes("sessions/loc")) return json({ session: { ref: "loc", children: [] } });
     return json({ sessions: [], remaining: 0 });
   });
   await navigationStore.getState().loadSection("live");
+  await navigationStore.getState().loadSection("live", 50, 50);
+  await navigationStore.getState().loadPinCatalog();
+  await navigationStore.getState().loadPinSection("pin");
+  await navigationStore.getState().loadPinSection("pin", 50, 50);
   await navigationStore.getState().lookupLocation("loc");
   const state = navigationStore.getState();
-  expect(selectGlobalRows(state)).toHaveLength(1);
-  expect(selectLocation("loc")(state)?.data).toEqual({ session: { ref: "loc", children: [] } });
+  expect(selectGlobalRows(state).map((row) => row.ref)).toEqual(["s", "s2"]);
+  expect(selectPinSections(state).map((section) => [section.id, section.sessions.map((row) => row.ref)])).toEqual([
+    ["pin", ["p1", "p2"]],
+  ]);
+  expect(selectLocation("loc")(state)?.data).toMatchObject({ session: { ref: "loc" } });
   expect(selectProjectResource("p")(state)).toBeUndefined();
   expect(selectProjectPage("p", "current")(state)).toBeUndefined();
   expect(selectExpanded("p")(state)).toBe(false);
   expect(findSessionNode("s", state)?.ref).toBe("s");
 });
 
-test("boot keeps one global four-request budget through pin sections, roots, and page remainders", async () => {
+test("boot keeps one global four-request budget through first resources, pin sections, and expanded roots", async () => {
   const projects = ["p1", "p2", "p3", "p4"].map((key) => ({
     key,
     default_expanded: true,
@@ -312,12 +460,12 @@ test("boot keeps one global four-request budget through pin sections, roots, and
   for (let i = 0; i < 128; i++) {
     if (pending.length > 0) release();
     await flush();
-    if (pending.length === 0 && active === 0 && calls.some((url) => url.includes("projects/p4?tier=archived"))) break;
+    if (pending.length === 0 && active === 0 && calls.some((url) => url.endsWith("projects/p4"))) break;
   }
   expect(maximum).toBeLessThanOrEqual(4);
   expect(calls.filter((url) => url.includes("pin-sections/pin-")).length).toBe(6);
   expect(calls.filter((url) => url.includes("/projects/p") && !url.includes("?tier=")).length).toBe(4);
-  expect(calls.filter((url) => url.includes("?tier=")).length).toBe(12);
+  expect(calls.filter((url) => url.includes("?tier=")).length).toBe(0);
   expect(active).toBe(0);
 });
 
@@ -365,7 +513,7 @@ test("404 project recovery refreshes its owning loaded catalog once and retries 
     return json({ sessions: [], remaining: 0 });
   });
   const result = await navigationStore.getState().loadProject("p");
-  expect(result.data).toEqual(project);
+  expect(result.data).toMatchObject(project);
   expect(projectCalls).toBe(2);
   expect(catalogCalls).toBe(2);
   const catalogRequest = (fetch as ReturnType<typeof vi.fn>).mock.calls
@@ -407,10 +555,77 @@ test("uncertain project membership refreshes every loaded catalog before retry",
     }
     return json({ sessions: [], remaining: 0 });
   });
-  expect((await navigationStore.getState().loadProject("p")).data).toEqual(project);
+  expect((await navigationStore.getState().loadProject("p")).data).toMatchObject(project);
   expect(projectCalls).toBe(2);
   expect(catalogs.get("projects")).toBe(2);
   expect(catalogs.get("archived-projects")).toBe(2);
+});
+
+test("404 project recovery discovers nonempty catalogs after a forced manifest refresh", async () => {
+  let manifestCalls = 0;
+  let projectCalls = 0;
+  let catalogCalls = 0;
+  const project = {
+    key: "late",
+    current: { sessions: [], remaining: 0 },
+    recent: { sessions: [], remaining: 0 },
+    archived: { sessions: [], remaining: 0 },
+  };
+  await init((url) => {
+    if (url === "/api/navigation") {
+      manifestCalls++;
+      return json(
+        emptyManifest({
+          catalogs: {
+            projects: { count: manifestCalls === 1 ? 0 : 1 },
+            archived_projects: { count: 0 },
+            test_runs: { count: 0 },
+          },
+        }),
+        200,
+        `"manifest-${manifestCalls}"`,
+        manifestCalls,
+      );
+    }
+    if (url.includes("catalogs/projects")) {
+      catalogCalls++;
+      return json({ projects: [project], remaining: 0 });
+    }
+    if (url.endsWith("/projects/late")) {
+      projectCalls++;
+      return projectCalls === 1 ? json({}, 404) : json(project);
+    }
+    return json({ projects: [], remaining: 0 });
+  });
+
+  expect((await navigationStore.getState().loadProject("late")).data).toMatchObject(project);
+  expect(manifestCalls).toBe(2);
+  expect(catalogCalls).toBe(1);
+  expect(projectCalls).toBe(2);
+});
+
+test.each([
+  ["section", () => navigationStore.getState().loadSection("live")],
+  ["pin catalog", () => navigationStore.getState().loadPinCatalog()],
+  ["pin section", () => navigationStore.getState().loadPinSection("p")],
+  ["catalog", () => navigationStore.getState().loadCatalog("projects")],
+  ["project", () => navigationStore.getState().loadProject("p")],
+  ["project page", () => navigationStore.getState().loadProjectPage("p", "current")],
+  ["location", () => navigationStore.getState().lookupLocation("p")],
+] as const)("malformed %s bodies fail closed without selecting legacy mode", async (_name, operation) => {
+  await init((url) => (url === "/api/navigation" ? json(emptyManifest()) : json({})));
+  const result = await operation();
+  expect(result.error).toBeInstanceOf(Error);
+  expect(result.data).toBeNull();
+  expect(navigationStore.getState().mode).toBe("v1");
+  expect(navigationStore.getState().protocolError).toBeInstanceOf(Error);
+});
+
+test("a malformed manifest body is never committed", async () => {
+  await init(() => json({}));
+  expect(navigationStore.getState().manifest?.data).toBeNull();
+  expect(navigationStore.getState().manifest?.error).toBeInstanceOf(Error);
+  expect(navigationStore.getState().mode).toBe("v1");
 });
 
 test("authoritative project absence preserves last-good project state without retry loops", async () => {
@@ -439,14 +654,14 @@ test("authoritative project absence preserves last-good project state without re
     }
     return json({ sessions: [], remaining: 0 });
   });
-  expect((await navigationStore.getState().loadProject("p")).data).toEqual(project);
+  expect((await navigationStore.getState().loadProject("p")).data).toMatchObject(project);
   client.emitNotification({
     method: "evener/navigation/invalidated",
     params: { generationId: generation, sequence: 1, targets: [{ kind: "project", projectKey: "p", revision: 2 }] },
   } as never);
   const result = await navigationStore.getState().loadProject("p");
   expect(result.error).toMatchObject({ status: 404 });
-  expect(result.data).toEqual(project);
+  expect(result.data).toMatchObject(project);
   expect(projectCalls).toBe(2);
   expect(catalogCalls).toBe(2);
 });
@@ -478,16 +693,16 @@ test("catalog refresh failure preserves stale catalog and project data", async (
     return json({ sessions: [], remaining: 0 });
   });
   const first = await navigationStore.getState().loadProject("p");
-  expect(first.data).toEqual(project);
+  expect(first.data).toMatchObject(project);
   client.emitNotification({
     method: "evener/navigation/invalidated",
     params: { generationId: generation, sequence: 1, targets: [{ kind: "project", projectKey: "p", revision: 2 }] },
   } as never);
   const result = await navigationStore.getState().loadProject("p");
-  expect(result.data).toEqual(project);
+  expect(result.data).toMatchObject(project);
   expect(
     [...navigationStore.getState().resources.values()].find((resource) => resource.key.kind === "catalog")?.data,
-  ).toEqual({ projects: [project], remaining: 0 });
+  ).toMatchObject({ projects: [project], remaining: 0 });
   expect(projectCalls).toBe(2);
   expect(catalogCalls).toBe(2);
 });
@@ -565,5 +780,5 @@ test("targeted updates are immutable and preserve unrelated resource identity", 
   expect(after.resources.get(JSON.stringify({ kind: "section", limit: 50, offset: 0, section: "live" }))).not.toBe(
     section,
   );
-  expect(catalog.data).toEqual({ projects: [], remaining: 0 });
+  expect(catalog.data).toMatchObject({ projects: [], remaining: 0 });
 });

@@ -40,7 +40,7 @@ const subscriptions: Array<() => void> = [];
 function currentSummary() {
   return navigationStore.getState().mode === "v1"
     ? navigationStore.getState().attention.summary
-    : (navigationStore.getState().attention.summary ?? treeStore.getState().tree?.attentionSummary ?? null);
+    : (treeStore.getState().tree?.attentionSummary ?? null);
 }
 
 function onNavigationAttention(): void {
@@ -50,7 +50,10 @@ function onNavigationAttention(): void {
   const next = new Map(prevNavigationAttention);
   for (const changed of state.attention.changed) {
     const level = changed.level === "error" ? "error" : changed.level === "needs_you" ? "needs_you" : null;
-    if (!level) continue;
+    if (!level) {
+      next.delete(changed.threadId);
+      continue;
+    }
     next.set(changed.threadId, {
       ref: changed.threadId,
       title: changed.title,
@@ -126,18 +129,20 @@ export function initNotifications(): void {
   // microtask lets AppShell wire its client during the same mount before the
   // migration-only tree fallback is considered.
   queueMicrotask(() => {
-    const client = connectionStore.getState().client;
-    if (client) initNavigation(client);
+    const { client, state } = connectionStore.getState();
+    if (client && state === "ready") initNavigation(client);
   });
 
   subscriptions.push(
     connectionStore.subscribe((state, prev) => {
-      if (state.client && state.client !== prev.client) initNavigation(state.client);
+      if (state.client && state.state === "ready" && (state.client !== prev.client || prev.state !== "ready"))
+        initNavigation(state.client);
     }),
   );
   subscriptions.push(
     navigationStore.subscribe((state, prev) => {
       if (state.attention !== prev.attention) onNavigationAttention();
+      if (prev.mode === "v1" && state.mode !== "v1") prevNavigationAttention = null;
       if (state.mode === "legacy" && prev.mode !== "legacy" && treeStore.getState().tree === null)
         void treeStore.getState().ensureLoaded();
     }),

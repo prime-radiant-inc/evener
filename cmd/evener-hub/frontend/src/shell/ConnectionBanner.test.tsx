@@ -316,6 +316,10 @@ describe("clicking Retry", () => {
       .mockResolvedValueOnce(new Response(null, { status: 200 })) // post-retry: auth check
       .mockResolvedValueOnce(new Response(null, { status: 200 })); // post-retry: not-built check
     vi.stubGlobal("fetch", fetchMock);
+    // This component test isolates its closed-reason probes from the global
+    // notification engine, whose capability-absence path legitimately starts
+    // the migration-only legacy tree after a ready client is published.
+    resetNotificationsForTests();
     const fresh = new FakeClient("ready");
 
     render(<ConnectionBanner state="closed" createClient={() => fresh} />);
@@ -326,6 +330,6 @@ describe("clicking Retry", () => {
 
     await screen.findByText("Connection closed.");
     expect(screen.queryByText(SIGN_IN_PROMPT_MESSAGE)).toBeNull();
-    expect(fetchMock).toHaveBeenCalledTimes(4);
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/", "/", "/", "/"]);
   });
 });

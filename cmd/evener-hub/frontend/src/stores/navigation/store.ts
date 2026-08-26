@@ -125,10 +125,18 @@ function requestFor<T>(k: ResourceKey): NavigationRequest<T> {
     const generationID = response.headers.get("X-Evener-Navigation-Generation") ?? "";
     const revisionText = response.headers.get("X-Evener-Navigation-Revision") ?? "";
     const responseEtag = response.headers.get("etag") ?? "";
+    if (!generationID) throw new NavigationHTTPError(response.status, "missing generation");
+    if (!/^(0|[1-9]\d*)$/.test(revisionText)) throw new NavigationHTTPError(response.status, "invalid revision");
     if (!responseEtag) throw new NavigationHTTPError(response.status, "missing ETag");
     const revision = Number(revisionText);
+    if (!Number.isSafeInteger(revision)) throw new NavigationHTTPError(response.status, "invalid revision");
     let data: unknown;
-    if (response.status === 200) data = await response.json();
+    if (response.status === 200) {
+      data = await response.json();
+      if (!isNavigationValue(k, data, generationID, revision)) {
+        throw new NavigationProtocolError(`invalid ${k.kind} body`);
+      }
+    }
     return { status: response.status, generationID, revision, etag: responseEtag, data: data as T };
   };
 }
@@ -139,12 +147,136 @@ export class NavigationHTTPError extends Error {
     this.status = status;
   }
 }
+class NavigationProtocolError extends Error {
+  constructor(message: string) {
+    super(`navigation protocol: ${message}`);
+  }
+}
+type RecordValue = Record<string, unknown>;
+const record = (value: unknown): value is RecordValue => !!value && typeof value === "object" && !Array.isArray(value);
+const string = (value: unknown): value is string => typeof value === "string";
+const bool = (value: unknown): value is boolean => typeof value === "boolean";
+const count = (value: unknown): value is number => Number.isSafeInteger(value) && (value as number) >= 0;
+const optional = (value: unknown, check: (candidate: unknown) => boolean) => value === undefined || check(value);
+function metadata(value: RecordValue, generationID: string, revision: number): boolean {
+  return value.generation_id === generationID && value.revision === revision;
+}
+function sessions(value: unknown): boolean {
+  if (!Array.isArray(value)) return false;
+  const pending = [...value];
+  let nodes = 0;
+  while (pending.length > 0) {
+    const candidate = pending.pop();
+    if (!record(candidate) || ++nodes > 2_000) return false;
+    if (
+      !string(candidate.ref) ||
+      !string(candidate.host_id) ||
+      !string(candidate.session_id) ||
+      !string(candidate.title) ||
+      !string(candidate.project) ||
+      !string(candidate.state) ||
+      !string(candidate.kind) ||
+      !bool(candidate.live) ||
+      !Array.isArray(candidate.children) ||
+      !optional(candidate.branch, string) ||
+      !optional(candidate.cluster_count, count) ||
+      !optional(candidate.favorite, bool) ||
+      !optional(candidate.rename, bool) ||
+      !optional(candidate.ask_pending, bool) ||
+      !optional(candidate.dormant, bool) ||
+      !optional(candidate.updated_at, string) ||
+      !optional(candidate.more_subagents, count) ||
+      !optional(candidate.omitted_descendants, count)
+    )
+      return false;
+    pending.push(...candidate.children);
+  }
+  return true;
+}
+function tier(value: unknown): boolean {
+  return record(value) && sessions(value.sessions) && count(value.remaining);
+}
+function projectSummary(value: unknown): boolean {
+  if (!record(value)) return false;
+  return (
+    string(value.key) &&
+    string(value.name) &&
+    count(value.session_count) &&
+    optional(value.working_dir, string) &&
+    optional(value.rollup_state, string) &&
+    optional(value.rollup_live, count) &&
+    optional(value.rollup_attn, count) &&
+    optional(value.default_expanded, bool) &&
+    optional(value.more_current, count) &&
+    optional(value.more_recent, count) &&
+    optional(value.more_archived, count) &&
+    optional(value.worktrees, count) &&
+    optional(value.is_archived, bool) &&
+    optional(value.favorite, bool)
+  );
+}
+function isNavigationValue(k: ResourceKey, value: unknown, generationID: string, revision: number): boolean {
+  if (!record(value) || !metadata(value, generationID, revision)) return false;
+  switch (k.kind) {
+    case "manifest":
+      return isNavigationManifest(value);
+    case "section":
+    case "pin_section":
+      return sessions(value.sessions) && count(value.remaining) && bool(value.truncated);
+    case "pin_catalog":
+      return (
+        Array.isArray(value.pin_sections) &&
+        value.pin_sections.every((item) => record(item) && string(item.id) && string(item.name) && count(item.count)) &&
+        count(value.remaining)
+      );
+    case "catalog":
+      return Array.isArray(value.projects) && value.projects.every(projectSummary) && count(value.remaining);
+    case "project":
+      return (
+        value.key === k.projectKey &&
+        tier(value.current) &&
+        tier(value.recent) &&
+        tier(value.archived) &&
+        bool(value.truncated)
+      );
+    case "project_page":
+      return (
+        value.key === k.projectKey &&
+        value.tier === k.tier &&
+        value.offset === k.offset &&
+        sessions(value.sessions) &&
+        count(value.remaining) &&
+        bool(value.truncated)
+      );
+    case "location":
+      return (
+        value.ref === k.ref &&
+        string(value.top_level_ref) &&
+        bool(value.top_level) &&
+        optional(value.project_key, string) &&
+        optional(value.tier, string) &&
+        optional(value.pin_section_id, string) &&
+        optional(value.session, (candidate) => sessions([candidate]))
+      );
+  }
+}
 function isNavigationManifest(value: unknown): value is NavigationManifest {
   if (!value || typeof value !== "object") return false;
   const manifest = value as Partial<NavigationManifest>;
   const descriptor = (candidate: unknown) =>
-    !!candidate && typeof candidate === "object" && Number.isSafeInteger((candidate as { count?: unknown }).count);
+    !!candidate && typeof candidate === "object" && count((candidate as { count?: unknown }).count);
   return (
+    string(manifest.generation_id) &&
+    count(manifest.revision) &&
+    Array.isArray(manifest.sources) &&
+    manifest.sources.every(
+      (source) =>
+        record(source) && string(source.id) && string(source.label) && string(source.kind) && bool(source.online),
+    ) &&
+    record(manifest.attentionSummary) &&
+    count(manifest.attentionSummary.needsYou) &&
+    count(manifest.attentionSummary.error) &&
+    count(manifest.attentionSummary.working) &&
     !!manifest.sections &&
     descriptor(manifest.sections.live) &&
     descriptor(manifest.sections.needs_you) &&
@@ -185,13 +317,23 @@ function urlFor(k: ResourceKey): string {
 }
 function load<T>(k: ResourceKey): Promise<ResourceState<T>> {
   if (!revalidator) return Promise.reject(new Error("navigation is not initialized"));
+  const requestRevalidator = revalidator;
   const requestClient = activeClient;
   const requestEpoch = bootEpoch;
-  const requestGeneration = revalidator.generationID;
-  return revalidator.load<T>(key(k), requestFor<T>(k)).then((s) => {
-    if (requestClient !== activeClient || requestEpoch !== bootEpoch || requestGeneration !== revalidator?.generationID)
+  const requestGeneration = requestRevalidator.generationID;
+  return requestRevalidator.load<T>(key(k), requestFor<T>(k)).then((s) => {
+    if (
+      requestClient !== activeClient ||
+      requestEpoch !== bootEpoch ||
+      requestRevalidator !== revalidator ||
+      requestGeneration !== revalidator.generationID
+    )
       return s as ResourceState<T>;
     setResource(s);
+    if (s.error instanceof NavigationProtocolError) {
+      navigationStore.setState({ protocolError: s.error });
+      if (k.kind !== "manifest") requestRevalidator.force([{ kind: "manifest" }]);
+    }
     return s as ResourceState<T>;
   });
 }
@@ -206,8 +348,23 @@ async function withProjectRecovery(projectKey: string): Promise<ResourceState<Na
     return data?.projects.some((p) => p.key === projectKey) ?? false;
   });
   const candidates = known.length > 0 ? known : catalogs;
-  if (candidates.length === 0) await load<NavigationManifest>({ kind: "manifest" }).catch(() => undefined);
-  else {
+  if (candidates.length === 0) {
+    const manifestKey = { kind: "manifest" } as const;
+    revalidator?.force([manifestKey]);
+    const manifest = await load<NavigationManifest>(manifestKey).catch(() => null);
+    if (manifest?.data && !manifest.error && !manifest.stale && isNavigationManifest(manifest.data)) {
+      const manifestData = manifest.data;
+      const catalogJobs = (["projects", "archived_projects", "test_runs"] as const)
+        .filter((catalog) => manifestData.catalogs[catalog].count > 0)
+        .map((catalog) =>
+          navigationStore
+            .getState()
+            .loadCatalog(catalog)
+            .catch(() => undefined),
+        );
+      await Promise.all(catalogJobs);
+    }
+  } else {
     revalidator?.force(candidates.map((r) => r.key));
     await Promise.all(candidates.map((r) => load(r.key).catch(() => undefined)));
   }
@@ -256,16 +413,22 @@ async function boot(cap: NavigationCapability, epoch: number, client: AppwireCli
     navigationStore.setState({
       mode: "error",
       capability: cap,
+      attention: initialAttention,
       protocolError: new Error(`unsupported navigation capability version ${cap.version}`),
     });
     return;
   }
   if (revalidator && revalidator.generationID !== cap.generationId) revalidator.resetGeneration(cap.generationId);
+  const previous = navigationStore.getState();
   navigationStore.setState({
     capability: cap,
     mode: "v1",
     clientGenerationID: cap.generationId,
     lastSequence: cap.sequence,
+    attention:
+      previous.mode === "v1" && previous.clientGenerationID === cap.generationId
+        ? previous.attention
+        : initialAttention,
   });
   if (bootStartedEpoch === epoch) return;
   bootStartedEpoch = epoch;
@@ -319,13 +482,6 @@ async function hydrateProject(projectKey: string, epoch: number): Promise<void> 
     navigationStore.setState({ protocolError: new Error(`invalid navigation project ${projectKey}`) });
     return;
   }
-  const pages: Array<() => Promise<unknown>> = [];
-  for (const tier of ["current", "recent", "archived"] as const) {
-    const value = project[tier];
-    if (value.remaining > 0)
-      pages.push(() => navigationStore.getState().loadProjectPage(projectKey, tier, value.sessions.length, PAGE_LIMIT));
-  }
-  await runBounded(pages, epoch);
 }
 async function runBounded(jobs: Array<() => Promise<unknown>>, epoch: number): Promise<void> {
   let cursor = 0;
@@ -363,7 +519,13 @@ export function initNavigation(
     const cap: NavigationCapability | undefined =
       info && "navigation" in info ? info.navigation : info && "version" in info ? info : undefined;
     if (!cap) {
-      navigationStore.setState({ mode: "legacy", capability: null, clientGenerationID: "", lastSequence: 0 });
+      navigationStore.setState({
+        mode: "legacy",
+        capability: null,
+        clientGenerationID: "",
+        lastSequence: 0,
+        attention: initialAttention,
+      });
       return;
     }
     void boot(cap, epoch, ownedClient);
@@ -404,7 +566,7 @@ export function initNavigation(
           if (ownedClient !== activeClient || epoch !== bootEpoch) return;
           const cap = i.navigation;
           if (!cap) {
-            navigationStore.setState({ mode: "legacy", capability: null });
+            navigationStore.setState({ mode: "legacy", capability: null, attention: initialAttention });
             return;
           }
           const same = cap.version === 1 && revalidator?.generationID === cap.generationId;
@@ -415,7 +577,7 @@ export function initNavigation(
               clientGenerationID: cap.generationId,
               lastSequence: cap.sequence,
             });
-            revalidator?.force(revalidator.loadedKeys().filter((k) => k.kind !== "location"));
+            revalidator?.force(revalidator.loadedKeys());
           } else start(i);
         })
         .catch(() => {});

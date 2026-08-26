@@ -12,24 +12,73 @@ export const selectProjectPage =
     s.resources.get(keyID({ kind: "project_page", projectKey, tier, offset, limit }));
 export const selectLocation = (ref: string) => (s: ReturnType<typeof navigationStore.getState>) =>
   s.resources.get(keyID({ kind: "location", ref }));
-export function selectGlobalRows(state = navigationStore.getState()): NavigationSessionSummary[] {
-  const rows: NavigationSessionSummary[] = [];
-  for (const k of [
-    { kind: "section", section: "live", offset: 0, limit: 50 },
-    { kind: "section", section: "needs_you", offset: 0, limit: 50 },
-  ] as ResourceKey[]) {
-    const r = state.resources.get(keyID(k)) as ResourceState<{ sessions: NavigationSessionSummary[] }> | undefined;
-    if (r?.data) rows.push(...r.data.sessions);
+function loadedSectionRows(
+  state: ReturnType<typeof navigationStore.getState>,
+  predicate: (key: Extract<ResourceKey, { kind: "section" | "pin_section" }>) => boolean,
+): NavigationSessionSummary[] {
+  const pages: Array<{ offset: number; limit: number; sessions: NavigationSessionSummary[] }> = [];
+  for (const resource of state.resources.values()) {
+    if (
+      (resource.key.kind !== "section" && resource.key.kind !== "pin_section") ||
+      !predicate(resource.key) ||
+      resource.data === null
+    )
+      continue;
+    pages.push({
+      offset: resource.key.offset,
+      limit: resource.key.limit,
+      sessions: (resource as ResourceState<{ sessions: NavigationSessionSummary[] }>).data?.sessions ?? [],
+    });
   }
-  return rows;
+  return pages.sort((a, b) => a.offset - b.offset || a.limit - b.limit).flatMap((page) => page.sessions);
+}
+export function selectGlobalRows(state = navigationStore.getState()): NavigationSessionSummary[] {
+  return ["live", "needs_you"].flatMap((section) =>
+    loadedSectionRows(state, (key) => key.kind === "section" && key.section === section),
+  );
+}
+export interface LoadedPinSection {
+  id: string;
+  name: string;
+  sessions: NavigationSessionSummary[];
+}
+export function selectPinSections(state = navigationStore.getState()): LoadedPinSection[] {
+  const descriptors = [...state.resources.values()]
+    .filter((resource) => resource.key.kind === "pin_catalog" && resource.data !== null)
+    .sort((a, b) => {
+      const left = a.key.kind === "pin_catalog" ? a.key.offset : 0;
+      const right = b.key.kind === "pin_catalog" ? b.key.offset : 0;
+      return left - right;
+    })
+    .flatMap((resource) => {
+      const data = resource.data as { pin_sections?: Array<{ id: string; name: string }> } | null;
+      return data?.pin_sections ?? [];
+    });
+  const seen = new Set<string>();
+  return descriptors.flatMap((descriptor) => {
+    if (seen.has(descriptor.id)) return [];
+    seen.add(descriptor.id);
+    return [
+      {
+        id: descriptor.id,
+        name: descriptor.name,
+        sessions: loadedSectionRows(state, (key) => key.kind === "pin_section" && key.sectionId === descriptor.id),
+      },
+    ];
+  });
 }
 export function selectProjectSummaries(state = navigationStore.getState()): NavigationProjectSummary[] {
-  const out: NavigationProjectSummary[] = [];
-  for (const r of state.resources.values()) {
-    const d = r.data as { projects?: NavigationProjectSummary[] } | null;
-    if (r.key.kind === "catalog" && d?.projects) out.push(...d.projects);
-  }
-  return out;
+  const catalogOrder = { projects: 0, archived_projects: 1, test_runs: 2 } as const;
+  return [...state.resources.values()]
+    .filter((resource) => resource.key.kind === "catalog" && resource.data !== null)
+    .sort((a, b) => {
+      if (a.key.kind !== "catalog" || b.key.kind !== "catalog") return 0;
+      return catalogOrder[a.key.catalog] - catalogOrder[b.key.catalog] || a.key.offset - b.key.offset;
+    })
+    .flatMap((resource) => {
+      const data = resource.data as { projects?: NavigationProjectSummary[] } | null;
+      return data?.projects ?? [];
+    });
 }
 export const selectExpanded = (projectKey: string) => (s: ReturnType<typeof navigationStore.getState>) =>
   s.expanded.get(projectKey) ?? selectProjectSummaries(s).find((p) => p.key === projectKey)?.default_expanded ?? false;
@@ -42,9 +91,9 @@ export function findSessionNode(ref: string, state = navigationStore.getState())
     }
     return null;
   };
-  const rows = [...selectGlobalRows(state)];
+  const rows = [...selectGlobalRows(state), ...selectPinSections(state).flatMap((section) => section.sessions)];
   for (const resource of state.resources.values()) {
-    if (resource.key.kind === "pin_section" || resource.key.kind === "project_page") {
+    if (resource.key.kind === "project_page") {
       const data = resource.data as { sessions?: NavigationSessionSummary[] } | null;
       if (data?.sessions) rows.push(...data.sessions);
     }
