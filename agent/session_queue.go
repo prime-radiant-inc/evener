@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"sync/atomic"
 
@@ -104,8 +105,8 @@ func (s *Session) removeTurnOwnedSteering(owner *struct{ _ byte }) {
 		return
 	}
 	s.mu.Lock()
-	for i := len(s.steeringQueue) - 1; i >= 0; i-- {
-		if s.steeringQueue[i].turnOwner == owner {
+	for i, entry := range slices.Backward(s.steeringQueue) {
+		if entry.turnOwner == owner {
 			s.steeringQueue = append(s.steeringQueue[:i], s.steeringQueue[i+1:]...)
 			s.mu.Unlock()
 			s.persistQueuesSnapshot()

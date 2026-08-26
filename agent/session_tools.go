@@ -281,7 +281,7 @@ const (
 	visionSideChannelTimeout = 2 * time.Minute
 )
 
-var visionSideChannelTimeoutCause = errors.New("vision side-channel deadline")
+var errVisionSideChannelTimeout = errors.New("vision side-channel deadline")
 
 func (s *Session) visionSideChannelDuration() time.Duration {
 	if timeout := s.cfg.testOnly.visionSideChannelTimeout; timeout > 0 {
@@ -429,7 +429,7 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	s.mu.Unlock()
 
 	visionTimeout := s.visionSideChannelDuration()
-	visionCtx, cancel := context.WithTimeoutCause(ctx, visionTimeout, visionSideChannelTimeoutCause)
+	visionCtx, cancel := context.WithTimeoutCause(ctx, visionTimeout, errVisionSideChannelTimeout)
 	defer cancel()
 	req := llm.Request{
 		Model:    profile.Model(),
@@ -468,7 +468,7 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	if err != nil {
 		outcome := visionSideChannelProviderFailure
 		cause := context.Cause(visionCtx)
-		if errors.Is(cause, visionSideChannelTimeoutCause) {
+		if errors.Is(cause, errVisionSideChannelTimeout) {
 			outcome = visionSideChannelOwnedTimeout
 		} else if ctx.Err() != nil {
 			// Parent cancellation owns races with the side-channel deadline. This
