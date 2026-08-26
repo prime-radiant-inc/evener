@@ -85,9 +85,33 @@ func TestRESTDeleteNavigationConvergence(t *testing.T) {
 		}
 		assertDeleteNavigation(t, web, rec.Body.Bytes(), appwire.NavigationTargetProject, project.ID)
 
-		// A committed deletion is resumable and the next request is an ordinary no-op.
-		req = httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(`{"key":"`+project.ID+`","working_dir":"`+project.CanonicalPath+`"}`))
-		rec = httptest.NewRecorder()
+	})
+
+	t.Run("project empty no-op", func(t *testing.T) {
+		root := t.TempDir()
+		projectDir := filepath.Join(root, "empty-project")
+		if err := os.MkdirAll(projectDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		project, err := identifier.ResolveProject(projectDir)
+		if err != nil {
+			t.Fatal(err)
+		}
+		past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+		if _, err := past.Rebuild(); err != nil {
+			t.Fatal(err)
+		}
+		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
+		source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+		source.mu.Lock()
+		source.inputs.Tree.Projects[0].Key = project.ID
+		source.mu.Unlock()
+		web.navigation = newTestNavigationService(t, source)
+		if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+			t.Fatal(err)
+		}
+		req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(`{"key":"`+project.ID+`","working_dir":"`+project.CanonicalPath+`"}`))
+		rec := httptest.NewRecorder()
 		web.Handler().ServeHTTP(rec, req)
 		if rec.Code != http.StatusOK {
 			t.Fatalf("no-op status=%d body=%s", rec.Code, rec.Body.String())
@@ -193,13 +217,22 @@ func TestRESTDeleteNavigationConvergence(t *testing.T) {
 		if _, err := past.Rebuild(); err != nil {
 			t.Fatal(err)
 		}
+		// The resumed request only completes durable directory cleanup. The
+		// handler reports no newly deleted session, so it must be a navigation
+		// no-op even when the source has changed independently.
 		source.changeTitle("resume-second")
 		second := httptest.NewRecorder()
 		web.Handler().ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body)))
 		if second.Code != http.StatusOK {
 			t.Fatalf("resumed status=%d body=%s", second.Code, second.Body.String())
 		}
-		assertDeleteNavigation(t, web, second.Body.Bytes(), appwire.NavigationTargetProject, project.ID)
+		var resumed projectDeleteResponse
+		if err := json.Unmarshal(second.Body.Bytes(), &resumed); err != nil {
+			t.Fatal(err)
+		}
+		if len(resumed.Deleted) != 0 || len(resumed.Navigation.Targets) != 0 || len(web.navigation.DrainPublications()) != 0 {
+			t.Fatalf("resumed response/events=%+v", resumed)
+		}
 	})
 
 	t.Run("session changed repeated and no-op", func(t *testing.T) {
