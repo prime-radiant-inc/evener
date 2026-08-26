@@ -577,6 +577,15 @@ export function analyzeDifferentialCapture(candidate, capture) {
     scaleX: first && clip ? first.width / clip.width : null,
     scaleY: first && clip ? first.height / clip.height : null,
   };
+  const workState = capture.work ?? { limit: 25_000_000, operations: 0 };
+  workState.limit = Number(workState.limit ?? 25_000_000);
+  workState.operations = Number(workState.operations ?? 0);
+  const workStart = workState.operations;
+  const workSnapshot = () => ({
+    limit: workState.limit,
+    operations: workState.operations - workStart,
+    caseOperations: workState.operations,
+  });
   const unresolved = (reason) => ({
     unresolved: reason,
     mapping,
@@ -584,7 +593,31 @@ export function analyzeDifferentialCapture(candidate, capture) {
     mask: emptyMask,
     surfacePalette: { behind: [], inside: [], outside: [] },
     surfaceVerdicts: {},
+    work: workSnapshot(),
   });
+  const reserveWork = (stage, requested) => {
+    if (
+      !Number.isSafeInteger(requested) ||
+      requested < 0 ||
+      workState.operations + requested > workState.limit
+    ) {
+      const capabilityFailure = {
+        code: "contrast-analyzer-work-budget-exceeded",
+        candidateId: candidate.id,
+        kind: candidate.kind,
+        stage,
+        operations: workState.operations,
+        requested,
+        limit: workState.limit,
+      };
+      return {
+        ...unresolved("analyzer-work-budget-exceeded"),
+        capabilityFailure,
+      };
+    }
+    workState.operations += requested;
+    return null;
+  };
   if (!geometry || !clip || !first)
     return unresolved("missing-capture-geometry");
   if (
@@ -657,6 +690,11 @@ export function analyzeDifferentialCapture(candidate, capture) {
     right: -Infinity,
     bottom: -Infinity,
   };
+  const maskScanWork =
+    (imageBounds.right - imageBounds.left) *
+    (imageBounds.bottom - imageBounds.top);
+  const maskScanFailure = reserveWork("mask-scan", maskScanWork);
+  if (maskScanFailure) return maskScanFailure;
   for (let y = imageBounds.top; y < imageBounds.bottom; y += 1) {
     for (let x = imageBounds.left; x < imageBounds.right; x += 1) {
       const black = read(images.black, x, y);
@@ -702,6 +740,8 @@ export function analyzeDifferentialCapture(candidate, capture) {
     }
   }
   if (pixels.length === 0) return unresolved("missing-differential-mask");
+  const maskIndexFailure = reserveWork("mask-index", pixels.length * 4);
+  if (maskIndexFailure) return maskIndexFailure;
 
   const runs = [];
   const rows = new Map();
@@ -730,6 +770,7 @@ export function analyzeDifferentialCapture(candidate, capture) {
     runs,
   };
   const reliablePixels = pixels.filter(({ coverage }) => coverage >= 0.1);
+  mask.reliablePixelCount = reliablePixels.length;
   if (reliablePixels.length === 0)
     return {
       ...unresolved("ambiguous-low-coverage-mask"),
@@ -755,6 +796,119 @@ export function analyzeDifferentialCapture(candidate, capture) {
       y: pixel.point.y - scroll.y,
     },
   });
+  const nearestSourceMap = (region, source) => {
+    const width = region.right - region.left;
+    const height = region.bottom - region.top;
+    const area = width * height;
+    const verticalDistance = new Float64Array(area);
+    verticalDistance.fill(Infinity);
+    const verticalSource = new Int32Array(area);
+    verticalSource.fill(-1);
+    const nearest = new Int32Array(area);
+    nearest.fill(-1);
+    const distanceSquared = new Float64Array(area);
+    distanceSquared.fill(Infinity);
+    const maximum = Math.max(width, height);
+    const input = new Float64Array(maximum);
+    const output = new Float64Array(maximum);
+    const argument = new Int32Array(maximum);
+    const vertices = new Int32Array(maximum);
+    const boundaries = new Float64Array(maximum + 1);
+    const transform = (length) => {
+      let envelope = -1;
+      for (let position = 0; position < length; position += 1) {
+        if (!Number.isFinite(input[position])) continue;
+        let intersection = -Infinity;
+        while (envelope >= 0) {
+          const previous = vertices[envelope];
+          intersection =
+            (input[position] + position * position -
+              (input[previous] + previous * previous)) /
+            (2 * (position - previous));
+          if (intersection > boundaries[envelope]) break;
+          envelope -= 1;
+        }
+        envelope += 1;
+        vertices[envelope] = position;
+        boundaries[envelope] =
+          envelope === 0 ? -Infinity : intersection;
+        boundaries[envelope + 1] = Infinity;
+      }
+      if (envelope < 0) {
+        for (let position = 0; position < length; position += 1) {
+          output[position] = Infinity;
+          argument[position] = -1;
+        }
+        return;
+      }
+      let active = 0;
+      for (let position = 0; position < length; position += 1) {
+        while (
+          active < envelope &&
+          boundaries[active + 1] < position
+        )
+          active += 1;
+        const selected = vertices[active];
+        output[position] =
+          (position - selected) * (position - selected) + input[selected];
+        argument[position] = selected;
+      }
+    };
+
+    for (let x = 0; x < width; x += 1) {
+      for (let y = 0; y < height; y += 1) {
+        input[y] = source(region.left + x, region.top + y) ? 0 : Infinity;
+      }
+      transform(height);
+      for (let y = 0; y < height; y += 1) {
+        const index = y * width + x;
+        verticalDistance[index] = output[y];
+        verticalSource[index] = argument[y];
+      }
+    }
+    for (let y = 0; y < height; y += 1) {
+      for (let x = 0; x < width; x += 1)
+        input[x] = verticalDistance[y * width + x];
+      transform(width);
+      for (let x = 0; x < width; x += 1) {
+        const selectedX = argument[x];
+        if (selectedX < 0) continue;
+        const selectedY = verticalSource[y * width + selectedX];
+        if (selectedY < 0) continue;
+        const index = y * width + x;
+        nearest[index] =
+          (region.top + selectedY) * first.width + region.left + selectedX;
+        distanceSquared[index] = output[x];
+      }
+    }
+    return { region, width, nearest, distanceSquared };
+  };
+  const nearestAt = (map, pixel) => {
+    const localX = pixel.x - map.region.left;
+    const localY = pixel.y - map.region.top;
+    if (
+      localX < 0 ||
+      localY < 0 ||
+      localX >= map.width ||
+      localY >= map.region.bottom - map.region.top
+    )
+      return null;
+    const localIndex = localY * map.width + localX;
+    const sourceIndex = map.nearest[localIndex];
+    if (sourceIndex < 0) return null;
+    const x = sourceIndex % first.width;
+    const y = Math.floor(sourceIndex / first.width);
+    const point = documentPoint(x, y);
+    return {
+      color: read(images.hidden, x, y),
+      coordinate: {
+        image: { x, y },
+        document: point,
+        viewport: { x: point.x - scroll.x, y: point.y - scroll.y },
+      },
+      distanceSquared: map.distanceSquared[localIndex],
+    };
+  };
   const evidence = (foregroundPixel, backgroundEntry, value) => ({
     ratio: value,
     coordinate: coordinate(foregroundPixel),
@@ -764,23 +918,8 @@ export function analyzeDifferentialCapture(candidate, capture) {
     background: backgroundEntry.color,
     original: foregroundPixel.original,
     probes: foregroundPixel.probes,
+    adjacentDistanceSquared: backgroundEntry.distanceSquared ?? 0,
   });
-  const verdict = (foregrounds, backgrounds) => {
-    let minimum = null;
-    for (const foregroundPixel of foregrounds) {
-      for (const backgroundEntry of backgrounds) {
-        const value = contrastRatio(
-          foregroundPixel.foreground,
-          backgroundEntry.color,
-        );
-        if (minimum === null || value < minimum.ratio)
-          minimum = evidence(foregroundPixel, backgroundEntry, value);
-      }
-    }
-    return minimum
-      ? { ratio: minimum.ratio, sampleCount: backgrounds.length, minimumEvidence: minimum }
-      : null;
-  };
   const pairedVerdict = (foregrounds, backgrounds) => {
     let minimum = null;
     for (let index = 0; index < foregrounds.length; index += 1) {
@@ -804,81 +943,139 @@ export function analyzeDifferentialCapture(candidate, capture) {
   }));
   let inside = [];
   let outside = [];
+  let pairedForegrounds = pixels;
+  let adjacency;
   if (candidate.kind === "focus") {
-    const directions = [
-      [-1, 0],
-      [1, 0],
-      [0, -1],
-      [0, 1],
-    ];
-    const seen = { inside: new Set(), outside: new Set() };
-    for (const pixel of pixels) {
-      const distanceToCandidate = Math.max(
-        Math.abs(pixel.point.x - candidateDocument.left),
-        Math.abs(pixel.point.x - candidateDocument.right),
-        Math.abs(pixel.point.y - candidateDocument.top),
-        Math.abs(pixel.point.y - candidateDocument.bottom),
+    const candidateImageBounds = {
+      left: Math.max(
+        0,
+        Math.ceil((candidateDocument.left - clip.x) * scaleX - 0.5),
+      ),
+      top: Math.max(
+        0,
+        Math.ceil((candidateDocument.top - clip.y) * scaleY - 0.5),
+      ),
+      right: Math.min(
+        first.width,
+        Math.ceil((candidateDocument.right - clip.x) * scaleX - 0.5),
+      ),
+      bottom: Math.min(
+        first.height,
+        Math.ceil((candidateDocument.bottom - clip.y) * scaleY - 0.5),
+      ),
+    };
+    const region = {
+      left: Math.max(
+        0,
+        Math.min(maskBounds.left, candidateImageBounds.left) - 1,
+      ),
+      top: Math.max(
+        0,
+        Math.min(maskBounds.top, candidateImageBounds.top) - 1,
+      ),
+      right: Math.min(
+        first.width,
+        Math.max(maskBounds.right, candidateImageBounds.right) + 1,
+      ),
+      bottom: Math.min(
+        first.height,
+        Math.max(maskBounds.bottom, candidateImageBounds.bottom) + 1,
+      ),
+    };
+    const regionArea =
+      (region.right - region.left) * (region.bottom - region.top);
+    const mapFailure = reserveWork("focus-distance-maps", regionArea * 24);
+    if (mapFailure) return { ...mapFailure, mask };
+    const availableSurface = (x, y) => !maskKeys.has(`${x}:${y}`);
+    const insideMap = nearestSourceMap(
+      region,
+      (x, y) => availableSurface(x, y) && inCandidate(documentPoint(x, y)),
+    );
+    const outsideMap = nearestSourceMap(
+      region,
+      (x, y) => availableSurface(x, y) && !inCandidate(documentPoint(x, y)),
+    );
+    if (reliablePixels.length !== pixels.length) {
+      const foregroundMapFailure = reserveWork(
+        "focus-foreground-distance-map",
+        regionArea * 12,
       );
-      const limit = Math.ceil(
-        (distanceToCandidate +
-          Math.max(geometry.width, geometry.height) +
-          2) *
-          Math.max(scaleX, scaleY),
+      if (foregroundMapFailure) return { ...foregroundMapFailure, mask };
+      const reliableByIndex = new Map(
+        reliablePixels.map((pixel) => [
+          pixel.y * first.width + pixel.x,
+          pixel,
+        ]),
       );
-      for (const [dx, dy] of directions) {
-        const found = { inside: false, outside: false };
-        for (let step = 1; step <= limit; step += 1) {
-          const x = pixel.x + dx * step;
-          const y = pixel.y + dy * step;
-          if (x < 0 || y < 0 || x >= first.width || y >= first.height) break;
-          if (maskKeys.has(`${x}:${y}`)) continue;
-          const point = documentPoint(x, y);
-          const group = inCandidate(point) ? "inside" : "outside";
-          if (found[group]) continue;
-          found[group] = true;
-          const key = `${x}:${y}`;
-          if (!seen[group].has(key)) {
-            seen[group].add(key);
-            const entry = {
-              color: read(images.hidden, x, y),
-              coordinate: {
-                image: { x, y },
-                document: point,
-                viewport: { x: point.x - scroll.x, y: point.y - scroll.y },
-              },
-            };
-            if (group === "inside") inside.push(entry);
-            else outside.push(entry);
-          }
-          if (found.inside && found.outside) break;
-        }
-      }
+      const foregroundMap = nearestSourceMap(
+        region,
+        (x, y) => reliableByIndex.has(y * first.width + x),
+      );
+      pairedForegrounds = pixels.map((pixel) => {
+        if (pixel.coverage >= 0.1) return pixel;
+        const nearest = nearestAt(foregroundMap, pixel);
+        return reliableByIndex.get(
+          nearest.coordinate.image.y * first.width + nearest.coordinate.image.x,
+        );
+      });
     }
-    if (inside.length === 0)
-      return { ...unresolved("missing-focus-inside-surface"), mask };
-    if (outside.length === 0)
-      return { ...unresolved("missing-focus-outside-surface"), mask };
+    const pairingFailure = reserveWork(
+      "focus-surface-pairing",
+      pixels.length * 4,
+    );
+    if (pairingFailure) return { ...pairingFailure, mask };
+    for (const pixel of pixels) {
+      const insideEntry = nearestAt(insideMap, pixel);
+      if (!insideEntry)
+        return { ...unresolved("missing-focus-inside-surface"), mask };
+      const outsideEntry = nearestAt(outsideMap, pixel);
+      if (!outsideEntry)
+        return { ...unresolved("missing-focus-outside-surface"), mask };
+      inside.push(insideEntry);
+      outside.push(outsideEntry);
+    }
+    adjacency = {
+      method: "exact-euclidean-distance-map",
+      matchedPixelCount: pixels.length,
+      region,
+    };
+  } else if (reliablePixels.length !== pixels.length) {
+    const regionArea =
+      (imageBounds.right - imageBounds.left) *
+      (imageBounds.bottom - imageBounds.top);
+    const mapFailure = reserveWork(
+      "foreground-distance-map",
+      regionArea * 12,
+    );
+    if (mapFailure) return { ...mapFailure, mask };
+    const reliableByIndex = new Map(
+      reliablePixels.map((pixel) => [pixel.y * first.width + pixel.x, pixel]),
+    );
+    const foregroundMap = nearestSourceMap(
+      imageBounds,
+      (x, y) => reliableByIndex.has(y * first.width + x),
+    );
+    pairedForegrounds = pixels.map((pixel) => {
+      if (pixel.coverage >= 0.1) return pixel;
+      const nearest = nearestAt(foregroundMap, pixel);
+      return reliableByIndex.get(
+        nearest.coordinate.image.y * first.width + nearest.coordinate.image.x,
+      );
+    });
   }
+  const surfacePairingFailure = reserveWork(
+    "surface-verdicts",
+    pairedForegrounds.length * (candidate.kind === "focus" ? 4 : 2),
+  );
+  if (surfacePairingFailure) return { ...surfacePairingFailure, mask };
   const surfaceVerdicts =
     candidate.kind === "focus"
       ? {
-          inside: verdict(reliablePixels, inside),
-          outside: verdict(reliablePixels, outside),
+          inside: pairedVerdict(pairedForegrounds, inside),
+          outside: pairedVerdict(pairedForegrounds, outside),
         }
       : {
-          behind: pairedVerdict(
-            pixels.map((pixel) => {
-              if (pixel.coverage >= 0.1) return pixel;
-              return reliablePixels.reduce((nearest, value) => {
-                const distance =
-                  (value.x - pixel.x) ** 2 + (value.y - pixel.y) ** 2;
-                return nearest === null || distance < nearest.distance
-                  ? { pixel: value, distance }
-                  : nearest;
-              }, null).pixel;
-            }),
-            behind,
-          ),
+          behind: pairedVerdict(pairedForegrounds, behind),
         };
   const minimumEvidence = Object.values(surfaceVerdicts)
     .filter(Boolean)
@@ -899,6 +1096,8 @@ export function analyzeDifferentialCapture(candidate, capture) {
     },
     surfaceVerdicts,
     minimumEvidence,
+    adjacency,
+    work: workSnapshot(),
     ratio: minimumEvidence.ratio,
   };
 }
