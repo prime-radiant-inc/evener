@@ -404,6 +404,51 @@ func TestVisionFailureSteering_EmptyPathSanitizesProviderError(t *testing.T) {
 	}
 }
 
+func TestDescribeImage_ProviderWarningSanitizesAdapterError(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	const secret = "https://provider.invalid/body request-id=secret credential=secret"
+	adapter := &fakeErrAdapter{
+		name: "openai",
+		steps: []func(req llm.Request) (llm.Response, error){
+			func(llm.Request) (llm.Response, error) { return llm.Response{}, errors.New(secret) },
+		},
+	}
+	c := llm.NewClient()
+	c.Register(adapter)
+	sess, err := NewSession(c, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+
+	result := sess.describeImageCall(context.Background(), tool.ExecResult{ImageData: []byte("png"), ImageMediaType: "image/png"})
+	if result.outcome != visionSideChannelProviderFailure {
+		t.Fatalf("outcome = %v, want provider failure", result.outcome)
+	}
+	for {
+		select {
+		case ev := <-sess.Events():
+			if ev.Kind != events.EventWarning {
+				continue
+			}
+			warning, ok := ev.Data.(events.WarningData)
+			if !ok {
+				t.Fatalf("warning data = %T, want events.WarningData", ev.Data)
+			}
+			if warning.Message != "vision side-channel unavailable" {
+				t.Fatalf("warning = %q, want sanitized message", warning.Message)
+			}
+			if strings.Contains(warning.Message, secret) {
+				t.Fatalf("warning leaked adapter error: %q", warning.Message)
+			}
+			return
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for vision warning")
+		}
+	}
+}
+
 func TestDescribeImage_CancelsTheSideChannelOnTimeout(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
