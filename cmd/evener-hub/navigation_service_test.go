@@ -700,6 +700,23 @@ func TestNavigationServiceFailedRefreshPreservesNewerPendingEpoch(t *testing.T) 
 	if got := service.DrainPublications(); len(got) != 0 {
 		t.Fatalf("failed refresh published %+v", got)
 	}
+	source.mu.Lock()
+	source.err = nil
+	source.mu.Unlock()
+	source.changeTitle("retry")
+	retryDone := make(chan struct{})
+	go func() { service.refreshPending(ctx); close(retryDone) }()
+	waitNavigationSignal(t, retryDone, "retry refresh completion")
+	service.mu.Lock()
+	pending = service.pendingInvalidation
+	service.mu.Unlock()
+	if pending {
+		t.Fatal("successful retry left the pending epoch set")
+	}
+	publications := service.DrainPublications()
+	if len(publications) != 1 || !hasNavigationTarget(publications[0].Targets, appwire.NavigationTargetProject, "p1") {
+		t.Fatalf("retry publications = %+v, want one project publication", publications)
+	}
 	cancel()
 }
 
