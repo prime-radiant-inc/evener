@@ -1,10 +1,38 @@
 package appwire
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func TestLaunchConfigEnabledPluginsJSONPresence(t *testing.T) {
+	nilRaw, err := json.Marshal(LaunchConfigLayer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(nilRaw, []byte(`"enabledPlugins"`)) {
+		t.Fatalf("nil encoded: %s", nilRaw)
+	}
+
+	empty := []string{}
+	emptyRaw, err := json.Marshal(LaunchConfigLayer{EnabledPlugins: &empty})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(emptyRaw, []byte(`"enabledPlugins":[]`)) {
+		t.Fatalf("empty lost: %s", emptyRaw)
+	}
+
+	var roundTrip LaunchConfigLayer
+	if err := json.Unmarshal(emptyRaw, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if roundTrip.EnabledPlugins == nil || len(*roundTrip.EnabledPlugins) != 0 {
+		t.Fatalf("round trip = %#v", roundTrip.EnabledPlugins)
+	}
+}
 
 func TestThreadItemOutputImagesJSONRoundTrip(t *testing.T) {
 	item := ThreadItem{

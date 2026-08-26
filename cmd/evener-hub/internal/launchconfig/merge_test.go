@@ -6,6 +6,34 @@ import (
 	"testing"
 )
 
+func TestMergeEnabledPluginsReplacementAndPresence(t *testing.T) {
+	global := []string{"global"}
+	empty := []string{}
+	launch := []string{"alpha", "beta"}
+	got, _ := mergeLayers(map[LayerName]Layer{
+		LayerGlobal:  {EnabledPlugins: &global},
+		LayerProject: {EnabledPlugins: &empty},
+		LayerLaunch:  {EnabledPlugins: &launch},
+	})
+	if got.Effective.EnabledPlugins == nil || !reflect.DeepEqual(*got.Effective.EnabledPlugins, launch) {
+		t.Fatalf("effective = %#v, want %v", got.Effective.EnabledPlugins, launch)
+	}
+	if got.Provenance["enabled_plugins"] != LayerLaunch {
+		t.Fatalf("provenance = %q, want launch", got.Provenance["enabled_plugins"])
+	}
+	if _, ok := got.Layers[LayerProject]; !ok {
+		t.Fatal("explicit empty project layer should contribute")
+	}
+
+	got, _ = mergeLayers(map[LayerName]Layer{LayerGlobal: {EnabledPlugins: &global}, LayerLaunch: {EnabledPlugins: &empty}})
+	if got.Effective.EnabledPlugins == nil || len(*got.Effective.EnabledPlugins) != 0 {
+		t.Fatalf("explicit empty effective = %#v", got.Effective.EnabledPlugins)
+	}
+	if got.Provenance["enabled_plugins"] != LayerLaunch {
+		t.Fatalf("empty provenance = %q, want launch", got.Provenance["enabled_plugins"])
+	}
+}
+
 func checkMerge_ScalarPrecedence(t *testing.T) {
 	g := Layer{Model: "g-model", FastCheapModel: "g-fast", ReasoningEffort: "low", OpenAIResponsesContinuation: "off"}
 	r := Layer{Model: "r-model", FastCheapModel: "r-fast"}

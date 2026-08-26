@@ -256,6 +256,13 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 			prov["model_fallbacks"] = name
 			nonEmpty = true
 		}
+		// EnabledPlugins: higher-precedence layers REPLACE rather than append.
+		// A non-nil empty value intentionally clears plugin selection.
+		if l.EnabledPlugins != nil {
+			eff.EnabledPlugins = cloneStringSlicePtr(l.EnabledPlugins)
+			prov["enabled_plugins"] = name
+			nonEmpty = true
+		}
 		if len(l.MCPs) > 0 {
 			for _, m := range l.MCPs {
 				if prev, ok := mcpNames[m.Name]; ok {
@@ -321,4 +328,12 @@ func mergeLayers(layers map[LayerName]Layer) (Resolved, []Diagnostic) {
 		Provenance:  prov,
 		Diagnostics: diags,
 	}, diags
+}
+
+func cloneStringSlicePtr(in *[]string) *[]string {
+	if in == nil {
+		return nil
+	}
+	out := append([]string{}, (*in)...)
+	return &out
 }

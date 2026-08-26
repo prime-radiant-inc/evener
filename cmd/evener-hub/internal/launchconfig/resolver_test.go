@@ -21,6 +21,19 @@ func writeFile(t *testing.T, path, content string) {
 	}
 }
 
+func TestDecodeTrustedRepoLayerRejectsEnabledPlugins(t *testing.T) {
+	layer, diags := decodeTrustedRepoLayer("/repo", []byte("enabled_plugins = [\"alpha\"]\nmodel = \"m\""), func(data []byte, out any) error {
+		_, err := tomlDecode(data, out)
+		return err
+	})
+	if layer.EnabledPlugins != nil {
+		t.Fatalf("repo EnabledPlugins = %#v, want nil", layer.EnabledPlugins)
+	}
+	if len(diags) != 1 || diags[0].Layer != LayerRepo || diags[0].Field != "enabled_plugins" {
+		t.Fatalf("diagnostics = %#v, want enabled_plugins repository diagnostic", diags)
+	}
+}
+
 func checkResolve_LayersMerge(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()

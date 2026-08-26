@@ -2063,6 +2063,7 @@ type LaunchConfigLayer struct {
 	SystemPromptAppendText      string            `json:"systemPromptAppendText,omitempty"`
 	SystemPromptAppend          []string          `json:"systemPromptAppend,omitempty"`
 	ModelFallbacks              []string          `json:"modelFallbacks,omitempty"`
+	EnabledPlugins              *[]string         `json:"enabledPlugins,omitempty"`
 	MCPs                        []MCPServerSpec   `json:"mcps,omitempty"`
 	Env                         map[string]string `json:"env,omitempty"`
 	Verbose                     *bool             `json:"verbose,omitempty"`

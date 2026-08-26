@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/BurntSushi/toml"
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/identifier"
 )
@@ -141,7 +142,21 @@ func decodeTrustedRepoLayer(repoRoot string, data []byte, decode func([]byte, an
 	if err := decode(data, &layer); err != nil {
 		return Layer{}, []Diagnostic{{Layer: LayerRepo, Field: ".evener/launch.toml", Message: err.Error()}}
 	}
-	return validateAndExpandRepoLayer(repoRoot, layer)
+	metadata, err := toml.Decode(string(data), &Layer{})
+	if err != nil {
+		return Layer{}, []Diagnostic{{Layer: LayerRepo, Field: ".evener/launch.toml", Message: err.Error()}}
+	}
+	var diags []Diagnostic
+	for _, key := range metadata.Undecoded() {
+		if key.String() == "enabled_plugins" {
+			diags = append(diags, Diagnostic{Layer: LayerRepo, Field: "enabled_plugins", Message: "enabled_plugins is per-launch only"})
+			break
+		}
+	}
+	// The field is intentionally not persisted even if a custom decoder supplies it.
+	layer.EnabledPlugins = nil
+	validated, pathDiags := validateAndExpandRepoLayer(repoRoot, layer)
+	return validated, append(diags, pathDiags...)
 }
 
 // validateAndExpandRepoLayer rejects path entries that escape the repo
