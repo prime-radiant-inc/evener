@@ -110,8 +110,14 @@ export function TranscriptDetailEditor({
   }
 
   const readout =
-    selectedLevel === undefined ? "Custom" : LEVEL_OPTIONS.find((option) => option.value === selectedLevel)?.label;
+    selectedLevel === undefined
+      ? "Custom"
+      : selectedLevel === "full"
+        ? "Full detail"
+        : LEVEL_OPTIONS.find((option) => option.value === selectedLevel)?.label;
   const advancedCount = advancedEnabledCount(config);
+  const advancedSummary =
+    selectedLevel === undefined ? `Custom content · ${advancedCount} extras` : `${advancedCount} enabled`;
   const rootClassName = compact ? `${CLASS.root} ${CLASS.compact}` : CLASS.root;
 
   return (
@@ -137,8 +143,7 @@ export function TranscriptDetailEditor({
         disabled={disabled}
         onClick={() => setAdvancedOpen((open) => !open)}
       >
-        <span>Advanced</span>
-        <span> · {advancedCount} enabled</span>
+        <span>Advanced · {advancedSummary}</span>
         <span aria-hidden="true"> {advancedOpen ? "▴" : "▾"}</span>
       </button>
 
