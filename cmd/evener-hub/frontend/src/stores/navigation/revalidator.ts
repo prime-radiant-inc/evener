@@ -1,8 +1,8 @@
-import type { NavigationInvalidationTarget } from "../../protocol/types.gen";
+import type { NavigationInvalidationTarget, NavigationInvalidatedPayload } from "../../protocol/types.gen";
 import {
   isProjectResource,
   keyID,
-  resourceKey,
+  targetBase,
   type NavigationRequest,
   type NavigationResponse,
   type ResourceKey,
@@ -10,28 +10,30 @@ import {
   type ResourceState,
 } from "./types";
 
-type Entry = {
+interface Entry {
   state: ResourceState;
   request?: NavigationRequest;
   controller?: AbortController;
   promise?: Promise<ResourceState>;
   rerun: boolean;
-  token: number;
-};
-const error = (message: string) => new Error(`navigation protocol: ${message}`);
+  epoch: number;
+}
+const protocolError = (message: string) => new Error(`navigation protocol: ${message}`);
+const frozen = (state: ResourceState): ResourceState => Object.freeze({ ...state });
 
 export class NavigationRevalidator {
-  private generation: string;
+  private generationIDValue: string;
+  private epoch = 0;
+  private forceSequence = 0;
+  private lastSequence = 0;
+  private disposed = false;
   private readonly entries = new Map<string, Entry>();
   private readonly listeners = new Set<ResourceListener>();
-  private token = 0;
-  private disposed = false;
-
   constructor(generationID = "") {
-    this.generation = generationID;
+    this.generationIDValue = generationID;
   }
   get generationID(): string {
-    return this.generation;
+    return this.generationIDValue;
   }
   subscribe(listener: ResourceListener): () => void {
     if (this.disposed) return () => {};
@@ -54,18 +56,25 @@ export class NavigationRevalidator {
   states(): ReadonlyMap<string, ResourceState> {
     return new Map([...this.entries].map(([id, e]) => [id, e.state]));
   }
+  loadedKeys(): ResourceKey[] {
+    return [...this.entries.values()].map((entry) => entry.state.key);
+  }
+  acceptSequence(sequence: number): boolean {
+    const gap = sequence > this.lastSequence + 1;
+    this.lastSequence = Math.max(this.lastSequence, sequence);
+    return gap;
+  }
 
   invalidate(target: NavigationInvalidationTarget): void {
     if (this.disposed) return;
     if (target.kind === "all_loaded_projects") {
-      for (const e of this.entries.values()) if (isProjectResource(e.state.key)) this.raise(e, undefined);
+      for (const e of this.entries.values()) if (isProjectResource(e.state.key)) this.raise(e, undefined, false);
       return;
     }
-    const mapped = resourceKey(target);
-    if (!mapped) return;
-    for (const e of this.entries.values()) if (matches(e.state.key, mapped)) this.raise(e, target.revision);
+    const base = targetBase(target);
+    if (!base) return;
+    for (const e of this.entries.values()) if (matchesBase(e.state.key, base)) this.raise(e, target.revision, false);
   }
-
   force(keys: Iterable<ResourceKey>): void {
     if (this.disposed) return;
     for (const key of keys) {
@@ -73,90 +82,100 @@ export class NavigationRevalidator {
       if (e) this.raise(e, undefined, true);
     }
   }
-
   resetGeneration(generationID: string): void {
-    if (this.disposed || generationID === this.generation) return;
-    this.generation = generationID;
+    if (this.disposed || generationID === this.generationIDValue) return;
+    this.generationIDValue = generationID;
+    this.epoch++;
+    this.lastSequence = 0;
     for (const e of this.entries.values()) {
       e.controller?.abort();
-      e.rerun = Boolean(e.promise);
-      e.state = snapshot({
+      e.promise = undefined;
+      e.controller = undefined;
+      e.epoch = this.epoch;
+      e.rerun = false;
+      e.state = frozen({
         ...e.state,
         generationID,
         loadedRevision: null,
         targetRevision: null,
         etag: null,
         stale: true,
-        loading: Boolean(e.promise),
+        loading: false,
         error: null,
       });
       this.emit(e.state);
-      if (!e.promise && e.request) void this.start(e);
+      if (e.request) void this.start(e);
     }
   }
-
   load<T = unknown>(key: ResourceKey, request: NavigationRequest<T>): Promise<ResourceState<T>> {
-    if (this.disposed) return Promise.reject(error("revalidator disposed"));
-    let e = this.entries.get(keyID(key));
+    if (this.disposed) return Promise.reject(protocolError("revalidator disposed"));
+    const id = keyID(key);
+    let e = this.entries.get(id);
     if (!e) {
       e = {
-        state: snapshot({
+        state: frozen({
           key,
           data: null,
           loadedRevision: null,
           targetRevision: null,
+          forceToken: 0,
           etag: null,
           loading: false,
           stale: true,
           error: null,
-          generationID: this.generation,
+          generationID: this.generationIDValue,
         }),
         rerun: false,
-        token: 0,
+        epoch: this.epoch,
       };
-      this.entries.set(keyID(key), e);
+      this.entries.set(id, e);
     }
     e.request = request as NavigationRequest;
     if (e.promise) return e.promise as Promise<ResourceState<T>>;
     if (!e.state.stale && e.state.data !== null) return Promise.resolve(e.state as ResourceState<T>);
     return this.start(e) as Promise<ResourceState<T>>;
   }
-
-  private raise(e: Entry, revision?: number, forced = false): void {
-    const target = forced ? null : Math.max(e.state.targetRevision ?? -1, revision ?? -1);
-    if (!forced && target === e.state.targetRevision && e.state.stale) return;
-    e.token = forced ? ++this.token : e.token;
-    e.state = snapshot({ ...e.state, targetRevision: target, stale: true, error: null });
+  private raise(e: Entry, revision: number | undefined, forced: boolean): void {
+    const nextRevision = forced ? e.state.targetRevision : Math.max(e.state.targetRevision ?? -1, revision ?? -1);
+    if (!forced && nextRevision === e.state.targetRevision && e.state.stale) return;
+    const forceToken = forced ? ++this.forceSequence : e.state.forceToken;
+    e.state = frozen({ ...e.state, targetRevision: nextRevision, forceToken, stale: true, error: null });
     this.emit(e.state);
     if (e.promise) e.rerun = true;
     else if (e.request) void this.start(e);
   }
-
   private start(e: Entry): Promise<ResourceState> {
     if (!e.request || this.disposed) return Promise.resolve(e.state);
+    const epoch = this.epoch;
+    e.epoch = epoch;
+    const generation = this.generationIDValue;
+    const requestedRevision = e.state.targetRevision;
+    const requestedForce = e.state.forceToken;
     const controller = new AbortController();
     e.controller = controller;
-    const generation = this.generation;
-    const target = e.state.targetRevision;
-    const request = e.request;
-    e.state = snapshot({ ...e.state, loading: true, error: null });
+    e.state = frozen({ ...e.state, loading: true, error: null });
     this.emit(e.state);
-    const p = request(controller.signal, e.state.etag)
+    let run!: Promise<ResourceState>;
+    run = e
+      .request(controller.signal, e.state.etag)
       .then((response) => {
-        if (generation !== this.generation) return e.state;
+        if (epoch !== this.epoch || generation !== this.generationIDValue || e.epoch !== epoch) return e.state;
         try {
           validate(response, generation, e.state.etag);
         } catch (cause) {
           return this.fail(e, cause);
         }
-        if (response.revision < (e.state.loadedRevision ?? -1) || response.revision < (e.state.targetRevision ?? -1)) {
+        if (
+          response.revision < (e.state.loadedRevision ?? -1) ||
+          response.revision < (e.state.targetRevision ?? -1) ||
+          requestedForce !== e.state.forceToken
+        ) {
           e.rerun = true;
-          return this.fail(e, error("late or below-target response"));
+          return this.fail(e, protocolError("late, below-target, or superseded response"));
         }
-        const data = response.status === 304 ? e.state.data : response.data;
-        e.state = snapshot({
+        e.state = frozen({
           ...e.state,
-          data: data ?? null,
+          data: response.status === 304 ? e.state.data : (response.data ?? null),
           loadedRevision: response.revision,
           targetRevision: response.revision,
           etag: response.etag,
@@ -169,7 +188,7 @@ export class NavigationRevalidator {
       })
       .catch((cause) => (controller.signal.aborted ? e.state : this.fail(e, cause)))
       .then((state) => {
-        if (e.promise === p) {
+        if (e.promise === run && e.epoch === epoch) {
           e.promise = undefined;
           e.controller = undefined;
           if (e.rerun) {
@@ -179,11 +198,11 @@ export class NavigationRevalidator {
         }
         return state;
       });
-    e.promise = p;
-    return p;
+    e.promise = run;
+    return run;
   }
   private fail(e: Entry, cause: unknown): ResourceState {
-    e.state = snapshot({ ...e.state, loading: false, stale: true, error: cause });
+    e.state = frozen({ ...e.state, loading: false, stale: true, error: cause });
     this.emit(e.state);
     return e.state;
   }
@@ -191,26 +210,35 @@ export class NavigationRevalidator {
     if (!this.disposed) for (const listener of this.listeners) listener(state);
   }
 }
-
-function snapshot(state: ResourceState): ResourceState {
-  return Object.freeze({ ...state });
+function matchesBase(key: ResourceKey, base: Partial<ResourceKey>): boolean {
+  if (key.kind !== base.kind) {
+    if (!(base.kind === "project" && key.kind === "project_page")) return false;
+  }
+  if (base.kind === "section" && key.kind === "section") return key.section === base.section;
+  if (base.kind === "catalog" && key.kind === "catalog") return key.catalog === base.catalog;
+  if (base.kind === "pin_section" && key.kind === "pin_section") return key.sectionId === base.sectionId;
+  if (base.kind === "project" && (key.kind === "project" || key.kind === "project_page"))
+    return key.projectKey === base.projectKey;
+  return key.kind === base.kind;
 }
-function matches(a: ResourceKey, b: ResourceKey): boolean {
-  if (a.kind !== b.kind) return false;
-  if (a.kind === "project" && b.kind === "project") return a.projectKey === b.projectKey;
-  if (a.kind === "project_page" && b.kind === "project") return a.projectKey === b.projectKey;
-  return (
-    JSON.stringify(a) === JSON.stringify(b) ||
-    (a.kind === b.kind &&
-      (a.kind === "section" || a.kind === "catalog" || a.kind === "pin_catalog" || a.kind === "pin_section"))
-  );
+function validate(response: NavigationResponse, generation: string, cachedETag: string | null): void {
+  if (!response || (response.status !== 200 && response.status !== 304))
+    throw protocolError("status must be exact 200 or 304");
+  if (response.generationID !== generation) throw protocolError("generation mismatch");
+  if (!Number.isSafeInteger(response.revision) || response.revision < 0) throw protocolError("revision mismatch");
+  if (typeof response.etag !== "string" || response.etag.length === 0) throw protocolError("ETag mismatch");
+  if (response.status === 200 && response.data === undefined) throw protocolError("200 requires body");
+  if (response.status === 304 && (response.data !== undefined || cachedETag === null || response.etag !== cachedETag))
+    throw protocolError("304 cache/body contradiction");
 }
-function validate(response: NavigationResponse, generation: string, oldETag: string | null): void {
-  if (!response || (response.status !== 200 && response.status !== 304)) throw error("status must be 200 or 304");
-  if (response.generationID !== generation) throw error("generation mismatch");
-  if (!Number.isSafeInteger(response.revision) || response.revision < 0) throw error("revision mismatch");
-  if (!response.etag) throw error("missing ETag");
-  if (response.status === 304 && (response.data !== undefined || oldETag === null || response.etag !== oldETag))
-    throw error("contradictory 304");
-  if (response.status === 200 && response.data === undefined) throw error("200 requires body");
+export function applyNavigationInvalidation(
+  revalidator: NavigationRevalidator,
+  payload: NavigationInvalidatedPayload,
+): void {
+  if (payload.generationId !== revalidator.generationID) {
+    revalidator.resetGeneration(payload.generationId);
+    return;
+  }
+  if (revalidator.acceptSequence(payload.sequence)) revalidator.force(revalidator.loadedKeys());
+  for (const target of payload.targets) revalidator.invalidate(target);
 }

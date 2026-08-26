@@ -1,6 +1,6 @@
 import { expect, test, vi } from "vitest";
 import { navigationInvalidatedNotification } from "../../protocol/testing/notifications";
-import { NavigationRevalidator } from "./revalidator";
+import { applyNavigationInvalidation, NavigationRevalidator } from "./revalidator";
 import type { ResourceKey } from "./types";
 const key: ResourceKey = { kind: "project", projectKey: "p" };
 const d = <T>() => {
@@ -60,8 +60,40 @@ test("wildcard and force affect loaded project resources only", async () => {
 });
 
 test("notification fixture preserves generated wire payload", () => {
-  expect(navigationInvalidatedNotification([{ kind: "all_loaded_projects" }])).toEqual({
+  expect(
+    navigationInvalidatedNotification({
+      generationId: "generation_test",
+      sequence: 1,
+      targets: [{ kind: "all_loaded_projects" }],
+    }),
+  ).toEqual({
     method: "evener/navigation/invalidated",
     params: { generationId: "generation_test", sequence: 1, targets: [{ kind: "all_loaded_projects" }] },
   });
+});
+
+test("304 preserves data identity and a sequence gap forces loaded keys", async () => {
+  const r = new NavigationRevalidator("g");
+  const data = { value: 1 };
+  await r.load(key, async () => ({ status: 200, generationID: "g", revision: 1, etag: "a", data }));
+  r.invalidate({ kind: "project", projectKey: "p", revision: 2 });
+  await r.load(key, async () => ({ status: 304, generationID: "g", revision: 2, etag: "a" }));
+  expect(r.get(key)?.data).toBe(data);
+  const token = r.get(key)?.forceToken;
+  applyNavigationInvalidation(r, { generationId: "g", sequence: 4, targets: [] });
+  expect(r.get(key)?.forceToken).toBeGreaterThan(token ?? 0);
+});
+
+test("listener snapshots, unsubscribe, and dispose release callbacks", async () => {
+  const r = new NavigationRevalidator("g");
+  const seen: number[] = [];
+  const listener = (state: { forceToken: number }) => seen.push(state.forceToken);
+  const off = r.subscribe(listener);
+  await r.load(key, async () => ({ status: 200, generationID: "g", revision: 1, etag: "a", data: "x" }));
+  const before = seen.length;
+  off();
+  r.force([key]);
+  expect(seen.length).toBe(before);
+  r.dispose();
+  expect(r.states().size).toBe(0);
 });
