@@ -429,6 +429,9 @@ func (m hubModel) spawnFieldHint() string {
 }
 
 func (m hubModel) spawnPluginsSummary() string {
+	if m.spawnPluginPreviewLoading {
+		return "Inspecting plugins…"
+	}
 	if !m.spawnPluginPreviewLoaded {
 		if m.spawnPluginPreviewErr != nil {
 			return "Couldn't inspect plugins — press Enter to retry"

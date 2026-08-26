@@ -29,6 +29,10 @@ func (f *pluginSelectionFlag) Set(raw string) error {
 
 	parts := strings.Split(raw, ",")
 	names := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(f.names)+len(parts))
+	for _, name := range f.names {
+		seen[name] = struct{}{}
+	}
 	for _, part := range parts {
 		name := strings.TrimSpace(part)
 		if name == "" {
@@ -37,6 +41,10 @@ func (f *pluginSelectionFlag) Set(raw string) error {
 		if !isKebabCasePluginName(name) {
 			return fmt.Errorf("invalid plugin name %q: must be kebab-case", name)
 		}
+		if _, ok := seen[name]; ok {
+			return fmt.Errorf("duplicate enabled plugin name %q", name)
+		}
+		seen[name] = struct{}{}
 		names = append(names, name)
 	}
 	f.set = true

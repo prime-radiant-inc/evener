@@ -308,6 +308,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       pluginSelection.mode === "explicit" ? pluginSelection.names.includes(plugin.name) : plugin.selected,
     ).length ?? 0;
   const selectionErrors = previewResponse?.selectionErrors ?? [];
+  const explicitSelectionUnverified = pluginSelection.mode === "explicit" && pluginPreview.state.status !== "ready";
 
   // Mount: URL prefill + sticky defaults (synchronous), then the async catalogs
   // (harnesses, advanced schema) and the stale-model sweep.
@@ -671,6 +672,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // - a submit that CANNOT succeed must never fire regardless of path in.
     // The field's own inline note already says why, so no toast here.
     if (modelRequired) return;
+    if (explicitSelectionUnverified) return;
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing.");
       return;
@@ -846,7 +848,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                   aria-label="Start"
                   icon={busy ? undefined : <SendIcon />}
                   onClick={() => void handleSpawn()}
-                  disabled={busy || modelRequired || selectionErrors.length > 0}
+                  disabled={busy || modelRequired || selectionErrors.length > 0 || explicitSelectionUnverified}
                 >
                   {busy ? (
                     <Loader label="Starting" startedAt={busyStartedAt ?? now} now={now} />

@@ -7,6 +7,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../protocol/errors";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import type {
+  AnyNotification,
   LaunchOption,
   PluginPreviewResponse,
   Thread,
@@ -15,6 +16,8 @@ import type {
   ThreadStartResponse,
 } from "../../protocol/types.gen";
 import { ClientProvider } from "../../shell/clientContext";
+import { connectionStore } from "../../stores/connection";
+import { extensionsStore, resetExtensionsStoreForTests } from "../../stores/extensions";
 import { Toast } from "../../widgets";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
 import textareaStyles from "../../widgets/textarea/textarea.module.css";
@@ -186,6 +189,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetExtensionsStoreForTests();
   vi.unstubAllGlobals();
   window.history.pushState({}, "", "/");
   resetToastStoreForTests();
@@ -496,6 +501,7 @@ test("desktop plugin summary remains mounted with exact loading and error status
   const pendingClient = readyClient((f) => f.on("evener/plugin/preview", () => pending));
   renderSpawn(pendingClient);
   expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("Inspecting plugins…");
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
 
   cleanup();
   const errorClient = readyClient((f) => {
@@ -576,6 +582,54 @@ test("explicit plugin selection reaches Preview, resolve, and Thread Start", asy
       cwd: "/tmp/project",
     }),
   );
+});
+
+test("explicit selection stays blocked through notification refresh failure and retry", async () => {
+  const user = userEvent.setup();
+  let rejectRefresh!: (reason?: unknown) => void;
+  const refreshPending = new Promise<PluginPreviewResponse>((_, reject) => {
+    rejectRefresh = reject;
+  });
+  let explicitPreviewCalls = 0;
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", (params) => {
+      const names = params.launchOverrides?.enabledPlugins;
+      if (Array.isArray(names) && names.length === 1 && names[0] === "alpha") {
+        explicitPreviewCalls += 1;
+        if (explicitPreviewCalls === 2) return refreshPending;
+      }
+      return SPAWN_PLUGIN_PREVIEW;
+    });
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(screen.getByTestId("spawn-plugin-disclosure")).toBeTruthy());
+  const disclosure = screen.getByTestId("spawn-plugin-disclosure") as HTMLDetailsElement;
+  if (!disclosure.open) await user.click(screen.getByText("Plugins for this session"));
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await waitFor(() => expect(explicitPreviewCalls).toBe(1));
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+
+  // A plugin notification starts a fresh inspection while the explicit allow-list remains selected.
+  await act(async () => {
+    // The Spawn pane's preview refresh is exercised by changing its revision through
+    // the same notification path as the connected app shell.
+    fake.emitNotification({ method: "evener/plugin/updated", params: {} } as AnyNotification);
+  });
+  expect(extensionsStore.getState().pluginRevision).toBe(1);
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true));
+  await waitFor(() => expect(explicitPreviewCalls).toBe(2));
+
+  rejectRefresh(new Error("preview unavailable"));
+  await waitFor(() => expect(screen.getAllByText("Couldn't inspect plugins").length).toBeGreaterThan(0));
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+
+  await user.click(screen.getAllByRole("button", { name: "Retry" })[0]!);
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+  await waitFor(() => expect(explicitPreviewCalls).toBe(3));
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
 });
 
 test("explicit empty plugin selection reaches Thread Start as an empty list", async () => {

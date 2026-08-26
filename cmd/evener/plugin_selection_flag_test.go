@@ -45,13 +45,40 @@ func TestPluginSelectionFlagRejectsMalformedNames(t *testing.T) {
 	}
 }
 
-func TestPluginSelectionFlagKeepsDuplicateNamesForResolver(t *testing.T) {
+func TestPluginSelectionFlagRejectsDuplicateNamesWithinValue(t *testing.T) {
 	var f pluginSelectionFlag
-	if err := f.Set("alpha, alpha"); err != nil {
+	if err := f.Set("alpha, alpha"); err == nil {
+		t.Fatal("duplicate name was accepted")
+	}
+	if got := f.Value(); got != nil {
+		t.Fatalf("failed Set mutated omitted value: %#v", got)
+	}
+}
+
+func TestPluginSelectionFlagRejectsDuplicateNamesAcrossValuesWithoutMutation(t *testing.T) {
+	var f pluginSelectionFlag
+	if err := f.Set("alpha,beta"); err != nil {
 		t.Fatal(err)
 	}
-	if got := f.Value(); !reflect.DeepEqual(*got, []string{"alpha", "alpha"}) {
-		t.Fatalf("names = %#v", *got)
+	before := f.Value()
+	if err := f.Set("gamma,alpha"); err == nil {
+		t.Fatal("duplicate name across values was accepted")
+	}
+	if got := f.Value(); got == nil || !reflect.DeepEqual(*got, *before) {
+		t.Fatalf("failed Set mutated names: before=%#v after=%#v", before, got)
+	}
+}
+
+func TestPluginSelectionFlagKeepsExplicitEmptyOnFailedSet(t *testing.T) {
+	var f pluginSelectionFlag
+	if err := f.Set(""); err != nil {
+		t.Fatal(err)
+	}
+	if err := f.Set("alpha,alpha"); err == nil {
+		t.Fatal("duplicate name was accepted")
+	}
+	if got := f.Value(); got == nil || len(*got) != 0 {
+		t.Fatalf("failed Set lost explicit empty value: %#v", got)
 	}
 }
 

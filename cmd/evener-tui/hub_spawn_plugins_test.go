@@ -27,6 +27,30 @@ func TestSpawnPlugins_FollowsDirAndRefreshesOnTransition(t *testing.T) {
 	}
 }
 
+func TestSpawnPlugins_SummaryShowsInspectionDuringRefresh(t *testing.T) {
+	values := []string{"alpha"}
+	client, cleanup := newTestHubClient(t, nil)
+	defer cleanup()
+	m := newHubModel(client, "http://hub.test")
+	m.mode = hubModeSpawn
+	m.openSpawnForm()
+	m.spawnPluginPreview = appwire.PluginPreviewResponse{Plugins: []appwire.PluginLaunchCandidate{
+		{Name: "alpha", Selected: true},
+		{Name: "beta"},
+	}}
+	m.spawnPluginPreviewLoaded = true
+	m.spawnLaunchOverrides = &appwire.LaunchConfigLayer{EnabledPlugins: &values}
+	if got := m.spawnPluginsSummary(); got != "1/2 enabled" {
+		t.Fatalf("initial summary=%q, want count", got)
+	}
+	if cmd := m.requestSpawnPluginPreview(); cmd == nil {
+		t.Fatal("refresh did not return a command")
+	}
+	if got := m.spawnPluginsSummary(); got != "Inspecting plugins…" {
+		t.Fatalf("refresh summary=%q, want inspection state", got)
+	}
+}
+
 func TestSpawnPlugins_PreviewStaleKeyDroppedAndApplyMergesOverride(t *testing.T) {
 	m := newHubModel(nil, "http://hub.test")
 	m.mode = hubModeSpawn
