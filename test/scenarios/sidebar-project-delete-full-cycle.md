@@ -14,6 +14,8 @@ and the rest of `sidebar.js` died with the vanilla frontend (`660376f78`); the
 delete path is now `Rail.tsx`'s `confirmDelete` (`:399-432`) over
 `actions.ts`'s `deleteProject` (`:67-73`).
 
+**Navigation resource request counts are bounded** (`docs/superpowers/specs/2026-08-25-tree-transport-optimization-design.md`): a project delete triggers at most one request per affected loaded navigation representation (manifest, catalog page, project root); the idle rail issues zero navigation HTTP requests after hydration, and the mutation plus its AppWire notification do not duplicate a resource fetch.
+
 **Step 5 changed verdict: there is no redirect.** This card used to assert that
 deleting the project of the session you are looking at navigates the browser to
 `/new`. No such code path exists. `confirmDelete` deletes, refetches the tree,

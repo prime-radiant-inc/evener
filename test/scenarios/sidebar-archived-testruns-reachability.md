@@ -17,6 +17,8 @@ drive `sidebar.js`'s `pushArchivedSection`/`pushTestRunsSection`, poke
 All of that died with the vanilla frontend (`660376f78`); the rail is React
 (`cmd/evener-hub/frontend/src/shell/rail/`) and none of those handles exist.
 
+**Navigation resource request counts are bounded** (`docs/superpowers/specs/2026-08-25-tree-transport-optimization-design.md`): archive/unarchive/delete mutations trigger at most one request per affected loaded navigation representation (manifest, catalog page, project root); an idle rail issues zero navigation HTTP requests after hydration, and a mutation plus its AppWire notification do not duplicate a resource fetch.
+
 **Two section shapes, and only one of them is a disclosure** — this is the
 biggest change from the card's old text:
 

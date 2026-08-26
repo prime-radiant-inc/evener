@@ -25,6 +25,8 @@ row has no testid at all: reach it by the `role="treeitem"` element containing
 its name, or by its `+` button's accessible name `New session in <project name>`
 (`RailRow.tsx:602-609`, `IconButton` puts `label` on `aria-label`).
 
+**Navigation resource request counts are bounded** (`docs/superpowers/specs/2026-08-25-tree-transport-optimization-design.md`): after initial hydration the idle rail issues zero navigation HTTP requests; a single semantic change fetches at most one request per affected loaded representation (manifest, section page, catalog page, project root); a mutation and its matching AppWire notification do not duplicate a resource request. Reconnection revalidates with conditional ETags (304 on no change, 200 on change).
+
 **The `aria-expanded="undefined"` bug this card used to document is gone, and
 structurally cannot return.** The old sidebar computed
 `String(model.expanded.has(k) || p.default_expanded)` and rendered the literal

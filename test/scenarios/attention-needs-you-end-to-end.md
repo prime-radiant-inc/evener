@@ -33,6 +33,8 @@ used to say:
   `spawn-stale-model-cleared.md`'s and `spawn-empty-prompt-starts-dormant.md`'s job;
   this card spawns over REST so its own assertions stay about attention.
 
+**Navigation resource request counts are bounded** (`docs/superpowers/specs/2026-08-25-tree-transport-optimization-design.md`): an attention state change triggers at most one request per affected loaded navigation representation (manifest, Live/Needs You section page, project root); the idle rail issues zero navigation HTTP requests after hydration, and the attention change plus its AppWire notification do not duplicate a resource fetch.
+
 Part B (steps 5-7) and Part C are **fully browser-free**. Part A (steps 1-4) needs Chrome.
 
 ## Pre-state

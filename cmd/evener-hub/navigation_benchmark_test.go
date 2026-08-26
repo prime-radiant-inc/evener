@@ -2,10 +2,12 @@ package hub
 
 import (
 	"bytes"
+	"compress/gzip"
 	"context"
 	_ "embed"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -248,4 +250,118 @@ func countTreeProjectSessions(response hubapi.TreeResponse) int {
 		count += len(project.Sessions)
 	}
 	return count
+}
+
+// requestNavigationManifest issues a gzip-accepting GET /api/navigation through
+// the real HTTP handler and returns the raw (compressed) response bytes.
+func requestNavigationManifest(tb testing.TB, web *WebServer) []byte {
+	tb.Helper()
+	req := httptest.NewRequest(http.MethodGet, "/api/navigation", nil)
+	req.Header.Set("Accept-Encoding", "gzip")
+	recorder := httptest.NewRecorder()
+	web.Handler().ServeHTTP(recorder, req)
+	if recorder.Code != http.StatusOK {
+		tb.Fatalf("GET /api/navigation status=%d, want %d: %s", recorder.Code, http.StatusOK, recorder.Body.String())
+	}
+	return append([]byte(nil), recorder.Body.Bytes()...)
+}
+
+// gzipDecode decompresses a gzip-encoded body. It returns the input unchanged
+// when it is not gzip-encoded (e.g. an error response).
+func gzipDecode(body []byte) ([]byte, error) {
+	if len(body) == 0 || body[0] != 0x1f {
+		return body, nil
+	}
+	reader, err := gzip.NewReader(bytes.NewReader(body))
+	if err != nil {
+		return nil, err
+	}
+	decoded, err := io.ReadAll(reader)
+	if err != nil {
+		return nil, err
+	}
+	if err := reader.Close(); err != nil {
+		return nil, err
+	}
+	return decoded, nil
+}
+
+// BenchmarkNavigationMandatory measures the warm manifest request B/op after
+// the object, JSON, and gzip caches are populated. The spec (§895-930) requires
+// this to use no more than 20% of the legacy B/op baseline (25311669 → ≤5062334),
+// an allocation reduction of at least 80%.
+func BenchmarkNavigationMandatory(b *testing.B) {
+	web := newNavigationBenchmarkFixture(b)
+	// Warm the manifest cache.
+	_ = requestNavigationManifest(b, web)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		_ = requestNavigationManifest(b, web)
+	}
+}
+
+// BenchmarkNavigationExpanded measures the expanded hydration path: mandatory
+// resources plus the first four project root resources, all with gzip. It
+// proves the expanded variant stays within its 35%-of-legacy byte budget.
+func BenchmarkNavigationExpanded(b *testing.B) {
+	web := newNavigationBenchmarkFixture(b)
+	// Discover the first four project keys from the project catalog.
+	catalogReq := httptest.NewRequest(http.MethodGet, "/api/navigation/catalogs/projects", nil)
+	catalogReq.Header.Set("Accept-Encoding", "gzip")
+	catalogRec := httptest.NewRecorder()
+	web.Handler().ServeHTTP(catalogRec, catalogReq)
+	if catalogRec.Code != http.StatusOK {
+		b.Fatalf("project catalog status=%d: %s", catalogRec.Code, catalogRec.Body.String())
+	}
+	catalogBody, err := gzipDecode(catalogRec.Body.Bytes())
+	if err != nil {
+		b.Fatalf("decode project catalog gzip: %v", err)
+	}
+	var catalog hubapi.NavigationProjectCatalog
+	if err := json.Unmarshal(catalogBody, &catalog); err != nil {
+		b.Fatalf("decode project catalog: %v", err)
+	}
+	if len(catalog.Projects) < 4 {
+		b.Fatalf("project catalog has %d projects, need at least 4", len(catalog.Projects))
+	}
+	projectKeys := make([]string, 4)
+	for i := range 4 {
+		projectKeys[i] = catalog.Projects[i].Key
+	}
+
+	// Warm all expanded-hydration caches.
+	resources := []string{
+		"/api/navigation",
+		"/api/navigation/sections/live",
+		"/api/navigation/sections/needs-you",
+		"/api/navigation/pin-sections",
+		"/api/navigation/catalogs/projects",
+	}
+	for _, key := range projectKeys {
+		resources = append(resources, "/api/navigation/projects/"+key)
+	}
+	for _, target := range resources {
+		req := httptest.NewRequest(http.MethodGet, target, nil)
+		req.Header.Set("Accept-Encoding", "gzip")
+		rec := httptest.NewRecorder()
+		web.Handler().ServeHTTP(rec, req)
+		if rec.Code != http.StatusOK {
+			b.Fatalf("warm %s status=%d: %s", target, rec.Code, rec.Body.String())
+		}
+	}
+
+	b.ReportAllocs()
+	b.ResetTimer()
+	for range b.N {
+		for _, target := range resources {
+			req := httptest.NewRequest(http.MethodGet, target, nil)
+			req.Header.Set("Accept-Encoding", "gzip")
+			rec := httptest.NewRecorder()
+			web.Handler().ServeHTTP(rec, req)
+			if rec.Code != http.StatusOK {
+				b.Fatalf("%s status=%d: %s", target, rec.Code, rec.Body.String())
+			}
+		}
+	}
 }

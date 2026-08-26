@@ -24,6 +24,8 @@ trigger (`button[aria-haspopup="menu"]`, accessible text
 `widgets/dialog/OverlayPanel.tsx:92-94`). The `Rename` button is disabled while
 the trimmed value is empty (`Rail.tsx:639`).
 
+**Navigation resource request counts are bounded** (`docs/superpowers/specs/2026-08-25-tree-transport-optimization-design.md`): a rename mutation triggers at most one request per affected loaded navigation representation (manifest, section page, project root); the idle rail issues zero navigation HTTP requests after hydration, and the rename mutation plus its matching `evener/tree/changed` notification do not duplicate a resource fetch.
+
 ## Pre-state
 
 - A freshly built `evener hub` on an isolated `$HOME` and a kernel-assigned port

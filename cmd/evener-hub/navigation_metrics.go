@@ -14,6 +14,49 @@ type navigationMetricEvent struct {
 	DurationNanos     int64
 }
 
+// navigationMetricTotals aggregates a sequence of key-free metric events into
+// resource-class/status/byte/duration/counter totals. It never retains a
+// navigation identity, query, title, or filesystem path.
+type navigationMetricTotals struct {
+	Requests          int
+	NotModified       int
+	UncompressedBytes int
+	TransferredBytes  int
+	DurationNanos     int64
+	ByClass           map[string]navigationMetricClassTotals
+}
+
+// navigationMetricClassTotals is one resource-class slice of the aggregate.
+type navigationMetricClassTotals struct {
+	Requests          int
+	UncompressedBytes int
+	TransferredBytes  int
+	DurationNanos     int64
+}
+
+// aggregateNavigationMetrics folds a slice of key-free events into totals. It
+// is the live-diagnostics shape the transport budget tests assert against: no
+// title, prompt, ref, or path value is retained.
+func aggregateNavigationMetrics(events []navigationMetricEvent) navigationMetricTotals {
+	totals := navigationMetricTotals{ByClass: make(map[string]navigationMetricClassTotals)}
+	for _, event := range events {
+		totals.Requests++
+		if event.Status == 304 {
+			totals.NotModified++
+		}
+		totals.UncompressedBytes += event.UncompressedBytes
+		totals.TransferredBytes += event.TransferredBytes
+		totals.DurationNanos += event.DurationNanos
+		class := totals.ByClass[event.RouteClass]
+		class.Requests++
+		class.UncompressedBytes += event.UncompressedBytes
+		class.TransferredBytes += event.TransferredBytes
+		class.DurationNanos += event.DurationNanos
+		totals.ByClass[event.RouteClass] = class
+	}
+	return totals
+}
+
 // navigationMetricSink is injectable on WebServer for transport observation.
 // Implementations must not infer or attach resource identities to an event.
 type navigationMetricSink interface {

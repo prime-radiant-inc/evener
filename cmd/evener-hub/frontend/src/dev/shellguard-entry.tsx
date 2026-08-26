@@ -73,10 +73,78 @@ const TALL_TREE: TreeResponse = {
 
 // treeStore reads /api/tree over plain fetch (not the appwire socket), so the
 // stub lives on window.fetch. Installed at module evaluation, before the
-// AppShell render below can fire its first refresh.
+// AppShell render below can fire its first refresh. The navigation store reads
+// /api/navigation/* the same way; stubbing those routes lets the harness
+// exercise the v1 bounded-resource path rather than falling back to legacy
+// /api/tree mode (store.ts: enterLegacyMode when the client reports no
+// navigation capability).
+const NAVIGATION_MANIFEST = {
+  generation_id: "shellguard-generation",
+  revision: 1,
+  sources: [],
+  attentionSummary: { needsYou: 0, error: 0, working: 0 },
+  sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+  catalogs: { projects: { count: PROJECT_COUNT }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+};
+const EMPTY_SECTION = {
+  generation_id: "shellguard-generation",
+  revision: 1,
+  sessions: [],
+  remaining: 0,
+  truncated: false,
+};
+const EMPTY_PIN_CATALOG = {
+  generation_id: "shellguard-generation",
+  revision: 1,
+  pin_sections: [],
+  remaining: 0,
+};
+const EMPTY_PROJECT_CATALOG = {
+  generation_id: "shellguard-generation",
+  revision: 1,
+  projects: projects.map((p) => ({
+    key: p.key,
+    name: p.name,
+    working_dir: p.working_dir,
+    default_expanded: p.default_expanded,
+    session_count: SESSION_COUNT,
+  })),
+  remaining: 0,
+};
+
+function navigationResponse(url: string): Response | null {
+  if (url.startsWith("/api/navigation/catalogs/projects")) {
+    return new Response(JSON.stringify(EMPTY_PROJECT_CATALOG), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  if (url.startsWith("/api/navigation/sections/live") || url.startsWith("/api/navigation/sections/needs-you")) {
+    return new Response(JSON.stringify(EMPTY_SECTION), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  if (url.startsWith("/api/navigation/pin-sections")) {
+    return new Response(JSON.stringify(EMPTY_PIN_CATALOG), {
+      status: 200,
+      headers: { "content-type": "application/json" },
+    });
+  }
+  if (url === "/api/navigation" || url === "/api/navigation/") {
+    return new Response(JSON.stringify(NAVIGATION_MANIFEST), {
+      status: 200,
+      headers: { "content-type": "application/json", etag: '"shellguard-etag"' },
+    });
+  }
+  return null;
+}
+
 const realFetch = window.fetch.bind(window);
 window.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
   const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+  const nav = navigationResponse(url);
+  if (nav) return Promise.resolve(nav);
   if (url.startsWith("/api/tree")) {
     return Promise.resolve(
       new Response(JSON.stringify(TALL_TREE), { status: 200, headers: { "content-type": "application/json" } }),
