@@ -37,6 +37,20 @@ func captureNavigationREST(t *testing.T, web *WebServer, rr *httptest.ResponseRe
 	}
 }
 
+func captureArchiveNavigationREST(t *testing.T, web *WebServer, rr *httptest.ResponseRecorder) navigationRESTCapture {
+	t.Helper()
+	var response archiveMutationResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
+		t.Fatalf("decode response %q: %v", rr.Body.String(), err)
+	}
+	published := web.navigation.DrainPublications()
+	return navigationRESTCapture{
+		generation: response.Navigation.GenerationID,
+		targets:    append([]appwire.NavigationInvalidationTarget(nil), response.Navigation.Targets...),
+		published:  published,
+	}
+}
+
 func TestRESTNavigationTicketConvergesWithPublisherFIFO(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	web := NewWebServer(hubcore.WebConfig{
@@ -83,8 +97,10 @@ func TestRESTNavigationTicketConvergesWithPublisherFIFO(t *testing.T) {
 
 func TestRESTNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	dir := t.TempDir()
 	web := NewWebServer(hubcore.WebConfig{
-		Favorite: hubcore.NewFavoriteStore(t.TempDir() + "/favorites.db"),
+		Favorite: hubcore.NewFavoriteStore(dir + "/favorites.db"),
+		Archive:  hubcore.NewArchiveStore(dir + "/archive.db"),
 	})
 	web.navigation = newTestNavigationService(t, source)
 	if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
@@ -106,12 +122,16 @@ func TestRESTNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
 		t.Fatalf("no-op response/events: response=%+v events=%+v", first.Navigation, web.navigation.DrainPublications())
 	}
 
-	source.changeTitle("unknown-project-check")
-	rr = postJSON(t, web.Handler(), "/api/favorite", `{"kind":"project","id":"unknown","favorited":false}`)
+	// Session archive deliberately uses the handler's unscoped hint. The
+	// source still has a real p1 semantic change, so commitTargets may retain
+	// both the precise project and the wildcard target; requiring wildcard
+	// alone would incorrectly weaken the target assertion.
+	source.changeTitle("unknown-session-check")
+	rr = postJSON(t, web.Handler(), "/api/archive", `{"kind":"session","id":"unknown-session","archived":true}`)
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"ok":true`) {
 		t.Fatalf("unknown status/body=%d %s", rr.Code, rr.Body.String())
 	}
-	var response favoriteMutationResponse
+	var response archiveMutationResponse
 	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
 		t.Fatal(err)
 	}
@@ -119,7 +139,25 @@ func TestRESTNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
 	if len(published) != 1 || response.Navigation.GenerationID != published[0].GenerationID || !reflect.DeepEqual(response.Navigation.Targets, published[0].Targets) {
 		t.Fatalf("unknown convergence response=%+v publication=%+v", response.Navigation, published)
 	}
-	if len(published[0].Targets) != 1 || published[0].Targets[0].Kind != appwire.NavigationTargetAllLoadedProjects {
+	if !hasNavigationTarget(published[0].Targets, appwire.NavigationTargetAllLoadedProjects, "") || !hasNavigationTarget(published[0].Targets, appwire.NavigationTargetProject, "p1") {
 		t.Fatalf("unknown project targets=%+v", published[0].Targets)
+	}
+
+	// Repeating the same real handler request without another source change is
+	// an independent no-op flight: the successful response remains R39-empty
+	// and no second typed event is published.
+	rr = postJSON(t, web.Handler(), "/api/archive", `{"kind":"session","id":"unknown-session","archived":true}`)
+	if rr.Code != http.StatusOK {
+		t.Fatalf("repeat status=%d body=%s", rr.Code, rr.Body.String())
+	}
+	var repeat archiveMutationResponse
+	if err := json.Unmarshal(rr.Body.Bytes(), &repeat); err != nil {
+		t.Fatal(err)
+	}
+	if len(repeat.Navigation.Targets) != 0 {
+		t.Fatalf("repeat response targets=%+v, want empty", repeat.Navigation.Targets)
+	}
+	if events := web.navigation.DrainPublications(); len(events) != 0 {
+		t.Fatalf("repeat published events=%+v, want empty", events)
 	}
 }
