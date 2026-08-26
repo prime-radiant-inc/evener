@@ -76,6 +76,9 @@ func TestRESTNavigationTicketConvergesWithPublisherFIFO(t *testing.T) {
 	if len(publication.Targets) != 1 || publication.Targets[0].Kind != appwire.NavigationTargetProject || publication.Targets[0].ProjectKey != "p1" {
 		t.Fatalf("publication targets=%+v", publication.Targets)
 	}
+	if publication.Targets[0].Revision == 0 {
+		t.Fatalf("scoped favorite target has zero revision: %+v", publication.Targets[0])
+	}
 	if replay := web.navigation.DrainPublications(); len(replay) != 0 {
 		t.Fatalf("publisher replayed events: %+v", replay)
 	}
@@ -92,6 +95,7 @@ func TestRESTNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
 	if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
 		t.Fatal(err)
 	}
+	initialGeneration := web.navigation.Capability().GenerationID
 
 	// The first request changes the favorite store but not navigation. This is
 	// the R39 no-op contract: an independent refresh flight returns empty and
@@ -104,7 +108,7 @@ func TestRESTNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &first); err != nil {
 		t.Fatal(err)
 	}
-	if len(first.Navigation.Targets) != 0 || len(web.navigation.DrainPublications()) != 0 {
+	if first.Navigation.GenerationID != initialGeneration || len(first.Navigation.Targets) != 0 || len(web.navigation.DrainPublications()) != 0 {
 		t.Fatalf("no-op response/events: response=%+v events=%+v", first.Navigation, web.navigation.DrainPublications())
 	}
 
@@ -136,6 +140,18 @@ func TestRESTNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
 	if !hasWildcard || !hasNavigationTarget(published[0].Targets, appwire.NavigationTargetProject, "p1") {
 		t.Fatalf("unknown project targets=%+v", published[0].Targets)
 	}
+	for _, target := range published[0].Targets {
+		switch target.Kind {
+		case appwire.NavigationTargetProject:
+			if target.Revision == 0 {
+				t.Fatalf("scoped archive target has zero revision: %+v", target)
+			}
+		case appwire.NavigationTargetAllLoadedProjects:
+			if target.Revision != 0 {
+				t.Fatalf("wildcard archive target has revision %d", target.Revision)
+			}
+		}
+	}
 
 	// Repeating the same real handler request without another source change is
 	// an independent no-op flight: the successful response remains R39-empty
@@ -148,7 +164,7 @@ func TestRESTNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
 	if err := json.Unmarshal(rr.Body.Bytes(), &repeat); err != nil {
 		t.Fatal(err)
 	}
-	if len(repeat.Navigation.Targets) != 0 {
+	if repeat.Navigation.GenerationID != response.Navigation.GenerationID || len(repeat.Navigation.Targets) != 0 {
 		t.Fatalf("repeat response targets=%+v, want empty", repeat.Navigation.Targets)
 	}
 	if events := web.navigation.DrainPublications(); len(events) != 0 {
