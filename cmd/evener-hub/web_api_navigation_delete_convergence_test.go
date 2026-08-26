@@ -15,7 +15,6 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
-	"primeradiant.com/evener/rendezvous"
 )
 
 func assertDeleteNavigation(t *testing.T, web *WebServer, body []byte, kind appwire.NavigationTargetKind, projectKey string) {
@@ -104,10 +103,15 @@ func TestRESTDeleteNavigationConvergence(t *testing.T) {
 		if _, err := past.Rebuild(); err != nil {
 			t.Fatal(err)
 		}
-		roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
-			Entry: rendezvous.Entry{PID: 1, WorkingDir: project.CanonicalPath, StateDir: stateDir}, SessionID: webTestSessionID,
-		})
-		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster})
+		oldRemove := removeProjectSessionFile
+		removeProjectSessionFile = func(path string) error {
+			if strings.Contains(path, webTestSessionID) {
+				return errors.New("injected no-op cleanup failure")
+			}
+			return oldRemove(path)
+		}
+		t.Cleanup(func() { removeProjectSessionFile = oldRemove })
+		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
 		source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 		source.mu.Lock()
 		source.inputs.Tree.Projects[0].Key = project.ID
