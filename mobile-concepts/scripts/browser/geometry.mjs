@@ -171,6 +171,69 @@ export async function stabilizePagePaint(
     const style = element.ownerDocument?.defaultView?.getComputedStyle(element);
     const box = element.getBoundingClientRect();
     const opacity = Number(style?.opacity ?? 1);
+    const rectangle = {
+      left: box.left,
+      top: box.top,
+      right: box.right,
+      bottom: box.bottom,
+      width: box.width,
+      height: box.height,
+    };
+    const intersect = (left, right) => {
+      const result = {
+        left: Math.max(left.left, right.left),
+        top: Math.max(left.top, right.top),
+        right: Math.min(left.right, right.right),
+        bottom: Math.min(left.bottom, right.bottom),
+      };
+      result.width = Math.max(0, result.right - result.left);
+      result.height = Math.max(0, result.bottom - result.top);
+      return result;
+    };
+    const viewport = {
+      left: 0,
+      top: 0,
+      right: element.ownerDocument?.defaultView?.innerWidth ?? 0,
+      bottom: element.ownerDocument?.defaultView?.innerHeight ?? 0,
+    };
+    const viewportIntersection = intersect(rectangle, viewport);
+    let clipIntersection = { ...rectangle };
+    const clippingAncestors = [];
+    let ancestor = element.parentElement;
+    while (ancestor) {
+      const ancestorStyle =
+        ancestor.ownerDocument?.defaultView?.getComputedStyle(ancestor);
+      const clipsX = ancestorStyle?.overflowX !== "visible";
+      const clipsY = ancestorStyle?.overflowY !== "visible";
+      if (clipsX || clipsY) {
+        const ancestorBox = ancestor.getBoundingClientRect();
+        const bounds = {
+          left: clipsX ? ancestorBox.left : -Infinity,
+          right: clipsX ? ancestorBox.right : Infinity,
+          top: clipsY ? ancestorBox.top : -Infinity,
+          bottom: clipsY ? ancestorBox.bottom : Infinity,
+        };
+        clipIntersection = intersect(clipIntersection, bounds);
+        clippingAncestors.push({
+          element:
+            ancestor.id ||
+            ancestor.getAttribute?.("data-testid") ||
+            ancestor.tagName,
+          overflowX: ancestorStyle?.overflowX,
+          overflowY: ancestorStyle?.overflowY,
+          rect: {
+            left: ancestorBox.left,
+            top: ancestorBox.top,
+            right: ancestorBox.right,
+            bottom: ancestorBox.bottom,
+            width: ancestorBox.width,
+            height: ancestorBox.height,
+          },
+        });
+      }
+      ancestor = ancestor.parentElement;
+    }
+    const intersection = intersect(viewportIntersection, clipIntersection);
     return {
       element:
         element.id ||
@@ -181,17 +244,14 @@ export async function stabilizePagePaint(
         style?.display !== "none" &&
         style?.visibility !== "hidden" &&
         opacity > 0 &&
-        box.width > 0 &&
-        box.height > 0,
+        intersection.width > 0 &&
+        intersection.height > 0,
       opacity,
-      rect: {
-        left: box.left,
-        top: box.top,
-        right: box.right,
-        bottom: box.bottom,
-        width: box.width,
-        height: box.height,
-      },
+      rect: rectangle,
+      viewportIntersection,
+      clipIntersection,
+      intersection,
+      clippingAncestors,
     };
   },
 ) {
@@ -215,10 +275,30 @@ export async function stabilizePagePaint(
       target?.tagName ||
       "unknown";
     if (timing.endTime === Infinity || specified.iterations === Infinity) {
-      animation.pause();
-      const before = snapshotTarget(target);
-      const duration = Number(specified.duration);
-      const current = Number(animation.currentTime);
+      let stage = "pause";
+      let before;
+      let duration;
+      let current;
+      try {
+        animation.pause();
+        stage = "before-snapshot";
+        before = snapshotTarget(target);
+        duration = Number(specified.duration);
+        stage = "current-time-read";
+        current =
+          animation.currentTime === null || animation.currentTime === undefined
+            ? Number.NaN
+            : Number(animation.currentTime);
+      } catch (error) {
+        capabilityFailures.push({
+          code: "infinite-animation-evaluation-failed",
+          identity,
+          affectedElement,
+          stage,
+          error: error.message,
+        });
+        continue;
+      }
       const times = [
         ...(Number.isFinite(current) ? [current] : []),
         ...(Number.isFinite(duration) && duration > 0
@@ -235,30 +315,76 @@ export async function stabilizePagePaint(
         continue;
       }
       const phases = [];
+      let phaseFailure = false;
       for (const time of times) {
-        animation.currentTime = time;
-        await frame();
-        phases.push({ time, snapshot: snapshotTarget(target) });
+        try {
+          stage = "phase-assignment";
+          animation.currentTime = time;
+          stage = "phase-frame";
+          await frame();
+          stage = "phase-snapshot";
+          phases.push({ time, snapshot: snapshotTarget(target) });
+        } catch (error) {
+          capabilityFailures.push({
+            code: "infinite-animation-evaluation-failed",
+            identity,
+            affectedElement,
+            stage,
+            error: error.message,
+          });
+          phaseFailure = true;
+          break;
+        }
+      }
+      if (phaseFailure) continue;
+      const eligible = phases.filter(
+        ({ snapshot }) =>
+          snapshot?.visible &&
+          Number(snapshot.opacity) > 0 &&
+          Number(snapshot.intersection?.width) > 0 &&
+          Number(snapshot.intersection?.height) > 0,
+      );
+      if (eligible.length === 0) {
+        capabilityFailures.push({
+          code: "infinite-animation-no-visible-representative",
+          identity,
+          affectedElement,
+          before,
+          sampledPhases: times,
+        });
+        continue;
       }
       const score = ({ snapshot }) =>
-        (snapshot?.visible ? 1e12 : 0) +
-        Number(snapshot?.opacity ?? 0) * 1e9 +
-        Number(snapshot?.rect?.width ?? 0) *
-          Number(snapshot?.rect?.height ?? 0);
-      const chosen = phases.reduce(
+        Number(snapshot.opacity) * 1e9 +
+        Number(snapshot.intersection.width) *
+          Number(snapshot.intersection.height);
+      const chosen = eligible.reduce(
         (best, phase) =>
           best === null || score(phase) > score(best) ? phase : best,
         null,
       );
-      animation.currentTime = chosen.time;
-      await frame();
-      infiniteStabilized.push({
-        identity,
-        affectedElement,
-        before,
-        after: snapshotTarget(target),
-        chosenTime: chosen.time,
-      });
+      try {
+        stage = "final-assignment";
+        animation.currentTime = chosen.time;
+        stage = "final-frame";
+        await frame();
+        stage = "final-snapshot";
+        infiniteStabilized.push({
+          identity,
+          affectedElement,
+          before,
+          after: snapshotTarget(target),
+          chosenTime: chosen.time,
+        });
+      } catch (error) {
+        capabilityFailures.push({
+          code: "infinite-animation-evaluation-failed",
+          identity,
+          affectedElement,
+          stage,
+          error: error.message,
+        });
+      }
     } else if (
       animation.playState === "paused" ||
       Number(animation.playbackRate) === 0
@@ -307,6 +433,26 @@ export async function stabilizePagePaint(
     finiteForced,
     infiniteStabilized,
     capabilityFailures,
+  };
+}
+
+export function mergeStabilizationEvidence(stabilization) {
+  const failures = [
+    ...(stabilization.preCollection?.capabilityFailures ?? []),
+    ...(stabilization.focusSteps ?? []).flatMap(
+      (evidence) => evidence.capabilityFailures ?? [],
+    ),
+    ...(stabilization.postFocus?.capabilityFailures ?? []),
+  ];
+  const seen = new Set();
+  return {
+    stabilization,
+    capabilityFailures: failures.filter((failure) => {
+      const identity = JSON.stringify(failure);
+      if (seen.has(identity)) return false;
+      seen.add(identity);
+      return true;
+    }),
   };
 }
 
