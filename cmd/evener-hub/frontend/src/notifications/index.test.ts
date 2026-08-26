@@ -35,9 +35,7 @@ const navigationManifest = (generationId = "generation_test") =>
   );
 
 const flushMicrotasks = async (): Promise<void> => {
-  await Promise.resolve();
-  await Promise.resolve();
-  await Promise.resolve();
+  for (let i = 0; i < 12; i++) await Promise.resolve();
 };
 
 // localStorage shim (Node shadows jsdom's; see prefs.test.ts's identical note)
@@ -187,6 +185,7 @@ function armPrefs(loudScope: "asks" | "all" = "all"): void {
 // so that snapshot is the established baseline (electLeader ⇒ leader = true).
 async function boot(baseline: TreeResponse): Promise<void> {
   fetchMock.mockResolvedValueOnce(jsonResponse(baseline));
+  if (!connectionStore.getState().client) connectionStore.getState().connect(new FakeClient("ready"));
   initNotifications();
   await tick();
 }
@@ -255,9 +254,8 @@ describe("initNotifications lifecycle", () => {
   // module evaluation, so this baseline fetch is what makes the tree arrive on
   // every host. Kata bbsv mis-read its absence as the cause of mobile deep
   // links being discarded; it is present, and the shell relies on it.
-  test("fetches the tree itself, so the tree still arrives where no rail ever mounts", async () => {
-    initNotifications();
-    await tick();
+  test("fetches the tree after the handshake selects legacy mode", async () => {
+    await boot(treeOf([]));
 
     expect(fetchMock).toHaveBeenCalledWith("/api/tree", expect.anything());
     expect(treeStore.getState().tree).not.toBeNull();
@@ -288,13 +286,19 @@ describe("counts apply unconditionally", () => {
 
     client.emitNotification({
       method: "evener/attention/changed",
-      params: { changed: [{ threadId: "a", title: "A", level: "needs_you", askPending: true }], summary: { needsYou: 1, error: 0, working: 0 } },
+      params: {
+        changed: [{ threadId: "a", title: "A", project: "", level: "needs_you", askPending: true, prevLevel: "" }],
+        summary: { needsYou: 1, error: 0, working: 0 },
+      },
     });
     expect(document.title).toBe("(1) evener hub");
     expect(fires()).toEqual({ os: 0, sound: 0 }); // first notification establishes baseline
     client.emitNotification({
       method: "evener/attention/changed",
-      params: { changed: [{ threadId: "b", title: "B", level: "needs_you", askPending: true }], summary: { needsYou: 2, error: 0, working: 0 } },
+      params: {
+        changed: [{ threadId: "b", title: "B", project: "", level: "needs_you", askPending: true, prevLevel: "" }],
+        summary: { needsYou: 2, error: 0, working: 0 },
+      },
     });
 
     expect(document.title).toBe("(2) evener hub");
@@ -428,15 +432,17 @@ describe("reconnect re-baselines silently", () => {
   test("stale client connect and notifications cannot mutate the active generation", async () => {
     let releaseOld!: (value: ReturnType<typeof navigationCapability>) => void;
     const old = new FakeClient("ready");
-    old.scriptConnect(() => new Promise((resolve) => {
-      releaseOld = resolve;
-    }).then((cap) => ({
-      serverInfo: { name: "old", version: "1" },
-      protocolVersion: "evener-appwire-v3",
-      sourceId: "old",
-      features: {} as never,
-      navigation: cap,
-    })));
+    old.scriptConnect(() =>
+      new Promise<ReturnType<typeof navigationCapability>>((resolve) => {
+        releaseOld = resolve;
+      }).then((cap) => ({
+        serverInfo: { name: "old", version: "1" },
+        protocolVersion: "evener-appwire-v3",
+        sourceId: "old",
+        features: {} as never,
+        navigation: cap,
+      })),
+    );
     const active = new FakeClient("ready");
     initNavigation(old);
     initNavigation(active, navigationCapability("active"));
@@ -446,7 +452,10 @@ describe("reconnect re-baselines silently", () => {
     releaseOld(navigationCapability("stale"));
     old.emitNotification({
       method: "evener/attention/changed",
-      params: { changed: [{ threadId: "stale", title: "stale", level: "error", askPending: false }], summary: { needsYou: 0, error: 9, working: 0 } },
+      params: {
+        changed: [{ threadId: "stale", title: "stale", project: "", level: "error", askPending: false, prevLevel: "" }],
+        summary: { needsYou: 0, error: 9, working: 0 },
+      },
     });
     await flushMicrotasks();
     expect(navigationStore.getState().clientGenerationID).toBe("active");

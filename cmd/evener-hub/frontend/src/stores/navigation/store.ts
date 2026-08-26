@@ -116,7 +116,7 @@ function requestFor<T>(k: ResourceKey): NavigationRequest<T> {
   return async (signal, etag) => {
     const url = urlFor(k);
     const headers: HeadersInit = etag ? { "If-None-Match": etag } : {};
-    const response = await fetch(url, { credentials: "same-origin", headers, signal });
+    const response = await fetch(url, { method: "GET", credentials: "same-origin", headers, signal });
     if (response.status !== 200 && response.status !== 304)
       throw new NavigationHTTPError(response.status, "unexpected status");
     const contentType = response.headers.get("content-type") ?? "";
@@ -138,6 +138,29 @@ export class NavigationHTTPError extends Error {
     super(`navigation HTTP ${status}: ${message}`);
     this.status = status;
   }
+}
+function isNavigationManifest(value: unknown): value is NavigationManifest {
+  if (!value || typeof value !== "object") return false;
+  const manifest = value as Partial<NavigationManifest>;
+  const descriptor = (candidate: unknown) =>
+    !!candidate && typeof candidate === "object" && Number.isSafeInteger((candidate as { count?: unknown }).count);
+  return (
+    !!manifest.sections &&
+    descriptor(manifest.sections.live) &&
+    descriptor(manifest.sections.needs_you) &&
+    descriptor(manifest.sections.pin_sections) &&
+    !!manifest.catalogs &&
+    descriptor(manifest.catalogs.projects) &&
+    descriptor(manifest.catalogs.archived_projects) &&
+    descriptor(manifest.catalogs.test_runs)
+  );
+}
+function isNavigationProjectResource(value: unknown): value is NavigationProjectResource {
+  if (!value || typeof value !== "object") return false;
+  const project = value as Partial<NavigationProjectResource>;
+  return [project.current, project.recent, project.archived].every(
+    (tier) => !!tier && Array.isArray(tier.sessions) && Number.isSafeInteger(tier.remaining),
+  );
 }
 function urlFor(k: ResourceKey): string {
   const q = (offset: number, limit: number) => `?offset=${offset}&limit=${limit}`;
@@ -253,6 +276,10 @@ async function boot(cap: NavigationCapability, epoch: number, client: AppwireCli
   if (!manifest || epoch !== bootEpoch || client !== activeClient) return;
   const m = manifest.data;
   if (!m) return;
+  if (!isNavigationManifest(m)) {
+    navigationStore.setState({ protocolError: new Error("invalid navigation manifest") });
+    return;
+  }
   const jobs: Array<() => Promise<unknown>> = [];
   if (m.sections.live.count > 0) jobs.push(() => navigationStore.getState().loadSection("live"));
   if (m.sections.needs_you.count > 0) jobs.push(() => navigationStore.getState().loadSection("needs_you"));
@@ -288,6 +315,10 @@ async function hydrateProject(projectKey: string, epoch: number): Promise<void> 
     .catch(() => null);
   if (!resource?.data || resource.error || epoch !== bootEpoch) return;
   const project = resource.data;
+  if (!isNavigationProjectResource(project)) {
+    navigationStore.setState({ protocolError: new Error(`invalid navigation project ${projectKey}`) });
+    return;
+  }
   const pages: Array<() => Promise<unknown>> = [];
   for (const tier of ["current", "recent", "archived"] as const) {
     const value = project[tier];

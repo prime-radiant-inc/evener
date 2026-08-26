@@ -128,7 +128,6 @@ export function initNotifications(): void {
   queueMicrotask(() => {
     const client = connectionStore.getState().client;
     if (client) initNavigation(client);
-    else if (treeStore.getState().tree === null) void treeStore.getState().ensureLoaded();
   });
 
   subscriptions.push(
@@ -192,13 +191,6 @@ export function initNotifications(): void {
   const current = treeStore.getState().tree;
   if (current !== null) prevSnapshot = snapshotFromTree(current);
   applyCounts();
-
-  // Ensure attention data exists even where the rail never mounts to fetch it
-  // (e.g. the mobile drawer) — mirrors the legacy's own baseline fetch.
-  // ensureLoaded, not refresh: the duty is "a tree exists", and on a desktop
-  // boot the rail asks for the same thing at the same moment, so this shares
-  // that one request instead of issuing a second identical GET (kata p5w9).
-  if (!connectionStore.getState().client) void treeStore.getState().ensureLoaded();
 }
 
 // resetNotificationsForTests unwinds every store subscription and resets the

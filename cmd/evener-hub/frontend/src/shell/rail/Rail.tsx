@@ -21,6 +21,7 @@ import { type ChangeEvent, type CSSProperties, useCallback, useEffect, useId, us
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import { errorText } from "../../protocol/errors";
 import { useConnectionStore } from "../../stores/connection";
+import { useNavigationStore } from "../../stores/navigation/store";
 import { threadsStore } from "../../stores/threads";
 import {
   type TreeNode as ApiTreeNode,
@@ -238,6 +239,7 @@ export interface RailProps {
 }
 
 export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsumed }: RailProps = {}) {
+  const navigationMode = useNavigationStore((state) => state.mode);
   const fetchedTree = useTreeStore((s) => s.tree);
   const loading = useTreeStore((s) => s.loading);
   const error = useTreeStore((s) => s.error);
@@ -311,8 +313,8 @@ export function Rail({ onHide, width, onWidthChange, revealTarget, onRevealConsu
   // component, since TreeDrawer's sheet renders null while closed) from
   // re-fetching (kata p5w9).
   useEffect(() => {
-    void treeStore.getState().ensureLoaded();
-  }, []);
+    if (navigationMode === "legacy") void treeStore.getState().ensureLoaded();
+  }, [navigationMode]);
 
   useEffect(
     () => () => {
