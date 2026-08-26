@@ -11,7 +11,8 @@
     "test:geometry": "node --experimental-strip-types scripts/mobile-geometry.mjs",
     "test:ios": "node --test scripts/check-ios-config.test.mjs",
     "build": "tsc --noEmit --incremental false && vite build",
-    "boundary": "node scripts/check-boundary.mjs",
+    "boundary:live-concepts": "node scripts/check-live-concepts-boundary.mjs",
+    "boundary": "node scripts/check-boundary.mjs && node scripts/check-live-concepts-boundary.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
