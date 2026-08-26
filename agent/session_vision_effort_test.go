@@ -115,6 +115,49 @@ func TestDescribeImage_UsesLowEffortIndependentOfSession(t *testing.T) {
 	}
 }
 
+func TestDescribeImage_PreservesImageAndPDFRequestGoldens(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name, media string
+		kind        llm.ContentKind
+		data        []byte
+	}{
+		{name: "image", media: "image/png", kind: llm.ContentImage, data: []byte("image-bytes")},
+		{name: "pdf", media: "application/pdf", kind: llm.ContentDocument, data: []byte("pdf-bytes")},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			adapter := &fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+				func(req llm.Request) llm.Response {
+					return llm.Response{Message: llm.Assistant(visionOutputSentinel), Usage: llm.Usage{InputTokens: 2, OutputTokens: 3}}
+				},
+			}}
+			c := llm.NewClient()
+			c.Register(adapter)
+			sess, err := NewSession(c, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+			if err != nil {
+				t.Fatalf("NewSession: %v", err)
+			}
+			t.Cleanup(func() { sess.Close() })
+			got := sess.describeImageCall(context.Background(), tool.ExecResult{ImageData: tc.data, ImageMediaType: tc.media, ImagePurpose: "golden purpose"})
+			if got.description != visionOutputSentinel || len(adapter.Requests()) != 1 {
+				t.Fatalf("result/requests = %#v/%d, want one successful attempt", got, len(adapter.Requests()))
+			}
+			part := adapter.Requests()[0].Messages[0].Content[1]
+			if part.Kind != tc.kind {
+				t.Fatalf("content kind = %q, want %q", part.Kind, tc.kind)
+			}
+			if tc.kind == llm.ContentImage {
+				if part.Image == nil || !bytes.Equal(part.Image.Data, tc.data) || part.Image.MediaType != tc.media || part.Image.Detail != "original" || part.Document != nil {
+					t.Fatalf("image content = %#v, want exact inline image golden", part)
+				}
+			} else if part.Document == nil || !bytes.Equal(part.Document.Data, tc.data) || part.Document.MediaType != tc.media || part.Document.FileName != "document.pdf" || part.Image != nil {
+				t.Fatalf("document content = %#v, want exact inline PDF golden", part)
+			}
+		})
+	}
+}
+
 func TestPersistToolResults_VisionSteeringIncludesLatencyAndUsage(t *testing.T) {
 	t.Parallel()
 	dir := t.TempDir()
