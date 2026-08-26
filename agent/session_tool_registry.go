@@ -12,7 +12,6 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/artifactstore"
 	"primeradiant.com/evener/agent/internal/goal"
-	"primeradiant.com/evener/agent/internal/modelavailability"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
@@ -380,7 +379,7 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 		return err
 	}
 	if s.modelSnapshot != nil {
-		if _, inline := s.modelSnapshot.Inline(modelavailability.DefaultInlineMaxCount, modelavailability.DefaultInlineMaxBytes); !inline {
+		if _, inline := inlineModelSnapshot(*s.modelSnapshot); !inline {
 			if err := registerModelListTool(reg, s); err != nil {
 				return err
 			}

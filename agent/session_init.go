@@ -165,7 +165,7 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	if err := llm.ValidateReasoningEffort(cfg.ReasoningEffort); err != nil {
 		return nil, err
 	}
-	resolvedProfile, err := resolveLiveModelProfileValidated(client, profile)
+	resolvedProfile, selectedModels, err := resolveLiveModelProfileValidated(client, profile)
 	if err != nil {
 		return nil, err
 	}
@@ -278,11 +278,14 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	// snapshot is startup-bound and never refreshed silently; failed providers
 	// remain visible as unverified rather than being mistaken for empty lists.
 	if names := client.ProviderNames(); len(names) > 0 {
-		snapshot := modelavailability.Capture(context.Background(), names, func(ctx context.Context, name string) ([]llm.ModelInfo, error) {
+		snapshot := modelavailability.Capture(s.sessionCtx, names, func(ctx context.Context, name string) ([]llm.ModelInfo, error) {
+			if name == profile.ID() {
+				return append([]llm.ModelInfo(nil), selectedModels.models...), selectedModels.err
+			}
 			return client.ListModels(ctx, name)
 		}, 2*time.Second)
 		s.modelSnapshot = &snapshot
-		if text, ok := snapshot.Inline(modelavailability.DefaultInlineMaxCount, modelavailability.DefaultInlineMaxBytes); ok {
+		if text, ok := inlineModelSnapshot(snapshot); ok {
 			s.delegateModelDescription = text
 		} else if len(snapshot.Choices) > 0 {
 			s.delegateModelDescription = fmt.Sprintf("Startup model snapshot %s is incomplete or too large; use the model-list read tool to browse verified choices.", snapshot.Version)
@@ -475,6 +478,13 @@ func NewSession(client *llm.Client, profile *provider.Profile, env execenv.Execu
 	closeMCPManagerOnError = false
 	closeDelegateStoreOnError = false
 	return s, nil
+}
+
+func inlineModelSnapshot(snapshot modelavailability.Snapshot) (string, bool) {
+	return snapshot.Inline(
+		modelavailability.DefaultInlineMaxCount,
+		tool.DelegateModelDescriptionAdditionBudget(modelavailability.DefaultInlineMaxBytes),
+	)
 }
 
 // RestoreSessionConfig carries runtime-only settings needed when restoring a

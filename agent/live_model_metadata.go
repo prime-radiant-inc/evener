@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"time"
 
@@ -10,6 +11,11 @@ import (
 )
 
 const liveModelMetadataTimeout = 2 * time.Second
+
+type liveModelEnumeration struct {
+	models []llm.ModelInfo
+	err    error
+}
 
 func resolveLiveModelProfileWithTimeout(client *llm.Client, profile *provider.Profile) *provider.Profile {
 	ctx, cancel := context.WithTimeout(context.Background(), liveModelMetadataTimeout)
@@ -24,7 +30,7 @@ func resolveLiveModelProfileWithTimeout(client *llm.Client, profile *provider.Pr
 // enumerated list or the fetch's success flag; resolveLiveModelProfileValidated
 // is the membership-checking counterpart used by NewSession.
 func resolveLiveModelProfile(ctx context.Context, client *llm.Client, profile *provider.Profile) *provider.Profile {
-	filled, _, _ := fillLiveModelMetadata(ctx, client, profile)
+	filled, _ := fillLiveModelMetadata(ctx, client, profile)
 	return filled
 }
 
@@ -32,24 +38,25 @@ func resolveLiveModelProfile(ctx context.Context, client *llm.Client, profile *p
 // resolveLiveModelProfile, resolveLiveModelProfileValidated, and
 // resolveModelSwitchTarget: it fetches profile's provider instance's live
 // model list ONCE, fills live metadata onto profile when the requested model
-// is found, and returns the fetched list plus whether enumeration succeeded so
-// a caller can additionally run a membership check against the same list
-// without a second ListModels call (avoiding both the extra network latency
+// is found, and returns the fetched list or enumeration error so a caller can
+// additionally run a membership check against the same list or preserve the
+// failure in a startup snapshot without a second ListModels call (avoiding
+// both the extra network latency
 // and a TOCTOU window where the provider's list could change between two
-// calls). Fails open on a nil client/profile or any ListModels error: ok is
-// false, profile is returned unchanged, and models is nil.
-func fillLiveModelMetadata(ctx context.Context, client *llm.Client, profile *provider.Profile) (*provider.Profile, []llm.ModelInfo, bool) {
+// calls). The profile is returned unchanged on nil inputs or any ListModels
+// error; callers choose their own fail-open policy.
+func fillLiveModelMetadata(ctx context.Context, client *llm.Client, profile *provider.Profile) (*provider.Profile, liveModelEnumeration) {
 	if client == nil || profile == nil {
-		return profile, nil, false
+		return profile, liveModelEnumeration{err: errors.New("live model metadata inputs are nil")}
 	}
 	models, err := client.ListModels(ctx, profile.ID())
 	if err != nil {
-		return profile, nil, false
+		return profile, liveModelEnumeration{err: err}
 	}
 	if info, ok := liveModelInfoFor(models, profile.Model()); ok {
 		profile = profile.WithLiveModelInfo(info)
 	}
-	return profile, models, true
+	return profile, liveModelEnumeration{models: models}
 }
 
 // resolveLiveModelProfileValidated is NewSession's live-model seam: it fills
@@ -60,17 +67,17 @@ func fillLiveModelMetadata(ctx context.Context, client *llm.Client, profile *pro
 // list definitively doesn't carry. Fails open (nil error, profile unchanged
 // modulo any metadata fill) on any enumeration failure, matching NewSession's
 // prior unvalidated behavior in that case.
-func resolveLiveModelProfileValidated(client *llm.Client, profile *provider.Profile) (*provider.Profile, error) {
+func resolveLiveModelProfileValidated(client *llm.Client, profile *provider.Profile) (*provider.Profile, liveModelEnumeration, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), liveModelMetadataTimeout)
 	defer cancel()
-	filled, models, ok := fillLiveModelMetadata(ctx, client, profile)
-	if !ok {
-		return filled, nil
+	filled, enumeration := fillLiveModelMetadata(ctx, client, profile)
+	if enumeration.err != nil {
+		return filled, enumeration, nil
 	}
-	if err := validateModelSwitchMembership(client, filled, models); err != nil {
-		return filled, err
+	if err := validateModelSwitchMembership(client, filled, enumeration.models); err != nil {
+		return filled, enumeration, err
 	}
-	return filled, nil
+	return filled, enumeration, nil
 }
 
 func liveModelInfoFor(models []llm.ModelInfo, model string) (llm.ModelInfo, bool) {

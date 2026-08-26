@@ -82,6 +82,18 @@ func TestPageReturnsBoundedEnvelopeAndProgressesOversizedOrEmptySnapshots(t *tes
 	}
 }
 
+func TestPageRejectsTerminalEnvelopeOverByteBound(t *testing.T) {
+	s := testSnapshot("v1", false)
+	s.Status = map[string]ProviderStatus{
+		"provider": {Kind: StatusFailure, Detail: strings.Repeat("x", 256)},
+	}
+
+	page, err := s.Page("", 1, 128)
+	if err == nil {
+		t.Fatalf("Page returned oversized terminal envelope (%d bytes): %#v", page.SerializedBytes(), page)
+	}
+}
+
 func TestCursorRejectsUnknownFieldsAndIsIdempotent(t *testing.T) {
 	s := testSnapshot("v1", true, "p/a", "p/b")
 	p, err := s.Page("", 1, 1024)

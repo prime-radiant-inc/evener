@@ -206,6 +206,9 @@ func (s *Snapshot) Page(token string, maxCount, maxBytes int) (Page, error) {
 	p := Page{Version: s.Version, Complete: s.Complete, Status: status, Provenance: "startup-frozen"}
 	if off >= len(s.Choices) {
 		p.Terminal = true
+		if p.SerializedBytes() > maxBytes {
+			return Page{}, errors.New("page envelope budget too small")
+		}
 		return p, nil
 	}
 	for off < len(s.Choices) && len(p.Choices)+len(p.Oversized) < maxCount {
