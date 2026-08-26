@@ -327,8 +327,8 @@ async function removeGlobalProbe(client) {
   await paintFrames(client);
 }
 
-async function decodeAndAnalyze(client, candidates, captures) {
-  return evaluate(
+async function decodeAndAnalyze(client, candidates, captures, work) {
+  const result = await evaluate(
     client,
     `(async()=>{
       const decode=source=>new Promise((resolve,reject)=>{const image=new Image();image.onload=()=>{const canvas=document.createElement('canvas');canvas.width=image.naturalWidth;canvas.height=image.naturalHeight;const context=canvas.getContext('2d',{willReadFrequently:true});context.drawImage(image,0,0);resolve({width:canvas.width,height:canvas.height,data:context.getImageData(0,0,canvas.width,canvas.height).data})};image.onerror=()=>reject(new Error('contrast screenshot decode failed'));image.src='data:image/png;base64,'+source});
@@ -337,12 +337,16 @@ async function decodeAndAnalyze(client, candidates, captures) {
       const metadata=${JSON.stringify(captures.original.metadata)};
       metadata.timing={sequence:['stabilized','geometry','original','hidden','black-probe','white-probe'],eventDriven:true,captures:{original:${JSON.stringify(captures.original.metadata.capturedAt)},hidden:${JSON.stringify(captures.hidden.metadata.capturedAt)},blackProbe:${JSON.stringify(captures.black.metadata.capturedAt)},whiteProbe:${JSON.stringify(captures.white.metadata.capturedAt)}}};
       const analyze=${analyzeDifferentialCapture.toString()};
-      return ${JSON.stringify(candidates)}.map(candidate=>analyze(candidate,{...metadata,images:decoded}));
+      const work=${JSON.stringify(work)};
+      const evidence=${JSON.stringify(candidates)}.map(candidate=>analyze(candidate,{...metadata,images:decoded,work}));
+      return {evidence,work};
     })()`,
   );
+  work.operations = result.work.operations;
+  return result.evidence;
 }
 
-async function captureGlobalCandidates(client, candidates) {
+async function captureGlobalCandidates(client, candidates, work) {
   const results = new Map();
   for (const kind of ["text", "nontext"]) {
     const selected = candidates.filter((candidate) => candidate.kind === kind);
@@ -375,7 +379,7 @@ async function captureGlobalCandidates(client, candidates) {
       } finally {
         await removeGlobalProbe(client);
       }
-      const evidence = await decodeAndAnalyze(client, batch, captures);
+      const evidence = await decodeAndAnalyze(client, batch, captures, work);
       batch.forEach((candidate, index) =>
         results.set(candidate.index, evidence[index]),
       );
@@ -408,7 +412,7 @@ function focusProbeSource(candidate, state) {
   })()`;
 }
 
-async function captureFocusCandidates(client, candidates) {
+async function captureFocusCandidates(client, candidates, work) {
   const results = new Map();
   for (const candidate of candidates.filter(({ kind }) => kind === "focus")) {
     const geometry = await evaluate(
@@ -434,7 +438,7 @@ async function captureFocusCandidates(client, candidates) {
       await evaluate(client, focusProbeSource(candidate, "restore"));
       await paintFrames(client);
     }
-    const [evidence] = await decodeAndAnalyze(client, [current], captures);
+    const [evidence] = await decodeAndAnalyze(client, [current], captures, work);
     results.set(candidate.index, evidence);
   }
   await evaluate(
@@ -445,8 +449,9 @@ async function captureFocusCandidates(client, candidates) {
 }
 
 async function captureRenderedCandidates(client, candidates) {
-  const global = await captureGlobalCandidates(client, candidates);
-  const focus = await captureFocusCandidates(client, candidates);
+  const work = { limit: 250_000_000, operations: 0 };
+  const global = await captureGlobalCandidates(client, candidates, work);
+  const focus = await captureFocusCandidates(client, candidates, work);
   return candidates.map((candidate) => global.get(candidate.index) ?? focus.get(candidate.index));
 }
 
@@ -464,6 +469,12 @@ export async function sampleRenderedContrast(client, pairs, options = {}) {
   return pairs.map((pair, index) =>
     byIndex.has(index) ? applyRenderedSamples(pair, byIndex.get(index)) : pair,
   );
+}
+
+export function renderedContrastCapabilityFailures(pairs) {
+  return pairs
+    .map((pair) => pair.raw?.renderedSamples?.capabilityFailure)
+    .filter(Boolean);
 }
 
 async function runCase({
@@ -562,6 +573,9 @@ async function runCase({
     measurements.contrastPairs = await sampleRenderedContrast(
       client,
       measurements.contrastPairs,
+    );
+    capabilityFailures.push(
+      ...renderedContrastCapabilityFailures(measurements.contrastPairs),
     );
     const violations = assertGeometry(measurements, { route, safeArea });
     const finalAudit = await evaluate(
