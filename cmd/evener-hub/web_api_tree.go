@@ -136,7 +136,7 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 				AttentionSummary hubapi.AttentionSummary `json:"attentionSummary"`
 			}{hubNavigationNow(), inputs.AttentionSummary}, nil
 		}
-		resp, err := s.buildLegacyTreeResponse(inputs)
+		resp, err := s.legacyTreeResponse(inputs)
 		if err != nil {
 			return nil, err
 		}
@@ -149,6 +149,13 @@ func (s *WebServer) handleAPITree(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(representation.JSON)
+}
+
+func (s *WebServer) legacyTreeResponse(inputs navigationBuildInputs) (any, error) {
+	if s.legacyTreeBuild == nil {
+		return s.buildLegacyTreeResponse(inputs)
+	}
+	return s.legacyTreeBuild(inputs)
 }
 
 func (s *WebServer) buildLegacyTreeResponse(inputs navigationBuildInputs) (hubapi.TreeResponse, error) {

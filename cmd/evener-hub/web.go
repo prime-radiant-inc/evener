@@ -27,8 +27,11 @@ type WebServer struct {
 	appRPC            *appserver.Server
 	navigation        *NavigationService
 	navigationMetrics navigationMetricSink
-	sources           *appsource.Registry
-	startedAt         time.Time
+	// legacyTreeBuild is nil in production; tests may provide a narrow builder
+	// seam to assert that the HTTP compatibility projector is cached/coalesced.
+	legacyTreeBuild func(navigationBuildInputs) (any, error)
+	sources         *appsource.Registry
+	startedAt       time.Time
 
 	// lastGoodThreads retains each remote source's most recent successful
 	// ListThreads result so a transient list failure doesn't blank that
