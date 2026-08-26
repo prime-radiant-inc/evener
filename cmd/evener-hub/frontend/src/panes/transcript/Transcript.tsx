@@ -23,7 +23,7 @@ import { threadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
 import { resolveEffectiveConfig } from "../../transcriptDisplay/config";
 import { EmptyState, PaneScaffold, type VirtualListHandle } from "../../widgets";
-import { VisuallyHidden } from "../../widgets/visuallyHidden";
+import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "../session/liveness";
 import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
 import { TranscriptBody } from "../session/transcript/TranscriptBody";
