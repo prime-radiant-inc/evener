@@ -1071,7 +1071,7 @@ func (rs replayScope) active() bool { return strings.TrimSpace(rs.BehaviorTag) !
 // builderFamily maps a behavior tag to the wire-format family whose request
 // builder serves it. web_search raw blocks are foreign JSON across families, and
 // the thinking rule is scoped per family (exact-model for anthropic, same-
-// provider for google). An unrecognized tag maps to itself so an unknown
+// provider for google and openai). An unrecognized tag maps to itself so an unknown
 // provider never silently shares a family with a known one.
 //
 // Sibling tags collapse to one family because they emit the *same* raw block
@@ -1100,10 +1100,13 @@ func builderFamily(tag string) string {
 // Empty provenance (legacy transcripts) is always eligible. anthropic-family
 // targets require an exact (instance id, requested model) match — the requested
 // model taken from ResponseRequestModel, or catalog-canonicalized ResponseModel
-// when the request-model field is empty (closes G12). google targets require
-// only the same instance id (its builder must replay prior tool-call thought
-// signatures regardless of model). Every other target keeps its own builder
-// guard, so expansion never strips thinking for it.
+// when the request-model field is empty (closes G12). google and openai targets
+// require the same instance id: google's builder must replay prior tool-call
+// thought signatures regardless of model, and openai Responses carries an
+// opaque encrypted_content blob that only its issuing deployment can decrypt
+// (a cross-deployment replay yields "Encrypted content is not supported").
+// Every other target keeps its own builder guard, so expansion never strips
+// thinking for it.
 func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
 	if strings.TrimSpace(t.ResponseProvider) == "" {
 		return true
@@ -1111,7 +1114,7 @@ func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
 	switch builderFamily(rs.BehaviorTag) {
 	case "anthropic":
 		return rs.Provider == t.ResponseProvider && rs.requestedModelMatches(t)
-	case "google":
+	case "google", "openai":
 		return rs.Provider == t.ResponseProvider
 	default:
 		return true

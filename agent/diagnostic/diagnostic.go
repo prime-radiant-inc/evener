@@ -305,5 +305,10 @@ func isProviderFailure(message string) bool {
 		// stream is what failed.
 		strings.Contains(message, "stream ended without") ||
 		strings.Contains(message, "stream error") ||
-		strings.Contains(message, "missing response in finish event")
+		strings.Contains(message, "missing response in finish event") ||
+		// Encrypted reasoning content replayed to a deployment that did not
+		// produce it (a mid-session provider switch on a legacy transcript
+		// without per-turn provenance). The transcript is fine; the provider
+		// rejected a foreign encrypted_content blob.
+		strings.Contains(message, "encrypted content is not supported")
 }
