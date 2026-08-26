@@ -141,6 +141,23 @@ export function extractPaintStack(element, getStyle) {
 
 export function selectFocusIndicator(before, after) {
   const paints = [];
+  const splitShadows = (value) => {
+    if (!value || value === "none") return [];
+    const parts = [];
+    let depth = 0;
+    let start = 0;
+    for (let index = 0; index < value.length; index += 1) {
+      const character = value[index];
+      if (character === "(") depth += 1;
+      else if (character === ")") depth -= 1;
+      else if (character === "," && depth === 0) {
+        parts.push(value.slice(start, index).trim());
+        start = index + 1;
+      }
+    }
+    parts.push(value.slice(start).trim());
+    return parts.filter(Boolean);
+  };
   const outlineChanged =
     (after.outlineStyle !== before.outlineStyle ||
       after.outlineWidth !== before.outlineWidth ||
@@ -157,8 +174,40 @@ export function selectFocusIndicator(before, after) {
     });
   }
   if (after.boxShadow !== before.boxShadow && after.boxShadow !== "none") {
-    for (const match of after.boxShadow.matchAll(/rgba?\([^)]*\)/g))
-      paints.push({ source: "box-shadow", color: match[0] });
+    const remaining = splitShadows(before.boxShadow);
+    for (const shadow of splitShadows(after.boxShadow)) {
+      const unchanged = remaining.indexOf(shadow);
+      if (unchanged >= 0) {
+        remaining.splice(unchanged, 1);
+        continue;
+      }
+      const color = shadow.match(
+        /(?:rgba?\([^)]*\)|color\([^)]*\)|#[0-9a-fA-F]{3,8}|\b(?:black|white|transparent)\b)/,
+      )?.[0];
+      const withoutColor = color ? shadow.replace(color, "") : shadow;
+      const lengths = [
+        ...withoutColor.matchAll(
+          /(?:^|\s)(-?(?:\d+\.?\d*|\.\d+))(?:px)?(?=\s|$)/g,
+        ),
+      ].map((match) => Number(match[1]));
+      const [offsetX = 0, offsetY = 0, blur = 0, spread = 0] = lengths;
+      const inset = /\binset\b/.test(withoutColor);
+      const blurExtent = Math.max(0, blur) * 1.5;
+      const spreadExtent = Math.max(0, spread);
+      paints.push({
+        source: "box-shadow",
+        color: color ?? "transparent",
+        offsetX,
+        offsetY,
+        blur,
+        spread,
+        inset,
+        reach:
+          Math.max(Math.abs(offsetX), Math.abs(offsetY)) +
+          blurExtent +
+          spreadExtent,
+      });
+    }
   }
   return { changed: paints.length > 0, paints };
 }
@@ -682,9 +731,8 @@ export function analyzeDifferentialCapture(candidate, capture) {
             Math.ceil((candidateDocument.bottom - clip.y) * scaleY - 0.5),
           ),
         };
-  const pixels = [];
-  const maskKeys = new Set();
-  const maskBounds = {
+  let pixels = [];
+  const rawMaskBounds = {
     left: Infinity,
     top: Infinity,
     right: -Infinity,
@@ -732,16 +780,195 @@ export function analyzeDifferentialCapture(candidate, capture) {
         },
         probes: { black, white },
       });
-      maskKeys.add(`${x}:${y}`);
-      if (x < maskBounds.left) maskBounds.left = x;
-      if (y < maskBounds.top) maskBounds.top = y;
-      if (x + 1 > maskBounds.right) maskBounds.right = x + 1;
-      if (y + 1 > maskBounds.bottom) maskBounds.bottom = y + 1;
+      if (x < rawMaskBounds.left) rawMaskBounds.left = x;
+      if (y < rawMaskBounds.top) rawMaskBounds.top = y;
+      if (x + 1 > rawMaskBounds.right) rawMaskBounds.right = x + 1;
+      if (y + 1 > rawMaskBounds.bottom) rawMaskBounds.bottom = y + 1;
     }
   }
   if (pixels.length === 0) return unresolved("missing-differential-mask");
+  let focusIsolation;
+  if (candidate.kind === "focus") {
+    const componentFailure = reserveWork(
+      "focus-component-labeling",
+      pixels.length * 12,
+    );
+    if (componentFailure) return componentFailure;
+    const paints =
+      candidate.raw?.paint?.paints ?? candidate.paint?.paints ?? [];
+    let outerReach = 0;
+    let innerReach = 0;
+    for (const paint of paints) {
+      if (paint.source === "outline") {
+        const width = Number(paint.width);
+        const offset = Number(paint.offset);
+        if (Number.isFinite(width) && width > 0 && Number.isFinite(offset)) {
+          outerReach = Math.max(outerReach, Math.max(0, offset + width));
+          innerReach = Math.max(innerReach, Math.max(0, -offset));
+        }
+      } else if (paint.source === "box-shadow") {
+        const reach = Number(paint.reach);
+        if (Number.isFinite(reach) && reach >= 0) {
+          if (paint.inset) innerReach = Math.max(innerReach, reach);
+          else outerReach = Math.max(outerReach, reach);
+        }
+      }
+    }
+    const rasterTolerance = Math.max(1 / scaleX, 1 / scaleY);
+    if (outerReach === 0 && innerReach === 0) {
+      outerReach = rasterTolerance;
+      innerReach = rasterTolerance;
+    }
+    const ambiguityTolerance = rasterTolerance * 2;
+    const signedBoundaryDistance = (point) => {
+      const dx =
+        point.x < candidateDocument.left
+          ? candidateDocument.left - point.x
+          : point.x >= candidateDocument.right
+            ? point.x - candidateDocument.right
+            : 0;
+      const dy =
+        point.y < candidateDocument.top
+          ? candidateDocument.top - point.y
+          : point.y >= candidateDocument.bottom
+            ? point.y - candidateDocument.bottom
+            : 0;
+      if (dx > 0 || dy > 0) return Math.hypot(dx, dy);
+      return -Math.min(
+        point.x - candidateDocument.left,
+        candidateDocument.right - point.x,
+        point.y - candidateDocument.top,
+        candidateDocument.bottom - point.y,
+      );
+    };
+    const inSeedBand = (pixel, extra = 0) => {
+      const distance = signedBoundaryDistance(pixel.point);
+      return (
+        distance >= -(innerReach + rasterTolerance + extra) &&
+        distance <= outerReach + rasterTolerance + extra
+      );
+    };
+    const byIndex = new Map();
+    for (const pixel of pixels)
+      byIndex.set(pixel.y * first.width + pixel.x, pixel);
+    const visited = new Set();
+    const retainedComponents = [];
+    const discardedComponents = [];
+    const ambiguousComponents = [];
+    const retainedPixels = [];
+    const summarize = (id, component, seedPixelCount, ambiguityPixelCount) => {
+      const bounds = {
+        left: Infinity,
+        top: Infinity,
+        right: -Infinity,
+        bottom: -Infinity,
+      };
+      for (const pixel of component) {
+        if (pixel.x < bounds.left) bounds.left = pixel.x;
+        if (pixel.y < bounds.top) bounds.top = pixel.y;
+        if (pixel.x + 1 > bounds.right) bounds.right = pixel.x + 1;
+        if (pixel.y + 1 > bounds.bottom) bounds.bottom = pixel.y + 1;
+      }
+      return {
+        id,
+        pixelCount: component.length,
+        bounds,
+        seedPixelCount,
+        ambiguityPixelCount,
+      };
+    };
+    let componentId = 0;
+    for (const start of pixels) {
+      const startIndex = start.y * first.width + start.x;
+      if (visited.has(startIndex)) continue;
+      const queue = [start];
+      visited.add(startIndex);
+      const component = [];
+      let seedPixelCount = 0;
+      let ambiguityPixelCount = 0;
+      for (let cursor = 0; cursor < queue.length; cursor += 1) {
+        const pixel = queue[cursor];
+        component.push(pixel);
+        if (inSeedBand(pixel)) seedPixelCount += 1;
+        else if (inSeedBand(pixel, ambiguityTolerance))
+          ambiguityPixelCount += 1;
+        for (let offsetY = -1; offsetY <= 1; offsetY += 1) {
+          for (let offsetX = -1; offsetX <= 1; offsetX += 1) {
+            if (offsetX === 0 && offsetY === 0) continue;
+            const neighborX = pixel.x + offsetX;
+            const neighborY = pixel.y + offsetY;
+            if (
+              neighborX < imageBounds.left ||
+              neighborX >= imageBounds.right ||
+              neighborY < imageBounds.top ||
+              neighborY >= imageBounds.bottom
+            )
+              continue;
+            const neighborIndex = neighborY * first.width + neighborX;
+            const neighbor = byIndex.get(neighborIndex);
+            if (!neighbor || visited.has(neighborIndex)) continue;
+            visited.add(neighborIndex);
+            queue.push(neighbor);
+          }
+        }
+      }
+      const summary = summarize(
+        componentId,
+        component,
+        seedPixelCount,
+        ambiguityPixelCount,
+      );
+      if (seedPixelCount > 0) {
+        retainedComponents.push(summary);
+        for (const pixel of component) retainedPixels.push(pixel);
+      } else if (ambiguityPixelCount > 0) ambiguousComponents.push(summary);
+      else discardedComponents.push(summary);
+      componentId += 1;
+    }
+    focusIsolation = {
+      method: "8-connected-target-boundary-seed",
+      seedBand: {
+        outerReach,
+        innerReach,
+        rasterTolerance,
+        ambiguityTolerance,
+        paints,
+      },
+      rawPixelCount: pixels.length,
+      rawBounds: rawMaskBounds,
+      retained: retainedComponents,
+      discarded: discardedComponents,
+      ambiguous: ambiguousComponents,
+    };
+    pixels = retainedPixels;
+    if (ambiguousComponents.length > 0)
+      return {
+        ...unresolved("ambiguous-focus-component-attribution"),
+        focusIsolation,
+      };
+    if (pixels.length === 0)
+      return {
+        ...unresolved("missing-focus-causal-mask"),
+        focusIsolation,
+      };
+  }
   const maskIndexFailure = reserveWork("mask-index", pixels.length * 4);
   if (maskIndexFailure) return maskIndexFailure;
+
+  const maskKeys = new Set();
+  const maskBounds = {
+    left: Infinity,
+    top: Infinity,
+    right: -Infinity,
+    bottom: -Infinity,
+  };
+  for (const pixel of pixels) {
+    maskKeys.add(`${pixel.x}:${pixel.y}`);
+    if (pixel.x < maskBounds.left) maskBounds.left = pixel.x;
+    if (pixel.y < maskBounds.top) maskBounds.top = pixel.y;
+    if (pixel.x + 1 > maskBounds.right) maskBounds.right = pixel.x + 1;
+    if (pixel.y + 1 > maskBounds.bottom) maskBounds.bottom = pixel.y + 1;
+  }
 
   const runs = [];
   const rows = new Map();
@@ -775,6 +1002,7 @@ export function analyzeDifferentialCapture(candidate, capture) {
     return {
       ...unresolved("ambiguous-low-coverage-mask"),
       mask,
+      focusIsolation,
     };
   const colorKey = (color) =>
     [color.red, color.green, color.blue, color.alpha].join(":");
@@ -985,7 +1213,7 @@ export function analyzeDifferentialCapture(candidate, capture) {
     const regionArea =
       (region.right - region.left) * (region.bottom - region.top);
     const mapFailure = reserveWork("focus-distance-maps", regionArea * 24);
-    if (mapFailure) return { ...mapFailure, mask };
+    if (mapFailure) return { ...mapFailure, mask, focusIsolation };
     const availableSurface = (x, y) => !maskKeys.has(`${x}:${y}`);
     const insideMap = nearestSourceMap(
       region,
@@ -1000,7 +1228,8 @@ export function analyzeDifferentialCapture(candidate, capture) {
         "focus-foreground-distance-map",
         regionArea * 12,
       );
-      if (foregroundMapFailure) return { ...foregroundMapFailure, mask };
+      if (foregroundMapFailure)
+        return { ...foregroundMapFailure, mask, focusIsolation };
       const reliableByIndex = new Map(
         reliablePixels.map((pixel) => [
           pixel.y * first.width + pixel.x,
@@ -1023,14 +1252,22 @@ export function analyzeDifferentialCapture(candidate, capture) {
       "focus-surface-pairing",
       pixels.length * 4,
     );
-    if (pairingFailure) return { ...pairingFailure, mask };
+    if (pairingFailure) return { ...pairingFailure, mask, focusIsolation };
     for (const pixel of pixels) {
       const insideEntry = nearestAt(insideMap, pixel);
       if (!insideEntry)
-        return { ...unresolved("missing-focus-inside-surface"), mask };
+        return {
+          ...unresolved("missing-focus-inside-surface"),
+          mask,
+          focusIsolation,
+        };
       const outsideEntry = nearestAt(outsideMap, pixel);
       if (!outsideEntry)
-        return { ...unresolved("missing-focus-outside-surface"), mask };
+        return {
+          ...unresolved("missing-focus-outside-surface"),
+          mask,
+          focusIsolation,
+        };
       inside.push(insideEntry);
       outside.push(outsideEntry);
     }
@@ -1067,7 +1304,8 @@ export function analyzeDifferentialCapture(candidate, capture) {
     "surface-verdicts",
     pairedForegrounds.length * (candidate.kind === "focus" ? 4 : 2),
   );
-  if (surfacePairingFailure) return { ...surfacePairingFailure, mask };
+  if (surfacePairingFailure)
+    return { ...surfacePairingFailure, mask, focusIsolation };
   const surfaceVerdicts =
     candidate.kind === "focus"
       ? {
@@ -1097,6 +1335,7 @@ export function analyzeDifferentialCapture(candidate, capture) {
     surfaceVerdicts,
     minimumEvidence,
     adjacency,
+    focusIsolation,
     work: workSnapshot(),
     ratio: minimumEvidence.ratio,
   };

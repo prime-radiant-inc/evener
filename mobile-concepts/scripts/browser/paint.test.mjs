@@ -831,8 +831,26 @@ test("focus extraction distinguishes changed outline and multiple shadows", () =
       changed: true,
       paints: [
         { source: "outline", color: "rgb(10, 20, 30)", width: 2, offset: 3 },
-        { source: "box-shadow", color: "rgb(1, 2, 3)" },
-        { source: "box-shadow", color: "rgba(4, 5, 6, 0.5)" },
+        {
+          source: "box-shadow",
+          color: "rgb(1, 2, 3)",
+          offsetX: 0,
+          offsetY: 0,
+          blur: 0,
+          spread: 1,
+          inset: false,
+          reach: 1,
+        },
+        {
+          source: "box-shadow",
+          color: "rgba(4, 5, 6, 0.5)",
+          offsetX: 0,
+          offsetY: 0,
+          blur: 0,
+          spread: 3,
+          inset: false,
+          reach: 3,
+        },
       ],
     },
   );

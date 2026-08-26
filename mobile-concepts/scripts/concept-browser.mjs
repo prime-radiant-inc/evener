@@ -156,7 +156,7 @@ async function focusAudit(client) {
       const outside=extractPaintStack(e.parentElement,(target,pseudo)=>getComputedStyle(target,pseudo));
       const inside=extractPaintStack(e,(target,pseudo)=>getComputedStyle(target,pseudo));
       const box=e.getBoundingClientRect(),geometry={left:box.left,right:box.right,top:box.top,bottom:box.bottom,width:box.width,height:box.height};
-      const candidates=indicator.changed?[{id:subject+' focus indicator',kind:'focus',foreground:indicator.paints[0]?.color??'transparent',backgrounds:[{color:'transparent',image:'none',opacity:Number(s.opacity),owner:subject},...outside.layers],insideBackgrounds:inside.layers,minimum:3,changed:true,before,after,source:'rendered-focus-difference',candidateOpacity:Number(s.opacity),ancestorOpacities:outside.layers.map(layer=>layer.opacity),geometry,paint:{source:'rendered-focus-difference'},oracleId:e.dataset.browserFocusId,geometryCollectedAt:performance.now()}]:[];
+      const candidates=indicator.changed?[{id:subject+' focus indicator',kind:'focus',foreground:indicator.paints[0]?.color??'transparent',backgrounds:[{color:'transparent',image:'none',opacity:Number(s.opacity),owner:subject},...outside.layers],insideBackgrounds:inside.layers,minimum:3,changed:true,before,after,source:'rendered-focus-difference',candidateOpacity:Number(s.opacity),ancestorOpacities:outside.layers.map(layer=>layer.opacity),geometry,paint:{source:'rendered-focus-difference',paints:indicator.paints},oracleId:e.dataset.browserFocusId,geometryCollectedAt:performance.now()}]:[];
       if(!indicator.changed)candidates.push({id:subject,kind:'focus',foreground:'transparent',backgrounds:outside.layers,minimum:3,changed:false,before,after,source:'none'});
       return{id:e.dataset.browserFocusId||'',subject,visible:indicator.changed,candidates};
     })()`,
@@ -335,7 +335,7 @@ async function decodeAndAnalyze(client, candidates, captures, work) {
       const names=['original','hidden','black','white'],decoded={};
       for(const name of names)decoded[name]=await decode(${JSON.stringify(captures)}[name].data);
       const metadata=${JSON.stringify(captures.original.metadata)};
-      metadata.timing={sequence:['stabilized','geometry','original','hidden','black-probe','white-probe'],eventDriven:true,captures:{original:${JSON.stringify(captures.original.metadata.capturedAt)},hidden:${JSON.stringify(captures.hidden.metadata.capturedAt)},blackProbe:${JSON.stringify(captures.black.metadata.capturedAt)},whiteProbe:${JSON.stringify(captures.white.metadata.capturedAt)}}};
+      metadata.timing={sequence:['stabilized','geometry','original','hidden','black-probe','white-probe'],eventDriven:true,captures:{original:${JSON.stringify(captures.original.metadata.capturedAt)},hidden:${JSON.stringify(captures.hidden.metadata.capturedAt)},blackProbe:${JSON.stringify(captures.black.metadata.capturedAt)},whiteProbe:${JSON.stringify(captures.white.metadata.capturedAt)}},stabilization:{original:${JSON.stringify(captures.original.metadata.stabilization)},hidden:${JSON.stringify(captures.hidden.metadata.stabilization)},blackProbe:${JSON.stringify(captures.black.metadata.stabilization)},whiteProbe:${JSON.stringify(captures.white.metadata.stabilization)}}};
       const analyze=${analyzeDifferentialCapture.toString()};
       const work=${JSON.stringify(work)};
       const evidence=${JSON.stringify(candidates)}.map(candidate=>analyze(candidate,{...metadata,images:decoded,work}));
@@ -412,13 +412,60 @@ function focusProbeSource(candidate, state) {
   })()`;
 }
 
+async function focusTarget(client, candidate) {
+  await evaluate(
+    client,
+    `(() => {const target=document.querySelector('[data-browser-focus-id=${JSON.stringify(candidate.raw.oracleId)}]');if(!target)throw new Error('missing focus target');target.focus();return true})()`,
+  );
+}
+
+async function readFocusGeometry(client, candidate) {
+  return evaluate(
+    client,
+    `(() => {const target=document.querySelector('[data-browser-focus-id=${JSON.stringify(candidate.raw.oracleId)}]');if(!target)throw new Error('missing focus target');const box=target.getBoundingClientRect();return {left:box.left,top:box.top,right:box.right,bottom:box.bottom,width:box.width,height:box.height,geometryCollectedAt:performance.now()}})()`,
+  );
+}
+
+export async function captureFocusDifferential(client, candidate, options = {}) {
+  const focus = options.focus ?? focusTarget;
+  const mutate =
+    options.mutate ??
+    ((targetClient, targetCandidate, state) =>
+      evaluate(targetClient, focusProbeSource(targetCandidate, state)));
+  const restore =
+    options.restore ??
+    ((targetClient, targetCandidate) =>
+      evaluate(targetClient, focusProbeSource(targetCandidate, "restore")));
+  const stabilize = options.stabilize ?? stabilizePaint;
+  const geometry = options.geometry ?? readFocusGeometry;
+  const capture = options.capture ?? fullPageCapture;
+  const captures = {};
+  const stabilization = {};
+
+  await focus(client, candidate);
+  stabilization.original = await stabilize(client);
+  const measuredGeometry = await geometry(client, candidate);
+  try {
+    captures.original = await capture(client);
+    captures.original.metadata.stabilization = stabilization.original;
+    for (const state of ["hidden", "black", "white"]) {
+      await mutate(client, candidate, state);
+      stabilization[state] = await stabilize(client);
+      captures[state] = await capture(client);
+      captures[state].metadata.stabilization = stabilization[state];
+    }
+  } finally {
+    await restore(client, candidate);
+    stabilization.restore = await stabilize(client);
+  }
+  return { geometry: measuredGeometry, captures, stabilization };
+}
+
 async function captureFocusCandidates(client, candidates, work) {
   const results = new Map();
   for (const candidate of candidates.filter(({ kind }) => kind === "focus")) {
-    const geometry = await evaluate(
-      client,
-      `new Promise(resolve=>{const target=document.querySelector('[data-browser-focus-id=${JSON.stringify(candidate.raw.oracleId)}]');if(!target)throw new Error('missing focus target');target.focus();requestAnimationFrame(()=>requestAnimationFrame(()=>{const box=target.getBoundingClientRect();resolve({left:box.left,top:box.top,right:box.right,bottom:box.bottom,width:box.width,height:box.height,geometryCollectedAt:performance.now()})}))})`,
-    );
+    const differential = await captureFocusDifferential(client, candidate);
+    const { geometry } = differential;
     const current = {
       ...candidate,
       geometry,
@@ -427,18 +474,26 @@ async function captureFocusCandidates(client, candidates, work) {
         geometryCollectedAt: geometry.geometryCollectedAt,
       },
     };
-    const captures = { original: await fullPageCapture(client) };
-    try {
-      for (const state of ["hidden", "black", "white"]) {
-        await evaluate(client, focusProbeSource(candidate, state));
-        await paintFrames(client);
-        captures[state] = await fullPageCapture(client);
-      }
-    } finally {
-      await evaluate(client, focusProbeSource(candidate, "restore"));
-      await paintFrames(client);
+    const [evidence] = await decodeAndAnalyze(
+      client,
+      [current],
+      differential.captures,
+      work,
+    );
+    const captureCapabilityFailures = Object.entries(
+      differential.stabilization,
+    ).flatMap(([state, value]) =>
+      (value?.capabilityFailures ?? []).map((failure) => ({
+        ...failure,
+        captureState: state,
+        candidateId: candidate.id,
+      })),
+    );
+    if (captureCapabilityFailures.length > 0) {
+      evidence.unresolved = "focus-capture-stabilization-failed";
+      evidence.ratio = undefined;
+      evidence.captureCapabilityFailures = captureCapabilityFailures;
     }
-    const [evidence] = await decodeAndAnalyze(client, [current], captures, work);
     results.set(candidate.index, evidence);
   }
   await evaluate(
@@ -473,8 +528,13 @@ export async function sampleRenderedContrast(client, pairs, options = {}) {
 
 export function renderedContrastCapabilityFailures(pairs) {
   return pairs
-    .map((pair) => pair.raw?.renderedSamples?.capabilityFailure)
-    .filter(Boolean);
+    .flatMap((pair) => {
+      const evidence = pair.raw?.renderedSamples;
+      return [
+        ...(evidence?.capabilityFailure ? [evidence.capabilityFailure] : []),
+        ...(evidence?.captureCapabilityFailures ?? []),
+      ];
+    });
 }
 
 async function runCase({
