@@ -163,6 +163,28 @@ function checkTransports(source, fileRel, violations) {
   }
 }
 
+function isScopedSelector(selectorList) {
+  // .concept-* scoped selectors (existing broad acceptance).
+  if (selectorList.includes(".concept-")) return true;
+  // .live-concept-switcher root-scoped selectors: every comma-separated
+  // part must start with the .live-concept-switcher root class (or BEM
+  // element/modifier) and must not contain global element selectors.
+  if (selectorList.includes(".live-concept-switcher")) {
+    const parts = selectorList.split(",");
+    for (const part of parts) {
+      const trimmed = part.trim();
+      if (!trimmed.startsWith(".live-concept-switcher")) {
+        return false;
+      }
+      if (/\b(body|html)\b/.test(trimmed) || trimmed.includes("*")) {
+        return false;
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
 function findUnscopedCssSelectors(css) {
   const noComments = css.replace(/\/\*[\s\S]*?\*\//g, "");
   const unscoped = [];
@@ -174,13 +196,7 @@ function findUnscopedCssSelectors(css) {
       if (depth === 0) {
         const selector = current.trim();
         // Skip at-rules (@media, @keyframes, @font-face, …).
-        // Accept selectors scoped under .concept- or .live-concept-.
-        if (
-          selector &&
-          !selector.startsWith("@") &&
-          !selector.includes(".concept-") &&
-          !selector.includes(".live-concept-")
-        ) {
+        if (selector && !selector.startsWith("@") && !isScopedSelector(selector)) {
           unscoped.push(selector);
         }
       }
