@@ -144,6 +144,13 @@
   padding-left: var(--space-4);
 }
 
+.errors li {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--space-2);
+}
+
 .errors {
   display: flex;
   flex-direction: column;
@@ -178,5 +185,40 @@
 @media (max-width: 899px) {
   .desktopSurface {
     display: none;
+  }
+
+  /* The shared Switch and Input keep their compact desktop geometry. On a
+   * phone this surface owns a larger hit target without changing the primitive
+   * used by the other desktop controls. The switch's pseudo track preserves
+   * the compact visual while the actual role=switch button is 44px square. */
+  .panel .filter input {
+    min-height: 44px;
+  }
+
+  .panel .row [role="switch"] {
+    width: 44px;
+    height: 44px;
+    padding: 13px 6px;
+    background: transparent;
+  }
+
+  .panel .row [role="switch"]::before {
+    position: absolute;
+    top: 13px;
+    left: 6px;
+    width: 32px;
+    height: 18px;
+    border-radius: var(--radius-pill);
+    background: var(--field);
+    content: "";
+  }
+
+  .panel .row [role="switch"][aria-checked="true"]::before {
+    background: var(--accent);
+  }
+
+  .panel .row [role="switch"] > span {
+    position: relative;
+    z-index: 1;
   }
 }

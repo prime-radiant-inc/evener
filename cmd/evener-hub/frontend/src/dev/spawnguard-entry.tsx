@@ -280,6 +280,10 @@ function measureSpawn() {
   const pluginSheet = document.querySelector<HTMLElement>('[role="dialog"][aria-labelledby] h2')?.parentElement
     ?.parentElement;
   const start = document.querySelector<HTMLElement>('[data-testid="spawn-submit"]');
+  const pluginFilter = document.querySelector<HTMLElement>('[data-testid="plugin-selection-panel"] input');
+  const pluginSwitches = Array.from(
+    document.querySelectorAll<HTMLElement>('[data-testid="plugin-selection-panel"] [role="switch"]'),
+  );
 
   return {
     viewport: { width: window.innerWidth, height: window.innerHeight },
@@ -306,6 +310,8 @@ function measureSpawn() {
       row: pluginRow ? boxOf(pluginRow) : null,
       sheet: pluginSheet ? boxOf(pluginSheet) : null,
       start: start ? boxOf(start) : null,
+      filter: pluginFilter ? boxOf(pluginFilter) : null,
+      switches: pluginSwitches.map(boxOf),
     },
     overflow: scanHorizontalOverflow(),
   };
@@ -322,8 +328,13 @@ async function settleSpawn(): Promise<true> {
 
 function openSpawnPlugins(): void {
   const row = document.querySelector<HTMLButtonElement>('[data-label="Plugins"] button');
-  if (!row) throw new Error("Spawn Plugins row is not available");
-  row.click();
+  if (row && isElementVisible(row)) {
+    row.click();
+    return;
+  }
+  const summary = document.querySelector<HTMLElement>('[data-testid="spawn-plugin-summary"]');
+  if (!summary) throw new Error("Spawn Plugins summary is not available");
+  summary.click();
 }
 
 const settled = settleSpawn();

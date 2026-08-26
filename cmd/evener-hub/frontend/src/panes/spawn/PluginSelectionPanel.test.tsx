@@ -114,3 +114,13 @@ test("retry is reachable", async () => {
   await user.click(screen.getByRole("button", { name: "Retry" }));
   expect(onRetry).toHaveBeenCalledOnce();
 });
+
+test("shows a removable retained stale name while preserving other selected names", async () => {
+  const user = userEvent.setup();
+  const onSelectionChange = vi.fn();
+  renderPanel({ selection: { mode: "explicit", names: ["alpha", "missing"] }, onSelectionChange });
+
+  expect(screen.getByText("missing")).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Remove missing" }));
+  expect(onSelectionChange).toHaveBeenLastCalledWith({ mode: "explicit", names: ["alpha"] });
+});

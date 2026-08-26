@@ -73,6 +73,15 @@ export function PluginSelectionPanel({
   const selectedNames = selection.mode === "explicit" ? new Set(selection.names) : null;
   const selectedCount = preview.plugins.filter((plugin) => selectedNames?.has(plugin.name) ?? plugin.selected).length;
   const selectionErrors = preview.selectionErrors ?? [];
+  const currentNames = new Set(preview.plugins.map((plugin) => plugin.name));
+  const reportedErrorNames = new Set(selectionErrors.map((error) => error.name));
+  const staleSelectionErrors =
+    selection.mode === "explicit"
+      ? selection.names
+          .filter((name) => !currentNames.has(name) && !reportedErrorNames.has(name))
+          .map((name) => ({ name, reason: "no longer available in the current Preview" }))
+      : [];
+  const selectionIssues = [...selectionErrors, ...staleSelectionErrors];
   const diagnostics = preview.diagnostics ?? [];
 
   return (
@@ -142,13 +151,24 @@ export function PluginSelectionPanel({
       )}
       {preview.plugins.length === 0 && <p className={CLASS.empty}>No plugins are available for this session.</p>}
 
-      {selectionErrors.length > 0 && (
+      {selectionIssues.length > 0 && (
         <div className={CLASS.errors} role="alert">
           <strong>Selected plugins need attention</strong>
           <ul>
-            {selectionErrors.map((error) => (
+            {selectionIssues.map((error) => (
               <li key={`${error.name}:${error.reason}`}>
-                <strong>{error.name}</strong>: {error.reason}
+                <span>
+                  <strong>{error.name}</strong>: {error.reason}
+                </span>
+                <Button
+                  variant="quiet"
+                  size="xs"
+                  type="button"
+                  aria-label={`Remove ${error.name}`}
+                  onClick={() => onSelectionChange(setPluginSelected(selection, preview, error.name, false))}
+                >
+                  Remove
+                </Button>
               </li>
             ))}
           </ul>

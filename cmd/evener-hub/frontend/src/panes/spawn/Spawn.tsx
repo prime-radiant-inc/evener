@@ -128,7 +128,6 @@ const CLASS = {
   modelNote: requireClass(styles.modelNote, "spawn.module.css", "modelNote"),
   submitLabel: requireClass(styles.submitLabel, "spawn.module.css", "submitLabel"),
   pluginDesktop: requireClass(pluginSelectionStyles.desktopSurface, "pluginSelection.module.css", "desktopSurface"),
-  pluginStatus: requireClass(pluginSelectionStyles.status, "pluginSelection.module.css", "status"),
   pluginSummary: requireClass(pluginSelectionStyles.summary, "pluginSelection.module.css", "summary"),
 };
 
@@ -952,17 +951,17 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         </div>
 
         <div className={CLASS.pluginDesktop} data-testid="spawn-plugin-desktop">
-          {pluginPreview.state.status === "loading" && (
-            <div className={CLASS.pluginStatus} role="status">
-              Inspecting plugins…
-            </div>
-          )}
-          {pluginPreview.state.status === "error" && (
-            <div className={CLASS.pluginStatus} role="status">
-              <span>Couldn't inspect plugins</span>
-              <Button variant="secondary" size="xs" type="button" onClick={pluginPreview.retry}>
-                Retry
-              </Button>
+          {previewResponse === null && (
+            <div className={CLASS.pluginSummary} data-testid="spawn-plugin-summary" role="status">
+              <strong>Plugins for this session</strong>
+              <span>
+                {pluginPreview.state.status === "loading" ? "Inspecting plugins…" : "Couldn't inspect plugins"}
+              </span>
+              {pluginPreview.state.status === "error" && (
+                <Button variant="secondary" size="xs" type="button" onClick={pluginPreview.retry}>
+                  Retry
+                </Button>
+              )}
             </div>
           )}
           {previewResponse !== null && (

@@ -60,9 +60,7 @@ async function measureAt(cdpEndpoint, vitePort, width) {
     // before staging settles the fonts of a page that has not asked for them
     // yet and measureSpawn still runs mid-swap.
     await waitForFonts(send);
-    if (width <= 899) {
-      await evaluate(send, "window.openSpawnPlugins()\nnew Promise((resolve) => requestAnimationFrame(resolve))");
-    }
+    await evaluate(send, "window.openSpawnPlugins(); new Promise((resolve) => requestAnimationFrame(resolve))");
     return JSON.parse(await evaluate(send, "JSON.stringify(window.measureSpawn())"));
   } finally {
     await clearViewportOverride(send);
@@ -246,6 +244,28 @@ function assertResult(result, expectedWidth) {
       failures.push(`plugin sheet escapes the viewport: ${JSON.stringify(result.plugins.sheet)}`);
     }
     if (result.plugins.sheet.height < 120) failures.push(`plugin sheet is too short to be usable: ${JSON.stringify(result.plugins.sheet)}`);
+  }
+  if (result.plugins.filter === null || result.plugins.filter.width <= 1 || result.plugins.filter.height <= 1) {
+    failures.push(`plugin filter is not measurable at ${expectedWidth}px`);
+  } else if (mobile && result.plugins.filter.height < TAP_MIN_PX - 0.5) {
+    failures.push(`plugin filter is ${result.plugins.filter.height}px tall, below the ${TAP_MIN_PX}px touch floor`);
+  } else if (!mobile && result.plugins.filter.height >= 44) {
+    failures.push(`desktop plugin filter dimensions changed unexpectedly: ${JSON.stringify(result.plugins.filter)}`);
+  }
+  if (result.plugins.switches.length === 0) {
+    failures.push(`plugin switches are not measurable at ${expectedWidth}px`);
+  } else if (mobile) {
+    for (const [index, control] of result.plugins.switches.entries()) {
+      if (control.width < TAP_MIN_PX - 0.5 || control.height < TAP_MIN_PX - 0.5) {
+        failures.push(`plugin switch ${index} is ${control.width}x${control.height}, below the ${TAP_MIN_PX}px touch floor`);
+      }
+    }
+  } else {
+    for (const [index, control] of result.plugins.switches.entries()) {
+      if (Math.abs(control.width - 32) > 1 || Math.abs(control.height - 18) > 1) {
+        failures.push(`desktop plugin switch ${index} changed dimensions: ${JSON.stringify(control)}`);
+      }
+    }
   }
   if (pluginSurface !== null && result.plugins.start !== null && pluginSurface.top < result.plugins.start.bottom - 1) {
     failures.push(`plugin surface overlaps the prompt Start action: ${JSON.stringify({ pluginSurface, start: result.plugins.start })}`);

@@ -491,6 +491,25 @@ test("Spawn preview omits enabledPlugins while selection remains untouched", asy
   );
 });
 
+test("desktop plugin summary remains mounted with exact loading and error status", async () => {
+  const pending = new Promise<PluginPreviewResponse>(() => {});
+  const pendingClient = readyClient((f) => f.on("evener/plugin/preview", () => pending));
+  renderSpawn(pendingClient);
+  expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("Inspecting plugins…");
+
+  cleanup();
+  const errorClient = readyClient((f) => {
+    f.on("evener/plugin/preview", () => {
+      throw new Error("preview unavailable");
+    });
+  });
+  renderSpawn(errorClient);
+  await waitFor(() =>
+    expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("Couldn't inspect plugins"),
+  );
+  expect(screen.getByTestId("spawn-plugin-summary").textContent).not.toContain("0 of 0");
+});
+
 const SPAWN_PLUGIN_PREVIEW: PluginPreviewResponse = {
   plugins: [
     {
@@ -636,6 +655,64 @@ test("preview failure exposes retry without guessing zero or blocking default St
   await waitFor(() =>
     expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").length).toBeGreaterThan(1),
   );
+});
+
+test("retained stale plugin names reach failed Start and can be removed without losing survivors", async () => {
+  const user = userEvent.setup();
+  const stalePreview: PluginPreviewResponse = {
+    plugins: [
+      { ...SPAWN_PLUGIN_PREVIEW.plugins[0]!, name: "alpha" },
+      { ...SPAWN_PLUGIN_PREVIEW.plugins[1]!, name: "gone" },
+      { ...SPAWN_PLUGIN_PREVIEW.plugins[1]!, name: "beta" },
+    ],
+  };
+  const refreshedPreview: PluginPreviewResponse = {
+    plugins: [{ ...SPAWN_PLUGIN_PREVIEW.plugins[0]!, name: "alpha" }],
+  };
+  const advancedOption: LaunchOption = {
+    field: "maxRounds",
+    wireField: "maxRounds",
+    label: "Max rounds",
+    group: "general",
+    kind: "integer",
+    perLaunch: true,
+  };
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", (params) =>
+      params.launchOverrides?.maxRounds === 7 ? refreshedPreview : stalePreview,
+    );
+    f.on("evener/launch/schema", () => ({ options: [advancedOption] }));
+    f.on("thread/start", () => {
+      throw new Error("start failed");
+    });
+  });
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(screen.getByTestId("spawn-plugin-disclosure")).toBeTruthy());
+  const disclosure = screen.getByTestId("spawn-plugin-disclosure") as HTMLDetailsElement;
+  if (!disclosure.open) await user.click(screen.getByText("Plugins for this session"));
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await waitFor(() => expect(screen.getByTestId("spawn-plugin-disclosure")).toBeTruthy());
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.clear(screen.getByLabelText("Max rounds"));
+  await user.type(screen.getByLabelText("Max rounds"), "7");
+  await waitFor(() => expect(screen.getByRole("button", { name: "Remove gone" })).toBeTruthy());
+
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    launchOverrides: { enabledPlugins: ["alpha", "gone"], maxRounds: 7 },
+  });
+  expect(screen.getByRole("button", { name: "Remove gone" })).toBeTruthy();
+
+  await user.click(screen.getByRole("button", { name: "Remove gone" }));
+  await waitFor(() => {
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toMatchObject({
+      launchOverrides: { enabledPlugins: ["alpha"], maxRounds: 7 },
+    });
+  });
 });
 
 // A blank prompt starts a DORMANT session, exactly as the placeholder
