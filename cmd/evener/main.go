@@ -54,6 +54,7 @@ type runCLIFlags struct {
 	mcpServers                  stringSliceFlag
 	mcpConfigs                  stringSliceFlag
 	pluginDirs                  stringSliceFlag
+	enabledPlugins              pluginSelectionFlag
 	noDefaultMarketplaces       *bool
 	systemPromptAsUser          *bool
 	openAIResponsesContinuation *string
@@ -145,6 +146,11 @@ func mainWithDeps(deps mainDeps) {
 		deps.exit(2)
 		return
 	}
+	if err := rejectPluginSelectionWithResume(flags.enabledPlugins.Value(), *flags.resume, *flags.resumeLast); err != nil {
+		_, _ = fmt.Fprintf(deps.stderr, "evener: %v\n", err)
+		deps.exit(2)
+		return
+	}
 
 	var cpuStop func()
 	if *flags.cpuProfile != "" {
@@ -213,6 +219,7 @@ func mainWithDeps(deps mainDeps) {
 		mcpServers:                  []string(flags.mcpServers),
 		mcpConfigs:                  []string(flags.mcpConfigs),
 		pluginDirs:                  []string(flags.pluginDirs),
+		enabledPlugins:              flags.enabledPlugins.Value(),
 		noDefaultMarketplaces:       *flags.noDefaultMarketplaces,
 		systemPromptAsUser:          *flags.systemPromptAsUser,
 		openAIResponsesContinuation: *flags.openAIResponsesContinuation,
@@ -265,6 +272,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	fs.Var(&flags.mcpServers, "mcp", "MCP server `spec` (repeatable, format: name:command args...)")
 	fs.Var(&flags.mcpConfigs, "mcp-config", "path to .mcp.json `file` (repeatable)")
 	fs.Var(&flags.pluginDirs, "plugin-dir", "plugin `directory` (repeatable)")
+	fs.Var(&flags.enabledPlugins, "enabled-plugins", "comma-separated plugin names to enable (empty selects none)")
 	flags.noDefaultMarketplaces = fs.Bool("no-default-marketplaces", false, "do not seed the default plugin marketplaces on first run")
 	flags.systemPromptAsUser = fs.Bool("system-prompt-as-user", false, "deliver system prompt as first user message instead of system instructions")
 	flags.openAIResponsesContinuation = fs.String("openai-responses-continuation", "", "OpenAI Responses continuation `mode`: off|auto (default: off)")

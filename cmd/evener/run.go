@@ -57,15 +57,16 @@ type runConfig struct {
 	stdout                    io.Writer
 	stderr                    io.Writer
 
-	skillsDirs                  []string // extra skill directories
-	mcpServers                  []string // --mcp inline specs
-	mcpConfigs                  []string // --mcp-config file paths
-	pluginDirs                  []string // --plugin-dir directories
-	noDefaultMarketplaces       bool     // --no-default-marketplaces
-	systemPromptAsUser          bool     // --system-prompt-as-user
-	openAIResponsesContinuation string   // --openai-responses-continuation
-	sandboxMode                 string   // --sandbox mode name (default "off")
-	sandboxNet                  string   // --sandbox-net on|off
+	skillsDirs                  []string  // extra skill directories
+	mcpServers                  []string  // --mcp inline specs
+	mcpConfigs                  []string  // --mcp-config file paths
+	pluginDirs                  []string  // --plugin-dir directories
+	enabledPlugins              *[]string // --enabled-plugins selection; nil means omitted
+	noDefaultMarketplaces       bool      // --no-default-marketplaces
+	systemPromptAsUser          bool      // --system-prompt-as-user
+	openAIResponsesContinuation string    // --openai-responses-continuation
+	sandboxMode                 string    // --sandbox mode name (default "off")
+	sandboxNet                  string    // --sandbox-net on|off
 
 	// Resume options.
 	resume       string // session ID to resume
@@ -97,9 +98,15 @@ var (
 	runDrainJobTree = func(sess *agent.Session, ctx context.Context) (string, error) {
 		return sess.DrainJobTree(ctx)
 	}
+	runResolvePlugins = func(explicit []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
+		return plugins.NewManager("").ResolveForLaunch(explicit, enabled)
+	}
 )
 
 func run(ctx context.Context, cfg runConfig) error {
+	if err := rejectPluginSelectionWithResume(cfg.enabledPlugins, cfg.resume, cfg.resumeLast); err != nil {
+		return err
+	}
 	if cfg.stdout == nil {
 		cfg.stdout = os.Stdout
 	}
@@ -143,6 +150,18 @@ func run(ctx context.Context, cfg runConfig) error {
 	// --list-sessions: print and exit.
 	if cfg.listSessions {
 		return listSessions(cfg, stateDir)
+	}
+
+	resolvedPlugins, err := runResolvePlugins(cfg.pluginDirs, cfg.enabledPlugins)
+	if err != nil && cfg.enabledPlugins != nil {
+		return fmt.Errorf("resolve plugins: %w", err)
+	}
+	if err != nil {
+		fmt.Fprintf(cfg.stderr, "warning: listing installed plugins: %v\n", err) //nolint:errcheck
+	}
+	renderLaunchPluginDiagnostics(cfg.stderr, resolvedPlugins.Diagnostics)
+	if err := resolvedPlugins.ValidateSelection(); err != nil {
+		return err
 	}
 
 	// Resolve resume target.
@@ -234,7 +253,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		SkillsDirs:                  cfg.skillsDirs,
 		MCPConfigFiles:              cfg.mcpConfigs,
 		MCPInline:                   cfg.mcpServers,
-		PluginDirs:                  plugins.NewManager("").EnabledPluginDirs(cfg.pluginDirs),
+		PluginDirs:                  resolvedPlugins.SelectedDirs,
 		ContextStrategy:             cfg.contextStrategy,
 		ExportATIFPath:              cfg.exportATIF,
 		ExportATIFProviderHandles:   cfg.exportATIFProviderHandles,
