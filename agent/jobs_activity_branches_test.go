@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"reflect"
@@ -536,7 +537,7 @@ func TestTrimActivityTrailingEntry_DelegateChildRecurses(t *testing.T) {
 func TestEncodeActivityContinuation(t *testing.T) {
 	t.Parallel()
 	// A valid continuation round-trips.
-	cont := activityContinuation{Version: activityContinuationV1, RootID: "root", SessionID: "root", Revision: 7, Path: []string{"dlg_1"}}
+	cont := activityContinuation{Version: activityContinuationV2, RootID: "root", SessionID: "root", Revision: 7, Source: activitySourceHistorical, Generation: activityServingGeneration, Path: []string{"dlg_1"}}
 	encoded := encodeActivityContinuation(cont)
 	if encoded == "" {
 		t.Fatal("encoded continuation is empty")
@@ -592,6 +593,73 @@ func TestValidateActivityContinuationRevisionRequiresRestart(t *testing.T) {
 	}
 	if !strings.Contains(wire.Message, "restart") {
 		t.Fatalf("revision mismatch message = %q, want restart guidance", wire.Message)
+	}
+}
+
+func TestValidateActivityContinuationIdentityRejectsSourceHandoff(t *testing.T) {
+	t.Parallel()
+	cont := activityContinuation{Version: activityContinuationV2, Source: activitySourceHistorical, Generation: "g1"}
+	err := validateActivityContinuationIdentity(cont, activityContinuationIdentity{Source: activitySourceLive, Generation: "g1"})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("handoff error = %T %v, want WireError", err, err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok || data.EvenerErrorInfo != appwire.ErrorStaleContinuation || data.Cause != "restartFromRoot" || data.RetryDisposition != appwire.RetryDispositionAutomatic {
+		t.Fatalf("handoff data = %#v, want structured stale restart", wire.Data)
+	}
+}
+
+func TestValidateActivityContinuationIdentityRejectsServingRestartAtSameRevision(t *testing.T) {
+	t.Parallel()
+	cont := activityContinuation{Version: activityContinuationV2, Revision: 7, Source: activitySourceLive, Generation: "old-serving-generation"}
+	err := validateActivityContinuationIdentity(cont, activityContinuationIdentity{Source: activitySourceLive, Generation: "new-serving-generation"})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("restart error = %T %v, want typed conflict", err, err)
+	}
+}
+
+func TestActivityContinuationV2AuthenticatesIdentityAndRejectsLegacy(t *testing.T) {
+	t.Parallel()
+	cont := activityContinuation{
+		Version: activityContinuationV2, RootID: "root", SessionID: "root",
+		Revision: 0, Source: activitySourceHistorical, Generation: "generation-1",
+	}
+	token := encodeActivityContinuation(cont)
+	decoded, err := decodeActivityContinuation(token, "root")
+	if err != nil || decoded.Source != cont.Source || decoded.Generation != cont.Generation {
+		t.Fatalf("v2 round trip = %+v, err=%v", decoded, err)
+	}
+	raw, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw[len(raw)-1] ^= 1
+	if _, err := decodeActivityContinuation(base64.RawURLEncoding.EncodeToString(raw), "root"); err == nil {
+		t.Fatal("tampered continuation accepted")
+	} else {
+		var wire appwire.WireError
+		if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+			t.Fatalf("tampered continuation error = %T %v, want typed conflict", err, err)
+		}
+	}
+	legacy := base64.RawURLEncoding.EncodeToString([]byte(`{"v":1,"root":"root","session":"root","path":[]}`))
+	if _, err := decodeActivityContinuation(legacy, "root"); err == nil {
+		t.Fatal("legacy v1 continuation accepted")
+	} else {
+		var wire appwire.WireError
+		if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+			t.Fatalf("legacy continuation error = %T %v, want typed conflict", err, err)
+		}
+	}
+	for _, raw := range []string{
+		`{"v":2,"root":"root","session":"root","source":"historical","generation":"g","path":[]}`,
+		`{"v":2,"root":"root","session":"root","revision":null,"source":"historical","generation":"g","path":[]}`,
+	} {
+		if _, err := decodeActivityContinuation(base64.RawURLEncoding.EncodeToString([]byte(raw)), "root"); err == nil {
+			t.Fatalf("unsigned omitted/null revision continuation accepted: %s", raw)
+		}
 	}
 }
 

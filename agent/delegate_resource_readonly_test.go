@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -177,6 +178,36 @@ func TestStableDelegateReadOnly_ColdAndLiveProjectionMatch(t *testing.T) {
 	coldRow := stableReadonlyActivityRow(t, cold, "dlg_parity")
 	if !reflect.DeepEqual(coldRow, liveRow) {
 		t.Fatalf("cold/live stable delegate mismatch:\n cold=%#v\n live=%#v", coldRow, liveRow)
+	}
+}
+
+func TestActivityPublicPathsRejectSourceHandoffAtEqualRevision(t *testing.T) {
+	stateDir := t.TempDir()
+	s := newSession(t,
+		withDir(stateDir),
+		withConfig(SessionConfig{StateDir: stateDir, MaxSubagentDepth: 1}),
+		withoutGitSnapshot(),
+	)
+	base := activityContinuation{
+		Version: activityContinuationV2, RootID: s.ID(), SessionID: s.ID(),
+		Revision: 0, Generation: activityServingGeneration,
+	}
+	liveToken := encodeActivityContinuation(activityContinuation{Version: base.Version, RootID: base.RootID, SessionID: base.SessionID, Revision: base.Revision, Source: activitySourceLive, Generation: base.Generation})
+	historicalToken := encodeActivityContinuation(activityContinuation{Version: base.Version, RootID: base.RootID, SessionID: base.SessionID, Revision: base.Revision, Source: activitySourceHistorical, Generation: base.Generation})
+	for name, err := range map[string]error{
+		"live": func() error {
+			_, err := s.JobActivityTree(appwire.JobsListParams{Continuation: historicalToken})
+			return err
+		}(),
+		"historical": func() error {
+			_, err := LoadSessionJobActivityTree(stateDir, s.ID(), appwire.JobsListParams{Continuation: liveToken})
+			return err
+		}(),
+	} {
+		var wire appwire.WireError
+		if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+			t.Fatalf("%s source handoff error = %T %v, want typed conflict", name, err, err)
+		}
 	}
 }
 

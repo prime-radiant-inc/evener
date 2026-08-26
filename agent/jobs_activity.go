@@ -1,7 +1,11 @@
 package agent
 
 import (
+	"crypto/hmac"
+	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,19 +21,44 @@ import (
 )
 
 const (
-	activityMaxWorkUnits    = 2000
-	activityMaxNewDepth     = 32
-	activityMaxEncodedBytes = 4 << 20
-	activityMaxTokenBytes   = 16 << 10
-	activityContinuationV1  = 1
+	activityMaxWorkUnits     = 2000
+	activityMaxNewDepth      = 32
+	activityMaxEncodedBytes  = 4 << 20
+	activityMaxTokenBytes    = 16 << 10
+	activityContinuationV1   = 1
+	activityContinuationV2   = 2
+	activitySourceLive       = "live"
+	activitySourceHistorical = "historical"
 )
 
+var activityCursorSecret, activityServingGeneration = newActivityCursorIdentity()
+
+func newActivityCursorIdentity() ([]byte, string) {
+	secret := make([]byte, 32)
+	if _, err := rand.Read(secret); err != nil {
+		panic(fmt.Sprintf("activity cursor identity: %v", err))
+	}
+	generation := make([]byte, 16)
+	if _, err := rand.Read(generation); err != nil {
+		panic(fmt.Sprintf("activity serving generation: %v", err))
+	}
+	return secret, hex.EncodeToString(generation)
+}
+
 type activityContinuation struct {
-	Version   int      `json:"v"`
-	RootID    string   `json:"root"`
-	SessionID string   `json:"session"`
-	Revision  uint64   `json:"revision"`
-	Path      []string `json:"path"`
+	Version    int      `json:"v"`
+	RootID     string   `json:"root"`
+	SessionID  string   `json:"session"`
+	Revision   uint64   `json:"revision"`
+	Source     string   `json:"source"`
+	Generation string   `json:"generation"`
+	Signature  string   `json:"signature"`
+	Path       []string `json:"path"`
+}
+
+type activityContinuationIdentity struct {
+	Source     string
+	Generation string
 }
 
 // activitySessionSnapshot is the lock-free input to the activity projection.
@@ -67,6 +96,8 @@ type activityBudget struct {
 	bounded      bool
 	rootID       string
 	revision     uint64
+	source       string
+	generation   string
 	maxWorkUnits int
 	usedWork     int
 	maxDepth     int
@@ -82,6 +113,8 @@ func newBoundedActivityBudget(rootID string, now time.Time) *activityBudget {
 		visiting:     make(map[string]bool),
 		bounded:      true,
 		rootID:       rootID,
+		source:       activitySourceHistorical,
+		generation:   activityServingGeneration,
 		maxWorkUnits: activityMaxWorkUnits,
 		maxDepth:     activityMaxNewDepth,
 		now:          now,
@@ -89,7 +122,22 @@ func newBoundedActivityBudget(rootID string, now time.Time) *activityBudget {
 }
 
 func encodeActivityContinuation(cont activityContinuation) string {
-	payload, err := json.Marshal(cont)
+	if cont.Version == 0 {
+		cont.Version = activityContinuationV2
+	}
+	if cont.Version != activityContinuationV2 {
+		return ""
+	}
+	unsigned := cont
+	unsigned.Signature = ""
+	payload, err := json.Marshal(unsigned)
+	if err != nil {
+		return ""
+	}
+	mac := hmac.New(sha256.New, activityCursorSecret)
+	_, _ = mac.Write(payload)
+	cont.Signature = hex.EncodeToString(mac.Sum(nil))
+	payload, err = json.Marshal(cont)
 	if err != nil {
 		return ""
 	}
@@ -99,46 +147,66 @@ func encodeActivityContinuation(cont activityContinuation) string {
 func decodeActivityContinuation(token, expectedRoot string) (activityContinuation, error) {
 	token = strings.TrimSpace(token)
 	if token == "" {
-		return activityContinuation{}, errors.New("empty continuation")
+		return activityContinuation{}, activityContinuationRestartError("empty continuation")
 	}
 	if len(token) > activityMaxTokenBytes {
-		return activityContinuation{}, fmt.Errorf("continuation exceeds %d bytes", activityMaxTokenBytes)
+		return activityContinuation{}, activityContinuationRestartError("continuation is too large")
 	}
 	raw, err := base64.RawURLEncoding.DecodeString(token)
 	if err != nil {
-		return activityContinuation{}, fmt.Errorf("decode continuation: %w", err)
+		return activityContinuation{}, activityContinuationRestartError("continuation encoding is invalid")
 	}
 	var cont activityContinuation
 	if err := json.Unmarshal(raw, &cont); err != nil {
-		return activityContinuation{}, fmt.Errorf("unmarshal continuation: %w", err)
+		return activityContinuation{}, activityContinuationRestartError("continuation format is invalid")
 	}
-	if cont.Version != activityContinuationV1 {
-		return activityContinuation{}, fmt.Errorf("unsupported continuation version %d", cont.Version)
+	if cont.Version != activityContinuationV2 {
+		return activityContinuation{}, activityContinuationRestartError("unsupported continuation version")
 	}
 	if cont.RootID == "" || cont.SessionID == "" {
-		return activityContinuation{}, errors.New("continuation missing root or session")
+		return activityContinuation{}, activityContinuationRestartError("continuation missing root or session")
 	}
 	if expectedRoot != "" && cont.RootID != expectedRoot {
-		return activityContinuation{}, fmt.Errorf("continuation root %q does not match %q", cont.RootID, expectedRoot)
+		return activityContinuation{}, activityContinuationRestartError("continuation root does not match the requested session")
 	}
 	if err := validIDToken(cont.RootID); err != nil {
-		return activityContinuation{}, fmt.Errorf("invalid continuation root: %w", err)
+		return activityContinuation{}, activityContinuationRestartError("invalid continuation root")
 	}
 	if err := validIDToken(cont.SessionID); err != nil {
-		return activityContinuation{}, fmt.Errorf("invalid continuation session: %w", err)
+		return activityContinuation{}, activityContinuationRestartError("invalid continuation session")
 	}
 	seen := make(map[string]bool, len(cont.Path))
 	for _, hop := range cont.Path {
 		if err := validIDToken(hop); err != nil {
-			return activityContinuation{}, fmt.Errorf("invalid continuation path hop %q: %w", hop, err)
+			return activityContinuation{}, activityContinuationRestartError("continuation path is invalid")
 		}
 		if seen[hop] {
-			return activityContinuation{}, fmt.Errorf("duplicate continuation path hop %q", hop)
+			return activityContinuation{}, activityContinuationRestartError("continuation path is ambiguous")
 		}
 		seen[hop] = true
 	}
+	if cont.Source != activitySourceLive && cont.Source != activitySourceHistorical || cont.Generation == "" {
+		return activityContinuation{}, activityContinuationRestartError("continuation identity is incomplete")
+	}
+	unsigned := cont
+	signature := unsigned.Signature
+	unsigned.Signature = ""
+	payload, err := json.Marshal(unsigned)
+	if err != nil {
+		return activityContinuation{}, activityContinuationRestartError("continuation cannot be authenticated")
+	}
+	mac := hmac.New(sha256.New, activityCursorSecret)
+	_, _ = mac.Write(payload)
+	expected := hex.EncodeToString(mac.Sum(nil))
+	if !hmac.Equal([]byte(signature), []byte(expected)) {
+		return activityContinuation{}, activityContinuationRestartError("continuation authentication failed")
+	}
 	cont.Path = append([]string(nil), cont.Path...)
 	return cont, nil
+}
+
+func activityContinuationRestartError(reason string) error {
+	return appwire.StaleContinuation("activity continuation is stale; restart from the root (" + reason + ")")
 }
 
 // JobActivityTree builds one bounded page of the session's job-activity tree
@@ -163,7 +231,7 @@ func (s *Session) JobActivityTree(params appwire.JobsListParams) (appwire.JobAct
 		if err := validateLiveActivityContinuationRevision(params, s.jobActivityClock, snapshot); err != nil {
 			return appwire.JobActivityTree{}, err
 		}
-		return projectBoundedActivityTree(*snapshot, root.sessionID, startDepth, 0, now)
+		return projectBoundedActivityTree(*snapshot, root.sessionID, startDepth, 0, now, activityContinuationIdentity{Source: activitySourceLive, Generation: activityServingGeneration})
 	}
 	return projectStableLiveActivityTreeAt(s.jobActivityClock, root.sessionID, now, func() (*activitySessionSnapshot, int, error) {
 		return loadActivitySnapshotForParams(root, params)
@@ -183,7 +251,7 @@ func projectStableLiveActivityTreeAt(clock *jobActivityClock, rootID string, now
 		}
 		after := activityCurrentRootRevision(clock)
 		if before == after {
-			return projectBoundedActivityTree(*snapshot, rootID, startDepth, after, now)
+			return projectBoundedActivityTree(*snapshot, rootID, startDepth, after, now, activityContinuationIdentity{Source: activitySourceLive, Generation: activityServingGeneration})
 		}
 	}
 	return appwire.JobActivityTree{}, errors.New("activity tree changed while snapshot was being built; retry")
@@ -234,7 +302,17 @@ func validateLiveActivityContinuationRevision(params appwire.JobsListParams, clo
 	if err != nil {
 		return err
 	}
+	if err := validateActivityContinuationIdentity(cont, activityContinuationIdentity{Source: activitySourceLive, Generation: activityServingGeneration}); err != nil {
+		return err
+	}
 	return validateActivityContinuationRevision(cont, activityCurrentRootRevision(clock))
+}
+
+func validateActivityContinuationIdentity(cont activityContinuation, expected activityContinuationIdentity) error {
+	if cont.Source != expected.Source || cont.Generation != expected.Generation {
+		return activityContinuationRestartError("continuation source generation changed")
+	}
+	return nil
 }
 
 func validateActivityContinuationRevision(cont activityContinuation, current uint64) error {
@@ -491,12 +569,16 @@ func activityFilterSnapshotToDelegate(base activitySessionSnapshot, delegateID s
 	return filtered
 }
 
-func projectBoundedActivityTree(snapshot activitySessionSnapshot, rootID string, startDepth int, revision uint64, now time.Time) (appwire.JobActivityTree, error) {
+func projectBoundedActivityTree(snapshot activitySessionSnapshot, rootID string, startDepth int, revision uint64, now time.Time, identity ...activityContinuationIdentity) (appwire.JobActivityTree, error) {
 	budget := newBoundedActivityBudget(rootID, now)
 	budget.revision = revision
+	if len(identity) != 0 {
+		budget.source = identity[0].Source
+		budget.generation = identity[0].Generation
+	}
 	root := projectActivitySessionAt(snapshot, budget, startDepth, nil)
 	tree := appwire.JobActivityTree{Revision: revision, Root: root}
-	return trimActivityTreeToFit(tree, rootID)
+	return trimActivityTreeToFit(tree, rootID, activityContinuationIdentity{Source: budget.source, Generation: budget.generation})
 }
 
 func activitySnapshotPersistedRevision(snapshot *activitySessionSnapshot, rootID string) uint64 {
@@ -862,11 +944,13 @@ func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *a
 	session.Branch.Truncated = true
 	if budget != nil && budget.rootID != "" {
 		session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
-			Version:   activityContinuationV1,
-			RootID:    budget.rootID,
-			SessionID: sessionID,
-			Revision:  budget.revision,
-			Path:      append([]string(nil), path...),
+			Version:    activityContinuationV2,
+			RootID:     budget.rootID,
+			SessionID:  sessionID,
+			Revision:   budget.revision,
+			Source:     budget.source,
+			Generation: budget.generation,
+			Path:       append([]string(nil), path...),
 		})
 	}
 }
@@ -878,11 +962,13 @@ func markActivityDelegateTruncated(delegate *appwire.JobActivityDelegate, budget
 	delegate.Branch.Truncated = true
 	if budget != nil && budget.rootID != "" {
 		delegate.Branch.Continuation = encodeActivityContinuation(activityContinuation{
-			Version:   activityContinuationV1,
-			RootID:    budget.rootID,
-			SessionID: sessionID,
-			Revision:  budget.revision,
-			Path:      append([]string(nil), path...),
+			Version:    activityContinuationV2,
+			RootID:     budget.rootID,
+			SessionID:  sessionID,
+			Revision:   budget.revision,
+			Source:     budget.source,
+			Generation: budget.generation,
+			Path:       append([]string(nil), path...),
 		})
 	}
 }
@@ -993,7 +1079,11 @@ func activityBranchComplete(branch appwire.JobActivityBranchState) bool {
 	return branch.Error == "" && !branch.Truncated && branch.Continuation == ""
 }
 
-func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string) (appwire.JobActivityTree, error) {
+func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string, identity ...activityContinuationIdentity) (appwire.JobActivityTree, error) {
+	pageIdentity := activityContinuationIdentity{Source: activitySourceHistorical, Generation: activityServingGeneration}
+	if len(identity) != 0 {
+		pageIdentity = identity[0]
+	}
 	for {
 		recomputeActivitySession(&tree.Root)
 		raw, err := json.Marshal(tree)
@@ -1003,7 +1093,7 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string) (appwire
 		if len(raw) <= activityMaxEncodedBytes {
 			return tree, nil
 		}
-		if !trimActivityTrailingEntryAtRevision(&tree.Root, rootID, tree.Revision, nil) {
+		if !trimActivityTrailingEntryAtIdentity(&tree.Root, rootID, tree.Revision, pageIdentity, nil) {
 			return tree, nil
 		}
 	}
@@ -1014,24 +1104,30 @@ func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID strin
 }
 
 func trimActivityTrailingEntryAtRevision(session *appwire.JobActivitySession, rootID string, revision uint64, path []string) bool {
+	return trimActivityTrailingEntryAtIdentity(session, rootID, revision, activityContinuationIdentity{Source: activitySourceHistorical, Generation: activityServingGeneration}, path)
+}
+
+func trimActivityTrailingEntryAtIdentity(session *appwire.JobActivitySession, rootID string, revision uint64, identity activityContinuationIdentity, path []string) bool {
 	if session == nil || len(session.Entries) == 0 {
 		return false
 	}
 	i := len(session.Entries) - 1
 	entry := &session.Entries[i]
 	if entry.Delegate != nil && entry.Delegate.Child != nil {
-		if trimActivityTrailingEntryAtRevision(entry.Delegate.Child, rootID, revision, appendActivityPath(path, entry.Delegate.DelegateID)) {
+		if trimActivityTrailingEntryAtIdentity(entry.Delegate.Child, rootID, revision, identity, appendActivityPath(path, entry.Delegate.DelegateID)) {
 			return true
 		}
 	}
 	session.Entries = session.Entries[:i]
 	session.Branch.Truncated = true
 	session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
-		Version:   activityContinuationV1,
-		RootID:    rootID,
-		SessionID: session.SessionID,
-		Revision:  revision,
-		Path:      append([]string(nil), path...),
+		Version:    activityContinuationV2,
+		RootID:     rootID,
+		SessionID:  session.SessionID,
+		Revision:   revision,
+		Source:     identity.Source,
+		Generation: identity.Generation,
+		Path:       append([]string(nil), path...),
 	})
 	return true
 }

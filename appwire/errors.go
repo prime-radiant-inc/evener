@@ -22,6 +22,7 @@ const (
 	ErrorHubLaunch              ErrorInfo = "hubLaunch"
 	ErrorQueuedDrainPartial     ErrorInfo = "queuedDrainPartial"
 	ErrorMutationOutcomeUnknown ErrorInfo = "mutationOutcomeUnknown"
+	ErrorStaleContinuation      ErrorInfo = "staleContinuation"
 	ErrorInternal               ErrorInfo = "internal"
 )
 
@@ -96,6 +97,20 @@ func Conflict(message string) WireError {
 		Code:    CodeConflict,
 		Message: message,
 		Data:    ErrorData{EvenerErrorInfo: ErrorConflict},
+	}
+}
+
+// StaleContinuation asks the consumer to discard its partial page and restart
+// from the root; the structured data is stable across transports.
+func StaleContinuation(message string) WireError {
+	return WireError{
+		Code:    CodeConflict,
+		Message: message,
+		Data: ErrorData{
+			EvenerErrorInfo:  ErrorStaleContinuation,
+			RetryDisposition: RetryDispositionAutomatic,
+			Cause:            "restartFromRoot",
+		},
 	}
 }
 

@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -39,7 +40,14 @@ func LoadSessionJobActivityTree(stateDir, sessionID string, params appwire.JobsL
 		return appwire.JobActivityTree{}, err
 	}
 	root := activitySessionLocator{stateDir: stateDir, sessionID: sessionID}
-	snapshot, startDepth, err := loadActivitySnapshotForParams(root, params)
+	var snapshot *activitySessionSnapshot
+	var startDepth int
+	var err error
+	var readRevision uint64
+	snapshot, startDepth, readRevision, err = loadHistoricalContinuationConsistent(
+		func() (uint64, error) { return historicalActivityRevision(stateDir, sessionID) },
+		func() (*activitySessionSnapshot, int, error) { return loadActivitySnapshotForParams(root, params) },
+	)
 	if err != nil {
 		return appwire.JobActivityTree{}, err
 	}
@@ -49,20 +57,52 @@ func LoadSessionJobActivityTree(stateDir, sessionID string, params appwire.JobsL
 	}
 	revision := activitySnapshotPersistedRevision(snapshot, rootRevisionID)
 	if strings.TrimSpace(params.Continuation) != "" {
-		full, err := buildActivityFullSnapshot(root, map[string]bool{sessionID: true}, false)
+		revision = readRevision
+		cont, err := decodeActivityContinuation(params.Continuation, sessionID)
 		if err != nil {
 			return appwire.JobActivityTree{}, err
 		}
-		revision = activitySnapshotPersistedRevision(full, rootRevisionID)
-		cont, err := decodeActivityContinuation(params.Continuation, sessionID)
-		if err != nil {
+		if err := validateActivityContinuationIdentity(cont, activityContinuationIdentity{Source: activitySourceHistorical, Generation: activityServingGeneration}); err != nil {
 			return appwire.JobActivityTree{}, err
 		}
 		if err := validateActivityContinuationRevision(cont, revision); err != nil {
 			return appwire.JobActivityTree{}, err
 		}
 	}
-	return projectBoundedActivityTree(*snapshot, sessionID, startDepth, revision, time.Now().UTC())
+	return projectBoundedActivityTree(*snapshot, sessionID, startDepth, revision, time.Now().UTC(), activityContinuationIdentity{Source: activitySourceHistorical, Generation: activityServingGeneration})
+}
+
+func historicalActivityRevision(stateDir, sessionID string) (uint64, error) {
+	meta, err := schema.LoadSessionMeta(stateDir, sessionID)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return 0, nil
+		}
+		return 0, err
+	}
+	return activityRevisionFromMeta(meta), nil
+}
+
+func loadHistoricalContinuationConsistent(
+	readRevision func() (uint64, error),
+	load func() (*activitySessionSnapshot, int, error),
+) (*activitySessionSnapshot, int, uint64, error) {
+	before, err := readRevision()
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	snapshot, startDepth, err := load()
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	after, err := readRevision()
+	if err != nil {
+		return nil, 0, 0, err
+	}
+	if before != after {
+		return nil, 0, 0, activityContinuationRestartError("historical snapshot changed while it was being read")
+	}
+	return snapshot, startDepth, before, nil
 }
 
 func loadHistoricalActivityBase(stateDir, sessionID string, required bool) (activityLoadedBase, error) {

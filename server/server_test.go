@@ -1564,6 +1564,30 @@ func TestHandleAppJobsListSourceError(t *testing.T) {
 	}
 }
 
+func TestHandleAppJobsListStaleContinuationPreservesRecoveryData(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetJobsFunc(func(appwire.JobsListParams) (any, error) {
+		return nil, appwire.StaleContinuation("restart from root")
+	})
+	conn := srv.AppServer().NewConnection("test")
+	init := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	if init.Kind() != appwire.MessageResponse {
+		t.Fatalf("init=%v", init.Kind())
+	}
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodEvenerJobsList, appwire.JobsListParams{Continuation: "stale"}))
+	if resp.Kind() != appwire.MessageError || resp.Error == nil {
+		t.Fatalf("response=%+v, want error", resp)
+	}
+	if resp.Error.Error.Code != appwire.CodeConflict {
+		t.Fatalf("error code=%d, want conflict", resp.Error.Error.Code)
+	}
+	data, ok := resp.Error.Error.Data.(appwire.ErrorData)
+	if !ok || data.EvenerErrorInfo != appwire.ErrorStaleContinuation || data.Cause != "restartFromRoot" || data.RetryDisposition != appwire.RetryDispositionAutomatic {
+		t.Fatalf("recovery data=%#v, want structured stale continuation", resp.Error.Error.Data)
+	}
+}
+
 func TestHandleAppJobsOutputNilFunc(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")

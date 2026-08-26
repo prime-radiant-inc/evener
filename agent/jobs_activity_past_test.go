@@ -2,6 +2,8 @@ package agent
 
 import (
 	"encoding/json"
+	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -57,6 +59,61 @@ func TestLoadSessionJobActivityTree_FollowsOnlyStableDelegateChildren(t *testing
 	stray := pastFindDelegate(t, got.Root, strayID)
 	if stray.Child != nil || stray.Branch.Error == "" {
 		t.Fatalf("missing child delegate = %+v", stray)
+	}
+}
+
+func TestLoadHistoricalContinuationConsistentRejectsMutationWithoutDescendantTraversal(t *testing.T) {
+	t.Parallel()
+	reads := 0
+	loaded := false
+	_, _, _, err := loadHistoricalContinuationConsistent(
+		func() (uint64, error) {
+			reads++
+			if loaded {
+				return 2, nil
+			}
+			return 1, nil
+		},
+		func() (*activitySessionSnapshot, int, error) {
+			loaded = true
+			return &activitySessionSnapshot{SessionID: "root"}, 0, nil
+		},
+	)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeConflict {
+		t.Fatalf("mutation error = %T %v, want typed conflict", err, err)
+	}
+	if reads != 2 {
+		t.Fatalf("authoritative generation reads = %d, want 2; validation must not traverse descendants", reads)
+	}
+}
+
+func TestLoadSessionJobActivityTree_PublicContinuationKeepsHistoricalGeneration(t *testing.T) {
+	t.Parallel()
+	stateDir := t.TempDir()
+	rootID := "rootpage"
+	started := time.Unix(350, 0).UTC()
+	events := make([]jobstore.Event, 0, activityMaxWorkUnits+1)
+	for i := 0; i < activityMaxWorkUnits+1; i++ {
+		events = append(events, jobstore.Event{
+			Kind: jobstore.EventJobStarted, TS: started.Add(time.Duration(i) * time.Millisecond),
+			JobID: fmt.Sprintf("job_%04d", i), Type: jobstore.JobShell,
+			OwnerSessionID: rootID, VisibleToSession: rootID,
+			StartedAt: func() *time.Time { ts := started.Add(time.Duration(i) * time.Millisecond); return &ts }(),
+		})
+	}
+	s1cov_writeJobLog(t, stateDir, rootID, events...)
+	savePastActivityMetaWithTreeRevision(t, stateDir, rootID, "Root", "", 1)
+	first, err := LoadSessionJobActivityTree(stateDir, rootID, appwire.JobsListParams{})
+	if err != nil || first.Root.Branch.Continuation == "" {
+		t.Fatalf("first page = %+v, err=%v; want continuation", first.Root, err)
+	}
+	second, err := LoadSessionJobActivityTree(stateDir, rootID, appwire.JobsListParams{Continuation: first.Root.Branch.Continuation})
+	if err != nil {
+		t.Fatalf("continuation rejected: %v", err)
+	}
+	if second.Revision != first.Revision {
+		t.Fatalf("continuation revision = %d, want %d", second.Revision, first.Revision)
 	}
 }
 

@@ -188,7 +188,7 @@ func TestProjectActivitySession_TruncatesStableRowsWithScopedContinuation(t *tes
 
 func TestDecodeActivityContinuation_Validation(t *testing.T) {
 	t.Parallel()
-	valid := encodeActivityContinuation(activityContinuation{Version: 1, RootID: "root", SessionID: "root", Path: []string{"dlg_1"}})
+	valid := encodeActivityContinuation(activityContinuation{Version: activityContinuationV2, RootID: "root", SessionID: "root", Source: activitySourceHistorical, Generation: activityServingGeneration, Path: []string{"dlg_1"}})
 	if got, err := decodeActivityContinuation(valid, "root"); err != nil || got.SessionID != "root" || !reflect.DeepEqual(got.Path, []string{"dlg_1"}) {
 		t.Fatalf("decode valid=(%+v,%v)", got, err)
 	}
