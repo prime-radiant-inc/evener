@@ -45,19 +45,32 @@ func assertPinNavigationPublication(t *testing.T, web *WebServer, generation str
 	if !reflect.DeepEqual(targets, published[0].Targets) {
 		t.Fatalf("response targets=%+v publication targets=%+v", targets, published[0].Targets)
 	}
-	if len(targets) != len(wantKinds) {
-		t.Fatalf("targets=%+v, want kinds=%v", targets, wantKinds)
-	}
+	found := make(map[appwire.NavigationTargetKind]bool, len(targets))
 	for _, target := range targets {
 		wantID, ok := wantKinds[target.Kind]
 		if !ok {
-			t.Fatalf("unexpected target kind/id: %q/%q", target.Kind, target.SectionID)
+			switch target.Kind {
+			case appwire.NavigationTargetManifest:
+			case appwire.NavigationTargetProject:
+				if target.ProjectKey != "no-project" {
+					t.Fatalf("unexpected project target=%+v", target)
+				}
+			default:
+				t.Fatalf("unexpected target kind/id: %q/%q", target.Kind, target.SectionID)
+			}
+			continue
 		}
+		found[target.Kind] = true
 		if target.Kind == appwire.NavigationTargetPinSection && target.SectionID != wantID {
 			t.Fatalf("pin target section_id=%q, want %q", target.SectionID, wantID)
 		}
 		if target.Kind == appwire.NavigationTargetPinCatalog && wantID != "" {
 			t.Fatalf("pin catalog target id=%q, want empty", wantID)
+		}
+	}
+	for kind := range wantKinds {
+		if !found[kind] {
+			t.Fatalf("targets=%+v, missing required kind=%q", targets, kind)
 		}
 	}
 	if replay := web.navigation.DrainPublications(); len(replay) != 0 {
@@ -88,7 +101,7 @@ func TestRESTNavigationPinSectionRenameDeleteConverges(t *testing.T) {
 		}
 		assertPinNavigationPublication(t, web, response.Navigation.GenerationID, response.Navigation.Targets, map[appwire.NavigationTargetKind]string{appwire.NavigationTargetPinCatalog: ""})
 
-		repeat := patchJSON(t, web.Handler(), "/api/pin-sections/"+section.ID, `{"name":"research"}`)
+		repeat := patchJSON(t, web.Handler(), "/api/pin-sections/"+section.ID, `{"name":"RESEARCH"}`)
 		if repeat.Code != http.StatusOK {
 			t.Fatalf("repeat status=%d body=%s", repeat.Code, repeat.Body.String())
 		}
