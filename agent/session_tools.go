@@ -918,6 +918,22 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 	var persistErr error
 	if abortErr := s.withResponseSideEffects(ctx, func() {
 		commits := s.takeDelegateDeliveryCommits(calls)
+		if len(commits) != 0 {
+			if observe := s.cfg.testOnly.delegateDeliveryCommitsTaken; observe != nil {
+				observe()
+			}
+			// This is the last cancellation observation before transcript persistence.
+			// Once it passes, the durable append below owns the commit point and must
+			// finish rather than roll back a write that may already have started.
+			if persistErr = ctx.Err(); persistErr != nil {
+				for _, binding := range commits {
+					if binding.commit != nil {
+						_, _ = binding.commit.Complete(false)
+					}
+				}
+				return
+			}
+		}
 		persistedParts := projectToolResultsForTranscript(calls, results, parts)
 		live := llm.Message{Role: llm.RoleTool, Content: parts}
 		persisted := llm.Message{Role: llm.RoleTool, Content: persistedParts}
@@ -940,6 +956,13 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 		s.maybeAutoSave()
 		s.announceReadableToolResultImages(results)
 	}); abortErr != nil {
+		// The tool round will not persist, so release any inline delivery receipts
+		// it acquired before cancellation and leave their durable heads replayable.
+		for _, binding := range s.takeDelegateDeliveryCommits(calls) {
+			if binding.commit != nil {
+				_, _ = binding.commit.Complete(false)
+			}
+		}
 		if ctx.Err() != nil && !s.isClosingOrClosed() {
 			s.appendCanceledToolResults(calls, results, abortErr)
 		}

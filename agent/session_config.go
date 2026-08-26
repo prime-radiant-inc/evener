@@ -292,6 +292,9 @@ type testConfig struct {
 	// delegateSendBeforePositiveWaitAdmission observes the boundary immediately
 	// before a positive-wait send reserves its start. Nil preserves production.
 	delegateSendBeforePositiveWaitAdmission func()
+	// delegateDeliveryCommitsTaken observes the tool-result boundary after inline
+	// delivery commits leave the pending map and before any transcript write.
+	delegateDeliveryCommitsTaken func()
 	// delegateAttentionReadFold replaces only resident attention verification
 	// reads. Nil preserves the production transcript fold.
 	delegateAttentionReadFold func(string, string) (delegateAttentionFold, error)
