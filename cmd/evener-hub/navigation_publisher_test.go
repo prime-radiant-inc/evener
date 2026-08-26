@@ -56,11 +56,7 @@ func TestNavigationPublisherLifecycleCoalescesReadinessAndBroadcastsFIFOOnce(t *
 		t.Fatal(err)
 	}
 	for range 2 {
-		select {
-		case <-recorder.seen:
-		case <-t.Context().Done():
-			t.Fatal(t.Context().Err())
-		}
+		<-recorder.seen
 	}
 
 	methods, payloads := recorder.snapshot()
