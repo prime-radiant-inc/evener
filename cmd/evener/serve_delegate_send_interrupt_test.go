@@ -1,12 +1,10 @@
 package main
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
 	"io"
-	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -33,94 +31,6 @@ const (
 )
 
 var waiterInterruptDelegateID = regexp.MustCompile(`dlg_[A-Za-z0-9_-]+`)
-
-type waiterInterruptWriteObserverListener struct {
-	net.Listener
-	observe func([]byte)
-}
-
-func (l *waiterInterruptWriteObserverListener) Accept() (net.Conn, error) {
-	conn, err := l.Listener.Accept()
-	if err != nil {
-		return nil, err
-	}
-	return &waiterInterruptWriteObserverConn{Conn: conn, observe: l.observe}, nil
-}
-
-type waiterInterruptWriteObserverConn struct {
-	net.Conn
-	mu       sync.Mutex
-	buffer   []byte
-	upgraded bool
-	observe  func([]byte)
-}
-
-func (c *waiterInterruptWriteObserverConn) Write(p []byte) (int, error) {
-	n, err := c.Conn.Write(p)
-	if n == 0 {
-		return n, err
-	}
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	c.buffer = append(c.buffer, p[:n]...)
-	if !c.upgraded {
-		const handshakeEnd = "\r\n\r\n"
-		end := bytes.Index(c.buffer, []byte(handshakeEnd))
-		if end < 0 {
-			return n, err
-		}
-		c.buffer = c.buffer[end+len(handshakeEnd):]
-		c.upgraded = true
-	}
-	for {
-		payload, ok := waiterInterruptNextWebSocketPayload(&c.buffer)
-		if !ok {
-			break
-		}
-		c.observe(payload)
-	}
-	return n, err
-}
-
-func waiterInterruptNextWebSocketPayload(buffer *[]byte) ([]byte, bool) {
-	b := *buffer
-	if len(b) < 2 || b[0]&0x70 != 0 || b[0]&0x0f != 1 {
-		if len(b) > 0 {
-			*buffer = b[1:]
-		}
-		return nil, len(b) > 0
-	}
-	if b[1]&0x80 != 0 {
-		*buffer = b[1:]
-		return nil, true
-	}
-	length := int(b[1] & 0x7f)
-	header := 2
-	switch length {
-	case 126:
-		if len(b) < 4 {
-			return nil, false
-		}
-		length = int(b[2])<<8 | int(b[3])
-		header = 4
-	case 127:
-		if len(b) < 10 {
-			return nil, false
-		}
-		if b[2] != 0 || b[3] != 0 || b[4] != 0 || b[5] != 0 {
-			*buffer = b[1:]
-			return nil, true
-		}
-		length = int(b[6])<<24 | int(b[7])<<16 | int(b[8])<<8 | int(b[9])
-		header = 10
-	}
-	if len(b) < header+length {
-		return nil, false
-	}
-	payload := append([]byte(nil), b[header:header+length]...)
-	*buffer = b[header+length:]
-	return payload, true
-}
 
 type waiterInterruptAdapter struct {
 	initialTerminal    chan struct{}
@@ -246,24 +156,24 @@ func (s *waiterInterruptServer) SubmitNotification() {
 }
 
 type waiterInterruptDaemon struct {
-	adapter                *waiterInterruptAdapter
-	client                 *appwire.Client
-	ctx                    context.Context
-	ref                    string
-	terminalClaimed        chan struct{}
-	positiveWaitSeen       chan struct{}
-	turnEnded              chan struct{}
-	sessionEndEntered      chan struct{}
-	releaseSessionEnd      chan struct{}
-	sessionEndProjected    chan struct{}
-	releaseOnce            sync.Once
-	server                 *waiterInterruptServer
-	stateDir               string
-	sessionID              string
-	interruptResponseID    *atomic.Value
-	interruptResponse      chan struct{}
-	processingReleased     *atomic.Bool
-	earlyInterruptResponse *atomic.Bool
+	adapter             *waiterInterruptAdapter
+	client              *appwire.Client
+	ctx                 context.Context
+	ref                 string
+	terminalClaimed     chan struct{}
+	positiveWaitSeen    chan struct{}
+	turnEnded           chan struct{}
+	sessionEndEntered   chan struct{}
+	releaseSessionEnd   chan struct{}
+	sessionEndProjected chan struct{}
+	releaseOnce         sync.Once
+	server              *waiterInterruptServer
+	stateDir            string
+	sessionID           string
+	interruptResponseID *atomic.Value
+	interruptResponse   chan struct{}
+	processingReleased  *atomic.Bool
+	earlyInterruptFrame *atomic.Bool
 }
 
 func startWaiterInterruptDaemon(t *testing.T) *waiterInterruptDaemon {
@@ -273,7 +183,7 @@ func startWaiterInterruptDaemon(t *testing.T) *waiterInterruptDaemon {
 	interruptResponseCompleted := make(chan struct{})
 	var interruptResponseOnce sync.Once
 	var processingReleased atomic.Bool
-	var earlyInterruptResponse atomic.Bool
+	var earlyInterruptFrame atomic.Bool
 	positiveWaitSeen := make(chan struct{})
 	terminalClaimed := make(chan struct{})
 	turnEnded := make(chan struct{})
@@ -291,27 +201,6 @@ func startWaiterInterruptDaemon(t *testing.T) *waiterInterruptDaemon {
 	secondGenerationRunning := false
 
 	deps := defaultServeDeps()
-	listen := deps.listen
-	deps.listen = func(ctx context.Context, network, addr string) (net.Listener, error) {
-		listener, err := listen(ctx, network, addr)
-		if err != nil {
-			return nil, err
-		}
-		return &waiterInterruptWriteObserverListener{Listener: listener, observe: func(payload []byte) {
-			var message appwire.Message
-			if err := json.Unmarshal(payload, &message); err != nil || message.Kind() != appwire.MessageResponse {
-				return
-			}
-			id, _ := interruptResponseID.Load().(string)
-			if id == "" || message.IDString() != id {
-				return
-			}
-			if !processingReleased.Load() {
-				earlyInterruptResponse.Store(true)
-			}
-			interruptResponseOnce.Do(func() { close(interruptResponseCompleted) })
-		}}, nil
-	}
 	deps.ensureConfigDirs = func() error { return nil }
 	deps.seedMarketplaces = func() error { return nil }
 	deps.newClient = func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error) {
@@ -408,6 +297,21 @@ func startWaiterInterruptDaemon(t *testing.T) *waiterInterruptDaemon {
 		t.Fatalf("DialWebSocket: %v", err)
 	}
 	client := appwire.NewClient(transport)
+	// The ordered handler observes the response frame before the client wakes
+	// the matching RPC, without duplicating the WebSocket framing layer.
+	client.SetOrderedFrameHandler(func(message appwire.Message, err error) {
+		if err != nil || message.Kind() != appwire.MessageResponse {
+			return
+		}
+		id, _ := interruptResponseID.Load().(string)
+		if id == "" || message.IDString() != id {
+			return
+		}
+		if !processingReleased.Load() {
+			earlyInterruptFrame.Store(true)
+		}
+		interruptResponseOnce.Do(func() { close(interruptResponseCompleted) })
+	})
 	client.Start(context.WithoutCancel(ctx))
 	if _, err := client.Initialize(ctx, appwire.InitializeParams{
 		ClientInfo: appwire.ClientInfo{Name: "waiter-interrupt-test", Version: "test"},
@@ -445,23 +349,23 @@ func startWaiterInterruptDaemon(t *testing.T) *waiterInterruptDaemon {
 		cancel()
 	})
 	return &waiterInterruptDaemon{
-		adapter:                adapter,
-		client:                 client,
-		ctx:                    ctx,
-		ref:                    appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String(),
-		terminalClaimed:        terminalClaimed,
-		positiveWaitSeen:       positiveWaitSeen,
-		turnEnded:              turnEnded,
-		sessionEndEntered:      sessionEndEntered,
-		releaseSessionEnd:      releaseSessionEnd,
-		sessionEndProjected:    sessionEndProjected,
-		server:                 waiterServer,
-		stateDir:               stateDir,
-		sessionID:              entry.SessionID,
-		interruptResponseID:    &interruptResponseID,
-		interruptResponse:      interruptResponseCompleted,
-		processingReleased:     &processingReleased,
-		earlyInterruptResponse: &earlyInterruptResponse,
+		adapter:             adapter,
+		client:              client,
+		ctx:                 ctx,
+		ref:                 appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String(),
+		terminalClaimed:     terminalClaimed,
+		positiveWaitSeen:    positiveWaitSeen,
+		turnEnded:           turnEnded,
+		sessionEndEntered:   sessionEndEntered,
+		releaseSessionEnd:   releaseSessionEnd,
+		sessionEndProjected: sessionEndProjected,
+		server:              waiterServer,
+		stateDir:            stateDir,
+		sessionID:           entry.SessionID,
+		interruptResponseID: &interruptResponseID,
+		interruptResponse:   interruptResponseCompleted,
+		processingReleased:  &processingReleased,
+		earlyInterruptFrame: &earlyInterruptFrame,
 	}
 }
 
@@ -561,8 +465,8 @@ func TestRunServeInterruptSettlesClaimedPositiveWaitDelegateSend(t *testing.T) {
 	case <-interruptCtx.Done():
 		t.Fatalf("TurnInterrupt response did not complete after runnerDone barrier release: %v", interruptCtx.Err())
 	}
-	if daemon.earlyInterruptResponse.Load() {
-		t.Fatal("TurnInterrupt response write completed before processing release")
+	if daemon.earlyInterruptFrame.Load() {
+		t.Fatal("TurnInterrupt response completed before runnerDone barrier release")
 	}
 	select {
 	case err := <-interruptResult:
