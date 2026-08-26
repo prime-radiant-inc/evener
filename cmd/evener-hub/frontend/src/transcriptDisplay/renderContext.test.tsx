@@ -8,9 +8,10 @@ import {
   scopedDisclosureId,
   setDisclosureOpen,
 } from "../widgets/disclosure/disclosureStore";
-import { makeTranscriptDisplayConfig } from "./config";
+import { makeTranscriptDisplayConfig, presetContent, type TranscriptDisplayConfigV1 } from "./config";
 import type { TranscriptMetadataVisibility } from "./projector";
 import {
+  expandDetailsByDefault,
   type TranscriptRenderContextValue,
   TranscriptRenderProvider,
   useTranscriptRenderContext,
@@ -97,11 +98,50 @@ test("keeps provider context identity across projection objects with equal seman
 function DisclosureProbe({ id }: { id: string }) {
   const context = useTranscriptRenderContext();
   const scopedId = scopedDisclosureId(context.disclosureScope, id);
-  const fallback = disclosureDefault(context.disclosureScope, id, false);
+  const fallback = expandDetailsByDefault(context.config) || disclosureDefault(context.disclosureScope, id, false);
   return (
     <output data-testid={`disclosure-${id}`} data-open={isDisclosureOpen(scopedId, fallback) ? "true" : "false"} />
   );
 }
+
+const equivalentFull = makeTranscriptDisplayConfig({ kind: "custom", ...presetContent("full") });
+const namedFull = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });
+
+function baselineProvider(config: TranscriptDisplayConfigV1, eligibleDisclosureIds: readonly string[]) {
+  return (
+    <TranscriptRenderProvider config={config} disclosureScope="scope" eligibleDisclosureIds={eligibleDisclosureIds}>
+      <DisclosureProbe id="tool-a" />
+    </TranscriptRenderProvider>
+  );
+}
+
+test("only named Full establishes a baseline across equivalent Custom transitions", () => {
+  const { rerender, unmount } = render(
+    baselineProvider(makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }), ["tool-a"]),
+  );
+
+  act(() => setDisclosureOpen(scopedDisclosureId("scope", "tool-a"), false));
+  rerender(baselineProvider(equivalentFull, ["tool-a"]));
+  expect(screen.getByTestId("disclosure-tool-a").dataset.open).toBe("false");
+
+  rerender(baselineProvider(namedFull, ["tool-a"]));
+  expect(screen.getByTestId("disclosure-tool-a").dataset.open).toBe("true");
+
+  act(() => setDisclosureOpen(scopedDisclosureId("scope", "tool-a"), false));
+  rerender(baselineProvider(namedFull, ["tool-a"]));
+  expect(screen.getByTestId("disclosure-tool-a").dataset.open).toBe("false");
+
+  rerender(baselineProvider(equivalentFull, ["tool-a"]));
+  expect(screen.getByTestId("disclosure-tool-a").dataset.open).toBe("false");
+
+  unmount();
+  resetDisclosureStoreForTests();
+  render(baselineProvider(equivalentFull, ["tool-a"]));
+  expect(screen.getByTestId("disclosure-tool-a").dataset.open).toBe("true");
+  cleanup();
+  render(baselineProvider(namedFull, ["tool-a"]));
+  expect(screen.getByTestId("disclosure-tool-a").dataset.open).toBe("true");
+});
 
 test("refreshes a mounted Full baseline for new rows without reopening a manual close", () => {
   const config = makeTranscriptDisplayConfig({ kind: "preset", level: "full" });

@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import type { ItemModel, ThreadModel, TurnModel } from "../protocol/model";
-import { makeTranscriptDisplayConfig, type TranscriptDisplayConfigV1 } from "./config";
+import { makeTranscriptDisplayConfig, presetContent, type TranscriptDisplayConfigV1 } from "./config";
 import { projectThread } from "./projector";
 
 const BASE_THREAD = {
@@ -439,5 +439,19 @@ describe("transcript projector", () => {
       custom({ toolIntent: true, toolCalls: false, reasoning: true, expandByDefault: false }),
     );
     expect(reasoningWithoutTools.turns[0]?.entries.map((entry) => entry.id)).toEqual(["intent:tool", "think"]);
+  });
+
+  test("projects an equivalent Custom vector like its named preset without changing its kind", () => {
+    const model = threadWith(
+      item("user", "userMessage"),
+      item("tool", "commandExecution", { description: "Inspect" }),
+      item("think", "reasoning"),
+      item("agent", "agentMessage"),
+    );
+    const customConfig = custom(presetContent("tools"));
+    const presetConfig = preset("tools");
+
+    expect(customConfig.content.kind).toBe("custom");
+    expect(entriesFor(model, customConfig)).toEqual(entriesFor(model, presetConfig));
   });
 });

@@ -10,6 +10,7 @@ import type { TranscriptDisplayPatchResponse } from "../protocol/types.gen";
 import {
   encodeLocalConfig,
   makeTranscriptDisplayConfig,
+  presetContent,
   shippedDesktopConfig,
   shippedMobileConfig,
   type TranscriptDisplayConfigV1,
@@ -584,6 +585,37 @@ test("local values survive store reinitialization", () => {
   resetTranscriptDisplayStoreForTests();
   initTranscriptDisplay();
   expect(transcriptDisplayStore.getState().local.desktop).toEqual(value);
+});
+
+test("preserves an explicit Tools-equivalent Custom through local and hub persistence", async () => {
+  const custom = makeTranscriptDisplayConfig({ kind: "custom", ...presetContent("tools") });
+  transcriptDisplayStore.getState().setLocal("desktop", custom);
+  expect(transcriptDisplayStore.getState().local.desktop?.content.kind).toBe("custom");
+  expect(transcriptDisplayStore.getState().effective("desktop").content.kind).toBe("custom");
+  expect(JSON.parse(storage.getItem(desktopKey) ?? "{}").content.kind).toBe("custom");
+
+  resetTranscriptDisplayStoreForTests();
+  initTranscriptDisplay();
+  expect(transcriptDisplayStore.getState().local.desktop?.content.kind).toBe("custom");
+
+  const client = new FakeClient("ready");
+  client.on("evener/settings/transcriptDisplay/get", () => ({
+    desktop: { revision: 1, config: toWireConfig(custom) },
+    mobile: { revision: 1, config: toWireConfig(shippedMobileConfig) },
+  }));
+  connectionStore.getState().connect(client);
+  connectionStore.setState({ features: { ...(await client.connect()).features, transcriptDisplaySettings: true } });
+  await transcriptDisplayStore.getState().refreshHubDefaults();
+  expect(transcriptDisplayStore.getState().hub.desktop?.config.content.kind).toBe("custom");
+
+  client.on("evener/settings/transcriptDisplay/patch", () => ({
+    layout: "desktop",
+    revision: 2,
+    config: toWireConfig(custom),
+  }));
+  const canonical = await transcriptDisplayStore.getState().patchHubDefault("desktop", custom);
+  expect(canonical.config.content.kind).toBe("custom");
+  expect(transcriptDisplayStore.getState().hub.desktop?.config.content.kind).toBe("custom");
 });
 
 test("migration runs before local load, keeps old keys, and dual-writes literal booleans", () => {

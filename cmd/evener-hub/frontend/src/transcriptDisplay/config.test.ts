@@ -2,9 +2,9 @@ import { describe, expect, test } from "vitest";
 import {
   accessibleConfigSummary,
   advancedEnabledCount,
-  type ContentSelection,
   configFingerprint,
   configSummary,
+  contentSummary,
   decodeLocalConfig,
   dualWriteLegacyPreferences,
   encodeLocalConfig,
@@ -23,6 +23,8 @@ import {
 } from "./config";
 
 describe("transcript display config", () => {
+  const LEVELS = ["chat", "intent", "tools", "activity", "full"] as const;
+
   test("expands the five cumulative content presets", () => {
     expect(presetContent("chat")).toEqual({
       toolIntent: false,
@@ -56,12 +58,21 @@ describe("transcript display config", () => {
     });
   });
 
-  test("normalizes exact Custom vectors to named presets and retains other vectors", () => {
-    const customIntent: ContentSelection = {
-      kind: "custom",
-      ...presetContent("intent"),
-    };
-    expect(normalizeContent(customIntent)).toEqual({ kind: "preset", level: "intent" });
+  test.each(LEVELS)("preserves explicit Custom identity when its vector equals %s", (level) => {
+    const vector = presetContent(level);
+    const custom = makeTranscriptDisplayConfig({ kind: "custom", ...vector });
+    const preset = makeTranscriptDisplayConfig({ kind: "preset", level });
+
+    expect(custom.content).toEqual({ kind: "custom", ...vector });
+    expect(toWireConfig(custom).content).toEqual({ kind: "custom", custom: vector });
+    expect(fromWireConfig(toWireConfig(custom))).toEqual(custom);
+    expect(decodeLocalConfig(encodeLocalConfig(custom))).toEqual(custom);
+    expect(configFingerprint(custom)).not.toBe(configFingerprint(preset));
+    expect(contentSummary(custom.content)).toBe("Custom");
+  });
+
+  test("normalizes named presets and retains non-preset Custom vectors", () => {
+    expect(normalizeContent({ kind: "preset", level: "intent" })).toEqual({ kind: "preset", level: "intent" });
     expect(
       normalizeContent({
         kind: "custom",
@@ -117,6 +128,8 @@ describe("transcript display config", () => {
     '{"version":2,"content":{"kind":"preset","level":"chat"},"advanced":{"roundTimings":false,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":false,"hookExits":"none"}}',
     '{"version":1,"content":{"kind":"preset","level":"unknown"},"advanced":{"roundTimings":false,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":false,"hookExits":"none"}}',
     '{"version":1,"content":{"kind":"custom","custom":{"toolIntent":true}},"advanced":{"roundTimings":false,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":false,"hookExits":"none"}}',
+    '{"version":1,"content":{"kind":"custom","custom":{"toolIntent":true,"toolCalls":true,"reasoning":false,"expandByDefault":false,"extra":false}},"advanced":{"roundTimings":false,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":false,"hookExits":"none"}}',
+    '{"version":1,"content":{"kind":"custom","custom":{"toolIntent":"true","toolCalls":true,"reasoning":false,"expandByDefault":false}},"advanced":{"roundTimings":false,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":false,"hookExits":"none"}}',
     '{"version":1,"content":{"kind":"preset","level":"chat","custom":{"toolIntent":false,"toolCalls":false,"reasoning":false,"expandByDefault":false}},"advanced":{"roundTimings":false,"tokenCounts":false,"estimatedCost":false,"systemEvents":false,"promptEvents":false,"hookExits":"none"}}',
   ])("treats malformed or unsupported local data as absent (%j)", (raw) => {
     expect(decodeLocalConfig(raw)).toBeUndefined();
@@ -127,6 +140,24 @@ describe("transcript display config", () => {
     const wire = toWireConfig(config);
     expect(fromWireConfig(wire)).toEqual(config);
     expect(fromWireConfig({ ...wire, content: { kind: "custom" } })).toBeUndefined();
+    expect(
+      fromWireConfig({
+        ...wire,
+        content: {
+          kind: "custom",
+          custom: { ...presetContent("tools"), extra: false },
+        },
+      }),
+    ).toBeUndefined();
+    expect(
+      fromWireConfig({
+        ...wire,
+        content: {
+          kind: "custom",
+          custom: { ...presetContent("tools"), toolCalls: "true" },
+        },
+      }),
+    ).toBeUndefined();
     expect(fromWireConfig({ ...wire, advanced: { ...wire.advanced, hookExits: undefined } })).toBeUndefined();
   });
 
