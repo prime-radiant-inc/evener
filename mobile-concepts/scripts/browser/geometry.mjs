@@ -199,10 +199,30 @@ export async function stabilizePagePaint(
     const viewportIntersection = intersect(rectangle, viewport);
     let clipIntersection = { ...rectangle };
     const clippingAncestors = [];
+    const ancestorStyles = [];
+    let effectiveOpacity = opacity;
+    let effectiveVisible =
+      style?.display !== "none" && style?.visibility !== "hidden";
     let ancestor = element.parentElement;
     while (ancestor) {
       const ancestorStyle =
         ancestor.ownerDocument?.defaultView?.getComputedStyle(ancestor);
+      const ancestorOpacity = Number(ancestorStyle?.opacity ?? 1);
+      effectiveOpacity *= ancestorOpacity;
+      effectiveVisible =
+        effectiveVisible &&
+        ancestorStyle?.display !== "none" &&
+        ancestorStyle?.visibility !== "hidden" &&
+        ancestorOpacity > 0;
+      ancestorStyles.push({
+        element:
+          ancestor.id ||
+          ancestor.getAttribute?.("data-testid") ||
+          ancestor.tagName,
+        display: ancestorStyle?.display,
+        visibility: ancestorStyle?.visibility,
+        opacity: ancestorOpacity,
+      });
       const clipsX = ancestorStyle?.overflowX !== "visible";
       const clipsY = ancestorStyle?.overflowY !== "visible";
       if (clipsX || clipsY) {
@@ -241,12 +261,14 @@ export async function stabilizePagePaint(
         element.getAttribute?.("data-testid") ||
         element.tagName,
       visible:
-        style?.display !== "none" &&
-        style?.visibility !== "hidden" &&
-        opacity > 0 &&
+        effectiveVisible &&
+        effectiveOpacity > 0 &&
         intersection.width > 0 &&
         intersection.height > 0,
       opacity,
+      effectiveOpacity,
+      effectiveVisible,
+      ancestorStyles,
       rect: rectangle,
       viewportIntersection,
       clipIntersection,
@@ -261,8 +283,6 @@ export async function stabilizePagePaint(
   const infiniteStabilized = [];
   const capabilityFailures = [];
   for (const [index, animation] of animations.entries()) {
-    const timing = animation.effect?.getComputedTiming?.() ?? {};
-    const specified = animation.effect?.getTiming?.() ?? {};
     const target = animation.effect?.target;
     const identity =
       animation.id ||
@@ -274,8 +294,31 @@ export async function stabilizePagePaint(
       target?.getAttribute?.("data-testid") ||
       target?.tagName ||
       "unknown";
-    if (timing.endTime === Infinity || specified.iterations === Infinity) {
-      let stage = "pause";
+    let stage = "get-computed-timing";
+    let timing;
+    let specified;
+    let endTime;
+    let iterations;
+    try {
+      timing = animation.effect?.getComputedTiming?.() ?? {};
+      stage = "get-timing";
+      specified = animation.effect?.getTiming?.() ?? {};
+      stage = "end-time-read";
+      endTime = timing.endTime;
+      stage = "iterations-read";
+      iterations = specified.iterations;
+    } catch (error) {
+      capabilityFailures.push({
+        code: "animation-timing-evaluation-failed",
+        identity,
+        affectedElement,
+        stage,
+        error: error.message,
+      });
+      continue;
+    }
+    if (endTime === Infinity || iterations === Infinity) {
+      stage = "pause";
       let before;
       let duration;
       let current;
@@ -283,6 +326,7 @@ export async function stabilizePagePaint(
         animation.pause();
         stage = "before-snapshot";
         before = snapshotTarget(target);
+        stage = "duration-read";
         duration = Number(specified.duration);
         stage = "current-time-read";
         current =
@@ -340,7 +384,7 @@ export async function stabilizePagePaint(
       const eligible = phases.filter(
         ({ snapshot }) =>
           snapshot?.visible &&
-          Number(snapshot.opacity) > 0 &&
+          Number(snapshot.effectiveOpacity ?? snapshot.opacity) > 0 &&
           Number(snapshot.intersection?.width) > 0 &&
           Number(snapshot.intersection?.height) > 0,
       );
@@ -355,7 +399,7 @@ export async function stabilizePagePaint(
         continue;
       }
       const score = ({ snapshot }) =>
-        Number(snapshot.opacity) * 1e9 +
+        Number(snapshot.effectiveOpacity ?? snapshot.opacity) * 1e9 +
         Number(snapshot.intersection.width) *
           Number(snapshot.intersection.height);
       const chosen = eligible.reduce(
@@ -390,7 +434,7 @@ export async function stabilizePagePaint(
       Number(animation.playbackRate) === 0
     ) {
       const before = snapshotTarget(target);
-      const terminal = Number(timing.endTime);
+      const terminal = Number(endTime);
       if (!Number.isFinite(terminal)) {
         capabilityFailures.push({
           code: "finite-animation-no-terminal-time",
