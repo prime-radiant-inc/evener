@@ -2,6 +2,7 @@ package hubcore
 
 import (
 	"database/sql"
+	"errors"
 	"os"
 	"path/filepath"
 	"time"
@@ -98,14 +99,35 @@ func (s *ArchiveStore) Set(kind, id string, archived bool, now time.Time) error 
 	if archived {
 		flag = 1
 	}
-	_, err = db.Exec( //nolint:noctx // local file DB
-		`INSERT INTO archive (kind, id, archived, decided_at) VALUES (?, ?, ?, ?)
-		 ON CONFLICT(kind, id) DO UPDATE SET archived=excluded.archived, decided_at=excluded.decided_at`,
-		kind, id, flag, now.Unix())
+	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
-	s.fireChange()
+	defer func() { _ = tx.Rollback() }()
+	var previous int
+	err = tx.QueryRow(`SELECT archived FROM archive WHERE kind = ? AND id = ?`, kind, id).Scan(&previous)
+	changed := false
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
+		_, err = tx.Exec(`INSERT INTO archive (kind, id, archived, decided_at) VALUES (?, ?, ?, ?)`, kind, id, flag, now.Unix())
+		changed = err == nil
+	case err == nil && previous != flag:
+		_, err = tx.Exec(`UPDATE archive SET archived = ?, decided_at = ? WHERE kind = ? AND id = ?`, flag, now.Unix(), kind, id)
+		changed = err == nil
+	case err == nil:
+		// An equivalent decision is a content no-op; notably, do not churn decided_at.
+	default:
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	if err = tx.Commit(); err != nil {
+		return err
+	}
+	if changed {
+		s.fireChange()
+	}
 	return nil
 }
 
@@ -150,10 +172,24 @@ func (s *ArchiveStore) Delete(kind, id string) error {
 		return err
 	}
 	defer func() { _ = db.Close() }()
-	_, err = db.Exec(`DELETE FROM archive WHERE kind = ? AND id = ?`, kind, id) //nolint:noctx // local file DB
+	tx, err := db.Begin()
 	if err != nil {
 		return err
 	}
-	s.fireChange()
+	defer func() { _ = tx.Rollback() }()
+	result, err := tx.Exec(`DELETE FROM archive WHERE kind = ? AND id = ?`, kind, id)
+	if err != nil {
+		return err
+	}
+	changed, err := result.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if changed != 0 {
+		s.fireChange()
+	}
 	return nil
 }

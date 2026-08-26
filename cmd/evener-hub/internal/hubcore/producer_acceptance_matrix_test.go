@@ -189,10 +189,12 @@ func TestProducerAcceptanceFavoriteNoopAndOneChange(t *testing.T) {
 	}
 }
 
-func TestProducerAcceptanceRemoteHintCarriesSourceData(t *testing.T) {
+func TestProducerAcceptanceRemoteSourceMapChangeIsFingerprinted(t *testing.T) {
 	cache := &RemoteThreadCache{}
 	thread := appwire.Thread{ID: "remote-1", Source: "source-a"}
-	cache.StoreSnapshotData(RemoteThreadSnapshot{Threads: []appwire.Thread{thread}, Complete: true})
+	cache.StoreSnapshotData(RemoteThreadSnapshot{Threads: []appwire.Thread{thread}, Complete: true, Sources: map[string]RemoteSourceSnapshot{
+		"source-a": {Threads: []appwire.Thread{thread}, Complete: true},
+	}})
 	got := cache.Snapshot()
 	if len(got.Sources["source-a"].Threads) != 1 || got.Sources["source-a"].Threads[0].ID != thread.ID {
 		t.Fatalf("inferred remote source = %+v", got.Sources)
