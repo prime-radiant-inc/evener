@@ -1,11 +1,14 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "./notifications";
+import { FakeClient } from "./protocol/testing/fakeClient";
 import { AppwireClient } from "./protocol/client";
+import { AppShell } from "./shell/AppShell";
 import { resetWorkspaceStoreForTests } from "./shell/workspace";
 import { connectionStore } from "./stores/connection";
 import { resetThreadsStoreForTests } from "./stores/threads";
 import { resetTreeStoreForTests, treeStore } from "./stores/tree";
+import { navigationStore } from "./stores/navigation/store";
 import { resetToastStoreForTests } from "./widgets/toast/store";
 
 // AppShell's default createClient constructs a REAL AppwireClient (no test
@@ -306,6 +309,48 @@ test("initiates and settles the welcome tree load without an error", async () =>
   expect(tree).not.toBeNull();
   expect(loading).toBe(false);
   expect(error).toBeNull();
+});
+
+test("AppShell's injected v1 handshake selects navigation without a legacy tree request", async () => {
+  const client = new FakeClient("ready");
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v3",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "app-generation", sequence: 0 },
+  }));
+  const calls: string[] = [];
+  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
+    calls.push(String(input));
+    if (input !== "/api/navigation" || (init?.method ?? "GET") !== "GET")
+      throw new Error(`unexpected AppShell fetch: ${String(input)}`);
+    return Promise.resolve(
+      new Response(JSON.stringify({
+        generation_id: "app-generation",
+        revision: 1,
+        sources: [],
+        attentionSummary: { needsYou: 0, error: 0, working: 0 },
+        sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+        catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+      }), {
+        headers: {
+          "content-type": "application/json",
+          "X-Evener-Navigation-Generation": "app-generation",
+          "X-Evener-Navigation-Revision": "1",
+          etag: '"app-manifest"',
+        },
+      }),
+    );
+  });
+
+  render(<AppShell client={client} />);
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+
+  expect(navigationStore.getState().mode).toBe("v1");
+  expect(calls).toEqual(["/api/navigation"]);
 });
 
 test("does not escape a tree fetch before the test fake is installed", () => {

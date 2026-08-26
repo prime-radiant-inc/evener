@@ -2,10 +2,43 @@ import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vi
 import { FakeClient } from "../protocol/testing/fakeClient";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
+import { initNavigation, navigationStore } from "../stores/navigation/store";
 import { prefsStore, resetPrefsStoreForTests } from "../stores/prefs";
 import { resetTreeStoreForTests, type TreeNode, type TreeResponse, treeStore } from "../stores/tree";
 import { initNotifications, resetNotificationsForTests } from "./index";
 import { resetLeaderForTests, setLeaderForTests } from "./leader";
+
+const navigationCapability = (generationId = "generation_test", version = 1) => ({
+  version,
+  generationId,
+  sequence: 0,
+});
+
+const navigationManifest = (generationId = "generation_test") =>
+  new Response(
+    JSON.stringify({
+      generation_id: generationId,
+      revision: 1,
+      sources: [],
+      attentionSummary: { needsYou: 0, error: 0, working: 0 },
+      sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+      catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+    }),
+    {
+      headers: {
+        "content-type": "application/json",
+        "X-Evener-Navigation-Generation": generationId,
+        "X-Evener-Navigation-Revision": "1",
+        etag: '"manifest"',
+      },
+    },
+  );
+
+const flushMicrotasks = async (): Promise<void> => {
+  await Promise.resolve();
+  await Promise.resolve();
+  await Promise.resolve();
+};
 
 // localStorage shim (Node shadows jsdom's; see prefs.test.ts's identical note)
 // so the prefs setters this file drives actually round-trip.
@@ -159,6 +192,57 @@ async function boot(baseline: TreeResponse): Promise<void> {
 }
 
 describe("initNotifications lifecycle", () => {
+  test("supported v1 boots navigation and never fetches the legacy tree", async () => {
+    fetchMock.mockImplementation(async (input: RequestInfo | URL) => {
+      expect(input).toBe("/api/navigation");
+      return navigationManifest();
+    });
+    const client = new FakeClient("ready");
+    client.scriptConnect(() => ({
+      serverInfo: { name: "fake", version: "1" },
+      protocolVersion: "evener-appwire-v3",
+      sourceId: "fake",
+      features: {} as never,
+      navigation: navigationCapability(),
+    }));
+    connectionStore.getState().connect(client);
+    initNotifications();
+    await flushMicrotasks();
+
+    expect(navigationStore.getState().mode).toBe("v1");
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/api/navigation"]);
+  });
+
+  test("absent capability uses exactly the legacy tree and never navigation", async () => {
+    const client = new FakeClient("ready");
+    connectionStore.getState().connect(client);
+    initNotifications();
+    await flushMicrotasks();
+
+    expect(navigationStore.getState().mode).toBe("legacy");
+    expect(fetchMock.mock.calls.map(([url]) => url)).toEqual(["/api/tree"]);
+    expect(treeStore.getState().tree).not.toBeNull();
+  });
+
+  test("unsupported capability is an explicit protocol error, not a tree fallback", async () => {
+    const client = new FakeClient("ready");
+    client.scriptConnect(() => ({
+      serverInfo: { name: "fake", version: "1" },
+      protocolVersion: "evener-appwire-v3",
+      sourceId: "fake",
+      features: {} as never,
+      navigation: navigationCapability("generation_test", 2),
+    }));
+    connectionStore.getState().connect(client);
+    initNotifications();
+    await flushMicrotasks();
+
+    expect(navigationStore.getState().mode).toBe("error");
+    expect(navigationStore.getState().protocolError?.message).toContain("unsupported navigation capability version 2");
+    expect(fetchMock).not.toHaveBeenCalled();
+    expect(treeStore.getState().tree).toBeNull();
+  });
+
   test("is idempotent (safe to call repeatedly)", async () => {
     await boot(treeOf([]));
     expect(() => initNotifications()).not.toThrow();
@@ -193,6 +277,33 @@ describe("initNotifications lifecycle", () => {
 });
 
 describe("counts apply unconditionally", () => {
+  test("v1 attention owns counts and edge fires without tree or extra navigation fetches", async () => {
+    armPrefs("all");
+    const client = new FakeClient("ready");
+    fetchMock.mockImplementation(async () => navigationManifest());
+    initNavigation(client, navigationCapability());
+    initNotifications();
+    await flushMicrotasks();
+    fetchMock.mockClear();
+
+    client.emitNotification({
+      method: "evener/attention/changed",
+      params: { changed: [{ threadId: "a", title: "A", level: "needs_you", askPending: true }], summary: { needsYou: 1, error: 0, working: 0 } },
+    });
+    expect(document.title).toBe("(1) evener hub");
+    expect(fires()).toEqual({ os: 0, sound: 0 }); // first notification establishes baseline
+    client.emitNotification({
+      method: "evener/attention/changed",
+      params: { changed: [{ threadId: "b", title: "B", level: "needs_you", askPending: true }], summary: { needsYou: 2, error: 0, working: 0 } },
+    });
+
+    expect(document.title).toBe("(2) evener hub");
+    expect(fires()).toEqual({ os: 1, sound: 1 });
+    treeStore.setState({ tree: treeOf([node("legacy", "errored")]) });
+    expect(document.title).toBe("(2) evener hub");
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
   test("title + favicon update on a tree change even focused, even non-leader", async () => {
     prefsStore.getState().setNotification("title", true);
     prefsStore.getState().setNotification("favicon", true);
@@ -284,6 +395,64 @@ describe("shipped defaults (title ON, favicon/os/sound OFF)", () => {
 });
 
 describe("reconnect re-baselines silently", () => {
+  test("v1 reconnect forces one navigation handshake for same or new generation, never legacy refresh", async () => {
+    const client = new FakeClient("ready");
+    let generation = "generation_test";
+    client.scriptConnect(() => ({
+      serverInfo: { name: "fake", version: "1" },
+      protocolVersion: "evener-appwire-v3",
+      sourceId: "fake",
+      features: {} as never,
+      navigation: navigationCapability(generation),
+    }));
+    fetchMock.mockImplementation(async () => navigationManifest(generation));
+    initNavigation(client);
+    await flushMicrotasks();
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+
+    client.emitStateChange("reconnecting");
+    client.emitReady();
+    await flushMicrotasks();
+    expect(fetchMock).toHaveBeenCalledTimes(2); // one forced manifest reload
+    expect(fetchMock.mock.calls.every(([url]) => url === "/api/navigation")).toBe(true);
+
+    generation = "generation_next";
+    client.emitStateChange("reconnecting");
+    client.emitReady();
+    await flushMicrotasks();
+    expect(fetchMock).toHaveBeenCalledTimes(3); // one reset reload, not reset + legacy tree
+    expect(navigationStore.getState().clientGenerationID).toBe("generation_next");
+    expect(fetchMock.mock.calls.every(([url]) => url === "/api/navigation")).toBe(true);
+  });
+
+  test("stale client connect and notifications cannot mutate the active generation", async () => {
+    let releaseOld!: (value: ReturnType<typeof navigationCapability>) => void;
+    const old = new FakeClient("ready");
+    old.scriptConnect(() => new Promise((resolve) => {
+      releaseOld = resolve;
+    }).then((cap) => ({
+      serverInfo: { name: "old", version: "1" },
+      protocolVersion: "evener-appwire-v3",
+      sourceId: "old",
+      features: {} as never,
+      navigation: cap,
+    })));
+    const active = new FakeClient("ready");
+    initNavigation(old);
+    initNavigation(active, navigationCapability("active"));
+    await flushMicrotasks();
+    expect(navigationStore.getState().clientGenerationID).toBe("active");
+
+    releaseOld(navigationCapability("stale"));
+    old.emitNotification({
+      method: "evener/attention/changed",
+      params: { changed: [{ threadId: "stale", title: "stale", level: "error", askPending: false }], summary: { needsYou: 0, error: 9, working: 0 } },
+    });
+    await flushMicrotasks();
+    expect(navigationStore.getState().clientGenerationID).toBe("active");
+    expect(navigationStore.getState().attention.summary).toBeNull();
+  });
+
   test("attention that appeared across a reconnect does not re-alert", async () => {
     armPrefs("all");
     const fake = new FakeClient("ready");
