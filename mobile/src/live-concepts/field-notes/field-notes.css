@@ -1,0 +1,1084 @@
+/* Live Field Notes concept styles. Every selector is scoped under
+   .concept-field-notes so the live-concepts boundary checker accepts it.
+   Adapted from the concept-lab presentation: only the three milestone
+   surfaces (sessions, conversation, work) and the shell. No prototype
+   navigation, search, new-session, settings, voice, or Lab CSS. */
+
+.concept-field-notes {
+  --fn-bg: #1d1916;
+  --fn-surface: #28221d;
+  --fn-raised: #332a24;
+  --fn-surface-strong: var(--fn-raised);
+  --fn-ink: #f1e8dc;
+  --fn-muted: #b9ac9c;
+  --fn-line: #55483d;
+  --fn-control-line: #79695c;
+  --fn-accent: #dd8f72;
+  --fn-accent-ink: #211713;
+  --fn-violet: #b99c87;
+  --fn-attention: #efb768;
+  --fn-danger: #f1a09b;
+  --fn-user: #3b3028;
+  --fn-focus: #f0a688;
+  position: relative;
+  display: grid;
+  width: 100%;
+  height: var(--visual-viewport-height, 100dvh);
+  grid-template-rows: minmax(0, 1fr);
+  overflow: hidden;
+  background:
+    repeating-linear-gradient(
+      0deg,
+      transparent 0,
+      transparent 31px,
+      color-mix(in srgb, var(--fn-line) 7%, transparent) 32px
+    ),
+    linear-gradient(
+      102deg,
+      transparent 0 4rem,
+      color-mix(in srgb, var(--fn-accent) 5%, transparent) 4rem 4.0625rem,
+      transparent 4.0625rem
+    ),
+    var(--fn-bg);
+  color: var(--fn-ink);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial,
+    sans-serif;
+  isolation: isolate;
+}
+
+.concept-field-notes[data-appearance="light"] {
+  --fn-bg: #fffaf1;
+  --fn-surface: #f3eadc;
+  --fn-raised: #eadfce;
+  --fn-surface-strong: var(--fn-raised);
+  --fn-ink: #312d28;
+  --fn-muted: #72675c;
+  --fn-line: #d9cbb8;
+  --fn-control-line: #8d7d6e;
+  --fn-accent: #a14d36;
+  --fn-accent-ink: #ffffff;
+  --fn-violet: #7b5c4a;
+  --fn-attention: #8a5312;
+  --fn-danger: #9a3531;
+  --fn-user: #efe2d0;
+  --fn-focus: #7d3524;
+  color-scheme: light;
+}
+
+.concept-field-notes[data-appearance="dark"],
+:root[data-appearance="dark"] .concept-field-notes {
+  color-scheme: dark;
+}
+
+@media (prefers-color-scheme: light) {
+  .concept-field-notes[data-appearance="system"] {
+    --fn-bg: #fffaf1;
+    --fn-surface: #f3eadc;
+    --fn-raised: #eadfce;
+    --fn-surface-strong: var(--fn-raised);
+    --fn-ink: #312d28;
+    --fn-muted: #72675c;
+    --fn-line: #d9cbb8;
+    --fn-control-line: #8d7d6e;
+    --fn-accent: #a14d36;
+    --fn-accent-ink: #ffffff;
+    --fn-violet: #7b5c4a;
+    --fn-attention: #8a5312;
+    --fn-danger: #9a3531;
+    --fn-user: #efe2d0;
+    --fn-focus: #7d3524;
+    color-scheme: light;
+  }
+}
+
+.concept-field-notes,
+.concept-field-notes * {
+  box-sizing: border-box;
+}
+
+.concept-field-notes button,
+.concept-field-notes input,
+.concept-field-notes textarea,
+.concept-field-notes select {
+  font: inherit;
+}
+
+.concept-field-notes[data-platform="ios"] .fn-editorial,
+.concept-field-notes[data-platform="ios"]
+  :is(.fn-title-block h1, .fn-session-group h2, .fn-work-heading h2) {
+  font-family: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+}
+
+.concept-field-notes[data-platform="android"] .fn-editorial,
+.concept-field-notes[data-platform="android"]
+  :is(.fn-title-block h1, .fn-session-group h2, .fn-work-heading h2) {
+  font-family: Roboto, system-ui, -apple-system, "Segoe UI", sans-serif;
+  letter-spacing: -0.012em;
+}
+
+.concept-field-notes button,
+.concept-field-notes a,
+.concept-field-notes input,
+.concept-field-notes textarea,
+.concept-field-notes select {
+  -webkit-tap-highlight-color: transparent;
+}
+
+.concept-field-notes button {
+  color: inherit;
+}
+
+.concept-field-notes svg {
+  width: 1.25rem;
+  height: 1.25rem;
+  flex: 0 0 auto;
+}
+
+.concept-field-notes h1,
+.concept-field-notes h2,
+.concept-field-notes h3,
+.concept-field-notes p,
+.concept-field-notes dl,
+.concept-field-notes dd {
+  margin: 0;
+}
+
+.concept-field-notes .fn-visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  border: 0;
+  margin: -1px;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  overflow: hidden;
+  white-space: nowrap;
+}
+
+.concept-field-notes .fn-topbar {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  display: flex;
+  min-width: 0;
+  padding: max(0.75rem, var(--fn-edge-top)) max(1rem, var(--fn-edge-right))
+    0.8rem max(1rem, var(--fn-edge-left));
+  border-bottom: 1px solid var(--fn-line);
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+  background: color-mix(in srgb, var(--fn-bg) 95%, transparent);
+}
+
+.concept-field-notes .fn-topbar__leading,
+.concept-field-notes .fn-session-actions,
+.concept-field-notes .fn-session-actions button {
+  display: flex;
+  align-items: center;
+}
+
+.concept-field-notes .fn-topbar__leading {
+  min-width: 0;
+  align-items: flex-start;
+  gap: 0.4rem;
+}
+
+.concept-field-notes .fn-title-block {
+  min-width: 0;
+}
+
+.concept-field-notes .fn-title-block__kicker,
+.concept-field-notes .fn-eyebrow {
+  color: var(--fn-accent);
+  font-size: 0.7rem;
+  font-weight: 760;
+  letter-spacing: 0.105em;
+  line-height: 1.35;
+  text-transform: uppercase;
+}
+
+.concept-field-notes .fn-title-block__kicker {
+  margin-bottom: 0.2rem;
+}
+
+.concept-field-notes .fn-title-block h1 {
+  max-width: 21ch;
+  font-size: clamp(1.8rem, 7vw, 2.65rem);
+  font-weight: 720;
+  letter-spacing: -0.045em;
+  line-height: 1.02;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.concept-field-notes
+  .fn-title-block
+  > p:last-child:not(.fn-title-block__kicker) {
+  margin-top: 0.28rem;
+  color: var(--fn-muted);
+  font-size: 0.8rem;
+  line-height: 1.35;
+}
+
+.concept-field-notes .fn-icon-action,
+.concept-field-notes .fn-session-actions button,
+.concept-field-notes .fn-filter-row > button,
+.concept-field-notes .fn-question-actions button {
+  border: 1px solid var(--fn-control-line);
+  border-radius: 0.35rem;
+  background: transparent;
+  cursor: pointer;
+}
+
+.concept-field-notes .fn-icon-action {
+  display: grid;
+  padding: 0;
+  border-color: transparent;
+  place-items: center;
+}
+
+.concept-field-notes .fn-scroll-owner {
+  width: 100%;
+  min-height: 0;
+  padding: 0;
+  overflow-y: auto;
+  overscroll-behavior-y: contain;
+  scroll-behavior: smooth;
+  scrollbar-gutter: stable;
+}
+
+.concept-field-notes .fn-route-content {
+  width: min(100%, 58rem);
+  margin-inline: auto;
+  padding: 1rem max(1rem, var(--fn-edge-right))
+    calc(1.5rem + var(--keyboard-inset-height, var(--keyboard-inset, 0px)))
+    max(1rem, var(--fn-edge-left));
+}
+
+.concept-field-notes .fn-filter-row {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.5rem;
+}
+
+.concept-field-notes .fn-filter-row label {
+  display: flex;
+  min-width: 0;
+  border: 1px solid var(--fn-control-line);
+  border-radius: 0.8rem;
+  align-items: center;
+  background: var(--fn-surface);
+}
+
+.concept-field-notes .fn-filter-row input {
+  width: 100%;
+  min-width: 0;
+  padding: 0 0.85rem;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: var(--fn-ink);
+}
+
+.concept-field-notes .fn-filter-row > button {
+  padding-inline: 1rem;
+}
+
+.concept-field-notes .fn-refresh-status {
+  display: flex;
+  min-height: 2.2rem;
+  margin: 0.45rem 0 1rem;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 0.6rem;
+  color: var(--fn-muted);
+  font-size: 0.78rem;
+}
+
+.concept-field-notes .fn-refresh-status[data-refresh-state="loading"] {
+  color: var(--fn-accent);
+}
+
+.concept-field-notes .fn-session-groups,
+.concept-field-notes .fn-work-panel,
+.concept-field-notes .fn-conversation {
+  display: grid;
+  gap: 1.2rem;
+}
+
+.concept-field-notes .fn-session-group > header,
+.concept-field-notes .fn-work-list > header {
+  display: flex;
+  padding: 0 0.65rem 0.45rem;
+  align-items: end;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.concept-field-notes .fn-session-group h2,
+.concept-field-notes .fn-work-list h2 {
+  font-size: 0.78rem;
+  font-weight: 780;
+  letter-spacing: 0.075em;
+  text-transform: uppercase;
+}
+
+.concept-field-notes .fn-inset-list,
+.concept-field-notes .fn-question-card,
+.concept-field-notes .fn-usage,
+.concept-field-notes .fn-session-summary,
+.concept-field-notes .fn-composer {
+  border: 1px solid var(--fn-line);
+  border-radius: 0.3rem;
+  background: var(--fn-surface);
+}
+
+.concept-field-notes .fn-session-row + .fn-session-row {
+  border-top: 1px solid var(--fn-line);
+}
+
+.concept-field-notes .fn-session-row button {
+  display: grid;
+  width: 100%;
+  padding: 0.75rem 0.8rem;
+  border: 0;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 1rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  text-align: left;
+}
+
+.concept-field-notes .fn-session-row[data-current-state="attention"] {
+  border-left: 3px solid var(--fn-attention);
+  background: color-mix(in srgb, var(--fn-attention) 5%, transparent);
+}
+
+.concept-field-notes .fn-session-row[data-current-state="running"] {
+  border-left: 3px solid var(--fn-accent);
+  background: color-mix(in srgb, var(--fn-accent) 5%, transparent);
+}
+
+.concept-field-notes .fn-session-row[data-current-state="idle"] {
+  border-left: 3px solid var(--fn-muted);
+}
+
+.concept-field-notes .fn-session-row__copy,
+.concept-field-notes .fn-session-row__meta {
+  display: flex;
+  min-width: 0;
+  flex-direction: column;
+}
+
+.concept-field-notes .fn-session-row__copy {
+  gap: 0.15rem;
+}
+
+.concept-field-notes .fn-session-row__copy strong {
+  font-size: 0.96rem;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+
+.concept-field-notes .fn-session-row__copy > span,
+.concept-field-notes .fn-session-row__copy small,
+.concept-field-notes .fn-session-row__meta time {
+  color: var(--fn-muted);
+  font-size: 0.75rem;
+}
+
+.concept-field-notes .fn-session-row__meta {
+  align-items: flex-end;
+  gap: 0.3rem;
+}
+
+.concept-field-notes .fn-relationship-rail,
+.concept-field-notes .fn-attention-signal {
+  display: inline-flex;
+  width: fit-content;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 700;
+  line-height: 1.4;
+}
+
+.concept-field-notes .fn-relationship-rail {
+  margin-top: 0.25rem;
+  color: var(--fn-accent);
+}
+
+.concept-field-notes .fn-connection-marker {
+  width: 1.15rem;
+  height: 0.5rem;
+  border-bottom: 1px solid currentColor;
+  border-left: 1px solid currentColor;
+  border-radius: 0 0 0 0.35rem;
+}
+
+.concept-field-notes .fn-attention-signal {
+  color: var(--fn-attention);
+}
+
+.concept-field-notes .fn-attention-marker {
+  display: grid;
+  width: 1.15rem;
+  height: 1.15rem;
+  border: 1px solid currentColor;
+  border-radius: 0.35rem;
+  place-items: center;
+  font-size: 0.7rem;
+}
+
+.concept-field-notes [data-state-label] {
+  display: inline-flex;
+}
+
+.concept-field-notes [data-status-state] {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.28rem;
+  font-size: 0.72rem;
+  font-weight: 720;
+}
+
+.concept-field-notes [data-status-state] svg {
+  width: 0.85rem;
+  height: 0.85rem;
+}
+
+.concept-field-notes [data-status-state="attention"] {
+  color: var(--fn-attention);
+}
+
+.concept-field-notes [data-status-state="running"],
+.concept-field-notes [data-status-state="success"] {
+  color: var(--fn-accent);
+}
+
+.concept-field-notes [data-status-state="failed"] {
+  color: var(--fn-danger);
+}
+
+.concept-field-notes [data-status-state="idle"],
+.concept-field-notes [data-status-state="unknown"] {
+  color: var(--fn-muted);
+}
+
+.concept-field-notes .fn-banner {
+  display: flex;
+  padding: 0.75rem 0.9rem;
+  border: 1px solid color-mix(in srgb, var(--fn-attention) 42%, var(--fn-line));
+  border-radius: 0.75rem;
+  align-items: center;
+  gap: 0.65rem;
+  background: color-mix(in srgb, var(--fn-attention) 9%, var(--fn-bg));
+  color: var(--fn-ink);
+  font-size: 0.82rem;
+  line-height: 1.45;
+}
+
+.concept-field-notes .fn-banner span {
+  flex: 1;
+  color: var(--fn-muted);
+}
+
+.concept-field-notes .fn-inline-state {
+  padding: clamp(1.5rem, 7vw, 3.5rem) 1rem;
+  text-align: center;
+}
+
+.concept-field-notes .fn-inline-state h2 {
+  font-size: 1.25rem;
+}
+
+.concept-field-notes .fn-inline-state p {
+  max-width: 34rem;
+  margin: 0.45rem auto 0;
+  color: var(--fn-muted);
+  line-height: 1.55;
+}
+
+.concept-field-notes .fn-session-summary {
+  display: flex;
+  padding: 1rem;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.concept-field-notes .fn-session-actions {
+  padding: 0;
+  border: 0;
+  margin: 0;
+  justify-content: flex-end;
+  gap: 0.5rem;
+}
+
+.concept-field-notes .fn-session-actions button {
+  padding-inline: 0.9rem;
+  gap: 0.4rem;
+}
+
+.concept-field-notes .fn-work-heading h2,
+.concept-field-notes .fn-session-summary h2 {
+  margin-top: 0.25rem;
+  font-size: clamp(1.35rem, 4vw, 1.85rem);
+  letter-spacing: -0.025em;
+}
+
+.concept-field-notes .fn-work-heading p,
+.concept-field-notes .fn-session-summary p {
+  margin-top: 0.45rem;
+  color: var(--fn-muted);
+  line-height: 1.6;
+}
+
+.concept-field-notes .fn-transcript {
+  display: grid;
+  width: min(100%, 46rem);
+  padding-left: clamp(4.8rem, 15vw, 6.5rem);
+  border-left: 1px solid var(--fn-line);
+  margin-inline: auto;
+  gap: clamp(1.5rem, 5vw, 2.4rem);
+}
+
+.concept-field-notes .fn-transcript-item {
+  position: relative;
+  min-width: 0;
+  scroll-margin: 8rem;
+}
+
+.concept-field-notes .fn-chronology-stamp {
+  position: absolute;
+  top: 0.15rem;
+  right: calc(100% + 0.8rem);
+  display: grid;
+  width: 4.5rem;
+  color: var(--fn-muted);
+  font-size: 0.58rem;
+  letter-spacing: 0.08em;
+  line-height: 1.25;
+  text-align: right;
+  text-transform: uppercase;
+}
+
+.concept-field-notes .fn-chronology-stamp span:first-child {
+  color: var(--fn-accent);
+  font-size: 0.64rem;
+  font-variant-numeric: tabular-nums;
+}
+
+.concept-field-notes .fn-margin-label {
+  margin-bottom: 0.42rem;
+  color: var(--fn-muted);
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, system-ui, sans-serif;
+  font-size: 0.64rem;
+  font-weight: 720;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+}
+
+.concept-field-notes .fn-transcript-item[data-focused="true"] {
+  border-radius: 0.7rem;
+  outline: 3px solid color-mix(in srgb, var(--fn-focus) 55%, transparent);
+  outline-offset: 0.35rem;
+}
+
+.concept-field-notes .fn-transcript-item--assistant {
+  padding: 0 0 1.15rem;
+  border-bottom: 1px solid var(--fn-line);
+}
+
+.concept-field-notes .fn-user-message {
+  max-width: 58ch;
+  padding: 0.7rem 0.9rem;
+  border-left: 3px solid var(--fn-accent);
+  background: color-mix(in srgb, var(--fn-user) 78%, transparent);
+  font-size: 0.98rem;
+  line-height: 1.6;
+}
+
+.concept-field-notes .fn-assistant-message {
+  max-width: 68ch;
+  font-size: clamp(1rem, 2.2vw, 1.08rem);
+  line-height: 1.78;
+  white-space: pre-wrap;
+}
+
+.concept-field-notes .fn-tool-disclosure,
+.concept-field-notes .fn-attachment,
+.concept-field-notes .fn-transcript-error,
+.concept-field-notes .fn-question-summary {
+  border-block: 1px solid var(--fn-line);
+}
+
+.concept-field-notes
+  .fn-transcript-item[data-spatial-presentation="reading-flow"] {
+  padding: 0.15rem 0 0.15rem 0.8rem;
+  border-left: 3px solid var(--fn-line);
+}
+
+.concept-field-notes [data-current-record="true"] {
+  position: relative;
+  border-color: color-mix(in srgb, var(--fn-accent) 58%, var(--fn-line));
+  background: color-mix(in srgb, var(--fn-accent) 6%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--fn-accent) 18%, transparent);
+  animation: fn-current-pulse 2.8s ease-in-out infinite;
+}
+
+.concept-field-notes .fn-tool-disclosure [data-disclosure-state] > button,
+.concept-field-notes .fn-work-node [data-disclosure-state] > button {
+  display: flex;
+  width: 100%;
+  padding: 0.7rem 0.15rem;
+  border: 0;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  font-weight: 700;
+  text-align: left;
+}
+
+.concept-field-notes .fn-disclosure-summary {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+}
+
+.concept-field-notes .fn-disclosure-summary > span:first-child {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.concept-field-notes .fn-disclosure-summary [data-state-label] {
+  flex: 0 0 auto;
+}
+
+.concept-field-notes [data-disclosure-state="expanded"] > button svg {
+  transform: rotate(90deg);
+}
+
+.concept-field-notes .fn-tool-detail,
+.concept-field-notes .fn-work-node__detail {
+  padding: 0.2rem 0.2rem 1rem;
+  color: var(--fn-muted);
+}
+
+.concept-field-notes .fn-tool-detail dl,
+.concept-field-notes .fn-work-node__detail dl {
+  display: grid;
+  margin-top: 0.75rem;
+  gap: 0.75rem;
+}
+
+.concept-field-notes .fn-tool-detail dt,
+.concept-field-notes .fn-work-node__detail dt,
+.concept-field-notes .fn-usage dt {
+  color: var(--fn-muted);
+  font-size: 0.68rem;
+  font-weight: 760;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.concept-field-notes .fn-tool-detail dd,
+.concept-field-notes .fn-work-node__detail dd {
+  margin-top: 0.2rem;
+  color: var(--fn-ink);
+  line-height: 1.5;
+}
+
+.concept-field-notes .fn-attachment,
+.concept-field-notes .fn-transcript-error {
+  padding: 0.8rem 0.2rem;
+}
+
+.concept-field-notes .fn-attachment h3,
+.concept-field-notes .fn-transcript-error h3,
+.concept-field-notes .fn-question-summary h3 {
+  margin-top: 0.25rem;
+  font-size: 0.95rem;
+}
+
+.concept-field-notes .fn-attachment p:last-child,
+.concept-field-notes .fn-transcript-error p,
+.concept-field-notes .fn-question-summary p {
+  margin-top: 0.35rem;
+  color: var(--fn-muted);
+  line-height: 1.5;
+}
+
+.concept-field-notes .fn-primary-action {
+  border: 0;
+  border-radius: 0.75rem;
+  background: var(--fn-accent);
+  color: var(--fn-accent-ink);
+  cursor: pointer;
+  font-weight: 760;
+}
+
+.concept-field-notes .fn-primary-action:disabled,
+.concept-field-notes button:disabled {
+  cursor: not-allowed;
+  opacity: 0.48;
+}
+
+.concept-field-notes .fn-composer-error {
+  width: min(100%, 46rem);
+  margin-inline: auto;
+  padding: 0.65rem 0.8rem;
+  border-left: 3px solid var(--fn-danger);
+  background: color-mix(in srgb, var(--fn-danger) 9%, var(--fn-surface));
+  color: var(--fn-danger);
+  font-size: 0.82rem;
+}
+
+.concept-field-notes .fn-composer {
+  position: relative;
+  display: grid;
+  width: min(100%, 46rem);
+  margin-inline: auto;
+  padding: 0.65rem;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 0.45rem;
+}
+
+.concept-field-notes .fn-composer__modes {
+  display: flex;
+  padding: 0;
+  border: 0;
+  margin: 0;
+  grid-column: 1 / -1;
+  gap: 0.3rem;
+}
+
+.concept-field-notes .fn-composer__modes button {
+  padding: 0.3rem 0.75rem;
+  border: 1px solid var(--fn-control-line);
+  border-radius: 999px;
+  background: transparent;
+}
+
+.concept-field-notes .fn-composer__modes button[aria-pressed="true"] {
+  border-color: var(--fn-accent);
+  background: color-mix(in srgb, var(--fn-accent) 12%, var(--fn-surface));
+  color: var(--fn-accent);
+}
+
+.concept-field-notes .fn-composer label {
+  min-width: 0;
+}
+
+.concept-field-notes .fn-composer textarea {
+  width: 100%;
+  min-height: 3rem;
+  padding: 0.65rem;
+  border: 0;
+  outline: 0;
+  background: transparent;
+  color: inherit;
+  resize: vertical;
+  line-height: 1.5;
+}
+
+.concept-field-notes .fn-composer__submit {
+  display: grid;
+  width: 3rem;
+  padding: 0;
+  place-items: center;
+}
+
+.concept-field-notes .fn-composer__submit span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  clip-path: inset(50%);
+  overflow: hidden;
+}
+
+.concept-field-notes .fn-work-panel {
+  padding-bottom: 1rem;
+}
+
+.concept-field-notes .fn-work-heading {
+  max-width: 44rem;
+  padding: 0.5rem 0.6rem;
+}
+
+.concept-field-notes .fn-work-list {
+  display: grid;
+  gap: 0.5rem;
+}
+
+.concept-field-notes .fn-work-node {
+  border: 1px solid var(--fn-line);
+  border-radius: 0.2rem;
+  background: color-mix(in srgb, var(--fn-surface) 72%, transparent);
+}
+
+.concept-field-notes .fn-work-tree {
+  display: grid;
+  padding: 0;
+  margin: 0;
+  gap: 0.5rem;
+  list-style: none;
+}
+
+.concept-field-notes .fn-work-tree > li {
+  min-width: 0;
+}
+
+.concept-field-notes .fn-work-tree .fn-work-tree {
+  padding-left: clamp(0.7rem, 4vw, 1.5rem);
+  margin-top: 0.5rem;
+  border-left: 2px solid var(--fn-line);
+}
+
+.concept-field-notes .fn-work-tree .fn-work-tree > li {
+  position: relative;
+}
+
+.concept-field-notes .fn-work-tree .fn-work-tree > li::before {
+  position: absolute;
+  top: 1.25rem;
+  left: calc(clamp(0.7rem, 4vw, 1.5rem) * -1);
+  width: clamp(0.7rem, 4vw, 1.5rem);
+  border-top: 1px solid color-mix(in srgb, var(--fn-violet) 55%, var(--fn-line));
+  content: "";
+}
+
+.concept-field-notes .fn-work-node__context {
+  padding: 0.55rem 0.8rem 0;
+  color: var(--fn-muted);
+  font-size: 0.68rem;
+  font-weight: 690;
+  letter-spacing: 0.065em;
+  text-transform: uppercase;
+}
+
+.concept-field-notes .fn-work-node [data-disclosure-state] > button,
+.concept-field-notes .fn-work-node__detail {
+  padding-inline: 0.8rem;
+}
+
+.concept-field-notes .fn-work-node__detail dl {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+}
+
+.concept-field-notes .fn-work-node__detail p {
+  margin-top: 0.75rem;
+  color: var(--fn-ink);
+  line-height: 1.5;
+}
+
+.concept-field-notes .fn-usage {
+  padding: 1rem;
+}
+
+.concept-field-notes .fn-usage dl {
+  display: grid;
+  margin-top: 0.85rem;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.8rem;
+}
+
+.concept-field-notes .fn-usage dd {
+  margin-top: 0.15rem;
+  font-weight: 700;
+}
+
+.concept-field-notes .fn-context-meter {
+  height: 0.4rem;
+  margin-top: 1rem;
+  border-radius: 999px;
+  overflow: hidden;
+  background: var(--fn-surface-strong);
+}
+
+.concept-field-notes .fn-context-meter > span {
+  display: block;
+  height: 100%;
+  border-radius: inherit;
+  background: var(--fn-accent);
+}
+
+.concept-field-notes [data-current-work="true"] {
+  position: relative;
+  border-color: color-mix(in srgb, var(--fn-accent) 58%, var(--fn-line));
+  background: color-mix(in srgb, var(--fn-accent) 6%, transparent);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--fn-accent) 18%, transparent);
+  animation: fn-current-pulse 2.8s ease-in-out infinite;
+}
+
+.concept-field-notes :is(button, a, input, textarea, select):focus-visible {
+  outline: 3px solid var(--fn-focus);
+  outline-offset: 2px;
+}
+
+@keyframes fn-current-pulse {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px color-mix(in srgb, var(--fn-accent) 12%, transparent),
+      0 0 1.1rem color-mix(in srgb, var(--fn-violet) 10%, transparent);
+  }
+  50% {
+    box-shadow:
+      0 0 0 2px color-mix(in srgb, var(--fn-accent) 24%, transparent),
+      0 0 1.8rem color-mix(in srgb, var(--fn-violet) 20%, transparent);
+  }
+}
+
+.concept-field-notes .fn-route-enter {
+  animation: fn-route-in 180ms ease-out both;
+}
+
+@keyframes fn-route-in {
+  from {
+    opacity: 0;
+    transform: translateY(0.3rem);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.concept-field-notes [data-disclosure-state] > button svg {
+  transition: transform 150ms ease;
+}
+
+.concept-field-notes[data-reduced-motion="true"] *,
+.concept-field-notes[data-reduced-motion="true"] *::before,
+.concept-field-notes[data-reduced-motion="true"] *::after,
+:root[data-reduced-motion="true"] .concept-field-notes *,
+:root[data-reduced-motion="true"] .concept-field-notes *::before,
+:root[data-reduced-motion="true"] .concept-field-notes *::after {
+  scroll-behavior: auto;
+  animation: none;
+  transition: none;
+}
+
+.concept-field-notes[data-text-scale="accessibility"] *,
+.concept-field-notes[data-text-scale="accessibility"] *::before,
+.concept-field-notes[data-text-scale="accessibility"] *::after {
+  animation: none;
+  scroll-behavior: auto;
+  transition: none;
+}
+
+.concept-field-notes[data-text-scale="accessibility"] :is(.fn-route-enter) {
+  transform: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root .concept-field-notes *,
+  :root .concept-field-notes *::before,
+  :root .concept-field-notes *::after {
+    scroll-behavior: auto;
+    animation: none;
+    transition: none;
+  }
+}
+
+@media (prefers-reduced-transparency: reduce) {
+  .concept-field-notes,
+  .concept-field-notes .fn-topbar {
+    background-image: none;
+    background-color: var(--fn-bg);
+  }
+}
+
+@media (forced-colors: active) {
+  .concept-field-notes {
+    background: Canvas;
+    color: CanvasText;
+    forced-color-adjust: auto;
+  }
+
+  .concept-field-notes .fn-connection-marker,
+  .concept-field-notes .fn-attention-marker,
+  .concept-field-notes [data-current-work="true"],
+  .concept-field-notes [data-current-record="true"] {
+    border-color: currentColor;
+    box-shadow: none;
+    forced-color-adjust: none;
+  }
+
+  .concept-field-notes .fn-attention-signal,
+  .concept-field-notes .fn-relationship-rail,
+  .concept-field-notes [data-status-state] {
+    color: CanvasText;
+  }
+}
+
+@media (max-width: 44rem) {
+  .concept-field-notes
+    .fn-title-block
+    > p:last-child:not(.fn-title-block__kicker) {
+    display: none;
+  }
+}
+
+@media (max-width: 31rem) {
+  .concept-field-notes .fn-route-content {
+    padding-right: max(0.65rem, var(--fn-edge-right));
+    padding-left: max(0.65rem, var(--fn-edge-left));
+  }
+
+  .concept-field-notes .fn-topbar {
+    padding-right: max(0.65rem, var(--fn-edge-right));
+    padding-left: max(0.65rem, var(--fn-edge-left));
+    gap: 0.3rem;
+  }
+
+  .concept-field-notes .fn-title-block__kicker {
+    display: none;
+  }
+
+  .concept-field-notes .fn-title-block h1 {
+    font-size: 1.45rem;
+  }
+
+  .concept-field-notes .fn-session-row button,
+  .concept-field-notes .fn-session-summary,
+  .concept-field-notes .fn-banner {
+    align-items: flex-start;
+    grid-template-columns: 1fr;
+  }
+
+  .concept-field-notes .fn-session-row__meta {
+    width: 100%;
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+  }
+
+  .concept-field-notes .fn-session-summary,
+  .concept-field-notes .fn-banner {
+    flex-direction: column;
+  }
+
+  .concept-field-notes .fn-work-node__detail dl,
+  .concept-field-notes .fn-usage dl {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+.concept-field-notes .fn-session-group header span,
+.concept-field-notes .fn-work-list header span {
+  color: var(--fn-muted);
+  font-size: 0.75rem;
+}
