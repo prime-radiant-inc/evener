@@ -640,11 +640,11 @@ func TestPersistToolResults_VisionFailureCanceledBeforeInjectionRemovesOnlyOwned
 	if err != nil {
 		t.Fatalf("marshal after queue: %v", err)
 	}
-	// The owned entry is the final queue item; compare its removal without
-	// inspecting the private owner marker or weakening any public fields.
-	wantJSON, err := json.Marshal(before[:2])
-	if len(after) != 2 || err != nil || string(afterJSON) != string(wantJSON) {
-		t.Fatalf("unrelated queue fields/order changed: before=%s after=%s want=%s", beforeJSON, afterJSON, wantJSON)
+	// The owned entry is the final queue item. Compare directly with the
+	// serialized pre-cancellation queue so in-place mutations of referenced
+	// metadata cannot make both expected and actual values change together.
+	if len(after) != 2 || string(afterJSON) != string(beforeJSON) {
+		t.Fatalf("unrelated queue fields/order changed: before=%s after=%s", beforeJSON, afterJSON)
 	}
 }
 
@@ -665,6 +665,13 @@ func TestPersistToolResults_VisionFailureInjectsOnceAndDoesNotReappearNextBounda
 	if err := sess.persistToolResults(context.Background(), []llm.ToolCallData{{ID: "c1", Name: "read_file"}}, []tool.ExecResult{{CallID: "c1", ToolName: "read_file", ImageData: []byte("png"), ImageMediaType: "image/png"}}); err != nil {
 		t.Fatalf("persistToolResults: %v", err)
 	}
+	sess.mu.Lock()
+	if len(sess.steeringQueue) != 1 || len(sess.visionTurnOwners) != 1 {
+		sess.mu.Unlock()
+		t.Fatalf("pre-injection queue/owners = %d/%d, want 1/1", len(sess.steeringQueue), len(sess.visionTurnOwners))
+	}
+	queued := sess.steeringQueue[0]
+	sess.mu.Unlock()
 	var sigs []string
 	var failed []bool
 	if _, err := sess.injectPostToolSteering(context.Background(), nil, nil, &sigs, &failed); err != nil {
@@ -675,18 +682,27 @@ func TestPersistToolResults_VisionFailureInjectsOnceAndDoesNotReappearNextBounda
 		sess.mu.Unlock()
 		t.Fatalf("successful injection left queue/owners: %d/%d", len(sess.steeringQueue), len(sess.visionTurnOwners))
 	}
-	var visionTurns int
+	var steeringTurns []schema.Turn
 	for _, turn := range sess.history {
-		if turn.Kind == schema.TurnSteering && strings.Contains(turn.Message.Text(), "Vision is unavailable because the vision provider failed") {
-			visionTurns++
+		if turn.Kind == schema.TurnSteering {
+			steeringTurns = append(steeringTurns, turn)
 		}
 	}
 	sess.mu.Unlock()
-	if visionTurns != 1 {
-		t.Fatalf("vision steering turns = %d, want exactly 1", visionTurns)
+	if len(steeringTurns) != 1 {
+		t.Fatalf("steering turns = %d, want exactly 1", len(steeringTurns))
 	}
-	// A later boundary must remain ordinary and must not resurrect the consumed entry.
-	sess.injectDrainedSteering()
+	got := steeringTurns[0]
+	if got.Message.Text() != queued.Text || got.SteeringSource != queued.Source || got.SteeringKind != queued.Kind || got.ClientMutationID != queued.ClientMutationID || got.StableTurnID != queued.StableTurnID {
+		t.Fatalf("injected steering = text %q source %q kind %q mutation %q stable %q; want queued entry %#v", got.Message.Text(), got.SteeringSource, got.SteeringKind, got.ClientMutationID, got.StableTurnID, queued)
+	}
+	if queued.Kind != events.SteeringKindImageDescription || queued.Source != "" || queued.ClientMutationID != "" || queued.StableTurnID != "" || len(queued.Images) != 0 || queued.TaskCompletion != nil {
+		t.Fatalf("vision queue metadata = %#v, want exact daemon image-description entry", queued)
+	}
+	// A later full boundary must remain ordinary and must not resurrect the consumed entry.
+	if _, err := sess.injectPostToolSteering(context.Background(), nil, nil, &sigs, &failed); err != nil {
+		t.Fatalf("subsequent injectPostToolSteering: %v", err)
+	}
 	sess.mu.Lock()
 	defer sess.mu.Unlock()
 	if len(sess.steeringQueue) != 0 || len(sess.visionTurnOwners) != 0 {
