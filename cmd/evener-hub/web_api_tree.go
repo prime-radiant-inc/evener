@@ -626,7 +626,9 @@ func navigationBuildInputsFromTreeSnapshot(generationID string, revision uint64,
 	liveBySession := make(map[string]bool, len(live))
 	for _, entry := range live {
 		if entry.SessionID != "" {
-			liveBySession[entry.SessionID] = true
+			for _, alias := range favoriteSessionAliases(entry.SessionID) {
+				liveBySession[alias] = true
+			}
 		}
 	}
 	sessionFavoriteByID := make(map[string]bool, len(sessionFavorites))
