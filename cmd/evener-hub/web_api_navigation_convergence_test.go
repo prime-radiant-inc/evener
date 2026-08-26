@@ -136,7 +136,8 @@ func TestRESTNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
 		t.Fatal(err)
 	}
 	published := web.navigation.DrainPublications()
-	if len(published) != 1 || response.Navigation.GenerationID != published[0].GenerationID || !reflect.DeepEqual(response.Navigation.Targets, published[0].Targets) {
+	responseTargets := append([]appwire.NavigationInvalidationTarget(nil), response.Navigation.Targets...)
+	if len(published) != 1 || response.Navigation.GenerationID != published[0].GenerationID || !reflect.DeepEqual(responseTargets, published[0].Targets) {
 		t.Fatalf("unknown convergence response=%+v publication=%+v", response.Navigation, published)
 	}
 	if !hasNavigationTarget(published[0].Targets, appwire.NavigationTargetAllLoadedProjects, "") || !hasNavigationTarget(published[0].Targets, appwire.NavigationTargetProject, "p1") {
