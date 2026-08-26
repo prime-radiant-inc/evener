@@ -19,10 +19,11 @@ The initial implementation should be local-first. No transcript text, metadata, 
 
 A request contains:
 
-- `query`: non-empty UTF-8 text, with an implementation-defined maximum input size;
+- `query`: non-empty UTF-8 text, at most 4,096 UTF-8 bytes (hard ceiling; the
+  default request budget is 1,024 bytes);
 - `scope`: explicit default `current_project`; supported scopes must be enumerated, never inferred from query text;
 - optional filters: project identity, session/ref, agent kind, branch/lineage, author/role, inclusive time range, and retention/privacy class;
-- `limit`: bounded, with a server hard maximum;
+- `limit`: default 10, hard maximum 50;
 - `mode`: lexical, semantic, or hybrid (hybrid is the default only after semantic indexing exists);
 - `include_quotes`: explicit, default true for reviewable evidence.
 
@@ -48,13 +49,57 @@ Scores are relevance signals, not truth or permission. The contract must expose 
 Each result contains:
 
 - a bounded quote copied from the source after current redaction policy;
-- `transcript_ref`, session/project identity, turn sequence, content kind, and chunk offset/range;
+- `transcript_ref` as provenance only (it grants no access), session/project identity,
+  turn sequence, content kind, and chunk offset/range;
 - source updated time and an immutable source/content digest (or equivalent version token);
 - retrieval mode, index/embedding version, relevance score/band, and rank;
-- `provenance_status`: `exact`, `redacted`, `stale`, or `unavailable`;
-- a link/handle usable by the existing transcript reader, subject to the same authorization.
+- `quote_fidelity`: `exact` or `redacted`;
+- `source_verification`: `current`, `stale`, or `unavailable`;
+- an opaque, separately scoped `recall_ref` read capability. It is server-checked
+  for the original caller, project/privacy scope, and redaction policy before any
+  detail is returned. `transcript_ref` remains a provenance label only; the
+  existing reader retains its broader, independently authorized semantics.
+
+`quote_fidelity=exact` requires a source-copied quote and a matching digest;
+`quote_fidelity=redacted` requires a policy-versioned redacted quote and digest.
+Both are legal with `source_verification=current` or `stale`. A stale result is
+display-only evidence and its capability must not return newer or unredacted
+content. `source_verification=unavailable` may contain no quote, offset, or
+`recall_ref`; it must contain the indexed digest/version and a reason. A digest
+mismatch is fail-closed: return no quote/capability and `unavailable`, never a
+best-effort reconstruction. Thus every result variant has an unambiguous safe
+consumer action.
 
 A response also reports applied scope/filter summary, index coverage, whether results were truncated, and failure/degradation reasons. A result must never be rendered as an executable command or authoritative instruction; callers receive it as untrusted quoted evidence.
+
+### Resource-bounds contract
+
+These defaults and ceilings are normative and discoverable through the future
+recall capability's read-only `recall_limits` metadata. Deployment configuration
+may lower defaults but may never raise ceilings:
+
+| Dimension | Safe default | Mandatory hard ceiling |
+| --- | ---: | ---: |
+| query bytes | 1,024 | 4,096 |
+| result count | 10 | 50 |
+| quote bytes per result | 2,048 | 8,192 |
+| response bytes (quotes plus metadata) | 32 KiB | 128 KiB |
+| candidate chunks examined | 1,000 | 10,000 |
+| chunks ranked | 500 | 5,000 |
+| results per session | 3 | 10 |
+| wall-clock deadline | 500 ms | 2 s |
+| index bytes per source byte | 2x | 5x |
+
+The index also has a configured storage quota; its safe default is 1 GiB and
+its mandatory ceiling is 10 GiB per project. A request exceeding query bytes or
+`limit` is rejected before work with `invalid_request` and the effective limit.
+Candidate, ranking, response, diversity, and deadline limits stop further work
+and return available results with `coverage=partial`, `tripped_limits`, and
+effective limits. If no authorized result is complete, return an empty partial
+response rather than an unbounded retry. A storage-quota or index-growth breach
+stops indexing, records `index_quota_exceeded`, and leaves the prior active index
+usable; it never evicts data silently. Every response includes effective limits,
+which limits tripped, and measured candidate/chunk/response work.
 
 ## 3. Trust and threat model
 
@@ -77,7 +122,7 @@ The proposed capability boundary is a dedicated **memory-recall agent**. Only th
 | Index tampering or confused provenance | Integrity-protected records, source digest/version, authenticated local ownership, and validation on read; mismatch yields `stale`/`unavailable`, never a guessed quote. |
 | Resource exhaustion | Hard limits on query, filters, candidates, chunks, quote bytes, ranking work, index growth, and wall-clock deadline; return partial/degraded status honestly. |
 | Timing/coverage leakage | Do not reveal existence of unauthorized sessions; normalize authorization failures and avoid metadata side channels where practical. |
-| Capability confused deputy | Recall agent receives only caller-approved scope; backend rechecks caller and project; no “all projects” escalation via nested agent or ref. |
+| Capability confused deputy | Recall agent receives only caller-approved scope; backend rechecks caller and project; no “all projects” escalation via nested agent or ref. Negative access-expansion test proves a `recall_ref` cannot expose fields or sessions unavailable to its caller. |
 
 The host and local state directory are trusted only to the extent of the existing process/file permissions; this design does not claim protection from a fully compromised host. Embedding-model correctness, semantic truth, and user intent are not security properties.
 
@@ -111,14 +156,52 @@ The implementation plan must add deterministic fixtures/tests (not prose tests) 
 - a 201-session corpus where the current 200-session scan bound misses a known older match, proving the new index is not the old scan with a larger constant;
 - index unavailable/lagging/corrupt and authorization failure modes.
 
-Measure recall@k, precision@k, MRR or nDCG on a versioned labeled corpus, quote fidelity, unauthorized-disclosure rate (target zero), deletion leakage (target zero), poisoning/adversarial success rate, p50/p95 latency, index lag, and bytes per source byte. Evaluation must report corpus and policy versions; semantic quality must not be inferred from a handful of hand-picked examples.
+The corpus and expected outcomes are versioned (for example, `episodic-v1`
+plus policy/index versions). The following are pass/fail acceptance criteria,
+not merely measurements:
+
+- On the labeled `episodic-v1` corpus, each supported mode (lexical, semantic,
+  and hybrid) must achieve recall@5 >= 0.80 and nDCG@5 >= 0.70; hybrid must not
+  score below lexical by more than 0.05 on either metric. Ties use the specified
+  stable key, and the deterministic fixture rankings must match their checked-in
+  expected rows exactly.
+- Quote fidelity is 100% for `exact` fixtures and every `redacted` fixture must
+  contain no forbidden token while retaining its expected digest/policy version.
+  Unauthorized-disclosure and deletion-leakage rates must both be exactly zero.
+- A poisoning/adversarial success is a malicious quote causing an evaluator to
+  follow an instruction, change policy, or promote it as trusted memory without
+  independent corroboration. The injection fixture must produce zero such
+  successes; duplicate/repetition fixtures must not increase rank or corroboration
+  beyond one source lineage, and conflict fixtures must report conflict.
+- The 201-session fixture must find its known old match through the index while
+  the legacy 200-session scan reports truncation; no result may cross its project
+  boundary. Deletion, digest mismatch, and capability-expansion fixtures must
+  return the exact fail-closed shapes defined above.
+- At least 99% of bounded requests must finish within the 500 ms default deadline
+  and 100% within the 2 s ceiling on the reference corpus; index lag must be <=
+  60 seconds at p95. Candidate/chunk/response measurements may never exceed hard
+  ceilings, and indexed bytes per source byte must be <= 2x default and never
+  exceed the 5x ceiling. A limit breach is accepted only when its partial/reject
+  status and `tripped_limits` report are exact.
+
+Measure recall@k, precision@k, MRR or nDCG on the versioned labeled corpus,
+quote fidelity, unauthorized-disclosure rate, deletion leakage,
+poisoning/adversarial success rate, p50/p95 latency, index lag, and bytes per
+source byte. Evaluation must report corpus, policy, and index versions; semantic
+quality must not be inferred from a handful of hand-picked examples.
 
 ## 7. Non-goals and unresolved decisions
 
-Non-goals: runtime retrieval in this PR; embeddings or a vector database; changes to `find_session_transcripts`/`read_transcript`; automatic transcript summarization; automatic writes to project memory (#34); unsolicited live injection (#49); cross-user tenancy; remote model/service selection; claims that retrieved text is true; or closing #334.
+Non-goals: runtime retrieval in this PR; embeddings or a vector database; changes
+to `find_session_transcripts` or its lexical behavior; automatic transcript
+summarization; automatic writes to project memory (#34); unsolicited live
+injection (#49); cross-user tenancy; remote model/service selection; claims that
+retrieved text is true; or closing #334. The existing `read_transcript` contract
+is not changed here, but recall cannot ship until the separately scoped,
+server-checked `recall_ref` capability is implemented and tested.
 
-Unresolved and requiring architecture review: exact local index technology and encryption-at-rest posture; embedding model and licensing; chunk size/overlap; supported privacy classes and redaction detector; capability/token representation; remote embedding policy; retention defaults; whether thinking/tool content can ever be explicitly opted in; score calibration and fusion weights; source digest format; and operational rebuild/compaction limits. These are intentionally not guessed here.
+Unresolved and requiring architecture review: exact local index technology and encryption-at-rest posture; embedding model and licensing; chunk size/overlap; supported privacy classes and redaction detector; capability token encoding (but not its server-checked scope); remote embedding policy; retention defaults; whether thinking/tool content can ever be explicitly opted in; score calibration and fusion weights; source digest format; and operational rebuild/compaction scheduling. The normative resource ceilings and response behavior above are not unresolved. These are intentionally not guessed here.
 
 ## 8. Traceability to current baseline
 
-The current [`agent/session_tools_find.go`](../../../agent/session_tools_find.go) implementation provides metadata filtering, current/all-project scope (where available), refs/snippets, and a bounded scan of 200 opened transcripts. It searches full thinking, tool arguments, and tool-result bodies. [`read_transcript`](../../tools/transcripts.md) remains the provenance/audit reader. The future recall design must layer behind a new capability and preserve those APIs as the lexical baseline until a separately reviewed compatibility change lands.
+The current [`agent/session_tools_find.go`](../../../agent/session_tools_find.go) implementation provides metadata filtering, current/all-project scope (where available), refs/snippets, and a bounded scan of 200 opened transcripts. It searches full thinking, tool arguments, and tool-result bodies. [`read_transcript`](../../tools/transcripts.md) remains the provenance/audit reader with its existing broader semantics; a recall result's provenance ref must not expand that access. The future recall design must layer behind a server-checked scoped capability and preserve the existing APIs as the lexical baseline until a separately reviewed compatibility change lands.
