@@ -103,7 +103,7 @@ function projectResource(key: string) {
 
 function navigationResponse(url: string): Response | null {
   const projectMatch = url.match(/^\/api\/navigation\/projects\/([^?]+)/);
-  if (projectMatch && projectMatch[1]) {
+  if (projectMatch?.[1]) {
     return new Response(JSON.stringify(projectResource(decodeURIComponent(projectMatch[1]))), {
       status: 200,
       headers: { "content-type": "application/json", etag: '"shellguard-etag"' },
@@ -112,19 +112,34 @@ function navigationResponse(url: string): Response | null {
   if (url.startsWith("/api/navigation/catalogs/projects")) {
     return new Response(JSON.stringify(EMPTY_PROJECT_CATALOG), {
       status: 200,
-      headers: { "content-type": "application/json", etag: "\"shellguard-etag\"", "X-Evener-Navigation-Generation": "shellguard-generation", "X-Evener-Navigation-Revision": "1" },
+      headers: {
+        "content-type": "application/json",
+        etag: '"shellguard-etag"',
+        "X-Evener-Navigation-Generation": "shellguard-generation",
+        "X-Evener-Navigation-Revision": "1",
+      },
     });
   }
   if (url.startsWith("/api/navigation/sections/live") || url.startsWith("/api/navigation/sections/needs-you")) {
     return new Response(JSON.stringify(EMPTY_SECTION), {
       status: 200,
-      headers: { "content-type": "application/json", etag: "\"shellguard-etag\"", "X-Evener-Navigation-Generation": "shellguard-generation", "X-Evener-Navigation-Revision": "1" },
+      headers: {
+        "content-type": "application/json",
+        etag: '"shellguard-etag"',
+        "X-Evener-Navigation-Generation": "shellguard-generation",
+        "X-Evener-Navigation-Revision": "1",
+      },
     });
   }
   if (url.startsWith("/api/navigation/pin-sections")) {
     return new Response(JSON.stringify(EMPTY_PIN_CATALOG), {
       status: 200,
-      headers: { "content-type": "application/json", etag: "\"shellguard-etag\"", "X-Evener-Navigation-Generation": "shellguard-generation", "X-Evener-Navigation-Revision": "1" },
+      headers: {
+        "content-type": "application/json",
+        etag: '"shellguard-etag"',
+        "X-Evener-Navigation-Generation": "shellguard-generation",
+        "X-Evener-Navigation-Revision": "1",
+      },
     });
   }
   if (url === "/api/navigation" || url === "/api/navigation/") {
@@ -143,7 +158,15 @@ window.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response>
   if (nav) return Promise.resolve(nav);
   if (url.startsWith("/api/")) {
     return Promise.resolve(
-      new Response(JSON.stringify({}), { status: 200, headers: { "content-type": "application/json", etag: "\"shellguard-etag\"", "X-Evener-Navigation-Generation": "shellguard-generation", "X-Evener-Navigation-Revision": "1" } }),
+      new Response(JSON.stringify({}), {
+        status: 200,
+        headers: {
+          "content-type": "application/json",
+          etag: '"shellguard-etag"',
+          "X-Evener-Navigation-Generation": "shellguard-generation",
+          "X-Evener-Navigation-Revision": "1",
+        },
+      }),
     );
   }
   return realFetch(input, init);

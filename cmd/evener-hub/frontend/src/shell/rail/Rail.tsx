@@ -435,13 +435,7 @@ function isNavigationMutationReceipt(result: unknown): result is NavigationMutat
   );
 }
 
-function NavigationRail({
-  onHide,
-  width,
-  onWidthChange,
-  revealTarget,
-  onRevealConsumed,
-}: RailProps = {}) {
+function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealConsumed }: RailProps = {}) {
   const navigationMode = useNavigationStore((state) => state.mode);
   const manifest = useNavigationStore((state) => state.manifest);
   const resourcesState = useNavigationStore((state) => state.resources);
@@ -547,16 +541,13 @@ function NavigationRail({
   );
   const rootLoadsInFlight = useRef(new Set<string>());
   const rootGeneration = useRef("");
-  const loadProjectRoot = useCallback(
-    (key: string) => {
-      if (rootLoadsInFlight.current.has(key)) return;
-      rootLoadsInFlight.current.add(key);
-      void Promise.resolve(navigationStore.getState().loadProject(key))
-        .catch(() => undefined)
-        .finally(() => rootLoadsInFlight.current.delete(key));
-    },
-    [],
-  );
+  const loadProjectRoot = useCallback((key: string) => {
+    if (rootLoadsInFlight.current.has(key)) return;
+    rootLoadsInFlight.current.add(key);
+    void Promise.resolve(navigationStore.getState().loadProject(key))
+      .catch(() => undefined)
+      .finally(() => rootLoadsInFlight.current.delete(key));
+  }, []);
   useEffect(() => {
     if (navigationMode !== "v1") return;
     const generation = navigationStore.getState().clientGenerationID;
@@ -1047,10 +1038,7 @@ function NavigationRail({
             title="Couldn't load sessions"
             hint={loadError}
             action={
-              <Button
-                size="sm"
-                onClick={() => void navigationStore.getState().loadManifest()}
-              >
+              <Button size="sm" onClick={() => void navigationStore.getState().loadManifest()}>
                 Retry
               </Button>
             }

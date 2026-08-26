@@ -1,8 +1,8 @@
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { resetAskDockStoreForTests } from "../panes/session/composer/askDock/askDockStore";
-import { resetThreadsStoreForTests } from "../stores/threads";
 import { resetNavigationStoreForTests } from "../stores/navigation/store";
+import { resetThreadsStoreForTests } from "../stores/threads";
 import { resetDisclosureStoreForTests } from "../widgets/disclosure/disclosureStore";
 import SurfaceGallery, { SURFACE_GALLERY_SECTIONS } from "./SurfaceGallery";
 

@@ -6,7 +6,6 @@ import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
-import type { RailProject, RailSession } from "./railNodes";
 import { Tree, type TreeRowInfo } from "../../widgets";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -18,6 +17,8 @@ import type {
   LoadingRailNode,
   OverflowRailNode,
   ProjectRailNode,
+  RailProject,
+  RailSession,
   SessionRailNode,
 } from "./railNodes";
 
@@ -99,7 +100,17 @@ function apiNode(overrides: Partial<RailSession> = {}): RailSession {
 }
 
 function apiProject(overrides: Partial<RailProject> = {}): RailProject {
-  return { key: "p1", name: "Proj", sessions: [], more_current: 0, more_recent: 0, more_archived: 0, loaded: false, nextOffsets: {}, ...overrides };
+  return {
+    key: "p1",
+    name: "Proj",
+    sessions: [],
+    more_current: 0,
+    more_recent: 0,
+    more_archived: 0,
+    loaded: false,
+    nextOffsets: {},
+    ...overrides,
+  };
 }
 
 function sessionRailNode(session: RailSession, overrides: Partial<SessionRailNode> = {}): SessionRailNode {

@@ -1,8 +1,4 @@
-import type {
-  NavigationCapability,
-  NavigationManifest,
-  NavigationSessionSummary,
-} from "../../protocol/types.gen";
+import type { NavigationCapability, NavigationManifest, NavigationSessionSummary } from "../../protocol/types.gen";
 import type { NavigationResponse, ResourceKey } from "./types";
 export const capability = (generationId = "generation_test", version = 1): NavigationCapability => ({
   version,
