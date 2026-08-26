@@ -669,17 +669,18 @@ func TestNavigationServiceFailedRefreshPreservesNewerPendingEpoch(t *testing.T) 
 	done := make(chan struct{})
 
 	attached := make(chan struct{}, 1)
+	var injectOnce sync.Once
 	previousAttached := navigationRefreshTicketAttached
 	navigationRefreshTicketAttached = func(locked *NavigationService, _ *navigationBuildFlight) {
 		// Simulate a newer producer epoch arriving while the failed flight owns
 		// the lock; the retry must not clear this newer hint.
-		if len(attached) == 0 {
+		injectOnce.Do(func() {
 			locked.epoch++
 			locked.pendingEpoch++
 			locked.pendingHint = mergeNavigationChangeHints(locked.pendingHint, navigationChangeHint{Sources: true})
 			locked.pendingInvalidation = true
 			attached <- struct{}{}
-		}
+		})
 	}
 	t.Cleanup(func() { navigationRefreshTicketAttached = previousAttached })
 	source.mu.Lock()
