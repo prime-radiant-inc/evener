@@ -57,7 +57,7 @@ SensitivityMap = {inputNodeId: "public"|"personal"|"secret"}
 | `status` | `type,nodeId,text:String(1..4096),tone:"info"|"success"|"warning"|"error"` | none |
 | `link` | `type,nodeId,label:String(1..1024),url:String(1..2048)` | none; URL policy below |
 
-`Option = {optionId:Id,label:String(1..1024),detail?:String(0..1024),recommended?:Bool}`. Option IDs are unique within a group. `ActionName = "submit"|"cancel"`; `link_open` is a renderer-local navigation of a validated `link`, never a server action. `root` may contain only `stack,text,heading,label,choice_group,divider,status,link` for `render_widget`; `request_input` additionally permits `text_input,number_input,checkbox,button`. `label.for` and all action references must resolve. `button` and every input are illegal in `render_widget`. Inputs and actions are illegal outside `request_input`. A submit/cancel event is legal only when `nodeId` names a `button` whose declared `action` equals the event action; a `nodeId` naming an input or another button is `invalid_value` with `invalidNodeIds` as defined below. `SensitivityMap` must have exactly one entry for each input node, and no entry for a non-input node; omitted sensitivity defaults to `public`.
+`Option = {optionId:Id,label:String(1..1024),detail?:String(0..1024),recommended?:Bool}`. Option IDs are unique within a group. `ActionName = "submit"|"cancel"`; `link_open` is a renderer-local navigation of a validated `link`, never a server action. `root` may contain only `stack,text,heading,label,choice_group,divider,status,link` for `render_widget`; `request_input` additionally permits `text_input,number_input,checkbox,button`. `label.for` and all action references must resolve. `button` and every input are illegal in `render_widget`. Inputs and actions are illegal outside `request_input`. A submit/cancel event is legal only when `nodeId` names a `button` whose declared `action` equals the event action; a `nodeId` naming an input or another button is `invalid_value` with `invalidNodeIds` as defined below. A `cancel` button is legal only when the envelope has `allowCancel:true`; a cancel button with omitted/false `allowCancel` makes the envelope invalid. `SensitivityMap` must have exactly one entry for each input node, and no entry for a non-input node; omitted sensitivity defaults to `public`.
 
 **Client event:** only `request_input` accepts this object:
 
@@ -72,7 +72,7 @@ Values = {inputNodeId:TypedValue}  // exactly declared input IDs; no extras
 MutationId = [A-Za-z0-9_:-]{1,64}
 ```
 
-`TypedValue` is a string, finite number, boolean, null, or an array of option IDs, exactly as declared by its input. `submit` requires all `required` inputs and `cancel` requires `{}`. One event has exactly one action and is limited to 256 KiB. `value` is legal only for `public` inputs; personal/secret inputs MUST omit it and start empty. A producer that supplies a sensitive prefill is rejected before persistence.
+`TypedValue` is a string, finite number, boolean, null, or an array of option IDs, exactly as declared by its input. `Values` contains all and only supplied declared input IDs; optional IDs may be omitted. For `text_input`, omitted means empty/unanswered and `""` is supplied-but-empty; for `number_input`, omitted and `null` are distinct (unanswered versus explicit null, with null legal only when `required:false`); for `choice_group`, omitted means no selection and `[]` is supplied-but-empty (an option ID must be declared, and `[]` is legal only when optional); for `checkbox`, omitted means unanswered and `false` is a supplied value. A required text must have a non-empty string, required number a finite number, required choice a non-empty valid selection, and required checkbox `true`; required null is never valid. `submit` requires every required input ID and may omit optional IDs; `cancel` requires exactly `{}`. One event has exactly one action and is limited to 256 KiB. `value` is legal only for `public` inputs; personal/secret inputs MUST omit it and start empty. A producer that supplies a sensitive prefill is rejected before persistence.
 
 **Server result/error:**
 
@@ -80,17 +80,34 @@ MutationId = [A-Za-z0-9_:-]{1,64}
 Result = {protocol:"evener.widget", version:Version, kind:"result",
   sessionId:Id, widgetId:Id, revision:Int, clientMutationId:MutationId,
   status:"accepted"|"duplicate", lifecycle:"accepted"|"cancelled",
+  mutationStatus:"accepted"|"duplicate", outboxStatus:"delivered"|"none",
   values?:Values, groupStatus?:"complete"}
 Error = {protocol:"evener.widget", version:Version, kind:"error",
   sessionId:Id, widgetId:Id, revision:Int, clientMutationId?:MutationId,
-  code:ErrorCode, lifecycle:"pending"|"rejected"|"accepted"|"expired"|"cancelled",
+  code:ErrorCode, lifecycle:"pending"|"accepted"|"expired"|"cancelled",
+  mutationStatus:"rejected"|"in_flight"|"duplicate"|"conflict",
+  outboxStatus:"none"|"pending"|"delivered",
   currentRevision?:Int, invalidNodeIds?:[Id](1..16), fallback:Fallback}
 ErrorCode = "invalid_widget"|"unsupported_version"|"unsupported_catalog"|
   "unsupported_component"|"invalid_value"|"stale_revision"|"already_resolved"|
-  "expired"|"cancelled"|"unauthorized"|"rate_limited"|"idempotency_conflict"
+  "expired"|"cancelled"|"cancel_not_allowed"|"unauthorized"|"rate_limited"|"idempotency_conflict"
 ```
 
-A result never includes sensitive values (the producer receives them through the existing protected tool/session path); `values` is present only for non-sensitive fields and only where the negotiated policy permits it. Errors include only the bounded `invalidNodeIds` list for safe schema diagnostics; they include no values, token, URL, or internal detail. Responses are server-authenticated and addressed to the same session/widget.
+A result never includes sensitive values (the producer receives them through the existing protected tool/session path); `values` is present only for non-sensitive fields and only where the negotiated policy permits it. `Result` is legal only for an accepted/cancelled request after outbox delivery acknowledgement (`outboxStatus:"delivered"` for submit, `"none"` for cancel); `duplicate` repeats that winning result. Errors include only the bounded `invalidNodeIds` list for safe schema diagnostics; they include no values, token, URL, or internal detail. Responses are server-authenticated and addressed to the same session/widget.
+
+**Field legality by result/error and action:**
+
+| Message | Legal fields/effect |
+| --- | --- |
+| submit `Result` | `status:"accepted"|"duplicate"`, `lifecycle:"accepted"`, `mutationStatus` matching status, `outboxStatus:"delivered"`; `values` only public values; no `invalidNodeIds` |
+| cancel `Result` | same statuses, `lifecycle:"cancelled"`, `outboxStatus:"none"`, `values` absent; legal only when `allowCancel:true` |
+| `invalid_value` Error | `lifecycle:"pending"`, `mutationStatus:"rejected"`, `outboxStatus:"none"`, `invalidNodeIds` required and bounded; corrected retry uses a new ID |
+| `stale_revision` Error | pending/rejected/none; `currentRevision` required; no invalid IDs |
+| `unauthorized`, `rate_limited`, `invalid_widget`, negotiation errors | pending/rejected/none; no current revision, values, or invalid IDs (except invalid widget may include safe IDs only when parsing reached node validation) |
+| `idempotency_conflict` Error | pending/conflict/none; same key with a different digest has no effect |
+| `cancel_not_allowed` Error | pending/rejected/none; a cancel event against `allowCancel:false` has this one typed outcome and no effect |
+| `already_resolved` Error | `lifecycle:"accepted"|"cancelled"`, `mutationStatus:"duplicate"`, `outboxStatus:"delivered"|"none"`; it reports the winning state and no new effect |
+| `expired`/`cancelled` Error | matching terminal lifecycle, rejected or duplicate mutation status, no effect |
 
 **Capability advertisement:**
 
@@ -137,19 +154,19 @@ The idempotency key is `(tenant, sessionId, widgetId, clientMutationId)`. In one
 
 Idempotency records are retained until the later of widget expiry plus 24 hours or session expiry plus 24 hours, capped at 30 days from the record's `createdAt` epoch (the cap origin). They are then deleted only with the widget/session tombstone. After eviction, a mutation ID is not reusable: if its tombstone is unavailable, the server rejects the request as `expired`/`unauthorized` before any tool effect (fail closed), never treating it as new. Widget revisions are retained through the same window, capped at 64; post-eviction reconnect gets fallback only.
 
-Lifecycle is `pending -> accepted|cancelled|expired`; `rejected` is a non-terminal mutation result while the request remains `pending`. `expired` is server-enforced at `expiresAt` (or session expiry); no timer invents an answer. The following effects are normative:
+Request lifecycle is `pending -> accepted|cancelled|expired`; mutation status is a separate `in_flight|accepted|rejected|duplicate|conflict`, and outbox status is `none|pending|delivered`. A rejected mutation leaves request lifecycle `pending`. `in_flight` plus outbox `pending` is the pre-ack delivery state; request lifecycle remains `pending` until the deduplicated tool boundary acknowledges, then it becomes `accepted` and only then is a Result emitted. `expired` is server-enforced at `expiresAt` (or session expiry); no timer invents an answer. The following effects are normative:
 
 | Condition | Result/state/effect | Retry rule |
 | --- | --- | --- |
 | valid submit, pending/current revision | `accepted`, request terminal; outbox-backed exactly-once tool delivery; Result has `lifecycle:"accepted"` | same ID returns `duplicate` with accepted result; other IDs Error has `lifecycle:"accepted"` and `already_resolved` |
 | valid cancel with `allowCancel` | `cancelled`, request terminal; Result has `lifecycle:"cancelled"`; no tool delivery | same ID returns `duplicate` with cancelled result; other IDs Error has `lifecycle:"cancelled"` and `already_resolved` |
-| missing/invalid value | `invalid_value`, remains `pending`, returns current revision | corrected payload may use a new mutation ID; same ID only retries identical rejection |
-| stale revision | `stale_revision`, remains pending, returns `currentRevision`; no effect | refresh then new ID; same ID repeats rejection |
+| missing/invalid value | Error `invalid_value`, request remains `pending`, mutation `rejected`, outbox `none`, returns current revision | corrected payload may use a new mutation ID; same ID only retries identical rejection |
+| stale revision | Error `stale_revision`, request remains pending, mutation `rejected`, outbox `none`, returns `currentRevision`; no effect | refresh then new ID; same ID repeats rejection |
 | unauthorized/session mismatch | `unauthorized`, no existence/state disclosure, no effect | re-authenticate; mutation ID cannot be reused across sessions |
 | duplicate digest | stored result, no effect | deterministic replay |
 | digest mismatch | `idempotency_conflict`, no effect | new ID only after correction |
-| expiry/cancel/race loser | `expired`/`cancelled`/`already_resolved`, terminal state unchanged | no retry can mutate |
-| rate limit | `rate_limited`, remains pending, no effect | wait for server-provided retry window; new ID does not bypass quota |
+| expiry/cancel/race loser | `expired`/`cancelled`/`already_resolved`, terminal state unchanged; mutation `rejected` or `duplicate`, outbox `none` | no retry can mutate |
+| rate limit | `rate_limited`, remains pending, mutation `rejected`, outbox `none`, no effect | wait for server-provided retry window; new ID does not bypass quota |
 
 Concurrent valid events use one atomic compare-and-set from `pending`; one wins and all losers observe the terminal state. Reconnect/cold attach replays the latest valid revision, lifecycle, and version-independent fallback. Errors are localized generic messages and preserve no secrets.
 
@@ -159,7 +176,7 @@ Existing `ask_user` remains authoritative: its `DefAskUser` schema, interactive-
 
 One legacy `ask_user` tool call maps to **one** `request_input` envelope, with one `groupId` equal to the server-owned tool-call group. Each legacy question maps, in source-array order, to a `heading`/`text` plus exactly one `choice_group` (or declared input control); `header` is its label, `options` preserve order and labels/details, `multi_select` controls array cardinality, and `why` is plain text. The envelope contains all question controls and one submit/cancel action. There are no separate request widgets and no generic batch action.
 
-Submit is an atomic aggregation: all required controls validate together; any invalid control leaves the whole group pending and returns one `invalid_value` result with bounded `invalidNodeIds`; no partial tool delivery occurs. A successful submit serializes answers in original question order using the existing byte-compatible `[answers]` format and delivers exactly one legacy reply. For the concrete questions `[{"header":"Color","question":"Pick","options":[{"label":"Red"},{"label":"Blue"}],"multi_select":false},{"header":"Tags","question":"Choose","options":[{"label":"A"},{"label":"B"}],"multi_select":true}]`, selections Red and A+B serialize exactly as UTF-8 bytes `["Red","A","B"]` (hex `5b 22 52 65 64 22 2c 22 41 22 2c 22 42 22 5d`) in the existing user-message path. Cancel delivers exactly the existing cancellation bytes `[]` (hex `5b 5d`) atomically. A race or expiry delivers no partial reply; existing pending questions remain reconstructible until the group terminal state. One `clientMutationId` covers the complete group payload, so retries cannot produce a second legacy reply. Legacy transcripts without envelopes continue through the existing parser. Migration stages are schema/fixtures, read-only rendering, interaction persistence, adapter/parity, then deprecation only after evidence and rollback capability.
+Submit is an atomic aggregation: all required controls validate together; any invalid control leaves the whole group pending and returns one `invalid_value` result with bounded `invalidNodeIds`; no partial tool delivery occurs. A successful submit serializes answers in original question order using the existing byte-compatible `[answers]` format and delivers exactly one legacy reply. For the concrete questions `[{"header":"Color","question":"Pick","options":[{"label":"Red"},{"label":"Blue"}],"multi_select":false},{"header":"Tags","question":"Choose","options":[{"label":"A"},{"label":"B"}],"multi_select":true}]`, selections Red and A+B serialize exactly as 53 UTF-8 bytes `[answers]\n1. [Color] → "Red"\n2. [Tags] → "A", "B"` (hex `5b616e73776572735d0a312e205b436f6c6f725d20e286922022526564220a322e205b546167735d20e28692202241222c20224222`). Empty input serializes exactly `[answers]` (9 bytes, `5b616e73776572735d`); one skipped Color question serializes exactly `[answers]\n1. [Color] → skipped (no answer)` (44 bytes, `5b616e73776572735d0a312e205b436f6c6f725d20e2869220736b697070656420286e6f20616e7377657229`). Cancel uses the same all-question skip serialization, never JSON arrays. A race or expiry delivers no partial reply; existing pending questions remain reconstructible until the group terminal state. One `clientMutationId` covers the complete group payload, so retries cannot produce a second legacy reply. Legacy transcripts without envelopes continue through the existing parser. Migration stages are schema/fixtures, read-only rendering, interaction persistence, adapter/parity, then deprecation only after evidence and rollback capability.
 
 ## 8. Sensitive values and privacy boundary
 
@@ -195,22 +212,28 @@ Layouts reflow at narrow widths with no required horizontal scrolling or pointer
 
 ## 11. Concrete acceptance fixtures for future runtime PRs
 
-These are normative Given/When/Then fixtures, not claims that this design PR implements them. A future stage cannot advance until its listed fixtures pass on server, web, TUI, and mobile where applicable.
+These are normative Given/When/Then fixtures, not claims that this design PR implements them. A future stage cannot advance until its listed fixtures pass on server, web, TUI, and mobile where applicable. Unless a row supplies a complete replacement, every row starts from this complete grammar-valid F0 envelope (IDs are intentionally deterministic test IDs):
+
+```json
+{"protocol":"evener.widget","version":{"major":1,"minor":0},"kind":"request_input","widgetId":"w0","toolCallId":"tc0","sessionId":"s0","revision":1,"createdAt":"2026-08-26T00:00:00Z","expiresAt":null,"fallback":{"plainText":"Widget unavailable; see the transcript.!"},"allowCancel":false,"sensitivity":{"i1":"public"},"root":{"type":"stack","nodeId":"r0","direction":"vertical","children":[{"type":"heading","nodeId":"h0","text":"Pick","level":1},{"type":"label","nodeId":"l0","text":"Pick","for":"i1"},{"type":"text_input","nodeId":"i1","label":"Pick","required":true},{"type":"button","nodeId":"b1","label":"Submit","action":"submit"}]}}
+```
+
+F0's canonical UTF-8 bytes are the lexicographically-keyed, whitespace-free JSON above; the exact canonical byte length is 639 and SHA-256 is `0446d6d114707f03e8bd5d3c8956d796fce0e8bf01039caa105b59785da6e8b2`. Fixture generators MUST assert this digest (and `sha256(bytes)` for generated boundaries) before parsing and report it with the test artifact. BND-1 generates nested stacks with at most 64 children, node IDs `n0001` onward, and appends a final text payload to reach each boundary; this is deterministic and rejects any generated tree whose canonical digest differs from the recorded artifact. The complete negotiation fixtures use catalogs `{ "id":"cA", "revision":1, "sha256":"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }`, `{ "id":"cB", "revision":1, "sha256":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" }`, and `cWrong` with 64 `c` characters; the server and client must use these exact fields.
 
 | ID | Given | When | Then |
 | --- | --- | --- | --- |
-| BND-1 (server, web/TUI/mobile) | JSON envelope fixture has a 256 KiB encoded body, a 16-deep `stack`, 256 nodes, 128 options, and text exactly 4,096 bytes/1,024 scalars | validate, then add one byte/node/level/option | first is accepted; each added boundary returns Error `invalid_widget`, `lifecycle:"rejected"`, and the 62-byte fallback carrier whose length field is `00 00 00 28` |
+| BND-1 (server, web/TUI/mobile) | Start with F0 below; deterministic generator repeats `text` nodes to exact encoded size/count/depth/option boundaries (SHA-256 oracle: implementation records canonical generated bytes before parsing) | validate, then add one byte/node/level/option | first is accepted; each added boundary returns Error `invalid_widget`, `lifecycle:"pending"`, `mutationStatus:"rejected"`, and the 62-byte fallback carrier whose length field is `00 00 00 28` |
 | SEC-1 (server, web/TUI/mobile) | `{"type":"text","nodeId":"n1","text":"<img src=x onerror=1>"}`, a `link` URL `javascript:alert(1)`, `https://evil.example`, and a button action `tool.exec` | validate/render and attempt activation | `invalid_widget`/fallback; no markup, script, network request, tool action, or origin outside approved HTTPS occurs |
-| NEG-1 (server plus each client) | server tuples `[(1,1,cA),(1,0,cB)]`; client tuples `[(1,0,cB),(1,1,cWrong)]`, exact `cB` hash matches | negotiate | choose `(1,0,cB)`; replace hash with one byte difference and result is `unsupported_catalog` plus exact fallback carrier |
+| NEG-1 (server plus each client) | server tuples `[(1,1,{id:"cA",revision:1,sha256:"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}),(1,0,{id:"cB",revision:1,sha256:"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"})]`; client advertises complete cB object and `{id:"cWrong",revision:1,sha256:"cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"}` | negotiate | choose `(1,0,cB)`; replace one cB hash byte and result is `unsupported_catalog` plus exact fallback carrier |
 | NEG-2 (server plus each client) | client advertises only v2, then advertises v1.1 with unknown `tooltip:"x"`; server offers only v1.0 | negotiate/parse | no downgrade or field guessing; `unsupported_version` plus fallback carrier in both cases |
 | AUTH-1 (server, web/TUI/mobile event clients) | authenticated session A sends an Event with session/widget IDs from B and altered tenant | submit | Error `unauthorized` with no existence/state detail; no read, lifecycle mutation, or tool effect |
-| ID-1 (server and all event clients) | exact Event JSON `{"action":"submit","clientMutationId":"m1","nodeId":"b1","revision":1,"values":{"i1":"x"}}` | submit it twice | one outbox intent/tool effect; second Result has `status:"duplicate",lifecycle:"accepted"` and identical non-sensitive fields |
-| ID-2 (server and all event clients) | first Event above is rejected for missing required `i2`; resend same `m1` with `i2:"changed"` | retry | Error `idempotency_conflict`, `lifecycle:"pending"`, no effect; corrected payload requires a new ID |
+| ID-1 (server and all event clients) | exact Event JSON `{"protocol":"evener.widget","version":{"major":1,"minor":0},"kind":"event","sessionId":"s0","widgetId":"w0","revision":1,"nodeId":"b1","action":"submit","values":{"i1":"x"},"clientMutationId":"m1"}` | submit it twice | one outbox intent/tool effect; second Result has `status:"duplicate",mutationStatus:"duplicate",lifecycle:"accepted",outboxStatus:"delivered"` and identical non-sensitive fields |
+| ID-2 (server and all event clients) | F0 plus an added required `text_input` `i2`; exact Event above is rejected for missing `i2`; resend same `m1` with `i2:"changed"` | retry | Error `idempotency_conflict`, `lifecycle:"pending",mutationStatus:"conflict",outboxStatus:"none"`, no effect; corrected payload requires a new ID |
 | RACE-1 (server, web/TUI/mobile) | two authorized clients submit the same current revision with distinct IDs in one transaction race | submit concurrently | one Result `accepted`; loser Error `already_resolved,lifecycle:"accepted"`; one outbox delivery and no duplicate reply |
 | RECON-1 (server, web/TUI/mobile) | accepted outbox exists; client disconnects before Result, then reconnects; repeat after tombstone eviction | cold attach/retry | replay accepted Result and no second effect; post-eviction retry is `expired`/`unauthorized` and never new |
-| LEG-1 (server, web/TUI/mobile) | exact two-question fixture from §7, selections Red and A+B | submit all controls | one atomic group and exact bytes `["Red","A","B"]` (`5b 22 52 65 64 22 2c 22 41 22 2c 22 42 22 5d`); cancel is `[]` (`5b 5d`); invalid one produces `invalidNodeIds` and no bytes |
+| LEG-1 (server, web/TUI/mobile) | exact two-question fixture from §7, selections Red and A+B | submit all controls; separately run empty set and one skipped question through `composeAskAnswers` | one atomic group and exact 53-byte text `[answers]\n1. [Color] → "Red"\n2. [Tags] → "A", "B"` (hex `5b616e73776572735d0a312e205b436f6c6f725d20e286922022526564220a322e205b546167735d20e28692202241222c20224222`); empty is exact `[answers]` (9 bytes, `5b616e73776572735d`); skip is exact `[answers]\n1. [Color] → skipped (no answer)` (44 bytes, `5b616e73776572735d0a312e205b436f6c6f725d20e2869220736b697070656420286e6f20616e7377657229`); cancel uses the same all-question skip serialization, never JSON arrays; invalid one produces `invalidNodeIds` and no reply bytes |
 | PRIV-1 (server, web/TUI/mobile) | secret `text_input` omits initial `value`, submits `s3cr3t`, then retries/diagnoses/exports | inspect envelope, transcript, outbox, audit, diagnostics, export | only authorized tool handoff sees plaintext; all other surfaces show `[REDACTED]`; stored canonical event uses `hmac-v1` substitution and ciphertext, never plaintext |
-| A11Y-1 (web/TUI/mobile; server checks metadata) | exact request tree `heading(h1) -> label(l1 for i1) -> text_input(i1) -> button(b1 submit)` at 320 CSS px; keyboard sends Tab, Enter | attach, focus, submit missing value, cancel | focus order `h1,i1,b1`; roles `heading,textbox,button`; announcement `Pick: required`; error announcement `Pick is required`; no horizontal scroll/pointer-only action; fallback is readable |
+| A11Y-1 (web/TUI/mobile; server checks metadata) | exact request tree is F0 with `allowCancel:true` and an added `{type:"button",nodeId:"c1",label:"Cancel",action:"cancel",style:"cancel"}`; at 320 CSS px, keyboard sends Tab, Enter | attach, focus, submit missing value, cancel | focus order `h0,i1,b1,c1`; roles `heading,textbox,button,button`; announcement `Pick: required`; error announcement `Pick is required`; Enter submits, Escape cancels only after explicit cancel button focus; no horizontal scroll/pointer-only action; fallback is readable |
 
 ## 12. Traceable delivery checklist
 
