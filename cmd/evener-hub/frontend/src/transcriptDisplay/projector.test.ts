@@ -200,6 +200,15 @@ describe("transcript projector", () => {
     ]);
   });
 
+  test("governs the environment event with Advanced systemEvents", () => {
+    const model = threadWith(item("environment", "systemMessage", { eventKind: "environment" }));
+
+    expect(entriesFor(model, preset("chat"))).toEqual([]);
+    expect(entriesFor(model, preset("chat", { systemEvents: true }))).toEqual([
+      expect.objectContaining({ kind: "item", id: "environment" }),
+    ]);
+  });
+
   test("covers every current event kind with Advanced diagnostics enabled", () => {
     const eventKinds = [
       "system_prompt",
@@ -298,6 +307,39 @@ describe("transcript projector", () => {
     ]);
   });
 
+  test("projects failed reasoning and routine work from terminal turns at low detail", () => {
+    const terminalTurn = turn(
+      [
+        item("failed-command", "commandExecution", { description: "Routine command", status: "completed" }),
+        item("failed-reasoning", "reasoning", { status: "interrupted" }),
+      ],
+      { status: "failed", error: { message: "structured turn failure" } },
+    );
+    const model = { ...threadWith(), turns: [terminalTurn] } as ThreadModel;
+
+    const projection = projectThread(model, preset("chat"));
+    expect(projection.turns[0]?.entries.map((entry) => entry.id)).toEqual(["failed-command", "failed-reasoning"]);
+    expect(projection.turns[0]?.entries.every((entry) => entry.kind === "critical")).toBe(true);
+    expect(projection.turns[0]?.source).toBe(terminalTurn);
+    expect(projection.turns[0]?.source.status).toBe("failed");
+    expect(projection.turns[0]?.source.error).toEqual({ message: "structured turn failure" });
+  });
+
+  test("keeps a terminal turn renderable when all ordinary rows are hidden", () => {
+    const terminalTurn = turn([item("hidden-system", "systemMessage", { eventKind: "plugin_loaded" })], {
+      status: "interrupted",
+      error: { message: "structured interruption" },
+    });
+    const model = { ...threadWith(), turns: [terminalTurn] } as ThreadModel;
+
+    const projection = projectThread(model, preset("chat"));
+    expect(projection.turns[0]?.entries).toEqual([
+      expect.objectContaining({ kind: "critical", id: "hidden-system", sourceItemId: "hidden-system" }),
+    ]);
+    expect(projection.turns[0]?.visibleItems).toEqual([terminalTurn.items[0]]);
+    expect(projection.turns[0]?.source).toBe(terminalTurn);
+  });
+
   test("returns metadata directly from Advanced and identifies eligible disclosures", () => {
     const config = preset("full", {
       roundTimings: true,
@@ -344,6 +386,28 @@ describe("transcript projector", () => {
       { id: "intent:tool", sourceIndex: 2, index: 1, isMessage: false },
       { id: "agent", sourceIndex: 3, index: 2, isMessage: true },
     ]);
+    expect(projection.turns[0]?.visibleItems.map((item) => item.id)).toEqual(["user", "tool", "agent"]);
+  });
+
+  test("provides grouping input after filtering hidden tools and system rows", () => {
+    const model = threadWith(
+      item("user", "userMessage"),
+      item("hidden-tool", "commandExecution", { description: "Routine hidden action" }),
+      item("hidden-system", "systemMessage", { eventKind: "plugin_loaded" }),
+      item("warning", "warning", { text: "Attention" }),
+      item("agent", "agentMessage"),
+    );
+    const projected = projectThread(model, preset("chat")).turns[0];
+
+    expect(projected?.source.items.map((item) => item.id)).toEqual([
+      "user",
+      "hidden-tool",
+      "hidden-system",
+      "warning",
+      "agent",
+    ]);
+    expect(projected?.visibleItems.map((item) => item.id)).toEqual(["user", "warning", "agent"]);
+    expect(projected?.entries.map((entry) => entry.id)).toEqual(["user", "warning", "agent"]);
   });
 
   test("preserves source turns and does not mutate the input model or items", () => {
@@ -355,6 +419,7 @@ describe("transcript projector", () => {
     const projection = projectThread(model, preset("intent"));
 
     expect(projection.turns[0]?.source).toBe(sourceTurn);
+    expect(projection.turns[0]?.visibleItems).toEqual([sourceItem]);
     expect(model).toEqual(before);
     expect(sourceTurn.items[0]).toBe(sourceItem);
   });

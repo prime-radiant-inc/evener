@@ -29,10 +29,15 @@ export type ProjectedEntry =
       summary: string;
     };
 
+type ProjectedCriticalEntry = Extract<ProjectedEntry, { kind: "critical" }>;
+
 export interface ProjectedTurn {
   readonly id: string;
+  /** Unfiltered source retained for terminal status/error consumers only. */
   readonly source: TurnModel;
   readonly entries: readonly ProjectedEntry[];
+  /** Source items that survived visibility filtering, for downstream grouping. */
+  readonly visibleItems: readonly ItemModel[];
 }
 
 export interface ProjectedAnchor {
@@ -62,6 +67,9 @@ const MESSAGE_TYPES = new Set(["userMessage", "agentMessage"]);
 
 // Keep this vocabulary in step with protocol/types.gen.ts. The projector treats
 // a value outside this set as an unknown event and deliberately renders it.
+// `environment` is intentionally a routine low-level system event: its
+// visibility is governed by Advanced.systemEvents, just like the other known
+// diagnostic announcements.
 const KNOWN_EVENT_KINDS = new Set([
   "system_prompt",
   "plugin_loaded",
@@ -124,6 +132,10 @@ function isActiveItem(item: ItemModel, turn: TurnModel): boolean {
   return item.status === "inProgress" || (turn.status === "inProgress" && item.status === undefined);
 }
 
+function isTerminalTurn(turn: TurnModel): boolean {
+  return turn.status === "failed" || turn.status === "interrupted";
+}
+
 function itemSummary(item: ItemModel): string {
   const description = item.description?.trim();
   if (description) return description;
@@ -163,7 +175,7 @@ function intentEntry(item: ItemModel, turnId: string, sourceIndex: number): Proj
   };
 }
 
-function criticalEntry(item: ItemModel, turnId: string, sourceIndex: number): ProjectedEntry {
+function criticalEntry(item: ItemModel, turnId: string, sourceIndex: number): ProjectedCriticalEntry {
   return {
     kind: "critical",
     id: item.id,
@@ -217,7 +229,7 @@ function decisionFor(
     // tool name.
     if (vector.toolCalls && missingPurpose) return "critical";
     if (vector.toolCalls) return "item";
-    if (failure || active) return "critical";
+    if (failure || active || (isTerminalTurn(turn) && !vector.toolCalls)) return "critical";
     if (vector.toolIntent) return "intent";
     // Chat omits routine action rows, but a call with no purpose is not
     // routine-readable content: keep it as the neutral critical contract.
@@ -226,7 +238,7 @@ function decisionFor(
 
   if (item.type === "reasoning") {
     if (vector.reasoning) return "item";
-    return isActiveItem(item, turn) ? "critical" : "hidden";
+    return hasFailureStatus(item) || isActiveItem(item, turn) || isTerminalTurn(turn) ? "critical" : "hidden";
   }
 
   if (item.type === "systemMessage") return systemDecision(item, config);
@@ -256,6 +268,18 @@ function addAnchor(anchors: ProjectedAnchor[], entry: ProjectedEntry, index: num
   });
 }
 
+function terminalFallbackEntry(
+  turn: TurnModel,
+  sourceIndexByItem: ReadonlyMap<ItemModel, number>,
+): ProjectedCriticalEntry | undefined {
+  if (!isTerminalTurn(turn)) return undefined;
+  const sourceItem = turn.items.at(-1);
+  if (!sourceItem) return undefined;
+  const sourceIndex = sourceIndexByItem.get(sourceItem);
+  if (sourceIndex === undefined) return undefined;
+  return criticalEntry(sourceItem, turn.id, sourceIndex);
+}
+
 export function projectThread(model: ThreadModel, config: TranscriptDisplayConfigV1): TranscriptProjection {
   const normalized = normalizeConfig(config);
   const vector = contentVector(normalized);
@@ -267,9 +291,12 @@ export function projectThread(model: ThreadModel, config: TranscriptDisplayConfi
 
   for (const turn of model.turns) {
     const entries: ProjectedEntry[] = [];
+    const visibleItems: ItemModel[] = [];
+    const sourceIndexByItem = new Map<ItemModel, number>();
     for (const item of turn.items) {
       const itemSourceIndex = sourceIndex;
       sourceIndex += 1;
+      sourceIndexByItem.set(item, itemSourceIndex);
       const decision = decisionFor(item, turn, normalized, vector);
       if (decision === "hidden") continue;
 
@@ -279,13 +306,23 @@ export function projectThread(model: ThreadModel, config: TranscriptDisplayConfi
           : decision === "intent"
             ? intentEntry(item, turn.id, itemSourceIndex)
             : criticalEntry(item, turn.id, itemSourceIndex);
+      visibleItems.push(item);
       entries.push(entry);
       addAnchor(anchors, entry, projectedIndex);
       projectedIndex += 1;
 
       if (entry.kind === "item" && eligibleDisclosure(item)) eligibleDisclosureIds.push(item.id);
     }
-    turns.push({ id: turn.id, source: turn, entries });
+    if (entries.length === 0) {
+      const fallback = terminalFallbackEntry(turn, sourceIndexByItem);
+      if (fallback) {
+        visibleItems.push(fallback.item);
+        entries.push(fallback);
+        addAnchor(anchors, fallback, projectedIndex);
+        projectedIndex += 1;
+      }
+    }
+    turns.push({ id: turn.id, source: turn, entries, visibleItems });
   }
 
   return {
