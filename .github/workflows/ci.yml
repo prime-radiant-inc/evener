@@ -98,8 +98,35 @@ jobs:
         run: make fuzz
 
   snapshot-artifacts:
+    name: Build snapshot artifacts
     needs: [static, race, tests-and-fuzz, web]
-    uses: ./.github/workflows/binaries.yml
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      - uses: ./.github/actions/setup-toolchain
+
+      - name: Build snapshot
+        uses: goreleaser/goreleaser-action@v7
+        with:
+          version: "~> v2"
+          args: release --snapshot --clean
+        env:
+          BUILD_CHANNEL: snapshot
+
+      - name: Inspect archives
+        run: for f in dist/*.tar.gz; do echo "== $f"; tar -tzf "$f"; done
+
+      - name: Upload archives
+        uses: actions/upload-artifact@v7
+        with:
+          name: evener-snapshot-artifacts
+          path: |
+            dist/*.tar.gz
+            dist/checksums.txt
+          if-no-files-found: error
 
   # Temporary compatibility job. Branch protection requires this context until
   # the split jobs above have run successfully and protection is cut over.
