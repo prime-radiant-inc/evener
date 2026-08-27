@@ -431,6 +431,10 @@ func TestModelListToolPreservesJSONUnderConfiguredOutputLimit(t *testing.T) {
 	if len(page.Choices) == 0 {
 		t.Fatal("model_list returned no choices")
 	}
+	repeated := executeModelListPage(t, sess, "", modelavailability.DefaultPageMaxCount, 512)
+	if !slices.Equal(repeated.Choices, page.Choices) || repeated.Next != page.Next || repeated.Terminal != page.Terminal {
+		t.Fatalf("repeated model_list page = %#v, want %#v", repeated, page)
+	}
 }
 
 func TestModelListToolReturnsBoundedEmptyTerminalPage(t *testing.T) {
