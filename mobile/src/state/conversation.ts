@@ -47,14 +47,18 @@ export type ConversationStatus =
 
 // Mutation lifecycle state for send/steer/queue/interrupt. The store tracks
 // the kind, pending/failed status, the exact draft snapshot at submission,
-// and the conversation generation that initiated it. On failure, the failed
-// state PERSISTS until a subsequent mutation or open clears it. The
-// mutationId is a monotonically increasing private counter (F4) so
-// out-of-order completion cannot change a newer mutation, error, or draft.
+// the draft revision at submission (so type-then-delete after clear is
+// detected as an edit), and the conversation generation that initiated it.
+// On failure, the failed state PERSISTS until a subsequent mutation or open
+// clears it. The mutationId is a monotonically increasing private counter
+// (F4) so out-of-order completion cannot change a newer mutation, error, or
+// draft.
 export interface ConversationMutationState {
   kind: "send" | "steer" | "queue" | "interrupt";
   status: "pending" | "failed";
   draftSnapshot: string | null;
+  /** @internal — draft revision captured at submit; used to detect post-clear edits. */
+  draftRevisionAtSubmit: number;
   generation: number;
   /** @internal — monotonic token for stale-check; not for external consumption. */
   mutationId: number;
@@ -404,8 +408,19 @@ function requireCap(
 // the canonical projector needs the full turn context (pendingAsks set) to
 // project them as question items. F7: precise subtype checks — wrong subtype
 // or missing context returns null to schedule a reread.
-function projectSingleItem(item: ThreadItem): MobileTimelineItem | null {
+// Task 2A-Ops-5: when askPending is true, a userMessage item also returns
+// null to trigger an authoritative reread — the canonical projector must
+// settle the pending question state (remove question rows, clear askPending)
+// based on the full turn context after a user-message answer lifecycle.
+function projectSingleItem(
+  item: ThreadItem,
+  askPending: boolean,
+): MobileTimelineItem | null {
   if (item.type === "userMessage") {
+    // Task 2A-Ops-5: if there's a pending ask_user, a user message is the
+    // answer lifecycle — trigger an authoritative reread to settle the
+    // pending question state according to canonical projection.
+    if (askPending) return null;
     return { kind: "user", id: item.id, text: item.text ?? "" };
   }
   if (item.type === "agentMessage") {
@@ -474,6 +489,16 @@ const ITEM_NOTIFICATION_METHODS = new Set([
 export function createConversationStore() {
   let conversationGen = 0;
   let mutationIdCounter = 0;
+  // Draft revision: a monotonically increasing counter incremented on every
+  // setDraft call. When a mutation clears the draft on submit, it captures the
+  // current revision. On failure, the snapshot is restored ONLY if the revision
+  // has not changed since the clear — type-then-delete (which produces "" but
+  // increments the revision) counts as an edit and prevents restore.
+  let draftRevision = 0;
+  // loadOlder operation token — incremented on each loadOlder call so a stale
+  // loadOlder (from an older operation in the same generation) cannot overwrite
+  // a newer loadOlder's loadingOlder, error, or items.
+  let loadOlderToken = 0;
   // The store owns ONE drain scheduler for its entire lifetime. Lifecycle,
   // activity rehydrate, structural notification gaps, and mutation capability
   // recovery all request through it rather than owning timers/coalescers.
@@ -646,6 +671,12 @@ export function createConversationStore() {
   // Late-bound store setter — assigned inside create() so capability refresh
   // effects can call set() outside the create() callback scope.
   let storeSet: ((partial: Partial<ConversationState>) => void) | null = null;
+  // Returns the current draft revision — passed to handleMutationError so it
+  // can detect post-clear edits (type-then-delete) without exposing the
+  // revision in public state.
+  function getDraftRevision(): number {
+    return draftRevision;
+  }
   // F9: Rehydrate operation token — incremented on each rehydrate call so
   // a stale rehydrate (from an older operation) cannot overwrite a newer
   // rehydrate's state within the same generation.
@@ -838,7 +869,6 @@ export function createConversationStore() {
         const state = get();
         if (state.ref === null) return;
         const ref = state.ref;
-        const currentDraft = state.draft;
         const gen = state.conversationGeneration;
         // I1: If the service or sink objects differ from the current binding,
         // increment bindingEpoch BEFORE assignment so queued effects captured
@@ -877,16 +907,35 @@ export function createConversationStore() {
           // conversation projection. If it returns false, do not commit.
           const accepted = sink.setLiveView(activity, identity);
           if (!accepted) return;
-          set({
-            conversation: {
-              ...conversation,
-              items: capItems(truncateAndRecord(conversation.items)),
-            },
-            olderCursor,
-            // Preserve draft
-            draft: currentDraft,
-            error: null,
-          });
+          // Task 2A-Ops-1: At commit time, preserve the latest user draft
+          // (not the pre-await snapshot) and any newer mutation/error owner.
+          // A newer mutation that set pendingMutation/error during the await
+          // must NOT have its error cleared by this rehydrate.
+          const currentState = get();
+          // Only clear error if no mutation owns it. A failed mutation
+          // PERSISTS — rehydrate must not clear a mutation's error.
+          if (currentState.pendingMutation === null) {
+            set({
+              conversation: {
+                ...conversation,
+                items: capItems(truncateAndRecord(conversation.items)),
+              },
+              olderCursor,
+              // Preserve the CURRENT draft (may have been typed during await).
+              draft: currentState.draft,
+              error: null,
+            });
+          } else {
+            // A mutation owns the error — preserve it and the draft.
+            set({
+              conversation: {
+                ...conversation,
+                items: capItems(truncateAndRecord(conversation.items)),
+              },
+              olderCursor,
+              draft: currentState.draft,
+            });
+          }
         } catch (err) {
           // Stale safety: only set error if the binding epoch, generation, and
           // operation token are all still current.
@@ -909,14 +958,25 @@ export function createConversationStore() {
         if (state.olderCursor === null) return;
         const cursor = state.olderCursor ?? "";
         const gen = state.conversationGeneration;
+        // Task 2A-Ops-2: Operation token for loadOlder — a stale success/failure
+        // from an older operation must make no state change at all after a
+        // newer conversation or newer page operation owns those fields.
+        const olderToken = ++loadOlderToken;
         set({ loadingOlder: true });
         try {
           const result = await service.loadOlder(cursor);
           // Guard: the conversation generation may have changed during the await.
           if (get().conversationGeneration !== gen) {
-            set({ loadingOlder: false });
+            // Stale — newer conversation owns these fields. Only clear
+            // loadingOlder if this operation still owns it.
+            if (olderToken === loadOlderToken) {
+              set({ loadingOlder: false });
+            }
             return;
           }
+          // Task 2A-Ops-2: Stale loadOlder — a newer page operation owns the
+          // loadingOlder/error fields. Make no state change at all.
+          if (olderToken !== loadOlderToken) return;
           const currentConv = get().conversation;
           if (currentConv !== null) {
             // F10: Dedupe by source item identity — items from older pages
@@ -947,8 +1007,12 @@ export function createConversationStore() {
             });
           }
         } catch (err) {
-          // Stale safety: only set error if generation hasn't changed.
-          if (get().conversationGeneration === gen) {
+          // Task 2A-Ops-2: Stale safety — only set error/loadingOlder if the
+          // generation hasn't changed AND this operation still owns the fields.
+          if (
+            get().conversationGeneration === gen &&
+            olderToken === loadOlderToken
+          ) {
             set({
               loadingOlder: false,
               error: err instanceof Error ? err.message : String(err),
@@ -958,6 +1022,7 @@ export function createConversationStore() {
       },
 
       setDraft(text) {
+        draftRevision += 1;
         set({ draft: text });
       },
 
@@ -968,13 +1033,18 @@ export function createConversationStore() {
         const draftText = state.draft;
         const gen = state.conversationGeneration;
         const mutationId = ++mutationIdCounter;
+        const revisionAtSubmit = draftRevision;
         const mutation: ConversationMutationState = {
           kind: "send",
           status: "pending",
           draftSnapshot: draftText,
+          draftRevisionAtSubmit: revisionAtSubmit,
           generation: gen,
           mutationId,
         };
+        // Clearing the draft via set() (not setDraft) does NOT increment
+        // draftRevision — so any subsequent setDraft call (including
+        // type-then-delete) increments the revision and is detected as an edit.
         set({ draft: "", pendingSend: "pending", pendingMutation: mutation });
         try {
           await service.send(input);
@@ -992,6 +1062,8 @@ export function createConversationStore() {
             mutationId,
             mutation,
             draftText,
+            revisionAtSubmit,
+            getDraftRevision,
             set,
             get,
             requestCapabilityRefresh,
@@ -1006,10 +1078,12 @@ export function createConversationStore() {
         const draftText = state.draft;
         const gen = state.conversationGeneration;
         const mutationId = ++mutationIdCounter;
+        const revisionAtSubmit = draftRevision;
         const mutation: ConversationMutationState = {
           kind: "steer",
           status: "pending",
           draftSnapshot: draftText,
+          draftRevisionAtSubmit: revisionAtSubmit,
           generation: gen,
           mutationId,
         };
@@ -1030,6 +1104,8 @@ export function createConversationStore() {
             mutationId,
             mutation,
             draftText,
+            revisionAtSubmit,
+            getDraftRevision,
             set,
             get,
             requestCapabilityRefresh,
@@ -1044,10 +1120,12 @@ export function createConversationStore() {
         const draftText = state.draft;
         const gen = state.conversationGeneration;
         const mutationId = ++mutationIdCounter;
+        const revisionAtSubmit = draftRevision;
         const mutation: ConversationMutationState = {
           kind: "queue",
           status: "pending",
           draftSnapshot: draftText,
+          draftRevisionAtSubmit: revisionAtSubmit,
           generation: gen,
           mutationId,
         };
@@ -1067,6 +1145,8 @@ export function createConversationStore() {
             mutationId,
             mutation,
             draftText,
+            revisionAtSubmit,
+            getDraftRevision,
             set,
             get,
             requestCapabilityRefresh,
@@ -1080,11 +1160,13 @@ export function createConversationStore() {
         requireCap(state.conversation, "interrupt", "interrupt");
         const gen = state.conversationGeneration;
         const mutationId = ++mutationIdCounter;
+        const revisionAtSubmit = draftRevision;
         const mutation: ConversationMutationState = {
           kind: "interrupt",
           status: "pending",
           // Interrupt does NOT snapshot the draft — it should remain as-is.
           draftSnapshot: null,
+          draftRevisionAtSubmit: revisionAtSubmit,
           generation: gen,
           mutationId,
         };
@@ -1105,6 +1187,8 @@ export function createConversationStore() {
             mutationId,
             mutation,
             null,
+            revisionAtSubmit,
+            getDraftRevision,
             set,
             get,
             requestCapabilityRefresh,
@@ -1252,7 +1336,7 @@ export function createConversationStore() {
 
           case "item/started": {
             const params = n.params as { item: ThreadItem };
-            const projected = projectSingleItem(params.item);
+            const projected = projectSingleItem(params.item, conv.askPending);
             if (projected !== null) {
               const truncated = truncateItem(projected);
               const existingIdx = conv.items.findIndex(
@@ -1286,7 +1370,7 @@ export function createConversationStore() {
 
           case "item/completed": {
             const params = n.params as { item: ThreadItem };
-            const projected = projectSingleItem(params.item);
+            const projected = projectSingleItem(params.item, conv.askPending);
             if (projected !== null) {
               const truncated = truncateItem(projected);
               const existingIdx = conv.items.findIndex(
@@ -1544,14 +1628,20 @@ export function createConversationStore() {
 // non-subscribing refreshCapabilities (never open()) through the store-owned
 // drain scheduler (I2 — no direct await bypass) to publish refreshed caps
 // before surfacing the error. On failure, the failed mutation state PERSISTS
-// (not cleared to null). The draft is only restored if no new text was typed
-// during the in-flight mutation. F4/F10: uses mutationId (not generation alone)
+// (not cleared to null). The draft is only restored if the user has not edited
+// since the mutation cleared the draft — detected via draftRevision, so
+// type-then-delete (which produces "" but increments the revision) counts as
+// an edit and prevents restore. F4/F10: uses mutationId (not generation alone)
 // so out-of-order failure cannot overwrite a newer mutation's error.
 // F10: checks active mutation before the capability refresh — a newer
 // mutation may have started.
 // I2: the capability refresh is requested through the store-owned scheduler
 // so it serializes/coalesces with rereads; stale mutation recovery is
 // suppressed by the mutationId guard inside the scheduler effect.
+// Task 2A-Ops-3: after the capability refresh resolves, caps are published
+// only when both generation AND mutation operation ID remain current — a
+// newer same-generation mutation must not receive stale capability
+// publication or stale error state.
 async function handleMutationError(
   err: unknown,
   service: ConversationService,
@@ -1560,6 +1650,8 @@ async function handleMutationError(
   mutationId: number,
   mutation: ConversationMutationState,
   draftSnapshot: string | null,
+  revisionAtSubmit: number,
+  getDraftRevision: () => number,
   set: (partial: Partial<ConversationState>) => void,
   get: () => ConversationState,
   requestCapabilityRefresh: (
@@ -1586,10 +1678,12 @@ async function handleMutationError(
   // now surface the error.
   if (get().pendingMutation?.mutationId === mutationId) {
     // The failed mutation state PERSISTS — do NOT clear pendingMutation.
-    const currentDraft = get().draft;
-    // F10: Draft revision prevents type-delete restore — only restore if
-    // the draft is still empty (no new text was typed during the mutation).
-    const shouldRestore = currentDraft === "" && draftSnapshot !== null;
+    // Task 2A-Ops-4: Draft revision prevents type-delete restore — only
+    // restore if the draft revision has NOT changed since the mutation
+    // cleared the draft. Type-then-delete produces "" but increments the
+    // revision, so it counts as an edit and prevents restore.
+    const shouldRestore =
+      draftSnapshot !== null && getDraftRevision() === revisionAtSubmit;
     set({
       pendingMutation: { ...mutation, status: "failed" },
       pendingSend: null,
