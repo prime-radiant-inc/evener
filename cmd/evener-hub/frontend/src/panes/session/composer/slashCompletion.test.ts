@@ -169,7 +169,7 @@ test("fuzzy matching excludes labels that are not subsequences", () => {
   expect(filterSlashMenuItems(items, "smp").map((item) => item.label)).toEqual(["simplify", "sample"]);
 });
 
-test("ranking prefers exact, then beginning and contiguousness", () => {
+test("ranking prefers exact, then contiguousness and beginning", () => {
   const items: SlashMenuItem[] = [
     { key: "scattered", invocation: "/axbyc", label: "axbyc", hint: "", kind: "skill" },
     { key: "notBeginning", invocation: "/zabc", label: "zabc", hint: "", kind: "skill" },
@@ -179,19 +179,19 @@ test("ranking prefers exact, then beginning and contiguousness", () => {
   expect(filterSlashMenuItems(items, "abc").map((item) => item.key)).toEqual([
     "exact",
     "contiguous",
-    "scattered",
     "notBeginning",
+    "scattered",
   ]);
 });
 
 test("ranking prefers the narrowest span, then earliest match start", () => {
   const items: SlashMenuItem[] = [
-    { key: "wide", invocation: "/a12e", label: "a12e", hint: "", kind: "skill" },
+    { key: "wide", invocation: "/za12e", label: "za12e", hint: "", kind: "skill" },
     { key: "narrow", invocation: "/a1e", label: "a1e", hint: "", kind: "skill" },
-    { key: "late", invocation: "/xxae", label: "xxae", hint: "", kind: "skill" },
-    { key: "early", invocation: "/zae", label: "zae", hint: "", kind: "skill" },
+    { key: "late", invocation: "/xxa1e", label: "xxa1e", hint: "", kind: "skill" },
+    { key: "early", invocation: "/za1e", label: "za1e", hint: "", kind: "skill" },
   ];
-  expect(filterSlashMenuItems(items, "ae").map((item) => item.key)).toEqual(["narrow", "wide", "early", "late"]);
+  expect(filterSlashMenuItems(items, "ae").map((item) => item.key)).toEqual(["narrow", "early", "late", "wide"]);
 });
 
 test("ranking keeps original merge order for complete ties", () => {
@@ -200,6 +200,38 @@ test("ranking keeps original merge order for complete ties", () => {
     { key: "second", invocation: "/AB", label: "AB", hint: "", kind: "skill" },
   ];
   expect(filterSlashMenuItems(items, "a").map((item) => item.key)).toEqual(["first", "second"]);
+});
+
+test("ranking chooses the best valid embedding instead of the first character occurrences", () => {
+  const items: SlashMenuItem[] = [
+    { key: "alternate", invocation: "/abxabc", label: "abxabc", hint: "", kind: "skill" },
+    { key: "competitor", invocation: "/a1bc", label: "a1bc", hint: "", kind: "skill" },
+  ];
+  expect(filterSlashMenuItems(items, "abc").map((item) => item.key)).toEqual(["alternate", "competitor"]);
+});
+
+test("command and skill rows with the same name retain distinct keys", () => {
+  const items = mergeSlashCommands(
+    [builtin("review", "review command")],
+    [],
+    [{ name: "review", description: "review skill" }],
+  );
+  expect(items.map((item) => ({ key: item.key, kind: item.kind, invocation: item.invocation }))).toEqual([
+    { key: "builtin:review", kind: "builtin", invocation: "/review" },
+    { key: "skill:review", kind: "skill", invocation: "/review" },
+  ]);
+});
+
+test("qualified skill labels can be filtered and spliced with their canonical invocation", () => {
+  const items = mergeSlashCommands([], [], [{ name: "plugin:review", description: "review skill" }]);
+  const [skill] = filterSlashMenuItems(items, "pr");
+  const text = "Use /pr on this";
+  const token = parseSlashToken(text, "Use /pr".length)!;
+  expect(skill?.label).toBe("plugin:review");
+  expect(spliceSlashCommand(text, token, skill!.invocation)).toEqual({
+    text: "Use /plugin:review on this",
+    caret: "Use /plugin:review".length,
+  });
 });
 
 test("filterSlashMenuItems with an empty query returns the whole merged list, in order", () => {
@@ -227,6 +259,11 @@ test("the slash token follows the documented bare or singly-qualified name gramm
   expect(parseSlashToken("/plugin:", 8)).toBeNull();
   expect(parseSlashToken("/plugin:one:two", 16)).toBeNull();
   expect(parseSlashToken(`/${"a".repeat(129)}`, 130)).toBeNull();
+});
+
+test("the parser accepts a name at the exact 128-character limit", () => {
+  const name = "a".repeat(128);
+  expect(parseSlashToken(`/${name}`, name.length + 1)).toEqual({ start: 0, end: name.length + 1, query: name });
 });
 
 // --- spliceSlashCommand ---------------------------------------------------
