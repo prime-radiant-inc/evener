@@ -14,7 +14,12 @@ import type {
   ThreadItem,
   Turn,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
-import type { ActivityDetail, MobileConversation } from "./model";
+import type {
+  ActivityDetail,
+  ActivityFamily,
+  MobileConversation,
+  MobileTimelineItem,
+} from "./model";
 import { projectThread } from "./project";
 
 // --- fixture helpers ---------------------------------------------------------
@@ -937,6 +942,233 @@ describe("projectThread", () => {
         "a1",
         "u2",
       ]);
+    });
+  });
+
+  // --- activity family discriminator (Task 2A) --------------------------------
+  // The durable activity family is carried in MobileTimelineItem independent
+  // of the display label. The canonical projection derives it from the wire
+  // item's *type* — commandExecution → "tool", reasoning → "reasoning",
+  // anything else → "unknown" — never from the label string. A
+  // commandExecution whose toolName is "Reasoning" is still family "tool".
+  describe("activity family discriminator", () => {
+    function familyOf(c: MobileConversation): ActivityFamily | undefined {
+      const a = c.items.find((i) => i.kind === "activity");
+      return a?.kind === "activity" ? a.family : undefined;
+    }
+
+    it("a commandExecution tool call projects family 'tool'", () => {
+      const t = thread([
+        turn("t1", [
+          item({
+            id: "tool1",
+            type: "commandExecution",
+            toolName: "shell",
+            status: "completed",
+          }),
+        ]),
+      ]);
+      const c = projectThread(t);
+      expect(c.items[0]?.kind).toBe("activity");
+      expect(familyOf(c)).toBe("tool");
+    });
+
+    it("a reasoning item projects family 'reasoning'", () => {
+      const t = thread([
+        turn("t1", [item({ id: "r1", type: "reasoning", text: "thinking" })]),
+      ]);
+      const c = projectThread(t);
+      expect(c.items[0]?.kind).toBe("activity");
+      expect(familyOf(c)).toBe("reasoning");
+    });
+
+    it("an unknown item type projects family 'unknown'", () => {
+      const t = thread([
+        turn("t1", [item({ id: "unk1", type: "futureThing", text: "x" })]),
+      ]);
+      const c = projectThread(t);
+      expect(c.items[0]?.kind).toBe("activity");
+      expect(familyOf(c)).toBe("unknown");
+    });
+
+    // Adversarial: a commandExecution whose toolName is "Reasoning" must stay
+    // family "tool", NOT "reasoning". The family follows the wire type, not the
+    // label/toolName. callId must be preserved exactly.
+    it("a commandExecution named 'Reasoning' stays family 'tool' and preserves callId", () => {
+      const t = thread([
+        turn("t1", [
+          item({
+            id: "tool-reasoning",
+            type: "commandExecution",
+            toolName: "Reasoning",
+            callId: "call-reasoning-1",
+            status: "completed",
+            argumentsJson: '{"summary":"thinking about it"}',
+            output: "thoughts",
+          }),
+        ]),
+      ]);
+      const c = projectThread(t);
+      const a = c.items[0];
+      expect(a?.kind).toBe("activity");
+      if (a?.kind === "activity") {
+        // Family is "tool" — derived from type commandExecution, not toolName.
+        expect(a.family).toBe("tool");
+        // Label is still the toolName verbatim (display only).
+        expect(a.label).toBe("Reasoning");
+        // callId preserved exactly for diagnostics disclosure.
+        expect(a.detail.callId).toBe("call-reasoning-1");
+      }
+    });
+
+    // Adversarial: a reasoning item with custom text does not change family.
+    it("a reasoning item with custom text stays family 'reasoning'", () => {
+      const t = thread([
+        turn("t1", [
+          item({
+            id: "r1",
+            type: "reasoning",
+            text: "Step 1: analyze\nStep 2: plan",
+          }),
+        ]),
+      ]);
+      const c = projectThread(t);
+      const a = c.items[0];
+      expect(a?.kind).toBe("activity");
+      if (a?.kind === "activity") {
+        expect(a.family).toBe("reasoning");
+        expect(a.label).toBe("Reasoning");
+      }
+    });
+
+    // Adversarial: the discriminator is independent of the label — a tool and a
+    // reasoning item can share a label string but differ in family.
+    it("family is independent of label: same label, different family", () => {
+      const t = thread([
+        turn("t1", [
+          // A commandExecution tool named "Reasoning" (label "Reasoning").
+          item({
+            id: "tool-1",
+            type: "commandExecution",
+            toolName: "Reasoning",
+            status: "completed",
+          }),
+          // A genuine reasoning item (also label "Reasoning").
+          item({ id: "r-1", type: "reasoning", text: "thoughts" }),
+        ]),
+      ]);
+      const c = projectThread(t);
+      const activities = c.items.filter((i) => i.kind === "activity");
+      expect(activities).toHaveLength(2);
+      const [toolItem, reasoningItem] = activities;
+      if (toolItem?.kind === "activity" && reasoningItem?.kind === "activity") {
+        expect(toolItem.label).toBe("Reasoning");
+        expect(reasoningItem.label).toBe("Reasoning");
+        // Same label, different family — the discriminator carries the truth.
+        expect(toolItem.family).toBe("tool");
+        expect(reasoningItem.family).toBe("reasoning");
+      }
+    });
+
+    // Adversarial: an unknown item whose text looks like reasoning is still
+    // family "unknown".
+    it("an unknown item with reasoning-like text stays family 'unknown'", () => {
+      const t = thread([
+        turn("t1", [
+          item({
+            id: "unk1",
+            type: "newReasoningLikeThing",
+            text: "I should reason about this carefully",
+          }),
+        ]),
+      ]);
+      const c = projectThread(t);
+      const a = c.items[0];
+      expect(a?.kind).toBe("activity");
+      if (a?.kind === "activity") {
+        expect(a.family).toBe("unknown");
+        expect(a.label).toBe("Activity");
+      }
+    });
+
+    // Type/serialization: ActivityFamily is a closed type — only tool |
+    // reasoning | unknown. A projected family is always one of these three.
+    it("every projected activity family is a member of the closed ActivityFamily type", () => {
+      const t = thread([
+        turn("t1", [
+          item({ id: "r1", type: "reasoning", text: "r" }),
+          item({
+            id: "t1",
+            type: "commandExecution",
+            toolName: "shell",
+            status: "completed",
+          }),
+          item({ id: "u1", type: "futureThing", text: "u" }),
+        ]),
+      ]);
+      const c = projectThread(t);
+      const families = c.items
+        .filter(
+          (i): i is Extract<MobileTimelineItem, { kind: "activity" }> =>
+            i.kind === "activity",
+        )
+        .map((i) => i.family);
+      for (const f of families) {
+        // Closed set membership — exhaustive against ActivityFamily.
+        expect(["tool", "reasoning", "unknown"]).toContain(f);
+      }
+    });
+
+    // Serialization/durability: the family survives a JSON round-trip and is
+    // carried alongside the canonical projected shape.
+    it("family survives JSON serialization round-trip", () => {
+      const t = thread([
+        turn("t1", [
+          item({
+            id: "tool1",
+            type: "commandExecution",
+            toolName: "shell",
+            callId: "call-1",
+            status: "completed",
+          }),
+        ]),
+      ]);
+      const c = projectThread(t);
+      const roundTrip = JSON.parse(JSON.stringify(c)) as MobileConversation;
+      const a = roundTrip.items[0];
+      expect(a?.kind).toBe("activity");
+      if (a?.kind === "activity") {
+        expect(a.family).toBe("tool");
+        expect(a.detail.callId).toBe("call-1");
+      }
+    });
+
+    // Adversarial: clustering preserves family across a merged run. The first
+    // member's family (and item) keys the cluster; merged state never loses it.
+    it("clustering preserves family across a merged tool run", () => {
+      const t = thread([
+        turn("t1", [
+          item({
+            id: "c1",
+            type: "commandExecution",
+            toolName: "shell",
+            status: "completed",
+          }),
+          item({
+            id: "c2",
+            type: "commandExecution",
+            toolName: "grep",
+            status: "completed",
+          }),
+        ]),
+      ]);
+      const c = projectThread(t);
+      expect(kinds(c)).toEqual(["activity"]);
+      const a = c.items[0];
+      if (a?.kind === "activity") {
+        expect(a.family).toBe("tool");
+        expect(a.id).toBe("c1");
+      }
     });
   });
 });
