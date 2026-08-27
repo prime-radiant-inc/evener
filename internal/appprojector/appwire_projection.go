@@ -471,22 +471,17 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			if _, committed := p.communicateCommittedCalls[data.CallID]; committed {
 				return out
 			}
-			if itemID := p.provisionalCommunicateItems[data.CallID]; itemID != "" {
-				p.communicateCommittedCalls[data.CallID] = struct{}{}
-				p.communicatePhases[data.CallID] = communicatePhaseCommitted
-				delete(p.provisionalCommunicateItems, data.CallID)
-				p.recordAssistantMessage(p.activeTurnID, text)
-				return append(out, p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
-					ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID,
-					Item: appwire.ThreadItem{Type: "agentMessage", ID: itemID, TurnID: p.activeTurnID, Text: text, Status: appwire.TurnStatusCompleted},
-				}))
+			itemID := p.provisionalCommunicateItems[data.CallID]
+			if itemID == "" {
+				itemID = p.nextItemID("assistant")
 			}
 			p.communicateCommittedCalls[data.CallID] = struct{}{}
 			p.communicatePhases[data.CallID] = communicatePhaseCommitted
-			item := appwire.ThreadItem{Type: "agentMessage", ID: p.nextItemID("assistant"), TurnID: p.activeTurnID, Text: text, Status: appwire.TurnStatusCompleted}
+			delete(p.provisionalCommunicateItems, data.CallID)
 			p.recordAssistantMessage(p.activeTurnID, text)
 			return append(out, p.notification(appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
-				ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID, Item: item,
+				ThreadID: p.threadID, Ref: p.ref, TurnID: p.activeTurnID,
+				Item: appwire.ThreadItem{Type: "agentMessage", ID: itemID, TurnID: p.activeTurnID, Text: text, Status: appwire.TurnStatusCompleted},
 			}))
 		}
 		if p.matchesLastAssistantMessage(p.activeTurnID, text) {

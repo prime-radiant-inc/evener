@@ -34,6 +34,15 @@ type sessionModelResponse struct {
 	CommunicatePreviewCallIDs []string
 }
 
+func sortedPreviewCallIDs(calls map[string]struct{}) []string {
+	ids := make([]string, 0, len(calls))
+	for id := range calls {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	return ids
+}
+
 // attemptObservation carries one consumeModelStream attempt's phase/stats back
 // to callModel's retry closure, feeding llm.RetryStream's early-stop rules.
 // Populated on every return path, including errors, so a mid-stream failure
@@ -130,11 +139,7 @@ func (s *Session) callModel(ctx context.Context, policy llm.RetryPolicy, profile
 		}
 	}
 	withPreviewCalls := func(resp sessionModelResponse) sessionModelResponse {
-		resp.CommunicatePreviewCallIDs = make([]string, 0, len(previewCalls))
-		for id := range previewCalls {
-			resp.CommunicatePreviewCallIDs = append(resp.CommunicatePreviewCallIDs, id)
-		}
-		sort.Strings(resp.CommunicatePreviewCallIDs)
+		resp.CommunicatePreviewCallIDs = sortedPreviewCallIDs(previewCalls)
 		return resp
 	}
 	defer func() {
