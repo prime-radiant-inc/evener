@@ -15,7 +15,7 @@
 // The store holds the MobileConversation projection (never the raw wire
 // Thread). Notifications update the projection in place; a re-read via
 // thread/read after evener/thread/resync is the authoritative refresh path
-// (triggered by the injected coalescer, not timers).
+// (triggered by the store-owned drain scheduler, not timers).
 
 import { create } from "zustand";
 import { WireError } from "../../../cmd/evener-hub/frontend/src/protocol/errors";
@@ -36,6 +36,7 @@ import type {
   ConversationService,
   LiveConversationService,
 } from "../services/conversation";
+import type { ActivityIdentity, NotificationOutcome } from "./activity";
 
 export type ConversationStatus =
   | "idle"
@@ -59,97 +60,126 @@ export interface ConversationMutationState {
   mutationId: number;
 }
 
-// An injected coalescer that batches rehydrate requests (from resync and
-// unsupported item transitions) into a single rehydrate() call. The store
-// calls requestRehydrate(ref) — the coalescer decides when to actually fire.
-// F2: The coalescer is created and bound internally by openProjected; there
-// is no public setCoalescer. flush() lets callers await the in-flight effect.
-export interface RehydrateCoalescer {
-  requestRehydrate(key: string): void;
+// The store owns one drain scheduler for the entire store lifetime (not one
+// per openProjected). Every asynchronous recovery signal — lifecycle ask,
+// activity rehydrate, structural notification gaps, and mutation capability
+// recovery — requests through it rather than owning timers or coalescers.
+// `flush()` is test-only: it returns a promise that resolves only when the
+// complete drain is idle, including recursively queued trailing work.
+export interface DrainScheduler {
+  request(key: string, effect: () => Promise<void>): void;
+  /** @internal — test-only drain barrier. */
   flush(): Promise<void>;
 }
 
-// A structural activity sink accepted by openProjected/rehydrate (F4).
-// F4 strict API: identity-first parameters, no old setThreadIdentity.
-// The applyLiveNotification return value drives the shared reread scheduler.
+// A structural activity sink accepted by openProjected/rehydrate. Uses the
+// approved LiveActivityState contract from state/activity.ts directly via an
+// exact structural Pick so argument order cannot drift from the real store.
+// The applyLiveNotification return value drives the shared drain scheduler.
 export interface LiveActivitySink {
-  setLiveView(
-    identity: { threadId: string; ref: string; generation: number },
-    view: ActivityView,
-  ): void;
+  setLiveView(view: ActivityView, identity: ActivityIdentity): boolean;
   applyLiveNotification(
-    identity: { threadId: string; ref: string; generation: number },
     n: AnyNotification,
-  ): "applied" | "rehydrate" | "ignored";
+    identity: ActivityIdentity,
+  ): NotificationOutcome;
   reset(): void;
 }
 
-// AuthoritativeRereadScheduler (F5): coalesces multiple requestRehydrate
-// signals for the same key into a single bounded effect execution. The
-// effect atomically updates conversation and activity state. Tests prove
-// one real read/result for multiple signals.
-// F5: The drain loop catches errors (the effect is responsible for setting
-// generation/op-owned error state) and never produces an unhandled rejection.
-// A flush() method lets callers (rehydrate) await the in-flight effect.
-export function createAuthoritativeRereadScheduler(
-  effect: (key: string) => Promise<void>,
-): RehydrateCoalescer {
-  let pending: Promise<void> | null = null;
+// Production-owned drain scheduler. Coalesces a synchronous burst for the same
+// current identity into one effect execution; runs at most one effect at a
+// time; retains and drains requests arriving during the first effect, every
+// trailing effect, and an erroring effect; never loses a signal due to
+// unconditional cleanup; catches effect errors without unhandled rejections and
+// remains usable; suppresses stale identity work at the effect boundary.
+// One scheduler serves the whole store lifetime; openProjected/reset bind it.
+export function createDrainScheduler(): DrainScheduler {
+  // `scheduled` is true when a microtask is pending but no effect has started
+  // yet — a synchronous burst arriving before the microtask fires coalesces
+  // into that one pending effect.
   let scheduled = false;
+  // `busy` is true while an effect is actually running. Requests arriving
+  // during the effect are retained for exactly one trailing drain.
+  let busy = false;
+  let inFlight: Promise<void> | null = null;
+  // The pending key+effect for the next drain. Only the latest is retained,
+  // so a burst collapses to at most one trailing effect.
   let pendingKey: string | null = null;
-  // Wrap effect so errors are swallowed — the effect itself sets error state
-  // on the store. This prevents unhandled promise rejections (F5).
-  function runEffect(key: string): Promise<void> {
-    return effect(key).catch(() => {
-      // Error handling is the effect's responsibility (it sets
-      // generation-owned error state). Swallow to prevent unhandled rejection.
-    });
+  let pendingEffect: (() => Promise<void>) | null = null;
+  // Resolves when the drain reaches idle (no in-flight, no pending). Tests
+  // chain onto this to await the full drain including trailing work.
+  let idleResolvers: Array<() => void> = [];
+
+  function notifyIdle(): void {
+    if (inFlight === null && pendingEffect === null && !scheduled) {
+      const resolvers = idleResolvers;
+      idleResolvers = [];
+      for (const r of resolvers) r();
+    }
   }
+
+  function runOne(key: string, effect: () => Promise<void>): Promise<void> {
+    return Promise.resolve()
+      .then(effect)
+      .catch(() => {
+        // Effect errors are the effect's responsibility (it sets generation-owned
+        // error state). Swallow to prevent unhandled rejection; remain usable.
+      })
+      .then(() => {
+        if (pendingEffect !== null) {
+          // A request arrived during this effect — drain exactly one trailing.
+          const nextKey = pendingKey;
+          const nextEffect = pendingEffect;
+          pendingKey = null;
+          pendingEffect = null;
+          inFlight = runOne(nextKey ?? key, nextEffect);
+          return inFlight;
+        }
+        inFlight = null;
+        busy = false;
+        notifyIdle();
+        return undefined;
+      });
+  }
+
   return {
-    requestRehydrate(key: string) {
-      if (pending !== null) {
-        // A flush is in flight — mark for a trailing flush.
+    request(key: string, effect: () => Promise<void>): void {
+      if (busy) {
+        // An effect is in flight — retain only the latest request for a single
+        // trailing drain. This never loses the latest signal while bounding
+        // the queue to at most one pending trailing effect.
         pendingKey = key;
-        scheduled = true;
+        pendingEffect = effect;
         return;
       }
       if (scheduled) {
-        // Already scheduled but not yet started — coalesce.
+        // A microtask is pending but hasn't started — coalesce the burst by
+        // updating the pending effect to the latest request.
         pendingKey = key;
+        pendingEffect = effect;
         return;
       }
+      // First request in a quiescent drain — defer to a microtask so a
+      // synchronous burst coalesces into one effect.
       scheduled = true;
       pendingKey = key;
-      // Defer the effect start to a microtask so synchronous bursts
-      // coalesce into one call.
-      pending = Promise.resolve().then(async () => {
+      pendingEffect = effect;
+      inFlight = Promise.resolve().then(() => {
         scheduled = false;
+        busy = true;
         const keyToUse = pendingKey;
+        const effectToUse = pendingEffect;
         pendingKey = null;
-        try {
-          await runEffect(keyToUse ?? key);
-        } finally {
-          // Check if more requests arrived during the flush.
-          if (scheduled && pendingKey !== null) {
-            scheduled = false;
-            const retryKey = pendingKey;
-            pendingKey = null;
-            // One trailing flush for requests that arrived during the
-            // in-flight effect. This bounds the total to at most one
-            // in-flight + one trailing flush.
-            pending = runEffect(retryKey).finally(() => {
-              pending = null;
-              scheduled = false;
-              pendingKey = null;
-            });
-          } else {
-            pending = null;
-          }
-        }
+        pendingEffect = null;
+        return runOne(keyToUse ?? key, effectToUse ?? effect);
       });
     },
     flush(): Promise<void> {
-      return pending ?? Promise.resolve();
+      if (inFlight === null && pendingEffect === null && !scheduled) {
+        return Promise.resolve();
+      }
+      return new Promise<void>((resolve) => {
+        idleResolvers.push(resolve);
+      });
     },
   };
 }
@@ -408,8 +438,31 @@ const ITEM_NOTIFICATION_METHODS = new Set([
 export function createConversationStore() {
   let conversationGen = 0;
   let mutationIdCounter = 0;
-  let coalescer: RehydrateCoalescer | null = null;
+  // The store owns ONE drain scheduler for its entire lifetime. Lifecycle,
+  // activity rehydrate, structural notification gaps, and mutation capability
+  // recovery all request through it rather than owning timers/coalescers.
+  const scheduler = createDrainScheduler();
   let activitySink: LiveActivitySink | null = null;
+  // The service+sink bound by the last openProjected/rehydrate, used by
+  // requestRehydrate so applyNotification can request through the scheduler
+  // without holding its own service reference.
+  let boundService: LiveConversationService | null = null;
+  let boundSink: LiveActivitySink | null = null;
+  // Late-bound store getter — assigned inside create() so requestRehydrate
+  // (called from applyNotification) can access get().rehydrate.
+  let storeGet: (() => LiveConversationState) | null = null;
+
+  // Request one authoritative reread through the store-owned drain scheduler.
+  // The effect re-reads via the bound service+sink and is generation-safe.
+  function requestRehydrate(ref: string): void {
+    const service = boundService;
+    const sink = boundSink;
+    const g = storeGet;
+    if (service === null || sink === null || g === null) return;
+    scheduler.request(ref, async () => {
+      await g().rehydrate(service, sink);
+    });
+  }
   // F9: Rehydrate operation token — incremented on each rehydrate call so
   // a stale rehydrate (from an older operation) cannot overwrite a newer
   // rehydrate's state within the same generation.
@@ -447,808 +500,819 @@ export function createConversationStore() {
     });
   }
 
-  return create<LiveConversationState>((set, get) => ({
-    ref: null,
-    profileId: null,
-    connectionGeneration: 0,
-    conversationGeneration: 0,
+  return create<LiveConversationState>((set, get) => {
+    storeGet = get;
+    return {
+      ref: null,
+      profileId: null,
+      connectionGeneration: 0,
+      conversationGeneration: 0,
 
-    conversation: null,
-    olderCursor: null,
-    loadingOlder: false,
-    status: "idle",
-    error: null,
+      conversation: null,
+      olderCursor: null,
+      loadingOlder: false,
+      status: "idle",
+      error: null,
 
-    draft: "",
-    pendingSend: null,
-    pendingMutation: null,
+      draft: "",
+      pendingSend: null,
+      pendingMutation: null,
 
-    async open(service, ref) {
-      // Increment conversation generation so late frames from a previous
-      // conversation are rejected.
-      const gen = ++conversationGen;
-      set({
-        status: "opening",
-        ref,
-        error: null,
-        conversation: null,
-        olderCursor: null,
-        loadingOlder: false,
-        draft: "",
-        pendingSend: null,
-        pendingMutation: null,
-        conversationGeneration: gen,
-      });
-      try {
-        const conv = await service.open(ref);
-        // Reject if a newer conversation generation was opened during the await.
-        if (gen !== conversationGen) return;
+      async open(service, ref) {
+        // Increment conversation generation so late frames from a previous
+        // conversation are rejected.
+        const gen = ++conversationGen;
         set({
-          conversation: {
-            ...conv,
-            items: capItems(truncateAndRecord(conv.items)),
-          },
-          status: "open",
-          olderCursor: null,
-        });
-        // Subscribe to notifications for this thread.
-        service.subscribeNotifications((n) => {
-          if (gen !== conversationGen) return;
-          get().applyNotification(n);
-        });
-      } catch (err) {
-        if (gen !== conversationGen) return;
-        set({
-          status: "error",
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    },
-
-    async openProjected(service, sink, ref) {
-      const gen = ++conversationGen;
-      activitySink = sink;
-      // F2: Create and bind the coalescer internally — no public setCoalescer.
-      // The coalescer's effect calls rehydrate with the same service+sink.
-      const boundService = service;
-      const boundSink = sink;
-      coalescer = createAuthoritativeRereadScheduler(async (key: string) => {
-        // F3: rehydrate triggers the same shared reread. The effect is
-        // generation-safe (rehydrate checks generation internally).
-        await get().rehydrate(boundService, boundSink);
-        void key; // key is the ref; rehydrate reads ref from state
-      });
-      // Reset thread-scoped state (draft, pending mutation) — presentation state
-      // now lives outside the store (in live-ui-store).
-      // F4: reset the activity sink on thread change.
-      sink.reset();
-      set({
-        status: "opening",
-        ref,
-        error: null,
-        conversation: null,
-        olderCursor: null,
-        loadingOlder: false,
-        draft: "",
-        pendingSend: null,
-        pendingMutation: null,
-        conversationGeneration: gen,
-      });
-      try {
-        const { conversation, activity, olderCursor } =
-          await service.readProjection(ref);
-        if (gen !== conversationGen) return;
-        set({
-          conversation: {
-            ...conversation,
-            items: capItems(truncateAndRecord(conversation.items)),
-          },
-          status: "open",
-          olderCursor,
-        });
-        const identity = {
-          threadId: conversation.id,
+          status: "opening",
           ref,
-          generation: gen,
-        };
-        // F4: identity-first setLiveView.
-        sink.setLiveView(identity, activity);
-        service.subscribeNotifications((n) => {
-          if (gen !== conversationGen) return;
-          // Route notifications to BOTH stores — conversation and activity.
-          // F3: use applyLiveNotification's return to drive the shared reread.
-          const outcome = sink.applyLiveNotification(identity, n);
-          if (outcome === "rehydrate" && coalescer !== null) {
-            coalescer.requestRehydrate(ref);
-          }
-          // Also process the conversation store's own notification handler.
-          // Only call the conversation's applyNotification if the activity
-          // sink did not say "ignored" (ignored means the activity store
-          // rejected it on identity grounds — but conversation still needs
-          // its own processing for conversation-specific notifications).
-          get().applyNotification(n);
-        });
-      } catch (err) {
-        if (gen !== conversationGen) return;
-        set({
-          status: "error",
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    },
-
-    async rehydrate(service, sink) {
-      // Rehydrate uses readProjection to refresh the conversation without
-      // calling destructive open(). Preserves draft.
-      // F3: rehydrate triggers the same shared reread.
-      // F9: Operation token prevents stale rehydrate from overwriting
-      // newer state within the same generation.
-      const state = get();
-      if (state.ref === null) return;
-      const ref = state.ref;
-      const currentDraft = state.draft;
-      const gen = state.conversationGeneration;
-      const token = ++rehydrateToken;
-      activitySink = sink;
-      try {
-        const { conversation, activity, olderCursor } =
-          await service.readProjection(ref);
-        // Guard: a newer generation may have opened during the await.
-        if (get().conversationGeneration !== gen) {
-          return;
-        }
-        // F9: Stale rehydrate — a newer rehydrate started in the same gen.
-        if (token !== rehydrateToken) {
-          return;
-        }
-        set({
-          conversation: {
-            ...conversation,
-            items: capItems(truncateAndRecord(conversation.items)),
-          },
-          olderCursor,
-          // Preserve draft
-          draft: currentDraft,
           error: null,
+          conversation: null,
+          olderCursor: null,
+          loadingOlder: false,
+          draft: "",
+          pendingSend: null,
+          pendingMutation: null,
+          conversationGeneration: gen,
         });
-        const identity = {
-          threadId: conversation.id,
+        try {
+          const conv = await service.open(ref);
+          // Reject if a newer conversation generation was opened during the await.
+          if (gen !== conversationGen) return;
+          set({
+            conversation: {
+              ...conv,
+              items: capItems(truncateAndRecord(conv.items)),
+            },
+            status: "open",
+            olderCursor: null,
+          });
+          // Subscribe to notifications for this thread.
+          service.subscribeNotifications((n) => {
+            if (gen !== conversationGen) return;
+            get().applyNotification(n);
+          });
+        } catch (err) {
+          if (gen !== conversationGen) return;
+          set({
+            status: "error",
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
+      },
+
+      async openProjected(service, sink, ref) {
+        const gen = ++conversationGen;
+        activitySink = sink;
+        // Bind the service+sink at the store level so applyNotification can
+        // request through the store-owned drain scheduler without holding its
+        // own service reference.
+        boundService = service;
+        boundSink = sink;
+        // Reset thread-scoped state (draft, pending mutation) — presentation state
+        // now lives outside the store (in live-ui-store).
+        // F4: reset the activity sink on thread change.
+        sink.reset();
+        set({
+          status: "opening",
           ref,
-          generation: gen,
-        };
-        // F4: identity-first setLiveView.
-        sink.setLiveView(identity, activity);
-      } catch (err) {
-        // Stale safety: only set error if the generation hasn't changed
-        // and this is still the latest rehydrate operation.
-        if (get().conversationGeneration === gen && token === rehydrateToken) {
+          error: null,
+          conversation: null,
+          olderCursor: null,
+          loadingOlder: false,
+          draft: "",
+          pendingSend: null,
+          pendingMutation: null,
+          conversationGeneration: gen,
+        });
+        try {
+          const { conversation, activity, olderCursor } =
+            await service.readProjection(ref);
+          if (gen !== conversationGen) return;
+          const identity: ActivityIdentity = {
+            threadId: conversation.id,
+            ref,
+            generation: gen,
+          };
+          // Strict activity sink: call setLiveView BEFORE committing the paired
+          // conversation projection. If it returns false (stale/invalid identity),
+          // do not commit the conversation projection — the two stores stay
+          // atomically consistent under the same exact identity tuple.
+          const accepted = sink.setLiveView(activity, identity);
+          if (!accepted) return;
           set({
+            conversation: {
+              ...conversation,
+              items: capItems(truncateAndRecord(conversation.items)),
+            },
+            status: "open",
+            olderCursor,
+          });
+          service.subscribeNotifications((n) => {
+            if (gen !== conversationGen) return;
+            // Route notifications to BOTH stores — conversation and activity.
+            // Propagate every returned outcome; rehydrate requests the one shared
+            // drain scheduler. Notification-first, identity-second.
+            const outcome = sink.applyLiveNotification(n, identity);
+            if (outcome === "rehydrate") {
+              requestRehydrate(ref);
+            }
+            // Also process the conversation store's own notification handler.
+            // Only call the conversation's applyNotification if the activity
+            // sink did not say "ignored" (ignored means the activity store
+            // rejected it on identity grounds — but conversation still needs
+            // its own processing for conversation-specific notifications).
+            get().applyNotification(n);
+          });
+        } catch (err) {
+          if (gen !== conversationGen) return;
+          set({
+            status: "error",
             error: err instanceof Error ? err.message : String(err),
           });
         }
-      }
-    },
+      },
 
-    async loadOlder(service) {
-      const state = get();
-      if (state.loadingOlder || state.conversation === null) return;
-      // F8: Never request with a null/empty cursor — no more older pages.
-      if (state.olderCursor === null) return;
-      const cursor = state.olderCursor ?? "";
-      const gen = state.conversationGeneration;
-      set({ loadingOlder: true });
-      try {
-        const result = await service.loadOlder(cursor);
-        // Guard: the conversation generation may have changed during the await.
-        if (get().conversationGeneration !== gen) {
-          set({ loadingOlder: false });
-          return;
-        }
-        const currentConv = get().conversation;
-        if (currentConv !== null) {
-          // F10: Dedupe by source item identity — items from older pages
-          // that already exist in the current conversation (same id) are
-          // dropped, keeping the newer (live tail) version.
-          const existingIds = new Set(currentConv.items.map((i) => i.id));
-          const deduped = result.items.filter((i) => !existingIds.has(i.id));
-          // Prepend older (deduped) items, then trim from the oldest (front)
-          // so the newest live tail is retained (finding 8).
-          const merged = capItems([
-            ...deduped.map(truncateItem),
-            ...currentConv.items,
-          ]);
-          // F8: If we're at the cap and the merge trimmed older items,
-          // disable further paging honestly — set cursor to null so
-          // we don't repeatedly load rows that will be discarded.
-          const atCap = merged.length >= RETAINED_ITEM_CAP;
-          const nextCursor =
-            atCap && deduped.length < result.items.length
-              ? null // Some items were deduped — cap prevents useful paging
-              : atCap
-                ? null // At cap — further paging would just discard rows
-                : (result.nextCursor ?? null);
-          set({
-            conversation: { ...currentConv, items: merged },
-            olderCursor: nextCursor,
-            loadingOlder: false,
-          });
-        }
-      } catch (err) {
-        // Stale safety: only set error if generation hasn't changed.
-        if (get().conversationGeneration === gen) {
-          set({
-            loadingOlder: false,
-            error: err instanceof Error ? err.message : String(err),
-          });
-        }
-      }
-    },
-
-    setDraft(text) {
-      set({ draft: text });
-    },
-
-    async send(service, input) {
-      const state = get();
-      if (state.conversation === null) return;
-      requireCap(state.conversation, "send", "send");
-      const draftText = state.draft;
-      const gen = state.conversationGeneration;
-      const mutationId = ++mutationIdCounter;
-      const mutation: ConversationMutationState = {
-        kind: "send",
-        status: "pending",
-        draftSnapshot: draftText,
-        generation: gen,
-        mutationId,
-      };
-      set({ draft: "", pendingSend: "pending", pendingMutation: mutation });
-      try {
-        await service.send(input);
-        // F4: Check mutationId — out-of-order completion cannot clear a
-        // newer mutation's state.
-        if (get().pendingMutation?.mutationId === mutationId) {
-          set({ pendingSend: null, pendingMutation: null, error: null });
-        }
-      } catch (err) {
-        await handleMutationError(
-          err,
-          service,
-          state.ref,
-          gen,
-          mutationId,
-          mutation,
-          draftText,
-          set,
-          get,
-        );
-      }
-    },
-
-    async steer(service, input) {
-      const state = get();
-      if (state.conversation === null) return;
-      requireCap(state.conversation, "steer", "steer");
-      const draftText = state.draft;
-      const gen = state.conversationGeneration;
-      const mutationId = ++mutationIdCounter;
-      const mutation: ConversationMutationState = {
-        kind: "steer",
-        status: "pending",
-        draftSnapshot: draftText,
-        generation: gen,
-        mutationId,
-      };
-      // Steer/queue clear the draft on submit like send.
-      // F10: any new mutation clears legacy pendingSend.
-      set({ draft: "", pendingSend: null, pendingMutation: mutation });
-      try {
-        await service.steer(input);
-        if (get().pendingMutation?.mutationId === mutationId) {
-          set({ pendingMutation: null, error: null });
-        }
-      } catch (err) {
-        await handleMutationError(
-          err,
-          service,
-          state.ref,
-          gen,
-          mutationId,
-          mutation,
-          draftText,
-          set,
-          get,
-        );
-      }
-    },
-
-    async queue(service, input) {
-      const state = get();
-      if (state.conversation === null) return;
-      requireCap(state.conversation, "queue", "queue");
-      const draftText = state.draft;
-      const gen = state.conversationGeneration;
-      const mutationId = ++mutationIdCounter;
-      const mutation: ConversationMutationState = {
-        kind: "queue",
-        status: "pending",
-        draftSnapshot: draftText,
-        generation: gen,
-        mutationId,
-      };
-      // F10: any new mutation clears legacy pendingSend.
-      set({ draft: "", pendingSend: null, pendingMutation: mutation });
-      try {
-        await service.queue(input);
-        if (get().pendingMutation?.mutationId === mutationId) {
-          set({ pendingMutation: null, error: null });
-        }
-      } catch (err) {
-        await handleMutationError(
-          err,
-          service,
-          state.ref,
-          gen,
-          mutationId,
-          mutation,
-          draftText,
-          set,
-          get,
-        );
-      }
-    },
-
-    async interrupt(service) {
-      const state = get();
-      if (state.conversation === null) return;
-      requireCap(state.conversation, "interrupt", "interrupt");
-      const gen = state.conversationGeneration;
-      const mutationId = ++mutationIdCounter;
-      const mutation: ConversationMutationState = {
-        kind: "interrupt",
-        status: "pending",
-        // Interrupt does NOT snapshot the draft — it should remain as-is.
-        draftSnapshot: null,
-        generation: gen,
-        mutationId,
-      };
-      // Interrupt does NOT clear the draft.
-      // F10: any new mutation clears legacy pendingSend.
-      set({ pendingSend: null, pendingMutation: mutation });
-      try {
-        await service.interrupt();
-        if (get().pendingMutation?.mutationId === mutationId) {
-          set({ pendingMutation: null, error: null });
-        }
-      } catch (err) {
-        await handleMutationError(
-          err,
-          service,
-          state.ref,
-          gen,
-          mutationId,
-          mutation,
-          null,
-          set,
-          get,
-        );
-      }
-    },
-
-    close() {
-      // Increment generation so late frames from the closed conversation
-      // cannot repopulate the store.
-      ++conversationGen;
-      truncatedItemIds.clear();
-      // F4: reset the activity sink on close.
-      if (activitySink !== null) {
-        activitySink.reset();
-        activitySink = null;
-      }
-      coalescer = null;
-      set({
-        status: "closed",
-        conversation: null,
-        ref: null,
-        draft: "",
-        pendingSend: null,
-        pendingMutation: null,
-        olderCursor: null,
-        loadingOlder: false,
-        conversationGeneration: conversationGen,
-      });
-    },
-
-    applyNotification(n) {
-      const state = get();
-      if (state.conversation === null) return;
-
-      // Check threadId/ref against the current conversation and silently drop
-      // mismatches.
-      const nref = notificationRef(n);
-      if (nref !== null) {
-        const currentId = state.conversation.id;
-        const currentRef = state.ref;
-        const idMatch =
-          nref.threadId === undefined || nref.threadId === currentId;
-        const refMatch = nref.ref === undefined || nref.ref === currentRef;
-        if (!idMatch || !refMatch) return;
-      }
-
-      const conv = state.conversation;
-      switch (n.method) {
-        case "thread/status/changed": {
-          const params = n.params as {
-            status: { type: string };
-            capabilities?: ThreadCapabilities;
+      async rehydrate(service, sink) {
+        // Rehydrate uses readProjection to refresh the conversation without
+        // calling destructive open(). Preserves draft.
+        // F3: rehydrate triggers the same shared reread.
+        // F9: Operation token prevents stale rehydrate from overwriting
+        // newer state within the same generation.
+        const state = get();
+        if (state.ref === null) return;
+        const ref = state.ref;
+        const currentDraft = state.draft;
+        const gen = state.conversationGeneration;
+        const token = ++rehydrateToken;
+        activitySink = sink;
+        boundService = service;
+        boundSink = sink;
+        try {
+          const { conversation, activity, olderCursor } =
+            await service.readProjection(ref);
+          // Guard: a newer generation may have opened during the await.
+          if (get().conversationGeneration !== gen) {
+            return;
+          }
+          // F9: Stale rehydrate — a newer rehydrate started in the same gen.
+          if (token !== rehydrateToken) {
+            return;
+          }
+          const identity: ActivityIdentity = {
+            threadId: conversation.id,
+            ref,
+            generation: gen,
           };
+          // Strict activity sink: call setLiveView BEFORE committing the paired
+          // conversation projection. If it returns false, do not commit.
+          const accepted = sink.setLiveView(activity, identity);
+          if (!accepted) return;
           set({
             conversation: {
-              ...conv,
-              status: params.status.type,
-              capabilities: params.capabilities
-                ? { ...params.capabilities }
-                : conv.capabilities,
+              ...conversation,
+              items: capItems(truncateAndRecord(conversation.items)),
             },
+            olderCursor,
+            // Preserve draft
+            draft: currentDraft,
+            error: null,
           });
-          break;
-        }
-
-        case "thread/queueChanged": {
-          const params = n.params as {
-            queue: { depth?: number; preview?: string[]; texts?: string[] };
-          };
-          set({
-            conversation: {
-              ...conv,
-              queue: {
-                depth: params.queue.depth ?? 0,
-                preview: params.queue.preview ?? params.queue.texts ?? [],
-              },
-            },
-          });
-          break;
-        }
-
-        case "evener/thread/name/changed": {
-          const params = n.params as { name: string };
-          set({
-            conversation: { ...conv, name: params.name },
-          });
-          break;
-        }
-
-        case "thread/model/changed": {
-          const params = n.params as {
-            modelProvider: string;
-            reasoningEffortLevels?: string[];
-            supportsReasoning?: boolean;
-          };
-          set({
-            conversation: {
-              ...conv,
-              modelProvider: params.modelProvider,
-              reasoningEffortLevels: params.reasoningEffortLevels,
-              supportsReasoning: params.supportsReasoning,
-            },
-          });
-          break;
-        }
-
-        case "thread/reasoning-effort/changed": {
-          const params = n.params as { reasoningEffort?: string };
-          set({
-            conversation: { ...conv, reasoningEffort: params.reasoningEffort },
-          });
-          break;
-        }
-
-        case "turn/started": {
-          set({
-            conversation: { ...conv, status: "running" },
-          });
-          break;
-        }
-
-        case "turn/completed": {
-          const params = n.params as {
-            turn: { usage?: MobileUsage; status: string };
-          };
-          set({
-            conversation: {
-              ...conv,
-              status: conv.status === "running" ? "ready" : conv.status,
-              usage: params.turn.usage
-                ? { ...conv.usage, ...params.turn.usage }
-                : conv.usage,
-            },
-          });
-          break;
-        }
-
-        case "item/started": {
-          const params = n.params as { item: ThreadItem };
-          const projected = projectSingleItem(params.item);
-          if (projected !== null) {
-            const truncated = truncateItem(projected);
-            const existingIdx = conv.items.findIndex(
-              (i) => i.id === params.item.id,
-            );
-            if (existingIdx >= 0) {
-              set({
-                conversation: {
-                  ...conv,
-                  items: conv.items.map((i, idx) =>
-                    idx === existingIdx ? truncated : i,
-                  ),
-                },
-              });
-            } else {
-              set({
-                conversation: {
-                  ...conv,
-                  items: capItems([...conv.items, truncated]),
-                },
-              });
-            }
-          } else {
-            // Unsupported item transition — coalesce to one rehydrate.
-            if (coalescer !== null && state.ref !== null) {
-              coalescer.requestRehydrate(state.ref);
-            }
-          }
-          break;
-        }
-
-        case "item/completed": {
-          const params = n.params as { item: ThreadItem };
-          const projected = projectSingleItem(params.item);
-          if (projected !== null) {
-            const truncated = truncateItem(projected);
-            const existingIdx = conv.items.findIndex(
-              (i) => i.id === params.item.id,
-            );
-            if (existingIdx >= 0) {
-              // Replace existing item.
-              set({
-                conversation: {
-                  ...conv,
-                  items: conv.items.map((i, idx) =>
-                    idx === existingIdx ? truncated : i,
-                  ),
-                },
-              });
-            } else {
-              // UPSERT: insert the authoritative completed item even if the
-              // start notification was missed.
-              set({
-                conversation: {
-                  ...conv,
-                  items: capItems([...conv.items, truncated]),
-                },
-              });
-            }
-          } else {
-            if (coalescer !== null && state.ref !== null) {
-              coalescer.requestRehydrate(state.ref);
-            }
-          }
-          break;
-        }
-
-        case "item/agentMessage/delta": {
-          const params = n.params as { itemId: string; delta: string };
-          const existing = conv.items.find(
-            (i) => i.id === params.itemId && i.kind === "assistant",
-          );
-          if (existing) {
-            // F12: Per-item truncation ownership — once an item is
-            // truncated, later deltas cannot append. Tracked by item ID,
-            // not by text suffix, so genuine content ending with the
-            // marker doesn't freeze.
-            if (truncatedItemIds.has(params.itemId)) {
-              break;
-            }
-            const combined =
-              (existing.kind === "assistant" ? existing.markdown : "") +
-              params.delta;
-            const truncated = truncateText(combined, MAX_ITEM_BYTES);
-            if (truncated !== combined) {
-              truncatedItemIds.add(params.itemId);
-            }
-            set({
-              conversation: {
-                ...conv,
-                items: conv.items.map((item) =>
-                  item.kind === "assistant" && item.id === params.itemId
-                    ? { ...item, markdown: truncated }
-                    : item,
-                ),
-              },
-            });
-          } else {
-            // Delta targeting missing item — trigger resync.
-            if (coalescer !== null && state.ref !== null) {
-              coalescer.requestRehydrate(state.ref);
-            }
-          }
-          break;
-        }
-
-        case "item/agentMessage/reset": {
-          const params = n.params as { itemId: string };
-          const existing = conv.items.find(
-            (i) => i.id === params.itemId && i.kind === "assistant",
-          );
-          if (existing) {
-            set({
-              conversation: {
-                ...conv,
-                items: conv.items.map((item) =>
-                  item.kind === "assistant" && item.id === params.itemId
-                    ? { ...item, markdown: "" }
-                    : item,
-                ),
-              },
-            });
-          } else {
-            if (coalescer !== null && state.ref !== null) {
-              coalescer.requestRehydrate(state.ref);
-            }
-          }
-          break;
-        }
-
-        case "item/reasoning/summaryTextDelta": {
-          const params = n.params as { itemId: string; delta: string };
-          const existing = conv.items.find(
-            (i) => i.id === params.itemId && i.kind === "activity",
-          );
-          if (existing) {
-            // F12: Per-item truncation ownership.
-            if (truncatedItemIds.has(params.itemId)) {
-              break;
-            }
-            const combined =
-              (existing.kind === "activity"
-                ? (existing.detail.output ?? "")
-                : "") + params.delta;
-            const truncated = truncateText(combined, MAX_ITEM_BYTES);
-            if (truncated !== combined) {
-              truncatedItemIds.add(params.itemId);
-            }
-            set({
-              conversation: {
-                ...conv,
-                items: conv.items.map((item) =>
-                  item.kind === "activity" && item.id === params.itemId
-                    ? {
-                        ...item,
-                        detail: { ...item.detail, output: truncated },
-                      }
-                    : item,
-                ),
-              },
-            });
-          } else {
-            // Delta targeting missing or wrong-kind item — trigger resync.
-            if (coalescer !== null && state.ref !== null) {
-              coalescer.requestRehydrate(state.ref);
-            }
-          }
-          break;
-        }
-
-        case "item/toolOutput/delta": {
-          const params = n.params as { itemId: string; delta: string };
-          const existing = conv.items.find(
-            (i) => i.id === params.itemId && i.kind === "activity",
-          );
-          if (existing) {
-            // F12: Per-item truncation ownership.
-            if (truncatedItemIds.has(params.itemId)) {
-              break;
-            }
-            const combined =
-              (existing.kind === "activity"
-                ? (existing.detail.output ?? "")
-                : "") + params.delta;
-            const truncated = truncateText(combined, MAX_ITEM_BYTES);
-            if (truncated !== combined) {
-              truncatedItemIds.add(params.itemId);
-            }
-            set({
-              conversation: {
-                ...conv,
-                items: conv.items.map((item) =>
-                  item.kind === "activity" && item.id === params.itemId
-                    ? {
-                        ...item,
-                        detail: { ...item.detail, output: truncated },
-                      }
-                    : item,
-                ),
-              },
-            });
-          } else {
-            if (coalescer !== null && state.ref !== null) {
-              coalescer.requestRehydrate(state.ref);
-            }
-          }
-          break;
-        }
-
-        case "warning": {
-          const params = n.params as { message?: string; title?: string };
-          const id = `warning:${params.title ?? params.message ?? Date.now()}`;
-          const failureItem: MobileTimelineItem = {
-            kind: "failure",
-            id,
-            title: params.title ?? "Warning",
-            detail: params.message ?? "",
-          };
-          set({
-            conversation: {
-              ...conv,
-              items: capItems([...conv.items, failureItem]),
-            },
-          });
-          break;
-        }
-
-        // evener/thread/resync triggers a coalesced rehydrate via the injected
-        // coalescer. The store does not re-read on its own.
-        case "evener/thread/resync": {
-          if (coalescer !== null && state.ref !== null) {
-            coalescer.requestRehydrate(state.ref);
-          }
-          break;
-        }
-
-        // Default: only resync for unsupported item/* transitions, not for
-        // all unknown notifications — to avoid reread storms from unrelated
-        // notification families.
-        default: {
+        } catch (err) {
+          // Stale safety: only set error if the generation hasn't changed
+          // and this is still the latest rehydrate operation.
           if (
-            typeof n.method === "string" &&
-            n.method.startsWith("item/") &&
-            !ITEM_NOTIFICATION_METHODS.has(n.method)
+            get().conversationGeneration === gen &&
+            token === rehydrateToken
           ) {
-            if (coalescer !== null && state.ref !== null) {
-              coalescer.requestRehydrate(state.ref);
-            }
+            set({
+              error: err instanceof Error ? err.message : String(err),
+            });
           }
-          break;
         }
-      }
-    },
+      },
 
-    reset() {
-      // Invalidate the current conversation generation so late frames are
-      // rejected, then return to idle.
-      ++conversationGen;
-      truncatedItemIds.clear();
-      // F4: reset the activity sink on thread change.
-      if (activitySink !== null) {
-        activitySink.reset();
-        activitySink = null;
-      }
-      coalescer = null;
-      set({
-        ref: null,
-        profileId: null,
-        conversation: null,
-        olderCursor: null,
-        loadingOlder: false,
-        status: "idle",
-        error: null,
-        draft: "",
-        pendingSend: null,
-        pendingMutation: null,
-        conversationGeneration: conversationGen,
-      });
-    },
-  }));
+      async loadOlder(service) {
+        const state = get();
+        if (state.loadingOlder || state.conversation === null) return;
+        // F8: Never request with a null/empty cursor — no more older pages.
+        if (state.olderCursor === null) return;
+        const cursor = state.olderCursor ?? "";
+        const gen = state.conversationGeneration;
+        set({ loadingOlder: true });
+        try {
+          const result = await service.loadOlder(cursor);
+          // Guard: the conversation generation may have changed during the await.
+          if (get().conversationGeneration !== gen) {
+            set({ loadingOlder: false });
+            return;
+          }
+          const currentConv = get().conversation;
+          if (currentConv !== null) {
+            // F10: Dedupe by source item identity — items from older pages
+            // that already exist in the current conversation (same id) are
+            // dropped, keeping the newer (live tail) version.
+            const existingIds = new Set(currentConv.items.map((i) => i.id));
+            const deduped = result.items.filter((i) => !existingIds.has(i.id));
+            // Prepend older (deduped) items, then trim from the oldest (front)
+            // so the newest live tail is retained (finding 8).
+            const merged = capItems([
+              ...deduped.map(truncateItem),
+              ...currentConv.items,
+            ]);
+            // F8: If we're at the cap and the merge trimmed older items,
+            // disable further paging honestly — set cursor to null so
+            // we don't repeatedly load rows that will be discarded.
+            const atCap = merged.length >= RETAINED_ITEM_CAP;
+            const nextCursor =
+              atCap && deduped.length < result.items.length
+                ? null // Some items were deduped — cap prevents useful paging
+                : atCap
+                  ? null // At cap — further paging would just discard rows
+                  : (result.nextCursor ?? null);
+            set({
+              conversation: { ...currentConv, items: merged },
+              olderCursor: nextCursor,
+              loadingOlder: false,
+            });
+          }
+        } catch (err) {
+          // Stale safety: only set error if generation hasn't changed.
+          if (get().conversationGeneration === gen) {
+            set({
+              loadingOlder: false,
+              error: err instanceof Error ? err.message : String(err),
+            });
+          }
+        }
+      },
+
+      setDraft(text) {
+        set({ draft: text });
+      },
+
+      async send(service, input) {
+        const state = get();
+        if (state.conversation === null) return;
+        requireCap(state.conversation, "send", "send");
+        const draftText = state.draft;
+        const gen = state.conversationGeneration;
+        const mutationId = ++mutationIdCounter;
+        const mutation: ConversationMutationState = {
+          kind: "send",
+          status: "pending",
+          draftSnapshot: draftText,
+          generation: gen,
+          mutationId,
+        };
+        set({ draft: "", pendingSend: "pending", pendingMutation: mutation });
+        try {
+          await service.send(input);
+          // F4: Check mutationId — out-of-order completion cannot clear a
+          // newer mutation's state.
+          if (get().pendingMutation?.mutationId === mutationId) {
+            set({ pendingSend: null, pendingMutation: null, error: null });
+          }
+        } catch (err) {
+          await handleMutationError(
+            err,
+            service,
+            state.ref,
+            gen,
+            mutationId,
+            mutation,
+            draftText,
+            set,
+            get,
+          );
+        }
+      },
+
+      async steer(service, input) {
+        const state = get();
+        if (state.conversation === null) return;
+        requireCap(state.conversation, "steer", "steer");
+        const draftText = state.draft;
+        const gen = state.conversationGeneration;
+        const mutationId = ++mutationIdCounter;
+        const mutation: ConversationMutationState = {
+          kind: "steer",
+          status: "pending",
+          draftSnapshot: draftText,
+          generation: gen,
+          mutationId,
+        };
+        // Steer/queue clear the draft on submit like send.
+        // F10: any new mutation clears legacy pendingSend.
+        set({ draft: "", pendingSend: null, pendingMutation: mutation });
+        try {
+          await service.steer(input);
+          if (get().pendingMutation?.mutationId === mutationId) {
+            set({ pendingMutation: null, error: null });
+          }
+        } catch (err) {
+          await handleMutationError(
+            err,
+            service,
+            state.ref,
+            gen,
+            mutationId,
+            mutation,
+            draftText,
+            set,
+            get,
+          );
+        }
+      },
+
+      async queue(service, input) {
+        const state = get();
+        if (state.conversation === null) return;
+        requireCap(state.conversation, "queue", "queue");
+        const draftText = state.draft;
+        const gen = state.conversationGeneration;
+        const mutationId = ++mutationIdCounter;
+        const mutation: ConversationMutationState = {
+          kind: "queue",
+          status: "pending",
+          draftSnapshot: draftText,
+          generation: gen,
+          mutationId,
+        };
+        // F10: any new mutation clears legacy pendingSend.
+        set({ draft: "", pendingSend: null, pendingMutation: mutation });
+        try {
+          await service.queue(input);
+          if (get().pendingMutation?.mutationId === mutationId) {
+            set({ pendingMutation: null, error: null });
+          }
+        } catch (err) {
+          await handleMutationError(
+            err,
+            service,
+            state.ref,
+            gen,
+            mutationId,
+            mutation,
+            draftText,
+            set,
+            get,
+          );
+        }
+      },
+
+      async interrupt(service) {
+        const state = get();
+        if (state.conversation === null) return;
+        requireCap(state.conversation, "interrupt", "interrupt");
+        const gen = state.conversationGeneration;
+        const mutationId = ++mutationIdCounter;
+        const mutation: ConversationMutationState = {
+          kind: "interrupt",
+          status: "pending",
+          // Interrupt does NOT snapshot the draft — it should remain as-is.
+          draftSnapshot: null,
+          generation: gen,
+          mutationId,
+        };
+        // Interrupt does NOT clear the draft.
+        // F10: any new mutation clears legacy pendingSend.
+        set({ pendingSend: null, pendingMutation: mutation });
+        try {
+          await service.interrupt();
+          if (get().pendingMutation?.mutationId === mutationId) {
+            set({ pendingMutation: null, error: null });
+          }
+        } catch (err) {
+          await handleMutationError(
+            err,
+            service,
+            state.ref,
+            gen,
+            mutationId,
+            mutation,
+            null,
+            set,
+            get,
+          );
+        }
+      },
+
+      close() {
+        // Increment generation so late frames from the closed conversation
+        // cannot repopulate the store.
+        ++conversationGen;
+        truncatedItemIds.clear();
+        // F4: reset the activity sink on close.
+        if (activitySink !== null) {
+          activitySink.reset();
+          activitySink = null;
+        }
+        set({
+          status: "closed",
+          conversation: null,
+          ref: null,
+          draft: "",
+          pendingSend: null,
+          pendingMutation: null,
+          olderCursor: null,
+          loadingOlder: false,
+          conversationGeneration: conversationGen,
+        });
+      },
+
+      applyNotification(n) {
+        const state = get();
+        if (state.conversation === null) return;
+
+        // Check threadId/ref against the current conversation and silently drop
+        // mismatches.
+        const nref = notificationRef(n);
+        if (nref !== null) {
+          const currentId = state.conversation.id;
+          const currentRef = state.ref;
+          const idMatch =
+            nref.threadId === undefined || nref.threadId === currentId;
+          const refMatch = nref.ref === undefined || nref.ref === currentRef;
+          if (!idMatch || !refMatch) return;
+        }
+
+        const conv = state.conversation;
+        switch (n.method) {
+          case "thread/status/changed": {
+            const params = n.params as {
+              status: { type: string };
+              capabilities?: ThreadCapabilities;
+            };
+            set({
+              conversation: {
+                ...conv,
+                status: params.status.type,
+                capabilities: params.capabilities
+                  ? { ...params.capabilities }
+                  : conv.capabilities,
+              },
+            });
+            break;
+          }
+
+          case "thread/queueChanged": {
+            const params = n.params as {
+              queue: { depth?: number; preview?: string[]; texts?: string[] };
+            };
+            set({
+              conversation: {
+                ...conv,
+                queue: {
+                  depth: params.queue.depth ?? 0,
+                  preview: params.queue.preview ?? params.queue.texts ?? [],
+                },
+              },
+            });
+            break;
+          }
+
+          case "evener/thread/name/changed": {
+            const params = n.params as { name: string };
+            set({
+              conversation: { ...conv, name: params.name },
+            });
+            break;
+          }
+
+          case "thread/model/changed": {
+            const params = n.params as {
+              modelProvider: string;
+              reasoningEffortLevels?: string[];
+              supportsReasoning?: boolean;
+            };
+            set({
+              conversation: {
+                ...conv,
+                modelProvider: params.modelProvider,
+                reasoningEffortLevels: params.reasoningEffortLevels,
+                supportsReasoning: params.supportsReasoning,
+              },
+            });
+            break;
+          }
+
+          case "thread/reasoning-effort/changed": {
+            const params = n.params as { reasoningEffort?: string };
+            set({
+              conversation: {
+                ...conv,
+                reasoningEffort: params.reasoningEffort,
+              },
+            });
+            break;
+          }
+
+          case "turn/started": {
+            set({
+              conversation: { ...conv, status: "running" },
+            });
+            break;
+          }
+
+          case "turn/completed": {
+            const params = n.params as {
+              turn: { usage?: MobileUsage; status: string };
+            };
+            set({
+              conversation: {
+                ...conv,
+                status: conv.status === "running" ? "ready" : conv.status,
+                usage: params.turn.usage
+                  ? { ...conv.usage, ...params.turn.usage }
+                  : conv.usage,
+              },
+            });
+            break;
+          }
+
+          case "item/started": {
+            const params = n.params as { item: ThreadItem };
+            const projected = projectSingleItem(params.item);
+            if (projected !== null) {
+              const truncated = truncateItem(projected);
+              const existingIdx = conv.items.findIndex(
+                (i) => i.id === params.item.id,
+              );
+              if (existingIdx >= 0) {
+                set({
+                  conversation: {
+                    ...conv,
+                    items: conv.items.map((i, idx) =>
+                      idx === existingIdx ? truncated : i,
+                    ),
+                  },
+                });
+              } else {
+                set({
+                  conversation: {
+                    ...conv,
+                    items: capItems([...conv.items, truncated]),
+                  },
+                });
+              }
+            } else {
+              // Unsupported item transition — coalesce to one rehydrate.
+              if (state.ref !== null) {
+                requestRehydrate(state.ref);
+              }
+            }
+            break;
+          }
+
+          case "item/completed": {
+            const params = n.params as { item: ThreadItem };
+            const projected = projectSingleItem(params.item);
+            if (projected !== null) {
+              const truncated = truncateItem(projected);
+              const existingIdx = conv.items.findIndex(
+                (i) => i.id === params.item.id,
+              );
+              if (existingIdx >= 0) {
+                // Replace existing item.
+                set({
+                  conversation: {
+                    ...conv,
+                    items: conv.items.map((i, idx) =>
+                      idx === existingIdx ? truncated : i,
+                    ),
+                  },
+                });
+              } else {
+                // UPSERT: insert the authoritative completed item even if the
+                // start notification was missed.
+                set({
+                  conversation: {
+                    ...conv,
+                    items: capItems([...conv.items, truncated]),
+                  },
+                });
+              }
+            } else {
+              if (state.ref !== null) {
+                requestRehydrate(state.ref);
+              }
+            }
+            break;
+          }
+
+          case "item/agentMessage/delta": {
+            const params = n.params as { itemId: string; delta: string };
+            const existing = conv.items.find(
+              (i) => i.id === params.itemId && i.kind === "assistant",
+            );
+            if (existing) {
+              // F12: Per-item truncation ownership — once an item is
+              // truncated, later deltas cannot append. Tracked by item ID,
+              // not by text suffix, so genuine content ending with the
+              // marker doesn't freeze.
+              if (truncatedItemIds.has(params.itemId)) {
+                break;
+              }
+              const combined =
+                (existing.kind === "assistant" ? existing.markdown : "") +
+                params.delta;
+              const truncated = truncateText(combined, MAX_ITEM_BYTES);
+              if (truncated !== combined) {
+                truncatedItemIds.add(params.itemId);
+              }
+              set({
+                conversation: {
+                  ...conv,
+                  items: conv.items.map((item) =>
+                    item.kind === "assistant" && item.id === params.itemId
+                      ? { ...item, markdown: truncated }
+                      : item,
+                  ),
+                },
+              });
+            } else {
+              // Delta targeting missing item — trigger resync.
+              if (state.ref !== null) {
+                requestRehydrate(state.ref);
+              }
+            }
+            break;
+          }
+
+          case "item/agentMessage/reset": {
+            const params = n.params as { itemId: string };
+            const existing = conv.items.find(
+              (i) => i.id === params.itemId && i.kind === "assistant",
+            );
+            if (existing) {
+              set({
+                conversation: {
+                  ...conv,
+                  items: conv.items.map((item) =>
+                    item.kind === "assistant" && item.id === params.itemId
+                      ? { ...item, markdown: "" }
+                      : item,
+                  ),
+                },
+              });
+            } else {
+              if (state.ref !== null) {
+                requestRehydrate(state.ref);
+              }
+            }
+            break;
+          }
+
+          case "item/reasoning/summaryTextDelta": {
+            const params = n.params as { itemId: string; delta: string };
+            const existing = conv.items.find(
+              (i) => i.id === params.itemId && i.kind === "activity",
+            );
+            if (existing) {
+              // F12: Per-item truncation ownership.
+              if (truncatedItemIds.has(params.itemId)) {
+                break;
+              }
+              const combined =
+                (existing.kind === "activity"
+                  ? (existing.detail.output ?? "")
+                  : "") + params.delta;
+              const truncated = truncateText(combined, MAX_ITEM_BYTES);
+              if (truncated !== combined) {
+                truncatedItemIds.add(params.itemId);
+              }
+              set({
+                conversation: {
+                  ...conv,
+                  items: conv.items.map((item) =>
+                    item.kind === "activity" && item.id === params.itemId
+                      ? {
+                          ...item,
+                          detail: { ...item.detail, output: truncated },
+                        }
+                      : item,
+                  ),
+                },
+              });
+            } else {
+              // Delta targeting missing or wrong-kind item — trigger resync.
+              if (state.ref !== null) {
+                requestRehydrate(state.ref);
+              }
+            }
+            break;
+          }
+
+          case "item/toolOutput/delta": {
+            const params = n.params as { itemId: string; delta: string };
+            const existing = conv.items.find(
+              (i) => i.id === params.itemId && i.kind === "activity",
+            );
+            if (existing) {
+              // F12: Per-item truncation ownership.
+              if (truncatedItemIds.has(params.itemId)) {
+                break;
+              }
+              const combined =
+                (existing.kind === "activity"
+                  ? (existing.detail.output ?? "")
+                  : "") + params.delta;
+              const truncated = truncateText(combined, MAX_ITEM_BYTES);
+              if (truncated !== combined) {
+                truncatedItemIds.add(params.itemId);
+              }
+              set({
+                conversation: {
+                  ...conv,
+                  items: conv.items.map((item) =>
+                    item.kind === "activity" && item.id === params.itemId
+                      ? {
+                          ...item,
+                          detail: { ...item.detail, output: truncated },
+                        }
+                      : item,
+                  ),
+                },
+              });
+            } else {
+              if (state.ref !== null) {
+                requestRehydrate(state.ref);
+              }
+            }
+            break;
+          }
+
+          case "warning": {
+            const params = n.params as { message?: string; title?: string };
+            const id = `warning:${params.title ?? params.message ?? Date.now()}`;
+            const failureItem: MobileTimelineItem = {
+              kind: "failure",
+              id,
+              title: params.title ?? "Warning",
+              detail: params.message ?? "",
+            };
+            set({
+              conversation: {
+                ...conv,
+                items: capItems([...conv.items, failureItem]),
+              },
+            });
+            break;
+          }
+
+          // evener/thread/resync triggers a coalesced rehydrate via the store-owned
+          // drain scheduler. The store does not re-read on its own.
+          case "evener/thread/resync": {
+            if (state.ref !== null) {
+              requestRehydrate(state.ref);
+            }
+            break;
+          }
+
+          // Default: only resync for unsupported item/* transitions, not for
+          // all unknown notifications — to avoid reread storms from unrelated
+          // notification families.
+          default: {
+            if (
+              typeof n.method === "string" &&
+              n.method.startsWith("item/") &&
+              !ITEM_NOTIFICATION_METHODS.has(n.method)
+            ) {
+              if (state.ref !== null) {
+                requestRehydrate(state.ref);
+              }
+            }
+            break;
+          }
+        }
+      },
+
+      reset() {
+        // Invalidate the current conversation generation so late frames are
+        // rejected, then return to idle.
+        ++conversationGen;
+        truncatedItemIds.clear();
+        // F4: reset the activity sink on thread change.
+        if (activitySink !== null) {
+          activitySink.reset();
+          activitySink = null;
+        }
+        set({
+          ref: null,
+          profileId: null,
+          conversation: null,
+          olderCursor: null,
+          loadingOlder: false,
+          status: "idle",
+          error: null,
+          draft: "",
+          pendingSend: null,
+          pendingMutation: null,
+          conversationGeneration: conversationGen,
+        });
+      },
+    };
+  });
 }
 
 // Shared mutation error handler: on actionUnavailable, uses the non-subscribing
