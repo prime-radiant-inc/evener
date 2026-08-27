@@ -819,6 +819,10 @@ func TestCommunicate_TerminalClientSteeringRunsAfterTheTerminalResult(t *testing
 
 	select {
 	case <-wake:
+		// The scripted in-process adapter and channel wake should complete well
+		// within this bound; 5s only fires on a genuine synchronization hang.
+		// TRIPWIRE: deterministic in-process wake, not synchronization; this
+		// bound is far above the expected completion time and catches hangs.
 	case <-time.After(5 * time.Second):
 		t.Fatal("pending steering wake did not arrive")
 	}
