@@ -323,6 +323,23 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
     let generation = navigationStore.getState().clientGenerationID;
     let mounted = true;
     let intent = 0;
+    const lastSettledNeedsYouPage = (state: ReturnType<typeof navigationStore.getState>) =>
+      [...state.resources.values()]
+        .filter(
+          (resource) =>
+            resource.key.kind === "section" &&
+            resource.key.section === "needs_you" &&
+            resource.data !== null &&
+            resource.data !== undefined &&
+            !resource.error &&
+            !resource.stale,
+        )
+        .sort((a, b) =>
+          a.key.kind === "section" && b.key.kind === "section"
+            ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
+            : 0,
+        )
+        .at(-1);
     const nextPageFor = (state: ReturnType<typeof navigationStore.getState>) => {
       const offset = selectNextSectionOffset("needs_you", state);
       return { offset, id: keyID({ kind: "section", section: "needs_you", offset, limit: 50 }) };
@@ -394,6 +411,7 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
         ) {
           const page = nextPageFor(state);
           const resource = state.resources.get(page.id);
+          const settledPage = lastSettledNeedsYouPage(state);
           const beforeRefs = new Set(refs);
           if (resource?.data !== null && resource?.data !== undefined && !resource.error && !resource.stale) {
             const newlyLoaded = selectNeedsYouRows(state).find((row) => !beforeRefs.has(row.ref));
@@ -405,6 +423,12 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
             return;
           }
           if (refs.length === 0 && (state.manifest?.data?.sections.needs_you.count ?? 0) === 0) return;
+          if (
+            refs.length === 0 &&
+            settledPage !== undefined &&
+            ((settledPage.data as { remaining?: number } | null)?.remaining ?? 0) === 0
+          )
+            return;
           if (refs.length > 0 && selectSectionRemaining("needs_you", state) === 0) {
             const wrapped = nextNeedsYouRef(refs, current);
             if (wrapped !== null) openNeedsYouSession(wrapped);
