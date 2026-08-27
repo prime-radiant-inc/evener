@@ -66,9 +66,8 @@ export interface ConversationMutationState {
 // recovery — requests through it rather than owning timers or coalescers.
 // `flush()` is test-only: it returns a promise that resolves only when the
 // complete drain is idle, including recursively queued trailing work.
-export interface DrainScheduler {
+interface DrainScheduler {
   request(key: string, effect: () => Promise<void>): void;
-  /** @internal — test-only drain barrier. */
   flush(): Promise<void>;
 }
 
@@ -85,14 +84,25 @@ export interface LiveActivitySink {
   reset(): void;
 }
 
+// I1: Binding snapshot captured at request time. Every request through the
+// drain scheduler captures the current bindingEpoch + ref + generation +
+// service + sink. The effect verifies all are still current BEFORE any read,
+// suppressing stale work at the boundary — a request queued for conversation A
+// can never call serviceA with refB after the store switched to B.
+/** @internal — binding snapshot for scheduler stale-work suppression. */
+export interface RequestBinding {
+  readonly epoch: number;
+  readonly ref: string;
+  readonly generation: number;
+}
+
 // Production-owned drain scheduler. Coalesces a synchronous burst for the same
 // current identity into one effect execution; runs at most one effect at a
 // time; retains and drains requests arriving during the first effect, every
 // trailing effect, and an erroring effect; never loses a signal due to
 // unconditional cleanup; catches effect errors without unhandled rejections and
-// remains usable; suppresses stale identity work at the effect boundary.
-// One scheduler serves the whole store lifetime; openProjected/reset bind it.
-export function createDrainScheduler(): DrainScheduler {
+// remains usable. One scheduler serves the whole store lifetime.
+function createDrainScheduler(): DrainScheduler {
   // `scheduled` is true when a microtask is pending but no effect has started
   // yet — a synchronous burst arriving before the microtask fires coalesces
   // into that one pending effect.
@@ -321,6 +331,13 @@ export interface LiveConversationState extends ConversationState {
     service: LiveConversationService,
     activitySink: LiveActivitySink,
   ): Promise<void>;
+  /**
+   * @internal — test-only drain barrier. Returns a promise that resolves when
+   * the store-owned drain scheduler is idle, including trailing work. This is
+   * a closure-injected test seam, NOT a production-facing API; production code
+   * never calls it. (M2: avoids exporting the scheduler itself.)
+   */
+  flushScheduler(): Promise<void>;
 }
 
 // Extract threadId/ref from a notification's params, returning null if the
@@ -448,21 +465,110 @@ export function createConversationStore() {
   // without holding its own service reference.
   let boundService: LiveConversationService | null = null;
   let boundSink: LiveActivitySink | null = null;
+  // I1: Binding epoch — incremented on every openProjected/open/close/reset so
+  // a request queued for an older binding (serviceA+refA) can never run after
+  // the store switched to a newer binding (serviceB+refB). Every request
+  // captures epoch+ref+generation+service+sink; the effect verifies all still
+  // current before any read.
+  let bindingEpoch = 0;
   // Late-bound store getter — assigned inside create() so requestRehydrate
   // (called from applyNotification) can access get().rehydrate.
   let storeGet: (() => LiveConversationState) | null = null;
 
+  // I1: Capture the current binding snapshot at request time. The effect
+  // verifies the epoch+ref+generation+service+sink are all still current
+  // BEFORE any read — stale work is suppressed at the boundary.
+  function captureBinding(): RequestBinding | null {
+    if (boundService === null || boundSink === null) return null;
+    const state = storeGet?.();
+    if (state === undefined || state.ref === null) return null;
+    return {
+      epoch: bindingEpoch,
+      ref: state.ref,
+      generation: state.conversationGeneration,
+    };
+  }
+
+  // I1: Verify a captured binding is still current. If the epoch, ref, or
+  // generation changed (open/close/reset/openProjected/rehydrate), the request
+  // is stale and must be suppressed — never call serviceA with refB.
+  function isBindingCurrent(binding: RequestBinding): boolean {
+    const state = storeGet?.();
+    if (state === undefined) return false;
+    return (
+      binding.epoch === bindingEpoch &&
+      binding.ref === state.ref &&
+      binding.generation === state.conversationGeneration &&
+      boundService !== null &&
+      boundSink !== null
+    );
+  }
+
   // Request one authoritative reread through the store-owned drain scheduler.
-  // The effect re-reads via the bound service+sink and is generation-safe.
+  // I1: captures the binding at request time; the effect verifies it is still
+  // current before calling rehydrate with the expected service+sink.
   function requestRehydrate(ref: string): void {
+    const binding = captureBinding();
     const service = boundService;
     const sink = boundSink;
-    const g = storeGet;
-    if (service === null || sink === null || g === null) return;
+    if (binding === null || service === null || sink === null) return;
     scheduler.request(ref, async () => {
-      await g().rehydrate(service, sink);
+      // I1: Suppress stale work BEFORE any read — if the binding changed,
+      // do not call rehydrate (serviceA must never be called with refB).
+      if (!isBindingCurrent(binding)) return;
+      await storeGet?.().rehydrate(service, sink);
     });
   }
+
+  // I2: Request a mutation capability refresh through the store-owned drain
+  // scheduler — no direct await bypass. This serializes/coalesces with rereads.
+  // The effect refreshes capabilities and publishes them, guarded by the
+  // mutationId so a stale recovery cannot overwrite a newer mutation.
+  // I1: captures the generation+ref at request time; the effect verifies they
+  // are still current before any read. This works for both plain open() and
+  // openProjected() — it does not require projected bindings.
+  function requestCapabilityRefresh(
+    service: ConversationService,
+    ref: string,
+    gen: number,
+    mutationId: number,
+  ): void {
+    const entryEpoch = bindingEpoch;
+    scheduler.request(ref, async () => {
+      const g = storeGet;
+      if (g === null) return;
+      // I1: Suppress stale work at the boundary — if the binding epoch or
+      // generation changed, do not refresh.
+      if (entryEpoch !== bindingEpoch) return;
+      if (g().conversationGeneration !== gen) return;
+      const liveService = service as LiveConversationService;
+      if (typeof liveService.refreshCapabilities !== "function") return;
+      // I2: Check active mutation before the refresh — stale recovery bail.
+      if (g().pendingMutation?.mutationId !== mutationId) return;
+      try {
+        const refreshed = await liveService.refreshCapabilities(ref);
+        // I2: Check active mutation AFTER the refresh too.
+        if (g().pendingMutation?.mutationId !== mutationId) return;
+        if (g().conversationGeneration === gen && refreshed !== null) {
+          const currentConv = g().conversation;
+          if (currentConv !== null) {
+            storeSet?.({
+              conversation: {
+                ...currentConv,
+                capabilities: { ...refreshed },
+              },
+            });
+          }
+        }
+      } catch {
+        // If refresh fails, the mutation error handler surfaces the error.
+      }
+    });
+  }
+
+  // Late-bound store setter — assigned inside create() so capability refresh
+  // effects can call set() outside the create() callback scope.
+  let storeSet: ((partial: Partial<ConversationState>) => void) | null = null;
   // F9: Rehydrate operation token — incremented on each rehydrate call so
   // a stale rehydrate (from an older operation) cannot overwrite a newer
   // rehydrate's state within the same generation.
@@ -502,6 +608,7 @@ export function createConversationStore() {
 
   return create<LiveConversationState>((set, get) => {
     storeGet = get;
+    storeSet = set;
     return {
       ref: null,
       profileId: null,
@@ -518,10 +625,22 @@ export function createConversationStore() {
       pendingSend: null,
       pendingMutation: null,
 
+      // M2: closure-injected test seam — tests await this to deterministically
+      // drain the store-owned scheduler. Production code never calls it.
+      flushScheduler() {
+        return scheduler.flush();
+      },
+
       async open(service, ref) {
         // Increment conversation generation so late frames from a previous
         // conversation are rejected.
         const gen = ++conversationGen;
+        // I1: plain open CANNOT retain projected bindings — clear them and
+        // increment the binding epoch so any queued projected rehydrate/cap
+        // refresh is suppressed at the boundary.
+        bindingEpoch += 1;
+        boundService = null;
+        boundSink = null;
         set({
           status: "opening",
           ref,
@@ -562,10 +681,10 @@ export function createConversationStore() {
 
       async openProjected(service, sink, ref) {
         const gen = ++conversationGen;
+        // I1: increment the binding epoch and bind service+sink so queued
+        // requests from an older binding are suppressed at the boundary.
+        bindingEpoch += 1;
         activitySink = sink;
-        // Bind the service+sink at the store level so applyNotification can
-        // request through the store-owned drain scheduler without holding its
-        // own service reference.
         boundService = service;
         boundSink = sink;
         // Reset thread-scoped state (draft, pending mutation) — presentation state
@@ -638,11 +757,18 @@ export function createConversationStore() {
         // F3: rehydrate triggers the same shared reread.
         // F9: Operation token prevents stale rehydrate from overwriting
         // newer state within the same generation.
+        // I1: rehydrate accepts the expected binding (ref+gen from entry state)
+        // rather than resnapshotting current state mid-flight. It can never
+        // call serviceA with refB — the scheduler effect verifies the binding
+        // epoch before calling this, and rehydrate itself re-checks.
         const state = get();
         if (state.ref === null) return;
         const ref = state.ref;
         const currentDraft = state.draft;
         const gen = state.conversationGeneration;
+        // I1: Capture the binding epoch at entry — if it changed during the
+        // await (open/close/reset/openProjected), this rehydrate is stale.
+        const entryEpoch = bindingEpoch;
         const token = ++rehydrateToken;
         activitySink = sink;
         boundService = service;
@@ -650,6 +776,9 @@ export function createConversationStore() {
         try {
           const { conversation, activity, olderCursor } =
             await service.readProjection(ref);
+          // I1: Suppress stale work — if the binding epoch changed, the store
+          // switched to a different service/sink/ref. Do not commit.
+          if (entryEpoch !== bindingEpoch) return;
           // Guard: a newer generation may have opened during the await.
           if (get().conversationGeneration !== gen) {
             return;
@@ -678,9 +807,10 @@ export function createConversationStore() {
             error: null,
           });
         } catch (err) {
-          // Stale safety: only set error if the generation hasn't changed
-          // and this is still the latest rehydrate operation.
+          // Stale safety: only set error if the binding epoch, generation, and
+          // operation token are all still current.
           if (
+            entryEpoch === bindingEpoch &&
             get().conversationGeneration === gen &&
             token === rehydrateToken
           ) {
@@ -783,6 +913,7 @@ export function createConversationStore() {
             draftText,
             set,
             get,
+            requestCapabilityRefresh,
           );
         }
       },
@@ -820,6 +951,7 @@ export function createConversationStore() {
             draftText,
             set,
             get,
+            requestCapabilityRefresh,
           );
         }
       },
@@ -856,6 +988,7 @@ export function createConversationStore() {
             draftText,
             set,
             get,
+            requestCapabilityRefresh,
           );
         }
       },
@@ -893,6 +1026,7 @@ export function createConversationStore() {
             null,
             set,
             get,
+            requestCapabilityRefresh,
           );
         }
       },
@@ -901,12 +1035,17 @@ export function createConversationStore() {
         // Increment generation so late frames from the closed conversation
         // cannot repopulate the store.
         ++conversationGen;
+        // I1: increment the binding epoch and clear bindings so queued
+        // requests from the closed conversation are suppressed.
+        bindingEpoch += 1;
         truncatedItemIds.clear();
         // F4: reset the activity sink on close.
         if (activitySink !== null) {
           activitySink.reset();
           activitySink = null;
         }
+        boundService = null;
+        boundSink = null;
         set({
           status: "closed",
           conversation: null,
@@ -1291,12 +1430,17 @@ export function createConversationStore() {
         // Invalidate the current conversation generation so late frames are
         // rejected, then return to idle.
         ++conversationGen;
+        // I1: increment the binding epoch and clear bindings so queued
+        // requests from the prior conversation are suppressed.
+        bindingEpoch += 1;
         truncatedItemIds.clear();
         // F4: reset the activity sink on thread change.
         if (activitySink !== null) {
           activitySink.reset();
           activitySink = null;
         }
+        boundService = null;
+        boundSink = null;
         set({
           ref: null,
           profileId: null,
@@ -1315,14 +1459,18 @@ export function createConversationStore() {
   });
 }
 
-// Shared mutation error handler: on actionUnavailable, uses the non-subscribing
-// refreshCapabilities (never open()) to publish refreshed caps before
-// surfacing the error. On failure, the failed mutation state PERSISTS (not
-// cleared to null). The draft is only restored if no new text was typed
+// Shared mutation error handler: on actionUnavailable, requests the
+// non-subscribing refreshCapabilities (never open()) through the store-owned
+// drain scheduler (I2 — no direct await bypass) to publish refreshed caps
+// before surfacing the error. On failure, the failed mutation state PERSISTS
+// (not cleared to null). The draft is only restored if no new text was typed
 // during the in-flight mutation. F4/F10: uses mutationId (not generation alone)
 // so out-of-order failure cannot overwrite a newer mutation's error.
-// F10: checks active mutation before AND after the capability refresh — a
-// newer mutation may have started during the refresh await.
+// F10: checks active mutation before the capability refresh — a newer
+// mutation may have started.
+// I2: the capability refresh is requested through the store-owned scheduler
+// so it serializes/coalesces with rereads; stale mutation recovery is
+// suppressed by the mutationId guard inside the scheduler effect.
 async function handleMutationError(
   err: unknown,
   service: ConversationService,
@@ -1333,38 +1481,27 @@ async function handleMutationError(
   draftSnapshot: string | null,
   set: (partial: Partial<ConversationState>) => void,
   get: () => ConversationState,
+  requestCapabilityRefresh: (
+    service: ConversationService,
+    ref: string,
+    gen: number,
+    mutationId: number,
+  ) => void,
 ): Promise<void> {
   // F10: Check active mutation BEFORE the capability refresh. If a newer
   // mutation has already started, this error is stale — bail out.
   if (get().pendingMutation?.mutationId !== mutationId) return;
 
+  // I2: on actionUnavailable, request the capability refresh through the
+  // store-owned drain scheduler — no direct await bypass. The scheduler
+  // serializes/coalesces with rereads and suppresses stale mutation recovery.
   if (isActionUnavailableError(err) && ref !== null) {
-    // Use the non-subscribing capability refresh — never open().
-    // Only available on LiveConversationService; check for the method.
-    const liveService = service as LiveConversationService;
-    if (typeof liveService.refreshCapabilities === "function") {
-      try {
-        const refreshed = await liveService.refreshCapabilities(ref);
-        // F10: Check active mutation AFTER the capability refresh too —
-        // a newer mutation may have started during the await.
-        if (get().conversationGeneration === gen && refreshed !== null) {
-          const currentConv = get().conversation;
-          if (currentConv !== null) {
-            set({
-              conversation: {
-                ...currentConv,
-                capabilities: { ...refreshed },
-              },
-            });
-          }
-        }
-      } catch {
-        // If refresh fails, continue to surface the original error.
-      }
-    }
+    requestCapabilityRefresh(service, ref, gen, mutationId);
   }
-  // F10: Re-check mutationId after the refresh — out-of-order failure cannot
-  // change a newer mutation, error, or draft.
+
+  // F10: Re-check mutationId — out-of-order failure cannot change a newer
+  // mutation, error, or draft. The capability refresh runs asynchronously
+  // through the scheduler; the error is surfaced immediately.
   if (get().pendingMutation?.mutationId === mutationId) {
     // The failed mutation state PERSISTS — do NOT clear pendingMutation.
     const currentDraft = get().draft;
