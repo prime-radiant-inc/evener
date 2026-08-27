@@ -21,10 +21,6 @@
   overflow: hidden;
 }
 
-/* The model switch hugs its label: shrink-to-fit (basis auto, no grow) so
- * the effort control sits right beside it instead of being pushed to the far
- * end of the identity run. It still shrinks below its content width when the
- * row runs out of room - min-width: 0 lets the label ellipsize. */
 /* The model and vision-model switches hug their labels but may both shrink when
  * the status row runs narrow. The effort control is the other direct span in
  * this run and stays fixed-width; excluding it keeps its existing sizing. Both
