@@ -8,8 +8,8 @@
 // tests). It projects the wire Thread to a MobileConversation via projectThread,
 // subscribes to notifications, and enforces ThreadCapabilities before every
 // mutation: a false capability blocks the request entirely, never reaching the
-// wire. A server-reported actionUnavailable triggers a capability re-read so
-// the store's cached capabilities stay fresh.
+// wire. A server-reported actionUnavailable triggers a non-subscribing
+// capability re-read so the store's cached capabilities stay fresh.
 //
 // Generation safety is enforced by the store, not the service: the service is
 // stateless across opens (it holds only the current ref and last-read
@@ -68,12 +68,10 @@ export interface ConversationReadProjection {
   olderCursor: string | null;
 }
 
+// The canonical service interface — preserved for screen test mocks that only
+// need the basic open/send/steer/queue/interrupt/close surface.
 export interface ConversationService {
-  open(ref: string, cursor?: string): Promise<MobileConversation>;
-  readProjection?(
-    ref: string,
-    cursor?: string,
-  ): Promise<ConversationReadProjection>;
+  open(ref: string): Promise<MobileConversation>;
   loadOlder(cursor: string): Promise<{
     items: MobileTimelineItem[];
     nextCursor?: string;
@@ -93,6 +91,16 @@ export interface ConversationService {
     expectedEntryId: string,
   ): Promise<TurnCancelQueuedResponse>;
   close(): void;
+}
+
+// Required live behavior interface for the live read/projection path. This
+// must be implemented by any service that supports the live conversation
+// features (readProjection, openProjected, rehydrate, coalescer, mutation
+// state). It extends the canonical ConversationService with the live-only
+// methods that must not be optional-fallback to the old open() path.
+export interface LiveConversationService extends ConversationService {
+  readProjection(ref: string): Promise<ConversationReadProjection>;
+  refreshCapabilities(): Promise<ThreadCapabilities | null>;
 }
 
 // The evenerErrorInfo value the hub stamps when an action is not available for
@@ -115,7 +123,7 @@ function defaultIdFactory(): string {
 export function createConversationService(
   client: ConversationClientLike | AppwireClient,
   options: ConversationServiceOptions = {},
-): ConversationService {
+): LiveConversationService {
   const idFactory: IdFactory = options.idFactory ?? defaultIdFactory;
   const activityService = createActivityService();
 
@@ -137,6 +145,11 @@ export function createConversationService(
     }
   }
 
+  // Non-subscribing capability refresh: reads the thread metadata WITHOUT
+  // subscribing or replacing the subscription, and WITHOUT loading all turns.
+  // Returns the refreshed capabilities. This is the only path the store should
+  // use for actionUnavailable recovery — it never disturbs the active
+  // subscription.
   async function refreshCapabilities(): Promise<ThreadCapabilities | null> {
     if (ref === null) return null;
     const response: ThreadReadResponse = await client.request("thread/read", {
@@ -176,7 +189,7 @@ export function createConversationService(
   }
 
   return {
-    async open(threadRef, _cursor) {
+    async open(threadRef) {
       ref = threadRef;
       const response: ThreadReadResponse = await client.request("thread/read", {
         ref: threadRef,
@@ -188,7 +201,7 @@ export function createConversationService(
       return projectThread(response.thread);
     },
 
-    async readProjection(threadRef, cursor) {
+    async readProjection(threadRef) {
       ref = threadRef;
       const response: ThreadReadResponse = await client.request("thread/read", {
         ref: threadRef,
@@ -196,7 +209,6 @@ export function createConversationService(
         subscribe: true,
         replaceSubscription: true,
         turnLimit: READ_TURN_LIMIT,
-        ...(cursor !== undefined ? { cursor } : {}),
       });
       capabilities = response.thread.evener.capabilities;
       const conversation = projectThread(response.thread);
@@ -221,6 +233,8 @@ export function createConversationService(
       const items = projectOlderTurns(response.data);
       return { items, nextCursor: response.nextCursor };
     },
+
+    refreshCapabilities,
 
     subscribeNotifications(handler) {
       if (notificationUnsub !== null) {

@@ -6,9 +6,21 @@
 // commands, paths, prompts, profile IDs, or refs. The live view carries only
 // display-safe metadata: tone, title, detail summary — never raw identifiers
 // or operational payloads from the RedactedDiagnostic.
+//
+// Work entry keys are opaque stable private keys derived from a counter, not
+// raw labels or IDs. This ensures collision-safe keys and prevents
+// operational identifiers from leaking into the DOM.
 
 import type { ActivityView, WorkEntry, WorkTone } from "../services/activity";
 import type { DisplayTone, LiveActivityView, LiveWorkItem } from "./model";
+
+// Private key generator: produces opaque stable keys that do not expose raw
+// labels or IDs. Collision-safe via a monotonically increasing counter.
+let keyCounter = 0;
+function nextKey(kind: string): string {
+  keyCounter += 1;
+  return `wk${keyCounter}:${kind}`;
+}
 
 // Map an ActivityView work tone to a live display tone.
 function mapTone(tone: WorkTone): DisplayTone {
@@ -28,10 +40,11 @@ function mapTone(tone: WorkTone): DisplayTone {
 
 // Project a WorkEntry (with possible RedactedDiagnostic) into a LiveWorkItem
 // that carries NO raw identifiers, commands, paths, profile IDs, or refs.
+// Children are preserved recursively.
 function projectWorkEntry(entry: WorkEntry): LiveWorkItem {
   const children = (entry.children ?? []).map(projectWorkEntry);
   return {
-    key: entry.label, // Use label as the display key, not the raw ID
+    key: nextKey(entry.kind),
     kind: entry.kind,
     title: entry.label,
     detail: entry.outputSummary ?? "",
@@ -41,6 +54,9 @@ function projectWorkEntry(entry: WorkEntry): LiveWorkItem {
 }
 
 export function projectLiveActivity(view: ActivityView): LiveActivityView {
+  // Reset the key counter at the start of each projection pass to ensure
+  // deterministic keys within a single call.
+  keyCounter = 0;
   return {
     tasks: view.tasks.map((t) => ({ status: t.status, count: t.count })),
     work: view.work.map(projectWorkEntry),

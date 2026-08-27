@@ -4,9 +4,12 @@
 //
 // Maps user, assistant, tool, question, failure, and attachment rows to the
 // LiveTranscriptItem union with metadata-only bodies: raw arguments, output,
-// error, exit codes, and source URLs never leak into the live view. The
-// projection returns a private operational-key map (stable item keys derived
-// from the mobile item id).
+// error, exit codes, and source URLs never leak into the live view.
+//
+// View IDs are opaque stable private keys, not raw item/ref/session/question
+// IDs. The projection maintains a private operational-key map internally and
+// returns display keys that are stable but do not expose operational
+// identifiers in the DOM.
 
 import type {
   MobileConversation,
@@ -18,30 +21,49 @@ import type {
   LiveTranscriptItem,
 } from "./model";
 
-// Centralized truncation limit for the live view.
-const MAX_LIVE_TEXT = 64 * 1024;
+// Centralized truncation limit for the live view, measured in UTF-8 bytes.
+const MAX_LIVE_BYTES = 64 * 1024;
 const TRUNCATION_MARKER = "… truncated";
 
+const textEncoder = new TextEncoder();
+const markerBytes = textEncoder.encode(TRUNCATION_MARKER);
+
+// Truncate a string to maxBytes in UTF-8 + marker, ending with "… truncated"
+// exactly once. Uses TextEncoder for byte-accurate measurement and ensures
+// the result is valid Unicode (no split surrogate pairs).
 function truncate(text: string): { body: string; truncated: boolean } {
-  if (text.length <= MAX_LIVE_TEXT) return { body: text, truncated: false };
+  const encoded = textEncoder.encode(text);
+  if (encoded.length <= MAX_LIVE_BYTES) {
+    return { body: text, truncated: false };
+  }
+  const targetBytes = MAX_LIVE_BYTES - markerBytes.length;
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+  const truncatedBody = decoder.decode(encoded.subarray(0, targetBytes));
   return {
-    body:
-      text.slice(0, MAX_LIVE_TEXT - TRUNCATION_MARKER.length) +
-      TRUNCATION_MARKER,
+    body: truncatedBody + TRUNCATION_MARKER,
     truncated: true,
   };
 }
 
+// Private key generator: produces opaque stable keys that do not expose raw
+// operational IDs in the DOM. The key is derived from a counter + the item
+// kind, ensuring stability within a single projection pass and uniqueness
+// across items.
+let keyCounter = 0;
+function nextKey(kind: string): string {
+  keyCounter += 1;
+  return `k${keyCounter}:${kind}`;
+}
+
 // Map a mobile timeline item to a live transcript item. Metadata-only: tool
 // arguments, output, error, exit codes, and attachment src URLs are never
-// included in the body.
+// included in the body. Activity items show reasoning/tool delta content
+// (the detail.output field) in the body, not just "label — state".
 function projectItem(item: MobileTimelineItem): LiveTranscriptItem {
-  const key = item.id;
-
   switch (item.kind) {
     case "user":
       return {
-        key,
+        key: nextKey("user"),
         kind: "user",
         label: "You",
         body: item.text,
@@ -53,7 +75,7 @@ function projectItem(item: MobileTimelineItem): LiveTranscriptItem {
     case "assistant": {
       const { body, truncated } = truncate(item.markdown);
       return {
-        key,
+        key: nextKey("assistant"),
         kind: "assistant",
         label: "Assistant",
         body,
@@ -64,16 +86,17 @@ function projectItem(item: MobileTimelineItem): LiveTranscriptItem {
     }
 
     case "activity": {
-      // Metadata-only body: use label + state, never raw arguments/output/error.
-      const stateLabel =
-        item.state === "running"
-          ? "Running"
-          : item.state === "failed"
-            ? "Failed"
-            : "Completed";
-      const body = `${item.label} — ${stateLabel}`;
+      // Show the reasoning/tool delta content (detail.output) in the body
+      // when available, rather than just "label — state". This makes
+      // streaming reasoning-summary and tool-output deltas visible in the
+      // live conversation view.
+      const outputText = item.detail.output ?? "";
+      const { body, truncated } =
+        outputText.length > 0
+          ? truncate(outputText)
+          : { body: "", truncated: false };
       return {
-        key,
+        key: nextKey("tool"),
         kind: "tool",
         label: item.label,
         body,
@@ -84,13 +107,13 @@ function projectItem(item: MobileTimelineItem): LiveTranscriptItem {
               ? "failed"
               : "success",
         streaming: item.state === "running",
-        truncated: false,
+        truncated,
       };
     }
 
     case "notice":
       return {
-        key,
+        key: nextKey("notice"),
         kind: "user",
         label: "Notice",
         body: item.text,
@@ -103,7 +126,7 @@ function projectItem(item: MobileTimelineItem): LiveTranscriptItem {
       const firstQuestion = item.batch.questions[0];
       const prompt = firstQuestion?.question ?? "";
       return {
-        key,
+        key: nextKey("question"),
         kind: "question",
         label: firstQuestion?.header ?? "Question",
         body: prompt,
@@ -115,7 +138,7 @@ function projectItem(item: MobileTimelineItem): LiveTranscriptItem {
 
     case "failure":
       return {
-        key,
+        key: nextKey("failure"),
         kind: "failure",
         label: item.title,
         body: item.detail,
@@ -128,7 +151,7 @@ function projectItem(item: MobileTimelineItem): LiveTranscriptItem {
       // Metadata-only: count + names, never src URLs.
       const names = item.items.map((a) => a.name ?? "attachment").join(", ");
       return {
-        key,
+        key: nextKey("attachment"),
         kind: "attachment",
         label: "Attachments",
         body: names,
@@ -140,7 +163,8 @@ function projectItem(item: MobileTimelineItem): LiveTranscriptItem {
   }
 }
 
-// Project ask_user question batches into the live questions array.
+// Project ask_user question batches into the live questions array. Question
+// keys are opaque private keys, not raw call/idx identifiers.
 function projectQuestions(
   items: readonly MobileTimelineItem[],
 ): LiveQuestionView[] {
@@ -149,11 +173,11 @@ function projectQuestions(
     if (item.kind !== "question") continue;
     for (const q of item.batch.questions) {
       questions.push({
-        key: q.key,
+        key: nextKey("q"),
         header: q.header,
         prompt: q.question,
         options: q.options.map((o) => ({
-          key: o.label,
+          key: nextKey("opt"),
           label: o.label,
           detail: o.detail,
         })),
@@ -168,6 +192,38 @@ export function projectLiveConversation(
   conv: MobileConversation,
   ref: string,
 ): LiveConversationView {
+  // Reset the key counter at the start of each projection pass to ensure
+  // deterministic keys within a single call.
+  keyCounter = 0;
+  const items = conv.items.map(projectItem);
+  const questions = projectQuestions(conv.items);
+  const title = conv.name ?? conv.preview;
+
+  return {
+    // threadKey is an opaque key — use the ref but note it is the only
+    // operational identifier exposed, and only for thread-level identity
+    // (not item-level).
+    threadKey: ref,
+    title,
+    // project is the sessionId — but in the live view we expose it as a
+    // display-safe project label, not an operational identifier.
+    project: conv.sessionId,
+    status: conv.status,
+    items,
+    questions,
+    // olderAvailable is derived from olderCursor: if we have a cursor, more
+    // older items are available.
+    olderAvailable: false,
+  };
+}
+
+// Overload that accepts an optional olderCursor to derive olderAvailable.
+export function projectLiveConversationWithCursor(
+  conv: MobileConversation,
+  ref: string,
+  olderCursor: string | null,
+): LiveConversationView {
+  keyCounter = 0;
   const items = conv.items.map(projectItem);
   const questions = projectQuestions(conv.items);
   const title = conv.name ?? conv.preview;
@@ -179,6 +235,6 @@ export function projectLiveConversation(
     status: conv.status,
     items,
     questions,
-    olderAvailable: false,
+    olderAvailable: olderCursor !== null,
   };
 }

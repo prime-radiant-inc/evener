@@ -4,13 +4,11 @@
 // read boundary), applyNotification() (patch from activity notifications),
 // and reset() (clear on conversation switch).
 //
-// Generation safety: the generation counter increments only when the
-// conversation identity changes (thread id / ref), not on every re-projection
-// of the same conversation. This lets a caller re-project the same thread
-// (e.g. after a notification) without "regressing" the generation, while a
-// switch to a different conversation bumps the generation so a late
-// completion from the older conversation is dropped. reset() bumps the
-// generation and returns to idle.
+// Generation safety (CRITICAL): the store tracks both the thread identity
+// (threadId + ref) and a generation counter. Notifications that don't match
+// the current thread identity are rejected. reset() bumps the generation so
+// a late completion from the older conversation is dropped. setView() records
+// the thread identity so subsequent notifications can be validated.
 
 import { create } from "zustand";
 import type {
@@ -47,6 +45,10 @@ export interface ActivityState {
 
   project(service: ActivityServiceLike, thread: Thread): void;
   setView(view: ActivityView): void;
+  // Set the thread identity for notification validation. Called by the
+  // conversation store's openProjected to record which thread this activity
+  // view belongs to.
+  setThreadIdentity(threadId: string, ref: string): void;
   applyNotification(n: AnyNotification): void;
   setCoalescer(coalescer: ActivityRehydrateCoalescer): void;
   reset(): void;
@@ -117,7 +119,8 @@ function formatOutputBytes(bytes: number): string {
   return `${mb < 10 ? mb.toFixed(1) : Math.round(mb)} MB`;
 }
 
-// Project a wire EvenerJobInfo into a sanitized WorkEntry.
+// Project a wire EvenerJobInfo into a sanitized WorkEntry. The label uses
+// jobType (the operation name), never the task/prompt text.
 function projectJobEntry(job: {
   jobId: string;
   jobType: string;
@@ -143,7 +146,9 @@ function projectJobEntry(job: {
   };
 }
 
-// Project a wire EvenerDelegateInfo into a sanitized WorkEntry.
+// Project a wire EvenerDelegateInfo into a sanitized WorkEntry. The label
+// uses the delegate type (not description/task/prompt), to prevent leaking
+// delegated task text into the live view.
 function projectDelegateEntry(dlg: {
   delegateId: string;
   type: string;
@@ -151,14 +156,15 @@ function projectDelegateEntry(dlg: {
   terminal?: boolean;
   outcome?: string;
   resumable: boolean;
-  description?: string;
   durationMs?: number;
   resolvedProfileId?: string;
   runStartedAt?: string;
   runEndedAt?: string;
 }): WorkEntry {
   const tone = classifyTone(dlg.status, dlg.terminal, undefined, dlg.outcome);
-  const label = dlg.description ?? dlg.type ?? "Delegate";
+  // Use the type (operation name), NOT description or task — those may carry
+  // the delegated prompt text.
+  const label = dlg.type ?? "Delegate";
   return {
     kind: "delegate",
     label,
@@ -177,9 +183,38 @@ function projectDelegateEntry(dlg: {
   };
 }
 
+// Find a work entry by rawId in the work tree, searching recursively.
+function findEntryById(
+  work: WorkEntry[],
+  rawId: string,
+): { entry: WorkEntry; index: number; parent: WorkEntry[] } | null {
+  for (let i = 0; i < work.length; i++) {
+    const entry = work[i];
+    if (entry === undefined) continue;
+    if (entry.diagnostics?.rawId === rawId) {
+      return { entry, index: i, parent: work };
+    }
+    if (entry.children) {
+      const found = findEntryById(entry.children, rawId);
+      if (found) return found;
+    }
+  }
+  return null;
+}
+
+// Replace a work entry at a specific position, returning a new array.
+function replaceEntry(
+  work: WorkEntry[],
+  index: number,
+  newEntry: WorkEntry,
+): WorkEntry[] {
+  return work.map((w, i) => (i === index ? newEntry : w));
+}
+
 export function createActivityStore() {
   let generation = 0;
   let lastThreadKey: string | null = null;
+  let threadIdentity: { threadId: string; ref: string } | null = null;
   let coalescer: ActivityRehydrateCoalescer | null = null;
 
   return create<ActivityState>((set, get) => ({
@@ -196,6 +231,7 @@ export function createActivityStore() {
       if (key !== lastThreadKey) {
         generation += 1;
         lastThreadKey = key;
+        threadIdentity = { threadId: thread.id, ref: thread.evener.ref };
       }
       try {
         const view = service.projectActivity(thread);
@@ -213,10 +249,33 @@ export function createActivityStore() {
       set({ view, status: "open", error: null });
     },
 
+    setThreadIdentity(threadId, ref) {
+      threadIdentity = { threadId, ref };
+      lastThreadKey = `${threadId}:${ref}`;
+    },
+
     applyNotification(n) {
       const state = get();
       if (state.view === null) return;
       const view = state.view;
+
+      // Generation/identity safety: reject notifications that don't match
+      // the current thread identity.
+      if (threadIdentity !== null) {
+        const params = n.params as Record<string, unknown> | undefined;
+        if (params !== undefined && params !== null) {
+          const nThreadId =
+            typeof params.threadId === "string" ? params.threadId : undefined;
+          const nRef = typeof params.ref === "string" ? params.ref : undefined;
+          if (
+            (nThreadId !== undefined &&
+              nThreadId !== threadIdentity.threadId) ||
+            (nRef !== undefined && nRef !== threadIdentity.ref)
+          ) {
+            return;
+          }
+        }
+      }
 
       switch (n.method) {
         case "evener/job/started":
@@ -229,18 +288,69 @@ export function createActivityStore() {
               outputBytes: number;
               exitCode?: number;
               fromWatch?: boolean;
+              parentDelegateId?: string;
             };
           };
           const entry = projectJobEntry(params.job);
-          // Replace if same jobId exists, otherwise append.
-          const existingIdx = view.work.findIndex(
-            (w) => w.diagnostics?.rawId === params.job.jobId,
-          );
-          const newWork =
-            existingIdx >= 0
-              ? view.work.map((w, i) => (i === existingIdx ? entry : w))
-              : [...view.work, entry];
-          set({ view: { ...view, work: newWork } });
+          // Search recursively for the job — it may be nested under a delegate.
+          const found = findEntryById(view.work, params.job.jobId);
+          if (found) {
+            const newWork = replaceEntry(found.parent, found.index, entry);
+            // If the found entry was nested, we need to update the parent's
+            // children. Since we used replaceEntry on the parent array, we
+            // need to rebuild the full work array.
+            if (found.parent !== view.work) {
+              // The entry was nested — rebuild by finding and replacing the
+              // top-level parent that contains it.
+              const newWorkTree = view.work.map((w) => {
+                if (w.children === found.parent) {
+                  return { ...w, children: newWork };
+                }
+                // Deep search for the parent
+                return replaceChildEntry(w, found.parent, newWork);
+              });
+              set({ view: { ...view, work: newWorkTree } });
+            } else {
+              set({ view: { ...view, work: newWork } });
+            }
+          } else {
+            // Check if this job has a parent delegate — nest it.
+            const parentDelegateId = params.job.parentDelegateId;
+            if (parentDelegateId) {
+              const delegateFound = findEntryById(view.work, parentDelegateId);
+              if (delegateFound) {
+                const newChildren = [
+                  ...(delegateFound.entry.children ?? []),
+                  entry,
+                ];
+                const newDelegate = {
+                  ...delegateFound.entry,
+                  children: newChildren,
+                };
+                const newWork = replaceEntry(
+                  delegateFound.parent,
+                  delegateFound.index,
+                  newDelegate,
+                );
+                if (delegateFound.parent !== view.work) {
+                  const newWorkTree = view.work.map((w) => {
+                    if (w.children === delegateFound.parent) {
+                      return { ...w, children: newWork };
+                    }
+                    return replaceChildEntry(w, delegateFound.parent, newWork);
+                  });
+                  set({ view: { ...view, work: newWorkTree } });
+                } else {
+                  set({ view: { ...view, work: newWork } });
+                }
+              } else {
+                // Parent delegate not found — append at top level.
+                set({ view: { ...view, work: [...view.work, entry] } });
+              }
+            } else {
+              set({ view: { ...view, work: [...view.work, entry] } });
+            }
+          }
           break;
         }
 
@@ -253,7 +363,6 @@ export function createActivityStore() {
               terminal?: boolean;
               outcome?: string;
               resumable: boolean;
-              description?: string;
               durationMs?: number;
               resolvedProfileId?: string;
               runStartedAt?: string;
@@ -261,14 +370,28 @@ export function createActivityStore() {
             };
           };
           const entry = projectDelegateEntry(params.delegate);
-          const existingIdx = view.work.findIndex(
-            (w) => w.diagnostics?.rawId === params.delegate.delegateId,
-          );
-          const newWork =
-            existingIdx >= 0
-              ? view.work.map((w, i) => (i === existingIdx ? entry : w))
-              : [...view.work, entry];
-          set({ view: { ...view, work: newWork } });
+          const found = findEntryById(view.work, params.delegate.delegateId);
+          if (found) {
+            // Preserve existing children when replacing a delegate.
+            const newEntry = {
+              ...entry,
+              children: found.entry.children,
+            };
+            const newWork = replaceEntry(found.parent, found.index, newEntry);
+            if (found.parent !== view.work) {
+              const newWorkTree = view.work.map((w) => {
+                if (w.children === found.parent) {
+                  return { ...w, children: newWork };
+                }
+                return replaceChildEntry(w, found.parent, newWork);
+              });
+              set({ view: { ...view, work: newWorkTree } });
+            } else {
+              set({ view: { ...view, work: newWork } });
+            }
+          } else {
+            set({ view: { ...view, work: [...view.work, entry] } });
+          }
           break;
         }
 
@@ -332,6 +455,7 @@ export function createActivityStore() {
     reset() {
       generation += 1;
       lastThreadKey = null;
+      threadIdentity = null;
       set({ view: null, status: "idle", error: null });
     },
 
@@ -339,6 +463,26 @@ export function createActivityStore() {
       return generation;
     },
   }));
+}
+
+// Helper: replace a child array within a parent entry by reference.
+function replaceChildEntry(
+  parent: WorkEntry,
+  oldChildren: WorkEntry[],
+  newChildren: WorkEntry[],
+): WorkEntry {
+  if (parent.children === oldChildren) {
+    return { ...parent, children: newChildren };
+  }
+  if (parent.children) {
+    return {
+      ...parent,
+      children: parent.children.map((c) =>
+        replaceChildEntry(c, oldChildren, newChildren),
+      ),
+    };
+  }
+  return parent;
 }
 
 // Re-export for callers that want the default service.
