@@ -4,11 +4,21 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
+	"sort"
 	"strings"
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/frontmatter"
 )
+
+var slashAddressableNamePattern = regexp.MustCompile(`^[A-Za-z0-9_][A-Za-z0-9_-]*(?::[A-Za-z0-9_][A-Za-z0-9_-]*)?$`)
+
+// IsSlashAddressableName reports whether name is a canonical slash-addressable
+// skill name. Names are ASCII and may have one plugin separator.
+func IsSlashAddressableName(name string) bool {
+	return len(name) <= 128 && slashAddressableNamePattern.MatchString(name)
+}
 
 // SkillMeta holds discovery-time metadata for a single skill.
 type SkillMeta struct {
@@ -89,18 +99,49 @@ func LoadSkillBody(meta SkillMeta) (string, error) {
 	return doc.Body, nil
 }
 
+// CatalogEntries returns path-free skill metadata in canonical map-key order.
+func CatalogEntries(skills map[string]SkillMeta) []SkillMeta {
+	entries := make([]SkillMeta, 0, len(skills))
+	for key, meta := range skills {
+		entries = append(entries, SkillMeta{
+			Name:         key,
+			Description:  meta.Description,
+			AllowedTools: append([]string(nil), meta.AllowedTools...),
+		})
+	}
+	sort.Slice(entries, func(i, j int) bool { return entries[i].Name < entries[j].Name })
+	return entries
+}
+
+// ResolveSkill resolves an exact catalog key, or a uniquely matching plugin
+// suffix for an unqualified name.
+func ResolveSkill(skills map[string]SkillMeta, name string) (catalogName string, meta SkillMeta, ok bool) {
+	if meta, ok := skills[name]; ok {
+		return name, meta, true
+	}
+	if strings.Contains(name, ":") {
+		return "", SkillMeta{}, false
+	}
+	for key, candidate := range skills {
+		parts := strings.SplitN(key, ":", 2)
+		if len(parts) != 2 || parts[1] != name {
+			continue
+		}
+		if ok {
+			return "", SkillMeta{}, false
+		}
+		catalogName, meta, ok = key, candidate, true
+	}
+	return catalogName, meta, ok
+}
+
 // ResolveSkillContent looks up a skill by name in a skills map and returns its body content.
 // Tries exact match first, then tries unnamespaced match (e.g., "tdd" matches "myplugin:tdd").
 // Returns ("", nil) if not found.
 func ResolveSkillContent(skills map[string]SkillMeta, name string) (string, error) {
-	if meta, ok := skills[name]; ok {
+	_, meta, ok := ResolveSkill(skills, name)
+	if ok {
 		return LoadSkillBody(meta)
-	}
-	for key, meta := range skills {
-		parts := strings.SplitN(key, ":", 2)
-		if len(parts) == 2 && parts[1] == name {
-			return LoadSkillBody(meta)
-		}
 	}
 	return "", nil
 }
@@ -121,6 +162,9 @@ func parseSkillFile(path string) (SkillMeta, bool) {
 	name, _ := doc.Meta["name"].(string)
 	desc, _ := doc.Meta["description"].(string)
 	if strings.TrimSpace(name) == "" || strings.TrimSpace(desc) == "" {
+		return SkillMeta{}, false
+	}
+	if !IsSlashAddressableName(name) {
 		return SkillMeta{}, false
 	}
 
