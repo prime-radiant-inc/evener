@@ -970,6 +970,28 @@ export function createConversationStore() {
     return truncateItem(item);
   }
 
+  // Task 2A-Truncation residual fix round 2: Prune ownership maps for evicted
+  // IDs after an incremental append+cap path (item/started, item/completed,
+  // warning). When capItems trims the oldest items, any frozen/page/live
+  // entries for those evicted IDs are stale and must be removed so a later
+  // re-introduction (page load or lifecycle) independently judges the new
+  // content instead of inheriting a stale freeze.
+  function pruneEvictedIds(items: MobileTimelineItem[]): void {
+    const retainedIds = new Set(items.map((i) => i.id));
+    for (const id of [...truncatedItemIds]) {
+      if (!retainedIds.has(id)) truncatedItemIds.delete(id);
+    }
+    for (const id of [...pageOwnedIds]) {
+      if (!retainedIds.has(id)) pageOwnedIds.delete(id);
+    }
+    for (const id of [...liveOwnedRevs.keys()]) {
+      if (!retainedIds.has(id)) liveOwnedRevs.delete(id);
+    }
+    for (const id of [...itemFamilies.keys()]) {
+      if (!retainedIds.has(id)) itemFamilies.delete(id);
+    }
+  }
+
   return create<LiveConversationState>((rawSet, get) => {
     // R1: Wrap set so any write to pendingMutation or error increments the
     // corresponding monotonic revision counter — even ABA (same value). This
@@ -1470,13 +1492,32 @@ export function createConversationStore() {
             // truncation ownership exactly from the FINAL retained (capped)
             // items. I1: capture prior frozen IDs BEFORE reconciliation so
             // already-frozen current items (already truncated, text ≤ limit,
-            // exceedsByteLimit false) stay frozen — intersect with final IDs
-            // so capped/removed ownership drops. Incoming raw page items freeze
-            // independently via exceedsByteLimit. Then truncate the text.
-            const priorFrozen = new Set(truncatedItemIds);
+            // exceedsByteLimit false) stay frozen — intersect with current
+            // item IDs AND final IDs so capped/removed ownership drops.
+            // Incoming raw page items matching a stale frozen ID that is NOT
+            // in currentConv are independently judged from their raw content
+            // (exceedsByteLimit), NOT carried over as frozen.
+            const currentIds = new Set(currentConv.items.map((i) => i.id));
+            const priorFrozen = new Set<string>();
+            for (const id of truncatedItemIds) {
+              if (currentIds.has(id)) priorFrozen.add(id);
+            }
             const pageMerged = capItems([...deduped, ...currentConv.items]);
             reconcileTruncationFrom(pageMerged, priorFrozen);
             const merged = truncateAndRecord(pageMerged);
+            // Prune ownership maps for evicted IDs (IDs not in the final merged
+            // set). This prevents stale freeze/page/live entries from
+            // affecting future page loads or re-introductions.
+            const mergedIds = new Set(merged.map((i) => i.id));
+            for (const id of [...truncatedItemIds]) {
+              if (!mergedIds.has(id)) truncatedItemIds.delete(id);
+            }
+            for (const id of [...pageOwnedIds]) {
+              if (!mergedIds.has(id)) pageOwnedIds.delete(id);
+            }
+            for (const id of [...liveOwnedRevs.keys()]) {
+              if (!mergedIds.has(id)) liveOwnedRevs.delete(id);
+            }
             // F8: If we're at the cap and the merge trimmed older items,
             // disable further paging honestly — set cursor to null so
             // we don't repeatedly load rows that will be discarded.
@@ -1899,10 +1940,14 @@ export function createConversationStore() {
                 // Residual 2: Mark as live-owned — inserted by an actual
                 // accepted item lifecycle notification.
                 markLiveOwned(params.item.id);
+                const cappedItems = capItems([...conv.items, truncated]);
+                // Task 2A-Truncation residual fix round 2: prune evicted IDs
+                // from ownership maps after incremental append+cap.
+                pruneEvictedIds(cappedItems);
                 set({
                   conversation: {
                     ...conv,
-                    items: capItems([...conv.items, truncated]),
+                    items: cappedItems,
                   },
                 });
               }
@@ -1944,10 +1989,14 @@ export function createConversationStore() {
                 // Residual 2: Mark as live-owned — inserted by an actual
                 // accepted item lifecycle notification.
                 markLiveOwned(params.item.id);
+                const cappedItems = capItems([...conv.items, truncated]);
+                // Task 2A-Truncation residual fix round 2: prune evicted IDs
+                // from ownership maps after incremental append+cap.
+                pruneEvictedIds(cappedItems);
                 set({
                   conversation: {
                     ...conv,
-                    items: capItems([...conv.items, truncated]),
+                    items: cappedItems,
                   },
                 });
               }
@@ -2174,10 +2223,14 @@ export function createConversationStore() {
             // Residual 2: Mark as live-owned — created by an actual live
             // notification.
             markLiveOwned(id);
+            const warningCappedItems = capItems([...conv.items, failureItem]);
+            // Task 2A-Truncation residual fix round 2: prune evicted IDs
+            // from ownership maps after incremental append+cap.
+            pruneEvictedIds(warningCappedItems);
             set({
               conversation: {
                 ...conv,
-                items: capItems([...conv.items, failureItem]),
+                items: warningCappedItems,
               },
             });
             break;
