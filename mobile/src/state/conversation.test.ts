@@ -8308,4 +8308,591 @@ describe("ConversationStore", () => {
       ).toBe(false);
     });
   });
+
+  // --- Task 2A-Truncation residual fix round 1: I1 loadOlder preserves
+  // already-frozen current items; I2 rehydrate preserves only superseded IDs
+  // still actually frozen after the accepted live update; M1 observational
+  // omission/cap tests through reread/page/delta (no lifecycle clearing).
+  describe("Task 2A-Truncation residual fix round 1", () => {
+    async function openProjectedWithItems(items: ThreadItem[]): Promise<{
+      store: ReturnType<typeof createConversationStore>;
+      service: FakeConversationService;
+    }> {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ turns: [makeTurn({ id: "t0", items })] }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      return { store, service };
+    }
+
+    // I1: loadOlder — already-frozen current items stay frozen after page
+    // reconciliation. The current items are already truncated (text ≤ limit), so
+    // exceedsByteLimit is false for them. The fix must capture prior frozen IDs
+    // and preserve freeze for final-retained current items that were already
+    // frozen. A later delta to such an item must remain blocked.
+    it("I1 loadOlder: frozen current item stays frozen after page load, delta blocked", async () => {
+      // Open with an oversized assistant item (frozen), plus a page cursor.
+      const { store, service } = await openProjectedWithItems([
+        userMessageItem("B", "base"),
+        agentMessageItem("X", "x".repeat(MAX_ITEM_BYTES + 100), "inProgress"),
+      ]);
+      const xBefore = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(
+        xBefore?.kind === "assistant" &&
+          xBefore.markdown.endsWith("… truncated"),
+      ).toBe(true);
+      store.setState({ olderCursor: "cursor-1" });
+
+      // Load a small page item — reconciliation must NOT unfreeze X.
+      service.olderItems = {
+        items: [{ kind: "user", id: "page-A", text: "page" }],
+        nextCursor: "cursor-2",
+      };
+      await store.getState().loadOlder(service);
+
+      // X is still present and still frozen (marker once).
+      const xAfter = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xAfter?.kind).toBe("assistant");
+      expect(
+        xAfter?.kind === "assistant" && xAfter.markdown.endsWith("… truncated"),
+      ).toBe(true);
+
+      // A later delta to X must be blocked — X stays frozen.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+          delta: " should-not-append",
+        },
+      } as AnyNotification);
+      const xDelta = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(
+        xDelta?.kind === "assistant" && xDelta.markdown.endsWith("… truncated"),
+      ).toBe(true);
+      expect(
+        xDelta?.kind === "assistant" &&
+          xDelta.markdown.includes("should-not-append"),
+      ).toBe(false);
+    });
+
+    // I1: loadOlder — incoming raw oversized page item freezes independently, and
+    // an already-frozen current item AND the page item both freeze with one
+    // marker each.
+    it("I1 loadOlder: frozen current + oversized page item both freeze, deltas blocked", async () => {
+      const { store, service } = await openProjectedWithItems([
+        userMessageItem("B", "base"),
+        agentMessageItem("X", "x".repeat(MAX_ITEM_BYTES + 100), "inProgress"),
+      ]);
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [
+          {
+            kind: "activity",
+            id: "page-tool",
+            label: "shell",
+            state: "completed",
+            detail: {
+              output: "x".repeat(MAX_ITEM_BYTES + 100),
+              callId: "call-A",
+            },
+          },
+        ],
+        nextCursor: "cursor-2",
+      };
+      await store.getState().loadOlder(service);
+
+      // Both X (current) and page-tool (incoming) are frozen.
+      const xItem = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      const pItem = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "page-tool");
+      expect(
+        xItem?.kind === "assistant" && xItem.markdown.endsWith("… truncated"),
+      ).toBe(true);
+      expect(
+        pItem?.kind === "activity" &&
+          pItem.detail.output?.endsWith("… truncated"),
+      ).toBe(true);
+
+      // Delta to X (frozen current) is blocked.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+          delta: " should-not-append",
+        },
+      } as AnyNotification);
+      const xDelta = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(
+        xDelta?.kind === "assistant" &&
+          xDelta.markdown.includes("should-not-append"),
+      ).toBe(false);
+
+      // Delta to page-tool (frozen page item) is blocked.
+      store.getState().applyNotification({
+        method: "item/toolOutput/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "page-tool",
+          callId: "call-A",
+          delta: " should-not-append",
+        },
+      } as AnyNotification);
+      const pDelta = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "page-tool");
+      expect(
+        pDelta?.kind === "activity" &&
+          pDelta.detail.output?.includes("should-not-append"),
+      ).toBe(false);
+    });
+
+    // I1: loadOlder — capped current item loses freeze (no stale effect). When
+    // the cap trims an already-frozen current item, re-introducing it via a page
+    // load with short content must not re-freeze.
+    it("I1 loadOlder: capped frozen current item loses freeze, re-introduced short not frozen", async () => {
+      // Open with an oversized item (frozen) + one small item. The oversized
+      // item is retained (under cap). Then rehydrate OMITTING the oversized
+      // item — reconciliation removes its freeze. Then load a page bringing
+      // it back with SHORT content — it must NOT be frozen.
+      const oversized = "x".repeat(MAX_ITEM_BYTES + 100);
+      const { store, service } = await openProjectedWithItems([
+        userMessageItem("B", "base"),
+        agentMessageItem("X", oversized, "inProgress"),
+      ]);
+      // Verify X is frozen.
+      const xBefore = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(
+        xBefore?.kind === "assistant" &&
+          xBefore.markdown.endsWith("… truncated"),
+      ).toBe(true);
+
+      // Rehydrate omitting X — reconciliation removes the freeze for X.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({ id: "t0", items: [userMessageItem("B", "base")] }),
+          ],
+        }),
+      );
+      await store.getState().rehydrate(service, createFakeSink());
+      expect(
+        store.getState().conversation?.items.find((i) => i.id === "X"),
+      ).toBeUndefined();
+
+      // Load a page bringing X back with SHORT content — must NOT be frozen.
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [{ kind: "user", id: "X", text: "short-page" }],
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      const reintroduced = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(reintroduced).toBeDefined();
+      expect(reintroduced?.kind).toBe("user");
+    });
+
+    // I2: rehydrate — do NOT pass all superseded live IDs as frozen. If a reset
+    // (short lifecycle) removed the freeze before the rehydrate commits, the
+    // superseded ID stays unfrozen and a later delta applies.
+    it("I2 rehydrate: reset removes freeze, rehydrate preserves unfrozen, delta applies", async () => {
+      // Open with an oversized assistant item X (frozen).
+      const { store, service } = await openProjectedWithItems([
+        userMessageItem("B", "base"),
+        agentMessageItem("X", "x".repeat(MAX_ITEM_BYTES + 100), "inProgress"),
+      ]);
+      // Start a hanging rehydrate. Reread has X short.
+      const ctrl = makeControlledRead(service);
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [
+                userMessageItem("B", "base"),
+                agentMessageItem("X", "reread-short", "completed"),
+              ],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+
+      // While rehydrate is in-flight, reset X — this unfreezes X and marks it
+      // live-owned. The live version (empty) is newer than the reread.
+      store.getState().applyNotification({
+        method: "item/agentMessage/reset",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+        },
+      } as AnyNotification);
+      const xReset = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xReset?.kind === "assistant" && xReset.markdown).toBe("");
+
+      // Release rehydrate. X is superseded (live-owned, newer). The rehydrate
+      // must preserve the live (empty) version. Since the reset removed the
+      // freeze, the rehydrate must NOT re-freeze X.
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      const xAfter = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xAfter?.kind === "assistant" && xAfter.markdown).toBe("");
+
+      // A later delta must apply — freeze was removed by reset, not re-frozen.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+          delta: "fresh content",
+        },
+      } as AnyNotification);
+      const xDelta = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xDelta?.kind === "assistant" && xDelta.markdown).toBe(
+        "fresh content",
+      );
+    });
+
+    // I2: rehydrate — a superseded item that is STILL frozen (live delta made it
+    // oversized) stays frozen after rehydrate. This is the existing correct case.
+    it("I2 rehydrate: superseded still-frozen item stays frozen, delta blocked", async () => {
+      const { store, service } = await openProjectedWithItems([
+        userMessageItem("B", "base"),
+        agentMessageItem("X", "short", "inProgress"),
+      ]);
+      const ctrl = makeControlledRead(service);
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [
+                userMessageItem("B", "base"),
+                agentMessageItem("X", "reread-short", "completed"),
+              ],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+
+      // Live delta makes X oversized → frozen (markLiveOwned).
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+          delta: "x".repeat(MAX_ITEM_BYTES + 100),
+        },
+      } as AnyNotification);
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+
+      // X is superseded (live-owned, oversized) — stays frozen.
+      const xAfter = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(
+        xAfter?.kind === "assistant" && xAfter.markdown.endsWith("… truncated"),
+      ).toBe(true);
+
+      // Later delta blocked.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+          delta: " should-not-append",
+        },
+      } as AnyNotification);
+      const xFinal = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(
+        xFinal?.kind === "assistant" &&
+          xFinal.markdown.includes("should-not-append"),
+      ).toBe(false);
+    });
+
+    // I2: rehydrate — short superseded include case: reread includes X (stale
+    // short), live delta made X short (not frozen), rehydrate preserves live
+    // short, delta applies.
+    it("I2 rehydrate: short superseded include — live short not re-frozen, delta applies", async () => {
+      const { store, service } = await openProjectedWithItems([
+        userMessageItem("B", "base"),
+        agentMessageItem("X", "original", "inProgress"),
+      ]);
+      const ctrl = makeControlledRead(service);
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [
+                userMessageItem("B", "base"),
+                agentMessageItem("X", "stale-reread", "completed"),
+              ],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+
+      // Live delta appends short text (not frozen, markLiveOwned).
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+          delta: " live-append",
+        },
+      } as AnyNotification);
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+
+      // X is superseded (live-owned, short) — NOT frozen. Delta applies.
+      const xAfter = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xAfter?.kind === "assistant" && xAfter.markdown).toBe(
+        "original live-append",
+      );
+
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+          delta: " more",
+        },
+      } as AnyNotification);
+      const xDelta = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xDelta?.kind === "assistant" && xDelta.markdown).toBe(
+        "original live-append more",
+      );
+    });
+
+    // I2: rehydrate — short superseded omit case: reread omits X, live delta made
+    // X short (not frozen), rehydrate appends X as live tail, delta applies.
+    it("I2 rehydrate: short superseded omit — live short appended, not re-frozen, delta applies", async () => {
+      const { store, service } = await openProjectedWithItems([
+        userMessageItem("B", "base"),
+        agentMessageItem("X", "original", "inProgress"),
+      ]);
+      const ctrl = makeControlledRead(service);
+      // Reread OMITS X.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({ id: "t0", items: [userMessageItem("B", "base")] }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+
+      // Live delta appends short text (not frozen, markLiveOwned).
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+          delta: " live-append",
+        },
+      } as AnyNotification);
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+
+      // X appended as live tail (live-owned, short) — NOT frozen. Delta applies.
+      const xAfter = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xAfter?.kind === "assistant" && xAfter.markdown).toBe(
+        "original live-append",
+      );
+
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+          delta: " more",
+        },
+      } as AnyNotification);
+      const xDelta = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xDelta?.kind === "assistant" && xDelta.markdown).toBe(
+        "original live-append more",
+      );
+    });
+
+    // M1: observational omission via rehydrate (no lifecycle clearing). Open
+    // oversized X, rehydrate OMITTING X (removes freeze via reconciliation, not
+    // via conversation transition), then re-introduce X via item/completed short
+    // + delta. The freeze must be gone.
+    it("M1 rehydrate omit: freeze removed by reconciliation, re-introduced short accepts delta", async () => {
+      const { store, service } = await openProjectedWithItems([
+        userMessageItem("B", "base"),
+        agentMessageItem("X", "x".repeat(MAX_ITEM_BYTES + 100), "inProgress"),
+      ]);
+      // Rehydrate omitting X — reconciliation removes the freeze for X.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({ id: "t0", items: [userMessageItem("B", "base")] }),
+          ],
+        }),
+      );
+      await store.getState().rehydrate(service, createFakeSink());
+      expect(
+        store.getState().conversation?.items.find((i) => i.id === "X"),
+      ).toBeUndefined();
+
+      // Re-introduce X via item/completed short, then delta — must apply.
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          item: agentMessageItem("X", "fresh-short", "completed"),
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+          delta: " appended",
+        },
+      } as AnyNotification);
+      const xItem = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xItem?.kind === "assistant" && xItem.markdown).toBe(
+        "fresh-short appended",
+      );
+    });
+
+    // M1: observational cap via rehydrate+page (no lifecycle clearing). Open
+    // with an oversized item (frozen), rehydrate OMITTING it (reconciliation
+    // removes freeze), then load a page bringing it back with short content —
+    // it must not be frozen. This avoids openProjected/reset which clear
+    // truncatedItemIds via conversation transition.
+    it("M1 loadOlder cap: capped frozen item re-introduced via page with short content not frozen", async () => {
+      const oversized = "x".repeat(MAX_ITEM_BYTES + 100);
+      const { store, service } = await openProjectedWithItems([
+        userMessageItem("B", "base"),
+        agentMessageItem("X", oversized, "inProgress"),
+      ]);
+      // Verify X is frozen.
+      const xBefore = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(
+        xBefore?.kind === "assistant" &&
+          xBefore.markdown.endsWith("… truncated"),
+      ).toBe(true);
+
+      // Rehydrate omitting X — reconciliation removes the freeze for X.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({ id: "t0", items: [userMessageItem("B", "base")] }),
+          ],
+        }),
+      );
+      await store.getState().rehydrate(service, createFakeSink());
+      expect(
+        store.getState().conversation?.items.find((i) => i.id === "X"),
+      ).toBeUndefined();
+
+      // Load a page bringing X back with SHORT content — must NOT be frozen.
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [{ kind: "user", id: "X", text: "short-page" }],
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+      const reintroduced = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(reintroduced).toBeDefined();
+      expect(reintroduced?.kind).toBe("user");
+    });
+  });
 });
