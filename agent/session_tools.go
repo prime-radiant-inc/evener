@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/internal/toolname"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/llm"
@@ -383,12 +384,68 @@ func visionUsageAvailable(usage llm.Usage) bool {
 		usage.CacheWrite1hTokens != nil
 }
 
+// visionModelOff is the reserved bare-word setting that disables the vision
+// side-channel. Only a slash-free value can be the sentinel: a value with a
+// slash always parses as "provider/model", so a provider named "off" stays
+// reachable as "off/some-model".
+const visionModelOff = "off"
+
+// resolveVisionRoute maps the session's vision_model setting to the route the
+// side-channel executes on. "" resolves to the session's active route, "off"
+// (case-insensitive) disables the call, "provider/model" pins a provider, and
+// a bare model resolves on the active provider at call time — so it follows
+// SetModel switches. A malformed "x/" or "/x" value degrades to a bare-model
+// lookup on the active provider rather than an unroutable request.
+func resolveVisionRoute(profile *provider.Profile, setting string) (providerName, modelID string, off bool) {
+	setting = strings.TrimSpace(setting)
+	if setting == "" {
+		return profile.ID(), profile.Model(), false
+	}
+	if strings.EqualFold(setting, visionModelOff) {
+		return "", "", true
+	}
+	if prov, model, ok := strings.Cut(setting, "/"); ok && prov != "" && model != "" {
+		return prov, model, false
+	}
+	return profile.ID(), setting, false
+}
+
+// visionRouteSupportsReasoning gates reasoning_effort for the vision request:
+// the session route uses the profile's own answer (which may carry live
+// provider metadata); any other route answers from the embedded catalog, and
+// an uncatalogued model gets no effort knob rather than one it may reject.
+func visionRouteSupportsReasoning(profile *provider.Profile, providerName, modelID string) bool {
+	if providerName == profile.ID() && modelID == profile.Model() {
+		return profile.SupportsReasoning()
+	}
+	if cat := llm.EmbeddedModelCatalog(); cat != nil {
+		if mi := cat.LookupModelInfo(modelID); mi != nil {
+			return mi.SupportsReasoning
+		}
+	}
+	return false
+}
+
 func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visionSideChannelResult {
 	if len(r.ImageData) == 0 {
 		return visionSideChannelResult{outcome: visionSideChannelSuccess}
 	}
 	// Skip for explorer agents — they're just inventorying files, not analyzing images.
 	if s.cfg.AgentName == "explorer" {
+		return visionSideChannelResult{outcome: visionSideChannelSuccess}
+	}
+
+	// Snapshot the profile under s.mu: the vision side-channel runs during the
+	// round, so a concurrent SetModel (which mutates it under s.mu) must not race
+	// this read (PRI-1958 A2/A4). The fixed low vision cap below is deliberately
+	// independent of the session/task reasoning effort.
+	s.mu.Lock()
+	profile := s.profile
+	visionSetting := s.cfg.VisionModel
+	s.mu.Unlock()
+
+	routeProvider, routeModel, visionOff := resolveVisionRoute(profile, visionSetting)
+	if visionOff {
 		return visionSideChannelResult{outcome: visionSideChannelSuccess}
 	}
 
@@ -419,14 +476,6 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 		}}
 	}
 
-	// Snapshot the profile under s.mu: the vision side-channel runs during the
-	// round, so a concurrent SetModel (which mutates it under s.mu) must not race
-	// this read (PRI-1958 A2/A4). The fixed low vision cap below is deliberately
-	// independent of the session/task reasoning effort.
-	s.mu.Lock()
-	profile := s.profile
-	s.mu.Unlock()
-
 	visionTimeout := s.visionSideChannelDuration()
 	visionCtx, cancel := context.WithTimeoutCause(ctx, visionTimeout, errVisionSideChannelTimeout)
 	defer cancel()
@@ -454,14 +503,22 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	// cheapest level is above the cap gets that level rather than a value it
 	// would reject. Gate on SupportsReasoning so non-reasoning models never get
 	// reasoning_effort on the wire.
-	if profile.SupportsReasoning() {
-		effort := llm.ClampReasoningEffort(visionReasoningEffort, profile.ReasoningEffortLevels())
+	if visionRouteSupportsReasoning(profile, routeProvider, routeModel) {
+		levels := profile.ReasoningEffortLevels()
+		if routeProvider != profile.ID() || routeModel != profile.Model() {
+			if cat := llm.EmbeddedModelCatalog(); cat != nil {
+				if mi := cat.LookupModelInfo(routeModel); mi != nil && len(mi.ReasoningEffortLevels) > 0 {
+					levels = mi.ReasoningEffortLevels
+				}
+			}
+		}
+		effort := llm.ClampReasoningEffort(visionReasoningEffort, levels)
 		req.ReasoningEffort = &effort
 	}
 	s.applyModelRequestMetadata(profile, &req)
 
 	start := s.sclock().Now()
-	resp, err := s.client.Complete(visionCtx, req)
+	resp, err := s.cheap.CompleteRouted(visionCtx, profile, routeProvider, routeModel, req)
 	elapsed := s.sclock().Now().Sub(start)
 	elapsed = max(elapsed, 0)
 	if err != nil {
