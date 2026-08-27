@@ -81,6 +81,64 @@ func TestLoadSessionJobActivityTree_SizeContinuationWalksRetainedJobsOnce(t *tes
 }
 
 func TestLoadSessionJobActivityTree_SizeContinuationSkipsUnrepresentableEntry(t *testing.T) {
+	assertUnrepresentableActivityEntryWalk(t, strings.Repeat("x", activityMaxEncodedBytes+(256<<10)))
+}
+
+func TestLoadSessionJobActivityTree_SizeContinuationAccountsForResponseEnvelope(t *testing.T) {
+	assertUnrepresentableActivityEntryWalk(t, activityBoundaryDescription(t))
+}
+
+func activityBoundaryDescription(t *testing.T) string {
+	t.Helper()
+	stateDir := t.TempDir()
+	const rootID = "rootoversizedpage"
+	started := time.Unix(3_000, 0).UTC()
+	s1cov_writeJobLog(t, stateDir, rootID, jobstore.Event{
+		Kind:             jobstore.EventJobStarted,
+		TS:               started,
+		JobID:            "oversized_job",
+		Type:             jobstore.JobShell,
+		OwnerSessionID:   rootID,
+		VisibleToSession: rootID,
+		StartedAt:        &started,
+		Description:      "x",
+	})
+	savePastActivityMeta(t, stateDir, rootID, "Oversized continuation")
+	probe, err := LoadSessionJobActivityTree(stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("load boundary probe: %v", err)
+	}
+	if len(probe.Root.Entries) != 1 || probe.Root.Entries[0].Job == nil {
+		t.Fatalf("boundary probe entries = %+v, want one shell job", probe.Root.Entries)
+	}
+	entry := probe.Root.Entries[0]
+	entry.Job.Description = ""
+	base, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("marshal boundary entry base: %v", err)
+	}
+	description := strings.Repeat("x", activityMaxEncodedBytes-len(base)-1)
+	entry.Job.Description = description
+	encodedEntry, err := json.Marshal(entry)
+	if err != nil {
+		t.Fatalf("marshal boundary entry: %v", err)
+	}
+	if len(encodedEntry) != activityMaxEncodedBytes-1 {
+		t.Fatalf("boundary entry encoded to %d bytes, want %d", len(encodedEntry), activityMaxEncodedBytes-1)
+	}
+	probe.Root.Entries[0] = entry
+	encodedTree, err := json.Marshal(probe)
+	if err != nil {
+		t.Fatalf("marshal boundary tree: %v", err)
+	}
+	if len(encodedTree) <= activityMaxEncodedBytes {
+		t.Fatalf("boundary tree encoded to %d bytes, want more than %d", len(encodedTree), activityMaxEncodedBytes)
+	}
+	return description
+}
+
+func assertUnrepresentableActivityEntryWalk(t *testing.T, description string) {
+	t.Helper()
 	stateDir := t.TempDir()
 	const rootID = "rootoversizedpage"
 	started := time.Unix(3_000, 0).UTC()
@@ -94,7 +152,7 @@ func TestLoadSessionJobActivityTree_SizeContinuationSkipsUnrepresentableEntry(t 
 			OwnerSessionID:   rootID,
 			VisibleToSession: rootID,
 			StartedAt:        &started,
-			Description:      strings.Repeat("x", activityMaxEncodedBytes+(256<<10)),
+			Description:      description,
 		},
 		jobstore.Event{
 			Kind:             jobstore.EventJobStarted,

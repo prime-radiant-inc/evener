@@ -1034,10 +1034,28 @@ func trimActivityTreeToFit(tree appwire.JobActivityTree, rootID string) (appwire
 		if len(raw) <= activityMaxEncodedBytes {
 			return tree, nil
 		}
+		if omitUnrepresentableActivityEntry(&tree.Root, rootID, nil) {
+			continue
+		}
 		if !trimActivityTrailingEntry(&tree.Root, rootID, nil) {
 			return tree, nil
 		}
 	}
+}
+
+func omitUnrepresentableActivityEntry(session *appwire.JobActivitySession, rootID string, path []string) bool {
+	if session == nil || len(session.Entries) != 1 {
+		return false
+	}
+	entry := &session.Entries[0]
+	if entry.Delegate != nil && entry.Delegate.Child != nil && len(entry.Delegate.Child.Entries) > 0 {
+		return omitUnrepresentableActivityEntry(
+			entry.Delegate.Child,
+			rootID,
+			appendActivityPath(path, entry.Delegate.DelegateID),
+		)
+	}
+	return removeActivityEntry(session, 0, rootID, path, true)
 }
 
 func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID string, path []string) bool {
@@ -1051,16 +1069,26 @@ func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID strin
 			return true
 		}
 	}
-	removed := *entry
-	session.Entries = session.Entries[:i]
+	return removeActivityEntry(session, i, rootID, path, false)
+}
+
+func removeActivityEntry(
+	session *appwire.JobActivitySession,
+	i int,
+	rootID string,
+	path []string,
+	omitted bool,
+) bool {
+	removed := session.Entries[i]
+	session.Entries = append(session.Entries[:i], session.Entries[i+1:]...)
 	session.Branch.Truncated = true
 	after := activityPositionAfterEntries(session.Entries)
-	if raw, err := json.Marshal(removed); err == nil && len(raw) > activityMaxEncodedBytes {
+	if omitted {
 		after = activityEntryPositionFor(removed)
 		if after != nil {
 			appendActivityBranchError(
 				&session.Branch,
-				fmt.Sprintf("activity entry %q exceeds the %d-byte page limit and was omitted", after.ID, activityMaxEncodedBytes),
+				fmt.Sprintf("activity entry %q cannot fit within the %d-byte page limit and was omitted", after.ID, activityMaxEncodedBytes),
 			)
 		}
 	}
