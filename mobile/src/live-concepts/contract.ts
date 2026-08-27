@@ -85,6 +85,7 @@ export type LiveConceptIntent =
   | { type: "openWork" }
   | { type: "closeWork" }
   | { type: "setDraft"; value: string }
+  | { type: "setComposerMode"; mode: "send" | "steer" | "queue" }
   | { type: "submit"; mode: "send" | "steer" | "queue" }
   | { type: "interrupt" }
   | { type: "toggleTool"; key: string }
