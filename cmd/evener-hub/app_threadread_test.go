@@ -75,6 +75,132 @@ func TestAppThreadReadColdDelegatesMatchReconnectedDetailedStatus(t *testing.T) 
 	}
 }
 
+func TestPastThreadReadCarriesSkillCatalog(t *testing.T) {
+	cfg, entry := seedPastSessionWithSkillFixtures(t)
+	thread, ok, err := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID})
+	if err != nil || !ok {
+		t.Fatalf("pastThreadForRead = %v, %v", err, ok)
+	}
+	if thread.Evener.Diagnostics == nil {
+		t.Fatal("past thread has no diagnostics")
+	}
+	for _, want := range []string{"doctoring-evener", "project-skill", "extra-skill", "fixture-plugin:plugin-skill"} {
+		if !hasSkill(thread.Evener.Diagnostics.Skills, want) {
+			t.Fatalf("skills = %+v, missing %q", thread.Evener.Diagnostics.Skills, want)
+		}
+	}
+	for _, got := range thread.Evener.Diagnostics.Skills {
+		if strings.Contains(got.Name, string(filepath.Separator)) {
+			t.Fatalf("skill metadata contains a path: %+v", got)
+		}
+	}
+}
+
+func TestPastThreadReadCarriesExistingDelegateDiagnosticAlongsideSkills(t *testing.T) {
+	cfg, entry := seedPastSessionWithSkillFixtures(t)
+	delegateDir := filepath.Join(entry.StateDir, "sessions", entry.Meta.ID)
+	if err := os.MkdirAll(delegateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	descriptor := map[string]any{
+		"child_session_id": entry.Meta.ID, "transcript_ref": "local:" + entry.Meta.ID,
+		"owner_session_id": entry.Meta.ID, "task": "fixture task", "description": "fixture description",
+		"agent_type": "explorer", "resumable": true,
+		"tool_name_ceiling": []string{"communicate"},
+		"config":            map[string]any{},
+	}
+	batch, err := json.Marshal(map[string]any{"events": []any{map[string]any{
+		"kind": "delegate_created", "seq": 1, "ts": time.Unix(10, 0).UTC(),
+		"delegate_id": "dlg_fixture", "created": map[string]any{"descriptor": descriptor},
+	}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	journal := append([]byte("{\"version\":1}\n"), append(batch, '\n')...)
+	if err := os.WriteFile(filepath.Join(delegateDir, "delegates.jsonl"), journal, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	thread, ok, err := pastThreadForRead(cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID})
+	if err != nil || !ok {
+		t.Fatalf("pastThreadForRead = %v, %v", err, ok)
+	}
+	if thread.Evener.Diagnostics == nil || len(thread.Evener.Diagnostics.Delegates) != 1 ||
+		!hasSkill(thread.Evener.Diagnostics.Skills, "project-skill") {
+		t.Fatalf("diagnostics = %+v", thread.Evener.Diagnostics)
+	}
+}
+
+func hasSkill(skills []appwire.EvenerSkillInfo, name string) bool {
+	for _, skill := range skills {
+		if skill.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func seedPastSessionWithSkillFixtures(t *testing.T) (hubcore.WebConfig, hubcore.PastEntry) {
+	t.Helper()
+	root := t.TempDir()
+	workingDir := filepath.Join(root, "project")
+	extraDir := filepath.Join(root, "extra-skills")
+	pluginDir := filepath.Join(root, "plugin")
+	writeSkillFixture(t, filepath.Join(workingDir, "skills"), "project-skill", "project description")
+	writeSkillFixture(t, extraDir, "extra-skill", "extra description")
+	if err := os.MkdirAll(filepath.Join(pluginDir, ".claude-plugin"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	manifest := []byte(`{"name":"fixture-plugin"}`)
+	if err := os.WriteFile(filepath.Join(pluginDir, ".claude-plugin", "plugin.json"), manifest, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	writeSkillFixture(t, filepath.Join(pluginDir, "skills"), "plugin-skill", "plugin description")
+
+	stateDir := filepath.Join(root, "state", "projects", "project-repo-0000000000")
+	sessionID := "02wMz5Txv5aIxgf9yVdd0N"
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sessionID, ProfileID: "openai", Model: "gpt-5",
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: workingDir},
+		Config:    schema.ConfigSnapshot{SkillsDirs: []string{extraDir}, PluginDirs: []string{pluginDir}},
+		CreatedAt: now, UpdatedAt: now,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"), transcript.Header{SessionID: sessionID, CreatedAt: now, ProfileID: "openai", Model: "gpt-5"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	idx := hubcore.NewPastIndex(filepath.Join(root, "state", "projects", "*"))
+	if _, err := idx.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	entry, ok := idx.Find(sessionID)
+	if !ok {
+		t.Fatal("past entry not found")
+	}
+	return hubcore.WebConfig{Past: idx}, entry
+}
+
+func writeSkillFixture(t *testing.T, parent, name, description string) {
+	t.Helper()
+	dir := filepath.Join(parent, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	content := "---\nname: " + name + "\ndescription: " + description + "\n---\nfixture body\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o600); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestHubThreadReadStableDelegateDoesNotExtractActivationID(t *testing.T) {
 	raw := json.RawMessage(`{"job_id":"job_retired_activation","delegate_id":"dlg_stable","status":"running"}`)
 	item := appwire.ThreadItem{Type: "commandExecution", ToolName: "delegate", Raw: bytes.Clone(raw), Status: appwire.TurnStatusInProgress}
