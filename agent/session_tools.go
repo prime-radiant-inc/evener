@@ -960,11 +960,7 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 			// Once it passes, the durable append below owns the commit point and must
 			// finish rather than roll back a write that may already have started.
 			if persistErr = ctx.Err(); persistErr != nil {
-				for _, binding := range commits {
-					if binding.commit != nil {
-						_, _ = binding.commit.Complete(false)
-					}
-				}
+				abortDelegateToolCallDeliveryCommits(commits)
 				return
 			}
 		}
@@ -992,11 +988,7 @@ func (s *Session) appendToolResults(ctx context.Context, calls []llm.ToolCallDat
 	}); abortErr != nil {
 		// The tool round will not persist, so release any inline delivery receipts
 		// it acquired before cancellation and leave their durable heads replayable.
-		for _, binding := range s.takeDelegateDeliveryCommits(calls) {
-			if binding.commit != nil {
-				_, _ = binding.commit.Complete(false)
-			}
-		}
+		abortDelegateToolCallDeliveryCommits(s.takeDelegateDeliveryCommits(calls))
 		if ctx.Err() != nil && !s.isClosingOrClosed() {
 			s.appendCanceledToolResults(calls, results, abortErr)
 		}
@@ -1047,6 +1039,14 @@ type delegateToolCallDeliveryCommit struct {
 	commit     *delegateToolResultCommit
 }
 
+func abortDelegateToolCallDeliveryCommits(commits []delegateToolCallDeliveryCommit) {
+	for _, binding := range commits {
+		if binding.commit != nil {
+			_, _ = binding.commit.Complete(false)
+		}
+	}
+}
+
 func (s *Session) takeDelegateDeliveryCommits(calls []llm.ToolCallData) []delegateToolCallDeliveryCommit {
 	s.delegateDeliveryMu.Lock()
 	defer s.delegateDeliveryMu.Unlock()
@@ -1073,11 +1073,7 @@ func (s *Session) appendToolResultsWithDeliveryCommitsDurably(live, persisted ll
 		}
 	}
 	if err := s.writeTranscriptDurable(persistedTurn); err != nil {
-		for _, binding := range commits {
-			if binding.commit != nil {
-				_, _ = binding.commit.Complete(false)
-			}
-		}
+		abortDelegateToolCallDeliveryCommits(commits)
 		return err
 	}
 	s.mu.Lock()
