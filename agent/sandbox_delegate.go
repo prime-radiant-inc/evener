@@ -285,11 +285,8 @@ func degradedReadOnlyBoundaryFor(mode sandbox.Mode, writeBlocked bool) (degraded
 }
 
 func degradedReadOnlyBoundaryFromEnv(env execenv.ExecutionEnvironment) (degradedReadOnlyBoundary, bool) {
-	local, ok := env.(*execenv.LocalExecutionEnvironment)
-	if !ok || local == nil || local.Sandbox == nil {
-		return degradedReadOnlyBoundary{}, false
-	}
-	return degradedReadOnlyBoundaryFor(local.Sandbox.Mode, local.Sandbox.WriteBlocked)
+	mode, _, writeBlocked := parentSandboxFloorForEnv(env)
+	return degradedReadOnlyBoundaryFor(mode, writeBlocked)
 }
 
 func (b degradedReadOnlyBoundary) shellDisclosure(subject string) string {
