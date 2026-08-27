@@ -219,6 +219,58 @@ describe("ActivityService — projectActivity", () => {
       expect(dlg?.children?.[0]?.kind).toBe("watch");
     });
 
+    it("nests child delegates under their parent delegate via parentDelegateId", () => {
+      const diag: EvenerDiagnostics = {
+        delegates: [
+          delegate({ delegateId: "dlg-root", parentDelegateId: undefined }),
+          delegate({ delegateId: "dlg-child", parentDelegateId: "dlg-root" }),
+        ],
+      };
+      const t = thread({ evener: evenerThread({ diagnostics: diag }) });
+      const view = service.projectActivity(t);
+      // Only the root delegate is top-level; the child nests under it.
+      expect(view.work).toHaveLength(1);
+      expect(view.work[0]?.diagnostics?.rawId).toBe("dlg-root");
+      const child = view.work[0]?.children?.find((c) => c.kind === "delegate");
+      expect(child).toBeDefined();
+      expect(child?.diagnostics?.rawId).toBe("dlg-child");
+    });
+
+    it("nests jobs under child delegates at arbitrary depth", () => {
+      const diag: EvenerDiagnostics = {
+        delegates: [
+          delegate({ delegateId: "dlg-root", parentDelegateId: undefined }),
+          delegate({ delegateId: "dlg-child", parentDelegateId: "dlg-root" }),
+        ],
+        jobs: [job({ jobId: "job-deep", parentDelegateId: "dlg-child" })],
+      };
+      const t = thread({ evener: evenerThread({ diagnostics: diag }) });
+      const view = service.projectActivity(t);
+      expect(view.work).toHaveLength(1);
+      const childDlg = view.work[0]?.children?.find(
+        (c) => c.kind === "delegate",
+      );
+      expect(childDlg?.children?.[0]?.kind).toBe("job");
+      expect(childDlg?.children?.[0]?.diagnostics?.rawId).toBe("job-deep");
+    });
+
+    it("places delegates with unknown parentDelegateId at top level", () => {
+      // A delegate whose parent is not present in the diagnostics is
+      // rendered at top level rather than silently dropped.
+      const diag: EvenerDiagnostics = {
+        delegates: [
+          delegate({
+            delegateId: "dlg-orphan",
+            parentDelegateId: "dlg-missing",
+          }),
+        ],
+      };
+      const t = thread({ evener: evenerThread({ diagnostics: diag }) });
+      const view = service.projectActivity(t);
+      expect(view.work).toHaveLength(1);
+      expect(view.work[0]?.diagnostics?.rawId).toBe("dlg-orphan");
+    });
+
     it("returns empty work when diagnostics is absent", () => {
       const t = thread({ evener: evenerThread({ diagnostics: undefined }) });
       const view = service.projectActivity(t);

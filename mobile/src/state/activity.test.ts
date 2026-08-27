@@ -1,17 +1,16 @@
 // ActivityStore (Zustand) tests. The store owns the current ActivityView
-// projection (never the raw wire Thread). It exposes:
-// - project(service, thread) — re-project from a Thread
-// - setView(view, identity?) — adopt a pre-projected view + identity atomically
-// - applyNotification(n, identity?) — patch from activity notifications,
-//   returning "applied" | "rehydrate" | "ignored"
-// - reset() — clear on conversation switch (invalidates identity/generation)
+// projection (never the raw wire Thread). Two API tiers:
+// - Legacy: setView(view) / applyNotification(n) / project() / reset() —
+//   compile-only shims for the conversation store; not identity-enforcing.
+// - Live (strict): setLiveView(view, identity) / applyLiveNotification(n,
+//   identity) — enforce identity + generation on every call. No unbound mode.
 //
 // Identity safety (CRITICAL): the store tracks an ActivityIdentity
-// { threadId, ref, generation }. Every patch compares the supplied identity
-// with the current identity. Wrong thread/ref/generation is ignored even when
-// a new view exists. reset() bumps the generation so a late completion from
-// the older conversation is dropped. setView() installs both the sanitized
-// view and the identity atomically.
+// { threadId, ref, generation }. setLiveView installs view + identity
+// atomically and rejects stale (non-monotonic) generations. reset() records
+// an invalidated generation so a late setLiveView cannot revive the view.
+// applyLiveNotification validates BOTH the supplied identity against the store
+// AND the payload's threadId/ref (when present) against the supplied identity.
 
 import { describe, expect, it, vi } from "vitest";
 import type {
@@ -88,6 +87,23 @@ function emptyView(): ActivityView {
   };
 }
 
+// A notification with matching threadId/ref.
+function taskNotification(
+  total: number,
+  done: number,
+  id: ActivityIdentity = identity(),
+): AnyNotification {
+  return {
+    method: "evener/task/updated",
+    params: {
+      threadId: id.threadId,
+      ref: id.ref,
+      total,
+      done,
+    },
+  } as AnyNotification;
+}
+
 // --- tests -------------------------------------------------------------------
 
 describe("ActivityStore", () => {
@@ -99,316 +115,245 @@ describe("ActivityStore", () => {
     expect(state.error).toBeNull();
   });
 
-  it("project() stores the projected ActivityView and sets status open", () => {
-    const realService = createActivityService();
-    const t = thread({
-      evener: evenerThread({ tasks: { total: 3, done: 1 } }),
-    });
-    const store = createActivityStore();
-    store.getState().project(realService, t);
-    const state = store.getState();
-    expect(state.view).not.toBeNull();
-    expect(state.status).toBe("open");
-    expect(state.error).toBeNull();
-    const doneGroup = state.view?.tasks.find((g) => g.status === "done");
-    expect(doneGroup?.count).toBe(1);
-  });
+  // --- legacy compile path (conversation store) -----------------------------
 
-  it("project() with a fake service uses its scripted view", () => {
-    const fakeView: ActivityView = {
-      tasks: [{ status: "done", count: 7 }],
-      work: [],
-      usage: { cost: "$1.00" },
-      capabilities: ALL_TRUE_CAPS as MobileCapabilities,
-    };
-    const fakeService = {
-      projectActivity: vi.fn().mockReturnValue(fakeView),
-    };
-    const store = createActivityStore();
-    store.getState().project(fakeService, thread());
-    const state = store.getState();
-    expect(state.view).toBe(fakeView);
-    expect(fakeService.projectActivity).toHaveBeenCalledOnce();
-  });
-
-  it("project() records an error when the service throws", () => {
-    const boom = new Error("projection failed");
-    const fakeService = {
-      projectActivity: vi.fn().mockImplementation(() => {
-        throw boom;
-      }),
-    };
-    const store = createActivityStore();
-    store.getState().project(fakeService, thread());
-    const state = store.getState();
-    expect(state.view).toBeNull();
-    expect(state.status).toBe("error");
-    expect(state.error).toBe("projection failed");
-  });
-
-  it("project() installs identity from the thread", () => {
-    const realService = createActivityService();
-    const store = createActivityStore();
-    store.getState().project(realService, thread({ id: "t-7" }));
-    // After project, a notification with matching identity should apply.
-    const result = store.getState().applyNotification(
-      {
-        method: "evener/task/updated",
-        params: { threadId: "t-7", ref: "ref-1", total: 5, done: 5 },
-      } as AnyNotification,
-      identity({ threadId: "t-7", ref: "ref-1" }),
-    );
-    expect(result).toBe("applied");
-    expect(store.getState().view?.tasks).toHaveLength(3);
-  });
-
-  it("reset() clears the view and returns to idle", () => {
-    const realService = createActivityService();
-    const store = createActivityStore();
-    store.getState().project(realService, thread());
-    expect(store.getState().view).not.toBeNull();
-    store.getState().reset();
-    const state = store.getState();
-    expect(state.view).toBeNull();
-    expect(state.status).toBe("idle");
-    expect(state.error).toBeNull();
-  });
-
-  it("projectActivity is deterministic via the real service (smoke)", () => {
-    const realService = createActivityService();
-    const diag: EvenerDiagnostics = {
-      jobs: [
-        { jobId: "j1", jobType: "shell", status: "running", outputBytes: 0 },
-      ],
-    };
-    const t = thread({ evener: evenerThread({ diagnostics: diag }) });
-    const store = createActivityStore();
-    store.getState().project(realService, t);
-    const v1 = store.getState().view;
-    store.getState().project(realService, t);
-    const v2 = store.getState().view;
-    expect(v1).toEqual(v2);
-  });
-
-  // --- setView + identity ----------------------------------------------------
-
-  describe("setView", () => {
-    it("replaces the activity view directly", () => {
-      const view: ActivityView = {
-        tasks: [{ status: "done", count: 5 }],
-        work: [],
-        usage: { totalTokens: 100 },
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
-      };
+  describe("legacy compile-only path", () => {
+    it("project stores the projected view", () => {
+      const realService = createActivityService();
+      const t = thread({
+        evener: evenerThread({ tasks: { total: 3, done: 1 } }),
+      });
       const store = createActivityStore();
-      store.getState().setView(view);
-      expect(store.getState().view).toBe(view);
+      store.getState().project(realService, t);
+      const state = store.getState();
+      expect(state.view).not.toBeNull();
+      expect(state.status).toBe("open");
+    });
+
+    it("setView installs a view (no identity)", () => {
+      const store = createActivityStore();
+      store.getState().setView(emptyView());
+      expect(store.getState().view).not.toBeNull();
       expect(store.getState().status).toBe("open");
     });
 
-    it("setView from a read-boundary contains tasks/work/usage", () => {
-      const view: ActivityView = {
-        tasks: [
-          { status: "active", count: 1 },
-          { status: "open", count: 2 },
-          { status: "done", count: 3 },
-        ],
-        work: [
-          {
-            kind: "job",
-            label: "shell",
-            tone: "running",
-            outputSummary: "1.0 KB",
-          },
-        ],
-        usage: { totalTokens: 42, cost: "$0.01" },
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+    it("applyNotification patches via legacy path", () => {
+      const store = createActivityStore();
+      store.getState().setView(emptyView());
+      store.getState().applyNotification(taskNotification(5, 5));
+      expect(store.getState().view?.tasks).toHaveLength(3);
+    });
+
+    it("reset clears the view", () => {
+      const store = createActivityStore();
+      store.getState().setView(emptyView());
+      store.getState().reset();
+      expect(store.getState().view).toBeNull();
+      expect(store.getState().status).toBe("idle");
+    });
+  });
+
+  // --- setLiveView monotonic generation ------------------------------------
+
+  describe("setLiveView monotonic generation", () => {
+    it("installs view + identity on first call", () => {
+      const store = createActivityStore();
+      const id = identity({ generation: 5 });
+      const ok = store.getState().setLiveView(emptyView(), id);
+      expect(ok).toBe(true);
+      expect(store.getState().view).not.toBeNull();
+      expect(store.getState().generationForTest()).toBe(5);
+    });
+
+    it("accepts a strictly newer generation", () => {
+      const store = createActivityStore();
+      store.getState().setLiveView(emptyView(), identity({ generation: 5 }));
+      const ok = store
+        .getState()
+        .setLiveView(emptyView(), identity({ generation: 6 }));
+      expect(ok).toBe(true);
+      expect(store.getState().generationForTest()).toBe(6);
+    });
+
+    it("rejects an equal (stale) generation", () => {
+      const store = createActivityStore();
+      store.getState().setLiveView(emptyView(), identity({ generation: 5 }));
+      const ok = store
+        .getState()
+        .setLiveView(emptyView(), identity({ generation: 5 }));
+      expect(ok).toBe(false);
+      // View identity generation stays at 5; the stale set did not revive.
+      expect(store.getState().generationForTest()).toBe(5);
+    });
+
+    it("rejects an older generation", () => {
+      const store = createActivityStore();
+      store.getState().setLiveView(emptyView(), identity({ generation: 5 }));
+      const ok = store
+        .getState()
+        .setLiveView(emptyView(), identity({ generation: 4 }));
+      expect(ok).toBe(false);
+      expect(store.getState().generationForTest()).toBe(5);
+    });
+
+    it("new view then old view: old view is rejected", () => {
+      const store = createActivityStore();
+      const view1 = {
+        ...emptyView(),
+        tasks: [{ status: "done" as const, count: 1 }],
       };
-      const store = createActivityStore();
-      store.getState().setView(view);
-      const v = store.getState().view;
-      expect(v?.tasks).toHaveLength(3);
-      expect(v?.work).toHaveLength(1);
-      expect(v?.usage.totalTokens).toBe(42);
-      expect(v?.usage.cost).toBe("$0.01");
+      const view2 = {
+        ...emptyView(),
+        tasks: [{ status: "done" as const, count: 2 }],
+      };
+      store.getState().setLiveView(view1, identity({ generation: 1 }));
+      store.getState().setLiveView(view2, identity({ generation: 2 }));
+      // Late old view (generation 1) must not revive/replace.
+      const ok = store
+        .getState()
+        .setLiveView(view1, identity({ generation: 1 }));
+      expect(ok).toBe(false);
+      // The view stays as view2.
+      const doneCount = store
+        .getState()
+        .view?.tasks.find((g) => g.status === "done")?.count;
+      expect(doneCount).toBe(2);
     });
 
-    it("setView installs both sanitized view and identity atomically", () => {
-      const view = emptyView();
+    it("same ref new gen: accepts newer generation for same ref", () => {
       const store = createActivityStore();
-      const id = identity({
-        threadId: "thread-9",
-        ref: "ref-9",
-        generation: 3,
-      });
-      store.getState().setView(view, id);
-      // A notification with matching identity should apply.
-      const result = store.getState().applyNotification(
-        {
-          method: "evener/task/updated",
-          params: { threadId: "thread-9", ref: "ref-9", total: 2, done: 1 },
-        } as AnyNotification,
-        id,
-      );
-      expect(result).toBe("applied");
-      expect(store.getState().view?.tasks).toHaveLength(3);
+      store
+        .getState()
+        .setLiveView(
+          emptyView(),
+          identity({ threadId: "thread-1", ref: "ref-1", generation: 1 }),
+        );
+      const ok = store
+        .getState()
+        .setLiveView(
+          emptyView(),
+          identity({ threadId: "thread-1", ref: "ref-1", generation: 2 }),
+        );
+      expect(ok).toBe(true);
     });
 
-    it("setView without identity reuses last-known identity", () => {
-      const view = emptyView();
+    it("reset records invalidated generation; late setLiveView cannot revive", () => {
       const store = createActivityStore();
-      // project first establishes identity {thread-1, ref-1, gen N}
-      store.getState().project(createActivityService(), thread());
-      const gen = store.getState().generationForTest();
-      // setView without identity keeps the existing identity
-      store.getState().setView(view);
-      expect(store.getState().generationForTest()).toBe(gen);
-      // A notification matching the projected identity applies
-      const result = store.getState().applyNotification(
-        {
-          method: "evener/task/updated",
-          params: { threadId: "thread-1", ref: "ref-1", total: 2, done: 1 },
-        } as AnyNotification,
-        identity({ generation: gen }),
-      );
-      expect(result).toBe("applied");
+      store.getState().setLiveView(emptyView(), identity({ generation: 5 }));
+      const genBeforeReset = store.getState().generationForTest();
+      store.getState().reset();
+      expect(store.getState().view).toBeNull();
+      // A late setLiveView carrying the old generation (5) must be rejected.
+      const ok = store
+        .getState()
+        .setLiveView(emptyView(), identity({ generation: 5 }));
+      expect(ok).toBe(false);
+      expect(store.getState().view).toBeNull();
+      // A fresh newer generation after reset is accepted.
+      const ok2 = store
+        .getState()
+        .setLiveView(emptyView(), identity({ generation: genBeforeReset + 2 }));
+      expect(ok2).toBe(true);
     });
   });
 
-  // --- applyNotification identity safety -------------------------------------
+  // --- applyLiveNotification identity + payload validation ------------------
 
-  describe("applyNotification identity safety", () => {
-    it("ignores notification with wrong thread id", () => {
+  describe("applyLiveNotification identity + payload validation", () => {
+    it("applies when identity and payload match", () => {
       const store = createActivityStore();
-      store.getState().setView(emptyView(), identity());
-      const result = store.getState().applyNotification(
-        {
-          method: "evener/task/updated",
-          params: { threadId: "thread-OTHER", ref: "ref-1", total: 5, done: 5 },
-        } as AnyNotification,
-        identity({ threadId: "thread-OTHER" }),
-      );
-      expect(result).toBe("ignored");
-      // View unchanged
-      expect(store.getState().view?.tasks).toHaveLength(0);
-    });
-
-    it("ignores notification with wrong ref", () => {
-      const store = createActivityStore();
-      store.getState().setView(emptyView(), identity());
-      const result = store.getState().applyNotification(
-        {
-          method: "evener/task/updated",
-          params: { threadId: "thread-1", ref: "ref-OTHER", total: 5, done: 5 },
-        } as AnyNotification,
-        identity({ ref: "ref-OTHER" }),
-      );
-      expect(result).toBe("ignored");
-      expect(store.getState().view?.tasks).toHaveLength(0);
-    });
-
-    it("ignores notification with stale generation", () => {
-      const store = createActivityStore();
-      store.getState().setView(emptyView(), identity({ generation: 5 }));
-      // Supply an older generation
-      const result = store.getState().applyNotification(
-        {
-          method: "evener/task/updated",
-          params: { threadId: "thread-1", ref: "ref-1", total: 5, done: 5 },
-        } as AnyNotification,
-        identity({ generation: 4 }),
-      );
-      expect(result).toBe("ignored");
-      expect(store.getState().view?.tasks).toHaveLength(0);
-    });
-
-    it("applies notification matching thread/ref/generation", () => {
-      const store = createActivityStore();
-      store.getState().setView(emptyView(), identity({ generation: 5 }));
-      const result = store.getState().applyNotification(
-        {
-          method: "evener/task/updated",
-          params: { threadId: "thread-1", ref: "ref-1", total: 5, done: 5 },
-        } as AnyNotification,
-        identity({ generation: 5 }),
-      );
+      store.getState().setLiveView(emptyView(), identity({ generation: 1 }));
+      const result = store
+        .getState()
+        .applyLiveNotification(
+          taskNotification(5, 5),
+          identity({ generation: 1 }),
+        );
       expect(result).toBe("applied");
       expect(store.getState().view?.tasks).toHaveLength(3);
     });
 
-    it("ignores old-identity notification after a new view is set", () => {
+    it("ignores when supplied identity does not match store", () => {
       const store = createActivityStore();
-      // First view with identity gen 1
-      store.getState().setView(emptyView(), identity({ generation: 1 }));
-      // New view with identity gen 2 (new generation)
-      store.getState().setView(emptyView(), identity({ generation: 2 }));
-      // Late notification carrying the old generation 1 must be ignored
-      const result = store.getState().applyNotification(
-        {
-          method: "evener/task/updated",
-          params: { threadId: "thread-1", ref: "ref-1", total: 5, done: 5 },
-        } as AnyNotification,
-        identity({ generation: 1 }),
-      );
+      store.getState().setLiveView(emptyView(), identity({ generation: 1 }));
+      const result = store
+        .getState()
+        .applyLiveNotification(
+          taskNotification(5, 5),
+          identity({ generation: 2 }),
+        );
       expect(result).toBe("ignored");
       expect(store.getState().view?.tasks).toHaveLength(0);
     });
 
-    it("accepts same ref with new generation", () => {
-      const store = createActivityStore();
-      store.getState().setView(emptyView(), identity({ generation: 1 }));
-      // Same thread/ref but generation bumped (e.g. re-open of same ref)
-      store.getState().setView(emptyView(), identity({ generation: 2 }));
-      const result = store.getState().applyNotification(
-        {
-          method: "evener/task/updated",
-          params: { threadId: "thread-1", ref: "ref-1", total: 3, done: 3 },
-        } as AnyNotification,
-        identity({ generation: 2 }),
-      );
-      expect(result).toBe("applied");
-      const doneGroup = store
-        .getState()
-        .view?.tasks.find((g) => g.status === "done");
-      expect(doneGroup?.count).toBe(3);
-    });
-
-    it("without identity arg, validates against last-known identity from params", () => {
+    it("ignores when payload threadId mismatches supplied identity", () => {
       const store = createActivityStore();
       store
         .getState()
-        .setView(emptyView(), identity({ threadId: "thread-1", ref: "ref-1" }));
-      // Omit identity — store derives from notification params and compares
-      // against its current identity.
-      const result = store.getState().applyNotification({
-        method: "evener/task/updated",
-        params: { threadId: "thread-1", ref: "ref-1", total: 4, done: 4 },
-      } as AnyNotification);
-      expect(result).toBe("applied");
-      expect(store.getState().view?.tasks).toHaveLength(3);
+        .setLiveView(
+          emptyView(),
+          identity({ threadId: "thread-1", generation: 1 }),
+        );
+      // Supplied identity matches the store, but the payload carries a
+      // DIFFERENT threadId. This is the C2 bug: must be ignored.
+      const result = store
+        .getState()
+        .applyLiveNotification(
+          taskNotification(5, 5, identity({ threadId: "thread-OTHER" })),
+          identity({ threadId: "thread-1", generation: 1 }),
+        );
+      expect(result).toBe("ignored");
+      expect(store.getState().view?.tasks).toHaveLength(0);
     });
 
-    it("without identity arg, ignores wrong-thread notification", () => {
+    it("ignores when payload ref mismatches supplied identity", () => {
       const store = createActivityStore();
       store
         .getState()
-        .setView(emptyView(), identity({ threadId: "thread-1", ref: "ref-1" }));
-      const result = store.getState().applyNotification({
-        method: "evener/task/updated",
-        params: { threadId: "thread-2", ref: "ref-1", total: 4, done: 4 },
-      } as AnyNotification);
+        .setLiveView(emptyView(), identity({ ref: "ref-1", generation: 1 }));
+      const result = store
+        .getState()
+        .applyLiveNotification(
+          taskNotification(5, 5, identity({ ref: "ref-OTHER" })),
+          identity({ ref: "ref-1", generation: 1 }),
+        );
+      expect(result).toBe("ignored");
+      expect(store.getState().view?.tasks).toHaveLength(0);
+    });
+
+    it("ignores when view is null", () => {
+      const store = createActivityStore();
+      const result = store
+        .getState()
+        .applyLiveNotification(
+          taskNotification(5, 5),
+          identity({ generation: 1 }),
+        );
+      expect(result).toBe("ignored");
+    });
+
+    it("ignores old-identity notification after new view", () => {
+      const store = createActivityStore();
+      store.getState().setLiveView(emptyView(), identity({ generation: 1 }));
+      store.getState().setLiveView(emptyView(), identity({ generation: 2 }));
+      const result = store
+        .getState()
+        .applyLiveNotification(
+          taskNotification(5, 5),
+          identity({ generation: 1 }),
+        );
       expect(result).toBe("ignored");
       expect(store.getState().view?.tasks).toHaveLength(0);
     });
   });
 
-  // --- job/delegate/task/turn notification patching --------------------------
+  // --- job/delegate notification patching + sanitization ---------------------
 
   describe("activity notification patching", () => {
-    it("evener/job/started patches a sanitized work entry", () => {
+    it("job/started patches a sanitized work entry", () => {
       const store = createActivityStore();
-      store.getState().setView(emptyView(), identity());
-      const result = store.getState().applyNotification(
+      store.getState().setLiveView(emptyView(), identity({ generation: 1 }));
+      const result = store.getState().applyLiveNotification(
         {
           method: "evener/job/started",
           params: {
@@ -422,7 +367,7 @@ describe("ActivityStore", () => {
             },
           },
         } as AnyNotification,
-        identity(),
+        identity({ generation: 1 }),
       );
       expect(result).toBe("applied");
       const v = store.getState().view;
@@ -432,10 +377,10 @@ describe("ActivityStore", () => {
       expect(v?.work[0]?.diagnostics).not.toHaveProperty("command");
     });
 
-    it("evener/delegate/updated patches a sanitized delegate entry", () => {
+    it("delegate/updated patches a sanitized delegate entry", () => {
       const store = createActivityStore();
-      store.getState().setView(emptyView(), identity());
-      const result = store.getState().applyNotification(
+      store.getState().setLiveView(emptyView(), identity({ generation: 1 }));
+      const result = store.getState().applyLiveNotification(
         {
           method: "evener/delegate/updated",
           params: {
@@ -458,28 +403,25 @@ describe("ActivityStore", () => {
             },
           },
         } as AnyNotification,
-        identity(),
+        identity({ generation: 1 }),
       );
       expect(result).toBe("applied");
       const v = store.getState().view;
-      expect(v?.work).toHaveLength(1);
       expect(v?.work[0]?.kind).toBe("delegate");
-      // label uses type (not description/task/prompt)
       expect(v?.work[0]?.label).toBe("subagent");
       expect(v?.work[0]?.label).not.toContain("secret");
       expect(v?.work[0]?.diagnostics).not.toHaveProperty("transcriptRef");
     });
 
-    it("evener/task/updated patches task counts", () => {
+    it("task/updated patches task counts", () => {
       const store = createActivityStore();
-      store.getState().setView(emptyView(), identity());
-      const result = store.getState().applyNotification(
-        {
-          method: "evener/task/updated",
-          params: { threadId: "thread-1", ref: "ref-1", total: 10, done: 3 },
-        } as AnyNotification,
-        identity(),
-      );
+      store.getState().setLiveView(emptyView(), identity({ generation: 1 }));
+      const result = store
+        .getState()
+        .applyLiveNotification(
+          taskNotification(10, 3),
+          identity({ generation: 1 }),
+        );
       expect(result).toBe("applied");
       const v = store.getState().view;
       const doneGroup = v?.tasks.find((g) => g.status === "done");
@@ -488,7 +430,7 @@ describe("ActivityStore", () => {
       expect(openGroup?.count).toBe(7);
     });
 
-    it("turn/completed with usage applies safe usage", () => {
+    it("turn/completed with complete usage applies safe usage", () => {
       const store = createActivityStore();
       const view: ActivityView = {
         tasks: [],
@@ -496,8 +438,8 @@ describe("ActivityStore", () => {
         usage: { totalTokens: 50 },
         capabilities: ALL_TRUE_CAPS as MobileCapabilities,
       };
-      store.getState().setView(view, identity());
-      const result = store.getState().applyNotification(
+      store.getState().setLiveView(view, identity({ generation: 1 }));
+      const result = store.getState().applyLiveNotification(
         {
           method: "turn/completed",
           params: {
@@ -512,25 +454,23 @@ describe("ActivityStore", () => {
             },
           },
         } as AnyNotification,
-        identity(),
+        identity({ generation: 1 }),
       );
       expect(result).toBe("applied");
       const v = store.getState().view;
       expect(v?.usage.totalTokens).toBe(200);
       expect(v?.usage.inputTokens).toBe(100);
-      expect(v?.usage.outputTokens).toBe(100);
     });
 
     it("turn/completed without usage returns rehydrate", () => {
       const store = createActivityStore();
-      const view: ActivityView = {
-        tasks: [],
-        work: [],
-        usage: { totalTokens: 50 },
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
-      };
-      store.getState().setView(view, identity());
-      const result = store.getState().applyNotification(
+      store
+        .getState()
+        .setLiveView(
+          { ...emptyView(), usage: { totalTokens: 50 } },
+          identity({ generation: 1 }),
+        );
+      const result = store.getState().applyLiveNotification(
         {
           method: "turn/completed",
           params: {
@@ -544,122 +484,103 @@ describe("ActivityStore", () => {
             },
           },
         } as AnyNotification,
-        identity(),
+        identity({ generation: 1 }),
       );
-      // No usage on the turn — cannot authoritatively refresh, rehydrate.
+      expect(result).toBe("rehydrate");
+    });
+
+    it("turn/completed with empty/partial usage returns rehydrate", () => {
+      const store = createActivityStore();
+      store
+        .getState()
+        .setLiveView(
+          { ...emptyView(), usage: { totalTokens: 50 } },
+          identity({ generation: 1 }),
+        );
+      // Empty usage object {} — all fields optional, not authoritative.
+      const result = store.getState().applyLiveNotification(
+        {
+          method: "turn/completed",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t1",
+            turn: {
+              id: "t1",
+              itemsView: "default",
+              status: "completed",
+              usage: {},
+            },
+          },
+        } as AnyNotification,
+        identity({ generation: 1 }),
+      );
+      expect(result).toBe("rehydrate");
+    });
+
+    it("turn/completed with partial single-field usage returns rehydrate", () => {
+      const store = createActivityStore();
+      store
+        .getState()
+        .setLiveView(
+          { ...emptyView(), usage: { totalTokens: 50 } },
+          identity({ generation: 1 }),
+        );
+      // Only inputTokens present, no totalTokens — insufficient.
+      const result = store.getState().applyLiveNotification(
+        {
+          method: "turn/completed",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t1",
+            turn: {
+              id: "t1",
+              itemsView: "default",
+              status: "completed",
+              usage: { inputTokens: 100 },
+            },
+          },
+        } as AnyNotification,
+        identity({ generation: 1 }),
+      );
+      expect(result).toBe("rehydrate");
+    });
+
+    it("turn/completed with totalTokens=0 returns rehydrate", () => {
+      const store = createActivityStore();
+      store
+        .getState()
+        .setLiveView(
+          { ...emptyView(), usage: { totalTokens: 50 } },
+          identity({ generation: 1 }),
+        );
+      const result = store.getState().applyLiveNotification(
+        {
+          method: "turn/completed",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t1",
+            turn: {
+              id: "t1",
+              itemsView: "default",
+              status: "completed",
+              usage: { totalTokens: 0 },
+            },
+          },
+        } as AnyNotification,
+        identity({ generation: 1 }),
+      );
       expect(result).toBe("rehydrate");
     });
   });
 
-  // --- hierarchy: nested jobs, delegate preserving children -----------------
+  // --- hierarchy: nested jobs/delegates, collision, relocation --------------
 
   describe("hierarchy preservation", () => {
-    it("nests a job under its parent delegate", () => {
-      const store = createActivityStore();
-      const view: ActivityView = {
-        tasks: [],
-        work: [
-          {
-            kind: "delegate",
-            label: "subagent",
-            tone: "running",
-            diagnostics: {
-              rawId: "dlg-1",
-              operationName: "subagent",
-              statusClass: "running",
-            },
-          },
-        ],
-        usage: {},
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
-      };
-      store.getState().setView(view, identity());
-      const result = store.getState().applyNotification(
-        {
-          method: "evener/job/started",
-          params: {
-            threadId: "thread-1",
-            ref: "ref-1",
-            job: {
-              jobId: "job-nested",
-              jobType: "shell",
-              status: "running",
-              outputBytes: 0,
-              parentDelegateId: "dlg-1",
-            },
-          },
-        } as AnyNotification,
-        identity(),
-      );
-      expect(result).toBe("applied");
-      const dlg = store.getState().view?.work[0];
-      expect(dlg?.children).toHaveLength(1);
-      expect(dlg?.children?.[0]?.kind).toBe("job");
-      expect(dlg?.children?.[0]?.diagnostics?.rawId).toBe("job-nested");
-    });
-
-    it("patches a nested job in place preserving the parent delegate", () => {
-      const store = createActivityStore();
-      const view: ActivityView = {
-        tasks: [],
-        work: [
-          {
-            kind: "delegate",
-            label: "subagent",
-            tone: "running",
-            children: [
-              {
-                kind: "job",
-                label: "shell",
-                tone: "running",
-                outputSummary: "0 B",
-                diagnostics: {
-                  rawId: "job-nested",
-                  operationName: "shell",
-                  statusClass: "running",
-                },
-              },
-            ],
-            diagnostics: {
-              rawId: "dlg-1",
-              operationName: "subagent",
-              statusClass: "running",
-            },
-          },
-        ],
-        usage: {},
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
-      };
-      store.getState().setView(view, identity());
-      const result = store.getState().applyNotification(
-        {
-          method: "evener/job/finished",
-          params: {
-            threadId: "thread-1",
-            ref: "ref-1",
-            job: {
-              jobId: "job-nested",
-              jobType: "shell",
-              status: "completed",
-              outputBytes: 1024,
-              exitCode: 0,
-              parentDelegateId: "dlg-1",
-            },
-          },
-        } as AnyNotification,
-        identity(),
-      );
-      expect(result).toBe("applied");
-      const dlg = store.getState().view?.work[0];
-      expect(dlg?.kind).toBe("delegate");
-      expect(dlg?.children).toHaveLength(1);
-      expect(dlg?.children?.[0]?.tone).toBe("terminal");
-      expect(dlg?.children?.[0]?.outputSummary).toBe("1.0 KB");
-    });
-
-    it("delegate update preserves existing child jobs", () => {
-      const store = createActivityStore();
-      const view: ActivityView = {
+    function delegateView(): ActivityView {
+      return {
         tasks: [],
         work: [
           {
@@ -678,17 +599,6 @@ describe("ActivityStore", () => {
                   statusClass: "running",
                 },
               },
-              {
-                kind: "job",
-                label: "watch",
-                tone: "running",
-                outputSummary: "0 B",
-                diagnostics: {
-                  rawId: "job-B",
-                  operationName: "watch",
-                  statusClass: "running",
-                },
-              },
             ],
             diagnostics: {
               rawId: "dlg-1",
@@ -700,8 +610,66 @@ describe("ActivityStore", () => {
         usage: {},
         capabilities: ALL_TRUE_CAPS as MobileCapabilities,
       };
-      store.getState().setView(view, identity());
-      const result = store.getState().applyNotification(
+    }
+
+    it("nests a job under its parent delegate", () => {
+      const store = createActivityStore();
+      store.getState().setLiveView(delegateView(), identity({ generation: 1 }));
+      const result = store.getState().applyLiveNotification(
+        {
+          method: "evener/job/started",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            job: {
+              jobId: "job-nested",
+              jobType: "shell",
+              status: "running",
+              outputBytes: 0,
+              parentDelegateId: "dlg-1",
+            },
+          },
+        } as AnyNotification,
+        identity({ generation: 1 }),
+      );
+      expect(result).toBe("applied");
+      const dlg = store.getState().view?.work[0];
+      expect(dlg?.children).toHaveLength(2);
+      expect(dlg?.children?.[1]?.diagnostics?.rawId).toBe("job-nested");
+    });
+
+    it("patches a nested job in place preserving the parent delegate", () => {
+      const store = createActivityStore();
+      store.getState().setLiveView(delegateView(), identity({ generation: 1 }));
+      const result = store.getState().applyLiveNotification(
+        {
+          method: "evener/job/finished",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            job: {
+              jobId: "job-A",
+              jobType: "shell",
+              status: "completed",
+              outputBytes: 1024,
+              exitCode: 0,
+              parentDelegateId: "dlg-1",
+            },
+          },
+        } as AnyNotification,
+        identity({ generation: 1 }),
+      );
+      expect(result).toBe("applied");
+      const dlg = store.getState().view?.work[0];
+      expect(dlg?.kind).toBe("delegate");
+      expect(dlg?.children).toHaveLength(1);
+      expect(dlg?.children?.[0]?.tone).toBe("terminal");
+    });
+
+    it("delegate update preserves existing child jobs", () => {
+      const store = createActivityStore();
+      store.getState().setLiveView(delegateView(), identity({ generation: 1 }));
+      const result = store.getState().applyLiveNotification(
         {
           method: "evener/delegate/updated",
           params: {
@@ -725,22 +693,19 @@ describe("ActivityStore", () => {
             },
           },
         } as AnyNotification,
-        identity(),
+        identity({ generation: 1 }),
       );
       expect(result).toBe("applied");
       const dlg = store.getState().view?.work[0];
-      expect(dlg?.kind).toBe("delegate");
       expect(dlg?.tone).toBe("terminal");
-      // Children preserved
-      expect(dlg?.children).toHaveLength(2);
+      expect(dlg?.children).toHaveLength(1);
       expect(dlg?.children?.[0]?.diagnostics?.rawId).toBe("job-A");
-      expect(dlg?.children?.[1]?.diagnostics?.rawId).toBe("job-B");
     });
 
     it("job with missing parent delegate returns rehydrate (not flatten)", () => {
       const store = createActivityStore();
-      store.getState().setView(emptyView(), identity());
-      const result = store.getState().applyNotification(
+      store.getState().setLiveView(emptyView(), identity({ generation: 1 }));
+      const result = store.getState().applyLiveNotification(
         {
           method: "evener/job/started",
           params: {
@@ -755,11 +720,185 @@ describe("ActivityStore", () => {
             },
           },
         } as AnyNotification,
-        identity(),
+        identity({ generation: 1 }),
       );
-      // Parent not found — do NOT flatten to top-level; request rehydrate.
       expect(result).toBe("rehydrate");
       expect(store.getState().view?.work).toHaveLength(0);
+    });
+
+    it("cross-kind ID collision (job replaces delegate id) returns rehydrate", () => {
+      const store = createActivityStore();
+      store.getState().setLiveView(delegateView(), identity({ generation: 1 }));
+      // A job notification whose jobId collides with the delegate's rawId.
+      const result = store.getState().applyLiveNotification(
+        {
+          method: "evener/job/started",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            job: {
+              jobId: "dlg-1",
+              jobType: "shell",
+              status: "running",
+              outputBytes: 0,
+            },
+          },
+        } as AnyNotification,
+        identity({ generation: 1 }),
+      );
+      expect(result).toBe("rehydrate");
+      // The delegate was NOT replaced by a job.
+      expect(store.getState().view?.work[0]?.kind).toBe("delegate");
+    });
+
+    it("delegate ID collision with a job returns rehydrate", () => {
+      const store = createActivityStore();
+      // Start with a top-level job whose rawId is "job-X".
+      const view: ActivityView = {
+        tasks: [],
+        work: [
+          {
+            kind: "job",
+            label: "shell",
+            tone: "running",
+            outputSummary: "0 B",
+            diagnostics: {
+              rawId: "job-X",
+              operationName: "shell",
+              statusClass: "running",
+            },
+          },
+        ],
+        usage: {},
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+      };
+      store.getState().setLiveView(view, identity({ generation: 1 }));
+      // A delegate notification whose delegateId collides with the job.
+      const result = store.getState().applyLiveNotification(
+        {
+          method: "evener/delegate/updated",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            delegate: {
+              delegateId: "job-X",
+              ownerSessionId: "sess",
+              rootSessionId: "sess",
+              childSessionId: "child",
+              transcriptRef: "local:abc",
+              type: "subagent",
+              lifecycle: "running",
+              phase: "running",
+              status: "running",
+              resumable: true,
+              projectionRevision: 1,
+              needsAttention: false,
+            },
+          },
+        } as AnyNotification,
+        identity({ generation: 1 }),
+      );
+      expect(result).toBe("rehydrate");
+      expect(store.getState().view?.work[0]?.kind).toBe("job");
+    });
+
+    it("delegate parent relocation returns rehydrate", () => {
+      const store = createActivityStore();
+      // dlg-1 is currently top-level. The notification says its parent is now
+      // dlg-2 (relocation) — must rehydrate, not patch in the old branch.
+      store.getState().setLiveView(delegateView(), identity({ generation: 1 }));
+      const result = store.getState().applyLiveNotification(
+        {
+          method: "evener/delegate/updated",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            delegate: {
+              delegateId: "dlg-1",
+              ownerSessionId: "sess",
+              rootSessionId: "sess",
+              childSessionId: "child",
+              transcriptRef: "local:abc",
+              type: "subagent",
+              lifecycle: "running",
+              phase: "running",
+              status: "running",
+              resumable: true,
+              projectionRevision: 1,
+              needsAttention: false,
+              parentDelegateId: "dlg-2",
+            },
+          },
+        } as AnyNotification,
+        identity({ generation: 1 }),
+      );
+      expect(result).toBe("rehydrate");
+    });
+
+    it("new delegate with missing parent returns rehydrate", () => {
+      const store = createActivityStore();
+      store.getState().setLiveView(emptyView(), identity({ generation: 1 }));
+      const result = store.getState().applyLiveNotification(
+        {
+          method: "evener/delegate/updated",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            delegate: {
+              delegateId: "dlg-child",
+              ownerSessionId: "sess",
+              rootSessionId: "sess",
+              childSessionId: "child",
+              transcriptRef: "local:abc",
+              type: "subagent",
+              lifecycle: "running",
+              phase: "running",
+              status: "running",
+              resumable: true,
+              projectionRevision: 1,
+              needsAttention: false,
+              parentDelegateId: "dlg-MISSING",
+            },
+          },
+        } as AnyNotification,
+        identity({ generation: 1 }),
+      );
+      expect(result).toBe("rehydrate");
+      expect(store.getState().view?.work).toHaveLength(0);
+    });
+
+    it("new delegate nests under present parent delegate", () => {
+      const store = createActivityStore();
+      store.getState().setLiveView(delegateView(), identity({ generation: 1 }));
+      const result = store.getState().applyLiveNotification(
+        {
+          method: "evener/delegate/updated",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            delegate: {
+              delegateId: "dlg-child",
+              ownerSessionId: "sess",
+              rootSessionId: "sess",
+              childSessionId: "child",
+              transcriptRef: "local:abc",
+              type: "subagent",
+              lifecycle: "running",
+              phase: "running",
+              status: "running",
+              resumable: true,
+              projectionRevision: 1,
+              needsAttention: false,
+              parentDelegateId: "dlg-1",
+            },
+          },
+        } as AnyNotification,
+        identity({ generation: 1 }),
+      );
+      expect(result).toBe("applied");
+      const dlg = store.getState().view?.work[0];
+      const childDelegate = dlg?.children?.find((c) => c.kind === "delegate");
+      expect(childDelegate?.diagnostics?.rawId).toBe("dlg-child");
     });
   });
 
@@ -768,8 +907,8 @@ describe("ActivityStore", () => {
   describe("hostile notification payloads", () => {
     it("job notification with hostile command/task never leaks into label", () => {
       const store = createActivityStore();
-      store.getState().setView(emptyView(), identity());
-      store.getState().applyNotification(
+      store.getState().setLiveView(emptyView(), identity({ generation: 1 }));
+      store.getState().applyLiveNotification(
         {
           method: "evener/job/started",
           params: {
@@ -785,7 +924,7 @@ describe("ActivityStore", () => {
             },
           },
         } as AnyNotification,
-        identity(),
+        identity({ generation: 1 }),
       );
       const entry = store.getState().view?.work[0];
       expect(entry?.label).toBe("shell");
@@ -799,8 +938,8 @@ describe("ActivityStore", () => {
 
     it("delegate notification with hostile description/task never leaks into label", () => {
       const store = createActivityStore();
-      store.getState().setView(emptyView(), identity());
-      store.getState().applyNotification(
+      store.getState().setLiveView(emptyView(), identity({ generation: 1 }));
+      store.getState().applyLiveNotification(
         {
           method: "evener/delegate/updated",
           params: {
@@ -824,7 +963,7 @@ describe("ActivityStore", () => {
             },
           },
         } as AnyNotification,
-        identity(),
+        identity({ generation: 1 }),
       );
       const entry = store.getState().view?.work[0];
       expect(entry?.label).toBe("subagent");
@@ -833,7 +972,6 @@ describe("ActivityStore", () => {
       expect(entry?.label).not.toContain("evil");
       expect(entry?.label).not.toContain("ssh");
       expect(entry?.label).not.toContain("exfiltrate");
-      // diagnostics boundary: no transcriptRef / description / task
       expect(entry?.diagnostics).not.toHaveProperty("transcriptRef");
       expect(entry?.diagnostics).not.toHaveProperty("description");
       expect(entry?.diagnostics).not.toHaveProperty("task");
@@ -845,70 +983,36 @@ describe("ActivityStore", () => {
   describe("jobs-tree rehydrate", () => {
     it("evener/jobs/treeUpdated returns rehydrate", () => {
       const store = createActivityStore();
-      store.getState().setView(emptyView(), identity());
-      const result = store.getState().applyNotification(
+      store.getState().setLiveView(emptyView(), identity({ generation: 1 }));
+      const result = store.getState().applyLiveNotification(
         {
           method: "evener/jobs/treeUpdated",
           params: { threadId: "thread-1", ref: "ref-1", revision: 1 },
         } as AnyNotification,
-        identity(),
+        identity({ generation: 1 }),
       );
-      // The store does not coalesce; it signals rehydrate to the caller
-      // (conversation reslice owns the one authoritative reread scheduler).
       expect(result).toBe("rehydrate");
     });
   });
 
-  // --- reset invalidates identity/generation ---------------------------------
+  // --- reset ----------------------------------------------------------------
 
   describe("reset", () => {
-    it("reset clears activity view", () => {
+    it("reset bumps the generation and clears identity", () => {
       const store = createActivityStore();
-      store.getState().setView({
-        tasks: [{ status: "done", count: 1 }],
-        work: [],
-        usage: {},
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
-      });
-      store.getState().reset();
-      expect(store.getState().view).toBeNull();
-      expect(store.getState().status).toBe("idle");
-    });
-
-    it("reset bumps the generation", () => {
-      const store = createActivityStore();
-      store.getState().setView(emptyView(), identity({ generation: 5 }));
+      store.getState().setLiveView(emptyView(), identity({ generation: 5 }));
       const genBefore = store.getState().generationForTest();
       store.getState().reset();
       const genAfter = store.getState().generationForTest();
       expect(genAfter).toBeGreaterThan(genBefore);
-    });
-
-    it("rejects stale notification after reset (generation safety)", () => {
-      const store = createActivityStore();
-      store.getState().setView(
-        {
-          tasks: [{ status: "done", count: 1 }],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
-        },
-        identity({ generation: 1 }),
-      );
-      const genBefore = store.getState().generationForTest();
-      store.getState().reset();
-      const genAfter = store.getState().generationForTest();
-      expect(genAfter).toBeGreaterThan(genBefore);
-
-      // After reset, a stale notification (old generation) is ignored.
-      store.getState().applyNotification(
-        {
-          method: "evener/task/updated",
-          params: { threadId: "thread-1", ref: "ref-1", total: 5, done: 5 },
-        } as AnyNotification,
-        identity({ generation: genBefore }),
-      );
-      // View should still be null after reset
+      // After reset, a notification with the old identity is ignored (no view).
+      const result = store
+        .getState()
+        .applyLiveNotification(
+          taskNotification(5, 5),
+          identity({ generation: 5 }),
+        );
+      expect(result).toBe("ignored");
       expect(store.getState().view).toBeNull();
     });
   });
@@ -919,6 +1023,17 @@ function _typeCheck(state: ActivityState): void {
   state.project(createActivityService(), {} as Thread);
   state.setView({} as ActivityView);
   state.applyNotification({} as AnyNotification);
+  state.setLiveView({} as ActivityView, {
+    threadId: "t",
+    ref: "r",
+    generation: 1,
+  });
+  state.applyLiveNotification({} as AnyNotification, {
+    threadId: "t",
+    ref: "r",
+    generation: 1,
+  });
   state.reset();
 }
 void _typeCheck;
+void vi;

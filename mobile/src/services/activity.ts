@@ -196,14 +196,13 @@ function projectJobEntry(job: EvenerJobInfo): WorkEntry {
 
 function projectDelegateEntry(
   dlg: EvenerDelegateInfo,
-  childJobs: EvenerJobInfo[],
+  children: WorkEntry[],
 ): WorkEntry {
   const tone = classifyTone(dlg.status, dlg.terminal, undefined, dlg.outcome);
   // Use the type (operation name) only, never description/task prompt — those
   // may carry delegated task text. Fall back to a safe constant when type is
   // absent or empty.
   const label = dlg.type && dlg.type.length > 0 ? dlg.type : "Delegate";
-  const children = childJobs.map((cj) => projectJobEntry(cj));
   return {
     kind: "delegate",
     label,
@@ -220,28 +219,71 @@ function projectWork(diagnostics: EvenerDiagnostics | undefined): WorkEntry[] {
   const delegates = diagnostics.delegates ?? [];
   const jobs = diagnostics.jobs ?? [];
 
-  // Partition jobs: those with a parentDelegateId nest under that delegate;
-  // the rest are top-level entries.
-  const byParent = new Map<string, EvenerJobInfo[]>();
+  // Partition jobs by their parent delegate id.
+  const jobsByParent = new Map<string, EvenerJobInfo[]>();
   const topLevelJobs: EvenerJobInfo[] = [];
-  for (const job of jobs) {
-    const parent = job.parentDelegateId;
+  for (const j of jobs) {
+    const parent = j.parentDelegateId;
     if (parent !== undefined && parent !== "") {
-      const list = byParent.get(parent);
-      if (list !== undefined) list.push(job);
-      else byParent.set(parent, [job]);
+      const list = jobsByParent.get(parent);
+      if (list !== undefined) list.push(j);
+      else jobsByParent.set(parent, [j]);
     } else {
-      topLevelJobs.push(job);
+      topLevelJobs.push(j);
     }
+  }
+
+  // Build delegate entries recursively. A delegate with a parentDelegateId
+  // nests under that parent; a delegate whose parent is absent from the
+  // diagnostics is rendered at top level (never dropped).
+  const delegateById = new Map<string, EvenerDelegateInfo>();
+  for (const dlg of delegates) {
+    delegateById.set(dlg.delegateId, dlg);
+  }
+
+  // Memoized projection so each delegate is projected exactly once and
+  // children are assembled depth-first.
+  const projected = new Map<string, WorkEntry>();
+
+  function buildDelegate(dlg: EvenerDelegateInfo): WorkEntry {
+    const existing = projected.get(dlg.delegateId);
+    if (existing !== undefined) return existing;
+
+    // Gather child delegates (those whose parentDelegateId is this delegate)
+    // and child jobs.
+    const childEntries: WorkEntry[] = [];
+
+    // Child delegates — search the full delegate list for children.
+    for (const child of delegates) {
+      if (child.parentDelegateId === dlg.delegateId) {
+        childEntries.push(buildDelegate(child));
+      }
+    }
+
+    // Child jobs.
+    const childJobs = jobsByParent.get(dlg.delegateId) ?? [];
+    for (const cj of childJobs) {
+      childEntries.push(projectJobEntry(cj));
+    }
+
+    const entry = projectDelegateEntry(dlg, childEntries);
+    projected.set(dlg.delegateId, entry);
+    return entry;
   }
 
   const entries: WorkEntry[] = [];
   for (const dlg of delegates) {
-    const childJobs = byParent.get(dlg.delegateId) ?? [];
-    entries.push(projectDelegateEntry(dlg, childJobs));
+    // A delegate is top-level when it has no parentDelegateId, or when its
+    // parent is not present in the diagnostics.
+    const parent = dlg.parentDelegateId;
+    const hasParentInList =
+      parent !== undefined && parent !== "" && delegateById.has(parent);
+    if (!hasParentInList) {
+      entries.push(buildDelegate(dlg));
+    }
   }
-  for (const job of topLevelJobs) {
-    entries.push(projectJobEntry(job));
+  for (const j of topLevelJobs) {
+    entries.push(projectJobEntry(j));
   }
 
   return entries;
