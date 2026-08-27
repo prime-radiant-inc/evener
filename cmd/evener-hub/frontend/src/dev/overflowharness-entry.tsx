@@ -236,20 +236,20 @@ document.body.style.background = "var(--surface-0)";
 
 if (settingsMode) {
   createRoot(rootEl).render(
-    <div id="oh-pane" style={{ width, height: 900, padding: 8 }}>
+    <div id="oh-pane" style={{ width, height: 900 }}>
       <Settings params={{ section: "transcript" }} paneId="oh-settings" focused />
     </div>,
   );
 } else if (params.get("panels") === "1") {
   workspaceStore.getState().openPane("session", { ref: REF });
   createRoot(rootEl).render(
-    <div id="oh-pane" style={{ width, height: 900, padding: 8 }}>
+    <div id="oh-pane" style={{ width, height: 900 }}>
       <DockHost />
     </div>,
   );
 } else {
   createRoot(rootEl).render(
-    <div id="oh-pane" style={{ width, height: 900, padding: 8 }}>
+    <div id="oh-pane" style={{ width, height: 900 }}>
       <Session params={{ ref: REF }} paneId="oh" focused />
     </div>,
   );
@@ -308,8 +308,22 @@ interface DetailGeometry {
   fieldsetsFound: number;
   overflowElements: string[];
   fieldsetStacked: boolean;
+  rootRemPx: number;
+  editorContainerWidth: number;
+  fieldsetColumns: number;
   sheetBottomAnchored: boolean;
   popoverAnchored: boolean;
+  popoverScroll: {
+    connected: boolean;
+    contained: boolean;
+    expanded: boolean;
+    scrollable: boolean;
+    beforeTop: number;
+    afterTop: number;
+    scrollHeight: number;
+    clientHeight: number;
+  };
+  effectiveTargets: Array<{ kind: string; label: string; height: number }>;
 }
 
 interface SettingsGeometry {
@@ -320,6 +334,53 @@ interface SettingsGeometry {
   previewOverflowCount: number;
   previewInnerScrollCount: number;
   previewsFound: number;
+  editors: EditorMeasurement[];
+  canvases: PreviewCanvasMeasurement[];
+  fieldsets: Array<{ left: number; right: number; top: number; bottom: number }>;
+  trigger: null;
+  scrollContainers: Array<{
+    testId: string;
+    scrollWidth: number;
+    clientWidth: number;
+    scrollHeight: number;
+    clientHeight: number;
+  }>;
+}
+
+interface EditorMeasurement {
+  surface: "live" | "settings";
+  layout: "desktop" | "mobile";
+  ownerTestId: string;
+  track: {
+    left: number;
+    right: number;
+    width: number;
+    scrollWidth: number;
+    clientWidth: number;
+  };
+  segments: Array<{
+    label: string;
+    left: number;
+    right: number;
+    width: number;
+    height: number;
+    top: number;
+    bottom: number;
+    localLeft: number;
+    localRight: number;
+    checked: boolean;
+  }>;
+}
+
+interface PreviewCanvasMeasurement {
+  layout: "desktop" | "mobile";
+  testId: string;
+  width: number;
+  availableWidth: number;
+  scrollWidth: number;
+  clientWidth: number;
+  scrollHeight: number;
+  clientHeight: number;
 }
 
 function geometryOf(element: Element) {
@@ -386,6 +447,117 @@ function horizontalOverflowElements(root: Element): HTMLElement[] {
   );
 }
 
+function actualScrollContainers(root: Element): HTMLElement[] {
+  return [root, ...Array.from(root.querySelectorAll<HTMLElement>("*"))].filter((element): element is HTMLElement => {
+    if (!(element instanceof HTMLElement) || element.clientWidth <= 1) return false;
+    const style = getComputedStyle(element);
+    return [style.overflowX, style.overflowY].some((overflow) => overflow === "auto" || overflow === "scroll");
+  });
+}
+
+function markLiveOwner(): boolean {
+  const trigger = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+    button.textContent?.trim().startsWith("Detail:"),
+  );
+  const owner = trigger?.closest<HTMLElement>("div");
+  if (!owner) return false;
+  owner.dataset.testid = "transcript-detail-control";
+  return true;
+}
+
+function editorOwner(editor: HTMLElement): {
+  surface: "live" | "settings";
+  layout: "desktop" | "mobile";
+  ownerTestId: string;
+} {
+  const card = editor.closest<HTMLElement>('[data-testid^="transcript-display-card-"]');
+  if (card) {
+    const ownerTestId = card.dataset.testid ?? "";
+    return {
+      surface: "settings",
+      layout: ownerTestId.endsWith("-mobile") ? "mobile" : "desktop",
+      ownerTestId,
+    };
+  }
+  const owner = document.querySelector<HTMLElement>('[data-testid="transcript-detail-control"]');
+  return {
+    surface: "live",
+    layout: window.matchMedia("(max-width: 899px)").matches ? "mobile" : "desktop",
+    ownerTestId: owner?.dataset.testid ?? "",
+  };
+}
+
+function measureEditor(editor: HTMLElement): EditorMeasurement {
+  const owner = editorOwner(editor);
+  const track = editor.querySelector<HTMLElement>('[role="radiogroup"]');
+  if (!track) {
+    return {
+      ...owner,
+      track: { left: 0, right: 0, width: 0, scrollWidth: 0, clientWidth: 0 },
+      segments: [],
+    };
+  }
+  const trackBox = geometryOf(track);
+  const segments = Array.from(track.querySelectorAll<HTMLButtonElement>('[role="radio"]')).map((segment) => {
+    const box = geometryOf(segment);
+    return {
+      label:
+        segment.querySelector<HTMLElement>("span")?.textContent?.trim() ?? segment.getAttribute("aria-label") ?? "",
+      left: box.left,
+      right: box.right,
+      width: box.width,
+      height: box.height,
+      top: box.top,
+      bottom: box.bottom,
+      localLeft: box.left - trackBox.left,
+      localRight: box.right - trackBox.left,
+      checked: segment.getAttribute("aria-checked") === "true",
+    };
+  });
+  return {
+    ...owner,
+    track: {
+      left: trackBox.left,
+      right: trackBox.right,
+      width: trackBox.width,
+      scrollWidth: track.scrollWidth,
+      clientWidth: track.clientWidth,
+    },
+    segments,
+  };
+}
+
+function measureEditors(root: ParentNode): EditorMeasurement[] {
+  return Array.from(root.querySelectorAll<HTMLElement>('section[aria-label="Transcript detail editor"]')).map(
+    measureEditor,
+  );
+}
+
+function measureCanvas(canvas: HTMLElement): PreviewCanvasMeasurement {
+  const box = geometryOf(canvas);
+  const testId = canvas.dataset.testid ?? "";
+  const layout = testId.endsWith("-mobile") ? "mobile" : "desktop";
+  const card = canvas.closest<HTMLElement>('[data-testid^="transcript-display-card-"]');
+  const cardId = card?.dataset.testid ?? "";
+  const section = card?.querySelector<HTMLElement>(`section[aria-labelledby="${cardId}-example-heading"]`);
+  const sectionStyle = section ? getComputedStyle(section) : null;
+  const availableWidth = section
+    ? section.clientWidth -
+      (Number.parseFloat(sectionStyle?.paddingLeft ?? "0") || 0) -
+      (Number.parseFloat(sectionStyle?.paddingRight ?? "0") || 0)
+    : 0;
+  return {
+    layout,
+    testId,
+    width: box.width,
+    availableWidth,
+    scrollWidth: canvas.scrollWidth,
+    clientWidth: canvas.clientWidth,
+    scrollHeight: canvas.scrollHeight,
+    clientHeight: canvas.clientHeight,
+  };
+}
+
 function measureSettings(): SettingsGeometry {
   const content = document.querySelector<HTMLElement>('[data-testid="settings-content"]');
   if (!content) {
@@ -397,12 +569,31 @@ function measureSettings(): SettingsGeometry {
       previewOverflowCount: 0,
       previewInnerScrollCount: 0,
       previewsFound: 0,
+      editors: [],
+      canvases: [],
+      fieldsets: [],
+      trigger: null,
+      scrollContainers: [],
     };
   }
   const cards = Array.from(content.querySelectorAll<HTMLElement>('[data-testid^="transcript-display-card-"]'));
   const previews = cards.flatMap((card) =>
-    Array.from(card.querySelectorAll<HTMLElement>('[data-testid^="transcript-display-preview-"]')),
+    Array.from(
+      card.querySelectorAll<HTMLElement>(
+        '[data-testid="transcript-display-preview-desktop"], [data-testid="transcript-display-preview-mobile"]',
+      ),
+    ),
   );
+  const canvases = cards.flatMap((card) =>
+    Array.from(
+      card.querySelectorAll<HTMLElement>(
+        '[data-testid="transcript-display-preview-canvas-desktop"], [data-testid="transcript-display-preview-canvas-mobile"]',
+      ),
+    ),
+  );
+  const editors = cards.flatMap((card) => measureEditors(card));
+  const scrollRoots = [content, ...cards];
+  const scrollContainers = Array.from(new Set(scrollRoots.flatMap((root) => actualScrollContainers(root))));
   const cardBoxes = cards.map(geometryOf);
   const firstCard = cardBoxes[0];
   const secondCard = cardBoxes[1];
@@ -419,6 +610,17 @@ function measureSettings(): SettingsGeometry {
     cardOverflowCount: cards.reduce((count, card) => count + scrollOverflowCount(card), 0),
     previewOverflowCount: previews.reduce((count, preview) => count + scrollOverflowCount(preview), 0),
     previewsFound: previews.length,
+    editors,
+    canvases: canvases.map(measureCanvas),
+    fieldsets: [],
+    trigger: null,
+    scrollContainers: scrollContainers.map((element) => ({
+      testId: element.dataset.testid ?? (element.className || element.tagName.toLowerCase()),
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+      scrollHeight: element.scrollHeight,
+      clientHeight: element.clientHeight,
+    })),
     // A preview's production TranscriptBody is normal flow. Count only
     // descendants other than the preview root here so the assertion names an
     // accidental nested scroll container instead of the card's own box.
@@ -461,11 +663,26 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
       fieldsetsFound: 0,
       overflowElements: [],
       fieldsetStacked: false,
+      rootRemPx: 0,
+      editorContainerWidth: 0,
+      fieldsetColumns: 0,
       sheetBottomAnchored: false,
       popoverAnchored: false,
+      popoverScroll: {
+        connected: false,
+        contained: false,
+        expanded: false,
+        scrollable: false,
+        beforeTop: 0,
+        afterTop: 0,
+        scrollHeight: 0,
+        clientHeight: 0,
+      },
+      effectiveTargets: [],
     };
   }
   const mobile = window.matchMedia("(max-width: 899px)").matches;
+  markLiveOwner();
   const paneBox = pane.getBoundingClientRect();
   const triggerBox = geometryOf(trigger);
   const triggerCenter = { x: (triggerBox.left + triggerBox.right) / 2, y: (triggerBox.top + triggerBox.bottom) / 2 };
@@ -506,14 +723,28 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
       fieldsetsFound: 0,
       overflowElements: [],
       fieldsetStacked: false,
+      rootRemPx: 0,
+      editorContainerWidth: 0,
+      fieldsetColumns: 0,
       sheetBottomAnchored: false,
       popoverAnchored: false,
+      popoverScroll: {
+        connected: false,
+        contained: false,
+        expanded: false,
+        scrollable: false,
+        beforeTop: 0,
+        afterTop: 0,
+        scrollHeight: 0,
+        clientHeight: 0,
+      },
+      effectiveTargets: [],
     };
   }
   await waitForStablePanel(panel);
   if (includeAdvanced) {
-    const advanced = Array.from(panel.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
-      button.textContent?.trim().startsWith("Advanced"),
+    const advanced = Array.from(panel.querySelectorAll<HTMLElement>("summary")).find((summary) =>
+      summary.textContent?.trim().startsWith("Customize & advanced"),
     );
     if (!advanced) throw new Error("Detail editor Advanced disclosure is missing");
     advanced.click();
@@ -565,13 +796,71 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
   const targetHeights = targets.map((target) => target.height);
   const fieldsets = Array.from(panel.querySelectorAll<HTMLElement>("fieldset"));
   const fieldsetBoxes = fieldsets.map(geometryOf);
+  const editor = panel.querySelector<HTMLElement>('section[aria-label="Transcript detail editor"]');
+  const editorStyle = editor ? getComputedStyle(editor) : null;
+  const editorContainerWidth = editor
+    ? editor.clientWidth -
+      (Number.parseFloat(editorStyle?.paddingLeft ?? "0") || 0) -
+      (Number.parseFloat(editorStyle?.paddingRight ?? "0") || 0)
+    : 0;
+  const columnLefts: number[] = [];
+  for (const box of fieldsetBoxes) {
+    if (!columnLefts.some((left) => Math.abs(left - box.left) <= 0.5)) columnLefts.push(box.left);
+  }
+  const fieldsetColumns = columnLefts.length;
+  const rootRemPx = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
+  const effectiveTargets = controls.map((element) => {
+    const effectiveElement =
+      element.getAttribute("role") === "switch"
+        ? element.parentElement
+        : element.tagName === "SELECT"
+          ? element.parentElement?.parentElement
+          : element;
+    return {
+      kind: element === trigger ? "trigger" : (element.getAttribute("role") ?? element.tagName.toLowerCase()),
+      label: accessibleName(element),
+      height: effectiveElement?.getBoundingClientRect().height ?? element.getBoundingClientRect().height,
+    };
+  });
   const fieldsetStacked =
-    !mobile ||
-    (fieldsets.length === 3 &&
-      fieldsetBoxes.every((box, index) => {
-        const previous = fieldsetBoxes[index - 1];
-        return index === 0 || (previous !== undefined && box.top >= previous.bottom - 1);
-      }));
+    fieldsets.length === 3 &&
+    fieldsetBoxes.every((box, index) => {
+      const previous = fieldsetBoxes[index - 1];
+      return index === 0 || (previous !== undefined && box.top >= previous.bottom - 1);
+    });
+  let popoverScroll = {
+    connected: true,
+    contained: true,
+    expanded: true,
+    scrollable: false,
+    beforeTop: 0,
+    afterTop: 0,
+    scrollHeight: 0,
+    clientHeight: 0,
+  };
+  if (!mobile) {
+    const scrollPanel = panel.querySelector<HTMLElement>('[role="dialog"]') ?? panel;
+    const beforeTop = scrollPanel.scrollTop;
+    const scrollable = scrollPanel.scrollHeight > scrollPanel.clientHeight;
+    scrollPanel.scrollTop = scrollPanel.scrollHeight;
+    scrollPanel.dispatchEvent(new Event("scroll"));
+    await waitForStablePanel(panel);
+    const scrolledPanelBox = geometryOf(panel);
+    popoverScroll = {
+      connected: panel.isConnected,
+      contained:
+        scrolledPanelBox.left >= -1 &&
+        scrolledPanelBox.right <= window.innerWidth + 1 &&
+        scrolledPanelBox.top >= -1 &&
+        scrolledPanelBox.bottom <= window.innerHeight + 1,
+      expanded: trigger.getAttribute("aria-expanded") === "true",
+      scrollable,
+      beforeTop,
+      afterTop: scrollPanel.scrollTop,
+      scrollHeight: scrollPanel.scrollHeight,
+      clientHeight: scrollPanel.clientHeight,
+    };
+  }
   return {
     found: true,
     mobile,
@@ -589,12 +878,16 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
     targetHeights,
     targets,
     fieldsetsFound: fieldsets.length,
+    effectiveTargets,
     overflowElements: horizontalOverflowElements(panel).map(
       (element) =>
         `${element.tagName.toLowerCase()}.${element.className || "(no-class)"} ` +
         `${element.scrollWidth}/${element.clientWidth}x${element.scrollHeight}/${element.clientHeight}`,
     ),
     fieldsetStacked,
+    rootRemPx,
+    editorContainerWidth,
+    fieldsetColumns,
     sheetBottomAnchored: mobile && panelBox.bottom >= window.innerHeight - 1,
     popoverAnchored:
       !mobile &&
@@ -605,6 +898,7 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
         : panelBox.top >= finalTriggerBox.bottom
           ? panelBox.top - finalTriggerBox.bottom
           : 0) <= 24,
+    popoverScroll,
   };
 }
 
@@ -834,6 +1128,22 @@ function measure() {
   const subagentCard = pane.querySelector<HTMLElement>('[data-testid="subagent-row"]');
   const subagentQuote = subagentCard?.querySelector<HTMLElement>('[data-testid="subagent-quote"]');
   const subagentStats = subagentCard?.querySelector<HTMLElement>('[data-testid="subagent-stats"]');
+  const editors = measureEditors(document);
+  const liveEditorElement = Array.from(
+    document.querySelectorAll<HTMLElement>('section[aria-label="Transcript detail editor"]'),
+  ).find((editor) => !editor.closest('[data-testid^="transcript-display-card-"]'));
+  const fieldsets = liveEditorElement?.querySelectorAll<HTMLElement>("fieldset")
+    ? Array.from(liveEditorElement.querySelectorAll<HTMLElement>("fieldset")).map(geometryOf)
+    : [];
+  const triggerElement = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
+    button.textContent?.trim().startsWith("Detail:"),
+  );
+  const triggerBox = triggerElement ? geometryOf(triggerElement) : null;
+  const scrollRoots = [
+    pane,
+    ...Array.from(document.querySelectorAll<HTMLElement>('[data-testid="transcript-detail-popover"], [role="dialog"]')),
+  ];
+  const scrollContainers = Array.from(new Set(scrollRoots.flatMap((root) => actualScrollContainers(root))));
   const quoteFontSize = subagentQuote ? Number.parseFloat(getComputedStyle(subagentQuote).fontSize) : 0;
   const statusGeometry = (element: HTMLElement | null) =>
     element === null
@@ -852,6 +1162,19 @@ function measure() {
     scrollers,
     ignored,
     disclosures,
+    editors,
+    canvases: [],
+    fieldsets,
+    trigger: triggerBox
+      ? { left: triggerBox.left, right: triggerBox.right, top: triggerBox.top, bottom: triggerBox.bottom }
+      : null,
+    scrollContainers: scrollContainers.map((element) => ({
+      testId: element.dataset.testid ?? (element.className || element.tagName.toLowerCase()),
+      scrollWidth: element.scrollWidth,
+      clientWidth: element.clientWidth,
+      scrollHeight: element.scrollHeight,
+      clientHeight: element.clientHeight,
+    })),
     visibility: visibilityProbe(),
     subagentCard: {
       found: subagentCard !== null,
@@ -954,10 +1277,12 @@ declare global {
     measure: typeof measure;
     dump: typeof dump;
     inspectDetail: typeof inspectDetail;
+    markLiveOwner: typeof markLiveOwner;
     settled: Promise<true>;
   }
 }
 window.measure = measure;
 window.dump = dump;
 window.inspectDetail = inspectDetail;
+window.markLiveOwner = markLiveOwner;
 window.settled = settled;
