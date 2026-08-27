@@ -42,14 +42,17 @@ of which died with the vanilla frontend (`660376f78`). The rail row is now
    failure mode worth catching is not the duplication but the two rows
    disagreeing, and both rows are built server-side, so the exact assertion
    belongs here rather than in the DOM:
-   ```bash
-   curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/tree" \
-     | jq --arg ref "local:$SID" '
-         [ .. | objects | select(.ref? == $ref)
-           | {row_id, ref, state, ask_pending: (.ask_pending // false)} ]'
-   ```
-   Fields are `NavigationSessionSummary` (`hubapi/navigation.go#NavigationSessionSummary`): `row_id`, `ref`,
-   `state`, `ask_pending`.
+   On the authenticated `/rpc` AppWire connection, read the `live` and
+   `needs_you` sections with `evener/navigation/read`, read `pin_catalog` and
+   each nonempty `pin_section`, and read the target's `location` resource to
+   obtain its `project_key`. Then read
+   `{"resource":"project","projectKey":"<key>"}` and inspect its `current`,
+   `recent`, and `archived` session arrays. While any tier reports
+   `remaining > 0`, page that tier with `project_page` until it reaches zero.
+   Collect every returned copy of the target ref as the wire assertion.
+   Fields are `NavigationSessionSummary`
+   (`hubapi/navigation.go#NavigationSessionSummary`): `ref`, `state`,
+   `ask_pending`, and `project`.
 
 3. **[browser] The rail renders what the wire said.** Navigate to
    `/auth?token=$TOKEN&next=/s/local:$SID` and read every rendered copy:

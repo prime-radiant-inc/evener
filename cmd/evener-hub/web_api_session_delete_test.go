@@ -511,8 +511,9 @@ func TestAPISessionDeleteRetryScrubsPinAfterArtifactsAreAlreadyGone(t *testing.T
 // TestSessionDeleteRefreshesRosterAndBustsTreeMemo mirrors
 // TestProjectDeleteRefreshesRosterAndBustsTreeMemo for the single-session
 // handler: a successful delete must refresh the roster before PokeAttention
-// (no ghost rows in the immediate follow-up /api/tree) and bump the shared
-// InputsVersion so the tree memo is busted even without a past-index delta.
+// (no ghost rows in the immediate follow-up navigation read) and bump the
+// shared InputsVersion so the tree memo is busted even without a past-index
+// delta.
 func TestSessionDeleteRefreshesRosterAndBustsTreeMemo(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")

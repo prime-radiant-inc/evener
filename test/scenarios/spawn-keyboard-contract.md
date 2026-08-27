@@ -96,11 +96,14 @@ roles (`role="combobox"` with `aria-label="Model"`, `role="listbox"`,
    (see Sharp edges — that section is the one part of this pane with a
    real form in it, and it is not what this card is about).
 3. Snapshot the hub's session set, so "nothing spawned" is a comparison
-   rather than a feeling:
-   ```bash
-   curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/tree" \
-     | jq -c '[.. | objects | .ref? // empty] | unique'
-   ```
+   rather than a feeling. On the authenticated `/rpc` AppWire connection,
+   read the `manifest`, page through every non-empty global section and
+   project catalog until `remaining` is zero, read `pin_catalog` and every
+   non-empty `pin_section` through their remaining pages, then read each
+   returned project resource and page each `current`, `recent`, and
+   `archived` tier through its `remaining` pages with `project_page`. Collect
+   the refs from every response and save the resulting set for comparison
+   after the picker interaction.
 4. Open the picker and pick with Enter. The desktop Model field's trigger
    is the only VISIBLE button on the page carrying the screen-reader
    text `— change model`; assert that before clicking it. The filter on

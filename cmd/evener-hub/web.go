@@ -40,9 +40,9 @@ type WebServer struct {
 	// liveModels caches raw live /models listings for this server; per-server
 	// so another WebServer (different provider config) never shares entries.
 	liveModels *modelsCache
-	// treeCache memoizes the complete /api/tree navigation generation — tree,
-	// attention, live entries, and favorite authority — by inputs-version,
-	// remote generation, and 30s time bucket (see hubcore.TreeCache).
+	// treeCache memoizes the shared tree projection used by the remaining
+	// mutation handlers. NavigationService owns AppWire navigation generations
+	// and captures its source directly rather than using this cache.
 	treeCache  *hubcore.TreeCache
 	manifestFS fs.FS
 

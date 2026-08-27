@@ -72,13 +72,10 @@ and the session pane's empty state; anything else, grep `data-testid` in
    ```
 2. Poll `GET /api/sessions/local:$SID` for a few seconds and record
    `.state` and `.active_turn_id` throughout.
-3. Poll `GET /api/tree` until the session's node appears, then read its
-   `dormant` field:
-   ```bash
-   curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/tree" \
-     | jq --arg ref "local:$SID" '[.. | objects | select(.ref? == $ref)
-         | {ref, state, dormant, age}] | .[0]'
-   ```
+3. Poll the authenticated `/rpc` AppWire connection with
+   `evener/navigation/read` and
+   `{"resource":"location","ref":"local:$SID"}` until the session's
+   navigation location appears, then read its `session.dormant` field.
 4. Read the on-disk transcript: `go run ./cmd/evener doctor transcript
    "$SID" --state-dir "$state" --format outline --range last:20`.
 5. Repeat step 1 with a whitespace-only prompt (`"   \n  "`). The
@@ -119,8 +116,9 @@ and the session pane's empty state; anything else, grep `data-testid` in
   `active_turn_id` stays empty throughout. Falsify: a 4xx/5xx, or any
   poll catching `state: active` / a non-empty `active_turn_id` — a turn
   started from an empty input.
-- **Step 3 (dormant flag, exact)**: the node exists with `"dormant":
-  true` and `"state": "idle"`. Both, together: `idle` alone is also what
+- **Step 3 (dormant flag, exact)**: the AppWire location exists with
+  `location.session.dormant: true` and `location.session.state: "idle"`.
+  Both, together: `idle` alone is also what
   a session that ran and finished reports, which is the whole reason
   `Dormant` exists as a separate field. Falsify: `dormant` absent or
   `false` after the index has demonstrably caught up (the node itself is

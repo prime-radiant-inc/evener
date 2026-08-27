@@ -699,7 +699,7 @@ func TestProjectDeleteRefusesLiveSessionWhoseProbeTransientlyFails(t *testing.T)
 // TestProjectDeleteRefreshesRosterAndBustsTreeMemo pins the post-delete
 // freshness contract: a successful project delete must (1) refresh the
 // in-memory roster BEFORE poking the attention watcher, so the immediate
-// follow-up GET /api/tree the frontend issues is served from a roster that
+// follow-up navigation read issued by the frontend is served from a roster that
 // already dropped the deleted sessions instead of ghost rows until the next
 // 5s tick, and (2) bump the shared InputsVersion so the tree memo is busted
 // even when the past-index rebuild reports no delta.

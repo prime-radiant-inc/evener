@@ -131,10 +131,9 @@ func projectFavoritePresentation(presentation map[hubcore.ArchiveKey]bool) map[h
 	return projects
 }
 
-// memoTree returns the memoized full tree + attention summary, single-sourced
-// so callers never diverge on what "the tree" is. The full tree endpoint uses
-// memoTreeWithAuthority below when it also needs the exact raw snapshot used
-// to build this value.
+// memoTree returns the memoized tree projection retained by mutation handlers
+// that still need it. AppWire navigation reads are owned by NavigationService,
+// whose webNavigationSource captures a fresh source snapshot.
 func (s *WebServer) memoTree(ctx context.Context) (hubcore.Tree, appwire.AttentionSummary) {
 	tree, summary, _, _ := s.memoTreeWithAuthority(ctx)
 	return tree, summary
@@ -413,8 +412,8 @@ func (s *WebServer) remoteTreeThreads(ctx context.Context) []appwire.Thread {
 // remote source: it lists each source's threads (via listThreadsWithFallback,
 // which retains the last-known-good result across transient errors) and
 // backfills each thread's Source and Evener.Ref. This used to run inline on
-// every /api/tree request (as remoteTreeThreads); it now runs on a background
-// ~30s ticker + poke (main.go), Storing its result into a RemoteThreadCache
+// every navigation read (as remoteTreeThreads); it now runs on a background
+// ~30s ticker + poke (main.go), storing its result into a RemoteThreadCache
 // for remoteTreeThreads to read.
 func (s *WebServer) refreshRemoteThreads(ctx context.Context) []appwire.Thread {
 	return s.refreshRemoteThreadSnapshot(ctx).threads
@@ -1260,7 +1259,8 @@ func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
 		// A live rename lands in the persisted meta before the daemon thread
 		// reports the new Name; if the live thread carried no name (detail.Title
 		// fell back to the session id), prefer the resolved meta name so the
-		// session-detail endpoint agrees with /api/tree (WS3 T25 Bug 2).
+		// session-detail endpoint agrees with the navigation projection (WS3 T25
+		// Bug 2).
 		if detail.Title == "" || detail.Title == detail.SessionID {
 			if s.cfg.Roster != nil {
 				le, _ := s.cfg.Roster.Find(canonicalRouteID(id))

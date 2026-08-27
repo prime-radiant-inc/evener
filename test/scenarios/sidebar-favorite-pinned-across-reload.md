@@ -1,6 +1,6 @@
 # sidebar-favorite-pinned-across-reload: named pinned session sections survive reloads, reuse hidden empties, and leave project favorites unchanged
 
-**What this covers**: the named-section replacement for session favorites: `POST /api/session-pin`, `DELETE /api/session-pin`, `GET /api/pin-sections`, `PATCH /api/pin-sections/<id>`, `DELETE /api/pin-sections/<id>`, and `/api/tree`'s `pin_sections[]` plus per-row `pin_section_id`. It proves the sidebar is driven by durable server state, not optimistic client state, across raw API mutations and hard reloads.
+**What this covers**: the named-section replacement for session favorites: `POST /api/session-pin`, `DELETE /api/session-pin`, `GET /api/pin-sections`, `PATCH /api/pin-sections/<id>`, `DELETE /api/pin-sections/<id>`, and the AppWire navigation manifest/pin-section resources plus the location resource's `pin_section_id`. It proves the sidebar is driven by durable server state, not optimistic client state, across raw API mutations and hard reloads.
 
 **Surface**: see `docs/developing-evener/agentic-testing.md`, especially the setup checklist and the reminder that every `eval` must assert the scenario hub's own `location.port`. Use a **fresh Hub state directory** and a **dedicated Chrome profile** for this scenario only. Never reuse Jesse's real hub, real `$HOME`, or any fixed host port from another run.
 
@@ -56,9 +56,9 @@ Every browser `eval` below must return `location.port` and the check must assert
 }))()
 ```
 
-5. Raw API cross-check:
+5. Transport cross-check:
    - `GET /api/pin-sections` contains one `Client work` section with `member_count: 1`.
-   - `GET /api/tree` contains one `pin_sections[]` entry named `Client work`, and the pinned row carries its `pin_section_id`.
+   - AppWire `evener/navigation/read` `pin_catalog` contains one `pin_sections[]` entry named `Client work`. Use that descriptor's `id` as the `sectionId` for the `pin_section` read, verify that resource contains the pinned row, and verify the session's `location.pin_section_id` matches the same ID.
 
 ### 2. Pin a second session into existing **Client work**
 
@@ -89,7 +89,7 @@ Every browser `eval` below must return `location.port` and the check must assert
 ```
 
 4. Assert the visible top-level order is **Live**, **Client work**, **Research**, **Projects** (with any other standard headings preserving their normal positions around them) and that the hard reload still shows the assignments.
-5. Raw API cross-check after reload: `/api/tree` still reports `pin_sections` for **Client work** and **Research**.
+5. AppWire cross-check after reload: the `pin_catalog` resource still reports **Client work** and **Research**, and each `pin_section` resource still contains its assigned rows.
 
 ### 4. Collapse **Research**, reload, and verify disclosure state stays collapsed
 
@@ -114,7 +114,7 @@ Every browser `eval` below must return `location.port` and the check must assert
 3. Assert in the browser that the **Client work** heading disappears entirely.
 4. Raw API cross-check:
    - `GET /api/pin-sections` still includes **Client work** with `member_count: 0`.
-   - `GET /api/tree` no longer renders **Client work** in `pin_sections[]`.
+   - AppWire `pin_catalog` still reports **Client work** with count `0`, while its `pin_section` resource returns an empty `sessions` array and the rail omits the section.
 
 ### 7. Open another session’s picker and verify hidden **Client work** remains selectable
 
@@ -192,7 +192,7 @@ finally:
 PY
 ```
 
-2. Cross-check that the durable count increased even though the new member will stay hidden from `/api/tree`:
+2. Cross-check that the durable count increased even though the new member will stay hidden from the navigation rail:
 
 ```bash
 api "$HUB/api/pin-sections" |
@@ -217,7 +217,7 @@ raise SystemExit("seeded section missing from /api/pin-sections")'
 2. Confirm deletion.
 3. Raw API cross-check immediately after success:
    - `GET /api/pin-sections` no longer lists that section.
-   - affected sessions no longer carry its `pin_section_id` in `/api/tree`.
+   - the affected sessions' AppWire `location` resources no longer carry its `pin_section_id`.
 4. Hard reload via `/auth?token=$TOKEN&next=/`.
 5. Browser `eval` must confirm the same port and that the deleted section heading is still absent.
 
@@ -254,7 +254,7 @@ For every browser `eval` above, assert `location.port === "$EXPECTED_PORT"`. A p
 ## Sharp edges
 
 - Use raw API calls plus hard reloads for durability checks; an optimistic overlay is not sufficient evidence.
-- Empty sections are intentionally absent from `/api/tree`; only `GET /api/pin-sections` proves they still exist.
+- Empty sections are intentionally absent from the rendered navigation rail, while the navigation `pin_catalog` and `GET /api/pin-sections` retain them so the picker can offer hidden empties.
 - Hidden or dormant durable members must count toward delete confirmation even when the sidebar cannot currently render them.
 - The auth cookie is not port-scoped. A dedicated Chrome profile plus explicit `location.port` assertions are mandatory.
 - Do not introduce or look for a standalone **Add pinned section** sidebar control; creation is only through **Pin this session…** or **Move pinned session…**.

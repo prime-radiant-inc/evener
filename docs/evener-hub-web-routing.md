@@ -3,7 +3,8 @@
 Evener Hub uses a full-page app shell plus HTMX-loaded fragments.
 
 - User-facing page routes stay clean and deep-linkable: `/`, `/new`, `/s/:ref`, `/settings`, and `/settings/:section`.
-- AppWire and API routes stay under `/rpc` and `/api`.
+- AppWire requests use `/rpc`; HTTP routes that have not yet migrated stay
+  under `/api`.
 - Internal fragments live under `/_partials/*` and require `HX-Request: true`.
 
 Fragment routes:
@@ -20,17 +21,20 @@ Legacy fragment-looking paths such as `/sidebar`, `/workspace/spawn`, and
 `/s/:ref/state` are not public routes. Direct browser navigation should land on
 a page route or fail instead of rendering a fragment without the app shell.
 
-Sidebar routes (JSON, not fragments):
+Sidebar navigation (AppWire, not fragments):
 
-The sidebar is client-rendered: it fetches JSON and keeps its own keyed DOM,
-instead of swapping in a server-rendered HTML partial. `/_partials/sidebar`
-and `/_partials/sidebar/project` are gone — there is no server-rendered
-sidebar left to fragment-route.
+The sidebar is client-rendered: it reads typed navigation resources over the
+authenticated AppWire connection and keeps its own keyed DOM, instead of
+swapping in a server-rendered HTML partial. `/_partials/sidebar` and
+`/_partials/sidebar/project` are gone — there is no server-rendered sidebar
+left to fragment-route.
 
-- `GET /api/tree` — the sidebar's data source: the full navigation tree
-  (live sessions, projects, Needs-you, Pinned, archived projects, test runs).
-- `GET /api/tree/project?key=` — one project's node, keyed by its slug; used
-  to re-fetch a project the client has expanded.
+- `evener/navigation/read` — the typed sidebar read surface. Its `manifest`
+  resource provides the bounded descriptor/count index and attention summary;
+  `section`, `pin_catalog`, `pin_section`, `catalog`, `project`,
+  `project_page`, and `location` resources provide bounded rows and ownership
+  details. The canonical request shapes, pagination rules, and response
+  envelope are maintained in the [AppWire navigation resource matrix](developing-evener/agentic-testing.md).
 - `POST /api/favorite` — set or clear a session's or project's favorite
   (Pinned) decision.
 - `POST /api/project/delete` — delete every session under a project.

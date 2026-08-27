@@ -445,13 +445,11 @@ func TestAPIPinSectionsNilStoreAndMethods(t *testing.T) {
 	}
 }
 
-// TestAPISessionPinSurvivesSubsequentTreeLoad proves a direct pin-API section
-// assignment is not disturbed by a later /api/tree read. Historically a
-// stored legacy favorite for the same session made handleAPITree's
-// migrate-on-read path (ensureLegacyPinsMigrated) silently reassign the
-// session into the "Pinned" section, clobbering the explicit assignment made
-// through /api/session-pin.
-func TestAPISessionPinSurvivesSubsequentTreeLoad(t *testing.T) {
+// TestAPISessionPinSurvivesSubsequentNavigationRead proves a direct pin-API
+// section assignment is not disturbed when the AppWire navigation projection
+// is rebuilt. A stored favorite for the same session must not override the
+// explicit assignment made through /api/session-pin.
+func TestAPISessionPinSurvivesSubsequentNavigationRead(t *testing.T) {
 	const sessionID = "session-a"
 	past := hubcore.NewPastIndex("")
 	past.SeedForTest([]schema.SessionMeta{topLevelMeta(sessionID)})
@@ -472,7 +470,7 @@ func TestAPISessionPinSurvivesSubsequentTreeLoad(t *testing.T) {
 	wantSectionID := assignedBody.Assignment.Section.ID
 
 	// Trigger the navigation projection directly to verify the pin assignment
-	// survives a navigation read (the replacement for the legacy /api/tree load).
+	// survives a navigation read through the AppWire projection.
 	if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
 		t.Fatalf("navigation representation: %v", err)
 	}

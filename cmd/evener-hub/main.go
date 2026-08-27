@@ -291,9 +291,9 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// as a fallback when a session's project dir can't be found in the past index.
 	stateDir := filepath.Dir(filepath.Clean(strings.TrimSuffix(stateGlob, "*")))
 
-	// inputs is the shared inputs-version counter the /api/tree memo (TreeCache)
-	// keys on; bumped whenever an input to the tree changes so the next request
-	// recomputes instead of serving a stale memoized tree.
+	// inputs is the shared source-revision counter used by NavigationService and
+	// the remaining memoized tree projection; bumping it makes the next read
+	// observe changed navigation inputs instead of stale state.
 	inputs := &hubcore.InputsVersion{}
 
 	// Wire archive/favorite's content-delta-gated onChange hook (Task 10) to
@@ -480,8 +480,8 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	startHubPluginMaintenance(ctx, cfg, web, startBackground)
 	// Remote-thread cache refresher: refreshRemoteThreads (web_api_tree.go)
 	// walks every configured remote source's ListThreads, a synchronous
-	// network hop that used to run inline on every /api/tree request. Move it
-	// to a ~30s ticker + poke so a tree render never blocks on it; the tree
+	// network hop that used to run inline on every navigation read. Move it
+	// to a ~30s ticker + poke so a tree render never blocks on it; the navigation
 	// read path (remoteTreeThreads) reads remoteCache.Get() instead whenever
 	// RemoteThreadCache is configured.
 	startBackground(func() { refreshHubRemoteThreads(ctx, remotePoke, remoteCache, web) })
