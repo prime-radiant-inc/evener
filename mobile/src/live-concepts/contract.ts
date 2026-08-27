@@ -82,6 +82,7 @@ export type LiveConceptIntent =
   | { type: "refreshRoster" }
   | { type: "setRosterQuery"; value: string }
   | { type: "openConversation"; key: string }
+  | { type: "loadOlder" }
   | { type: "openWork" }
   | { type: "closeWork" }
   | { type: "setDraft"; value: string }
