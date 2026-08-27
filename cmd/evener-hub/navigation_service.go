@@ -139,6 +139,10 @@ type navigationServiceStats struct {
 	Cache      navigationCacheStats
 }
 
+type NavigationServiceStats = navigationServiceStats
+type NavigationResourceKey = navigationResourceKey
+type NavigationRepresentation = navigationRepresentation
+
 // NavigationService owns the coherent, revisioned navigation generation for a
 // single hub. Its source capture and pure projection are separated so a changed
 // source can never publish an incoherent projection under an older key.
@@ -257,7 +261,7 @@ func (s *NavigationService) Capability() *appwire.NavigationCapability {
 	return &appwire.NavigationCapability{Version: 1, GenerationID: s.generation, Sequence: s.sequence}
 }
 
-func (s *NavigationService) Stats() navigationServiceStats {
+func (s *NavigationService) Stats() NavigationServiceStats {
 	s.mu.Lock()
 	stats := navigationServiceStats{CoreBuilds: s.coreBuilds}
 	s.mu.Unlock()
@@ -277,7 +281,7 @@ func (s *NavigationService) CurrentRevision(key navigationResourceKey) uint64 {
 // VersionedKey atomically obtains the current semantic resource version. It is
 // paired internally with the immutable core projection selected by
 // Representation, so a new projection's bytes cannot enter an old cache key.
-func (s *NavigationService) VersionedKey(ctx context.Context, key navigationResourceKey) (navigationResourceKey, error) {
+func (s *NavigationService) VersionedKey(ctx context.Context, key navigationResourceKey) (NavigationResourceKey, error) {
 	_, versioned, _, err := s.versionedCore(ctx, key)
 	return versioned, err
 }
@@ -307,7 +311,7 @@ func (s *NavigationService) versionedCore(ctx context.Context, key navigationRes
 
 // Representation captures a versioned key and its immutable core projection in
 // one service transaction, then caches bytes only under that paired version.
-func (s *NavigationService) Representation(ctx context.Context, key navigationResourceKey) (navigationRepresentation, error) {
+func (s *NavigationService) Representation(ctx context.Context, key navigationResourceKey) (NavigationRepresentation, error) {
 	_, versioned, projection, err := s.versionedCore(ctx, key)
 	if err != nil {
 		return navigationRepresentation{}, err
@@ -343,7 +347,7 @@ func (s *NavigationService) Representation(ctx context.Context, key navigationRe
 // LegacyRepresentation binds the compatibility surface to the same immutable
 // core as the structured navigation API. The builder is called only on a cache
 // miss and must return a detached legacy object.
-func (s *NavigationService) LegacyRepresentation(ctx context.Context, id string, build func(navigationBuildInputs) (any, error)) (navigationRepresentation, error) {
+func (s *NavigationService) LegacyRepresentation(ctx context.Context, id string, build func(navigationBuildInputs) (any, error)) (NavigationRepresentation, error) {
 	if build == nil {
 		return navigationRepresentation{}, errors.New("legacy navigation builder is nil")
 	}
@@ -669,10 +673,6 @@ func (s *NavigationService) completeRefreshTicketsLocked(flight *navigationBuild
 	}
 }
 
-func navigationNextStates(previous map[navigationResourceKey]navigationResourceState, fingerprints map[navigationResourceKey]navigationFingerprint, dependencies map[navigationResourceKey][]navigationResourceKey) (map[navigationResourceKey]bool, map[navigationResourceKey]navigationResourceState, error) {
-	return navigationNextStatesContext(context.Background(), previous, fingerprints, dependencies)
-}
-
 func navigationNextStatesContext(ctx context.Context, previous map[navigationResourceKey]navigationResourceState, fingerprints map[navigationResourceKey]navigationFingerprint, dependencies map[navigationResourceKey][]navigationResourceKey) (map[navigationResourceKey]bool, map[navigationResourceKey]navigationResourceState, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
@@ -723,13 +723,6 @@ func navigationNextStatesContext(ctx context.Context, previous map[navigationRes
 
 func cloneNavigationDependencies(in []navigationResourceKey) []navigationResourceKey {
 	return append([]navigationResourceKey(nil), in...)
-}
-
-// navigationLogicalFingerprints covers complete logical resources, not just a
-// first page. It therefore changes a shared section/catalog/project revision on
-// off-page edits, membership changes, descendant changes, and removals.
-func navigationLogicalFingerprints(projection navigationProjection) (map[navigationResourceKey]navigationFingerprint, map[navigationResourceKey][]navigationResourceKey, error) {
-	return navigationLogicalFingerprintsWithContext(context.Background(), projection)
 }
 
 func navigationLogicalFingerprintsWithContext(ctx context.Context, projection navigationProjection) (map[navigationResourceKey]navigationFingerprint, map[navigationResourceKey][]navigationResourceKey, error) {
@@ -858,15 +851,9 @@ func navigationLogicalFingerprintsWithContext(ctx context.Context, projection na
 }
 
 // navigationLogicalFingerprintsContext keeps a canceled build from publishing
-// after expensive complete-resource traversal. The projection and fingerprint
-// helpers remain usable by existing callers through their context-free APIs.
+// after expensive complete-resource traversal.
 func navigationLogicalFingerprintsContext(ctx context.Context, projection navigationProjection) (map[navigationResourceKey]navigationFingerprint, map[navigationResourceKey][]navigationResourceKey, error) {
 	return navigationLogicalFingerprintsWithContext(ctx, projection)
-}
-
-func navigationLogicalNodes(projection navigationProjection, rows []hubcore.TreeNode) hubapi.NavigationArray[hubapi.NavigationSessionSummary] {
-	out, _ := navigationLogicalNodesContext(context.Background(), projection, rows)
-	return out
 }
 
 func navigationLogicalNodesContext(ctx context.Context, projection navigationProjection, rows []hubcore.TreeNode) (hubapi.NavigationArray[hubapi.NavigationSessionSummary], error) {
@@ -884,11 +871,6 @@ func navigationLogicalNodesContext(ctx context.Context, projection navigationPro
 	return out, nil
 }
 
-func navigationLogicalNode(projection navigationProjection, row hubcore.TreeNode) hubapi.NavigationSessionSummary {
-	out, _ := navigationLogicalNodeContext(context.Background(), projection, row)
-	return out
-}
-
 func navigationLogicalNodeContext(ctx context.Context, projection navigationProjection, row hubcore.TreeNode) (hubapi.NavigationSessionSummary, error) {
 	if err := ctx.Err(); err != nil {
 		return hubapi.NavigationSessionSummary{}, err
@@ -900,10 +882,6 @@ func navigationLogicalNodeContext(ctx context.Context, projection navigationProj
 	}
 	summary.Children = children
 	return summary, nil
-}
-
-func navigationLogicalFingerprint(value any) (navigationFingerprint, error) {
-	return navigationLogicalFingerprintContext(context.Background(), value)
 }
 
 const navigationFingerprintStringChunkSize = 4 << 10
@@ -960,11 +938,11 @@ func writeNavigationFingerprintValue(ctx context.Context, digest hash.Hash, valu
 	case reflect.Struct:
 		writeNavigationFingerprintByte(digest, 's')
 		writeNavigationFingerprintUint(digest, uint64(value.NumField()))
-		for index := range value.NumField() {
+		for _, field := range value.Fields() {
 			if err := ctx.Err(); err != nil {
 				return err
 			}
-			if err := writeNavigationFingerprintValue(ctx, digest, value.Field(index)); err != nil {
+			if err := writeNavigationFingerprintValue(ctx, digest, field); err != nil {
 				return err
 			}
 		}
@@ -1166,13 +1144,6 @@ func (s *NavigationService) hasPendingInvalidation() bool {
 	return s.pendingInvalidation
 }
 
-func (s *NavigationService) takePendingHint() navigationChangeHint {
-	s.mu.Lock()
-	hint := s.pendingHint
-	s.mu.Unlock()
-	return hint
-}
-
 func (s *NavigationService) refreshPending(ctx context.Context) {
 	hint, epoch, ok := s.snapshotPendingHint()
 	if !ok {
@@ -1220,9 +1191,7 @@ func (s *NavigationService) waitRetryOrWake(ctx context.Context) bool {
 
 func (s *NavigationService) waitBoundaryOrWake(ctx context.Context, boundary time.Time) (elapsed, keepGoing bool) {
 	delay := boundary.Sub(s.now())
-	if delay < 0 {
-		delay = 0
-	}
+	delay = max(delay, 0)
 	timer := s.newTimer(delay)
 	defer timer.Stop()
 	select {

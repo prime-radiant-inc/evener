@@ -410,9 +410,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	roster.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
 	archive.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
 	favorite.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
-	if remoteCache != nil {
-		remoteCache.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{Sources: true}) })
-	}
+	remoteCache.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{Sources: true}) })
 	if pinSections != nil {
 		pinSections.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
 	}

@@ -73,11 +73,6 @@ func (t Tree) SnapshotContext(ctx context.Context) (Tree, error) {
 	return Tree{NeedsYou: needsYou, Live: live, Projects: projects, ArchivedProjects: archived, favoriteLive: favorites}, nil
 }
 
-func cloneTreeProjects(projects []TreeProject) []TreeProject {
-	out, _ := cloneTreeProjectsContext(context.Background(), projects)
-	return out
-}
-
 func cloneTreeProjectsContext(ctx context.Context, projects []TreeProject) ([]TreeProject, error) {
 	out := make([]TreeProject, len(projects))
 	for index, project := range projects {
@@ -106,11 +101,6 @@ func cloneTreeProjectsContext(ctx context.Context, projects []TreeProject) ([]Tr
 		}
 	}
 	return out, nil
-}
-
-func cloneTreeNodes(nodes []TreeNode) []TreeNode {
-	out, _ := cloneTreeNodesContext(context.Background(), nodes)
-	return out
 }
 
 func cloneTreeNodesContext(ctx context.Context, nodes []TreeNode) ([]TreeNode, error) {

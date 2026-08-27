@@ -39,6 +39,8 @@ var (
 	hubNavigationNow             = func() time.Time { return time.Now().UTC() }
 )
 
+var _ = hubTreeAttentionRank
+
 type navigationSnapshot struct {
 	metas               []schema.SessionMeta
 	live                []hubcore.LiveEntry
@@ -118,19 +120,6 @@ func canonicalPinAssignments(assignments map[string]hubcore.SessionPin, classifi
 		}
 	}
 	return out
-}
-
-func pinSectionAssignmentLookup(assignments map[string]hubcore.SessionPin, visible map[hubcore.ArchiveKey]bool) map[string]string {
-	bySession := make(map[string]string, len(assignments)*3)
-	for sessionID, assignment := range assignments {
-		if !visible[hubcore.ArchiveKey{Kind: "session", ID: sessionID}] {
-			continue
-		}
-		for _, alias := range favoriteSessionAliases(sessionID) {
-			bySession[alias] = assignment.SectionID
-		}
-	}
-	return bySession
 }
 
 func projectFavoritePresentation(presentation map[hubcore.ArchiveKey]bool) map[hubcore.ArchiveKey]bool {

@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"primeradiant.com/evener/agent/task"
@@ -219,10 +220,10 @@ func navigationPageQuery(offset, limit, maximum uint32) (url.Values, error) {
 		return nil, fmt.Errorf("navigation limit must be at most %d", maximum)
 	}
 	if offset != 0 {
-		query.Set("offset", fmt.Sprintf("%d", offset))
+		query.Set("offset", strconv.FormatUint(uint64(offset), 10))
 	}
 	if limit != 0 {
-		query.Set("limit", fmt.Sprintf("%d", limit))
+		query.Set("limit", strconv.FormatUint(uint64(limit), 10))
 	}
 	return query, nil
 }

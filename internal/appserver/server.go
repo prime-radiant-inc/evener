@@ -277,8 +277,8 @@ func navigationCapability(capability *appwire.NavigationCapability) *appwire.Nav
 	if capability == nil {
 		return nil
 	}
-	copy := *capability
-	return &copy
+	clone := *capability
+	return &clone
 }
 
 type Connection struct {

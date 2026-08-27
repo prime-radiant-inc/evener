@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"sort"
 	"strings"
 	"time"
@@ -31,23 +32,6 @@ const (
 	maxNavigationIdentityBytes   = 1_024
 	maxNavigationWorkingDirBytes = 4_096
 )
-
-// navigationResourceBounds documents the common recursive resource limits.
-type navigationResourceBounds struct {
-	TopLevelRows int
-	Children     int
-	Nodes        int
-	Depth        int
-	Bytes        int
-}
-
-var navigationSessionResourceBounds = navigationResourceBounds{
-	TopLevelRows: maxNavigationSectionRows,
-	Children:     maxNavigationChildren,
-	Nodes:        maxNavigationNodes,
-	Depth:        maxNavigationDepth,
-	Bytes:        maxNavigationResponseBytes,
-}
 
 type navigationResourceKind string
 
@@ -265,9 +249,7 @@ func cloneNavigationInputs(in navigationBuildInputs) navigationBuildInputs {
 	out.PinSectionBySession = cloneNavigationStringMap(in.PinSectionBySession)
 	out.PinSections = append([]hubcore.PinSection(nil), in.PinSections...)
 	out.PinAssignments = make(map[string]hubcore.SessionPin, len(in.PinAssignments))
-	for id, assignment := range in.PinAssignments {
-		out.PinAssignments[id] = assignment
-	}
+	maps.Copy(out.PinAssignments, in.PinAssignments)
 	return out
 }
 
@@ -281,9 +263,7 @@ func cloneNavigationLiveEntries(in []hubcore.LiveEntry) []hubcore.LiveEntry {
 		out[i].RunningSubagentIDs = append([]string(nil), entry.RunningSubagentIDs...)
 		if entry.RunningSubagentStates != nil {
 			out[i].RunningSubagentStates = make(map[string]string, len(entry.RunningSubagentStates))
-			for key, value := range entry.RunningSubagentStates {
-				out[i].RunningSubagentStates[key] = value
-			}
+			maps.Copy(out[i].RunningSubagentStates, entry.RunningSubagentStates)
 		}
 	}
 	return out
@@ -294,21 +274,13 @@ func cloneNavigationBoolMap(in map[string]bool) map[string]bool {
 		return nil
 	}
 	out := make(map[string]bool, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
-	return out
-}
-func cloneNavigationStringMap(in map[string]string) map[string]string {
-	out := make(map[string]string, len(in))
-	for key, value := range in {
-		out[key] = value
-	}
+	maps.Copy(out, in)
 	return out
 }
 
-func cloneNavigationNodes(nodes []hubcore.TreeNode) []hubcore.TreeNode {
-	out, _ := cloneNavigationNodesContext(context.Background(), nodes)
+func cloneNavigationStringMap(in map[string]string) map[string]string {
+	out := make(map[string]string, len(in))
+	maps.Copy(out, in)
 	return out
 }
 
@@ -326,11 +298,6 @@ func cloneNavigationNodesContext(ctx context.Context, nodes []hubcore.TreeNode) 
 		out[index].Children = children
 	}
 	return out, nil
-}
-
-func navigationPinCandidates(tree hubcore.Tree) []hubcore.TreeNode {
-	out, _ := navigationPinCandidatesContext(context.Background(), tree)
-	return out
 }
 
 func navigationPinCandidatesContext(ctx context.Context, tree hubcore.Tree) ([]hubcore.TreeNode, error) {
@@ -381,10 +348,6 @@ func navigationPinCandidatesContext(ctx context.Context, tree hubcore.Tree) ([]h
 	}
 	cloned, err := cloneNavigationNodesContext(ctx, out)
 	return cloned, err
-}
-
-func validateNavigationInputs(inputs navigationBuildInputs) error {
-	return validateNavigationInputsContext(context.Background(), inputs)
 }
 
 func validateNavigationInputsContext(ctx context.Context, inputs navigationBuildInputs) error {
@@ -458,10 +421,6 @@ func navigationSources(sources []hubapi.Source) hubapi.NavigationArray[hubapi.So
 		out = append(out, source)
 	}
 	return out
-}
-
-func validateNavigationNodes(rows []hubcore.TreeNode) error {
-	return validateNavigationNodesContext(context.Background(), rows)
 }
 
 func validateNavigationNodesContext(ctx context.Context, rows []hubcore.TreeNode) error {
@@ -895,11 +854,6 @@ func (p navigationProjection) projectSummary(project hubcore.TreeProject) hubapi
 	return hubapi.NavigationProjectSummary{Key: project.Key, Name: truncateNavigationRunes(project.Name, maxNavigationLabelRunes), WorkingDir: truncateNavigationBytes(project.WorkingDir, maxNavigationWorkingDirBytes), RollupState: project.RollupState, RollupLive: project.RollupLive, RollupAttn: project.RollupAttn, DefaultExpanded: project.Expanded, MoreCurrent: project.MoreCurrent, MoreRecent: project.MoreRecent, MoreArchived: project.MoreArchived, Worktrees: project.Worktrees, IsArchived: project.IsArchived, Favorite: p.inputs.ProjectFavorite[project.Key], SessionCount: project.TotalSessionCount()}
 }
 
-func (p navigationProjection) buildPinSections() []navigationPinSection {
-	out, _ := p.buildPinSectionsContext(context.Background())
-	return out
-}
-
 func (p navigationProjection) buildPinSectionsContext(ctx context.Context) ([]navigationPinSection, error) {
 	byID := make(map[string]navigationPinSection, len(p.inputs.PinSections))
 	for _, section := range p.inputs.PinSections {
@@ -975,10 +929,6 @@ func (p navigationProjection) buildPinSectionsContext(ctx context.Context) ([]na
 	return out, nil
 }
 
-func (p navigationProjection) indexLocations() {
-	_ = p.indexLocationsContext(context.Background())
-}
-
 func (p navigationProjection) indexLocationsContext(ctx context.Context) error {
 	indexRows := func(rows []hubcore.TreeNode, projectKey, tier string) {
 		for _, root := range rows {
@@ -1010,21 +960,17 @@ func (p navigationProjection) indexLocationsContext(ctx context.Context) error {
 	return ctx.Err()
 }
 
-func (p navigationProjection) indexLocationNode(node, root hubcore.TreeNode, projectKey, tier string, topLevel bool) {
-	_ = p.indexLocationNodeContext(context.Background(), node, root, projectKey, tier, topLevel)
-}
-
 func (p navigationProjection) indexLocationNodeContext(ctx context.Context, node, root hubcore.TreeNode, projectKey, tier string, topLevel bool) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	ref, err := navigationRef(node.ID)
 	if err != nil {
-		return nil
+		return err
 	}
 	rootRef, err := navigationRef(root.ID)
 	if err != nil {
-		return nil
+		return err
 	}
 	if _, exists := p.locations[ref.String()]; !exists {
 		summary := navigationProjector{projection: p}.projectShallow(node)
@@ -1042,7 +988,6 @@ func (p navigationProjection) indexLocationNodeContext(ctx context.Context, node
 // resource. A project root deliberately uses one traversal across all tiers.
 type navigationTraversal struct {
 	nodes     int
-	bytes     int
 	depth     int
 	truncated bool
 }
@@ -1185,15 +1130,7 @@ func navigationRange(length int, offset uint32, limit int) (int, int) {
 	start := int(offset)
 	return start, min(start+limit, length)
 }
-func navigationAppendWithin[T any](rows *hubapi.NavigationArray[T], candidate T, maxBytes int) bool {
-	test := append(append(hubapi.NavigationArray[T](nil), (*rows)...), candidate)
-	encoded, err := json.Marshal(test)
-	if err != nil || len(encoded) > maxBytes {
-		return false
-	}
-	*rows = append(*rows, candidate)
-	return true
-}
+
 func navigationJSONWithin(value any, maxBytes int) error {
 	encoded, err := json.Marshal(value)
 	if err != nil {

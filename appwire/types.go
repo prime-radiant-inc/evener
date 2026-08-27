@@ -2,6 +2,7 @@ package appwire
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -1940,7 +1941,7 @@ func (target *NavigationInvalidationTarget) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	if fields == nil {
-		return fmt.Errorf("navigation invalidation target must be an object")
+		return errors.New("navigation invalidation target must be an object")
 	}
 	for name := range fields {
 		switch name {
