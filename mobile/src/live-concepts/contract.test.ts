@@ -5,6 +5,11 @@ import type {
   LiveConceptModule,
   LiveConceptState,
 } from "./contract";
+import type {
+  DisplayTone,
+  LiveConversationView,
+  LiveTranscriptItem,
+} from "./model";
 
 const concepts = ["stillwater", "constellation", "field-notes"] as const;
 const surfaces = ["sessions", "conversation", "work"] as const;
@@ -47,5 +52,35 @@ describe("live concept contract", () => {
     expectTypeOf<LiveConceptModule["id"]>().toEqualTypeOf<
       (typeof concepts)[number]
     >();
+  });
+
+  it("exposes a setComposerMode intent for local composer-mode selection", () => {
+    const intent: LiveConceptIntent = { type: "setComposerMode", mode: "send" };
+    expect(intent.type).toBe("setComposerMode");
+    type SetComposerMode = Extract<
+      LiveConceptIntent,
+      { type: "setComposerMode" }
+    >;
+    expectTypeOf<SetComposerMode["mode"]>().toEqualTypeOf<
+      "send" | "steer" | "queue"
+    >();
+  });
+
+  it("annotates the conversation view with display tone and nullable updated label", () => {
+    expectTypeOf<LiveConversationView>().toHaveProperty("tone");
+    expectTypeOf<LiveConversationView>().toHaveProperty("updatedLabel");
+    expectTypeOf<LiveConversationView["tone"]>().toEqualTypeOf<DisplayTone>();
+    expectTypeOf<LiveConversationView["updatedLabel"]>().toEqualTypeOf<
+      string | null
+    >();
+  });
+
+  it("annotates transcript items with a question link and stable sequence label", () => {
+    expectTypeOf<LiveTranscriptItem>().toHaveProperty("questionKey");
+    expectTypeOf<LiveTranscriptItem>().toHaveProperty("sequenceLabel");
+    expectTypeOf<LiveTranscriptItem["questionKey"]>().toEqualTypeOf<
+      string | null
+    >();
+    expectTypeOf<LiveTranscriptItem["sequenceLabel"]>().toEqualTypeOf<string>();
   });
 });
