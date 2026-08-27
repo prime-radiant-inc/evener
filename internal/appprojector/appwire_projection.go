@@ -1000,6 +1000,14 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Ref:             p.ref,
 			ReasoningEffort: data.ReasoningEffort,
 		})}
+	case events.EventVisionModelChanged:
+		p.clearSkillCandidate()
+		data := eventData[events.VisionModelChangedData](event.Data)
+		return []AppNotification{p.notification(appwire.NotifyThreadVisionModelChanged, appwire.ThreadVisionModelChangedParams{
+			ThreadID:    p.threadID,
+			Ref:         p.ref,
+			VisionModel: data.NewVisionModel,
+		})}
 	// The job lifecycle pair below is the ONLY job push on the wire, and it
 	// serves every consumer: the webui folds it into subagent rows and uses it
 	// as the jobs panel's refetch trigger, and the TUI applies it to its
