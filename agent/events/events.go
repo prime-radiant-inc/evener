@@ -78,6 +78,9 @@ const (
 	// EventReasoningEffortChanged reports that SetReasoningEffort committed a
 	// reasoning-effort change.
 	EventReasoningEffortChanged EventKind = "REASONING_EFFORT_CHANGED"
+	// EventVisionModelChanged reports that SetVisionModel committed a change to
+	// the vision side-channel routing.
+	EventVisionModelChanged EventKind = "VISION_MODEL_CHANGED"
 	// EventTurnLimit reports turn or tool-round limits.
 	EventTurnLimit EventKind = "TURN_LIMIT"
 	// EventLoopDetection reports detection of a loop.

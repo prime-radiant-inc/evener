@@ -4,6 +4,7 @@ import (
 	"context"
 	"testing"
 
+	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/llm"
@@ -79,5 +80,61 @@ func TestDescribeImage_RoutesToConfiguredProvider(t *testing.T) {
 	reqs := anthropic.Requests()
 	if len(reqs) != 1 || reqs[0].Model != "claude-x" {
 		t.Fatalf("anthropic requests = %#v, want one claude-x call", reqs)
+	}
+}
+
+func TestSetVisionModelValidatesAndEmits(t *testing.T) {
+	t.Parallel()
+	sess := s3cov_visionSession(t, SessionConfig{}, func(req llm.Request) llm.Response {
+		return llm.Response{Message: llm.Assistant("vision")}
+	})
+
+	if err := sess.SetVisionModel("anthropic/claude-x"); err == nil {
+		t.Fatal("unregistered cross-provider ref must fail")
+	}
+	if got := sess.VisionModel(); got != "" {
+		t.Fatalf("failed set changed the setting to %q", got)
+	}
+	if err := sess.SetVisionModel("anthropic/"); err == nil {
+		t.Fatal("malformed ref with an empty model must fail")
+	}
+}
+
+func TestSetVisionModelStoresAndEmitsEvent(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	c := llm.NewClient()
+	c.Register(&fakeAdapter{name: "openai", steps: []func(req llm.Request) llm.Response{
+		func(req llm.Request) llm.Response { return llm.Response{Message: llm.Assistant("vision")} },
+	}})
+	sess, err := NewSession(c, NewOpenAIProfile("m"), execenv.NewLocalExecutionEnvironment(dir), SessionConfig{StateDir: dir})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(func() { sess.Close() })
+
+	var sawEvent bool
+	done := make(chan struct{})
+	sess.ConsumeEventsLossless(func(ev events.SessionEvent) {
+		if ev.Kind == events.EventVisionModelChanged {
+			if d, ok := ev.Data.(events.VisionModelChangedData); ok && d.NewVisionModel == "off" && d.OldVisionModel == "" {
+				sawEvent = true
+			}
+		}
+	}, func() { close(done) })
+
+	if err := sess.SetVisionModel("off"); err != nil {
+		t.Fatalf("SetVisionModel(off): %v", err)
+	}
+	if got := sess.VisionModel(); got != "off" {
+		t.Fatalf("VisionModel() = %q, want off", got)
+	}
+	if got := sess.cfg.toSnapshot().VisionModel; got != "off" {
+		t.Fatalf("snapshot VisionModel = %q, want off (persistence rides the snapshot)", got)
+	}
+	sess.Close()
+	<-done
+	if !sawEvent {
+		t.Fatal("no EventVisionModelChanged emitted")
 	}
 }

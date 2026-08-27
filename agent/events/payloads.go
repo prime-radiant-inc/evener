@@ -466,6 +466,14 @@ type ReasoningEffortChangedData struct {
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 }
 
+// VisionModelChangedData is the payload for an EventVisionModelChanged event:
+// SetVisionModel committed a new vision side-channel setting ("", "off", or a
+// model ref). Old and new let subscribers diff the change.
+type VisionModelChangedData struct {
+	OldVisionModel string `json:"old_vision_model"`
+	NewVisionModel string `json:"new_vision_model"`
+}
+
 // TurnLimitData is the payload for an EventTurnLimit event.
 type TurnLimitData struct {
 	MaxTurns              int `json:"max_turns,omitempty"`

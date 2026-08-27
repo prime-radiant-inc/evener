@@ -1194,6 +1194,68 @@ func (s *Session) SetModel(model string) error {
 	return nil
 }
 
+// SetVisionModel changes the vision side-channel routing for future image
+// reads. The ref is "" (describe with the session's active model), "off"
+// (disable the side-channel), a bare model on the active provider, or
+// "provider/model" to pin a provider instance, which must be registered in
+// the client. It takes effect on the next image read and persists with the
+// session config; it never alters the active model itself.
+func (s *Session) SetVisionModel(ref string) error {
+	ref = strings.TrimSpace(ref)
+	s.mu.Lock()
+	if s.closingOrClosedLocked() {
+		s.mu.Unlock()
+		return nil
+	}
+	if err := s.validateVisionModelRefLocked(ref); err != nil {
+		s.mu.Unlock()
+		return err
+	}
+	old := s.cfg.VisionModel
+	if old == ref {
+		s.mu.Unlock()
+		return nil
+	}
+	s.cfg.VisionModel = ref
+	s.mu.Unlock()
+	s.emit(events.EventVisionModelChanged, events.VisionModelChangedData{OldVisionModel: old, NewVisionModel: ref})
+	return nil
+}
+
+func (s *Session) validateVisionModelRefLocked(ref string) error {
+	if ref == "" || strings.EqualFold(ref, visionModelOff) {
+		return nil
+	}
+	prov, model, ok := strings.Cut(ref, "/")
+	if ok && (prov == "" || model == "") {
+		return fmt.Errorf("invalid vision model ref %q: want \"model\" or \"provider/model\"", ref)
+	}
+	if ok && !strings.EqualFold(prov, s.profile.ID()) && !sessionClientHasProvider(s.client, prov) {
+		return fmt.Errorf("vision model provider %q is not configured or has no credential (active provider %q)", prov, s.profile.ID())
+	}
+	return nil
+}
+
+func sessionClientHasProvider(client *llm.Client, name string) bool {
+	if client == nil {
+		return false
+	}
+	for _, p := range client.ProviderNames() {
+		if strings.EqualFold(p, name) {
+			return true
+		}
+	}
+	return false
+}
+
+// VisionModel returns the session's configured vision side-channel setting
+// ("", "off", or a model ref) for thread-read snapshots.
+func (s *Session) VisionModel() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg.VisionModel
+}
+
 // buildModelSwitchMarkerText renders the persisted model-switch marker text:
 // "Switched model: <old provider/model> → <new provider/model>", with
 // warning lines appended when estimated context usage exceeds the new
