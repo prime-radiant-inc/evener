@@ -10,34 +10,26 @@
 // alongside the view — never in the serialized view, display key,
 // sequenceLabel, threadKey, project, body, or DOM-bound fields.
 //
-// `threadKey` is a registry-allocated opaque key (not a hash of ref).
-// `project` comes only from the supplied display-safe `projectLabel`, never
-// `conv.sessionId`. `updatedLabel` passes the authoritative option or null —
-// never fabricated. `sequenceLabel` is an opaque stable presentation label
-// allocated on first sight, not an array index, and stays stable when older
-// rows prepend. `questionKey` links a transcript item to its LiveQuestionView
-// via an opaque key; null when the item is not a question-bearing turn.
+// C1: All identities use exact nested Maps (TupleRegistry) keyed by string
+// tuples — no delimiter/NUL composites anywhere. Question identity includes
+// batch callId + question key; option identity includes callId + question key
+// + label + detail. Hostile `:` / NUL in any component cannot alias.
 //
-// The registry uses exact nested Maps keyed separately by raw scope,
-// namespace, and source ID — no delimiter-concatenated keys. `reset(scope)`
-// deletes the exact scope by Map key; no prefix matching, so a scope that is
-// a prefix of another is never confused. The registry is bounded by safe
-// rejection (not eviction): before projecting, the projector counts all
-// identities the projection would bring; if over max, it throws a generic
-// typed ProjectionCapacityError and leaves the prior registry unchanged — no
-// current identity loses its key.
+// I1: Every projection is transactional. All allocations stage in temporary
+// registries; only on successful build are they committed. Allocator
+// collision, duplicate option/question, capacity overflow, or any validation
+// error commits ZERO identities/counters/scopes — the prior registry is
+// unchanged and retry works.
 //
-// The default key allocator is process-unique via a module-level factory
-// counter, so two projector instances with default allocators never collide.
-// An injected allocator that returns a key already owned by another identity
-// throws a generic ProjectionCapacityError. `reset` and `dispose` free
-// allocated key state so it can be reused.
+// I2: Operational map snapshots are genuinely runtime-immutable (FrozenMap).
+// Cast/set/delete/clear throw without mutation. No registry refs escape.
 //
-// Empty/missing question batches emit one explicit question transcript row
-// with questionKey:null and a safe generic body. Multi-question batches remain
-// one row/card per question. Option identity uses exact nested question scope
-// + unique label/detail; indistinguishable duplicates throw a generic safe
-// error whose message contains no raw q.key.
+// I3: Zero-question batch emits NO transcript row and NO question card; no
+// private mappings are created.
+//
+// I4: Oversized UTF-8 content yields exactly one truncation marker even if
+// the input already contains the marker one or many times. Byte cap and
+// code-point boundary are preserved.
 
 import type {
   MobileConversation,
@@ -50,7 +42,7 @@ import type {
   LiveTranscriptItem,
 } from "./model";
 
-// --- truncation --------------------------------------------------------------
+// --- truncation (I4) ---------------------------------------------------------
 
 const MAX_LIVE_BYTES = 64 * 1024;
 const TRUNCATION_MARKER = "… truncated";
@@ -58,8 +50,6 @@ const TRUNCATION_MARKER = "… truncated";
 const textEncoder = new TextEncoder();
 const markerBytes = textEncoder.encode(TRUNCATION_MARKER);
 
-// Find the largest cut ≤ targetBytes such that encoded[0..cut] decodes as
-// valid UTF-8 (no split code point at the boundary).
 function truncateToValidUtf8(encoded: Uint8Array, targetBytes: number): string {
   if (targetBytes <= 0) return "";
   const decoder = new TextDecoder("utf-8", { fatal: true });
@@ -74,31 +64,22 @@ function truncateToValidUtf8(encoded: Uint8Array, targetBytes: number): string {
   return "";
 }
 
-// Encode first; body including marker is guaranteed ≤ MAX_LIVE_BYTES UTF-8
-// bytes. Recognizes a store-capped marker and does not duplicate it. If the
-// marker-ended content exceeds the cap, it is re-truncated validly.
+// I4: If content fits within cap, preserve as-is (a trailing marker means
+// the store already truncated it). If content exceeds cap, strip ALL existing
+// markers so the output has exactly one, then truncate and add a single marker.
 function truncate(text: string): { body: string; truncated: boolean } {
   const encoded = textEncoder.encode(text);
 
-  // Check if the store already capped the text and appended the marker.
-  if (text.endsWith(TRUNCATION_MARKER)) {
-    const contentText = text.slice(0, text.length - TRUNCATION_MARKER.length);
-    const contentEncoded = textEncoder.encode(contentText);
-    if (contentEncoded.length + markerBytes.length <= MAX_LIVE_BYTES) {
-      return { body: text, truncated: true };
-    }
-    // Content + marker exceeds cap — re-truncate the content validly.
-    const targetBytes = MAX_LIVE_BYTES - markerBytes.length;
-    const truncatedContent = truncateToValidUtf8(contentEncoded, targetBytes);
-    return { body: truncatedContent + TRUNCATION_MARKER, truncated: true };
+  if (encoded.length <= MAX_LIVE_BYTES) {
+    return { body: text, truncated: text.endsWith(TRUNCATION_MARKER) };
   }
 
-  if (encoded.length <= MAX_LIVE_BYTES) {
-    return { body: text, truncated: false };
-  }
+  // Oversized: strip ALL existing markers, then truncate + add exactly one.
+  const stripped = text.split(TRUNCATION_MARKER).join("");
+  const strippedEncoded = textEncoder.encode(stripped);
 
   const targetBytes = MAX_LIVE_BYTES - markerBytes.length;
-  const truncatedContent = truncateToValidUtf8(encoded, targetBytes);
+  const truncatedContent = truncateToValidUtf8(strippedEncoded, targetBytes);
   return { body: truncatedContent + TRUNCATION_MARKER, truncated: true };
 }
 
@@ -113,13 +94,176 @@ function conversationTone(status: string): DisplayTone {
 
 // --- error -------------------------------------------------------------------
 
-// Generic typed projection-capacity error. Used for both capacity overflow
-// and allocator collision. The message is intentionally generic — it never
-// contains raw scope/namespace/source IDs or allocator-returned keys.
 export class ProjectionCapacityError extends Error {
   constructor() {
     super("projection capacity exceeded");
     this.name = "ProjectionCapacityError";
+  }
+}
+
+// --- runtime-immutable map wrapper (I2) --------------------------------------
+
+// A genuinely immutable map: set/delete/clear are defined (so casts to Map
+// hit them) but throw without mutating the underlying data. The backing Map
+// is private with no escape hatch.
+class FrozenMap<K, V> implements ReadonlyMap<K, V> {
+  private readonly _map: Map<K, V>;
+
+  constructor(entries: Iterable<[K, V]>) {
+    this._map = new Map(entries);
+  }
+
+  get size(): number {
+    return this._map.size;
+  }
+
+  get(key: K): V | undefined {
+    return this._map.get(key);
+  }
+
+  has(key: K): boolean {
+    return this._map.has(key);
+  }
+
+  keys(): MapIterator<K> {
+    return this._map.keys();
+  }
+
+  values(): MapIterator<V> {
+    return this._map.values();
+  }
+
+  entries(): MapIterator<[K, V]> {
+    return this._map.entries();
+  }
+
+  forEach(
+    callback: (value: V, key: K, map: ReadonlyMap<K, V>) => void,
+    thisArg?: unknown,
+  ): void {
+    this._map.forEach((value, key) => {
+      callback.call(thisArg, value, key, this);
+    });
+  }
+
+  [Symbol.iterator](): MapIterator<[K, V]> {
+    return this._map.entries();
+  }
+
+  get [Symbol.toStringTag](): string {
+    return "FrozenMap";
+  }
+
+  // Mutation guards — present so `as Map<K,V>` casts invoke these, not a
+  // silent mutation of a real Map. They always throw, never mutate.
+  set(_key: K, _value: V): this {
+    throw new TypeError("Cannot mutate a frozen map");
+  }
+
+  delete(_key: K): boolean {
+    throw new TypeError("Cannot mutate a frozen map");
+  }
+
+  clear(): void {
+    throw new TypeError("Cannot mutate a frozen map");
+  }
+}
+
+// --- tuple registry (C1: exact nested Maps, no delimiter composites) --------
+
+// A registry of values keyed by exact string tuples, implemented as nested
+// Maps. Each dimension is a separate Map key — hostile delimiters or NUL
+// in any component cannot alias with another tuple.
+class TupleRegistry<V> {
+  private root = new Map<string, unknown>();
+  private _size = 0;
+
+  get(path: readonly string[]): V | undefined {
+    let node: Map<string, unknown> | undefined = this.root;
+    for (let i = 0; i < path.length - 1; i++) {
+      const key = path[i] as string;
+      node = node.get(key) as Map<string, unknown> | undefined;
+      if (node === undefined) return undefined;
+    }
+    const last = path[path.length - 1] as string;
+    return node!.get(last) as V | undefined;
+  }
+
+  has(path: readonly string[]): boolean {
+    let node: Map<string, unknown> | undefined = this.root;
+    for (let i = 0; i < path.length - 1; i++) {
+      const key = path[i] as string;
+      node = node.get(key) as Map<string, unknown> | undefined;
+      if (node === undefined) return false;
+    }
+    const last = path[path.length - 1] as string;
+    return node!.has(last);
+  }
+
+  set(path: readonly string[], val: V): boolean {
+    let node: Map<string, unknown> = this.root;
+    for (let i = 0; i < path.length - 1; i++) {
+      const key = path[i] as string;
+      let next = node.get(key) as Map<string, unknown> | undefined;
+      if (next === undefined) {
+        next = new Map<string, unknown>();
+        node.set(key, next);
+      }
+      node = next;
+    }
+    const last = path[path.length - 1] as string;
+    const isNew = !node.has(last);
+    if (isNew) this._size++;
+    node.set(last, val);
+    return isNew;
+  }
+
+  // Delete all entries under a given scope (first path element). Returns
+  // freed values for allocated-key cleanup.
+  deleteScope(scope: string): V[] {
+    const values: V[] = [];
+    const collect = (node: Map<string, unknown>) => {
+      for (const [, v] of node) {
+        if (v instanceof Map) {
+          collect(v as Map<string, unknown>);
+        } else {
+          values.push(v as V);
+          this._size--;
+        }
+      }
+    };
+    const sub = this.root.get(scope);
+    if (sub !== undefined) {
+      collect(sub as Map<string, unknown>);
+      this.root.delete(scope);
+    }
+    return values;
+  }
+
+  clear(): void {
+    this.root.clear();
+    this._size = 0;
+  }
+
+  get size(): number {
+    return this._size;
+  }
+
+  *entries(): IterableIterator<[string[], V]> {
+    const walk = function* (
+      node: Map<string, unknown>,
+      prefix: string[],
+    ): IterableIterator<[string[], V]> {
+      for (const [k, v] of node) {
+        const p = [...prefix, k];
+        if (v instanceof Map) {
+          yield* walk(v as Map<string, unknown>, p);
+        } else {
+          yield [p, v as V];
+        }
+      }
+    };
+    yield* walk(this.root, []);
   }
 }
 
@@ -155,84 +299,12 @@ export interface LiveConversationProjector {
 
 export type OpaqueKeyAllocator = () => string;
 
-// Module-level counter for process-unique default allocator prefixes.
-// Two projector instances with the default allocator never collide because
-// each gets a distinct prefix.
 let moduleAllocatorCounter = 0;
 
 function defaultAllocator(): OpaqueKeyAllocator {
   const prefix = `p${moduleAllocatorCounter++}`;
   let n = 0;
   return () => `${prefix}-${++n}`;
-}
-
-// --- nested registry ---------------------------------------------------------
-// scope → namespace → sourceId → allocated value
-// Exact Map-key lookup; no delimiter concatenation, no prefix matching.
-
-type NestedMap<V> = Map<string, Map<string, Map<string, V>>>;
-
-function nestedGet<V>(
-  reg: NestedMap<V>,
-  scope: string,
-  ns: string,
-  id: string,
-): V | undefined {
-  return reg.get(scope)?.get(ns)?.get(id);
-}
-
-function nestedSet<V>(
-  reg: NestedMap<V>,
-  scope: string,
-  ns: string,
-  id: string,
-  val: V,
-): void {
-  let nsMap = reg.get(scope);
-  if (!nsMap) {
-    nsMap = new Map();
-    reg.set(scope, nsMap);
-  }
-  let idMap = nsMap.get(ns);
-  if (!idMap) {
-    idMap = new Map();
-    nsMap.set(ns, idMap);
-  }
-  idMap.set(id, val);
-}
-
-function nestedHas<V>(
-  reg: NestedMap<V>,
-  scope: string,
-  ns: string,
-  id: string,
-): boolean {
-  return reg.get(scope)?.get(ns)?.has(id) ?? false;
-}
-
-// Remove a scope entirely and return all allocated values stored under it.
-function nestedDeleteScope<V>(reg: NestedMap<V>, scope: string): V[] {
-  const nsMap = reg.get(scope);
-  if (!nsMap) return [];
-  const values: V[] = [];
-  for (const [, idMap] of nsMap) {
-    for (const [, val] of idMap) {
-      values.push(val);
-    }
-  }
-  reg.delete(scope);
-  return values;
-}
-
-// Count total entries across all scopes (for one registry).
-function nestedCount<V>(reg: NestedMap<V>): number {
-  let count = 0;
-  for (const [, nsMap] of reg) {
-    for (const [, idMap] of nsMap) {
-      count += idMap.size;
-    }
-  }
-  return count;
 }
 
 // --- projector factory -------------------------------------------------------
@@ -246,298 +318,51 @@ export function createLiveConversationProjector(options?: {
   const alloc = options?.allocator ?? defaultAllocator();
   const maxReg = options?.maxRegistrySize ?? DEFAULT_MAX_REGISTRY;
 
-  // Private scoped registries: nested Maps keyed by scope → namespace → id.
-  const keyRegistry: NestedMap<string> = new Map();
-  const seqRegistry: NestedMap<string> = new Map();
+  // C1: Exact nested Maps keyed by string tuples. No delimiter concatenation.
+  const keyRegistry = new TupleRegistry<string>();
+  const seqRegistry = new TupleRegistry<string>();
 
   // All allocator-returned strings currently in use (for collision detection).
-  // Freed on reset/dispose so keys can be reused after their scope is cleared.
   const allocatedKeys = new Set<string>();
 
-  // Total identity count (entries in keyRegistry only; seqRegistry tracks the
-  // same identity tuples for items but is not double-counted).
+  // Total identity count (entries in keyRegistry only; seqRegistry tracks
+  // the same identity tuples for items but is not double-counted).
   let totalIdentities = 0;
 
-  function allocate(): string {
-    const k = alloc();
-    if (allocatedKeys.has(k)) {
-      throw new ProjectionCapacityError();
-    }
-    allocatedKeys.add(k);
-    return k;
-  }
+  // --- preflight: count new identities using exact tuple paths (C1) --------
 
-  function stableKey(
-    scope: string,
-    namespace: string,
-    sourceId: string,
-  ): string {
-    let k = nestedGet(keyRegistry, scope, namespace, sourceId);
-    if (k === undefined) {
-      k = allocate();
-      nestedSet(keyRegistry, scope, namespace, sourceId, k);
-      totalIdentities += 1;
-    }
-    return k;
-  }
-
-  function stableSeq(
-    scope: string,
-    namespace: string,
-    sourceId: string,
-  ): string {
-    let s = nestedGet(seqRegistry, scope, namespace, sourceId);
-    if (s === undefined) {
-      s = allocate();
-      nestedSet(seqRegistry, scope, namespace, sourceId, s);
-    }
-    return s;
-  }
-
-  // Pre-projection identity count: walk all items, collect unique identity
-  // tuples, count how many are NOT already registered. If the total would
-  // exceed max, the caller throws before touching the registry.
   function countNewIdentities(
     items: readonly MobileTimelineItem[],
     scope: string,
   ): number {
-    const seen = new Set<string>();
+    const seen = new TupleRegistry<true>();
     let newCount = 0;
 
-    function check(ns: string, id: string): void {
-      const tuple = `${ns}\u0000${id}`;
-      if (seen.has(tuple)) return;
-      seen.add(tuple);
-      if (!nestedHas(keyRegistry, scope, ns, id)) newCount += 1;
+    function check(path: string[]): void {
+      if (seen.has(path)) return;
+      seen.set(path, true);
+      if (!keyRegistry.has(path)) newCount += 1;
     }
 
-    check("thread", scope);
+    check([scope, "thread"]);
     for (const item of items) {
       if (item.kind === "question") {
-        if (item.batch.questions.length === 0) {
-          check("item", item.id);
-        } else {
-          for (const q of item.batch.questions) {
-            if (q === undefined) continue;
-            check("item", `${item.id}:${q.key}`);
-            check("question", q.key);
-            for (const o of q.options) {
-              check("option", `${q.key}:${o.label}\u0000${o.detail}`);
-            }
+        // I3: empty batch → no identities.
+        if (item.batch.questions.length === 0) continue;
+        const callId = item.batch.callId;
+        for (const q of item.batch.questions) {
+          if (q === undefined) continue;
+          check([scope, "qitem", callId, q.key]);
+          check([scope, "question", callId, q.key]);
+          for (const o of q.options) {
+            check([scope, "option", callId, q.key, o.label, o.detail]);
           }
         }
       } else {
-        check("item", item.id);
+        check([scope, "item", item.id]);
       }
     }
     return newCount;
-  }
-
-  function projectItem(
-    item: MobileTimelineItem,
-    scope: string,
-    questionKeyMap: Map<string, string>,
-  ): LiveTranscriptItem[] {
-    switch (item.kind) {
-      case "user":
-        return [
-          {
-            key: stableKey(scope, "item", item.id),
-            kind: "user",
-            label: "You",
-            body: item.text,
-            tone: "idle",
-            streaming: false,
-            truncated: false,
-            questionKey: null,
-            sequenceLabel: stableSeq(scope, "item", item.id),
-          },
-        ];
-
-      case "assistant": {
-        const { body, truncated } = truncate(item.markdown);
-        return [
-          {
-            key: stableKey(scope, "item", item.id),
-            kind: "assistant",
-            label: "Assistant",
-            body,
-            tone: item.streaming ? "running" : "idle",
-            streaming: item.streaming,
-            truncated,
-            questionKey: null,
-            sequenceLabel: stableSeq(scope, "item", item.id),
-          },
-        ];
-      }
-
-      case "activity": {
-        const outputText = item.detail.output ?? "";
-        const { body, truncated } =
-          outputText.length > 0
-            ? truncate(outputText)
-            : { body: "", truncated: false };
-        return [
-          {
-            key: stableKey(scope, "item", item.id),
-            kind: "tool",
-            label: item.label,
-            body,
-            tone:
-              item.state === "running"
-                ? "running"
-                : item.state === "failed"
-                  ? "failed"
-                  : "success",
-            streaming: item.state === "running",
-            truncated,
-            questionKey: null,
-            sequenceLabel: stableSeq(scope, "item", item.id),
-          },
-        ];
-      }
-
-      case "notice":
-        return [
-          {
-            key: stableKey(scope, "item", item.id),
-            kind: "user",
-            label: "Notice",
-            body: item.text,
-            tone: item.tone === "warning" ? "attention" : "idle",
-            streaming: false,
-            truncated: false,
-            questionKey: null,
-            sequenceLabel: stableSeq(scope, "item", item.id),
-          },
-        ];
-
-      case "question": {
-        // Empty/missing question batch: one explicit row, questionKey:null,
-        // safe generic body. No LiveQuestionView card is created.
-        if (item.batch.questions.length === 0) {
-          return [
-            {
-              key: stableKey(scope, "item", item.id),
-              kind: "question",
-              label: "Question",
-              body: "No questions available.",
-              tone: "idle",
-              streaming: false,
-              truncated: false,
-              questionKey: null,
-              sequenceLabel: stableSeq(scope, "item", item.id),
-            },
-          ];
-        }
-
-        // C4: Project one linked transcript question row per question in the
-        // batch, never first-body/last-key mismatch. Each row links to its
-        // own questionKey.
-        const rows: LiveTranscriptItem[] = [];
-        for (const q of item.batch.questions) {
-          if (q === undefined) continue;
-          const qKey = questionKeyMap.get(q.key) ?? null;
-          const sourceId = `${item.id}:${q.key}`;
-          rows.push({
-            key: stableKey(scope, "item", sourceId),
-            kind: "question",
-            label: q.header,
-            body: q.question,
-            tone: "attention",
-            streaming: false,
-            truncated: false,
-            questionKey: qKey,
-            sequenceLabel: stableSeq(scope, "item", sourceId),
-          });
-        }
-        return rows;
-      }
-
-      case "failure":
-        return [
-          {
-            key: stableKey(scope, "item", item.id),
-            kind: "failure",
-            label: item.title,
-            body: item.detail,
-            tone: "failed",
-            streaming: false,
-            truncated: false,
-            questionKey: null,
-            sequenceLabel: stableSeq(scope, "item", item.id),
-          },
-        ];
-
-      case "attachments": {
-        const names = item.items.map((a) => a.name ?? "attachment").join(", ");
-        return [
-          {
-            key: stableKey(scope, "item", item.id),
-            kind: "attachment",
-            label: "Attachments",
-            body: names,
-            tone: "idle",
-            streaming: false,
-            truncated: false,
-            questionKey: null,
-            sequenceLabel: stableSeq(scope, "item", item.id),
-          },
-        ];
-      }
-    }
-  }
-
-  function projectQuestions(
-    items: readonly MobileTimelineItem[],
-    scope: string,
-  ): {
-    questions: LiveQuestionView[];
-    keyMap: Map<string, string>;
-    opQuestionKeys: Map<string, string>;
-    opOptionKeys: Map<string, string>;
-  } {
-    const questions: LiveQuestionView[] = [];
-    const keyMap = new Map<string, string>(); // q.key → opaque question key
-    const opQuestionKeys = new Map<string, string>();
-    const opOptionKeys = new Map<string, string>();
-
-    for (const item of items) {
-      if (item.kind !== "question") continue;
-      if (item.batch.questions.length === 0) continue; // empty batch: no card
-      for (const q of item.batch.questions) {
-        if (q === undefined) continue;
-        const qKey = stableKey(scope, "question", q.key);
-        keyMap.set(q.key, qKey);
-        opQuestionKeys.set(qKey, q.key);
-
-        // C3: Option identity uses stable content identity (label+detail),
-        // not array index. Detect indistinguishable duplicates and safe-error.
-        // The error message is generic — no raw q.key in it.
-        const seenOptions = new Set<string>();
-        const options = q.options.map((o) => {
-          const optIdentity = `${o.label}\u0000${o.detail}`;
-          if (seenOptions.has(optIdentity)) {
-            // Generic safe error: says "duplicate option" but never leaks the
-            // raw q.key or any internal identifier.
-            throw new Error("Indistinguishable duplicate option");
-          }
-          seenOptions.add(optIdentity);
-          const optKey = stableKey(scope, "option", `${q.key}:${optIdentity}`);
-          opOptionKeys.set(optKey, optIdentity);
-          return { key: optKey, label: o.label, detail: o.detail };
-        });
-
-        questions.push({
-          key: qKey,
-          header: q.header,
-          prompt: q.question,
-          options,
-          multiple: q.multiSelect,
-        });
-      }
-    }
-    return { questions, keyMap, opQuestionKeys, opOptionKeys };
   }
 
   return {
@@ -548,31 +373,262 @@ export function createLiveConversationProjector(options?: {
       const { ref, olderCursor, projectLabel, updatedLabel } = opts;
       const scope = ref;
 
-      // Capacity check: count new identities this projection would bring.
-      // If total would exceed max, throw before touching the registry.
+      // --- I1: Preflight capacity check (before any allocation) -------------
       const newCount = countNewIdentities(conv.items, scope);
       if (totalIdentities + newCount > maxReg) {
         throw new ProjectionCapacityError();
       }
 
-      // Pre-compute question keys first so items can link to them.
-      const { questions, keyMap, opQuestionKeys, opOptionKeys } =
-        projectQuestions(conv.items, scope);
+      // --- I1: Build phase — stage all allocations transactionally ----------
+      // Staging registries are local; only committed on success. If any error
+      // occurs, staging is discarded and zero identities are committed.
+      const stagedKeys = new TupleRegistry<string>();
+      const stagedSeqs = new TupleRegistry<string>();
+      const stagedAllocated = new Set<string>();
 
-      // Project items (question items may expand to multiple rows).
+      function stageKey(path: string[]): string {
+        let k = keyRegistry.get(path);
+        if (k !== undefined) return k;
+
+        k = stagedKeys.get(path);
+        if (k !== undefined) return k;
+
+        k = alloc();
+        if (allocatedKeys.has(k) || stagedAllocated.has(k)) {
+          throw new ProjectionCapacityError();
+        }
+        stagedAllocated.add(k);
+        stagedKeys.set(path, k);
+        return k;
+      }
+
+      function stageSeq(path: string[]): string {
+        let s = seqRegistry.get(path);
+        if (s !== undefined) return s;
+
+        s = stagedSeqs.get(path);
+        if (s !== undefined) return s;
+
+        s = alloc();
+        if (allocatedKeys.has(s) || stagedAllocated.has(s)) {
+          throw new ProjectionCapacityError();
+        }
+        stagedAllocated.add(s);
+        stagedSeqs.set(path, s);
+        return s;
+      }
+
+      // --- Build question views and key mappings (C1: callId in identity) ---
+      const questions: LiveQuestionView[] = [];
+      const keyMap = new Map<string, Map<string, string>>(); // callId → q.key → qKey
+      const opQuestionKeys = new Map<string, string>();
+      const opOptionKeys = new Map<string, string>();
+      const seenQuestions = new Set<string>();
+
+      for (const item of conv.items) {
+        if (item.kind !== "question") continue;
+        // I3: zero-question batch → no card, no mappings.
+        if (item.batch.questions.length === 0) continue;
+        const callId = item.batch.callId;
+
+        for (const q of item.batch.questions) {
+          if (q === undefined) continue;
+
+          // Detect duplicate question (same callId + q.key).
+          const qId = JSON.stringify([callId, q.key]);
+          if (seenQuestions.has(qId)) {
+            throw new Error("Indistinguishable duplicate question");
+          }
+          seenQuestions.add(qId);
+
+          const qKey = stageKey([scope, "question", callId, q.key]);
+          if (!keyMap.has(callId)) keyMap.set(callId, new Map());
+          keyMap.get(callId)?.set(q.key, qKey);
+          opQuestionKeys.set(qKey, q.key);
+
+          // Detect duplicate options within this question (exact label+detail).
+          const seenOptions = new Set<string>();
+          const options = q.options.map((o) => {
+            const optId = JSON.stringify([o.label, o.detail]);
+            if (seenOptions.has(optId)) {
+              throw new Error("Indistinguishable duplicate option");
+            }
+            seenOptions.add(optId);
+            const optKey = stageKey([
+              scope,
+              "option",
+              callId,
+              q.key,
+              o.label,
+              o.detail,
+            ]);
+            opOptionKeys.set(optKey, JSON.stringify([o.label, o.detail]));
+            return { key: optKey, label: o.label, detail: o.detail };
+          });
+
+          questions.push({
+            key: qKey,
+            header: q.header,
+            prompt: q.question,
+            options,
+            multiple: q.multiSelect,
+          });
+        }
+      }
+
+      // --- Build transcript items (C1: exact paths, I3: empty batch) --------
       const opItemKeys = new Map<string, string>();
       const items: LiveTranscriptItem[] = [];
+
       for (const item of conv.items) {
-        const rows = projectItem(item, scope, keyMap);
+        const rows: LiveTranscriptItem[] = [];
+
+        switch (item.kind) {
+          case "user":
+            rows.push({
+              key: stageKey([scope, "item", item.id]),
+              kind: "user",
+              label: "You",
+              body: item.text,
+              tone: "idle",
+              streaming: false,
+              truncated: false,
+              questionKey: null,
+              sequenceLabel: stageSeq([scope, "item", item.id]),
+            });
+            break;
+
+          case "assistant": {
+            const { body, truncated } = truncate(item.markdown);
+            rows.push({
+              key: stageKey([scope, "item", item.id]),
+              kind: "assistant",
+              label: "Assistant",
+              body,
+              tone: item.streaming ? "running" : "idle",
+              streaming: item.streaming,
+              truncated,
+              questionKey: null,
+              sequenceLabel: stageSeq([scope, "item", item.id]),
+            });
+            break;
+          }
+
+          case "activity": {
+            const outputText = item.detail.output ?? "";
+            const { body, truncated } =
+              outputText.length > 0
+                ? truncate(outputText)
+                : { body: "", truncated: false };
+            rows.push({
+              key: stageKey([scope, "item", item.id]),
+              kind: "tool",
+              label: item.label,
+              body,
+              tone:
+                item.state === "running"
+                  ? "running"
+                  : item.state === "failed"
+                    ? "failed"
+                    : "success",
+              streaming: item.state === "running",
+              truncated,
+              questionKey: null,
+              sequenceLabel: stageSeq([scope, "item", item.id]),
+            });
+            break;
+          }
+
+          case "notice":
+            rows.push({
+              key: stageKey([scope, "item", item.id]),
+              kind: "user",
+              label: "Notice",
+              body: item.text,
+              tone: item.tone === "warning" ? "attention" : "idle",
+              streaming: false,
+              truncated: false,
+              questionKey: null,
+              sequenceLabel: stageSeq([scope, "item", item.id]),
+            });
+            break;
+
+          case "question": {
+            // I3: zero-question batch → no transcript rows.
+            if (item.batch.questions.length === 0) break;
+            const callId = item.batch.callId;
+            for (const q of item.batch.questions) {
+              if (q === undefined) continue;
+              const qKey = keyMap.get(callId)?.get(q.key) ?? null;
+              rows.push({
+                key: stageKey([scope, "qitem", callId, q.key]),
+                kind: "question",
+                label: q.header,
+                body: q.question,
+                tone: "attention",
+                streaming: false,
+                truncated: false,
+                questionKey: qKey,
+                sequenceLabel: stageSeq([scope, "qitem", callId, q.key]),
+              });
+            }
+            break;
+          }
+
+          case "failure":
+            rows.push({
+              key: stageKey([scope, "item", item.id]),
+              kind: "failure",
+              label: item.title,
+              body: item.detail,
+              tone: "failed",
+              streaming: false,
+              truncated: false,
+              questionKey: null,
+              sequenceLabel: stageSeq([scope, "item", item.id]),
+            });
+            break;
+
+          case "attachments": {
+            const names = item.items
+              .map((a) => a.name ?? "attachment")
+              .join(", ");
+            rows.push({
+              key: stageKey([scope, "item", item.id]),
+              kind: "attachment",
+              label: "Attachments",
+              body: names,
+              tone: "idle",
+              streaming: false,
+              truncated: false,
+              questionKey: null,
+              sequenceLabel: stageSeq([scope, "item", item.id]),
+            });
+            break;
+          }
+        }
+
         for (const row of rows) {
           opItemKeys.set(row.key, item.id);
           items.push(row);
         }
       }
 
+      // Thread key (C1: exact path [scope, "thread"]).
+      const threadKey = stageKey([scope, "thread"]);
+
+      // --- I1: Commit — write staging to main registries (atomic) -----------
+      for (const [path, key] of stagedKeys.entries()) {
+        keyRegistry.set(path, key);
+        allocatedKeys.add(key);
+      }
+      for (const [path, seq] of stagedSeqs.entries()) {
+        seqRegistry.set(path, seq);
+        allocatedKeys.add(seq);
+      }
+      totalIdentities += stagedKeys.size;
+
       const title = conv.name ?? conv.preview;
-      // C1: threadKey is a registry-allocated opaque key, not a hash.
-      const threadKey = stableKey(scope, "thread", scope);
 
       return {
         view: {
@@ -587,9 +643,9 @@ export function createLiveConversationProjector(options?: {
           updatedLabel,
         },
         operational: {
-          itemKeys: opItemKeys,
-          questionKeys: opQuestionKeys,
-          optionKeys: opOptionKeys,
+          itemKeys: new FrozenMap(opItemKeys),
+          questionKeys: new FrozenMap(opQuestionKeys),
+          optionKeys: new FrozenMap(opOptionKeys),
         },
       };
     },
@@ -601,15 +657,13 @@ export function createLiveConversationProjector(options?: {
         allocatedKeys.clear();
         totalIdentities = 0;
       } else {
-        // Free allocated keys for this scope from both registries.
-        for (const k of nestedDeleteScope(keyRegistry, scope)) {
+        for (const k of keyRegistry.deleteScope(scope)) {
           allocatedKeys.delete(k);
         }
-        for (const s of nestedDeleteScope(seqRegistry, scope)) {
+        for (const s of seqRegistry.deleteScope(scope)) {
           allocatedKeys.delete(s);
         }
-        // Recount total identities from keyRegistry (accurate, avoids drift).
-        totalIdentities = nestedCount(keyRegistry);
+        totalIdentities = keyRegistry.size;
       }
     },
 
