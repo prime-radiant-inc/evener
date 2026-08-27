@@ -1988,4 +1988,391 @@ describe("ConversationService", () => {
       expect(startCall?.params).toMatchObject({ ref: "ref-B" });
     });
   });
+
+  // R5: Before ANY ref/capability state write in open/readProjection/refresh,
+  // extract and runtime-validate response.thread.evener.capabilities into a
+  // complete plain local ThreadCapabilities copy. All 11 generated fields must
+  // be booleans; allow future extra keys but never retain the response object
+  // or getters. Null/missing/nonobject/wrong-field/throwing-getter must reject
+  // before commit and leave the pair null.
+  describe("capability extraction validation (R5)", () => {
+    // Helper: make a thread with custom capabilities that may be malformed.
+    function makeThreadWithCaps(caps: unknown): Thread {
+      return makeThread({
+        evener: {
+          ref: "ref-1",
+          capabilities: caps as ThreadCapabilities,
+          queue: { revision: 0 },
+        },
+      });
+    }
+
+    // Helper: verify all requireRef-only and gated operations are fail-closed
+    // (no wire mutation) after a failed open/readProjection.
+    async function assertAllOpsFailClosed(
+      service: ReturnType<typeof createConversationService>,
+      client: FakeAppwireClient,
+    ) {
+      client.on(
+        "turn/start",
+        () =>
+          ({
+            turn: { id: "t1", itemsView: "default", status: "running" },
+            receipt: makeReceipt(),
+          }) as TurnStartResponse,
+      );
+      client.on(
+        "turn/steer",
+        () => ({ receipt: makeReceipt() }) as TurnSteerResponse,
+      );
+      client.on(
+        "turn/queue",
+        () => ({ receipt: makeReceipt() }) as TurnQueueResponse,
+      );
+      client.on(
+        "turn/interrupt",
+        () => ({ receipt: makeReceipt() }) as TurnInterruptResponse,
+      );
+      client.on("thread/compact/start", () => EMPTY_RESPONSE);
+      client.on("thread/shutdown", () => EMPTY_RESPONSE);
+      client.on("thread/model/set", () => EMPTY_RESPONSE);
+      client.on("thread/reasoning-effort/set", () => EMPTY_RESPONSE);
+      client.on("evener/thread/name/set", () => EMPTY_RESPONSE);
+      client.on(
+        "thread/turns/list",
+        () => ({ data: [], nextCursor: undefined }) as ThreadTurnsListResponse,
+      );
+      client.on(
+        "turn/cancelQueued",
+        () =>
+          ({
+            removedText: "x",
+            receipt: makeReceipt(),
+          }) as TurnCancelQueuedResponse,
+      );
+
+      // Gated ops (requireCap + requireRef) — all must throw before wire.
+      await expect(service.send(textInput("hello"))).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "turn/start"),
+      ).toBeUndefined();
+      await expect(service.steer(textInput("s"))).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "turn/steer"),
+      ).toBeUndefined();
+      await expect(service.queue(textInput("q"))).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "turn/queue"),
+      ).toBeUndefined();
+      await expect(service.interrupt()).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "turn/interrupt"),
+      ).toBeUndefined();
+      await expect(service.compact()).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "thread/compact/start"),
+      ).toBeUndefined();
+      await expect(service.shutdown()).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "thread/shutdown"),
+      ).toBeUndefined();
+      await expect(service.changeModel("o", "g")).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "thread/model/set"),
+      ).toBeUndefined();
+      await expect(service.rename("n")).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "evener/thread/name/set"),
+      ).toBeUndefined();
+
+      // requireRef-only ops — all must throw before wire.
+      await expect(service.setReasoningEffort("high")).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "thread/reasoning-effort/set"),
+      ).toBeUndefined();
+      await expect(service.cancelQueued(0, "e")).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "turn/cancelQueued"),
+      ).toBeUndefined();
+      await expect(service.loadOlder("cursor-x")).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "thread/turns/list"),
+      ).toBeUndefined();
+    }
+
+    // --- open: malformed capabilities ---
+
+    it("open: null capabilities rejects before commit, pair stays null", async () => {
+      const thread = makeThreadWithCaps(null);
+      const { client, service } = setup({ thread });
+      await expect(service.open("ref-1")).rejects.toThrow(
+        "capabilities is not an object",
+      );
+      await assertAllOpsFailClosed(service, client);
+    });
+
+    it("open: missing capabilities rejects before commit, pair stays null", async () => {
+      const thread = makeThread({
+        evener: {
+          ref: "ref-1",
+          // capabilities intentionally omitted
+          capabilities: undefined as unknown as ThreadCapabilities,
+          queue: { revision: 0 },
+        },
+      });
+      const { client, service } = setup({ thread });
+      await expect(service.open("ref-1")).rejects.toThrow(
+        "capabilities is not an object",
+      );
+      await assertAllOpsFailClosed(service, client);
+    });
+
+    it("open: non-object capabilities rejects before commit, pair stays null", async () => {
+      const thread = makeThreadWithCaps("not-an-object");
+      const { client, service } = setup({ thread });
+      await expect(service.open("ref-1")).rejects.toThrow(
+        "capabilities is not an object",
+      );
+      await assertAllOpsFailClosed(service, client);
+    });
+
+    it("open: wrong-type field (send=string) rejects before commit, pair stays null", async () => {
+      const thread = makeThreadWithCaps({
+        ...ALL_TRUE_CAPS,
+        send: "yes" as unknown as boolean,
+      });
+      const { client, service } = setup({ thread });
+      await expect(service.open("ref-1")).rejects.toThrow(
+        'capability "send" is not a boolean',
+      );
+      await assertAllOpsFailClosed(service, client);
+    });
+
+    it("open: throwing getter on a capability field rejects before commit, pair stays null", async () => {
+      const throwingCaps = {
+        get send() {
+          throw new Error("getter bomb");
+        },
+        steer: true,
+        interrupt: true,
+        compact: true,
+        clear: true,
+        forkFromTurn: true,
+        shutdown: true,
+        changeModel: true,
+        queue: true,
+        goal: true,
+        rename: true,
+      };
+      const thread = makeThreadWithCaps(throwingCaps);
+      const { client, service } = setup({ thread });
+      await expect(service.open("ref-1")).rejects.toThrow();
+      await assertAllOpsFailClosed(service, client);
+    });
+
+    // --- readProjection: malformed capabilities ---
+
+    it("readProjection: null capabilities rejects before commit, pair stays null", async () => {
+      const thread = makeThreadWithCaps(null);
+      const { client, service } = setup({ thread });
+      await expect(service.readProjection("ref-1")).rejects.toThrow(
+        "capabilities is not an object",
+      );
+      await assertAllOpsFailClosed(service, client);
+    });
+
+    it("readProjection: missing capabilities rejects before commit, pair stays null", async () => {
+      const thread = makeThread({
+        evener: {
+          ref: "ref-1",
+          capabilities: undefined as unknown as ThreadCapabilities,
+          queue: { revision: 0 },
+        },
+      });
+      const { client, service } = setup({ thread });
+      await expect(service.readProjection("ref-1")).rejects.toThrow(
+        "capabilities is not an object",
+      );
+      await assertAllOpsFailClosed(service, client);
+    });
+
+    it("readProjection: non-object capabilities rejects before commit, pair stays null", async () => {
+      const thread = makeThreadWithCaps(42);
+      const { client, service } = setup({ thread });
+      await expect(service.readProjection("ref-1")).rejects.toThrow(
+        "capabilities is not an object",
+      );
+      await assertAllOpsFailClosed(service, client);
+    });
+
+    it("readProjection: wrong-type field (rename=number) rejects before commit, pair stays null", async () => {
+      const thread = makeThreadWithCaps({
+        ...ALL_TRUE_CAPS,
+        rename: 1 as unknown as boolean,
+      });
+      const { client, service } = setup({ thread });
+      await expect(service.readProjection("ref-1")).rejects.toThrow(
+        'capability "rename" is not a boolean',
+      );
+      await assertAllOpsFailClosed(service, client);
+    });
+
+    it("readProjection: throwing getter rejects before commit, pair stays null", async () => {
+      const throwingCaps = {
+        send: true,
+        steer: true,
+        interrupt: true,
+        compact: true,
+        clear: true,
+        forkFromTurn: true,
+        shutdown: true,
+        changeModel: true,
+        queue: true,
+        goal: true,
+        get rename() {
+          throw new Error("late getter bomb");
+        },
+      };
+      const thread = makeThreadWithCaps(throwingCaps);
+      const { client, service } = setup({ thread });
+      await expect(service.readProjection("ref-1")).rejects.toThrow();
+      await assertAllOpsFailClosed(service, client);
+    });
+
+    // --- recovery: after malformed caps rejection, successful open works ---
+
+    it("after open malformed-caps rejection, a later successful open commits and operations reach wire", async () => {
+      const badThread = makeThreadWithCaps(null);
+      const { client, service } = setup({ thread: badThread });
+      await expect(service.open("ref-1")).rejects.toThrow(
+        "capabilities is not an object",
+      );
+      // Now a successful open with valid caps.
+      client.on("thread/read", () => makeReadResponse(makeThread()));
+      const conv = await service.open("ref-2");
+      expect(conv.id).toBe("thread-1");
+      // Operations reach the wire.
+      client.on(
+        "turn/start",
+        () =>
+          ({
+            turn: { id: "t1", itemsView: "default", status: "running" },
+            receipt: makeReceipt(),
+          }) as TurnStartResponse,
+      );
+      const receipt = await service.send(textInput("hello"));
+      expect(receipt).toBeDefined();
+      const startCall = client.calls.find((c) => c.method === "turn/start");
+      expect(startCall).toBeDefined();
+      expect(startCall?.params).toMatchObject({ ref: "ref-2" });
+    });
+
+    // --- refresh: malformed capabilities ---
+
+    it("refresh: null capabilities returns rejection and does not corrupt current pair", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      // Set up a refresh handler that returns null capabilities.
+      client.on("thread/read", (params) => {
+        const p = params as { ref: string; subscribe?: boolean };
+        if (p.subscribe === false) {
+          return makeReadResponse(makeThreadWithCaps(null));
+        }
+        return makeReadResponse(makeThread());
+      });
+      // The refresh must reject (malformed caps).
+      await expect(service.refreshCapabilities("ref-1")).rejects.toThrow(
+        "capabilities is not an object",
+      );
+      // Current pair must be intact — send reaches the wire with ref-1.
+      client.on(
+        "turn/start",
+        () =>
+          ({
+            turn: { id: "t1", itemsView: "default", status: "running" },
+            receipt: makeReceipt(),
+          }) as TurnStartResponse,
+      );
+      const receipt = await service.send(textInput("hello"));
+      expect(receipt).toBeDefined();
+      const startCall = client.calls.find((c) => c.method === "turn/start");
+      expect(startCall).toBeDefined();
+      expect(startCall?.params).toMatchObject({ ref: "ref-1" });
+    });
+
+    it("refresh: wrong-type field returns rejection and does not corrupt current pair", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      const badCaps = {
+        ...ALL_TRUE_CAPS,
+        interrupt: "no" as unknown as boolean,
+      };
+      client.on("thread/read", (params) => {
+        const p = params as { ref: string; subscribe?: boolean };
+        if (p.subscribe === false) {
+          return makeReadResponse(makeThreadWithCaps(badCaps));
+        }
+        return makeReadResponse(makeThread());
+      });
+      await expect(service.refreshCapabilities("ref-1")).rejects.toThrow(
+        'capability "interrupt" is not a boolean',
+      );
+      // Current pair intact — send reaches wire.
+      client.on(
+        "turn/start",
+        () =>
+          ({
+            turn: { id: "t1", itemsView: "default", status: "running" },
+            receipt: makeReceipt(),
+          }) as TurnStartResponse,
+      );
+      const receipt = await service.send(textInput("hello"));
+      expect(receipt).toBeDefined();
+      const startCall = client.calls.find((c) => c.method === "turn/start");
+      expect(startCall).toBeDefined();
+      expect(startCall?.params).toMatchObject({ ref: "ref-1" });
+    });
+
+    it("refresh: throwing getter returns rejection and does not corrupt current pair", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      const throwingCaps = {
+        send: true,
+        steer: true,
+        get interrupt() {
+          throw new Error("refresh getter bomb");
+        },
+        compact: true,
+        clear: true,
+        forkFromTurn: true,
+        shutdown: true,
+        changeModel: true,
+        queue: true,
+        goal: true,
+        rename: true,
+      };
+      client.on("thread/read", (params) => {
+        const p = params as { ref: string; subscribe?: boolean };
+        if (p.subscribe === false) {
+          return makeReadResponse(makeThreadWithCaps(throwingCaps));
+        }
+        return makeReadResponse(makeThread());
+      });
+      await expect(service.refreshCapabilities("ref-1")).rejects.toThrow();
+      // Current pair intact — send reaches wire.
+      client.on(
+        "turn/start",
+        () =>
+          ({
+            turn: { id: "t1", itemsView: "default", status: "running" },
+            receipt: makeReceipt(),
+          }) as TurnStartResponse,
+      );
+      const receipt = await service.send(textInput("hello"));
+      expect(receipt).toBeDefined();
+      const startCall = client.calls.find((c) => c.method === "turn/start");
+      expect(startCall).toBeDefined();
+      expect(startCall?.params).toMatchObject({ ref: "ref-1" });
+    });
+  });
 });
