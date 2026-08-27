@@ -2166,6 +2166,43 @@ func TestDelegateResourceRuntime_ColdIdleUsesCommittedConfigTemplatesAndToolCeil
 	}
 }
 
+func TestDelegateResourceRuntime_ColdIdleInheritsLiveLifetimeContext(t *testing.T) {
+	fixture := newColdStableDelegateFixture(t, "")
+	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
+	if err != nil {
+		t.Fatalf("restore root: %v", err)
+	}
+	defer root.Close()
+	owner, cancelOwner := context.WithCancel(context.Background())
+	root.cfg.LifetimeContext = owner
+	reservation, err := root.delegateController.ReserveStart(rootDelegateActor(root.id), fixture.delegateID)
+	if err != nil {
+		t.Fatalf("ReserveStart: %v", err)
+	}
+	started, err := root.delegateController.CommitStart(reservation)
+	if err != nil {
+		t.Fatalf("CommitStart: %v", err)
+	}
+	defer func() {
+		_, _ = root.delegateController.FailCommittedRestart(started.lease, delegatePermanentStartFailure(errors.New("test complete"), "construction_failed"))
+	}()
+	sub, restored, err := (delegateRuntime{owner: root}).restoreIdle(started)
+	if err != nil {
+		t.Fatalf("restoreIdle: %v", err)
+	}
+	if !restored {
+		t.Fatal("cold idle delegate was reported retained")
+	}
+	defer sub.sess.discardRestoredCandidate()
+
+	cancelOwner()
+	select {
+	case <-sub.sess.sessionCtx.Done():
+	default:
+		t.Fatal("restored stable delegate outlived the live parent lifetime context")
+	}
+}
+
 func TestDelegateResourceRuntime_ColdIdleReusesExactSharedRootTaskStore(t *testing.T) {
 	fixture := newColdStableDelegateFixture(t, "root")
 	root, err := restoreDelegateResourceBootstrapSession(fixture.client, fixture.profile, fixture.workspace, fixture.meta, fixture.stateDir)
