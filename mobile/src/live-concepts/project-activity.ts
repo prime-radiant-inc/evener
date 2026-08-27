@@ -2,26 +2,85 @@
 // LiveActivityView for live-concept renderers. No DOM, no network, no clock.
 // Same input on the same projector instance → same output.
 //
-// The projector INSTANCE owns a private scoped registry keyed by exact scope,
-// parent identity, kind, and source identity via nested Maps — no delimiter
-// prefix encoding. `reset(scope)` deletes the exact scope. Stable keys
-// survive hierarchy insertion/reorder/patch. Labels are display-safe inputs
-// only; raw diagnostic IDs live only in the private operational map returned
-// alongside the view. Duplicate/cross-kind source IDs are detected and produce
-// a generic safe error, never shared/swapped keys.
+// The projector INSTANCE owns a private scoped registry using nested exact
+// Maps at every depth — no delimiter/path composites for hierarchy identity.
+// `reset(scope)` deletes the exact scope. Stable keys survive hierarchy
+// insertion/reorder/patch. Raw diagnostic IDs and no-ID fallback labels live
+// in separate tagged namespaces so rawId "x" can never alias label "x".
+// Raw diagnostic IDs are unique scope-wide across all parents and kinds.
+// The operational snapshot maps rawId → opaque key (no-ID entries omitted)
+// and is returned as a genuinely runtime-immutable wrapper.
 //
-// The production default allocator prefixes keys process-unique via a
-// module-level factory counter, so distinct instances never collide. An
-// injected allocator that returns duplicate keys is detected and produces a
-// generic safe error. Cycle detection traverses with an ancestry set and
-// throws a generic cycle error before stack overflow. The registry is bounded
-// with safe capacity rejection before mutation (no FIFO eviction):
-// identical over-cap rejection leaves existing key stability.
+// All rejections are transactional: capacity, collision, cycle, and duplicate
+// errors commit zero registry entries. The production default allocator uses
+// a module-level random salt plus an instance counter for process-unique,
+// non-derivable keys. Traversal is iterative (stack-safe) for arbitrary depth.
 
 import type { ActivityView, WorkEntry, WorkTone } from "../services/activity";
 import type { DisplayTone, LiveActivityView, LiveWorkItem } from "./model";
 
+// --- typed projector error ---------------------------------------------------
+
+export type ActivityProjectorErrorCode =
+  | "capacity"
+  | "collision"
+  | "cycle"
+  | "raw-duplicate"
+  | "no-id-duplicate";
+
+export class ActivityProjectorError extends Error {
+  readonly code: ActivityProjectorErrorCode;
+  constructor(code: ActivityProjectorErrorCode, message: string) {
+    super(message);
+    this.name = "ActivityProjectorError";
+    this.code = code;
+  }
+}
+
+// --- immutable readonly map wrapper ------------------------------------------
+// Genuinely runtime-immutable: the internal Map is a private field (#map)
+// inaccessible from outside the class. Casting to Map does not expose
+// set/delete/clear because those methods do not exist on the wrapper.
+
+class ImmutableReadonlyMap<K, V> implements ReadonlyMap<K, V> {
+  #map: Map<K, V>;
+  readonly size: number;
+  constructor(entries: Iterable<[K, V]>) {
+    this.#map = new Map(entries);
+    this.size = this.#map.size;
+  }
+  get(key: K): V | undefined {
+    return this.#map.get(key);
+  }
+  has(key: K): boolean {
+    return this.#map.has(key);
+  }
+  forEach(
+    callback: (value: V, key: K, map: ReadonlyMap<K, V>) => void,
+    thisArg?: unknown,
+  ): void {
+    this.#map.forEach((v, k) => {
+      callback.call(thisArg, v, k, this);
+    });
+  }
+  entries(): MapIterator<[K, V]> {
+    return this.#map.entries();
+  }
+  keys(): MapIterator<K> {
+    return this.#map.keys();
+  }
+  values(): MapIterator<V> {
+    return this.#map.values();
+  }
+  [Symbol.iterator](): MapIterator<[K, V]> {
+    return this.#map[Symbol.iterator]();
+  }
+}
+
 // --- operational map (snapshot) ----------------------------------------------
+// Direction: raw operational ID → opaque key. No-ID/display-label entries
+// are omitted. The wrapper is a genuinely immutable lookup — no registry
+// references, no exposed mutation methods.
 
 export interface ActivityOperationalMap {
   readonly keys: ReadonlyMap<string, string>;
@@ -47,21 +106,23 @@ export interface LiveActivityProjector {
   dispose(): void;
 }
 
-// --- key allocator ------------------------------------------------------------
+// --- key allocator -----------------------------------------------------------
 
 export type OpaqueKeyAllocator = () => string;
 
-// Module-level factory counter: each default instance gets a process-unique
-// prefix so distinct instances never produce colliding keys.
+// Module-level random salt: non-derivable across process loads. Combined
+// with a per-instance counter for process-unique, non-derivable keys.
+const moduleSalt = Math.random().toString(36).slice(2, 10);
 let factoryCounter = 0;
 
 function defaultAllocator(): OpaqueKeyAllocator {
-  const prefix = `w${factoryCounter}_`;
+  const salt = moduleSalt;
+  const id = factoryCounter;
   factoryCounter += 1;
   let n = 0;
   return () => {
     n += 1;
-    return `${prefix}${n}`;
+    return `${salt}_${id}_${n}`;
   };
 }
 
@@ -82,15 +143,141 @@ function mapTone(tone: WorkTone): DisplayTone {
   }
 }
 
+// --- hierarchy node (nested exact Maps, no delimiter strings) ----------------
+
+interface HierarchyNode {
+  // kind → namespace → sourceId → opaque key
+  entries: Map<string, Map<string, Map<string, string>>>;
+  // kind → namespace → sourceId → child node
+  children: Map<string, Map<string, Map<string, HierarchyNode>>>;
+}
+
+function newHierarchyNode(): HierarchyNode {
+  return { entries: new Map(), children: new Map() };
+}
+
+// Look up an existing key at a parent node (read-only, creates nothing).
+function lookupKey(
+  parentNode: HierarchyNode | undefined,
+  kind: string,
+  ns: string,
+  sourceId: string,
+): string | undefined {
+  if (parentNode === undefined) return undefined;
+  const nsMap = parentNode.entries.get(kind);
+  if (nsMap === undefined) return undefined;
+  const srcMap = nsMap.get(ns);
+  if (srcMap === undefined) return undefined;
+  return srcMap.get(sourceId);
+}
+
+// Look up an existing child node (read-only, creates nothing).
+function lookupChild(
+  parentNode: HierarchyNode | undefined,
+  kind: string,
+  ns: string,
+  sourceId: string,
+): HierarchyNode | undefined {
+  if (parentNode === undefined) return undefined;
+  const nsMap = parentNode.children.get(kind);
+  if (nsMap === undefined) return undefined;
+  const srcMap = nsMap.get(ns);
+  if (srcMap === undefined) return undefined;
+  return srcMap.get(sourceId);
+}
+
+// Get-or-create a child node (mutation, only during commit).
+function getOrCreateChild(
+  parentNode: HierarchyNode,
+  kind: string,
+  ns: string,
+  sourceId: string,
+): HierarchyNode {
+  let nsMap = parentNode.children.get(kind);
+  if (nsMap === undefined) {
+    nsMap = new Map();
+    parentNode.children.set(kind, nsMap);
+  }
+  let srcMap = nsMap.get(ns);
+  if (srcMap === undefined) {
+    srcMap = new Map();
+    nsMap.set(ns, srcMap);
+  }
+  let child = srcMap.get(sourceId);
+  if (child === undefined) {
+    child = newHierarchyNode();
+    srcMap.set(sourceId, child);
+  }
+  return child;
+}
+
+// Set a key at a parent node (mutation, only during commit).
+function setKey(
+  parentNode: HierarchyNode,
+  kind: string,
+  ns: string,
+  sourceId: string,
+  key: string,
+): void {
+  let nsMap = parentNode.entries.get(kind);
+  if (nsMap === undefined) {
+    nsMap = new Map();
+    parentNode.entries.set(kind, nsMap);
+  }
+  let srcMap = nsMap.get(ns);
+  if (srcMap === undefined) {
+    srcMap = new Map();
+    nsMap.set(ns, srcMap);
+  }
+  srcMap.set(sourceId, key);
+}
+
+// Iteratively collect all keys in a scope's hierarchy tree (for reset).
+function collectAllKeys(root: HierarchyNode): string[] {
+  const keys: string[] = [];
+  const stack: HierarchyNode[] = [root];
+  while (stack.length > 0) {
+    const node = stack.pop()!;
+    for (const [, nsMap] of node.entries) {
+      for (const [, srcMap] of nsMap) {
+        for (const [, key] of srcMap) {
+          keys.push(key);
+        }
+      }
+    }
+    for (const [, nsMap] of node.children) {
+      for (const [, srcMap] of nsMap) {
+        for (const [, child] of srcMap) {
+          stack.push(child);
+        }
+      }
+    }
+  }
+  return keys;
+}
+
+// --- collected entry (validation phase) -------------------------------------
+
+interface CollectedEntry {
+  entry: WorkEntry;
+  entryKind: string;
+  ns: string; // "raw" or "label"
+  sourceId: string;
+  rawId: string | null;
+  existingKey: string | undefined;
+  parentIndex: number; // -1 for root
+  // The parent node in the EXISTING registry (read-only, from before this
+  // projection). May be undefined if the scope or path doesn't exist yet.
+  existingParentNode: HierarchyNode | undefined;
+  // The child node in the EXISTING registry for this entry's children to
+  // look up against (read-only).
+  existingChildNode: HierarchyNode | undefined;
+  childIndices: number[];
+}
+
 // --- projector factory -------------------------------------------------------
 
 const DEFAULT_MAX_REGISTRY = 10_000;
-
-// Nested Maps: scope → parentPath → kind → sourceId → opaque key.
-type SourceMap = Map<string, string>;
-type KindMap = Map<string, SourceMap>;
-type ParentMap = Map<string, KindMap>;
-type ScopeRegistry = Map<string, ParentMap>;
 
 export function createLiveActivityProjector(options?: {
   allocator?: OpaqueKeyAllocator;
@@ -99,132 +286,9 @@ export function createLiveActivityProjector(options?: {
   const alloc = options?.allocator ?? defaultAllocator();
   const maxReg = options?.maxRegistrySize ?? DEFAULT_MAX_REGISTRY;
 
-  const registry: ScopeRegistry = new Map();
+  const registry = new Map<string, HierarchyNode>();
   const allocatedKeys = new Set<string>();
   let registrySize = 0;
-
-  function stableKey(
-    scope: string,
-    parentPath: string,
-    kind: string,
-    sourceId: string,
-  ): string {
-    let scopeMap = registry.get(scope);
-    if (scopeMap === undefined) {
-      scopeMap = new Map();
-      registry.set(scope, scopeMap);
-    }
-    let parentMap = scopeMap.get(parentPath);
-    if (parentMap === undefined) {
-      parentMap = new Map();
-      scopeMap.set(parentPath, parentMap);
-    }
-    let kindMap = parentMap.get(kind);
-    if (kindMap === undefined) {
-      kindMap = new Map();
-      parentMap.set(kind, kindMap);
-    }
-    let key = kindMap.get(sourceId);
-    if (key === undefined) {
-      // Safe capacity rejection before mutation — no FIFO eviction.
-      if (registrySize >= maxReg) {
-        throw new Error("Activity projector registry capacity exceeded");
-      }
-      key = alloc();
-      // Validate injected allocator collisions with a generic safe error.
-      if (allocatedKeys.has(key)) {
-        throw new Error("Activity projector key allocator collision detected");
-      }
-      allocatedKeys.add(key);
-      kindMap.set(sourceId, key);
-      registrySize += 1;
-    }
-    return key;
-  }
-
-  function projectWorkEntry(
-    entry: WorkEntry,
-    scope: string,
-    parentPath: string,
-    seenRawIds: Map<string, Set<string>>,
-    seenNoId: Map<string, Set<string>>,
-    ancestry: WeakSet<WorkEntry>,
-    opKeys: Map<string, string>,
-  ): LiveWorkItem {
-    // Cycle detection: if this entry is already in the ancestry path, throw
-    // a generic typed cycle error before stack overflow.
-    if (ancestry.has(entry)) {
-      throw new Error("Activity work entry cycle detected");
-    }
-    ancestry.add(entry);
-
-    const rawId = entry.diagnostics?.rawId;
-    let sourceId: string;
-
-    if (rawId !== undefined && rawId !== "") {
-      // Every raw diagnostic ID unique within the same parent across kinds.
-      // Duplicate/cross-kind → generic safe error (no raw ID in message).
-      let seen = seenRawIds.get(parentPath);
-      if (seen === undefined) {
-        seen = new Set();
-        seenRawIds.set(parentPath, seen);
-      }
-      if (seen.has(rawId)) {
-        throw new Error(
-          "Duplicate activity source identity under the same parent — cannot assign distinct stable keys",
-        );
-      }
-      seen.add(rawId);
-      sourceId = rawId;
-    } else {
-      // For no-ID siblings, use kind+label only when unique under exact parent.
-      // Indistinguishable duplicates → generic error (no occurrence positions).
-      const noIdKey = `${entry.kind}\u0000${entry.label}`;
-      let seen = seenNoId.get(parentPath);
-      if (seen === undefined) {
-        seen = new Set();
-        seenNoId.set(parentPath, seen);
-      }
-      if (seen.has(noIdKey)) {
-        throw new Error(
-          "Indistinguishable duplicate activity entries under the same parent — cannot assign distinct stable keys",
-        );
-      }
-      seen.add(noIdKey);
-      sourceId = entry.label;
-    }
-
-    const childPath = `${parentPath}/${entry.kind}:${sourceId}`;
-    const key = stableKey(scope, parentPath, entry.kind, sourceId);
-
-    const children = (entry.children ?? []).map((c) =>
-      projectWorkEntry(
-        c,
-        scope,
-        childPath,
-        seenRawIds,
-        seenNoId,
-        ancestry,
-        opKeys,
-      ),
-    );
-
-    // Recursively populate operational snapshot for every child, not only
-    // top level. Caller mutation cannot change backing registry/past result
-    // because opKeys is a fresh Map per projection call.
-    opKeys.set(key, rawId ?? entry.label);
-
-    ancestry.delete(entry);
-
-    return {
-      key,
-      kind: entry.kind,
-      title: entry.label,
-      detail: entry.outputSummary ?? "",
-      tone: mapTone(entry.tone),
-      children,
-    };
-  }
 
   return {
     project(
@@ -235,27 +299,234 @@ export function createLiveActivityProjector(options?: {
       operational: ActivityOperationalMap;
     } {
       const scope = opts.scope;
-      const seenRawIds = new Map<string, Set<string>>();
-      const seenNoId = new Map<string, Set<string>>();
-      const ancestry = new WeakSet<WorkEntry>();
-      const opKeys = new Map<string, string>();
+      const scopeRoot = registry.get(scope);
+      const seenRawIds = new Set<string>(); // scope-wide uniqueness
+      const seenNoId = new Map<number, Set<string>>(); // per-parent
+      const collected: CollectedEntry[] = [];
+      const topLevelIndices: number[] = [];
 
-      const work = view.work.map((w) =>
-        projectWorkEntry(
-          w,
-          scope,
-          "root",
-          seenRawIds,
-          seenNoId,
-          ancestry,
-          opKeys,
-        ),
+      // --- Pass 1: iterative traversal, validate, collect -------------------
+      // Stack-safe for arbitrary depth. Each frame carries a direct reference
+      // to the parent's existing hierarchy node (O(1) lookup, no path
+      // reconstruction). Cycle detection uses a path Set maintained across
+      // visit/leave frames.
+
+      type Frame =
+        | {
+            type: "enter";
+            entry: WorkEntry;
+            parentIndex: number;
+            // The parent's existing hierarchy node (for read-only lookup).
+            parentExistingNode: HierarchyNode | undefined;
+          }
+        | { type: "leave"; entry: WorkEntry; index: number };
+
+      const stack: Frame[] = [];
+      for (let i = view.work.length - 1; i >= 0; i--) {
+        stack.push({
+          type: "enter",
+          entry: view.work[i]!,
+          parentIndex: -1,
+          parentExistingNode: scopeRoot,
+        });
+      }
+
+      const pathSet = new Set<WorkEntry>();
+
+      while (stack.length > 0) {
+        const frame = stack.pop()!;
+        if (frame.type === "enter") {
+          // Cycle detection: entry already on current path → cycle error.
+          if (pathSet.has(frame.entry)) {
+            throw new ActivityProjectorError(
+              "cycle",
+              "Activity work entry cycle detected",
+            );
+          }
+          pathSet.add(frame.entry);
+
+          const rawId = frame.entry.diagnostics?.rawId;
+          const hasRawId = rawId !== undefined && rawId !== "";
+          const ns = hasRawId ? "raw" : "label";
+          const sourceId = hasRawId ? rawId! : frame.entry.label;
+
+          // Raw ID scope-wide uniqueness (across all parents and kinds).
+          if (hasRawId) {
+            if (seenRawIds.has(rawId!)) {
+              throw new ActivityProjectorError(
+                "raw-duplicate",
+                "Raw diagnostic ID duplicate — cannot assign distinct stable keys",
+              );
+            }
+            seenRawIds.add(rawId!);
+          } else {
+            // No-ID per-parent duplicate check (kind+label under same parent).
+            const noIdKey = `${frame.entry.kind}\u0000${frame.entry.label}`;
+            let parentSet = seenNoId.get(frame.parentIndex);
+            if (parentSet === undefined) {
+              parentSet = new Set();
+              seenNoId.set(frame.parentIndex, parentSet);
+            }
+            if (parentSet.has(noIdKey)) {
+              throw new ActivityProjectorError(
+                "no-id-duplicate",
+                "Indistinguishable duplicate activity entries — cannot assign distinct stable keys",
+              );
+            }
+            parentSet.add(noIdKey);
+          }
+
+          // Look up existing key (read-only, O(1) via direct parent node ref).
+          const existingKey = lookupKey(
+            frame.parentExistingNode,
+            frame.entry.kind,
+            ns,
+            sourceId,
+          );
+
+          // Look up the existing child node for this entry's children.
+          const existingChildNode = lookupChild(
+            frame.parentExistingNode,
+            frame.entry.kind,
+            ns,
+            sourceId,
+          );
+
+          const index = collected.length;
+          collected.push({
+            entry: frame.entry,
+            entryKind: frame.entry.kind,
+            ns,
+            sourceId,
+            rawId: hasRawId ? rawId! : null,
+            existingKey,
+            parentIndex: frame.parentIndex,
+            existingParentNode: frame.parentExistingNode,
+            existingChildNode,
+            childIndices: [],
+          });
+
+          if (frame.parentIndex < 0) {
+            topLevelIndices.push(index);
+          } else {
+            collected[frame.parentIndex]!.childIndices.push(index);
+          }
+
+          // Push leave frame, then children (reverse for correct order).
+          stack.push({ type: "leave", entry: frame.entry, index });
+          const childEntries = frame.entry.children ?? [];
+          for (let i = childEntries.length - 1; i >= 0; i--) {
+            stack.push({
+              type: "enter",
+              entry: childEntries[i]!,
+              parentIndex: index,
+              parentExistingNode: existingChildNode,
+            });
+          }
+        } else {
+          // Leave: remove from path set.
+          pathSet.delete(frame.entry);
+        }
+      }
+
+      // --- Capacity check (before any mutation) -----------------------------
+
+      const newEntryCount = collected.reduce(
+        (count, ce) => count + (ce.existingKey === undefined ? 1 : 0),
+        0,
       );
+      if (registrySize + newEntryCount > maxReg) {
+        throw new ActivityProjectorError(
+          "capacity",
+          "Activity projector registry capacity exceeded",
+        );
+      }
+
+      // --- Pass 2: allocate keys (no registry mutation) ---------------------
+      // If a collision is detected, roll back all keys allocated in this pass.
+
+      const newKeys = new Map<number, string>(); // collected index → key
+      for (let i = 0; i < collected.length; i++) {
+        const ce = collected[i]!;
+        if (ce.existingKey !== undefined) continue;
+        const key = alloc();
+        if (allocatedKeys.has(key)) {
+          // Collision: roll back this pass's allocations.
+          for (const k of newKeys.values()) {
+            allocatedKeys.delete(k);
+          }
+          throw new ActivityProjectorError(
+            "collision",
+            "Activity projector key allocator collision detected",
+          );
+        }
+        allocatedKeys.add(key);
+        newKeys.set(i, key);
+      }
+
+      // --- Pass 3: commit to registry (can't fail — capacity/collision checked)
+
+      let commitRoot = registry.get(scope);
+      if (commitRoot === undefined) {
+        commitRoot = newHierarchyNode();
+        registry.set(scope, commitRoot);
+      }
+      // Process in order: parents are always committed before children.
+      // For each entry, the commit-time parent node is:
+      //   - commitRoot if parentIndex < 0 (root entry)
+      //   - the parent's commit-time child node otherwise
+      // We track each entry's commit-time child node for its children to use.
+      const commitChildNodes: HierarchyNode[] = new Array(collected.length);
+      for (let i = 0; i < collected.length; i++) {
+        const ce = collected[i]!;
+        const commitParent =
+          ce.parentIndex < 0 ? commitRoot : commitChildNodes[ce.parentIndex]!;
+        // Get or create the child node for this entry under its parent.
+        commitChildNodes[i] = getOrCreateChild(
+          commitParent,
+          ce.entryKind,
+          ce.ns,
+          ce.sourceId,
+        );
+        // Set the key if this is a new entry.
+        if (ce.existingKey === undefined) {
+          const key = newKeys.get(i)!;
+          setKey(commitParent, ce.entryKind, ce.ns, ce.sourceId, key);
+          registrySize += 1;
+        }
+      }
+
+      // --- Pass 4: build LiveWorkItem tree and operational map --------------
+
+      const builtItems: (LiveWorkItem | undefined)[] = new Array(
+        collected.length,
+      );
+      const opEntries: [string, string][] = []; // rawId → key
+
+      for (let i = collected.length - 1; i >= 0; i--) {
+        const ce = collected[i]!;
+        const key = ce.existingKey ?? newKeys.get(i)!;
+        const children = ce.childIndices.map((idx) => builtItems[idx]!);
+        builtItems[i] = {
+          key,
+          kind: ce.entry.kind,
+          title: ce.entry.label,
+          detail: ce.entry.outputSummary ?? "",
+          tone: mapTone(ce.entry.tone),
+          children,
+        };
+        if (ce.rawId !== null) {
+          opEntries.push([ce.rawId, key]);
+        }
+      }
+
+      const topLevel = topLevelIndices.map((idx) => builtItems[idx]!);
+      const opMap = new ImmutableReadonlyMap<string, string>(opEntries);
 
       return {
         live: {
           tasks: view.tasks.map((t) => ({ status: t.status, count: t.count })),
-          work,
+          work: topLevel,
           usage: {
             totalTokens: view.usage.totalTokens,
             cost: view.usage.cost,
@@ -264,7 +535,7 @@ export function createLiveActivityProjector(options?: {
           },
         },
         operational: {
-          keys: opKeys,
+          keys: opMap,
         },
       };
     },
@@ -275,16 +546,13 @@ export function createLiveActivityProjector(options?: {
         allocatedKeys.clear();
         registrySize = 0;
       } else {
-        const scopeMap = registry.get(scope);
-        if (scopeMap !== undefined) {
-          for (const [, parentMap] of scopeMap) {
-            for (const [, kindMap] of parentMap) {
-              for (const [, key] of kindMap) {
-                allocatedKeys.delete(key);
-              }
-              registrySize -= kindMap.size;
-            }
+        const scopeRoot = registry.get(scope);
+        if (scopeRoot !== undefined) {
+          const removedKeys = collectAllKeys(scopeRoot);
+          for (const key of removedKeys) {
+            allocatedKeys.delete(key);
           }
+          registrySize -= removedKeys.length;
           registry.delete(scope);
         }
       }
