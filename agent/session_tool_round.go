@@ -459,7 +459,6 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 			s.appendSteeringTurn(reminder, kind)
 		}
 	}); abortErr != nil {
-		s.removeAllTurnOwnedSteering()
 		return false, abortErr
 	}
 	return yieldToObserverCallback, nil
