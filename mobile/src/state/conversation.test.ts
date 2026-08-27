@@ -1037,6 +1037,7 @@ describe("ConversationStore", () => {
             kind: "activity",
             id: "tool-1",
             label: "shell",
+            family: "tool",
             state: "running",
             detail: {},
           },
@@ -1094,6 +1095,73 @@ describe("ConversationStore", () => {
       expect(item).toBeDefined();
       expect(item?.kind).toBe("activity");
     });
+
+    // Task 2A: notification path (projectSingleItem) must set the durable
+    // activity family from the wire type, independent of the label. A
+    // commandExecution whose toolName is "Reasoning" stays family "tool" and
+    // preserves callId exactly; a reasoning item is family "reasoning".
+    it("2A: notification-path commandExecution named 'Reasoning' is family 'tool' with exact callId", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({ items: [] });
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "commandExecution",
+            id: "tool-reasoning-1",
+            toolName: "Reasoning",
+            callId: "call-reasoning-1",
+            status: "completed",
+            output: "thoughts",
+            argumentsJson: '{"summary":"thinking"}',
+          },
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      const item = conv?.items.find((i) => i.id === "tool-reasoning-1");
+      expect(item?.kind).toBe("activity");
+      if (item?.kind === "activity") {
+        // Family follows the wire type (commandExecution), not the toolName.
+        expect(item.family).toBe("tool");
+        // Label is still the toolName verbatim (display only).
+        expect(item.label).toBe("Reasoning");
+        // callId preserved exactly for diagnostics disclosure.
+        expect(item.detail.callId).toBe("call-reasoning-1");
+      }
+    });
+
+    it("2A: notification-path reasoning item is family 'reasoning'", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({ items: [] });
+      await store.getState().open(service, "ref-1");
+      store.getState().applyNotification({
+        method: "item/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "reasoning",
+            id: "reason-notify-1",
+            status: "inProgress",
+            text: "analyzing",
+          },
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      const item = conv?.items.find((i) => i.id === "reason-notify-1");
+      expect(item?.kind).toBe("activity");
+      if (item?.kind === "activity") {
+        expect(item.family).toBe("reasoning");
+        expect(item.label).toBe("Reasoning");
+      }
+    });
   });
 
   describe("assistant delta appends to item", () => {
@@ -1137,6 +1205,7 @@ describe("ConversationStore", () => {
             kind: "activity",
             id: "reason-1",
             label: "Reasoning",
+            family: "reasoning",
             state: "running",
             detail: { output: "Thinking" },
           },
@@ -1170,6 +1239,7 @@ describe("ConversationStore", () => {
             kind: "activity",
             id: "tool-1",
             label: "shell",
+            family: "tool",
             state: "running",
             detail: { output: "line1" },
           },
@@ -1308,6 +1378,7 @@ describe("ConversationStore", () => {
             kind: "activity",
             id: "tool-big",
             label: "shell",
+            family: "tool",
             state: "running",
             detail: { output: largeOutput },
           },

@@ -191,6 +191,7 @@ function buildConversationItems(): MobileTimelineItem[] {
     kind: "activity",
     id: "act-1",
     label: "find auth files",
+    family: "tool",
     state: "completed",
     detail: {
       arguments: '{"path": "src/middleware", "pattern": "auth"}',
@@ -206,6 +207,7 @@ function buildConversationItems(): MobileTimelineItem[] {
     kind: "activity",
     id: "act-2",
     label: "analyzing auth flow",
+    family: "reasoning",
     state: "completed",
     detail: {
       arguments: "",
@@ -245,6 +247,7 @@ function buildConversationItems(): MobileTimelineItem[] {
     kind: "activity",
     id: "act-3",
     label: "applying fix",
+    family: "tool",
     state: "running",
     detail: {
       arguments:
@@ -275,6 +278,7 @@ function buildConversationItems(): MobileTimelineItem[] {
       kind: "activity",
       id: `act-batch-${i}`,
       label: `test iteration ${i + 1}`,
+      family: "tool",
       state: i % 5 === 0 ? "failed" : "completed",
       detail: {
         arguments: `{"test": "case_${i + 1}"}`,

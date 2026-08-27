@@ -593,6 +593,7 @@ describe("coordinator — only active assistant prose", () => {
             kind: "activity",
             id: "act1",
             label: "Tool",
+            family: "tool",
             state: "running",
             detail: {},
           },

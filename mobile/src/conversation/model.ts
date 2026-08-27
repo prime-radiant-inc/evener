@@ -87,13 +87,11 @@ export type MobileTimelineItem =
       id: string;
       label: string;
       // Durable activity-family discriminator, independent of `label`. The
-      // canonical projection (projectThread) always sets this to a concrete
-      // ActivityFamily derived from the wire item's type (commandExecution →
+      // projection sets this from the wire item's type (commandExecution →
       // "tool", reasoning → "reasoning", anything else → "unknown"), never from
-      // the label text. Optional on the type so non-canonical constructors
-      // (dev fixtures, live-concepts tests) keep compiling; consumers branch on
-      // `family` and fall back to "unknown" when absent.
-      family?: ActivityFamily;
+      // the label text. Required: every activity constructor MUST set it to a
+      // concrete ActivityFamily; consumers branch on `family`, never `label`.
+      family: ActivityFamily;
       state: ActivityState;
       detail: ActivityDetail;
     }
