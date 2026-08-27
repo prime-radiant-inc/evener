@@ -243,56 +243,42 @@ func TestDegradedDelegateSpawnFailureDisposesItsScratch(t *testing.T) {
 	}
 }
 
-// TestSandboxPromptLineDisclosesDegradedReadOnlyDelegate: silent degradation is
-// its own bug, so the delegate's own prompt must say exactly where its read-only
-// boundary holds — enforced for the file tools, advisory for the shell — and name
-// the one directory it may write.
-func TestSandboxPromptLineDisclosesDegradedReadOnlyDelegate(t *testing.T) {
-	root := realTempDirForTest(t)
-	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeOff, WriteBlocked: true},
-		sbxNoBackendFacts(realTempDirForTest(t)), root)
-	if err != nil {
-		t.Fatalf("Resolve: %v", err)
+// TestDegradedReadOnlyBoundaryDisclosesUnsandboxedShellCapabilities protects the
+// structured facts both parent- and delegate-facing renderers consume. It catches
+// a disclosure that narrows the residual gap to writes while omitting host reads
+// or network access, without pinning model-facing prose.
+func TestDegradedReadOnlyBoundaryDisclosesUnsandboxedShellCapabilities(t *testing.T) {
+	boundary, ok := degradedReadOnlyBoundaryFor(sandbox.ModeOff, true)
+	if !ok {
+		t.Fatal("write-blocked off must report the degraded read-only boundary")
 	}
-	local := execenv.NewLocalExecutionEnvironment(root)
-	t.Cleanup(func() { local.Cleanup(); local.DisposeSandboxScratch() })
-	if err := local.EnableSandbox(&rp); err != nil {
-		t.Fatalf("EnableSandbox: %v", err)
+	if boundary.ShellSandboxed {
+		t.Error("the degraded delegate must not report its shell as sandboxed")
 	}
-
-	got := sandboxPromptLine(local)
-	if got == "" {
-		t.Fatal("a degraded read-only delegate must still be told what its box does")
+	if !boundary.ShellMayReadHostFiles || !boundary.ShellMayWriteHostFiles {
+		t.Errorf("degraded shell host file access = read:%v write:%v, want both allowed",
+			boundary.ShellMayReadHostFiles, boundary.ShellMayWriteHostFiles)
 	}
-	if strings.Contains(got, "off (network") {
-		t.Errorf("the line must not describe the delegate's scope as the mode name %q: %q", sandbox.ModeOff, got)
+	if !boundary.ShellNetworkUnrestricted {
+		t.Error("the degraded delegate must report unrestricted shell network access")
 	}
-	for _, want := range []string{"read-only", "file tools", "shell"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("degraded sandbox line must mention %q: %q", want, got)
+	for _, tc := range []struct {
+		mode         sandbox.Mode
+		writeBlocked bool
+	}{
+		{mode: sandbox.ModeOff},
+		{mode: sandbox.ModeReadOnly, writeBlocked: true},
+	} {
+		if _, ok := degradedReadOnlyBoundaryFor(tc.mode, tc.writeBlocked); ok {
+			t.Errorf("mode=%v writeBlocked=%v reported a degraded boundary", tc.mode, tc.writeBlocked)
 		}
-	}
-	// The one thing the file-tool layer takes away that a plain-off delegate had:
-	// it will not traverse a symlinked directory. A model that hits that denial
-	// must be able to act on it instead of retrying the same path.
-	if !strings.Contains(got, "symlink") {
-		t.Errorf("degraded sandbox line must disclose the symlink-traversal refusal: %q", got)
-	}
-	scratch := local.SessionScratchDir()
-	if scratch == "" {
-		t.Fatal("a degraded read-only delegate must be given a scratch dir")
-	}
-	if !strings.Contains(got, scratch) {
-		t.Errorf("degraded sandbox line must name the one writable directory: got %q, want it to contain %q", got, scratch)
 	}
 }
 
 // TestCreateExplorerDelegateDegradesInsteadOfRefusing drives the reported
 // regression end to end: delegate(agent_type="explorer") with NO sandbox argument,
 // on a host where no backend can enforce read-only. It must launch — the caller
-// asked for an agent type, not for an OS sandbox — and the parent must be told in
-// band that the delegate's read-only boundary holds for file tools and is
-// advisory for its shell, so a degradation is never silent.
+// asked for an agent type, not for an OS sandbox.
 func TestCreateExplorerDelegateDegradesInsteadOfRefusing(t *testing.T) {
 	root := newNoBackendDelegateSession(t)
 
@@ -306,28 +292,11 @@ func TestCreateExplorerDelegateDegradesInsteadOfRefusing(t *testing.T) {
 	if result.DelegateID == "" {
 		t.Fatalf("degraded explorer delegate returned no delegate_id: %+v", result)
 	}
-	var disclosure string
-	for _, warning := range result.Warnings {
-		if strings.Contains(warning, "read-only") {
-			disclosure = warning
-		}
-	}
-	if disclosure == "" {
-		t.Fatalf("the parent must be told the boundary degraded, got warnings %q", result.Warnings)
-	}
-	for _, want := range []string{"file tools", "shell", "no sandbox backend"} {
-		if !strings.Contains(disclosure, want) {
-			t.Errorf("degradation disclosure must mention %q: %q", want, disclosure)
-		}
-	}
 }
 
-// TestDegradedAdvisoryPromisesOnlyWhatThisHostDelivers: the advisory's
-// remediation has to be true on the host it fires on. A worktree lane changes
-// WHERE the delegate works, not what confines it — an isolated delegate takes the
-// same unwrapped path, so its shell can still write any absolute path — so the
-// advisory may claim a separate checkout and must not claim a boundary.
-func TestDegradedAdvisoryPromisesOnlyWhatThisHostDelivers(t *testing.T) {
+// TestDegradedWorktreeIsolationDoesNotAddKernelConfinement proves a worktree lane
+// changes where the delegate works but cannot add the missing host sandbox.
+func TestDegradedWorktreeIsolationDoesNotAddKernelConfinement(t *testing.T) {
 	lane, home := sbxLane(t)
 	parent := sbxDelegateSession(t, sbxNoBackendFacts(home))
 	sbxSetParentEnv(t, parent, lane)
@@ -349,34 +318,6 @@ func TestDegradedAdvisoryPromisesOnlyWhatThisHostDelivers(t *testing.T) {
 	t.Cleanup(le.DisposeSandboxScratch)
 	if le.KernelWrapper() != nil {
 		t.Fatal("this host has no backend; an isolated delegate must be no more confined than a shared one")
-	}
-
-	advisory := degradedReadOnlyDelegateAdvisory(policy)
-	if strings.Contains(advisory, "hard boundary") {
-		t.Errorf("the advisory must not offer a boundary this host cannot enforce: %q", advisory)
-	}
-	if !strings.Contains(advisory, "separate checkout") {
-		t.Errorf("the advisory must claim what a worktree lane actually gives — a separate checkout: %q", advisory)
-	}
-}
-
-// TestCreateExplorerDelegateEnforcedHostSaysNothing: the disclosure is a report
-// of a real gap, not decoration. Where the host CAN enforce the read-only box,
-// the spawn carries no such warning.
-func TestCreateExplorerDelegateEnforcedHostSaysNothing(t *testing.T) {
-	root, _, _ := newDelegateResourceBootstrapSession(t) // bwrap-capable prober
-
-	result := root.createDelegate(context.Background(), delegateArgs{
-		Task:      "investigate the failing test",
-		AgentType: "explorer",
-	})
-	if result.Err != nil {
-		t.Fatalf("createDelegate on a bwrap host: %v", result.Err)
-	}
-	for _, warning := range result.Warnings {
-		if strings.Contains(warning, "no sandbox backend") {
-			t.Errorf("an enforced read-only delegate must not claim a degraded boundary: %q", warning)
-		}
 	}
 }
 

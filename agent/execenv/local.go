@@ -95,9 +95,10 @@ type LocalExecutionEnvironment struct {
 	Wrapper *sandbox.Wrapper
 
 	// sbMu guards the lazily-built fd-anchored file-tool layers. sbfs is the policy
-	// enforcement layer, built on first file-tool use from an ENFORCED Sandbox policy
-	// and cached for the environment's lifetime (its root fds are captured once so a
-	// later root swap cannot redirect resolution). It stays nil for off / a nil policy.
+	// enforcement layer, built on first file-tool use from a file-tool-confined
+	// Sandbox policy and cached for the environment's lifetime (its root fds are
+	// captured once so a later root swap cannot redirect resolution). It stays nil
+	// for plain off / a nil policy.
 	sbMu sync.Mutex
 	sbfs *sandboxFS
 	// scratchFS is the cached fd-anchored layer for an unsandboxed session's

@@ -253,6 +253,38 @@ func (s *Session) delegateFileToolEnforceable(host sandbox.HostFacts) bool {
 	return execenv.FileToolEnforceable()
 }
 
+type degradedReadOnlyBoundary struct {
+	ShellSandboxed           bool
+	ShellMayReadHostFiles    bool
+	ShellMayWriteHostFiles   bool
+	ShellNetworkUnrestricted bool
+}
+
+func degradedReadOnlyBoundaryFor(mode sandbox.Mode, writeBlocked bool) (degradedReadOnlyBoundary, bool) {
+	if mode != sandbox.ModeOff || !writeBlocked {
+		return degradedReadOnlyBoundary{}, false
+	}
+	return degradedReadOnlyBoundary{
+		ShellMayReadHostFiles:    true,
+		ShellMayWriteHostFiles:   true,
+		ShellNetworkUnrestricted: true,
+	}, true
+}
+
+func (b degradedReadOnlyBoundary) shellDisclosure(subject string) string {
+	parts := make([]string, 0, 3)
+	if !b.ShellSandboxed {
+		parts = append(parts, subject+" is unsandboxed")
+	}
+	if b.ShellMayReadHostFiles && b.ShellMayWriteHostFiles {
+		parts = append(parts, "may read or write anything the host user can")
+	}
+	if b.ShellNetworkUnrestricted {
+		parts = append(parts, "uses unrestricted network access")
+	}
+	return strings.Join(parts, ", ")
+}
+
 // degradedReadOnlyDelegateAdvisory is the spawn-result disclosure the PARENT
 // reads: the delegate it just launched is read-only for its file tools and only
 // advisory for its shell, because this host cannot enforce the box. It rides the
@@ -266,10 +298,14 @@ func (s *Session) delegateFileToolEnforceable(host sandbox.HostFacts) bool {
 // delegate's own directory somewhere an ACCIDENTAL write lands harmlessly, which
 // is the same collision-avoidance claim the shared-workspace advisory makes.
 func degradedReadOnlyDelegateAdvisory(policy *sandbox.SandboxPolicy) string {
-	if policy == nil || policy.Mode != sandbox.ModeOff || !policy.WriteBlocked {
+	if policy == nil {
 		return ""
 	}
-	return "this delegate's read-only boundary is enforced for its file tools (every write_file/edit_file outside its own scratch dir is denied) but ADVISORY for its shell: no sandbox backend is available on this host, so a shell command it runs can still write your workspace. Its prompt says so too. No sandbox mode can harden this here; isolation=\"worktree\" only gives it a separate checkout, so a stray write lands off your tree rather than being blocked."
+	boundary, ok := degradedReadOnlyBoundaryFor(policy.Mode, policy.WriteBlocked)
+	if !ok {
+		return ""
+	}
+	return "this delegate's read-only boundary is enforced for its file tools (every file-tool write outside its own scratch dir is denied) but ADVISORY for its shell: no sandbox backend is available on this host, so " + boundary.shellDisclosure("its shell") + ". Its prompt says so too. No sandbox mode can harden this here; isolation=\"worktree\" only gives it a separate checkout, so a stray write lands off your tree rather than being blocked."
 }
 
 // resolveReadOnlyDelegateSandboxRequest applies the structured read-only role's

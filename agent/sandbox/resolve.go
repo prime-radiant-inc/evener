@@ -187,15 +187,14 @@ func (rp ResolvedPolicy) Enforced() bool { return rp.Mode != ModeOff }
 // nothing, so the file tools keep today's byte-identical os path.
 func (rp ResolvedPolicy) FileToolConfined() bool { return rp.Mode != ModeOff || rp.WriteBlocked }
 
-// FileToolEnforceable reports whether the in-process file-tool layer can enforce
-// anything at all on this host. Its race-safe primitives (openat2 /
+// FileToolEnforceable reports whether this OS has an in-process file-tool
+// enforcement implementation. Its race-safe primitives (openat2 /
 // RESOLVE_NO_SYMLINKS on Linux, the O_NOFOLLOW tail walk on darwin) exist only
 // there; every other platform's stand-ins fail closed on EVERY operation, reads
-// included. So a policy that leans on file-tool enforcement alone — the degraded
-// read-only delegate — must not be derived off those two: it would hand back a
-// delegate whose file tools are all broken rather than one that is confined.
-// Callers with no such fallback (an ordinary sandboxed mode) never need this: the
-// resolver's backend floor already refuses every mode off Linux/darwin.
+// included. Linux callers must separately prove the live process may use openat2:
+// an older kernel or seccomp policy can reject the syscall even though the OS has
+// the implementation. The delegate fallback combines this platform check with
+// execenv's runtime probe before deriving a wrapperless policy.
 func FileToolEnforceable(host HostFacts) bool {
 	return host.OS == "linux" || host.OS == "darwin"
 }

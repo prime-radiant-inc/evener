@@ -282,7 +282,8 @@ func sandboxPromptLine(env execenv.ExecutionEnvironment) string {
 // parent's deliverable.
 func sandboxPromptBoundary(rp *sandbox.ResolvedPolicy) string {
 	if !rp.Enforced() {
-		return "read-only for your file tools — fixed for this session. This host has no sandbox backend, so the boundary is ENFORCED for your file tools (write_file, edit_file and the rest are denied) and ADVISORY for your shell: nothing stops a shell command from writing, so do not write outside the scratch directory. Your file tools will not traverse a symlinked directory either; if one is refused, name the real path instead of retrying"
+		boundary, _ := degradedReadOnlyBoundaryFor(rp.Mode, rp.WriteBlocked)
+		return "read-only for your file tools — fixed for this session. This host has no sandbox backend, so the boundary is ENFORCED for your file tools (every file-tool write outside your scratch directory is denied) and ADVISORY for your shell: " + boundary.shellDisclosure("your shell") + ". Do not write outside the scratch directory. Your file tools will not traverse a symlinked directory either; if one is refused, name the real path instead of retrying"
 	}
 	netStr := "on"
 	if !rp.Network {
