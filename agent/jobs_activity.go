@@ -25,10 +25,16 @@ const (
 )
 
 type activityContinuation struct {
-	Version   int      `json:"v"`
-	RootID    string   `json:"root"`
-	SessionID string   `json:"session"`
-	Path      []string `json:"path"`
+	Version   int                    `json:"v"`
+	RootID    string                 `json:"root"`
+	SessionID string                 `json:"session"`
+	Path      []string               `json:"path"`
+	After     *activityEntryPosition `json:"after,omitempty"`
+}
+
+type activityEntryPosition struct {
+	Kind string `json:"kind"`
+	ID   string `json:"id"`
 }
 
 // activitySessionSnapshot is the lock-free input to the activity projection.
@@ -46,6 +52,7 @@ type activitySessionSnapshot struct {
 	Diagnostics     []string
 	Children        map[string]*activitySessionSnapshot // child session ID
 	Errors          map[string]error                    // child session ID
+	ResumeAfter     *activityEntryPosition
 }
 
 type activitySessionLocator struct {
@@ -134,6 +141,16 @@ func decodeActivityContinuation(token, expectedRoot string) (activityContinuatio
 			return activityContinuation{}, fmt.Errorf("duplicate continuation path hop %q", hop)
 		}
 		seen[hop] = true
+	}
+	if cont.After != nil {
+		if cont.After.Kind != "shell" && cont.After.Kind != "delegate" {
+			return activityContinuation{}, fmt.Errorf("invalid continuation entry kind %q", cont.After.Kind)
+		}
+		if cont.After.ID == "" {
+			return activityContinuation{}, errors.New("continuation entry position is missing an ID")
+		}
+		position := *cont.After
+		cont.After = &position
 	}
 	cont.Path = append([]string(nil), cont.Path...)
 	return cont, nil
@@ -261,7 +278,7 @@ func buildActivityContinuationSnapshot(loc activitySessionLocator, cont activity
 		if loc.sessionID != cont.SessionID {
 			return nil, fmt.Errorf("continuation session %q does not match root %q", cont.SessionID, loc.sessionID)
 		}
-		return buildActivityFullSnapshot(loc, visited, required)
+		return buildActivityContinuationTarget(loc, cont, visited, required)
 	}
 	return buildActivityContinuationAt(loc, cont, 0, visited, required)
 }
@@ -271,7 +288,7 @@ func buildActivityContinuationAt(loc activitySessionLocator, cont activityContin
 		if loc.sessionID != cont.SessionID {
 			return nil, fmt.Errorf("continuation session %q does not match resolved path %q", cont.SessionID, loc.sessionID)
 		}
-		return buildActivityFullSnapshot(loc, visited, required)
+		return buildActivityContinuationTarget(loc, cont, visited, required)
 	}
 	loaded, err := loadActivityBase(loc, required)
 	if err != nil {
@@ -300,6 +317,16 @@ func buildActivityContinuationAt(loc activitySessionLocator, cont activityContin
 		return &filtered, nil
 	}
 	return nil, fmt.Errorf("continuation path hop %q not found", delegateID)
+}
+
+func buildActivityContinuationTarget(loc activitySessionLocator, cont activityContinuation, visited map[string]bool, required bool) (*activitySessionSnapshot, error) {
+	snapshot, err := buildActivityFullSnapshot(loc, visited, required)
+	if err != nil || snapshot == nil || cont.After == nil {
+		return snapshot, err
+	}
+	position := *cont.After
+	snapshot.ResumeAfter = &position
+	return snapshot, nil
 }
 
 func loadActivityBase(loc activitySessionLocator, required bool) (activityLoadedBase, error) {
@@ -633,8 +660,15 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 	defer delete(budget.visiting, cycleKey)
 
 	records := activityOwnedRecords(snapshot.SessionID, mergeActivityRecords(snapshot.Jobs, snapshot.LiveJobs))
+	resumed := snapshot.ResumeAfter == nil
 	for _, rec := range records {
 		if rec == nil {
+			continue
+		}
+		if !resumed {
+			if activityEntryPositionMatches(snapshot.ResumeAfter, "shell", rec.JobID) {
+				resumed = true
+			}
 			continue
 		}
 		switch rec.Type {
@@ -651,6 +685,12 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 		}
 	}
 	for _, delegateID := range sortedStableActivityDelegateIDs(snapshot.StableDelegates) {
+		if !resumed {
+			if activityEntryPositionMatches(snapshot.ResumeAfter, "delegate", delegateID) {
+				resumed = true
+			}
+			continue
+		}
 		if !activityConsumeWorkUnit(budget, 1) {
 			markActivitySessionTruncated(&projected, budget, snapshot.SessionID, path)
 			projected.Counts, projected.Aggregate = aggregateActivity(projected.Entries, projected.Branch)
@@ -658,6 +698,9 @@ func projectActivitySessionAt(snapshot activitySessionSnapshot, budget *activity
 		}
 		delegate := projectStableActivityDelegate(snapshot, snapshot.StableDelegates[delegateID], budget, depth, path)
 		projected.Entries = append(projected.Entries, appwire.JobActivityEntry{Kind: "delegate", Delegate: &delegate})
+	}
+	if !resumed {
+		appendActivityBranchError(&projected.Branch, fmt.Sprintf("continuation entry %q was not found in session %q", snapshot.ResumeAfter.ID, snapshot.SessionID))
 	}
 
 	projected.Counts, projected.Aggregate = aggregateActivity(projected.Entries, projected.Branch)
@@ -834,8 +877,27 @@ func markActivitySessionTruncated(session *appwire.JobActivitySession, budget *a
 			RootID:    budget.rootID,
 			SessionID: sessionID,
 			Path:      append([]string(nil), path...),
+			After:     activityPositionAfterEntries(session.Entries),
 		})
 	}
+}
+
+func activityEntryPositionMatches(position *activityEntryPosition, kind, id string) bool {
+	return position != nil && position.Kind == kind && position.ID == id
+}
+
+func activityPositionAfterEntries(entries []appwire.JobActivityEntry) *activityEntryPosition {
+	if len(entries) == 0 {
+		return nil
+	}
+	entry := entries[len(entries)-1]
+	if entry.Job != nil {
+		return &activityEntryPosition{Kind: "shell", ID: entry.Job.JobID}
+	}
+	if entry.Delegate != nil {
+		return &activityEntryPosition{Kind: "delegate", ID: entry.Delegate.DelegateID}
+	}
+	return nil
 }
 
 func markActivityDelegateTruncated(delegate *appwire.JobActivityDelegate, budget *activityBudget, sessionID string, path []string) {
