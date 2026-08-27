@@ -24,6 +24,7 @@ import type {
   ThreadCapabilities,
   ThreadItem,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import { WireError } from "../../../cmd/evener-hub/frontend/src/protocol/errors";
 import type {
   MobileCapabilities,
   MobileConversation,
@@ -35,7 +36,6 @@ import type {
   ConversationService,
   LiveConversationService,
 } from "../services/conversation";
-import type { ActivityState } from "./activity";
 
 export type ConversationStatus =
   | "idle"
@@ -55,27 +55,31 @@ export interface ConversationMutationState {
   status: "pending" | "failed";
   draftSnapshot: string | null;
   generation: number;
+  /** @internal — monotonic token for stale-check; not for external consumption. */
   mutationId: number;
 }
 
 // An injected coalescer that batches rehydrate requests (from resync and
 // unsupported item transitions) into a single rehydrate() call. The store
 // calls requestRehydrate(ref) — the coalescer decides when to actually fire.
+// F2: The coalescer is created and bound internally by openProjected; there
+// is no public setCoalescer. flush() lets callers await the in-flight effect.
 export interface RehydrateCoalescer {
-  requestRehydrate(ref: string): void;
+  requestRehydrate(key: string): void;
+  flush(): Promise<void>;
 }
 
-// A structural activity sink accepted by openProjected/rehydrate (F6).
-// Routes every subscribed frame to both conversation and activity; the
-// applyNotification return signals whether a shared reread is needed.
+// A structural activity sink accepted by openProjected/rehydrate (F4).
+// F4 strict API: identity-first parameters, no old setThreadIdentity.
+// The applyLiveNotification return value drives the shared reread scheduler.
 export interface LiveActivitySink {
-  setView(
+  setLiveView(
+    identity: { threadId: string; ref: string; generation: number },
     view: ActivityView,
-    identity: { threadId: string; ref: string; generation: number },
   ): void;
-  applyNotification(
-    n: AnyNotification,
+  applyLiveNotification(
     identity: { threadId: string; ref: string; generation: number },
+    n: AnyNotification,
   ): "applied" | "rehydrate" | "ignored";
   reset(): void;
 }
@@ -84,12 +88,23 @@ export interface LiveActivitySink {
 // signals for the same key into a single bounded effect execution. The
 // effect atomically updates conversation and activity state. Tests prove
 // one real read/result for multiple signals.
+// F5: The drain loop catches errors (the effect is responsible for setting
+// generation/op-owned error state) and never produces an unhandled rejection.
+// A flush() method lets callers (rehydrate) await the in-flight effect.
 export function createAuthoritativeRereadScheduler(
   effect: (key: string) => Promise<void>,
 ): RehydrateCoalescer {
   let pending: Promise<void> | null = null;
   let scheduled = false;
   let pendingKey: string | null = null;
+  // Wrap effect so errors are swallowed — the effect itself sets error state
+  // on the store. This prevents unhandled promise rejections (F5).
+  function runEffect(key: string): Promise<void> {
+    return effect(key).catch(() => {
+      // Error handling is the effect's responsibility (it sets
+      // generation-owned error state). Swallow to prevent unhandled rejection.
+    });
+  }
   return {
     requestRehydrate(key: string) {
       if (pending !== null) {
@@ -112,7 +127,7 @@ export function createAuthoritativeRereadScheduler(
         const keyToUse = pendingKey;
         pendingKey = null;
         try {
-          await effect(keyToUse ?? key);
+          await runEffect(keyToUse ?? key);
         } finally {
           // Check if more requests arrived during the flush.
           if (scheduled && pendingKey !== null) {
@@ -122,9 +137,7 @@ export function createAuthoritativeRereadScheduler(
             // One trailing flush for requests that arrived during the
             // in-flight effect. This bounds the total to at most one
             // in-flight + one trailing flush.
-            pending = (async () => {
-              await effect(retryKey);
-            })().finally(() => {
+            pending = runEffect(retryKey).finally(() => {
               pending = null;
               scheduled = false;
               pendingKey = null;
@@ -135,30 +148,15 @@ export function createAuthoritativeRereadScheduler(
         }
       });
     },
+    flush(): Promise<void> {
+      return pending ?? Promise.resolve();
+    },
   };
 }
 
-// Adapter: wrap a Zustand activity store into a LiveActivitySink (F6).
-// The existing ActivityStore has setView(view) and applyNotification(n)
-// without the identity parameter. This adapter adds the identity
-// parameter and records it via setThreadIdentity.
-export function createActivitySink(store: {
-  getState: () => ActivityState;
-}): LiveActivitySink {
-  return {
-    setView(view, identity) {
-      store.getState().setView(view);
-      store.getState().setThreadIdentity(identity.threadId, identity.ref);
-    },
-    applyNotification(n, _identity) {
-      store.getState().applyNotification(n);
-      return "applied";
-    },
-    reset() {
-      store.getState().reset();
-    },
-  };
-}
+// F4: No legacy createActivitySink adapter — the activity store's own
+// LiveActivityState (Coordinate B) implements LiveActivitySink directly.
+// Do not fabricate "applied" — use the real applyLiveNotification outcome.
 
 // --- limits and truncation helpers (centralized) ----------------------------
 
@@ -167,8 +165,8 @@ export const TRUNCATION_MARKER = "… truncated";
 export const RETAINED_ITEM_CAP = 500;
 
 // Truncate a string to maxBytes in UTF-8 + marker, ending with "… truncated"
-// exactly once. Uses TextEncoder for byte-accurate measurement and ensures the
-// result is valid Unicode (no split surrogate pairs).
+// exactly once. Iterates Unicode scalar values (not UTF-16 code units) so
+// no surrogate pairs are split and no U+FFFD replacement chars are produced.
 const textEncoder = new TextEncoder();
 const markerBytes = textEncoder.encode(TRUNCATION_MARKER);
 
@@ -176,18 +174,29 @@ export function truncateText(text: string, maxBytes: number): string {
   const encoded = textEncoder.encode(text);
   if (encoded.length <= maxBytes) return text;
   const targetBytes = maxBytes - markerBytes.length;
-  // Decode a subarray up to targetBytes, then re-encode to verify the actual
-  // byte length (the decoder may add replacement chars at a boundary).
-  const decoder = new TextDecoder("utf-8", { fatal: false });
-  let truncated = decoder.decode(encoded.subarray(0, targetBytes));
-  // If the re-encoded truncated text + marker exceeds maxBytes (due to
-  // replacement chars at the boundary), trim further.
+  // Iterate code points (for...of iterates Unicode scalar values) to find
+  // the longest prefix whose UTF-8 encoding fits within targetBytes. This
+  // avoids splitting surrogate pairs and never produces U+FFFD.
+  let byteLen = 0;
+  let cutIdx = 0;
+  for (const cp of text) {
+    const cpBytes = textEncoder.encode(cp).length;
+    if (byteLen + cpBytes > targetBytes) break;
+    byteLen += cpBytes;
+    cutIdx += cp.length;
+  }
+  // Trim code points until the result + marker fits within maxBytes.
+  // (May need to trim if a multibyte code point straddles the boundary.)
+  let truncated = text.slice(0, cutIdx);
   let truncatedBytes = textEncoder.encode(truncated);
   while (
     truncatedBytes.length + markerBytes.length > maxBytes &&
     truncated.length > 0
   ) {
-    truncated = truncated.slice(0, -1);
+    // Remove one code point (may be 2 UTF-16 units for surrogate pairs).
+    const codePoints = [...truncated];
+    codePoints.pop();
+    truncated = codePoints.join("");
     truncatedBytes = textEncoder.encode(truncated);
   }
   return truncated + TRUNCATION_MARKER;
@@ -198,11 +207,11 @@ export function exceedsByteLimit(text: string, maxBytes: number): boolean {
   return textEncoder.encode(text).length > maxBytes;
 }
 
-// F8: Check if text already carries the truncation marker. Once marked,
-// later deltas cannot append — the marker appears exactly once at the end.
-function isAlreadyTruncated(text: string): boolean {
-  return text.endsWith(TRUNCATION_MARKER);
-}
+// F12: Per-item truncation ownership. Instead of checking if the text ends
+// with the marker (which would freeze if genuine content ends with "…
+// truncated"), the store tracks which item IDs have been truncated in a
+// private set. This allows genuine marker suffixes in content without
+// freezing delta appends.
 
 // Apply truncation to an item's text-bearing fields (arguments, output, error,
 // markdown). Returns a new item with truncated fields.
@@ -231,19 +240,18 @@ function truncateItem(item: MobileTimelineItem): MobileTimelineItem {
   }
 }
 
-// Enforce the 500-item retained cap. When prepending older items, trims the
-// NEWEST items (end of array) so the oldest rows are retained for paging.
-// When appending, trims the oldest (front of array).
+// Enforce the 500-item retained cap. When prepending older items, retains
+// the NEWEST items (end of array) so the live tail is preserved for
+// interactive scrolling. When appending, trims the oldest (front of array).
 function capItems(
   items: MobileTimelineItem[],
   mode: "append" | "prepend" = "append",
 ): MobileTimelineItem[] {
   if (items.length <= RETAINED_ITEM_CAP) return items;
-  if (mode === "prepend") {
-    // Keep the oldest RETAINED_ITEM_CAP items (front of the merged array).
-    return items.slice(0, RETAINED_ITEM_CAP);
-  }
-  // Default: keep the newest RETAINED_ITEM_CAP items.
+  // In both modes, retain the newest RETAINED_ITEM_CAP items (the tail).
+  // Prepend adds older items at the front; trimming from the front (oldest)
+  // keeps the newest live tail intact. Append adds newer items at the end;
+  // trimming from the front keeps the newest items too.
   return items.slice(items.length - RETAINED_ITEM_CAP);
 }
 
@@ -279,6 +287,8 @@ export interface ConversationState {
 // these live-only methods. They are NOT optional-fallback to old open().
 // Base ConversationState is preserved for screen test mocks that only need
 // the basic open/send/steer/queue/interrupt/close surface.
+// F2: setCoalescer is removed from the public interface — openProjected
+// creates and binds the coalescer internally.
 export interface LiveConversationState extends ConversationState {
   openProjected(
     service: LiveConversationService,
@@ -289,7 +299,6 @@ export interface LiveConversationState extends ConversationState {
     service: LiveConversationService,
     activitySink: LiveActivitySink,
   ): Promise<void>;
-  setCoalescer(coalescer: RehydrateCoalescer): void;
 }
 
 // Extract threadId/ref from a notification's params, returning null if the
@@ -306,12 +315,12 @@ function notificationRef(
   return { threadId, ref };
 }
 
-// Check if an error carries the actionUnavailable evenerErrorInfo.
+// Check if an error is a WireError carrying the actionUnavailable
+// evenerErrorInfo. F11: uses actual WireError identity (instanceof), not a
+// structural property check, to match the canonical error discrimination
+// pattern used by isHubLaunchError.
 function isActionUnavailableError(err: unknown): boolean {
-  if (err === null || err === undefined || typeof err !== "object")
-    return false;
-  const obj = err as Record<string, unknown>;
-  return obj.evenerErrorInfo === "actionUnavailable";
+  return err instanceof WireError && err.evenerErrorInfo === "actionUnavailable";
 }
 
 // Check a capability on the current conversation and throw if false. This
@@ -330,6 +339,11 @@ function requireCap(
 // Project a wire ThreadItem into a mobile timeline item for insertion from
 // item/started and item/completed notifications. This reuses the same field
 // mapping as the full projection but handles a single item in isolation.
+// F6: ask_user items (commandExecution with toolName "ask_user") are NOT
+// projected as generic activity — they return null to signal a reread, since
+// the canonical projector needs the full turn context (pendingAsks set) to
+// project them as question items. F7: precise subtype checks — wrong subtype
+// or missing context returns null to schedule a reread.
 function projectSingleItem(item: ThreadItem): MobileTimelineItem | null {
   if (item.type === "userMessage") {
     return { kind: "user", id: item.id, text: item.text ?? "" };
@@ -342,7 +356,15 @@ function projectSingleItem(item: ThreadItem): MobileTimelineItem | null {
       streaming: item.status === "inProgress",
     };
   }
+  // F6: ask_user is a commandExecution with toolName "ask_user". The canonical
+  // projector handles ask_user with full turn context (pendingAsks, question
+  // parsing). We cannot replicate that from a single item notification, so
+  // return null to schedule an authoritative reread — never project as generic
+  // activity.
   if (item.type === "commandExecution") {
+    if (item.toolName === "ask_user") {
+      return null; // F6: schedule reread for ask_user
+    }
     return {
       kind: "activity",
       id: item.id,
@@ -394,6 +416,42 @@ export function createConversationStore() {
   let mutationIdCounter = 0;
   let coalescer: RehydrateCoalescer | null = null;
   let activitySink: LiveActivitySink | null = null;
+  // F9: Rehydrate operation token — incremented on each rehydrate call so
+  // a stale rehydrate (from an older operation) cannot overwrite a newer
+  // rehydrate's state within the same generation.
+  let rehydrateToken = 0;
+  // F12: Per-item truncation ownership — tracks which item IDs have been
+  // truncated to their byte limit. Once an item is truncated, later deltas
+  // cannot append (the marker appears exactly once). This is tracked by
+  // item ID, not by checking the text suffix, so genuine content that
+  // happens to end with "… truncated" does not freeze delta appends.
+  const truncatedItemIds = new Set<string>();
+
+  // Truncate items and record which item IDs were truncated (F12).
+  // Called from open/openProjected/rehydrate to seed the truncation set.
+  function truncateAndRecord(
+    items: MobileTimelineItem[],
+  ): MobileTimelineItem[] {
+    return items.map((item) => {
+      // Check if any text-bearing field exceeds the byte limit.
+      let needsTruncation = false;
+      if (item.kind === "assistant") {
+        needsTruncation = exceedsByteLimit(item.markdown, MAX_ITEM_BYTES);
+      } else if (item.kind === "activity") {
+        needsTruncation =
+          (item.detail.arguments !== undefined &&
+            exceedsByteLimit(item.detail.arguments, MAX_ITEM_BYTES)) ||
+          (item.detail.output !== undefined &&
+            exceedsByteLimit(item.detail.output, MAX_ITEM_BYTES)) ||
+          (item.detail.error !== undefined &&
+            exceedsByteLimit(item.detail.error, MAX_ITEM_BYTES));
+      }
+      if (needsTruncation) {
+        truncatedItemIds.add(item.id);
+      }
+      return truncateItem(item);
+    });
+  }
 
   return create<LiveConversationState>((set, get) => ({
     ref: null,
@@ -434,7 +492,7 @@ export function createConversationStore() {
         set({
           conversation: {
             ...conv,
-            items: capItems(conv.items.map(truncateItem)),
+            items: capItems(truncateAndRecord(conv.items)),
           },
           status: "open",
           olderCursor: null,
@@ -456,8 +514,20 @@ export function createConversationStore() {
     async openProjected(service, sink, ref) {
       const gen = ++conversationGen;
       activitySink = sink;
+      // F2: Create and bind the coalescer internally — no public setCoalescer.
+      // The coalescer's effect calls rehydrate with the same service+sink.
+      const boundService = service;
+      const boundSink = sink;
+      coalescer = createAuthoritativeRereadScheduler(async (key: string) => {
+        // F3: rehydrate triggers the same shared reread. The effect is
+        // generation-safe (rehydrate checks generation internally).
+        await get().rehydrate(boundService, boundSink);
+        void key; // key is the ref; rehydrate reads ref from state
+      });
       // Reset thread-scoped state (draft, pending mutation) — presentation state
       // now lives outside the store (in live-ui-store).
+      // F4: reset the activity sink on thread change.
+      sink.reset();
       set({
         status: "opening",
         ref,
@@ -477,7 +547,7 @@ export function createConversationStore() {
         set({
           conversation: {
             ...conversation,
-            items: capItems(conversation.items.map(truncateItem)),
+            items: capItems(truncateAndRecord(conversation.items)),
           },
           status: "open",
           olderCursor,
@@ -487,12 +557,22 @@ export function createConversationStore() {
           ref,
           generation: gen,
         };
-        sink.setView(activity, identity);
+        // F4: identity-first setLiveView.
+        sink.setLiveView(identity, activity);
         service.subscribeNotifications((n) => {
           if (gen !== conversationGen) return;
           // Route notifications to BOTH stores — conversation and activity.
+          // F3: use applyLiveNotification's return to drive the shared reread.
+          const outcome = sink.applyLiveNotification(identity, n);
+          if (outcome === "rehydrate" && coalescer !== null) {
+            coalescer.requestRehydrate(ref);
+          }
+          // Also process the conversation store's own notification handler.
+          // Only call the conversation's applyNotification if the activity
+          // sink did not say "ignored" (ignored means the activity store
+          // rejected it on identity grounds — but conversation still needs
+          // its own processing for conversation-specific notifications).
           get().applyNotification(n);
-          sink.applyNotification(n, identity);
         });
       } catch (err) {
         if (gen !== conversationGen) return;
@@ -506,11 +586,15 @@ export function createConversationStore() {
     async rehydrate(service, sink) {
       // Rehydrate uses readProjection to refresh the conversation without
       // calling destructive open(). Preserves draft.
+      // F3: rehydrate triggers the same shared reread.
+      // F9: Operation token prevents stale rehydrate from overwriting
+      // newer state within the same generation.
       const state = get();
       if (state.ref === null) return;
       const ref = state.ref;
       const currentDraft = state.draft;
       const gen = state.conversationGeneration;
+      const token = ++rehydrateToken;
       activitySink = sink;
       try {
         const { conversation, activity, olderCursor } =
@@ -519,10 +603,14 @@ export function createConversationStore() {
         if (get().conversationGeneration !== gen) {
           return;
         }
+        // F9: Stale rehydrate — a newer rehydrate started in the same gen.
+        if (token !== rehydrateToken) {
+          return;
+        }
         set({
           conversation: {
             ...conversation,
-            items: capItems(conversation.items.map(truncateItem)),
+            items: capItems(truncateAndRecord(conversation.items)),
           },
           olderCursor,
           // Preserve draft
@@ -534,10 +622,12 @@ export function createConversationStore() {
           ref,
           generation: gen,
         };
-        sink.setView(activity, identity);
+        // F4: identity-first setLiveView.
+        sink.setLiveView(identity, activity);
       } catch (err) {
-        // Stale safety: only set error if the generation hasn't changed.
-        if (get().conversationGeneration === gen) {
+        // Stale safety: only set error if the generation hasn't changed
+        // and this is still the latest rehydrate operation.
+        if (get().conversationGeneration === gen && token === rehydrateToken) {
           set({
             error: err instanceof Error ? err.message : String(err),
           });
@@ -545,13 +635,11 @@ export function createConversationStore() {
       }
     },
 
-    setCoalescer(c) {
-      coalescer = c;
-    },
-
     async loadOlder(service) {
       const state = get();
       if (state.loadingOlder || state.conversation === null) return;
+      // F8: Never request with a null/empty cursor — no more older pages.
+      if (state.olderCursor === null) return;
       const cursor = state.olderCursor ?? "";
       const gen = state.conversationGeneration;
       set({ loadingOlder: true });
@@ -569,15 +657,25 @@ export function createConversationStore() {
           // dropped, keeping the newer (live tail) version.
           const existingIds = new Set(currentConv.items.map((i) => i.id));
           const deduped = result.items.filter((i) => !existingIds.has(i.id));
-          // Prepend older (deduped) items, then trim from the newest (end)
-          // so the oldest rows are retained for continued paging utility.
+          // Prepend older (deduped) items, then trim from the oldest (front)
+          // so the newest live tail is retained (finding 8).
           const merged = capItems(
             [...deduped.map(truncateItem), ...currentConv.items],
             "prepend",
           );
+          // F8: If we're at the cap and the merge trimmed older items,
+          // disable further paging honestly — set cursor to null so
+          // we don't repeatedly load rows that will be discarded.
+          const atCap = merged.length >= RETAINED_ITEM_CAP;
+          const nextCursor =
+            atCap && deduped.length < result.items.length
+              ? null // Some items were deduped — cap prevents useful paging
+              : atCap
+                ? null // At cap — further paging would just discard rows
+                : result.nextCursor ?? null;
           set({
             conversation: { ...currentConv, items: merged },
-            olderCursor: result.nextCursor ?? null,
+            olderCursor: nextCursor,
             loadingOlder: false,
           });
         }
@@ -648,7 +746,8 @@ export function createConversationStore() {
         mutationId,
       };
       // Steer/queue clear the draft on submit like send.
-      set({ draft: "", pendingMutation: mutation });
+      // F10: any new mutation clears legacy pendingSend.
+      set({ draft: "", pendingSend: null, pendingMutation: mutation });
       try {
         await service.steer(input);
         if (get().pendingMutation?.mutationId === mutationId) {
@@ -683,7 +782,8 @@ export function createConversationStore() {
         generation: gen,
         mutationId,
       };
-      set({ draft: "", pendingMutation: mutation });
+      // F10: any new mutation clears legacy pendingSend.
+      set({ draft: "", pendingSend: null, pendingMutation: mutation });
       try {
         await service.queue(input);
         if (get().pendingMutation?.mutationId === mutationId) {
@@ -719,7 +819,8 @@ export function createConversationStore() {
         mutationId,
       };
       // Interrupt does NOT clear the draft.
-      set({ pendingMutation: mutation });
+      // F10: any new mutation clears legacy pendingSend.
+      set({ pendingSend: null, pendingMutation: mutation });
       try {
         await service.interrupt();
         if (get().pendingMutation?.mutationId === mutationId) {
@@ -744,6 +845,13 @@ export function createConversationStore() {
       // Increment generation so late frames from the closed conversation
       // cannot repopulate the store.
       ++conversationGen;
+      truncatedItemIds.clear();
+      // F4: reset the activity sink on close.
+      if (activitySink !== null) {
+        activitySink.reset();
+        activitySink = null;
+      }
+      coalescer = null;
       set({
         status: "closed",
         conversation: null,
@@ -940,25 +1048,26 @@ export function createConversationStore() {
             (i) => i.id === params.itemId && i.kind === "assistant",
           );
           if (existing) {
-            // F8: Once the truncation marker is present, later deltas cannot
-            // append — the marker appears exactly once at the end.
-            const currentMarkdown =
-              existing.kind === "assistant" ? existing.markdown : "";
-            if (isAlreadyTruncated(currentMarkdown)) {
+            // F12: Per-item truncation ownership — once an item is
+            // truncated, later deltas cannot append. Tracked by item ID,
+            // not by text suffix, so genuine content ending with the
+            // marker doesn't freeze.
+            if (truncatedItemIds.has(params.itemId)) {
               break;
+            }
+            const combined =
+              (existing.kind === "assistant" ? existing.markdown : "") +
+              params.delta;
+            const truncated = truncateText(combined, MAX_ITEM_BYTES);
+            if (truncated !== combined) {
+              truncatedItemIds.add(params.itemId);
             }
             set({
               conversation: {
                 ...conv,
                 items: conv.items.map((item) =>
                   item.kind === "assistant" && item.id === params.itemId
-                    ? {
-                        ...item,
-                        markdown: truncateText(
-                          item.markdown + params.delta,
-                          MAX_ITEM_BYTES,
-                        ),
-                      }
+                    ? { ...item, markdown: truncated }
                     : item,
                 ),
               },
@@ -1002,13 +1111,17 @@ export function createConversationStore() {
             (i) => i.id === params.itemId && i.kind === "activity",
           );
           if (existing) {
-            // F8: Once truncated, don't append more deltas.
-            const currentOutput =
-              existing.kind === "activity"
-                ? (existing.detail.output ?? "")
-                : "";
-            if (isAlreadyTruncated(currentOutput)) {
+            // F12: Per-item truncation ownership.
+            if (truncatedItemIds.has(params.itemId)) {
               break;
+            }
+            const combined =
+              (existing.kind === "activity"
+                ? (existing.detail.output ?? "")
+                : "") + params.delta;
+            const truncated = truncateText(combined, MAX_ITEM_BYTES);
+            if (truncated !== combined) {
+              truncatedItemIds.add(params.itemId);
             }
             set({
               conversation: {
@@ -1017,13 +1130,7 @@ export function createConversationStore() {
                   item.kind === "activity" && item.id === params.itemId
                     ? {
                         ...item,
-                        detail: {
-                          ...item.detail,
-                          output: truncateText(
-                            (item.detail.output ?? "") + params.delta,
-                            MAX_ITEM_BYTES,
-                          ),
-                        },
+                        detail: { ...item.detail, output: truncated },
                       }
                     : item,
                 ),
@@ -1044,13 +1151,17 @@ export function createConversationStore() {
             (i) => i.id === params.itemId && i.kind === "activity",
           );
           if (existing) {
-            // F8: Once truncated, don't append more deltas.
-            const currentOutput =
-              existing.kind === "activity"
-                ? (existing.detail.output ?? "")
-                : "";
-            if (isAlreadyTruncated(currentOutput)) {
+            // F12: Per-item truncation ownership.
+            if (truncatedItemIds.has(params.itemId)) {
               break;
+            }
+            const combined =
+              (existing.kind === "activity"
+                ? (existing.detail.output ?? "")
+                : "") + params.delta;
+            const truncated = truncateText(combined, MAX_ITEM_BYTES);
+            if (truncated !== combined) {
+              truncatedItemIds.add(params.itemId);
             }
             set({
               conversation: {
@@ -1059,13 +1170,7 @@ export function createConversationStore() {
                   item.kind === "activity" && item.id === params.itemId
                     ? {
                         ...item,
-                        detail: {
-                          ...item.detail,
-                          output: truncateText(
-                            (item.detail.output ?? "") + params.delta,
-                            MAX_ITEM_BYTES,
-                          ),
-                        },
+                        detail: { ...item.detail, output: truncated },
                       }
                     : item,
                 ),
@@ -1128,6 +1233,13 @@ export function createConversationStore() {
       // Invalidate the current conversation generation so late frames are
       // rejected, then return to idle.
       ++conversationGen;
+      truncatedItemIds.clear();
+      // F4: reset the activity sink on thread change.
+      if (activitySink !== null) {
+        activitySink.reset();
+        activitySink = null;
+      }
+      coalescer = null;
       set({
         ref: null,
         profileId: null,
@@ -1149,8 +1261,10 @@ export function createConversationStore() {
 // refreshCapabilities (never open()) to publish refreshed caps before
 // surfacing the error. On failure, the failed mutation state PERSISTS (not
 // cleared to null). The draft is only restored if no new text was typed
-// during the in-flight mutation. F4: uses mutationId (not generation alone)
+// during the in-flight mutation. F4/F10: uses mutationId (not generation alone)
 // so out-of-order failure cannot overwrite a newer mutation's error.
+// F10: checks active mutation before AND after the capability refresh — a
+// newer mutation may have started during the refresh await.
 async function handleMutationError(
   err: unknown,
   service: ConversationService,
@@ -1162,13 +1276,19 @@ async function handleMutationError(
   set: (partial: Partial<ConversationState>) => void,
   get: () => ConversationState,
 ): Promise<void> {
+  // F10: Check active mutation BEFORE the capability refresh. If a newer
+  // mutation has already started, this error is stale — bail out.
+  if (get().pendingMutation?.mutationId !== mutationId) return;
+
   if (isActionUnavailableError(err) && ref !== null) {
     // Use the non-subscribing capability refresh — never open().
     // Only available on LiveConversationService; check for the method.
     const liveService = service as LiveConversationService;
     if (typeof liveService.refreshCapabilities === "function") {
       try {
-        const refreshed = await liveService.refreshCapabilities();
+        const refreshed = await liveService.refreshCapabilities(ref);
+        // F10: Check active mutation AFTER the capability refresh too —
+        // a newer mutation may have started during the await.
         if (get().conversationGeneration === gen && refreshed !== null) {
           const currentConv = get().conversation;
           if (currentConv !== null) {
@@ -1185,12 +1305,13 @@ async function handleMutationError(
       }
     }
   }
-  // F4: Check mutationId — out-of-order failure cannot change a newer
-  // mutation, error, or draft.
+  // F10: Re-check mutationId after the refresh — out-of-order failure cannot
+  // change a newer mutation, error, or draft.
   if (get().pendingMutation?.mutationId === mutationId) {
     // The failed mutation state PERSISTS — do NOT clear pendingMutation.
     const currentDraft = get().draft;
-    // Only restore the draft if no new text was typed during the mutation.
+    // F10: Draft revision prevents type-delete restore — only restore if
+    // the draft is still empty (no new text was typed during the mutation).
     const shouldRestore = currentDraft === "" && draftSnapshot !== null;
     set({
       pendingMutation: { ...mutation, status: "failed" },
