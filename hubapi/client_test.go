@@ -507,48 +507,6 @@ func TestClientSession_Error(t *testing.T) {
 	}
 }
 
-func TestClientSpawnSchema(t *testing.T) {
-	want := hubapi.SpawnSchema{
-		Fields: []hubapi.SpawnField{
-			{Name: "prompt", Type: "string", Required: true},
-		},
-	}
-	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Errorf("method: got %s, want GET", r.Method)
-		}
-		if r.URL.Path != "/api/spawn-schema" {
-			t.Errorf("path: got %s, want /api/spawn-schema", r.URL.Path)
-		}
-		_ = json.NewEncoder(w).Encode(want)
-	})
-	defer srv.Close()
-
-	got, err := client.SpawnSchema(context.Background())
-	if err != nil {
-		t.Fatalf("SpawnSchema: %v", err)
-	}
-	if len(got.Fields) != 1 || got.Fields[0].Name != "prompt" {
-		t.Errorf("fields: got %+v", got.Fields)
-	}
-}
-
-func TestClientSpawnSchema_Error(t *testing.T) {
-	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusServiceUnavailable)
-		_ = json.NewEncoder(w).Encode(hubapi.SpawnSchema{})
-	})
-	defer srv.Close()
-
-	_, err := client.SpawnSchema(context.Background())
-	if err == nil {
-		t.Fatal("expected error for 503 response")
-	}
-	if !strings.Contains(err.Error(), "503") {
-		t.Errorf("error should report status code 503, got %v", err)
-	}
-}
-
 func TestClientSpawn(t *testing.T) {
 	want := hubapi.SpawnResponse{
 		Ref:       "local:abc123",

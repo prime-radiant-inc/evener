@@ -158,7 +158,6 @@ func (s *WebServer) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
 		FrontendHash:     s.frontendHash,
 		Capabilities: hubapi.HealthCapabilities{
 			TranscriptFollow: true,
-			SpawnSchema:      true,
 			Spawn:            s.cfg.Spawner != nil || len(s.cfg.CodexSources) > 0 || len(s.cfg.CodexLaunches) > 0 || s.cfg.CodexLauncher != nil,
 			Fork:             true,
 			RemoteSources:    len(s.cfg.CodexSources) > 0,
@@ -308,21 +307,6 @@ func (s *WebServer) apiStateGlob() string {
 		return ""
 	}
 	return s.cfg.Past.StateGlob()
-}
-
-func (s *WebServer) handleAPISpawnSchema(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
-		return
-	}
-	writeAPIJSON(w, http.StatusOK, hubapi.SpawnSchema{Fields: []hubapi.SpawnField{
-		{Name: "prompt", Type: "text"},
-		{Name: "harness", Type: "enum", Values: launchHarnessIDs(s.cfg)},
-		{Name: "working_dir", Type: "path"},
-		{Name: "model", Type: "model"},
-		{Name: "agent", Type: "string"},
-		{Name: "reasoning_effort", Type: "enum", Values: []string{"minimal", "low", "medium", "high", "xhigh", "max", "none"}},
-	}})
 }
 
 func warningPayload(raw json.RawMessage) map[string]any {

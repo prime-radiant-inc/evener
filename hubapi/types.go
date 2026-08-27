@@ -21,7 +21,6 @@ type HealthResponse struct {
 
 type HealthCapabilities struct {
 	TranscriptFollow bool `json:"transcript_follow"`
-	SpawnSchema      bool `json:"spawn_schema"`
 	Spawn            bool `json:"spawn"`
 	Fork             bool `json:"fork"`
 	RemoteSources    bool `json:"remote_sources"`
@@ -144,17 +143,6 @@ type SessionCapabilities struct {
 	// composer's queue affordance on the web UI.
 	Queue          bool   `json:"queue"`
 	ReadOnlyReason string `json:"read_only_reason,omitempty"`
-}
-
-type SpawnSchema struct {
-	Fields []SpawnField `json:"fields"`
-}
-
-type SpawnField struct {
-	Name     string   `json:"name"`
-	Type     string   `json:"type"`
-	Values   []string `json:"values,omitempty"`
-	Required bool     `json:"required"`
 }
 
 type ModelOption struct {

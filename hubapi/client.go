@@ -270,12 +270,6 @@ func (c *Client) Session(ctx context.Context, ref Ref) (SessionDetail, error) {
 	return out, err
 }
 
-func (c *Client) SpawnSchema(ctx context.Context) (SpawnSchema, error) {
-	var out SpawnSchema
-	err := c.get(ctx, "/api/spawn-schema", &out)
-	return out, err
-}
-
 func (c *Client) Spawn(ctx context.Context, req SpawnRequest) (SpawnResponse, error) {
 	var out SpawnResponse
 	err := c.post(ctx, "/api/spawn", req, &out)

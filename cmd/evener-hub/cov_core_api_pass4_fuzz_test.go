@@ -117,8 +117,6 @@ func FuzzCoreAPIPass4(f *testing.F) {
 			fn(rec, req)
 			return rec
 		}
-		direct(web.handleAPISpawnSchema, http.MethodGet, "/api/spawn/schema", "")
-		direct(web.handleAPISpawnSchema, http.MethodPost, "/api/spawn/schema", "")
 		direct(web.handleAPIUpgrade, http.MethodGet, "/api/upgrade", "")
 		direct(web.handleAPIUpgrade, http.MethodPost, "/api/upgrade", "{")
 		call(http.MethodPost, "/api/sessions/remote:thread/clear", "")
