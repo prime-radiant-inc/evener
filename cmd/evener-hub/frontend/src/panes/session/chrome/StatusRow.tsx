@@ -22,6 +22,7 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import { ModelSwitch } from "./ModelSwitch";
 import { contextTone, formatWorkDuration, totalWorkMillis } from "./statusFormat";
 import styles from "./statusrow.module.css";
+import { VisionModelSwitch } from "./VisionModelSwitch";
 
 export interface StatusRowProps {
   sessionRef: string;
@@ -160,6 +161,7 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
       <span className={CLASS.identity} data-testid="status-row-identity">
         <ModelSwitch sessionRef={sessionRef} model={model} />
         <ReasoningEffortControl sessionRef={sessionRef} model={model} />
+        {"changeVisionModel" in model.capabilities && <VisionModelSwitch sessionRef={sessionRef} model={model} />}
       </span>
       {hasContext && (
         <>
