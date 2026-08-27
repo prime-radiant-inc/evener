@@ -274,6 +274,38 @@ func Load(dir string) (Instance, error) {
 	return lp, nil
 }
 
+// ManifestName resolves and validates only a plugin manifest. Batch callers
+// use it to apply the same first-manifest-wins duplicate policy before any
+// component loader runs, including callers that intentionally load skills
+// without agents, commands, hooks, or MCP configuration.
+func ManifestName(dir string) (string, error) {
+	resolved, err := filepath.EvalSymlinks(dir)
+	if err != nil {
+		return "", fmt.Errorf("resolving plugin dir %q: %w", dir, err)
+	}
+	resolved, err = pluginAbs(resolved)
+	if err != nil {
+		return "", fmt.Errorf("resolving plugin dir %q: %w", dir, err)
+	}
+
+	manifestPath := filepath.Join(resolved, ".claude-plugin", "plugin.json")
+	if _, err := pluginStat(manifestPath); err != nil {
+		if !os.IsNotExist(err) {
+			return "", fmt.Errorf("reading plugin manifest %q: %w", manifestPath, err)
+		}
+		manifestPath = filepath.Join(resolved, ".codex-plugin", "plugin.json")
+	}
+	data, err := pluginReadFile(manifestPath)
+	if err != nil {
+		return "", fmt.Errorf("reading plugin manifest %q: %w", manifestPath, err)
+	}
+	manifest, err := ParseManifest(data)
+	if err != nil {
+		return "", fmt.Errorf("in plugin at %q: %w", resolved, err)
+	}
+	return manifest.Name, nil
+}
+
 // LoadAll loads plugins from multiple directories and checks for
 // duplicate plugin names.
 func LoadAll(dirs []string) ([]Instance, error) {
@@ -305,9 +337,12 @@ type SkippedPlugin struct {
 
 // LoadAllFailSoft loads each directory in dirs independently, the same way
 // LoadAll does, but never aborts the batch: a directory that fails to load or
-// duplicates an already-loaded plugin's name is recorded in the returned
-// skipped slice and passed over, instead of failing every other directory
-// too. Use this in batch contexts — session init, the hub's command catalog —
+// duplicates an already-selected plugin manifest name is recorded in the
+// returned skipped slice and passed over, instead of failing every other
+// directory too. Duplicate selection is first-manifest-wins, even when that
+// first plugin later fails an unrelated component load; this gives all batch
+// callers a deterministic selection policy that skill-only readers can share.
+// Use this in batch contexts — session init, the hub's command catalog —
 // where one broken or duplicate directory must not brick everything else;
 // callers that want LoadAll's fail-hard, abort-on-first-error behavior (e.g.
 // an explicit single-plugin install/validate operation) should keep using
@@ -318,6 +353,23 @@ func LoadAllFailSoft(dirs []string) ([]Instance, []SkippedPlugin) {
 	var skipped []SkippedPlugin
 
 	for _, dir := range dirs {
+		manifestName, err := ManifestName(dir)
+		if err != nil {
+			skipped = append(skipped, SkippedPlugin{
+				Dir:    dir,
+				Reason: fmt.Sprintf("skipping broken plugin at %q: %v", dir, err),
+			})
+			continue
+		}
+		if prevDir, ok := seen[manifestName]; ok {
+			skipped = append(skipped, SkippedPlugin{
+				Dir:    dir,
+				Name:   manifestName,
+				Reason: fmt.Sprintf("skipping duplicate plugin name %q at %q (already selected from %q)", manifestName, dir, prevDir),
+			})
+			continue
+		}
+		seen[manifestName] = dir
 		lp, err := Load(dir)
 		if err != nil {
 			skipped = append(skipped, SkippedPlugin{
@@ -326,15 +378,6 @@ func LoadAllFailSoft(dirs []string) ([]Instance, []SkippedPlugin) {
 			})
 			continue
 		}
-		if prevDir, ok := seen[lp.Manifest.Name]; ok {
-			skipped = append(skipped, SkippedPlugin{
-				Dir:    lp.Dir,
-				Name:   lp.Manifest.Name,
-				Reason: fmt.Sprintf("skipping duplicate plugin name %q at %q (already loaded from %q)", lp.Manifest.Name, lp.Dir, prevDir),
-			})
-			continue
-		}
-		seen[lp.Manifest.Name] = lp.Dir
 		plugins = append(plugins, lp)
 	}
 	return plugins, skipped

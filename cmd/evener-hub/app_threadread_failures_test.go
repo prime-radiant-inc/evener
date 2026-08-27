@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -10,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
@@ -213,5 +215,88 @@ func TestPastEntryThread_DoesNotDeriveTheFailureCountOnTheListSweepPath(t *testi
 
 	if thread.Evener.FailedToolCalls != nil {
 		t.Fatalf("sweep projector reported %d failures; it must not scan transcripts", *thread.Evener.FailedToolCalls)
+	}
+}
+
+func TestPastThreadListDoesNotDiscoverSkills(t *testing.T) {
+	cfg, entry := seedPastSessionWithSkillFixtures(t)
+	var calls int
+	previous := discoverPastThreadSkillCatalog
+	discoverPastThreadSkillCatalog = func(hubcore.PastEntry) []appwire.EvenerSkillInfo {
+		calls++
+		return []appwire.EvenerSkillInfo{{Name: "unexpected"}}
+	}
+	t.Cleanup(func() { discoverPastThreadSkillCatalog = previous })
+
+	if _, err := pastEntryThread(cfg, entry, false); err != nil {
+		t.Fatal(err)
+	}
+	sources := appsource.NewRegistry()
+	live := appwire.Thread{ID: "live", SessionID: "live", Source: "fixture", Evener: appwire.EvenerThread{Ref: "fixture:live"}}
+	sources.Add(&listThreadSource{id: "fixture", thread: live, relayLifecycleSource: relayLifecycleSource{thread: live}})
+	if _, err := hubThreadList(context.Background(), cfg, sources, appwire.ThreadListParams{}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := hubThreadTranscriptList(context.Background(), cfg, sources, appwire.ThreadTranscriptListParams{Ref: "fixture:live"}); err != nil {
+		t.Fatal(err)
+	}
+	if calls != 0 {
+		t.Fatalf("thread/navigation sweep made %d cold skill-discovery calls, want 0", calls)
+	}
+}
+
+func TestPastThreadTurnsListDoesNotDiscoverSkills(t *testing.T) {
+	cfg, entry := seedPastSessionWithSkillFixtures(t)
+	var calls int
+	previous := discoverPastThreadSkillCatalog
+	discoverPastThreadSkillCatalog = func(hubcore.PastEntry) []appwire.EvenerSkillInfo {
+		calls++
+		return []appwire.EvenerSkillInfo{{Name: "unexpected"}}
+	}
+	t.Cleanup(func() { discoverPastThreadSkillCatalog = previous })
+
+	_, ok, err := pastThreadTurnsList(cfg, appwire.ThreadTurnsListParams{Ref: "local:" + entry.Meta.ID, Limit: 1})
+	if err != nil || !ok {
+		t.Fatalf("pastThreadTurnsList = %v, %v", err, ok)
+	}
+	if calls != 0 {
+		t.Fatalf("turn-page sweep made %d cold skill-discovery calls, want 0", calls)
+	}
+}
+
+func TestMergePastThreadForReadKeepsLiveDiagnostics(t *testing.T) {
+	cfg, entry := seedPastSessionWithSkillFixtures(t)
+	var calls int
+	previous := discoverPastThreadSkillCatalog
+	discoverPastThreadSkillCatalog = func(hubcore.PastEntry) []appwire.EvenerSkillInfo {
+		calls++
+		return []appwire.EvenerSkillInfo{{Name: "unexpected"}}
+	}
+	t.Cleanup(func() { discoverPastThreadSkillCatalog = previous })
+	liveDiagnostics := &appwire.EvenerDiagnostics{Tools: []appwire.EvenerToolInfo{{Name: "live-tool"}}}
+	got, err := mergePastThreadForRead(cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID}, appwire.Thread{
+		ID: entry.Meta.ID, SessionID: entry.Meta.ID, Evener: appwire.EvenerThread{Diagnostics: liveDiagnostics},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Evener.Diagnostics != liveDiagnostics || len(got.Evener.Diagnostics.Skills) != 0 || len(got.Evener.Diagnostics.Tools) != 1 {
+		t.Fatalf("live diagnostics were replaced or changed: %+v", got.Evener.Diagnostics)
+	}
+	if calls != 0 {
+		t.Fatalf("live diagnostics caused %d discarded discovery calls, want 0", calls)
+	}
+}
+
+func TestMergePastThreadForReadUsesPastDiagnosticsWhenLiveAbsent(t *testing.T) {
+	cfg, entry := seedPastSessionWithSkillFixtures(t)
+	got, err := mergePastThreadForRead(cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID}, appwire.Thread{
+		ID: entry.Meta.ID, SessionID: entry.Meta.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Evener.Diagnostics == nil || !hasSkill(got.Evener.Diagnostics.Skills, "project-skill") {
+		t.Fatalf("past diagnostics were not copied: %+v", got.Evener.Diagnostics)
 	}
 }

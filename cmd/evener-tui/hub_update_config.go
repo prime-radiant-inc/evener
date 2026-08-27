@@ -174,9 +174,26 @@ func (m hubModel) handleLaunchOverridesOpen(msg launchconfig.LaunchOverridesOpen
 	}
 	m.launchOverridesModal = &modal
 	if m.client != nil {
-		return m, launchconfig.CmdLaunchSchema(m.client)
+		// The resolve supplies the modal's "(default)" labels: unset
+		// overrides render the effective value a session started now would
+		// inherit for this working directory.
+		return m, tea.Batch(
+			launchconfig.CmdLaunchSchema(m.client),
+			launchconfig.CmdResolveLaunch(m.client, m.launchOverridesCWD(), nil),
+		)
 	}
 	return m, nil
+}
+
+// launchOverridesCWD is the working directory a session started now would
+// inherit — the spawn form's Dir when set, else the selected dashboard
+// project's directory — which is what the overrides modal resolves its
+// "(default)" labels against.
+func (m hubModel) launchOverridesCWD() string {
+	if dir := strings.TrimSpace(m.spawnDir); dir != "" {
+		return dir
+	}
+	return m.spawnWorkingDir()
 }
 
 func (m hubModel) handleLaunchOverridesResult(msg launchconfig.LaunchOverridesResultMsg) (tea.Model, tea.Cmd) {
@@ -514,11 +531,18 @@ func (m hubModel) handleLaunchResult(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.launchOverridesModal = &p
 		return m, cmd
 	}
+	var modalCmd tea.Cmd
+	if _, ok := msg.(launchconfig.LaunchResolveResultMsg); ok && m.launchOverridesModal != nil {
+		updated, cmd := m.launchOverridesModal.Update(msg)
+		p := updated.(launchconfig.LaunchOverridesModal)
+		m.launchOverridesModal = &p
+		modalCmd = cmd
+	}
 	if m.launchSettingsPanel != nil {
 		updated, cmd := m.launchSettingsPanel.Update(msg)
 		p := updated.(launchconfig.LaunchSettingsPanel)
 		m.launchSettingsPanel = &p
-		return m, cmd
+		return m, tea.Batch(modalCmd, cmd)
 	}
-	return m, nil
+	return m, modalCmd
 }

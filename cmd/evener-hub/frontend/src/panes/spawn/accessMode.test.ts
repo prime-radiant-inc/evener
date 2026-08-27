@@ -1,6 +1,12 @@
 // @vitest-environment node
 import { describe, expect, test } from "vitest";
-import { ACCESS_MODE_OPTIONS, mergeAccessModeSandbox, sandboxForAccessMode } from "./accessMode";
+import {
+  ACCESS_MODE_OPTIONS,
+  accessModeDefaultLabel,
+  accessModeForSandbox,
+  mergeAccessModeSandbox,
+  sandboxForAccessMode,
+} from "./accessMode";
 
 describe("ACCESS_MODE_OPTIONS", () => {
   test("is exactly four fixed rows in order full/read-only/workspace-write/restricted (floor §1.8)", () => {
@@ -25,6 +31,41 @@ describe("sandboxForAccessMode", () => {
   test("an unrecognized or empty mode maps to no sandbox", () => {
     expect(sandboxForAccessMode("")).toBe("");
     expect(sandboxForAccessMode("nonsense")).toBe("");
+  });
+});
+
+describe("accessModeForSandbox", () => {
+  test("is the exact inverse of sandboxForAccessMode for every fixed row", () => {
+    for (const option of ACCESS_MODE_OPTIONS) {
+      expect(accessModeForSandbox(sandboxForAccessMode(option.value))).toEqual(option);
+    }
+  });
+
+  test('maps sandbox "off" back to the Full access row', () => {
+    expect(accessModeForSandbox("off")).toEqual({ value: "full", label: "Full access" });
+  });
+
+  test("an unrecognized or empty sandbox has no row", () => {
+    expect(accessModeForSandbox("")).toBeUndefined();
+    expect(accessModeForSandbox("nonsense")).toBeUndefined();
+  });
+});
+
+describe("accessModeDefaultLabel", () => {
+  test("names the resolved sandbox in the chip's own friendly wording", () => {
+    expect(accessModeDefaultLabel("off")).toBe("Full access (default)");
+    expect(accessModeDefaultLabel("read-only")).toBe("Read-only (default)");
+    expect(accessModeDefaultLabel("workspace-write")).toBe("Workspace write (default)");
+    expect(accessModeDefaultLabel("restricted")).toBe("Restricted (default)");
+  });
+
+  test('stays plain "(default)" when nothing resolves (unset everywhere or resolve not landed)', () => {
+    expect(accessModeDefaultLabel("")).toBe("(default)");
+    expect(accessModeDefaultLabel("   ")).toBe("(default)");
+  });
+
+  test("a sandbox value outside the fixed rows is named raw rather than dropped", () => {
+    expect(accessModeDefaultLabel("custom-mode")).toBe("custom-mode (default)");
   });
 });
 

@@ -248,6 +248,37 @@ describe("rendering", () => {
     );
     expect(screen.getByText("default: evener")).toBeTruthy();
   });
+
+  test("threads resolvedDefaults down to unset fields, whose empty markers name the inherited value", () => {
+    render(
+      <LaunchConfigForm
+        options={OPTIONS}
+        layer="global"
+        current={{}}
+        resolvedDefaults={{ reasoningEffort: "high" }}
+        successToast="Launch defaults saved"
+        validatePath={OK_VALIDATE}
+        onSave={async () => RESOLVED}
+      />,
+    );
+    const select = screen.getByLabelText("Reasoning effort") as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["high (default)", "high"]);
+  });
+
+  test("without resolvedDefaults the empty markers stay plain", () => {
+    render(
+      <LaunchConfigForm
+        options={OPTIONS}
+        layer="global"
+        current={{}}
+        successToast="Launch defaults saved"
+        validatePath={OK_VALIDATE}
+        onSave={async () => RESOLVED}
+      />,
+    );
+    const select = screen.getByLabelText("Reasoning effort") as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["(default)", "high"]);
+  });
 });
 
 describe("validation blocks save", () => {

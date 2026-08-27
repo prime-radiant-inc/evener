@@ -1421,6 +1421,142 @@ test("kata xgk8: an Advanced-options model override satisfies the requirement wi
   expect(modelTrigger().textContent).toContain("(default)"); // top-level chip untouched
 });
 
+// --- resolved-default labels -------------------------------------------------
+//
+// A launch-config control whose unset state reads "(default)" names the value
+// a session started now would inherit instead: the field's entry in the
+// effective layer of evener/launch/resolve for the current working directory.
+// Until that resolve lands - or if it fails - the label stays plain
+// "(default)": an unresolved answer must never be dressed up as a known one.
+
+function effortOptionLabels(): (string | null)[] {
+  const select = screen.getByLabelText("Effort") as HTMLSelectElement;
+  return Array.from(select.options).map((o) => o.textContent);
+}
+
+test("Effort, Model, and the mobile rows name the resolved default once launch/resolve lands", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "anthropic/claude-sonnet-4-5", reasoningEffort: "high" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  // No working directory yet, so no resolve has run: plain "(default)".
+  expect(effortOptionLabels()[0]).toBe("(default)");
+  expect(screen.getByTestId("spawn-model-value").textContent).toBe("(default)");
+
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+
+  // Effort's empty option names the inherited effort.
+  await waitFor(() => expect(effortOptionLabels()[0]).toBe("high (default)"));
+  // The desktop Model field's closed trigger names the inherited model.
+  expect(modelTrigger().textContent).toContain("anthropic/claude-sonnet-4-5 (default)");
+  // The card's phone trigger follows the same rule the desktop field does.
+  expect(screen.getByTestId("spawn-model-value").textContent).toBe("anthropic/claude-sonnet-4-5 (default)");
+  // The mobile Reasoning effort row derives its resting label from the same
+  // options list, so it inherits the resolved wording too.
+  const mobileConfig = screen.getByTestId("spawn-mobile-config");
+  const effortRow = mobileConfig.querySelector('[data-label="Reasoning effort"]');
+  expect(effortRow?.textContent).toContain("high (default)");
+});
+
+// Access mode is the chip-level face of the launch-config sandbox field
+// (floor §1.8), so it follows the same resolved-default rule: its empty
+// option names the inherited sandbox in the chip's own friendly wording.
+test("Access mode names the resolved sandbox default once launch/resolve lands", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => ({
+      effective: { sandbox: "workspace-write" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  // The desktop Access mode select lives inside the Advanced panel.
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  const accessOptionLabels = () => {
+    const select = screen.getByLabelText("Access mode") as HTMLSelectElement;
+    return Array.from(select.options).map((o) => o.textContent);
+  };
+
+  // No working directory yet, so no resolve has run: plain "(default)".
+  expect(accessOptionLabels()[0]).toBe("(default)");
+
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+
+  // The desktop Access mode select's empty option names the inherited sandbox.
+  await waitFor(() => expect(accessOptionLabels()[0]).toBe("Workspace write (default)"));
+  // The mobile Access mode row derives its resting label from the same
+  // options list, so it inherits the resolved wording too.
+  const mobileConfig = screen.getByTestId("spawn-mobile-config");
+  const accessRow = mobileConfig.querySelector('[data-label="Access mode"]');
+  expect(accessRow?.textContent).toContain("Workspace write (default)");
+});
+
+test("the (default) labels stay plain when the resolve fails", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/resolve", () => {
+      throw new Error("resolve down");
+    });
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+  await act(async () => {}); // let the rejection's state writes land
+
+  expect(effortOptionLabels()[0]).toBe("(default)");
+  expect(modelTrigger().textContent).not.toContain("claude");
+  expect(screen.getByTestId("spawn-model-value").textContent).toBe("(default)");
+});
+
+// The Advanced panel's own unset labels resolve the same way, off the same
+// resolve the pane already runs: a boolean field reads "On (default)"/"Off
+// (default)" per the effective value.
+test("an Advanced-options boolean names the resolved default (On/Off)", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/launch/schema", () => ({
+      options: [
+        {
+          field: "no_project_prompts",
+          wireField: "noProjectPrompts",
+          label: "No project prompts",
+          group: "general",
+          kind: "boolean",
+          perLaunch: true,
+        },
+      ],
+    }));
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "anthropic/claude-sonnet-4-5", noProjectPrompts: true },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() => expect(fake.calls.some((c) => c.method === "evener/launch/resolve")).toBe(true));
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  const select = screen.getByLabelText("No project prompts") as HTMLSelectElement;
+  expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["On (default)", "On", "Off"]);
+});
+
 // --- uncredentialed-default fallback ---------------------------------------
 //
 // A resolved default whose provider has no credentials is a guaranteed

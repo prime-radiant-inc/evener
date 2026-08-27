@@ -68,6 +68,7 @@ function renderPanel(
       resolveConfig={resolveConfig as (o: unknown) => Promise<LaunchConfigResolved>}
       loadCatalog={loadCatalog}
       complete={complete}
+      resolvedDefaults={over.resolvedDefaults}
     >
       {children}
     </AdvancedOptions>,
@@ -123,6 +124,236 @@ test("a boolean control collects true/false and drops the (default)", async () =
   await user.selectOptions(screen.getByLabelText("No project prompts"), "On");
 
   expect(onOverridesChange).toHaveBeenLastCalledWith({ noProjectPrompts: true });
+});
+
+// --- resolved-default labels -------------------------------------------------
+//
+// The panel receives the effective layer of the pane's own launch/resolve as
+// `resolvedDefaults`: a control whose unset state reads "(default)" prepends
+// the value a session started now would inherit. Until the resolve lands (no
+// prop), the label stays plain "(default)".
+
+test("a boolean control's (default) option names the resolved default (On/Off)", async () => {
+  const user = userEvent.setup();
+  renderPanel(
+    [
+      option({ wireField: "noProjectPrompts", kind: "boolean", label: "No project prompts" }),
+      option({ wireField: "verbose", kind: "boolean", label: "Verbose event log" }),
+      option({ wireField: "nonInteractive", kind: "boolean", label: "Non-interactive" }),
+    ],
+    { resolvedDefaults: { noProjectPrompts: true, verbose: false } },
+  );
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  const labels = (name: string) =>
+    Array.from((screen.getByLabelText(name) as HTMLSelectElement).options).map((o) => o.textContent);
+  expect(labels("No project prompts")).toEqual(["On (default)", "On", "Off"]);
+  expect(labels("Verbose event log")).toEqual(["Off (default)", "On", "Off"]);
+  // No layer sets this one: the plain word stays.
+  expect(labels("Non-interactive")).toEqual(["(default)", "On", "Off"]);
+});
+
+test("a select control renders exactly one empty option, carrying the resolved default's label", async () => {
+  const user = userEvent.setup();
+  // reasoning_effort's real schema ships its OWN { value: "", label:
+  // "(default)" } choice (schema.go's reasoningChoices): the panel owns the
+  // empty option, so the schema's is dropped rather than duplicated.
+  renderPanel(
+    [
+      option({
+        wireField: "reasoningEffort",
+        kind: "select",
+        label: "Reasoning effort",
+        choices: [
+          { value: "", label: "(default)" },
+          { value: "high", label: "high" },
+          { value: "max", label: "max" },
+        ],
+      }),
+    ],
+    { resolvedDefaults: { reasoningEffort: "high" } },
+  );
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  const select = screen.getByLabelText("Reasoning effort") as HTMLSelectElement;
+  expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["high (default)", "high", "max"]);
+  expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "high", "max"]);
+});
+
+test("a select control without a resolved default dedupes the schema's own empty choice to a plain (default)", async () => {
+  const user = userEvent.setup();
+  renderPanel([
+    option({
+      wireField: "reasoningEffort",
+      kind: "select",
+      label: "Reasoning effort",
+      choices: [
+        { value: "", label: "(default)" },
+        { value: "high", label: "high" },
+      ],
+    }),
+  ]);
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  const select = screen.getByLabelText("Reasoning effort") as HTMLSelectElement;
+  expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["(default)", "high"]);
+});
+
+test("a modelPicker control names the resolved default model", async () => {
+  const user = userEvent.setup();
+  renderPanel([option({ wireField: "fastCheapModel", kind: "modelPicker", label: "Fast cheap model" })], {
+    resolvedDefaults: { fastCheapModel: "openai/gpt-5" },
+  });
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  expect(screen.getByRole("button", { name: /change model/i }).textContent).toContain("openai/gpt-5 (default)");
+});
+
+test("an integer control's placeholder names the resolved default", async () => {
+  const user = userEvent.setup();
+  renderPanel(
+    [
+      option({ wireField: "maxRounds", kind: "integer", label: "Max rounds" }),
+      option({ wireField: "maxSubagentDepth", kind: "integer", label: "Max subagent depth" }),
+    ],
+    { resolvedDefaults: { maxRounds: 250 } },
+  );
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  expect((screen.getByLabelText("Max rounds") as HTMLInputElement).placeholder).toBe("250 (default)");
+  // No layer sets this one: the input stays bare, exactly as before.
+  expect((screen.getByLabelText("Max subagent depth") as HTMLInputElement).placeholder).toBe("");
+});
+
+test("a text control's placeholder names the resolved default, clipped when long", async () => {
+  const user = userEvent.setup();
+  renderPanel(
+    [
+      option({ wireField: "agent", kind: "text", label: "Agent" }),
+      option({ wireField: "systemPromptText", kind: "text", label: "System prompt text" }),
+    ],
+    { resolvedDefaults: { agent: "evener-canary", systemPromptText: "x".repeat(120) } },
+  );
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  expect((screen.getByLabelText("Agent") as HTMLInputElement).placeholder).toBe("evener-canary (default)");
+  // A long free-text default (a system prompt) is clipped, not dumped whole.
+  const promptPlaceholder = (screen.getByLabelText("System prompt text") as HTMLInputElement).placeholder;
+  expect(promptPlaceholder.endsWith("… (default)")).toBe(true);
+  expect(promptPlaceholder.length).toBeLessThan(80);
+});
+
+test("a browsable path control's trigger names the resolved default path", async () => {
+  const user = userEvent.setup();
+  renderPanel(
+    [
+      option({ wireField: "traceFile", kind: "path", pathKind: "outputFile", label: "Trace file" }),
+      option({ wireField: "cpuProfile", kind: "path", pathKind: "outputFile", label: "CPU profile" }),
+    ],
+    { resolvedDefaults: { traceFile: "/tmp/demo-trace.log" } },
+  );
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  expect(screen.getByRole("button", { name: /Trace file/i }).textContent).toContain("/tmp/demo-trace.log (default)");
+  // No layer sets this one: the plain "(default)" trigger stays.
+  const cpuTrigger = screen.getByRole("button", { name: /CPU profile/i });
+  expect(cpuTrigger.textContent).toContain("(default)");
+  expect(cpuTrigger.textContent).not.toContain("demo-trace");
+});
+
+// --- inherited collection rows ----------------------------------------------
+//
+// A collection control's own list holds only the user's per-launch additions;
+// entries the effective config would inherit used to be invisible ("None."
+// even when a session would pick up several). The panel renders them as
+// ghost rows - tagged "(default)", no remove button - computed as the
+// resolved effective value minus the user's local entries, which matches each
+// kind's merge semantics (pathList/mcps append, env per-key, modelFallbacks
+// replace) because resolvedDefaults is the resolve RPC's effective layer and
+// already contains the local overrides.
+
+test("a pathList control ghosts inherited entries, and a local add replaces its ghost", async () => {
+  const user = userEvent.setup();
+  renderPanel([option({ wireField: "skillsDirs", kind: "pathList", pathKind: "dir", label: "Skill directories" })], {
+    resolvedDefaults: { skillsDirs: ["/opt/skills"] },
+  });
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  const list = screen.getByRole("list", { name: "Skill directories" });
+  expect(within(list).queryByText("None.")).toBeNull();
+  const ghost = within(list).getByText("/opt/skills").closest("li") as HTMLElement;
+  expect(ghost.textContent).toContain("(default)");
+  expect(within(ghost).queryByRole("button")).toBeNull();
+
+  // Adding the same path locally turns it into an ordinary removable row and
+  // drops the ghost (the effective layer already contains the local entry).
+  await typePath(user, pathTrigger(/browse/i), "/opt/skills");
+  await user.click(screen.getByRole("button", { name: "Add" }));
+  const row = within(list).getByText("/opt/skills").closest("li") as HTMLElement;
+  expect(row.textContent).not.toContain("(default)");
+  expect(within(row).getByRole("button", { name: "Remove /opt/skills" })).toBeTruthy();
+  expect(within(list).getAllByRole("listitem")).toHaveLength(1);
+});
+
+test("a modelList control ghosts inherited fallbacks", async () => {
+  const user = userEvent.setup();
+  renderPanel([option({ wireField: "modelFallbacks", kind: "modelList", label: "Model fallbacks" })], {
+    resolvedDefaults: { modelFallbacks: ["openai/gpt-5"] },
+  });
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  const list = screen.getByRole("list", { name: "Model fallbacks" });
+  const ghost = within(list).getByText("openai/gpt-5").closest("li") as HTMLElement;
+  expect(ghost.textContent).toContain("(default)");
+  expect(within(ghost).queryByRole("button")).toBeNull();
+});
+
+test("an envMap control ghosts inherited entries, and a local override of the same key replaces its ghost", async () => {
+  const user = userEvent.setup();
+  renderPanel([option({ wireField: "env", kind: "envMap", label: "Env vars" })], {
+    resolvedDefaults: { env: { EDITOR: "vim", PAGER: "less" } },
+  });
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  const list = screen.getByRole("list", { name: "Env vars" });
+  expect(within(list).queryByText("None.")).toBeNull();
+  for (const text of ["EDITOR=vim", "PAGER=less"]) {
+    const ghost = within(list).getByText(text).closest("li") as HTMLElement;
+    expect(ghost.textContent).toContain("(default)");
+    expect(within(ghost).queryByRole("button")).toBeNull();
+  }
+
+  // Overriding one key locally replaces exactly that ghost row.
+  await user.type(screen.getByPlaceholderText("NAME=value"), "EDITOR=emacs{Enter}");
+  const row = within(list).getByText("EDITOR=emacs").closest("li") as HTMLElement;
+  expect(row.textContent).not.toContain("(default)");
+  expect(within(row).getByRole("button", { name: "Remove EDITOR" })).toBeTruthy();
+  expect(within(list).queryByText("EDITOR=vim")).toBeNull();
+  expect(within(list).getByText("PAGER=less")).toBeTruthy();
+});
+
+test("an mcpServerList control ghosts inherited servers", async () => {
+  const user = userEvent.setup();
+  renderPanel([option({ wireField: "mcps", kind: "mcpServerList", label: "MCP servers" })], {
+    resolvedDefaults: { mcps: [{ name: "docs", command: "npx", args: ["docs-mcp"] }] },
+  });
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  const list = screen.getByRole("list", { name: "MCP servers" });
+  const ghost = within(list).getByText("docs: npx docs-mcp").closest("li") as HTMLElement;
+  expect(ghost.textContent).toContain("(default)");
+  expect(within(ghost).queryByRole("button")).toBeNull();
 });
 
 test("an integer control collects a parsed number", async () => {

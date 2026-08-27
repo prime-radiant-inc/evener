@@ -35,6 +35,26 @@ export function sandboxForAccessMode(mode: string): string {
   }
 }
 
+// Inverse of sandboxForAccessMode, for labelling: the access-mode row a
+// resolved launch-config `sandbox` value corresponds to. "off" maps back to
+// "full" (Full access); an unknown or empty sandbox has no row.
+export function accessModeForSandbox(sandbox: string): AccessModeOption | undefined {
+  const value = sandbox.trim() === "off" ? "full" : sandbox.trim();
+  return ACCESS_MODE_OPTIONS.find((option) => option.value === value);
+}
+
+// The empty option's label for the access-mode control: names the sandbox a
+// session started now would inherit, in the control's own friendly wording -
+// "Workspace write (default)". Plain "(default)" until a resolve lands with
+// one; a sandbox value outside the four fixed rows is named raw rather than
+// dropped (same rule the effort ladder's preserved values follow).
+export function accessModeDefaultLabel(resolvedSandbox: string): string {
+  const sandbox = resolvedSandbox.trim();
+  if (sandbox === "") return "(default)";
+  const option = accessModeForSandbox(sandbox);
+  return `${option?.label ?? sandbox} (default)`;
+}
+
 // Mirrors web_spawn.go:launchOverridesWithAccessMode. Merges the access-mode
 // sandbox into launch overrides ONLY when the advanced-options schema hasn't
 // already set `sandbox` explicitly (floor §1.8) - the schema value wins.

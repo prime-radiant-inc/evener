@@ -26,6 +26,53 @@ func useSkillCall(id, skillName string) llm.ToolCallData {
 	}
 }
 
+func TestBuildPromptDataHasUseSkillTracksCallableDefinitions(t *testing.T) {
+	t.Parallel()
+	for _, tc := range []struct {
+		name   string
+		keep   []string
+		legacy bool
+		want   bool
+	}{
+		{name: "legacy uninitialized cache", legacy: true},
+		{name: "empty final cache"},
+		{name: "restricted final cache", keep: []string{"read_file"}},
+		{name: "callable final cache", keep: []string{"use_skill"}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSession(t)
+			if tc.legacy {
+				// A pre-cache/legacy session has no final definitions. This is the
+				// only direct assignment here; the other cases exercise the real
+				// registry restriction and rebuildToolDefsCache lifecycle below.
+				s.cachedToolDefs = nil
+			} else {
+				rebuildPromptToolCacheForTest(s, tc.keep...)
+			}
+			if got := s.buildPromptData(s.currentEnv()).HasUseSkill; got != tc.want {
+				t.Fatalf("HasUseSkill = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+// rebuildPromptToolCacheForTest models the production final-tool restriction
+// boundary: restrict the initialized registry, then rebuild the cached provider
+// definitions that are sent to the model. HasUseSkill must follow this cache,
+// not the profile's larger initial definition set.
+func rebuildPromptToolCacheForTest(s *Session, keep ...string) {
+	allowed := make(map[string]bool, len(keep))
+	for _, name := range keep {
+		allowed[name] = true
+	}
+	for name := range s.reg.RegisteredNames() {
+		if !allowed[name] {
+			s.reg.Remove(name)
+		}
+	}
+	s.rebuildToolDefsCache()
+}
+
 // use_skill tests exercise provider profiles that expose the use_skill tool.
 
 func TestUseSkill_ReturnsBody(t *testing.T) {
@@ -82,6 +129,124 @@ func TestUseSkill_ReturnsBody(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected skill body 'Greet people warmly' in tool result of second request")
+	}
+}
+
+func TestUseSkill_InlineMentionPreservesUserInput(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nGreet people warmly.\n")
+
+	input := "Please use /greet for Jesse"
+	skillBody := "Greet people warmly."
+	c := llm.NewClient()
+	skillCall := useSkillCall("s1", "greet")
+	comm := communicateCall("c1", "done")
+	adapter := &fakeAdapter{
+		name: "anthropic",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(skillCall) },
+			func(req llm.Request) llm.Response { return toolCallResponse(comm) },
+		},
+	}
+	c.Register(adapter)
+
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	var eventsSeen []events.SessionEvent
+	eventsDone := make(chan struct{})
+	go func() {
+		defer close(eventsDone)
+		for ev := range sess.Events() {
+			eventsSeen = append(eventsSeen, ev)
+		}
+	}()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, input, nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+	<-eventsDone
+
+	var userInputs []string
+	for _, ev := range eventsSeen {
+		if ev.Kind != events.EventUserInput {
+			continue
+		}
+		data, ok := ev.Data.(events.UserInputData)
+		if ok {
+			userInputs = append(userInputs, data.Text)
+		}
+	}
+	if len(userInputs) != 1 || userInputs[0] != input {
+		t.Fatalf("user input events = %q, want complete sentence %q", userInputs, input)
+	}
+	if strings.Contains(userInputs[0], "Greet people warmly.") {
+		t.Fatal("inline mention expanded the skill body before the model turn")
+	}
+
+	requests := adapter.Requests()
+	if len(requests) < 2 {
+		t.Fatalf("expected tool follow-up request, got %d requests", len(requests))
+	}
+	var requestUserTexts []string
+	for _, msg := range requests[0].Messages {
+		if msg.Role == llm.RoleUser {
+			requestUserTexts = append(requestUserTexts, msg.Text())
+		}
+	}
+	if len(requestUserTexts) == 0 || requestUserTexts[len(requestUserTexts)-1] != input {
+		t.Fatalf("provider user messages = %q, want final message exactly %q", requestUserTexts, input)
+	}
+	if strings.Contains(requestUserTexts[len(requestUserTexts)-1], skillBody) {
+		t.Fatal("provider request expanded the inline skill body before the model turn")
+	}
+
+	foundSkillBody := false
+	for _, msg := range requests[1].Messages {
+		for _, part := range msg.Content {
+			if part.Kind != llm.ContentToolResult {
+				continue
+			}
+			content, _ := part.ToolResult.Content.(string)
+			if strings.Contains(content, "Greet people warmly.") {
+				foundSkillBody = true
+			}
+		}
+	}
+	if !foundSkillBody {
+		t.Fatal("scripted inline use_skill call did not return the skill body")
+	}
+}
+
+func TestStandaloneSkillActivationUsesCanonicalPluginName(t *testing.T) {
+	s := newTestSession(t)
+	s.skills = map[string]skill.SkillMeta{
+		"plugin:simplify": {Name: "simplify", SkillFile: writeSkillBodyFile(t, "plugin steps")},
+	}
+	_ = drainSlashEvents(s)
+
+	got, ok := s.expandSlashCommand(context.Background(), "/plugin:simplify")
+	if !ok || got != "plugin steps" {
+		t.Fatalf("expanded = %q, %v; want plugin skill body", got, ok)
+	}
+	var activated []string
+	for _, ev := range drainSlashEvents(s) {
+		if ev.Kind != events.EventSkillActivated {
+			continue
+		}
+		if data, ok := ev.Data.(events.SkillActivatedData); ok {
+			activated = append(activated, data.Name)
+		}
+	}
+	if len(activated) != 1 || activated[0] != "plugin:simplify" {
+		t.Fatalf("activation names = %v, want [plugin:simplify]", activated)
 	}
 }
 

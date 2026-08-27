@@ -339,6 +339,7 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
       ? { diagnostics: { plugins: thread.evener.diagnostics.plugins?.map((plugin) => ({ name: plugin.name })) } }
       : {}),
     delegates: (thread.evener.diagnostics?.delegates ?? []).map(cloneStableDelegate),
+    skills: (thread.evener.diagnostics?.skills ?? []).map((skill) => ({ ...skill })),
     turnSlots: thread.evener.diagnostics?.turnSlots ? { ...thread.evener.diagnostics.turnSlots } : null,
     jobsUpdatedAt: null,
     jobsTreeRevision: null,

@@ -11,8 +11,180 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/plugin"
+	"primeradiant.com/evener/agent/skill"
 	"primeradiant.com/evener/llm"
 )
+
+func writeSkillBodyFile(t *testing.T, body string) string {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "SKILL.md")
+	if err := os.WriteFile(path, []byte("---\nname: simplify\ndescription: test\n---\n"+body), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path
+}
+
+func drainSlashEvents(s *Session) []events.SessionEvent {
+	var got []events.SessionEvent
+	for {
+		select {
+		case ev := <-s.Events():
+			got = append(got, ev)
+		default:
+			return got
+		}
+	}
+}
+
+func TestExpandSlashCommandStandaloneSkillResolution(t *testing.T) {
+	tests := []struct {
+		name       string
+		input      string
+		skills     map[string]skill.SkillMeta
+		want       string
+		wantOK     bool
+		wantActive string
+	}{
+		{
+			name:  "body and context",
+			input: "/simplify this diff",
+			skills: map[string]skill.SkillMeta{
+				"simplify": {Name: "simplify", SkillFile: writeSkillBodyFile(t, "follow these steps")},
+			},
+			want:       "follow these steps\n\nUser context:\nthis diff",
+			wantOK:     true,
+			wantActive: "simplify",
+		},
+		{
+			name:  "plugin qualified",
+			input: "/plugin:simplify",
+			skills: map[string]skill.SkillMeta{
+				"plugin:simplify": {Name: "simplify", SkillFile: writeSkillBodyFile(t, "plugin steps")},
+			},
+			want:       "plugin steps",
+			wantOK:     true,
+			wantActive: "plugin:simplify",
+		},
+		{
+			name:  "tabs and newlines around context",
+			input: " \n/simplify \t this diff \n ",
+			skills: map[string]skill.SkillMeta{
+				"simplify": {Name: "simplify", SkillFile: writeSkillBodyFile(t, "follow these steps")},
+			},
+			want:       "follow these steps\n\nUser context:\nthis diff",
+			wantOK:     true,
+			wantActive: "simplify",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newTestSession(t)
+			s.skills = tt.skills
+			_ = drainSlashEvents(s)
+
+			got, ok := s.expandSlashCommand(context.Background(), tt.input)
+			if ok != tt.wantOK || got != tt.want {
+				t.Fatalf("expanded = %q, %v; want %q, %v", got, ok, tt.want, tt.wantOK)
+			}
+			var activated []string
+			for _, ev := range drainSlashEvents(s) {
+				if ev.Kind != events.EventSkillActivated {
+					continue
+				}
+				data, ok := ev.Data.(events.SkillActivatedData)
+				if ok {
+					activated = append(activated, data.Name)
+				}
+			}
+			if len(activated) != 1 || activated[0] != tt.wantActive {
+				t.Fatalf("activation names = %v, want [%q]", activated, tt.wantActive)
+			}
+		})
+	}
+}
+
+func TestExpandSlashCommandStandalonePreservesCommandPrecedence(t *testing.T) {
+	s := newTestSession(t)
+	s.skills = map[string]skill.SkillMeta{
+		"review": {Name: "review", SkillFile: writeSkillBodyFile(t, "skill body")},
+	}
+	s.pluginCommands = map[string]plugin.Command{
+		"review": {Name: "review", Body: "command $ARGUMENTS", Source: "project"},
+	}
+	_ = drainSlashEvents(s)
+
+	got, ok := s.expandSlashCommand(context.Background(), "/review diff")
+	if !ok || got != "command diff" {
+		t.Fatalf("expanded = %q, %v; want command expansion", got, ok)
+	}
+	for _, ev := range drainSlashEvents(s) {
+		if ev.Kind == events.EventSkillActivated {
+			t.Fatal("command precedence emitted a skill activation")
+		}
+	}
+}
+
+func TestExpandSlashCommandStandaloneUnknownAndAmbiguousFallThrough(t *testing.T) {
+	tests := []struct {
+		name   string
+		skills map[string]skill.SkillMeta
+		input  string
+	}{
+		{name: "unknown", skills: nil, input: "/missing context"},
+		{
+			name: "ambiguous suffix",
+			skills: map[string]skill.SkillMeta{
+				"one:review": {Name: "review", SkillFile: writeSkillBodyFile(t, "one")},
+				"two:review": {Name: "review", SkillFile: writeSkillBodyFile(t, "two")},
+			},
+			input: "/review context",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			s := newTestSession(t)
+			s.skills = tt.skills
+			_ = drainSlashEvents(s)
+			got, ok := s.expandSlashCommand(context.Background(), tt.input)
+			if ok || got != tt.input {
+				t.Fatalf("expanded = %q, %v; want unchanged input", got, ok)
+			}
+			for _, ev := range drainSlashEvents(s) {
+				if ev.Kind == events.EventSkillActivated {
+					t.Fatal("fall-through emitted a skill activation")
+				}
+			}
+		})
+	}
+}
+
+func TestExpandSlashCommandStandaloneBodyLoadFailureWarnsWithoutActivation(t *testing.T) {
+	s := newTestSession(t)
+	s.skills = map[string]skill.SkillMeta{
+		"simplify": {Name: "simplify", SkillFile: filepath.Join(t.TempDir(), "missing", "SKILL.md")},
+	}
+	_ = drainSlashEvents(s)
+
+	got, ok := s.expandSlashCommand(context.Background(), "/simplify context")
+	if ok || got != "/simplify context" {
+		t.Fatalf("expanded = %q, %v; want unchanged input", got, ok)
+	}
+	var warned bool
+	for _, ev := range drainSlashEvents(s) {
+		if ev.Kind == events.EventSkillActivated {
+			t.Fatal("failed skill load emitted an activation")
+		}
+		if ev.Kind == events.EventWarning {
+			if data, ok := ev.Data.(events.WarningData); ok && strings.Contains(data.Message, "loading slash skill /simplify failed") {
+				warned = true
+			}
+		}
+	}
+	if !warned {
+		t.Fatal("failed skill load did not emit a warning")
+	}
+}
 
 // writeEvenerwideCommandFile creates <workDir>/.evener/commands/<name>.md.
 func writeEvenerwideCommandFile(t *testing.T, workDir, name, content string) {

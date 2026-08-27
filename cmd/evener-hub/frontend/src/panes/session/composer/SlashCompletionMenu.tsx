@@ -41,7 +41,13 @@ export function optionId(listboxId: string, index: number): string {
 
 export function SlashCompletionMenu({ id, items, highlightedIndex, onSelect }: SlashCompletionMenuProps) {
   return (
-    <div className={CLASS.menu} role="listbox" id={id} aria-label="Slash commands" data-testid="composer-slash-menu">
+    <div
+      className={CLASS.menu}
+      role="listbox"
+      id={id}
+      aria-label="Slash commands and skills"
+      data-testid="composer-slash-menu"
+    >
       {items.map((item, index) => {
         const active = index === highlightedIndex;
         return (

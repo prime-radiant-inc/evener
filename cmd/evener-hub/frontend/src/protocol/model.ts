@@ -5,6 +5,7 @@
 
 import type {
   EvenerDelegateInfo,
+  EvenerSkillInfo,
   EvenerTurnSlots,
   EvenerUsage,
   GoalState,
@@ -229,6 +230,7 @@ export interface ThreadModel {
   // independently max-merged because transcript activity is durable outside
   // the lifecycle event sequence.
   delegates?: EvenerDelegateInfo[];
+  skills?: EvenerSkillInfo[];
   turnSlots?: EvenerTurnSlots | null;
   // Bumped (to the reducer's frame time) by every evener/job/started and
   // evener/job/finished for this thread; the jobs panel re-fetches its list when
