@@ -212,7 +212,9 @@ func mergePastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 // start without loading any skill bodies. The order mirrors session startup:
 // embedded skills first, project and configured extra directories next, and
 // finally the skills exposed by configured plugins. Later layers overwrite an
-// earlier canonical key, just as they do during session initialization.
+// earlier canonical key, just as they do during session initialization. Plugin
+// directories use the shared first-manifest-wins selection policy; a later
+// duplicate is skipped even if the selected plugin fails component loading.
 //
 // This function is intentionally behind a package variable. Thread-list,
 // transcript-list, and turn-page sweeps must remain metadata-only and cheap;
@@ -261,24 +263,8 @@ func discoverPastThreadSkills(entry hubcore.PastEntry) []appwire.EvenerSkillInfo
 // hooks, or MCP configuration: a malformed unrelated component must not hide
 // otherwise valid plugin skills from a cold thread read.
 func pastThreadPluginName(dir string) (string, bool) {
-	for _, manifestPath := range []string{
-		filepath.Join(dir, ".claude-plugin", "plugin.json"),
-		filepath.Join(dir, ".codex-plugin", "plugin.json"),
-	} {
-		data, err := os.ReadFile(manifestPath)
-		if err != nil {
-			if os.IsNotExist(err) {
-				continue
-			}
-			return "", false
-		}
-		manifest, err := plugin.ParseManifest(data)
-		if err != nil {
-			return "", false
-		}
-		return manifest.Name, true
-	}
-	return "", false
+	name, err := plugin.ManifestName(dir)
+	return name, err == nil
 }
 
 func attachPastThreadSkillCatalog(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
