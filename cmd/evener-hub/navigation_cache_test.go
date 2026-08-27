@@ -21,6 +21,13 @@ func TestNavigationCacheConcurrentMissBuildsOnce(t *testing.T) {
 	buildStarted := make(chan struct{})
 	buildRelease := make(chan struct{})
 	var started atomic.Bool
+	const callers = 20
+	var waiterHooks atomic.Int32
+	cache.beforeSingleflight = func(owner bool) {
+		if !owner && waiterHooks.Add(1) == callers-1 {
+			close(buildRelease)
+		}
+	}
 	build := func(context.Context) (navigationRepresentation, error) {
 		calls.Add(1)
 		if started.CompareAndSwap(false, true) {
@@ -30,7 +37,6 @@ func TestNavigationCacheConcurrentMissBuildsOnce(t *testing.T) {
 		return representationFixture("project:p1", 4), nil
 	}
 
-	const callers = 20
 	results := make(chan navigationRepresentation, callers)
 	errs := make(chan error, callers)
 	var wg sync.WaitGroup
@@ -42,7 +48,6 @@ func TestNavigationCacheConcurrentMissBuildsOnce(t *testing.T) {
 		})
 	}
 	<-buildStarted
-	close(buildRelease)
 	wg.Wait()
 	close(results)
 	close(errs)
