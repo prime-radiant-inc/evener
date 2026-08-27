@@ -344,49 +344,6 @@ func (s *NavigationService) Representation(ctx context.Context, key navigationRe
 	return representation, err
 }
 
-// LegacyRepresentation binds the compatibility surface to the same immutable
-// core as the structured navigation API. The builder is called only on a cache
-// miss and must return a detached legacy object.
-func (s *NavigationService) LegacyRepresentation(ctx context.Context, id string, build func(navigationBuildInputs) (any, error)) (NavigationRepresentation, error) {
-	if build == nil {
-		return navigationRepresentation{}, errors.New("legacy navigation builder is nil")
-	}
-	_, err := s.ensureSnapshot(ctx, false, nil)
-	if err != nil {
-		return navigationRepresentation{}, err
-	}
-	s.mu.Lock()
-	if s.core == nil {
-		s.mu.Unlock()
-		return navigationRepresentation{}, errors.New("navigation core unavailable")
-	}
-	// Legacy output spans the whole immutable core. Its identity must therefore
-	// follow the completed core build, not the manifest resource revision (which
-	// intentionally ignores row/model/pin-only changes).
-	key := navigationResourceKey{Kind: navigationResourceLegacy, ID: id, Generation: s.generation, Revision: s.buildID}
-	inputs := s.core.projection.inputs
-	s.mu.Unlock()
-	return s.cache.Get(ctx, key, func(context.Context) (navigationRepresentation, error) {
-		object, err := build(cloneNavigationInputs(inputs))
-		if err != nil {
-			return navigationRepresentation{}, err
-		}
-		encoded, err := json.Marshal(object)
-		if err != nil {
-			return navigationRepresentation{}, fmt.Errorf("encode legacy navigation representation: %w", err)
-		}
-		// writeAPIJSON uses json.Encoder.Encode, whose legacy wire contract
-		// includes a trailing newline. Keep that framing byte in the cached
-		// representation without changing the structured navigation encodings.
-		encoded = append(encoded, '\n')
-		compressed, err := gzipNavigation(encoded)
-		if err != nil {
-			return navigationRepresentation{}, err
-		}
-		return navigationRepresentation{Object: object, JSON: encoded, Gzip: compressed, Generation: key.Generation, Revision: key.Revision, SizeEstimate: int64(len(encoded) + len(compressed))}, nil
-	})
-}
-
 func gzipNavigation(input []byte) ([]byte, error) {
 	var buffer bytes.Buffer
 	writer := gzip.NewWriter(&buffer)

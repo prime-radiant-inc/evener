@@ -47,7 +47,6 @@ const (
 	navigationResourceProject          navigationResourceKind = "project"
 	navigationResourceProjectPage      navigationResourceKind = "project_page"
 	navigationResourceLocation         navigationResourceKind = "location"
-	navigationResourceLegacy           navigationResourceKind = "legacy"
 )
 
 // navigationResourceKey describes one immutable navigation representation. It
