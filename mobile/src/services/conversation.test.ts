@@ -702,6 +702,123 @@ describe("ConversationService", () => {
       expect(caps).not.toBeNull();
       expect(caps?.send).toBe(true);
     });
+    it("late refresh for A after opening B does not overwrite B's cached capabilities", async () => {
+      // Deferred-promise test: start refreshCapabilities("ref-A") with a
+      // pending thread/read, then open("ref-B") while A's refresh is in
+      // flight, then resolve A. The returned A capabilities must remain
+      // available to the caller, but B's mutation-gating cache must stay
+      // B's — A's late resolution must neither overwrite B's capabilities
+      // nor gate B with A's values.
+      const { client, service } = setup();
+      const capsA: ThreadCapabilities = {
+        ...ALL_TRUE_CAPS,
+        send: false,
+        rename: false,
+      };
+      const capsB: ThreadCapabilities = { ...ALL_TRUE_CAPS };
+      const threadA = makeThread({
+        id: "thread-A",
+        evener: { ref: "ref-A", capabilities: capsA, queue: { revision: 0 } },
+      });
+      const threadB = makeThread({
+        id: "thread-B",
+        evener: { ref: "ref-B", capabilities: capsB, queue: { revision: 0 } },
+      });
+
+      let resolveARead = (_resp: ThreadReadResponse) => {};
+      const aReadPromise = new Promise<ThreadReadResponse>((r) => {
+        resolveARead = r;
+      });
+      client.on("thread/read", (params) => {
+        const p = params as { ref: string; subscribe?: boolean };
+        // refresh: subscribe=false -> defer A; open: subscribe=true -> immediate
+        if (p.ref === "ref-A" && p.subscribe === false) {
+          return aReadPromise;
+        }
+        if (p.ref === "ref-A") return makeReadResponse(threadA);
+        return makeReadResponse(threadB);
+      });
+
+      // Open A: ref=ref-A, capabilities=capsA.
+      await service.open("ref-A");
+      // Start A's refresh — pending on aReadPromise (not awaited yet).
+      const refreshPromise = service.refreshCapabilities("ref-A");
+      // Open B while A's refresh is in flight: ref=ref-B, capabilities=capsB.
+      await service.open("ref-B");
+      // Resolve A's late refresh now that B is the current ref.
+      resolveARead(makeReadResponse(threadA));
+      const aCaps = await refreshPromise;
+      // Returned A capabilities remain available to the generation-safe store.
+      expect(aCaps).toEqual(capsA);
+
+      // B's service mutation gates remain B's. If A's caps (send=false) had
+      // leaked into the cache, send would throw before reaching the wire.
+      client.on(
+        "turn/start",
+        () =>
+          ({
+            turn: { id: "t1", itemsView: "default", status: "running" },
+            receipt: makeReceipt(),
+          }) as TurnStartResponse,
+      );
+      const receipt = await service.send(textInput("hello"));
+      expect(receipt).toBeDefined();
+      const startCall = client.calls.find((c) => c.method === "turn/start");
+      expect(startCall).toBeDefined();
+      expect(startCall?.params).toMatchObject({ ref: "ref-B" });
+    });
+    it("refresh updates cache when threadRef is still the current ref", async () => {
+      // Converse/current-ref case: when the refresh resolves and threadRef
+      // is still the currently open ref, the mutation-gating cache IS
+      // updated. This guards against over-correcting into never updating.
+      const { client, service } = setup();
+      const capsBefore = ALL_TRUE_CAPS;
+      const capsAfter: ThreadCapabilities = { ...ALL_TRUE_CAPS, send: false };
+      const threadBefore = makeThread({
+        evener: {
+          ref: "ref-1",
+          capabilities: capsBefore,
+          queue: { revision: 0 },
+        },
+      });
+      const threadAfter = makeThread({
+        evener: {
+          ref: "ref-1",
+          capabilities: capsAfter,
+          queue: { revision: 0 },
+        },
+      });
+
+      client.on("thread/read", () => makeReadResponse(threadBefore));
+      await service.open("ref-1");
+      // ref=ref-1, capabilities=capsBefore (send=true).
+
+      let resolveRead = (_resp: ThreadReadResponse) => {};
+      const readPromise = new Promise<ThreadReadResponse>((r) => {
+        resolveRead = r;
+      });
+      client.on("thread/read", () => readPromise);
+      const refreshPromise = service.refreshCapabilities("ref-1");
+      // ref is still ref-1 — no switch occurred.
+      resolveRead(makeReadResponse(threadAfter));
+      const caps = await refreshPromise;
+      expect(caps).toEqual(capsAfter);
+
+      // Cache was updated (threadRef === ref), so send is now gated by
+      // capsAfter.send=false and must throw before reaching the wire.
+      client.on(
+        "turn/start",
+        () =>
+          ({
+            turn: { id: "t1", itemsView: "default", status: "running" },
+            receipt: makeReceipt(),
+          }) as TurnStartResponse,
+      );
+      await expect(service.send(textInput("hello"))).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "turn/start"),
+      ).toBeUndefined();
+    });
   });
 
   describe("loadOlder with explicit limit", () => {
@@ -755,18 +872,25 @@ describe("ConversationService", () => {
       expect(typeof service.close).toBe("function");
     });
 
-    it("open(ref, cursor?) accepts optional cursor for bounded reads", async () => {
+    it("ignores compatibility cursor — sends canonical unbounded subscribed open request", async () => {
       const { client, service } = setup();
-      const conv = await service.open("ref-1");
-      expect(conv.id).toBe("thread-1");
-      // With cursor, open sends turnLimit for a bounded initial read.
-      client.calls.length = 0;
+      // open(ref, cursor?) preserves the cursor param for signature
+      // compatibility but must NOT add turnLimit or paging from cursor.
+      // The request stays exactly the canonical unbounded subscribed open;
+      // bounded reads live exclusively in readProjection, cursor paging in
+      // thread/turns/list.
       await service.open("ref-1", "some-cursor");
       const call = client.calls.find((c) => c.method === "thread/read");
       expect(call).toBeDefined();
       const params = call?.params as Record<string, unknown>;
-      expect(params).toHaveProperty("turnLimit");
-      expect(params.turnLimit).toBe(50);
+      expect(params).toMatchObject({
+        ref: "ref-1",
+        includeTurns: true,
+        subscribe: true,
+        replaceSubscription: true,
+      });
+      expect(params).not.toHaveProperty("turnLimit");
+      expect(params).not.toHaveProperty("cursor");
     });
   });
 });

@@ -152,8 +152,16 @@ export function createConversationService(
       includeTurns: false,
       subscribe: false,
     });
-    capabilities = response.thread.evener.capabilities;
-    return capabilities;
+    const refreshed = response.thread.evener.capabilities;
+    // Only mutate the service's mutation-gating cache if threadRef is still
+    // the currently open ref when the response resolves. A late refresh for
+    // thread A after opening B must neither overwrite B's cached
+    // capabilities nor gate B with A's values. The returned capabilities
+    // remain available to the caller (generation-safe store) regardless.
+    if (ref === threadRef) {
+      capabilities = refreshed;
+    }
+    return refreshed;
   }
 
   // withCapabilityRefresh wraps a mutation: if the server rejects with
@@ -169,14 +177,17 @@ export function createConversationService(
   }
 
   return {
-    async open(threadRef, cursor) {
+    async open(threadRef, _cursor) {
+      // The compatibility cursor is intentionally ignored: open() must send
+      // exactly the canonical unbounded subscribed open request. Bounded
+      // live projection lives exclusively in readProjection; cursor paging
+      // lives exclusively in thread/turns/list.
       ref = threadRef;
       const response: ThreadReadResponse = await client.request("thread/read", {
         ref: threadRef,
         includeTurns: true,
         subscribe: true,
         replaceSubscription: true,
-        ...(cursor !== undefined ? { turnLimit: READ_TURN_LIMIT } : {}),
       });
       capabilities = response.thread.evener.capabilities;
       return projectThread(response.thread);
