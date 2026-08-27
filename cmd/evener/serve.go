@@ -84,6 +84,7 @@ type serveServer interface {
 	SetThreadEnvelopeSource(server.ThreadEnvelopeSource)
 	RefreshThreadEnvelope()
 	SetModelFunc(func(string) error)
+	SetVisionModelFunc(func(string) error)
 	UpdateSessionInfo(sessionID, model, profile string)
 	SetNameFunc(func(string))
 	SetReasoningEffortFunc(func(string))
@@ -888,6 +889,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	})
 	srv.SetNameFunc(func(name string) { getSession().Rename(name) })
 	srv.SetReasoningEffortFunc(func(effort string) { getSession().SetReasoningEffort(effort) })
+	// Resolve the session per call like the model/effort hooks above: binding one
+	// session's method value here would pin the hook to the pre-/clear session.
+	srv.SetVisionModelFunc(func(v string) error { return getSession().SetVisionModel(v) })
 	srv.SetListModelsFunc(cmdutil.ListModelsFunc(client, profile.ID()))
 	srv.SetTasksFunc(func() any { return getSession().Tasks() })
 	srv.SetJobsFunc(func(params appwire.JobsListParams) (any, error) {
@@ -1503,6 +1507,10 @@ func (l liveThreadEnvelopeSource) ReasoningInfo() (string, []string, bool) {
 	sess := l.session()
 	p := sess.Profile()
 	return sess.ReasoningEffort(), p.ReasoningEffortLevels(), p.SupportsReasoning()
+}
+
+func (l liveThreadEnvelopeSource) VisionModel() string {
+	return l.session().VisionModel()
 }
 
 func (l liveThreadEnvelopeSource) SessionMeta() schema.SessionMeta {

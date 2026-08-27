@@ -254,15 +254,16 @@ type ContextMetrics struct {
 // ActionCapabilities reports which mutating session actions are currently
 // supported by this daemon.
 type ActionCapabilities struct {
-	Send           bool   `json:"send"`
-	Steer          bool   `json:"steer"`
-	Interrupt      bool   `json:"interrupt"`
-	Compact        bool   `json:"compact"`
-	Clear          bool   `json:"clear"`
-	Shutdown       bool   `json:"shutdown"`
-	ChangeModel    bool   `json:"change_model"`
-	Queue          bool   `json:"queue"`
-	ReadOnlyReason string `json:"read_only_reason,omitempty"`
+	Send              bool   `json:"send"`
+	Steer             bool   `json:"steer"`
+	Interrupt         bool   `json:"interrupt"`
+	Compact           bool   `json:"compact"`
+	Clear             bool   `json:"clear"`
+	Shutdown          bool   `json:"shutdown"`
+	ChangeModel       bool   `json:"change_model"`
+	ChangeVisionModel bool   `json:"change_vision_model"`
+	Queue             bool   `json:"queue"`
+	ReadOnlyReason    string `json:"read_only_reason,omitempty"`
 }
 
 // ServerConfig holds configuration for the HTTP server.
@@ -350,6 +351,7 @@ type Server struct {
 	compactFunc                     func(context.Context) error
 	clearFunc                       func(context.Context) error
 	modelFunc                       func(string) error
+	visionModelFunc                 func(string) error
 	nameFunc                        func(string)
 	reasoningEffortFunc             func(string)
 	listModelsFunc                  func(context.Context) ([]appwire.ModelDescriptor, error)
@@ -639,6 +641,13 @@ func (s *Server) SetClearFunc(fn func(context.Context) error) {
 func (s *Server) SetModelFunc(fn func(string) error) {
 	s.mu.Lock()
 	s.modelFunc = fn
+	s.mu.Unlock()
+}
+
+// SetVisionModelFunc sets the function called by thread/vision-model/set.
+func (s *Server) SetVisionModelFunc(fn func(string) error) {
+	s.mu.Lock()
+	s.visionModelFunc = fn
 	s.mu.Unlock()
 }
 

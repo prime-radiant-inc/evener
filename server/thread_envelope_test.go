@@ -713,6 +713,8 @@ func (c *countingThreadEnvelopeSource) ReasoningInfo() (string, []string, bool) 
 	c.hit()
 	return "", nil, false
 }
+
+func (c *countingThreadEnvelopeSource) VisionModel() string { c.hit(); return "" }
 func (c *countingThreadEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int64) {
 	c.hit()
 	return 0, nil, 0

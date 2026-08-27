@@ -321,14 +321,15 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 	closed := threadStatus == appwire.ThreadStatusClosed
 	steerAvailable := s.steerFunc != nil || s.steerWithImagesFunc != nil
 	capabilities := ActionCapabilities{
-		Send:        !active && !closed,
-		Steer:       steerAvailable,
-		Interrupt:   s.interruptWired && active && !closed,
-		Compact:     s.compactFunc != nil && !closed,
-		Clear:       s.clearFunc != nil && !active && !closed,
-		Shutdown:    s.shutdownFunc != nil,
-		ChangeModel: s.modelFunc != nil && !closed,
-		Queue:       s.queueFunc != nil && active && !closed,
+		Send:              !active && !closed,
+		Steer:             steerAvailable,
+		Interrupt:         s.interruptWired && active && !closed,
+		Compact:           s.compactFunc != nil && !closed,
+		Clear:             s.clearFunc != nil && !active && !closed,
+		Shutdown:          s.shutdownFunc != nil,
+		ChangeModel:       s.modelFunc != nil && !closed,
+		ChangeVisionModel: s.visionModelFunc != nil && !closed,
+		Queue:             s.queueFunc != nil && active && !closed,
 	}
 	s.mu.RUnlock()
 	sort.Strings(descendantSessionIDs)

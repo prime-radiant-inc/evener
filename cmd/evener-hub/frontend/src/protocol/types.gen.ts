@@ -347,6 +347,7 @@ export interface EvenerThread {
   reasoningEffort?: string;
   reasoningEffortLevels?: string[];
   supportsReasoning?: boolean;
+  visionModel?: string;
 }
 
 export interface EvenerToolInfo {
@@ -1337,6 +1338,7 @@ export interface ThreadCapabilities {
   forkFromTurn: boolean;
   shutdown: boolean;
   changeModel: boolean;
+  changeVisionModel: boolean;
   queue: boolean;
   goal: boolean;
   rename: boolean;
@@ -1594,6 +1596,11 @@ export interface ThreadTurnsListResponse {
   nextCursor?: string;
 }
 
+export interface ThreadVisionModelSetParams {
+  ref: string;
+  visionModel: string;
+}
+
 export interface ToolOutputDeltaParams {
   threadId: string;
   ref: string;
@@ -1758,6 +1765,7 @@ export const METHOD_NAMES = [
   "thread/model/set",
   "evener/thread/name/set",
   "thread/reasoning-effort/set",
+  "thread/vision-model/set",
   "thread/compact/start",
   "thread/shutdown",
   "turn/start",
@@ -1918,6 +1926,7 @@ export interface MethodTypes {
   "thread/model/set": { params: ThreadModelSetParams; result: EmptyResponse };
   "evener/thread/name/set": { params: ThreadNameSetParams; result: EmptyResponse };
   "thread/reasoning-effort/set": { params: ThreadReasoningEffortSetParams; result: EmptyResponse };
+  "thread/vision-model/set": { params: ThreadVisionModelSetParams; result: EmptyResponse };
   "thread/compact/start": { params: ThreadCompactStartParams; result: EmptyResponse };
   "thread/shutdown": { params: ThreadShutdownParams; result: EmptyResponse };
   "turn/start": { params: TurnStartParams; result: TurnStartResponse };

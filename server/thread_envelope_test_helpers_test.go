@@ -32,6 +32,7 @@ type stubThreadEnvelopeSource struct {
 	reasoningEffort  string
 	reasoningLevels  []string
 	supportsReason   bool
+	visionModel      string
 	meta             schema.SessionMeta
 	// parkOnMeta runs at the start of SessionMeta(), the last facet
 	// refreshFacets samples. Parking there holds a fully-populated sample open.
@@ -74,6 +75,8 @@ func (s *stubThreadEnvelopeSource) PendingEscalations() []appwire.SandboxEscalat
 func (s *stubThreadEnvelopeSource) ReasoningInfo() (string, []string, bool) {
 	return s.reasoningEffort, s.reasoningLevels, s.supportsReason
 }
+
+func (s *stubThreadEnvelopeSource) VisionModel() string { return s.visionModel }
 
 // publishEnvelope installs src as the server's envelope source and seeds every
 // facet from it, which is what serve.go does at session install.

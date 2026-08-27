@@ -529,6 +529,7 @@ func (s *Server) registerAppWireHandlers() {
 	appserver.HandleTyped(router, appwire.MethodThreadShutdown, s.handleAppThreadShutdown)
 	appserver.HandleTyped(router, appwire.MethodThreadClear, s.handleAppThreadClear)
 	appserver.HandleTyped(router, appwire.MethodThreadModelSet, s.handleAppThreadModelSet)
+	appserver.HandleTyped(router, appwire.MethodThreadVisionModelSet, s.handleAppThreadVisionModelSet)
 	appserver.HandleTyped(router, appwire.MethodEvenerThreadNameSet, s.handleAppThreadNameSet)
 	appserver.HandleTyped(router, appwire.MethodThreadReasoningEffortSet, s.handleAppThreadReasoningEffortSet)
 	appserver.HandleTyped(router, appwire.MethodEvenerTasksList, s.handleAppTasksList)
@@ -1066,6 +1067,34 @@ func (s *Server) handleAppThreadModelSet(_ context.Context, params appwire.Threa
 	return appwire.EmptyResponse{}, nil
 }
 
+func (s *Server) handleAppThreadVisionModelSet(_ context.Context, params appwire.ThreadVisionModelSetParams) (appwire.EmptyResponse, error) {
+	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
+		return appwire.EmptyResponse{}, err
+	}
+	s.mu.RLock()
+	processing := s.processing
+	reservedTurnID := strings.TrimSpace(s.appReservedTurnID)
+	fn := s.visionModelFunc
+	s.mu.RUnlock()
+	if processing || reservedTurnID != "" {
+		msg := "session is processing"
+		if reservedTurnID != "" {
+			msg = "turn " + reservedTurnID + " is active"
+		}
+		return appwire.EmptyResponse{}, appwire.Conflict(msg)
+	}
+	if fn == nil {
+		return appwire.EmptyResponse{}, appwire.Unavailable("vision model change not available")
+	}
+	// "" and "off" are legitimate setting values (session-model and disabled),
+	// so unlike model/set there is no empty-value rejection here; ref shape is
+	// the session's job to validate (Session.SetVisionModel).
+	if err := fn(params.VisionModel); err != nil {
+		return appwire.EmptyResponse{}, appwire.InvalidParams(err.Error())
+	}
+	return appwire.EmptyResponse{}, nil
+}
+
 func (s *Server) handleAppThreadNameSet(_ context.Context, params appwire.ThreadNameSetParams) (appwire.EmptyResponse, error) {
 	if err := s.requireRootMutationTarget(params.Ref, ""); err != nil {
 		return appwire.EmptyResponse{}, err
@@ -1229,6 +1258,7 @@ func (s *Server) appThread() appwire.Thread {
 	reasoningEffort := envelope.ReasoningEffort
 	reasoningEffortLevels := envelope.ReasoningEffortLevels
 	supportsReasoning := envelope.SupportsReasoning
+	visionModel := envelope.VisionModel
 	threadName := envelope.Name
 	threadPreview := envelope.Preview
 	if threadPreview == "" {
@@ -1268,6 +1298,7 @@ func (s *Server) appThread() appwire.Thread {
 			ReasoningEffort:       reasoningEffort,
 			ReasoningEffortLevels: reasoningEffortLevels,
 			SupportsReasoning:     supportsReasoning,
+			VisionModel:           visionModel,
 		},
 	}
 }
@@ -1405,13 +1436,14 @@ func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCa
 		// business of the paths that act on it -- handleInterrupt still answers
 		// Unavailable with none wired, and InterruptClientMutation has its own
 		// quiescence precondition (kata vewa).
-		Interrupt:    s.interruptWired && active && !closed,
-		Compact:      s.compactFunc != nil && !closed,
-		Clear:        false,
-		ForkFromTurn: false,
-		Shutdown:     s.shutdownFunc != nil,
-		ChangeModel:  s.modelFunc != nil && !closed,
-		Rename:       s.nameFunc != nil && !closed,
+		Interrupt:         s.interruptWired && active && !closed,
+		Compact:           s.compactFunc != nil && !closed,
+		Clear:             false,
+		ForkFromTurn:      false,
+		Shutdown:          s.shutdownFunc != nil,
+		ChangeModel:       s.modelFunc != nil && !closed,
+		ChangeVisionModel: s.visionModelFunc != nil && !closed,
+		Rename:            s.nameFunc != nil && !closed,
 		// Queue mirrors Steer's "active turn" gate: only meaningful while
 		// a turn is in flight or reserved by turn/start (kata 111a).
 		Queue: s.queueFunc != nil && active && !closed,
