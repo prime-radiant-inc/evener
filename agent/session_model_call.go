@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"math"
-	"sort"
 	"strings"
 	"time"
 
@@ -839,12 +838,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		}
 	}
 	withPreviews := func(resp sessionModelResponse) sessionModelResponse {
-		ids := make([]string, 0, len(previewCalls))
-		for callID := range previewCalls {
-			ids = append(ids, callID)
-		}
-		sort.Strings(ids)
-		resp.CommunicatePreviewCallIDs = ids
+		resp.CommunicatePreviewCallIDs = sortedPreviewCallIDs(previewCalls)
 		return resp
 	}
 	policy := llm.DefaultRetryPolicy()
