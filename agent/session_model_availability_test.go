@@ -162,7 +162,7 @@ func TestRestoreSessionReusesSelectedModelsAndAdvertisesSnapshot(t *testing.T) {
 	}
 }
 
-func TestLeafSessionsSkipModelAvailabilityCapture(t *testing.T) {
+func TestSessionsWithoutDelegateCapabilitySkipModelAvailabilityCapture(t *testing.T) {
 	newClient := func() (*llm.Client, *modelAvailabilityAdapter, *modelAvailabilityAdapter) {
 		selected := &modelAvailabilityAdapter{models: []llm.ModelInfo{{ID: "gpt-5.5"}}}
 		selected.name = "openai"
@@ -227,6 +227,57 @@ func TestLeafSessionsSkipModelAvailabilityCapture(t *testing.T) {
 		restoreCfg.spawn.depth = 1
 		restoreCfg.spawn.parentSessionID = "parent-session"
 		restoreCfg.spawn.delegationAllowance = 0
+		sess, err := RestoreSessionFromMetaWithConfig(
+			client,
+			NewOpenAIProfile("gpt-5.5"),
+			execenv.NewLocalExecutionEnvironment(t.TempDir()),
+			meta,
+			restoreCfg,
+		)
+		if err != nil {
+			t.Fatalf("RestoreSessionFromMetaWithConfig: %v", err)
+		}
+		defer sess.Close()
+		assertLeaf(t, sess, selected, other)
+	})
+
+	t.Run("fresh restricted by allowed tools", func(t *testing.T) {
+		client, selected, other := newClient()
+		cfg := SessionConfig{NoProjectPrompts: true}
+		cfg.spawn.depth = 1
+		cfg.spawn.parentSessionID = "parent-session"
+		cfg.spawn.delegationAllowance = 1
+		cfg.spawn.allowedToolNames = []string{"read_file"}
+		cfg.testOnly = testConfig{skipGitSnapshot: true, minimalSystemPrompt: true, noSyncJobStore: true}
+		sess, err := NewSession(client, NewOpenAIProfile("gpt-5.5"), execenv.NewLocalExecutionEnvironment(t.TempDir()), cfg)
+		if err != nil {
+			t.Fatalf("NewSession: %v", err)
+		}
+		defer sess.Close()
+		assertLeaf(t, sess, selected, other)
+	})
+
+	t.Run("restored under tool ceiling", func(t *testing.T) {
+		client, selected, other := newClient()
+		meta := schema.SessionMeta{
+			ID:         ulid.Make().String(),
+			ProfileID:  "openai",
+			Model:      "gpt-5.5",
+			IsSubagent: true,
+			Config:     (SessionConfig{MaxSubagentDepth: 1, NoProjectPrompts: true}).toSnapshot(),
+		}
+		restoreCfg := RestoreSessionConfig{
+			StateDir: t.TempDir(),
+			testOnly: testConfig{
+				skipGitSnapshot:     true,
+				minimalSystemPrompt: true,
+				noSyncJobStore:      true,
+			},
+		}
+		restoreCfg.spawn.depth = 1
+		restoreCfg.spawn.parentSessionID = "parent-session"
+		restoreCfg.spawn.delegationAllowance = 1
+		restoreCfg.spawn.toolNameCeiling = []string{"communicate"}
 		sess, err := RestoreSessionFromMetaWithConfig(
 			client,
 			NewOpenAIProfile("gpt-5.5"),

@@ -473,7 +473,7 @@ func inlineModelSnapshot(snapshot modelavailability.Snapshot) (string, bool) {
 // model selection before tool schemas are projected. Leaf sessions cannot
 // delegate, so they do not enumerate providers or register the browsing tool.
 func (s *Session) captureModelAvailability(selectedModels liveModelEnumeration) {
-	if s.delegationAllowance <= 0 {
+	if !s.hasConfiguredDelegateCapability() {
 		return
 	}
 	names := s.client.ProviderNames()
@@ -497,6 +497,23 @@ func (s *Session) captureModelAvailability(selectedModels liveModelEnumeration) 
 	} else {
 		s.delegateModelDescription = fmt.Sprintf("Startup model snapshot %s has no verified choices; provider availability is unverified.", snapshot.Version)
 	}
+}
+
+// hasConfiguredDelegateCapability applies the construction-time policy axes
+// that can remove delegate after core-tool registration. Capture runs before
+// that registration so its snapshot can shape the delegate schema, but a
+// session whose final policy excludes delegate must not enumerate providers.
+func (s *Session) hasConfiguredDelegateCapability() bool {
+	if s.delegationAllowance <= 0 || s.cfg.testOnly.minimalWorktreeToolRegistry {
+		return false
+	}
+	if len(s.cfg.spawn.allowedToolNames) > 0 && !hasString(s.cfg.spawn.allowedToolNames, "delegate") {
+		return false
+	}
+	if hasString(s.cfg.spawn.deniedToolNames, "delegate") {
+		return false
+	}
+	return len(s.cfg.spawn.toolNameCeiling) == 0 || hasString(s.cfg.spawn.toolNameCeiling, "delegate")
 }
 
 // RestoreSessionConfig carries runtime-only settings needed when restoring a
