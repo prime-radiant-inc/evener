@@ -1,11 +1,15 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { useState } from "react";
+import { startTransition, useState } from "react";
 import { afterEach, expect, test, vi } from "vitest";
-import { makeTranscriptDisplayConfig, type TranscriptDisplayConfigV1 } from "../../../transcriptDisplay/config";
+import {
+  makeTranscriptDisplayConfig,
+  presetContent,
+  type TranscriptDisplayConfigV1,
+} from "../../../transcriptDisplay/config";
 import { TranscriptDetailEditor } from "./TranscriptDetailEditor";
 
 afterEach(cleanup);
@@ -32,7 +36,17 @@ function ControlledEditor({
   );
 }
 
-test("renders all five visible levels and gives Full its full accessible name", () => {
+function latestContent(changes: TranscriptDisplayConfigV1[]): TranscriptDisplayConfigV1["content"] {
+  const latest = changes.at(-1);
+  if (latest === undefined) throw new Error("editor did not emit a configuration");
+  return latest.content;
+}
+
+function clickAdvanced() {
+  return screen.getByText(/^Customize & advanced/);
+}
+
+test("renders six explicit choices and gives Full its full accessible name", () => {
   render(
     <TranscriptDetailEditor
       value={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })}
@@ -46,22 +60,36 @@ test("renders all five visible levels and gives Full its full accessible name", 
   expect(screen.getByRole("radio", { name: "Tools" })).toBeTruthy();
   expect(screen.getByRole("radio", { name: "Activity" })).toBeTruthy();
   expect(screen.getByRole("radio", { name: "Full detail" })).toBeTruthy();
+  expect(screen.getByRole("radio", { name: "Custom" })).toBeTruthy();
   expect(screen.getByText("Full")).toBeTruthy();
+  expect(screen.getByRole("radio", { name: "Tools" }).getAttribute("aria-checked")).toBe("true");
+  expect(screen.queryByText(/Current detail|Critical rows remain visible/)).toBeNull();
 });
 
-test("uses Full detail in the current readout while the visible stop stays Full", () => {
-  render(
-    <TranscriptDetailEditor
-      value={makeTranscriptDisplayConfig({ kind: "preset", level: "full" })}
-      onChange={() => {}}
-    />,
+test("keeps Custom selected for all 16 explicit Custom vectors", () => {
+  const booleans = [false, true];
+  const vectors = booleans.flatMap((toolIntent) =>
+    booleans.flatMap((toolCalls) =>
+      booleans.flatMap((reasoning) =>
+        booleans.map((expandByDefault) => ({ toolIntent, toolCalls, reasoning, expandByDefault })),
+      ),
+    ),
   );
+  const presetLabels = ["Chat", "Intent", "Tools", "Activity", "Full detail"];
 
-  expect(screen.getByText("Full")).toBeTruthy();
-  expect(screen.getByText("Full detail")).toBeTruthy();
+  for (const vector of vectors) {
+    const { unmount } = render(
+      <TranscriptDetailEditor value={makeTranscriptDisplayConfig({ kind: "custom", ...vector })} onChange={() => {}} />,
+    );
+    expect(screen.getByRole("radio", { name: "Custom" }).getAttribute("aria-checked")).toBe("true");
+    for (const name of presetLabels) {
+      expect(screen.getByRole("radio", { name }).getAttribute("aria-checked")).toBe("false");
+    }
+    unmount();
+  }
 });
 
-test("the five-level radio track keeps Arrow, Home, and End selection behavior", async () => {
+test("the six-choice track keeps Arrow, Home, and End selection behavior", async () => {
   const user = userEvent.setup();
   render(<ControlledEditor initial={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })} />);
 
@@ -70,7 +98,7 @@ test("the five-level radio track keeps Arrow, Home, and End selection behavior",
   expect(screen.getByRole("radio", { name: "Activity" }).getAttribute("aria-checked")).toBe("true");
 
   await user.keyboard("{End}");
-  expect(screen.getByRole("radio", { name: "Full detail" }).getAttribute("aria-checked")).toBe("true");
+  expect(screen.getByRole("radio", { name: "Custom" }).getAttribute("aria-checked")).toBe("true");
 
   await user.keyboard("{Home}");
   expect(screen.getByRole("radio", { name: "Chat" }).getAttribute("aria-checked")).toBe("true");
@@ -101,143 +129,224 @@ test("selecting a regular level preserves every Advanced value", async () => {
   });
 });
 
-test("Advanced content changes preserve explicit Custom vectors", async () => {
+test("selecting Custom restores its mounted vector and content edits update the cache", async () => {
   const user = userEvent.setup();
-  const onChange = vi.fn();
+  const changes: TranscriptDisplayConfigV1[] = [];
   render(
-    <ControlledEditor initial={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })} onChange={onChange} />,
+    <ControlledEditor
+      initial={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })}
+      onChange={(next) => changes.push(next)}
+    />,
   );
 
-  await user.click(screen.getByRole("button", { name: /Advanced/ }));
+  await user.click(screen.getByRole("radio", { name: "Custom" }));
+  expect(latestContent(changes)).toEqual({ kind: "custom", ...presetContent("tools") });
+  await user.click(clickAdvanced());
   await user.click(screen.getByRole("switch", { name: "Reasoning" }));
-  expect(screen.getByText("Custom")).toBeTruthy();
-  for (const radio of screen.getAllByRole("radio")) {
-    expect(radio.getAttribute("aria-checked")).toBe("false");
-  }
-  expect(onChange).toHaveBeenLastCalledWith(
-    expect.objectContaining({
-      content: { kind: "custom", toolIntent: true, toolCalls: true, reasoning: true, expandByDefault: false },
-    }),
-  );
-
-  await user.click(screen.getByRole("switch", { name: "Tool calls" }));
-  expect(screen.getByText("Custom")).toBeTruthy();
-  expect(onChange).toHaveBeenLastCalledWith(
-    expect.objectContaining({
-      content: { kind: "custom", toolIntent: true, toolCalls: false, reasoning: true, expandByDefault: false },
-    }),
-  );
+  const remembered = latestContent(changes);
+  await user.click(screen.getByRole("radio", { name: "Chat" }));
+  await user.click(screen.getByRole("radio", { name: "Custom" }));
+  expect(latestContent(changes)).toEqual(remembered);
 });
 
-test("Advanced summary includes Custom content and independent extras", async () => {
+test("received Custom values refresh the mounted cache", async () => {
   const user = userEvent.setup();
+  const customA = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: false,
+    toolCalls: false,
+    reasoning: true,
+    expandByDefault: false,
+  });
+  const customB = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: false,
+    reasoning: true,
+    expandByDefault: true,
+  });
+  const preset = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  const changes: TranscriptDisplayConfigV1[] = [];
+  const view = render(<TranscriptDetailEditor value={customA} onChange={(next) => changes.push(next)} />);
+
+  view.rerender(<TranscriptDetailEditor value={customB} onChange={(next) => changes.push(next)} />);
+  view.rerender(<TranscriptDetailEditor value={preset} onChange={(next) => changes.push(next)} />);
+  await user.click(screen.getByRole("radio", { name: "Custom" }));
+
+  expect(latestContent(changes)).toEqual(customB.content);
+});
+
+test("an aborted Custom render cannot poison the committed mounted cache", () => {
+  const committedCustom = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: false,
+    toolCalls: false,
+    reasoning: false,
+    expandByDefault: false,
+  });
+  const preset = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  const uncommittedCustom = makeTranscriptDisplayConfig({
+    kind: "custom",
+    toolIntent: true,
+    toolCalls: false,
+    reasoning: true,
+    expandByDefault: true,
+  });
+  const never = new Promise<never>(() => {});
+  let update: (next: { value: TranscriptDisplayConfigV1; suspend: boolean }) => void = () => {};
+  const changes: TranscriptDisplayConfigV1[] = [];
+
+  function Suspender(): never {
+    throw never;
+  }
+
+  function Harness() {
+    const [state, setState] = useState({ value: committedCustom, suspend: false });
+    update = setState;
+    return (
+      <>
+        <TranscriptDetailEditor value={state.value} onChange={(next) => changes.push(next)} />
+        {state.suspend && <Suspender />}
+      </>
+    );
+  }
+
+  render(<Harness />);
+  act(() => update({ value: preset, suspend: false }));
+  expect(screen.getByRole("radio", { name: "Tools" }).getAttribute("aria-checked")).toBe("true");
+
+  act(() => {
+    startTransition(() => update({ value: uncommittedCustom, suspend: true }));
+  });
+  expect(screen.getByRole("radio", { name: "Tools" }).getAttribute("aria-checked")).toBe("true");
+
+  fireEvent.click(screen.getByRole("radio", { name: "Custom" }));
+  expect(latestContent(changes)).toEqual(committedCustom.content);
+});
+
+test("first Custom selection clones the current preset and remount clears dormant cache", async () => {
+  const user = userEvent.setup();
+  const changes: TranscriptDisplayConfigV1[] = [];
+  const view = render(
+    <ControlledEditor
+      initial={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })}
+      onChange={(next) => changes.push(next)}
+    />,
+  );
+
+  await user.click(screen.getByRole("radio", { name: "Custom" }));
+  await user.click(clickAdvanced());
+  await user.click(screen.getByRole("switch", { name: "Reasoning" }));
+  view.unmount();
+
+  render(
+    <ControlledEditor
+      initial={makeTranscriptDisplayConfig({ kind: "preset", level: "intent" })}
+      onChange={(next) => changes.push(next)}
+    />,
+  );
+  await user.click(screen.getByRole("radio", { name: "Custom" }));
+  expect(latestContent(changes)).toEqual({ kind: "custom", ...presetContent("intent") });
+});
+
+test("content and Advanced changes remain independent in both directions", async () => {
+  const user = userEvent.setup();
+  const changes: TranscriptDisplayConfigV1[] = [];
+  const initial = makeTranscriptDisplayConfig(
+    { kind: "custom", toolIntent: false, toolCalls: true, reasoning: false, expandByDefault: true },
+    { tokenCounts: true, systemEvents: true, hookExits: "successful" },
+  );
+  render(<ControlledEditor initial={initial} onChange={(next) => changes.push(next)} />);
+
+  await user.click(clickAdvanced());
+  await user.click(screen.getByRole("switch", { name: "Tool intent" }));
+  const contentAfterContentChange = latestContent(changes);
+  expect(changes.at(-1)?.advanced).toEqual(initial.advanced);
+
+  await user.click(screen.getByRole("switch", { name: "Round timings" }));
+  expect(latestContent(changes)).toEqual(contentAfterContentChange);
+  await user.click(screen.getByRole("switch", { name: "Low-level system events" }));
+  expect(latestContent(changes)).toEqual(contentAfterContentChange);
+});
+
+test("Disclosure summary counts only Metrics and Diagnostics extras", async () => {
+  const user = userEvent.setup();
+  const preset = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" }, { roundTimings: true });
+  const presetView = render(<TranscriptDetailEditor value={preset} onChange={() => {}} />);
+  expect(screen.getByText("Customize & advanced · 1 extras")).toBeTruthy();
+  presetView.unmount();
+
   const config = makeTranscriptDisplayConfig(
     { kind: "custom", toolIntent: true, toolCalls: false, reasoning: true, expandByDefault: false },
     { roundTimings: true, systemEvents: true },
   );
   render(<TranscriptDetailEditor value={config} onChange={() => {}} />);
 
-  await user.click(screen.getByRole("button", { name: /Advanced/ }));
-
-  expect(screen.getByRole("button", { name: /Advanced · Custom content · 2 extras/ })).toBeTruthy();
+  expect(screen.getByText("Customize & advanced · Custom content · 2 extras")).toBeTruthy();
+  await user.click(clickAdvanced());
+  expect(screen.getByRole("group", { name: "Content" })).toBeTruthy();
+  expect(screen.getByRole("group", { name: "Metrics" })).toBeTruthy();
+  expect(screen.getByRole("group", { name: "Diagnostics" })).toBeTruthy();
 });
 
-test("Metrics and Diagnostics toggles remain independent of content", async () => {
+test("Disclosure is controlled across rerenders and starts closed after remount", async () => {
   const user = userEvent.setup();
-  const onChange = vi.fn();
-  render(
-    <ControlledEditor initial={makeTranscriptDisplayConfig({ kind: "preset", level: "intent" })} onChange={onChange} />,
-  );
+  const config = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
+  const view = render(<TranscriptDetailEditor value={config} onChange={() => {}} />);
 
-  await user.click(screen.getByRole("button", { name: /Advanced/ }));
-  await user.click(screen.getByRole("switch", { name: "Round timings" }));
-  await user.click(screen.getByRole("switch", { name: "Low-level system events" }));
-
-  expect(onChange).toHaveBeenLastCalledWith(
-    expect.objectContaining({
-      content: { kind: "preset", level: "intent" },
-      advanced: expect.objectContaining({ roundTimings: true, systemEvents: true }),
-    }),
-  );
-});
-
-test("disabled editor exposes disabled controls and cannot change the value", async () => {
-  const user = userEvent.setup();
-  const onChange = vi.fn();
-  render(
+  expect(screen.queryByRole("group", { name: "Content" })).toBeNull();
+  await user.click(clickAdvanced());
+  expect(screen.getByRole("group", { name: "Content" })).toBeTruthy();
+  view.rerender(
     <TranscriptDetailEditor
-      value={makeTranscriptDisplayConfig({ kind: "preset", level: "tools" })}
-      onChange={onChange}
-      disabled
-    />,
-  );
-
-  expect((screen.getByRole("radio", { name: "Tools" }) as HTMLButtonElement).disabled).toBe(true);
-  expect((screen.getByRole("button", { name: /Advanced/ }) as HTMLButtonElement).disabled).toBe(true);
-  await user.click(screen.getByRole("radio", { name: "Chat" }));
-  expect(onChange).not.toHaveBeenCalled();
-});
-
-test("Custom has no regular radio checked", () => {
-  render(
-    <TranscriptDetailEditor
-      value={makeTranscriptDisplayConfig({
-        kind: "custom",
-        toolIntent: true,
-        toolCalls: false,
-        reasoning: false,
-        expandByDefault: true,
-      })}
+      value={makeTranscriptDisplayConfig({ kind: "preset", level: "full" })}
       onChange={() => {}}
     />,
   );
+  expect(screen.getByRole("group", { name: "Content" })).toBeTruthy();
+  view.unmount();
 
-  for (const radio of screen.getAllByRole("radio")) {
-    expect(radio.getAttribute("aria-checked")).toBe("false");
-  }
-  expect(screen.getByText("Custom")).toBeTruthy();
+  render(<TranscriptDetailEditor value={config} onChange={() => {}} />);
+  expect(screen.queryByRole("group", { name: "Content" })).toBeNull();
 });
 
-test("disabled Advanced switches and select cannot change the value", async () => {
+test("disabled editor leaves the open Disclosure inert and disables its controls", async () => {
   const user = userEvent.setup();
   const onChange = vi.fn();
   const config = makeTranscriptDisplayConfig({ kind: "preset", level: "tools" });
   const { rerender } = render(<TranscriptDetailEditor value={config} onChange={onChange} />);
 
-  await user.click(screen.getByRole("button", { name: /Advanced/ }));
+  await user.click(clickAdvanced());
   rerender(<TranscriptDetailEditor value={config} onChange={onChange} disabled />);
-
-  for (const control of screen.getAllByRole("switch")) {
-    expect((control as HTMLButtonElement).disabled).toBe(true);
-  }
-  const hookSelect = screen.getByRole("combobox", { name: "Hook exit messages" }) as HTMLSelectElement;
-  expect(hookSelect.disabled).toBe(true);
-  await user.click(screen.getByRole("switch", { name: "Tool calls" }));
-  await user.selectOptions(hookSelect, "all");
+  const summary = clickAdvanced().closest("summary");
+  expect(summary?.getAttribute("aria-disabled")).toBe("true");
+  expect(summary?.getAttribute("tabindex")).toBe("-1");
+  for (const control of screen.getAllByRole("switch")) expect((control as HTMLButtonElement).disabled).toBe(true);
+  expect((screen.getByRole("combobox", { name: "Hook exit messages" }) as HTMLSelectElement).disabled).toBe(true);
+  await user.click(screen.getByRole("radio", { name: "Custom" }));
   expect(onChange).not.toHaveBeenCalled();
-  expect(hookSelect.value).toBe("none");
 });
 
-test("explains that critical rows are locked and are not editor controls", () => {
+test("Hook exit messages is labelled through FormRow and Select", async () => {
+  const user = userEvent.setup();
   render(<TranscriptDetailEditor value={makeTranscriptDisplayConfig()} onChange={() => {}} />);
+  await user.click(clickAdvanced());
 
-  expect(screen.getByText(/Critical rows remain visible at every detail level/)).toBeTruthy();
-  expect(
-    screen.getByText(
-      /questions, requests, active work, steering, warnings, failures, interruptions, and recovery actions/,
-    ),
-  ).toBeTruthy();
-  expect(screen.queryByRole("switch", { name: /critical/i })).toBeNull();
+  const select = screen.getByRole("combobox", { name: "Hook exit messages" });
+  expect(select.id).toBeTruthy();
+  expect(screen.getByLabelText("Hook exit messages")).toBe(select);
 });
 
-test("styles the five-stop track with non-color selection and 44px touch targets", () => {
+test("styles only layout and retains semantic fieldsets", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "transcriptDisplay.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 
-  expect(css).toMatch(/grid-template-columns:\s*repeat\(5/);
-  expect(css).toMatch(/button\[role="radio"\][^{]*\{[^}]*min-height:\s*44px/);
-  expect(css).not.toContain("overflow-x: auto");
-  expect(css).not.toContain("min-width: 440px");
-  expect(css).toMatch(/aria-checked="true"/);
-  expect(css).toMatch(/\.advancedPanel[^{]*button\[role="switch"\][^{]*\{[^}]*min-height:\s*44px/);
+  expect(css).toContain("container-name: transcript-detail-editor");
+  expect(css).toMatch(/\.root[^{]*\{[^}]*gap:\s*var\(--space-3\)/);
+  expect(css).toMatch(/\.compact[^{]*\{[^}]*gap:\s*var\(--space-2\)/);
+  expect(css).toMatch(/\.fieldsets[^{]*\{[^}]*grid-template-columns:\s*repeat\(3/);
+  expect(css).toMatch(/@container transcript-detail-editor \(max-width: 34rem\)/);
+  expect(css).not.toMatch(/:global\(/);
+  expect(css).not.toMatch(/role="(radio|switch)"/);
+  expect(css).not.toMatch(/advancedToggle|selectLabel|critical|Current detail/);
 });
