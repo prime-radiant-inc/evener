@@ -438,12 +438,18 @@ func (s *Session) injectPostToolSteering(ctx context.Context, calls []llm.ToolCa
 		hooks.beforeSteering()
 	}
 
-	// Inject any queued steering messages before the next model call.
+	// Inject any queued steering messages before the next model call. A terminal
+	// communicate result owns this input's boundary, so leave client-authored
+	// steering durable pending work for wakeForPendingSteering and
+	// EntrySteeringCarrier. Consuming it here would mark it incorporated in a
+	// result that ends the turn without a model request that can act on it.
 	if abortErr := s.withResponseSideEffects(ctx, func() {
-		if s.hasPendingSteering() {
-			yieldToObserverCallback = false
+		if !s.Communicated() {
+			if s.hasPendingSteering() {
+				yieldToObserverCallback = false
+			}
+			s.injectDrainedSteering()
 		}
-		s.injectDrainedSteering()
 	}); abortErr != nil {
 		s.removeAllTurnOwnedSteering()
 		return false, abortErr

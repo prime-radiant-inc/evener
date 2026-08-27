@@ -78,10 +78,14 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 
 			inbox := []string{}
 			if endTurn {
-				// Drain steering queue into the inbox for terminal delivery. The
-				// inbox is text-only in the wire shape, so image-bearing entries
-				// are also appended as TurnSteering to keep their ContentImage
-				// parts available to the next model round.
+				// Drain daemon-authored steering context into the terminal inbox.
+				// Client-authored steering remains durable pending work for
+				// wakeForPendingSteering and EntrySteeringCarrier: incorporating
+				// it into a result that ends the turn would create a durable
+				// transcript item without a model request that can act on it.
+				// The inbox is text-only in the wire shape, so image-bearing
+				// daemon entries are also appended as TurnSteering to keep their
+				// ContentImage parts available to the next model round.
 				drained := deps.drainSteering()
 				inbox = make([]string, 0, len(drained))
 				var deferred []steeringMessage
