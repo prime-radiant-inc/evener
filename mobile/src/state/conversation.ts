@@ -30,6 +30,7 @@ import type {
   MobileTimelineItem,
   MobileUsage,
 } from "../conversation/model";
+import type { ActivityView } from "../services/activity";
 import type {
   ConversationService,
   LiveConversationService,
@@ -46,12 +47,15 @@ export type ConversationStatus =
 // Mutation lifecycle state for send/steer/queue/interrupt. The store tracks
 // the kind, pending/failed status, the exact draft snapshot at submission,
 // and the conversation generation that initiated it. On failure, the failed
-// state PERSISTS until a subsequent mutation or open clears it.
+// state PERSISTS until a subsequent mutation or open clears it. The
+// mutationId is a monotonically increasing private counter (F4) so
+// out-of-order completion cannot change a newer mutation, error, or draft.
 export interface ConversationMutationState {
   kind: "send" | "steer" | "queue" | "interrupt";
   status: "pending" | "failed";
   draftSnapshot: string | null;
   generation: number;
+  mutationId: number;
 }
 
 // An injected coalescer that batches rehydrate requests (from resync and
@@ -59,6 +63,101 @@ export interface ConversationMutationState {
 // calls requestRehydrate(ref) — the coalescer decides when to actually fire.
 export interface RehydrateCoalescer {
   requestRehydrate(ref: string): void;
+}
+
+// A structural activity sink accepted by openProjected/rehydrate (F6).
+// Routes every subscribed frame to both conversation and activity; the
+// applyNotification return signals whether a shared reread is needed.
+export interface LiveActivitySink {
+  setView(
+    view: ActivityView,
+    identity: { threadId: string; ref: string; generation: number },
+  ): void;
+  applyNotification(
+    n: AnyNotification,
+    identity: { threadId: string; ref: string; generation: number },
+  ): "applied" | "rehydrate" | "ignored";
+  reset(): void;
+}
+
+// AuthoritativeRereadScheduler (F5): coalesces multiple requestRehydrate
+// signals for the same key into a single bounded effect execution. The
+// effect atomically updates conversation and activity state. Tests prove
+// one real read/result for multiple signals.
+export function createAuthoritativeRereadScheduler(
+  effect: (key: string) => Promise<void>,
+): RehydrateCoalescer {
+  let pending: Promise<void> | null = null;
+  let scheduled = false;
+  let pendingKey: string | null = null;
+  return {
+    requestRehydrate(key: string) {
+      if (pending !== null) {
+        // A flush is in flight — mark for a trailing flush.
+        pendingKey = key;
+        scheduled = true;
+        return;
+      }
+      if (scheduled) {
+        // Already scheduled but not yet started — coalesce.
+        pendingKey = key;
+        return;
+      }
+      scheduled = true;
+      pendingKey = key;
+      // Defer the effect start to a microtask so synchronous bursts
+      // coalesce into one call.
+      pending = Promise.resolve().then(async () => {
+        scheduled = false;
+        const keyToUse = pendingKey;
+        pendingKey = null;
+        try {
+          await effect(keyToUse ?? key);
+        } finally {
+          // Check if more requests arrived during the flush.
+          if (scheduled && pendingKey !== null) {
+            scheduled = false;
+            const retryKey = pendingKey;
+            pendingKey = null;
+            // One trailing flush for requests that arrived during the
+            // in-flight effect. This bounds the total to at most one
+            // in-flight + one trailing flush.
+            pending = (async () => {
+              await effect(retryKey);
+            })().finally(() => {
+              pending = null;
+              scheduled = false;
+              pendingKey = null;
+            });
+          } else {
+            pending = null;
+          }
+        }
+      });
+    },
+  };
+}
+
+// Adapter: wrap a Zustand activity store into a LiveActivitySink (F6).
+// The existing ActivityStore has setView(view) and applyNotification(n)
+// without the identity parameter. This adapter adds the identity
+// parameter and records it via setThreadIdentity.
+export function createActivitySink(store: {
+  getState: () => ActivityState;
+}): LiveActivitySink {
+  return {
+    setView(view, identity) {
+      store.getState().setView(view);
+      store.getState().setThreadIdentity(identity.threadId, identity.ref);
+    },
+    applyNotification(n, _identity) {
+      store.getState().applyNotification(n);
+      return "applied";
+    },
+    reset() {
+      store.getState().reset();
+    },
+  };
 }
 
 // --- limits and truncation helpers (centralized) ----------------------------
@@ -97,6 +196,12 @@ export function truncateText(text: string, maxBytes: number): string {
 // Check if text exceeds the byte limit (for setting truncated flag in projections).
 export function exceedsByteLimit(text: string, maxBytes: number): boolean {
   return textEncoder.encode(text).length > maxBytes;
+}
+
+// F8: Check if text already carries the truncation marker. Once marked,
+// later deltas cannot append — the marker appears exactly once at the end.
+function isAlreadyTruncated(text: string): boolean {
+  return text.endsWith(TRUNCATION_MARKER);
 }
 
 // Apply truncation to an item's text-bearing fields (arguments, output, error,
@@ -159,16 +264,6 @@ export interface ConversationState {
   readonly pendingMutation?: ConversationMutationState | null;
 
   open(service: ConversationService, ref: string): Promise<void>;
-  openProjected?(
-    service: LiveConversationService,
-    activityStore: { getState: () => ActivityState },
-    ref: string,
-  ): Promise<void>;
-  rehydrate?(
-    service: LiveConversationService,
-    activityStore: { getState: () => ActivityState },
-  ): Promise<void>;
-  setCoalescer?(coalescer: RehydrateCoalescer): void;
   loadOlder(service: ConversationService): Promise<void>;
   setDraft(text: string): void;
   send(service: ConversationService, input: InputItem[]): Promise<void>;
@@ -178,6 +273,23 @@ export interface ConversationState {
   close(): void;
   applyNotification(n: AnyNotification): void;
   reset(): void;
+}
+
+// Required live state interface (F3): the production store always implements
+// these live-only methods. They are NOT optional-fallback to old open().
+// Base ConversationState is preserved for screen test mocks that only need
+// the basic open/send/steer/queue/interrupt/close surface.
+export interface LiveConversationState extends ConversationState {
+  openProjected(
+    service: LiveConversationService,
+    activitySink: LiveActivitySink,
+    ref: string,
+  ): Promise<void>;
+  rehydrate(
+    service: LiveConversationService,
+    activitySink: LiveActivitySink,
+  ): Promise<void>;
+  setCoalescer(coalescer: RehydrateCoalescer): void;
 }
 
 // Extract threadId/ref from a notification's params, returning null if the
@@ -279,9 +391,11 @@ const ITEM_NOTIFICATION_METHODS = new Set([
 
 export function createConversationStore() {
   let conversationGen = 0;
+  let mutationIdCounter = 0;
   let coalescer: RehydrateCoalescer | null = null;
+  let activitySink: LiveActivitySink | null = null;
 
-  return create<ConversationState>((set, get) => ({
+  return create<LiveConversationState>((set, get) => ({
     ref: null,
     profileId: null,
     connectionGeneration: 0,
@@ -339,8 +453,9 @@ export function createConversationStore() {
       }
     },
 
-    async openProjected(service, activityStore, ref) {
+    async openProjected(service, sink, ref) {
       const gen = ++conversationGen;
+      activitySink = sink;
       // Reset thread-scoped state (draft, pending mutation) — presentation state
       // now lives outside the store (in live-ui-store).
       set({
@@ -367,12 +482,17 @@ export function createConversationStore() {
           status: "open",
           olderCursor,
         });
-        activityStore.getState().setView(activity);
+        const identity = {
+          threadId: conversation.id,
+          ref,
+          generation: gen,
+        };
+        sink.setView(activity, identity);
         service.subscribeNotifications((n) => {
           if (gen !== conversationGen) return;
           // Route notifications to BOTH stores — conversation and activity.
           get().applyNotification(n);
-          activityStore.getState().applyNotification(n);
+          sink.applyNotification(n, identity);
         });
       } catch (err) {
         if (gen !== conversationGen) return;
@@ -383,7 +503,7 @@ export function createConversationStore() {
       }
     },
 
-    async rehydrate(service, activityStore) {
+    async rehydrate(service, sink) {
       // Rehydrate uses readProjection to refresh the conversation without
       // calling destructive open(). Preserves draft.
       const state = get();
@@ -391,6 +511,7 @@ export function createConversationStore() {
       const ref = state.ref;
       const currentDraft = state.draft;
       const gen = state.conversationGeneration;
+      activitySink = sink;
       try {
         const { conversation, activity, olderCursor } =
           await service.readProjection(ref);
@@ -408,7 +529,12 @@ export function createConversationStore() {
           draft: currentDraft,
           error: null,
         });
-        activityStore.getState().setView(activity);
+        const identity = {
+          threadId: conversation.id,
+          ref,
+          generation: gen,
+        };
+        sink.setView(activity, identity);
       } catch (err) {
         // Stale safety: only set error if the generation hasn't changed.
         if (get().conversationGeneration === gen) {
@@ -438,10 +564,15 @@ export function createConversationStore() {
         }
         const currentConv = get().conversation;
         if (currentConv !== null) {
-          // Prepend older items, then trim from the newest (end) so the oldest
-          // rows are retained for continued paging utility.
+          // F10: Dedupe by source item identity — items from older pages
+          // that already exist in the current conversation (same id) are
+          // dropped, keeping the newer (live tail) version.
+          const existingIds = new Set(currentConv.items.map((i) => i.id));
+          const deduped = result.items.filter((i) => !existingIds.has(i.id));
+          // Prepend older (deduped) items, then trim from the newest (end)
+          // so the oldest rows are retained for continued paging utility.
           const merged = capItems(
-            [...result.items.map(truncateItem), ...currentConv.items],
+            [...deduped.map(truncateItem), ...currentConv.items],
             "prepend",
           );
           set({
@@ -471,16 +602,20 @@ export function createConversationStore() {
       requireCap(state.conversation, "send", "send");
       const draftText = state.draft;
       const gen = state.conversationGeneration;
+      const mutationId = ++mutationIdCounter;
       const mutation: ConversationMutationState = {
         kind: "send",
         status: "pending",
         draftSnapshot: draftText,
         generation: gen,
+        mutationId,
       };
       set({ draft: "", pendingSend: "pending", pendingMutation: mutation });
       try {
         await service.send(input);
-        if (get().pendingMutation?.generation === gen) {
+        // F4: Check mutationId — out-of-order completion cannot clear a
+        // newer mutation's state.
+        if (get().pendingMutation?.mutationId === mutationId) {
           set({ pendingSend: null, pendingMutation: null, error: null });
         }
       } catch (err) {
@@ -489,6 +624,7 @@ export function createConversationStore() {
           service,
           state.ref,
           gen,
+          mutationId,
           mutation,
           draftText,
           set,
@@ -503,17 +639,19 @@ export function createConversationStore() {
       requireCap(state.conversation, "steer", "steer");
       const draftText = state.draft;
       const gen = state.conversationGeneration;
+      const mutationId = ++mutationIdCounter;
       const mutation: ConversationMutationState = {
         kind: "steer",
         status: "pending",
         draftSnapshot: draftText,
         generation: gen,
+        mutationId,
       };
       // Steer/queue clear the draft on submit like send.
       set({ draft: "", pendingMutation: mutation });
       try {
         await service.steer(input);
-        if (get().pendingMutation?.generation === gen) {
+        if (get().pendingMutation?.mutationId === mutationId) {
           set({ pendingMutation: null, error: null });
         }
       } catch (err) {
@@ -522,6 +660,7 @@ export function createConversationStore() {
           service,
           state.ref,
           gen,
+          mutationId,
           mutation,
           draftText,
           set,
@@ -536,16 +675,18 @@ export function createConversationStore() {
       requireCap(state.conversation, "queue", "queue");
       const draftText = state.draft;
       const gen = state.conversationGeneration;
+      const mutationId = ++mutationIdCounter;
       const mutation: ConversationMutationState = {
         kind: "queue",
         status: "pending",
         draftSnapshot: draftText,
         generation: gen,
+        mutationId,
       };
       set({ draft: "", pendingMutation: mutation });
       try {
         await service.queue(input);
-        if (get().pendingMutation?.generation === gen) {
+        if (get().pendingMutation?.mutationId === mutationId) {
           set({ pendingMutation: null, error: null });
         }
       } catch (err) {
@@ -554,6 +695,7 @@ export function createConversationStore() {
           service,
           state.ref,
           gen,
+          mutationId,
           mutation,
           draftText,
           set,
@@ -567,18 +709,20 @@ export function createConversationStore() {
       if (state.conversation === null) return;
       requireCap(state.conversation, "interrupt", "interrupt");
       const gen = state.conversationGeneration;
+      const mutationId = ++mutationIdCounter;
       const mutation: ConversationMutationState = {
         kind: "interrupt",
         status: "pending",
         // Interrupt does NOT snapshot the draft — it should remain as-is.
         draftSnapshot: null,
         generation: gen,
+        mutationId,
       };
       // Interrupt does NOT clear the draft.
       set({ pendingMutation: mutation });
       try {
         await service.interrupt();
-        if (get().pendingMutation?.generation === gen) {
+        if (get().pendingMutation?.mutationId === mutationId) {
           set({ pendingMutation: null, error: null });
         }
       } catch (err) {
@@ -587,6 +731,7 @@ export function createConversationStore() {
           service,
           state.ref,
           gen,
+          mutationId,
           mutation,
           null,
           set,
@@ -795,6 +940,13 @@ export function createConversationStore() {
             (i) => i.id === params.itemId && i.kind === "assistant",
           );
           if (existing) {
+            // F8: Once the truncation marker is present, later deltas cannot
+            // append — the marker appears exactly once at the end.
+            const currentMarkdown =
+              existing.kind === "assistant" ? existing.markdown : "";
+            if (isAlreadyTruncated(currentMarkdown)) {
+              break;
+            }
             set({
               conversation: {
                 ...conv,
@@ -850,6 +1002,14 @@ export function createConversationStore() {
             (i) => i.id === params.itemId && i.kind === "activity",
           );
           if (existing) {
+            // F8: Once truncated, don't append more deltas.
+            const currentOutput =
+              existing.kind === "activity"
+                ? (existing.detail.output ?? "")
+                : "";
+            if (isAlreadyTruncated(currentOutput)) {
+              break;
+            }
             set({
               conversation: {
                 ...conv,
@@ -884,6 +1044,14 @@ export function createConversationStore() {
             (i) => i.id === params.itemId && i.kind === "activity",
           );
           if (existing) {
+            // F8: Once truncated, don't append more deltas.
+            const currentOutput =
+              existing.kind === "activity"
+                ? (existing.detail.output ?? "")
+                : "";
+            if (isAlreadyTruncated(currentOutput)) {
+              break;
+            }
             set({
               conversation: {
                 ...conv,
@@ -981,12 +1149,14 @@ export function createConversationStore() {
 // refreshCapabilities (never open()) to publish refreshed caps before
 // surfacing the error. On failure, the failed mutation state PERSISTS (not
 // cleared to null). The draft is only restored if no new text was typed
-// during the in-flight mutation.
+// during the in-flight mutation. F4: uses mutationId (not generation alone)
+// so out-of-order failure cannot overwrite a newer mutation's error.
 async function handleMutationError(
   err: unknown,
   service: ConversationService,
   ref: string | null,
   gen: number,
+  mutationId: number,
   mutation: ConversationMutationState,
   draftSnapshot: string | null,
   set: (partial: Partial<ConversationState>) => void,
@@ -1015,7 +1185,9 @@ async function handleMutationError(
       }
     }
   }
-  if (get().pendingMutation?.generation === gen) {
+  // F4: Check mutationId — out-of-order failure cannot change a newer
+  // mutation, error, or draft.
+  if (get().pendingMutation?.mutationId === mutationId) {
     // The failed mutation state PERSISTS — do NOT clear pendingMutation.
     const currentDraft = get().draft;
     // Only restore the draft if no new text was typed during the mutation.

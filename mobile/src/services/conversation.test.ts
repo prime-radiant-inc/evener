@@ -564,7 +564,11 @@ describe("ConversationService", () => {
   });
 
   describe("server action-unavailable refreshes capabilities", () => {
-    it("re-reads thread on actionUnavailable and throws", async () => {
+    it("does NOT auto-refresh on actionUnavailable — store owns the single read", async () => {
+      // F2: The service must NOT call refreshCapabilities itself on
+      // actionUnavailable. Exactly one non-subscribing thread/read occurs,
+      // and it is driven by the store, not the service. The service just
+      // throws so the store can handle recovery.
       const { client, service } = setup();
       let readCount = 0;
       client.on("thread/read", () => {
@@ -579,7 +583,9 @@ describe("ConversationService", () => {
       await service.open("ref-1");
       const initialReadCount = readCount;
       await expect(service.send(textInput("hello"))).rejects.toThrow();
-      expect(readCount).toBeGreaterThan(initialReadCount);
+      // The service must NOT have triggered an extra thread/read — only the
+      // store will call refreshCapabilities.
+      expect(readCount).toBe(initialReadCount);
     });
   });
 
@@ -726,6 +732,31 @@ describe("ConversationService", () => {
         },
       } as AnyNotification);
       expect(received).toHaveLength(0);
+    });
+  });
+
+  describe("LiveConversationService interface (F1)", () => {
+    it("createConversationService returns LiveConversationService", () => {
+      const { service } = setup();
+      // Must have readProjection and refreshCapabilities as required methods
+      expect(typeof service.readProjection).toBe("function");
+      expect(typeof service.refreshCapabilities).toBe("function");
+      // Must also have all base ConversationService methods
+      expect(typeof service.open).toBe("function");
+      expect(typeof service.send).toBe("function");
+      expect(typeof service.steer).toBe("function");
+      expect(typeof service.queue).toBe("function");
+      expect(typeof service.interrupt).toBe("function");
+      expect(typeof service.loadOlder).toBe("function");
+      expect(typeof service.subscribeNotifications).toBe("function");
+      expect(typeof service.close).toBe("function");
+    });
+
+    it("open(ref) signature preserved exactly — no cursor parameter", async () => {
+      const { service } = setup();
+      // open takes exactly one argument (ref), not (ref, cursor)
+      const conv = await service.open("ref-1");
+      expect(conv.id).toBe("thread-1");
     });
   });
 });
