@@ -653,6 +653,31 @@ func TestStatusEndpoint_DetailedStatus(t *testing.T) {
 	}
 }
 
+func TestStatusEndpoint_DetailedStatusPreservesEmptyPlugins(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetStatus(StatusInfo{SessionID: "empty-plugins", State: "idle"})
+	setEnvelope(srv, func(e *stubThreadEnvelopeSource) {
+		e.detailedStatus = DetailedStatus{Plugins: []PluginStatusInfo{}}
+	})
+
+	req := httptest.NewRequest(http.MethodGet, "/status", nil)
+	w := httptest.NewRecorder()
+	srv.ServeHTTP(w, req)
+	if w.Code != http.StatusOK {
+		t.Fatalf("status code: got %d, want 200", w.Code)
+	}
+
+	var wire struct {
+		Detailed map[string]json.RawMessage `json:"detailed"`
+	}
+	if err := json.NewDecoder(w.Body).Decode(&wire); err != nil {
+		t.Fatalf("decode status: %v", err)
+	}
+	if got := string(wire.Detailed["plugins"]); got != "[]" {
+		t.Fatalf("serialized empty plugins = %s, want []", got)
+	}
+}
+
 func TestStatusEndpoint_DetailedStatusIncludesStableDelegates(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetStatus(StatusInfo{SessionID: "root", State: "idle"})

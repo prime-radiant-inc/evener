@@ -190,21 +190,30 @@ func (m hubModel) handleLaunchOverridesResult(msg launchconfig.LaunchOverridesRe
 }
 
 func (m hubModel) handlePluginPreviewResult(msg launchconfig.PluginPreviewResultMsg) (tea.Model, tea.Cmd) {
-	if m.mode != hubModeSpawn || msg.Key != m.spawnPluginPreviewRequestKey {
+	if m.mode != hubModeSpawn || !m.spawnHarnessSupportsPlugins() || msg.Key != m.spawnPluginPreviewRequestKey {
 		return m, nil
 	}
 	m.spawnPluginPreviewLoading = false
 	if msg.Err != nil {
+		if m.spawnPluginPreviewParamsDigest != m.spawnPluginPreviewLastSuccess {
+			m.spawnPluginPreview = appwire.PluginPreviewResponse{}
+			m.spawnPluginPreviewLoaded = false
+		}
 		m.spawnPluginPreviewErr = msg.Err
 		return m.forwardSpawnPluginPreviewToPanel(msg)
 	}
 	m.spawnPluginPreviewErr = nil
 	m.spawnPluginPreviewLoaded = true
 	m.spawnPluginPreview = msg.Response
+	m.spawnPluginPreviewLastSuccess = m.spawnPluginPreviewParamsDigest
 	return m.forwardSpawnPluginPreviewToPanel(msg)
 }
 
 func (m hubModel) handlePluginsForLaunchResult(msg launchconfig.PluginsForLaunchResultMsg) (tea.Model, tea.Cmd) {
+	if !m.spawnHarnessSupportsPlugins() {
+		m.spawnPluginsPanel = nil
+		return m, nil
+	}
 	if msg.Retry {
 		cmd := m.requestSpawnPluginPreview()
 		return m, cmd

@@ -40,6 +40,7 @@ export interface MobileSettingRowsProps {
   onAccessChange: (value: string) => void;
   pluginPreview: PluginPreviewLoadState;
   pluginSelection: PluginSelectionState;
+  pluginsSupported?: boolean;
   onPluginSelectionChange: (next: PluginSelectionState) => void;
   onPluginRetry: () => void;
 }
@@ -172,6 +173,7 @@ export function MobileSettingRows({
   onAccessChange,
   pluginPreview,
   pluginSelection,
+  pluginsSupported = true,
   onPluginSelectionChange,
   onPluginRetry,
 }: MobileSettingRowsProps) {
@@ -205,6 +207,8 @@ export function MobileSettingRows({
   const harnessLabel = harnessOptions.find((option) => option.value === harness)?.label ?? harness;
   const reasoningLabel = reasoningOptions.find((option) => option.value === reasoningEffort)?.label ?? "(default)";
   const accessLabel = accessOptions.find((option) => option.value === accessMode)?.label ?? "(default)";
+  const pluginResponse =
+    pluginPreview.status === "ready" || pluginPreview.status === "error" ? pluginPreview.response : undefined;
   const pluginSummary =
     pluginPreview.status === "loading"
       ? "Inspecting plugins…"
@@ -245,18 +249,20 @@ export function MobileSettingRows({
           onClick={() => open("Access mode")}
           expanded={openPicker === "Access mode"}
         />
-        <MobileSettingRow
-          label="Plugins"
-          value={pluginSummary}
-          onClick={() => {
-            if (pluginPreview.status === "ready") setPluginDraft(pluginSelection);
-            open("Plugins");
-          }}
-          expanded={openPicker === "Plugins"}
-          disabled={pluginPreview.status !== "ready"}
-        />
+        {pluginsSupported && (
+          <MobileSettingRow
+            label="Plugins"
+            value={pluginSummary}
+            onClick={() => {
+              if (pluginResponse) setPluginDraft(pluginSelection);
+              open("Plugins");
+            }}
+            expanded={openPicker === "Plugins"}
+            disabled={!pluginResponse}
+          />
+        )}
       </div>
-      {pluginPreview.status === "error" && (
+      {pluginsSupported && pluginPreview.status === "error" && (
         <div className={CLASS.sheetBody} role="status">
           <span>Couldn't inspect plugins</span>{" "}
           <Button variant="quiet" size="xs" type="button" onClick={onPluginRetry}>
@@ -313,7 +319,7 @@ export function MobileSettingRows({
       </Sheet>
 
       <Sheet
-        open={openPicker === "Plugins" && pluginPreview.status === "ready"}
+        open={pluginsSupported && openPicker === "Plugins" && pluginResponse !== undefined}
         side="bottom"
         size="wide"
         onClose={() => finishPlugins(false)}
@@ -332,8 +338,9 @@ export function MobileSettingRows({
         <div className={CLASS.sheetBody}>
           <p>Load only selected plugins. This choice applies to this session.</p>
           <PluginSelectionPanel
-            preview={pluginPreview.status === "ready" ? pluginPreview.response : { plugins: [] }}
+            preview={pluginResponse ?? { plugins: [] }}
             selection={pluginDraft}
+            removeOnly={pluginPreview.status === "error"}
             onSelectionChange={setPluginDraft}
             onRetry={onPluginRetry}
           />

@@ -84,6 +84,73 @@ func TestServePassesResolvedPluginDirsToSessionConfig(t *testing.T) {
 	}
 }
 
+func TestServePluginRootFlagUsesHubValidatedRegistryAfterDisablement(t *testing.T) {
+	hubRoot := filepath.Join(t.TempDir(), "hub-root")
+	hubInstalledDir := filepath.Join(hubRoot, "installed-alpha")
+	writeTask3Plugin(t, hubInstalledDir, "alpha")
+	if err := plugins.SaveRegistry(filepath.Join(hubRoot, "installed_plugins.json"), plugins.Registry{
+		Plugins: map[string][]plugins.InstallEntry{
+			"alpha@acme": {{
+				InstallPath: hubInstalledDir,
+				Version:     "1.0.0",
+				Enabled:     true,
+				Source:      plugins.Source{Kind: plugins.SourceDirectory, Path: hubInstalledDir},
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("SaveRegistry(enabled): %v", err)
+	}
+	selected := []string{"alpha"}
+	if _, err := plugins.NewManager(hubRoot).ResolveForLaunch(nil, &selected); err != nil {
+		t.Fatalf("hub validation ResolveForLaunch: %v", err)
+	}
+	if err := plugins.SaveRegistry(filepath.Join(hubRoot, "installed_plugins.json"), plugins.Registry{
+		Plugins: map[string][]plugins.InstallEntry{
+			"alpha@acme": {{
+				InstallPath: hubInstalledDir,
+				Version:     "1.0.0",
+				Enabled:     false,
+				Source:      plugins.Source{Kind: plugins.SourceDirectory, Path: hubInstalledDir},
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("SaveRegistry(disabled): %v", err)
+	}
+
+	xdgConfigHome := filepath.Join(t.TempDir(), "ambient-config")
+	ambientRoot := filepath.Join(xdgConfigHome, "evener", "plugins")
+	ambientInstalledDir := filepath.Join(ambientRoot, "installed-alpha")
+	writeTask3Plugin(t, ambientInstalledDir, "alpha")
+	if err := plugins.SaveRegistry(filepath.Join(ambientRoot, "installed_plugins.json"), plugins.Registry{
+		Plugins: map[string][]plugins.InstallEntry{
+			"alpha@acme": {{
+				InstallPath: ambientInstalledDir,
+				Version:     "9.9.9",
+				Enabled:     true,
+				Source:      plugins.Source{Kind: plugins.SourceDirectory, Path: ambientInstalledDir},
+			}},
+		},
+	}); err != nil {
+		t.Fatalf("SaveRegistry(ambient): %v", err)
+	}
+	t.Setenv("XDG_CONFIG_HOME", xdgConfigHome)
+
+	deps := defaultServeDeps()
+	deps.ensureConfigDirs = func() error { return nil }
+	deps.seedMarketplaces = func() error { return nil }
+
+	err := runServeWithDeps([]string{
+		"--model", "openai/gpt-test",
+		"--dir", t.TempDir(),
+		"--state-dir", t.TempDir(),
+		"--plugin-root", hubRoot,
+		"--enabled-plugins=alpha",
+	}, deps)
+	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable: alpha: no valid plugin candidate") {
+		t.Fatalf("serve error = %v, want disabled hub-root selection failure", err)
+	}
+}
+
 func TestAgentToServerDetailedStatus_DelegatesLossless(t *testing.T) {
 	valid, resumable := true, false
 	running, quiet, duration := int64(100), int64(40), int64(60)
@@ -845,6 +912,18 @@ func TestAgentToServerDetailedStatus_Empty(t *testing.T) {
 	}
 	if len(got.Agents) != 0 {
 		t.Errorf("Agents = %d, want 0", len(got.Agents))
+	}
+}
+
+func TestAgentToServerDetailedStatus_PreservesPluginPresence(t *testing.T) {
+	got := agentToServerDetailedStatus(agent.DetailedStatus{Plugins: []agent.PluginInfo{}})
+	if got.Plugins == nil {
+		t.Fatal("explicit empty Plugins became nil")
+	}
+
+	legacy := agentToServerDetailedStatus(agent.DetailedStatus{})
+	if legacy.Plugins != nil {
+		t.Fatalf("nil Plugins became non-nil: %#v", legacy.Plugins)
 	}
 }
 

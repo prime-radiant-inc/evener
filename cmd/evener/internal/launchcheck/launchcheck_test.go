@@ -42,8 +42,19 @@ func TestLaunchCheckReportsProtocolAndValidatedModel(t *testing.T) {
 		t.Fatalf("launch check output=%+v", out)
 	}
 	// Literal check: catches a change to the ProtocolVersion constant value.
-	if out.Protocol != "evener-appwire-v3" {
-		t.Fatalf("out.Protocol=%q, want \"evener-appwire-v3\"", out.Protocol)
+	if out.Protocol != "evener-appwire-v4" {
+		t.Fatalf("out.Protocol=%q, want \"evener-appwire-v4\"", out.Protocol)
+	}
+}
+
+func TestLaunchCheckRejectsPreviousProtocolVersion(t *testing.T) {
+	var stdout, stderr bytes.Buffer
+	err := RunLaunchCheck([]string{"--protocol", "evener-appwire-v3", "--json"}, &stdout, &stderr)
+	if err == nil || !strings.Contains(err.Error(), "unsupported appwire protocol") {
+		t.Fatalf("RunLaunchCheck error = %v, want previous-protocol rejection", err)
+	}
+	if stdout.Len() != 0 {
+		t.Fatalf("RunLaunchCheck wrote a contract for an incompatible protocol: %q", stdout.String())
 	}
 }
 

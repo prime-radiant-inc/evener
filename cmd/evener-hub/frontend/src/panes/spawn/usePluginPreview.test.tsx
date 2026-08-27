@@ -102,6 +102,49 @@ describe("usePluginPreview", () => {
     expect(result.current.state).toEqual({ status: "ready", response: RESPONSE });
   });
 
+  test("does not reuse a successful response after a changed request fails", async () => {
+    vi.useFakeTimers();
+    const client = new FakeClient();
+    const responseA: PluginPreviewResponse = {
+      plugins: [
+        {
+          name: "request-a",
+          source: "test",
+          selected: true,
+          skillCount: 0,
+          agentCount: 0,
+          commandCount: 0,
+          hookCount: 0,
+          mcpCount: 0,
+        },
+      ],
+    };
+    let requests = 0;
+    client.on("evener/plugin/preview", () => {
+      requests += 1;
+      if (requests === 1) return responseA;
+      throw new Error("preview failed for request B");
+    });
+    const { result, rerender } = renderHook(
+      ({ cwd }: { cwd: string }) => usePluginPreview({ client, cwd, launchOverrides: {}, pluginRevision: 0 }),
+      { initialProps: { cwd: "/request-a" } },
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+      await flush();
+    });
+    expect(result.current.state).toEqual({ status: "ready", response: responseA });
+
+    rerender({ cwd: "/request-b" });
+    expect(result.current.state).toEqual({ status: "loading" });
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+      await flush();
+    });
+
+    expect(result.current.state).toEqual({ status: "error", message: "preview failed for request B" });
+  });
+
   test("retry reloads the same key and revision refresh starts a new request", async () => {
     vi.useFakeTimers();
     const client = new FakeClient();

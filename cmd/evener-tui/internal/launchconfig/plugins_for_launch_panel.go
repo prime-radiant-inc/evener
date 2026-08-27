@@ -26,21 +26,26 @@ type PluginsForLaunchResult struct {
 // PluginsForLaunchPanel selects the plugins for one upcoming session. It is
 // intentionally separate from PluginsPanel, which manages the global registry.
 type PluginsForLaunchPanel struct {
-	plugins         []appwire.PluginLaunchCandidate
-	selected        map[string]bool
-	selectionOrder  []string
-	initial         map[string]bool
-	initialProvided bool
-	dirty           bool
-	selectionErrors map[string]string
-	diagnostics     []string
-	filter          string
-	cursor          int
-	done            bool
-	cancelled       bool
-	applied         bool
-	width           int
-	previewErr      error
+	plugins                      []appwire.PluginLaunchCandidate
+	selected                     map[string]bool
+	selectionOrder               []string
+	initial                      map[string]bool
+	initialProvided              bool
+	dirty                        bool
+	selectionErrors              map[string]string
+	diagnostics                  []string
+	filter                       string
+	cursor                       int
+	done                         bool
+	cancelled                    bool
+	applied                      bool
+	width                        int
+	previewErr                   error
+	previewErrorSelectionCleared bool
+}
+
+type pluginLaunchRow struct {
+	appwire.PluginLaunchCandidate
 }
 
 func NewPluginsForLaunchPanel(preview appwire.PluginPreviewResponse, initial *[]string, width int) PluginsForLaunchPanel {
@@ -90,7 +95,9 @@ func (p PluginsForLaunchPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return p, nil
 		}
 		wasFailed := p.previewErr != nil
+		preserveSelection := wasFailed && (p.initialProvided || p.dirty)
 		p.previewErr = nil
+		p.previewErrorSelectionCleared = false
 		p.plugins = append([]appwire.PluginLaunchCandidate(nil), v.Response.Plugins...)
 		p.selectionErrors = map[string]string{}
 		for _, failure := range v.Response.SelectionErrors {
@@ -102,7 +109,7 @@ func (p PluginsForLaunchPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				p.diagnostics = append(p.diagnostics, message)
 			}
 		}
-		if wasFailed {
+		if wasFailed && !preserveSelection {
 			p.resetSelectionFromResponse(v.Response)
 		} else if !p.initialProvided && !p.dirty {
 			p.selected = map[string]bool{}
@@ -124,10 +131,20 @@ func (p PluginsForLaunchPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				p.done = true
 				return p, func() tea.Msg { return PluginsForLaunchResultMsg{Cancelled: true} }
 			case tea.KeyEnter:
+				if p.previewErrorSelectionCleared {
+					cmd := p.applySelection()
+					return p, cmd
+				}
 				return p, func() tea.Msg { return PluginsForLaunchResultMsg{Retry: true} }
+			case tea.KeyRunes:
+				if !v.Paste && len(v.Runes) == 1 && v.Runes[0] == 'N' {
+					p.clearSelection()
+					p.previewErrorSelectionCleared = true
+				}
 			default:
 				return p, nil
 			}
+			return p, nil
 		}
 		switch v.Type {
 		case tea.KeyEscape, tea.KeyCtrlC:
@@ -141,10 +158,8 @@ func (p PluginsForLaunchPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if p.hasBlockingSelectionError() {
 				return p, nil
 			}
-			values := p.selectedValues()
-			p.applied = true
-			p.done = true
-			return p, func() tea.Msg { return PluginsForLaunchResultMsg{Applied: true, EnabledPlugins: values} }
+			cmd := p.applySelection()
+			return p, cmd
 		case tea.KeyUp:
 			if p.cursor > 0 {
 				p.cursor--
@@ -159,15 +174,24 @@ func (p PluginsForLaunchPanel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case tea.KeySpace:
 			p.toggleCursor()
 		case tea.KeyRunes:
+			if v.Paste {
+				p.filter += string(v.Runes)
+				p.cursor = 0
+				break
+			}
 			for _, r := range v.Runes {
 				switch r {
 				case 'a':
+					p.filter += string(r)
+					p.cursor = 0
+				case 'A':
 					p.dirty = true
-					p.selectVisible()
+					p.selectVisibleCandidates()
 				case 'n':
-					p.dirty = true
-					p.selected = map[string]bool{}
-					p.selectionOrder = nil
+					p.filter += string(r)
+					p.cursor = 0
+				case 'N':
+					p.clearSelection()
 				default:
 					p.filter += string(r)
 					p.cursor = 0
@@ -186,19 +210,63 @@ type PluginsForLaunchResultMsg = pluginsForLaunchResultMsg
 type pluginsForLaunchResultMsg = PluginsForLaunchResult
 
 func (p PluginsForLaunchPanel) filtered() []appwire.PluginLaunchCandidate {
+	rows := p.filteredRows()
+	filtered := make([]appwire.PluginLaunchCandidate, 0, len(rows))
+	for _, row := range rows {
+		filtered = append(filtered, row.PluginLaunchCandidate)
+	}
+	return filtered
+}
+
+func (p PluginsForLaunchPanel) filteredRows() []pluginLaunchRow {
 	if p.filter == "" {
-		return p.plugins
+		return p.rows()
 	}
 	needle := strings.ToLower(p.filter)
-	filtered := make([]appwire.PluginLaunchCandidate, 0, len(p.plugins))
-	for _, plugin := range p.plugins {
-		if strings.Contains(strings.ToLower(plugin.Name), needle) ||
-			strings.Contains(strings.ToLower(plugin.Source), needle) ||
-			strings.Contains(strings.ToLower(plugin.Description), needle) {
-			filtered = append(filtered, plugin)
+	rows := p.rows()
+	filtered := make([]pluginLaunchRow, 0, len(rows))
+	for _, row := range rows {
+		if p.rowMatchesFilter(row, needle) {
+			filtered = append(filtered, row)
 		}
 	}
 	return filtered
+}
+
+func (p PluginsForLaunchPanel) rows() []pluginLaunchRow {
+	rows := make([]pluginLaunchRow, 0, len(p.plugins)+len(p.selected))
+	seen := map[string]bool{}
+	for _, plugin := range p.plugins {
+		rows = append(rows, pluginLaunchRow{PluginLaunchCandidate: plugin})
+		seen[plugin.Name] = true
+	}
+	for _, name := range p.selectionOrder {
+		if seen[name] || !p.selected[name] || strings.TrimSpace(p.selectionErrors[name]) == "" {
+			continue
+		}
+		rows = append(rows, pluginLaunchRow{appwire.PluginLaunchCandidate{Name: name}})
+		seen[name] = true
+	}
+	var rest []string
+	for name := range p.selected {
+		if seen[name] || !p.selected[name] || strings.TrimSpace(p.selectionErrors[name]) == "" {
+			continue
+		}
+		rest = append(rest, name)
+	}
+	sort.Strings(rest)
+	for _, name := range rest {
+		rows = append(rows, pluginLaunchRow{appwire.PluginLaunchCandidate{Name: name}})
+	}
+	return rows
+}
+
+func (p PluginsForLaunchPanel) rowMatchesFilter(row pluginLaunchRow, needle string) bool {
+	plugin := row.PluginLaunchCandidate
+	return strings.Contains(strings.ToLower(plugin.Name), needle) ||
+		strings.Contains(strings.ToLower(plugin.Source), needle) ||
+		strings.Contains(strings.ToLower(plugin.Description), needle) ||
+		strings.Contains(strings.ToLower(p.selectionErrors[plugin.Name]), needle)
 }
 
 func (p PluginsForLaunchPanel) selectedValues() *[]string {
@@ -221,6 +289,19 @@ func (p PluginsForLaunchPanel) selectedValues() *[]string {
 	return &values
 }
 
+func (p *PluginsForLaunchPanel) clearSelection() {
+	p.dirty = true
+	p.selected = map[string]bool{}
+	p.selectionOrder = nil
+}
+
+func (p *PluginsForLaunchPanel) applySelection() tea.Cmd {
+	values := p.selectedValues()
+	p.applied = true
+	p.done = true
+	return func() tea.Msg { return PluginsForLaunchResultMsg{Applied: true, EnabledPlugins: values} }
+}
+
 func (p *PluginsForLaunchPanel) toggleCursor() {
 	filtered := p.filtered()
 	if p.cursor < 0 || p.cursor >= len(filtered) {
@@ -234,13 +315,31 @@ func (p *PluginsForLaunchPanel) toggleCursor() {
 	}
 }
 
-func (p *PluginsForLaunchPanel) selectVisible() {
-	for _, plugin := range p.filtered() {
+func (p *PluginsForLaunchPanel) selectVisibleCandidates() {
+	available := p.availablePluginNames()
+	for name := range p.selected {
+		if !available[name] {
+			delete(p.selected, name)
+		}
+	}
+	needle := strings.ToLower(p.filter)
+	for _, plugin := range p.plugins {
+		if needle != "" && !p.rowMatchesFilter(pluginLaunchRow{PluginLaunchCandidate: plugin}, needle) {
+			continue
+		}
 		if !p.selected[plugin.Name] {
 			p.selectionOrder = append(p.selectionOrder, plugin.Name)
 		}
 		p.selected[plugin.Name] = true
 	}
+}
+
+func (p PluginsForLaunchPanel) availablePluginNames() map[string]bool {
+	available := make(map[string]bool, len(p.plugins))
+	for _, plugin := range p.plugins {
+		available[plugin.Name] = true
+	}
+	return available
 }
 
 func (p *PluginsForLaunchPanel) resetSelectionFromResponse(response appwire.PluginPreviewResponse) {
@@ -292,7 +391,11 @@ func (p PluginsForLaunchPanel) View() string {
 	if p.previewErr != nil {
 		body.WriteString("Couldn't inspect plugins: ")
 		body.WriteString(p.previewErr.Error())
-		body.WriteString("\nPress Enter to retry; current candidates are not editable.\n")
+		if p.previewErrorSelectionCleared {
+			body.WriteString("\nPress Enter to apply the empty selection; current candidates are not editable.\n")
+		} else {
+			body.WriteString("\nPress Enter to retry; press N for none; current candidates are not editable.\n")
+		}
 	} else {
 		filtered := p.filtered()
 		start := 0
@@ -333,10 +436,13 @@ func (p PluginsForLaunchPanel) View() string {
 		}
 	}
 	footerKeys := []string{tuiprim.KbdHint("↑↓", "navigate"), tuiprim.KbdHint("space", "toggle"),
-		tuiprim.KbdHint("a", "all visible"), tuiprim.KbdHint("n", "none"),
+		tuiprim.KbdHint("A", "all matching"), tuiprim.KbdHint("N", "none"),
 		tuiprim.KbdHint("enter", "apply"), tuiprim.KbdHint("esc", "cancel")}
 	if p.previewErr != nil {
-		footerKeys = []string{tuiprim.KbdHint("enter", "retry"), tuiprim.KbdHint("esc", "cancel")}
+		footerKeys = []string{tuiprim.KbdHint("enter", "retry"), tuiprim.KbdHint("N", "none"), tuiprim.KbdHint("esc", "cancel")}
+		if p.previewErrorSelectionCleared {
+			footerKeys = []string{tuiprim.KbdHint("enter", "apply"), tuiprim.KbdHint("esc", "cancel")}
+		}
 	}
 	footer := tuiprim.ActionBarForWidth(width, footerKeys...)
 	return tuiprim.Overlay(tuiprim.OverlayOpts{Title: "Plugins for this session", Width: width, Body: body.String(), Footer: footer})

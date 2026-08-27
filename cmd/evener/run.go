@@ -113,17 +113,6 @@ func run(ctx context.Context, cfg runConfig) error {
 	if cfg.stderr == nil {
 		cfg.stderr = os.Stderr
 	}
-	var resumeWithChildID string
-	var resumeWithStateDir string
-	resumeWithCommitted := false
-	defer func() {
-		if resumeWithChildID == "" || resumeWithCommitted {
-			return
-		}
-		if err := agent.RemoveSessionArtifacts(resumeWithStateDir, resumeWithChildID); err != nil {
-			fmt.Fprintf(cfg.stderr, "warning: could not roll back resume-with session %s: %v\n", resumeWithChildID, err) //nolint:errcheck
-		}
-	}()
 	if cfg.workDir == "" {
 		wd, err := runGetwd()
 		if err != nil {
@@ -168,8 +157,6 @@ func run(ctx context.Context, cfg runConfig) error {
 			return fmt.Errorf("resolve project state: %w", err)
 		}
 	}
-	resumeWithStateDir = stateDir
-
 	// --list-sessions: print and exit.
 	if cfg.listSessions {
 		return listSessions(cfg, stateDir)
@@ -183,20 +170,6 @@ func run(ctx context.Context, cfg runConfig) error {
 			return err
 		}
 		meta = &m
-		if cfg.resumeWith != "" {
-			childConfig := meta.Config.Clone()
-			childConfig.PluginDirs = append([]string(nil), resolvedPlugins.SelectedDirs...)
-			childID, err := agent.AsideSessionWithConfig(stateDir, meta.ID, childConfig)
-			if err != nil {
-				return fmt.Errorf("create resume-with session: %w", err)
-			}
-			resumeWithChildID = childID
-			childMeta, err := schema.LoadSessionMeta(stateDir, childID)
-			if err != nil {
-				return fmt.Errorf("load resume-with session: %w", err)
-			}
-			meta = &childMeta
-		}
 	}
 
 	// Determine prompt.
@@ -240,7 +213,39 @@ func run(ctx context.Context, cfg runConfig) error {
 		return err
 	}
 	defer closeAPILog() //nolint:errcheck
-	if meta != nil {
+	var resumeWithChildID string
+	resumeWithRollbackAllowed := false
+	resumeWithCommitted := false
+	if meta != nil && cfg.resumeWith != "" {
+		childConfig := meta.Config.Clone()
+		childConfig.PluginDirs = append([]string(nil), resolvedPlugins.SelectedDirs...)
+		childID, err := agent.AsideSessionWithConfig(stateDir, meta.ID, childConfig)
+		if err != nil {
+			return fmt.Errorf("create resume-with session: %w", err)
+		}
+		resumeWithChildID = childID
+		resumeWithRollbackAllowed = true
+		defer func() {
+			if resumeWithCommitted || !resumeWithRollbackAllowed {
+				return
+			}
+			if err := agent.RemoveSessionArtifacts(stateDir, resumeWithChildID); err != nil {
+				fmt.Fprintf(cfg.stderr, "warning: could not roll back resume-with session %s: %v\n", resumeWithChildID, err) //nolint:errcheck
+			}
+		}()
+		if err := reserveSession(resumeWithChildID); err != nil {
+			if errors.Is(err, llm.ErrAPILogTargetLocked) {
+				resumeWithRollbackAllowed = false
+			}
+			return err
+		}
+		childMeta, err := schema.LoadSessionMeta(stateDir, childID)
+		if err != nil {
+			return fmt.Errorf("load resume-with session: %w", err)
+		}
+		meta = &childMeta
+	}
+	if meta != nil && resumeWithChildID == "" {
 		if err := reserveSession(meta.ID); err != nil {
 			return err
 		}
@@ -318,6 +323,7 @@ func run(ctx context.Context, cfg runConfig) error {
 			Project:                     project,
 			ResolveProfile:              baseSessionCfg.ResolveProfile,
 			AcquireSessionOwnership:     reserveSession,
+			OwnershipAlreadyAcquired:    true,
 			OpenAIResponsesContinuation: openAIResponsesContinuation,
 			TurnEndsProcess:             baseSessionCfg.TurnEndsProcess,
 		})

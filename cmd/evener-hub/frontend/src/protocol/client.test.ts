@@ -86,7 +86,7 @@ describe("AppwireClient", () => {
       id: 1,
       method: "initialize",
       params: {
-        protocolVersion: "evener-appwire-v3",
+        protocolVersion: "evener-appwire-v4",
         clientInfo: DEFAULT_CLIENT_INFO,
         capabilities: DEFAULT_CAPABILITIES,
       },

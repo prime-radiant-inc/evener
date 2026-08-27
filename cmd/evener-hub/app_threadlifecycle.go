@@ -127,20 +127,14 @@ func hubThreadStart(ctx context.Context, cfg hubcore.WebConfig, sources *appsour
 		if spawnResolved.Effective.EnabledPlugins != nil {
 			return appwire.ThreadStartResponse{}, appwire.HubLaunchError(pluginErr.Error())
 		}
-		// Registry discovery is fail-soft when no explicit selection was
-		// requested. Keep the valid explicit directories the shared resolver
-		// managed to load, rather than handing invalid entries to the daemon.
-		spawnResolved.Effective.PluginDirs = pluginResolution.SelectedDirs
 	} else if err := pluginResolution.ValidateSelection(); err != nil {
 		return appwire.ThreadStartResponse{}, appwire.InvalidParams(err.Error())
-	}
-	if pluginErr == nil {
-		spawnResolved.Effective.PluginDirs = pluginResolution.SelectedDirs
 	}
 	entry, err := cfg.Spawner.Spawn(ctx, hubcore.SpawnRequest{
 		Project:    spawnResolved.Project,
 		Resolved:   spawnResolved,
 		WorkingDir: workingDir,
+		PluginRoot: cfg.PluginRoot,
 		Provider:   modelRef.Provider,
 	})
 	if err != nil {

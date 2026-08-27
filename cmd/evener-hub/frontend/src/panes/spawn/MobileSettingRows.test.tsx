@@ -214,14 +214,53 @@ test("plugin sheet stays open across toggles, Done applies, and Cancel restores 
   expect(document.activeElement).toBe(rowButton);
 });
 
-test("plugin preview error keeps the row honest and exposes retry", async () => {
+test("plugin preview error allows only safe removal from the last preview and exposes retry", async () => {
   const user = userEvent.setup();
   const onPluginRetry = vi.fn();
-  renderRows({ pluginPreview: { status: "error", message: "offline" }, onPluginRetry });
+  const onPluginSelectionChange = vi.fn();
+  const response: PluginPreviewResponse = {
+    plugins: [
+      {
+        name: "alpha",
+        source: "installed",
+        selected: true,
+        skillCount: 1,
+        agentCount: 0,
+        commandCount: 0,
+        hookCount: 0,
+        mcpCount: 0,
+      },
+      {
+        name: "beta",
+        source: "installed",
+        selected: false,
+        skillCount: 0,
+        agentCount: 0,
+        commandCount: 0,
+        hookCount: 0,
+        mcpCount: 0,
+      },
+    ],
+    selectionErrors: [{ name: "alpha", reason: "plugin is unavailable" }],
+  };
+  renderRows({
+    pluginPreview: { status: "error", message: "offline", response },
+    pluginSelection: { mode: "explicit", names: ["alpha"] },
+    onPluginSelectionChange,
+    onPluginRetry,
+  });
 
   const pluginRow = screen.getByTestId("mobile-spawn-config").querySelector('[data-label="Plugins"]') as HTMLElement;
   expect(pluginRow.textContent).toContain("Couldn't inspect plugins");
-  expect(within(pluginRow).queryByRole("button")).toBeNull();
+  await user.click(within(pluginRow).getByRole("button"));
+  const dialog = await screen.findByRole("dialog", { name: "Plugins for this session" });
+  expect((within(dialog).getByRole("switch", { name: "alpha" }) as HTMLButtonElement).disabled).toBe(false);
+  expect((within(dialog).getByRole("switch", { name: "beta" }) as HTMLButtonElement).disabled).toBe(true);
+  expect((within(dialog).getByRole("button", { name: "All" }) as HTMLButtonElement).disabled).toBe(true);
+  await user.click(within(dialog).getByRole("button", { name: "None" }));
+  expect(within(dialog).queryByRole("alert")).toBeNull();
+  await user.click(within(dialog).getByRole("button", { name: "Done" }));
+  expect(onPluginSelectionChange).toHaveBeenCalledWith({ mode: "explicit", names: [] });
   await user.click(screen.getByRole("button", { name: "Retry" }));
   expect(onPluginRetry).toHaveBeenCalledOnce();
   expect(screen.queryByText("0 of 0")).toBeNull();

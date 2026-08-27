@@ -17,7 +17,12 @@
 // (Jesse 2026-07-22).
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
 import { friendlyLaunchErrorMessage } from "../../protocol/errors";
-import type { HarnessDescriptor, LaunchConfigLayer, LaunchOption } from "../../protocol/types.gen";
+import type {
+  HarnessDescriptor,
+  LaunchConfigLayer,
+  LaunchOption,
+  PluginSelectionError,
+} from "../../protocol/types.gen";
 import { useClient } from "../../shell/clientContext";
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
@@ -53,12 +58,17 @@ import { type TextEditor, useAttachments } from "../session/composer/attachments
 import { AdvancedOptions } from "./AdvancedOptions";
 import { ACCESS_MODE_OPTIONS } from "./accessMode";
 import { resolveHeadBranch } from "./branch";
-import { harnessUsesEvenerModels } from "./harnessModels";
+import { harnessSupportsPluginSelection, harnessUsesEvenerModels } from "./harnessModels";
 import { MobileSettingRows } from "./MobileSettingRows";
 import { ModelField } from "./ModelField";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
 import pluginSelectionStyles from "./pluginSelection.module.css";
-import { type PluginSelectionState, reconcilePluginSelection, withPluginSelection } from "./pluginSelectionState";
+import {
+  type PluginSelectionState,
+  pluginSelectionIssues,
+  reconcilePluginSelection,
+  withPluginSelection,
+} from "./pluginSelectionState";
 import { createDir, preflightDir } from "./preflight";
 import { perLaunchEvenerOptions, resolveScalars } from "./schema";
 import styles from "./spawn.module.css";
@@ -152,6 +162,9 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   const [schemaOptions, setSchemaOptions] = useState<LaunchOption[]>([]);
   const [advancedOverrides, setAdvancedOverrides] = useState<LaunchConfigLayer>({});
   const [pluginSelection, setPluginSelection] = useState<PluginSelectionState>({ mode: "default" });
+  const [knownSelectionIssues, setKnownSelectionIssues] = useState<PluginSelectionError[]>([]);
+  const pluginSelectionRef = useRef(pluginSelection);
+  pluginSelectionRef.current = pluginSelection;
   const [staleNotice, setStaleNotice] = useState<string | null>(null);
   const [createDialogPath, setCreateDialogPath] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -177,7 +190,10 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // one): what the Effort ladder keys off while Model reads "(default)".
   const [resolvedDefaultModel, setResolvedDefaultModel] = useState("");
   const pluginRevision = useExtensionsStore((state) => state.pluginRevision);
-  const combinedOverrides = withPluginSelection(advancedOverrides, pluginSelection);
+  const pluginSelectionSupported = harnessSupportsPluginSelection(harness, harnesses);
+  const combinedOverrides = pluginSelectionSupported
+    ? withPluginSelection(advancedOverrides, pluginSelection)
+    : withPluginSelection(advancedOverrides, { mode: "default" });
 
   // Attachments reuse the composer's staged-image pipeline via a TextEditor
   // bridge over the prompt textarea (see Composer.tsx's own bridge for the
@@ -284,9 +300,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     (overrides: LaunchConfigLayer) =>
       client.request("evener/launch/resolve", {
         cwd,
-        launchOverrides: withPluginSelection(overrides, pluginSelection),
+        launchOverrides: pluginSelectionSupported
+          ? withPluginSelection(overrides, pluginSelection)
+          : withPluginSelection(overrides, { mode: "default" }),
       }),
-    [client, cwd, pluginSelection],
+    [client, cwd, pluginSelection, pluginSelectionSupported],
   );
 
   const pluginPreview = usePluginPreview({
@@ -294,21 +312,34 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     cwd,
     launchOverrides: combinedOverrides,
     pluginRevision,
+    enabled: pluginSelectionSupported,
   });
 
   useEffect(() => {
+    if (!pluginSelectionSupported) return;
     const state = pluginPreview.state;
     if (state.status !== "ready") return;
-    setPluginSelection((previous) => reconcilePluginSelection(previous, state.response));
-  }, [pluginPreview.state]);
+    const nextSelection = reconcilePluginSelection(pluginSelectionRef.current, state.response);
+    setPluginSelection(nextSelection);
+    setKnownSelectionIssues(pluginSelectionIssues(nextSelection, state.response));
+    // A selection change clears the cached issues until its new preview settles.
+    // Re-running this effect for that selection change would restore old issues.
+  }, [pluginPreview.state, pluginSelectionSupported]);
 
-  const previewResponse = pluginPreview.state.status === "ready" ? pluginPreview.state.response : null;
+  const previewResponse =
+    pluginSelectionSupported && (pluginPreview.state.status === "ready" || pluginPreview.state.status === "error")
+      ? (pluginPreview.state.response ?? null)
+      : null;
   const selectedPluginCount =
     previewResponse?.plugins.filter((plugin) =>
       pluginSelection.mode === "explicit" ? pluginSelection.names.includes(plugin.name) : plugin.selected,
     ).length ?? 0;
-  const selectionErrors = previewResponse?.selectionErrors ?? [];
-  const explicitSelectionUnverified = pluginSelection.mode === "explicit" && pluginPreview.state.status !== "ready";
+  const currentSelectionIssues =
+    pluginPreview.state.status === "ready" ? pluginSelectionIssues(pluginSelection, pluginPreview.state.response) : [];
+  const explicitSelectionLoading =
+    pluginSelectionSupported && pluginSelection.mode === "explicit" && pluginPreview.state.status === "loading";
+  const pluginSelectionBlocked =
+    explicitSelectionLoading || knownSelectionIssues.length > 0 || currentSelectionIssues.length > 0;
 
   // Mount: URL prefill + sticky defaults (synchronous), then the async catalogs
   // (harnesses, advanced schema) and the stale-model sweep.
@@ -554,8 +585,18 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     }
   }, [knownEffortLevels, reasoningEffort]);
 
+  function handlePluginSelectionChange(next: PluginSelectionState): void {
+    setKnownSelectionIssues((issues) => {
+      if (next.mode === "default") return [];
+      const selectedNames = new Set(next.names);
+      return issues.filter((issue) => selectedNames.has(issue.name));
+    });
+    setPluginSelection(next);
+  }
+
   function handleHarnessChange(next: string): void {
     setHarness(next);
+    if (!harnessSupportsPluginSelection(next, harnesses)) handlePluginSelectionChange({ mode: "default" });
     // Switching to a non-evener harness always blanks the model; switching to a
     // evener-model harness only blanks a value that isn't already provider/model
     // shaped (floor §1.10, spawn.js:395-402).
@@ -612,6 +653,12 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   }
 
   async function doSpawn(): Promise<void> {
+    if (pluginSelectionBlocked) {
+      busyRef.current = false;
+      setBusy(false);
+      setBusyStartedAt(null);
+      return;
+    }
     // The advanced schema's sandbox wins over the access-mode chip (floor §1.8);
     // its model/reasoningEffort win over the chips (floor §1.11) - resolveScalars
     // hoists them into the top-level fields the daemon prefers over overrides.
@@ -652,7 +699,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // one-shot prompt/attachments reset.
     updatePrompt("");
     attachments.clearSubmitted(submittedMarkers);
-    setPluginSelection({ mode: "default" });
+    handlePluginSelectionChange({ mode: "default" });
     // Same defect class: both callers set busy=true before awaiting this
     // function but only their OWN catch blocks ever reset it back to false,
     // so a success fell through with the button stuck disabled/"Starting…"
@@ -672,7 +719,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // - a submit that CANNOT succeed must never fire regardless of path in.
     // The field's own inline note already says why, so no toast here.
     if (modelRequired) return;
-    if (explicitSelectionUnverified) return;
+    if (pluginSelectionBlocked) return;
     if (attachments.hasPending) {
       toasts.push("error", "Image attachment is still processing.");
       return;
@@ -848,7 +895,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                   aria-label="Start"
                   icon={busy ? undefined : <SendIcon />}
                   onClick={() => void handleSpawn()}
-                  disabled={busy || modelRequired || selectionErrors.length > 0 || explicitSelectionUnverified}
+                  disabled={busy || modelRequired || pluginSelectionBlocked}
                 >
                   {busy ? (
                     <Loader label="Starting" startedAt={busyStartedAt ?? now} now={now} />
@@ -952,42 +999,45 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           </FormRow>
         </div>
 
-        <div className={CLASS.pluginDesktop} data-testid="spawn-plugin-desktop">
-          {previewResponse === null && (
-            <div className={CLASS.pluginSummary} data-testid="spawn-plugin-summary" role="status">
-              <strong>Plugins for this session</strong>
-              <span>
-                {pluginPreview.state.status === "loading" ? "Inspecting plugins…" : "Couldn't inspect plugins"}
-              </span>
-              {pluginPreview.state.status === "error" && (
-                <Button variant="secondary" size="xs" type="button" onClick={pluginPreview.retry}>
-                  Retry
-                </Button>
-              )}
-            </div>
-          )}
-          {previewResponse !== null && (
-            <Disclosure
-              id="spawn-plugin-selection"
-              data-testid="spawn-plugin-disclosure"
-              summary={
-                <div className={CLASS.pluginSummary} data-testid="spawn-plugin-summary">
-                  <strong>Plugins for this session</strong>
-                  <span>
-                    {selectedPluginCount} of {previewResponse.plugins.length} will load · session only
-                  </span>
-                </div>
-              }
-            >
-              <PluginSelectionPanel
-                preview={previewResponse}
-                selection={pluginSelection}
-                onSelectionChange={setPluginSelection}
-                onRetry={pluginPreview.retry}
-              />
-            </Disclosure>
-          )}
-        </div>
+        {pluginSelectionSupported && (
+          <div className={CLASS.pluginDesktop} data-testid="spawn-plugin-desktop">
+            {previewResponse === null && (
+              <div className={CLASS.pluginSummary} data-testid="spawn-plugin-summary" role="status">
+                <strong>Plugins for this session</strong>
+                <span>
+                  {pluginPreview.state.status === "loading" ? "Inspecting plugins…" : "Couldn't inspect plugins"}
+                </span>
+                {pluginPreview.state.status === "error" && (
+                  <Button variant="secondary" size="xs" type="button" onClick={pluginPreview.retry}>
+                    Retry
+                  </Button>
+                )}
+              </div>
+            )}
+            {previewResponse !== null && (
+              <Disclosure
+                id="spawn-plugin-selection"
+                data-testid="spawn-plugin-disclosure"
+                summary={
+                  <div className={CLASS.pluginSummary} data-testid="spawn-plugin-summary">
+                    <strong>Plugins for this session</strong>
+                    <span>
+                      {selectedPluginCount} of {previewResponse.plugins.length} will load · session only
+                    </span>
+                  </div>
+                }
+              >
+                <PluginSelectionPanel
+                  preview={previewResponse}
+                  selection={pluginSelection}
+                  removeOnly={pluginPreview.state.status === "error"}
+                  onSelectionChange={handlePluginSelectionChange}
+                  onRetry={pluginPreview.retry}
+                />
+              </Disclosure>
+            )}
+          </div>
+        )}
 
         <div className={CLASS.mobileConfig} data-testid="spawn-mobile-config">
           <MobileSettingRows
@@ -1010,7 +1060,8 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             onAccessChange={setAccessMode}
             pluginPreview={pluginPreview.state}
             pluginSelection={pluginSelection}
-            onPluginSelectionChange={setPluginSelection}
+            pluginsSupported={pluginSelectionSupported}
+            onPluginSelectionChange={handlePluginSelectionChange}
             onPluginRetry={pluginPreview.retry}
           />
         </div>

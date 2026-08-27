@@ -129,9 +129,11 @@ type hubModel struct {
 	spawnPluginPreviewLoaded       bool
 	spawnPluginPreviewLoading      bool
 	spawnPluginPreviewErr          error
+	spawnPluginPreviewGeneration   uint64
 	spawnPluginPreviewRevision     uint64
 	spawnPluginPreviewRequestKey   string
 	spawnPluginPreviewParamsDigest string
+	spawnPluginPreviewLastSuccess  string
 	spawnSubmitting                bool
 	spawnFocus                     hubSpawnField
 	// spawnRecentDirs holds the hub's most recently used project dirs (the

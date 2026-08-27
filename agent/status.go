@@ -137,7 +137,7 @@ const detailedStatusTerminalJobsLimit = 50
 // DetailedStatus builds a snapshot of the session's loaded tools, MCP servers,
 // skills, plugins, hooks, jobs, and public agent names.
 func (s *Session) DetailedStatus() DetailedStatus {
-	var ds DetailedStatus
+	ds := DetailedStatus{Plugins: make([]PluginInfo, 0)}
 	now := s.sclock().Now().UTC()
 
 	// Build MCP tool → server name map for tool categorization.

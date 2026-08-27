@@ -12,7 +12,7 @@ import type { InitializeResponse } from "../types.gen";
 // without duplicating the literal.
 export const FAKE_INITIALIZE_RESULT: InitializeResponse = {
   serverInfo: { name: "fake-evener-hub", version: "0.0.0-test" },
-  protocolVersion: "evener-appwire-v3",
+  protocolVersion: "evener-appwire-v4",
   sourceId: "fake-source",
   features: {
     threadList: true,

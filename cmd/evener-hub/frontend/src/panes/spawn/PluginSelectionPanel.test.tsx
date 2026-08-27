@@ -91,6 +91,36 @@ test("filters by name, source, and description and supports All and None", async
   expect(onSelectionChange).toHaveBeenLastCalledWith({ mode: "explicit", names: ["alpha", "beta"] });
 });
 
+test("simultaneously mounted panels keep distinct filter label targets", () => {
+  render(
+    <>
+      <PluginSelectionPanel
+        preview={preview}
+        selection={{ mode: "default" }}
+        onSelectionChange={vi.fn()}
+        onRetry={vi.fn()}
+      />
+      <PluginSelectionPanel
+        preview={preview}
+        selection={{ mode: "default" }}
+        onSelectionChange={vi.fn()}
+        onRetry={vi.fn()}
+      />
+    </>,
+  );
+
+  const panels = screen.getAllByTestId("plugin-selection-panel");
+  expect(panels).toHaveLength(2);
+  const ids = panels.map((panel) => {
+    const label = within(panel).getByText("Filter plugins", { selector: "label" });
+    const input = within(panel).getByRole("searchbox") as HTMLInputElement;
+    expect(label.getAttribute("for")).toBe(input.id);
+    expect(input.id).not.toBe("");
+    return input.id;
+  });
+  expect(new Set(ids).size).toBe(2);
+});
+
 test("exposes diagnostics and blocking selection errors without relying on color", async () => {
   const user = userEvent.setup();
   renderPanel();

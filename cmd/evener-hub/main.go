@@ -28,6 +28,7 @@ import (
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/internal/binresolve"
 	"primeradiant.com/evener/internal/credentials"
+	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/rendezvous"
@@ -345,6 +346,11 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		return fmt.Errorf("load deletion state: %w", err)
 	}
 
+	// Resolve the registry root once for this hub process. Launch configuration
+	// may override XDG_CONFIG_HOME for a child, so the child must receive this
+	// concrete root rather than resolving its own default from that environment.
+	pluginRoot := plugins.NewManager("").Root
+
 	// Web
 	web := NewWebServer(hubcore.WebConfig{
 		HubAddr:             cfg.Addr,
@@ -352,6 +358,7 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		MobileBaseURL:       cfg.MobileBaseURL,
 		HubStateRoot:        cfg.HubStateRoot,
 		LaunchConfigRoot:    cmdutil.DefaultConfigRoot(),
+		PluginRoot:          pluginRoot,
 		RunDir:              runDir,
 		PastIndexPath:       pastIndexDB,
 		Roster:              roster,

@@ -206,7 +206,7 @@ stays open while switches are changed; **Done** applies the selection and
 
 The TUI new-session form has a `Plugins: N/M enabled` field after `Dir` and
 before `Prompt`. Enter opens the `Plugins for this session` picker; Space
-toggles a row, `a` selects all visible rows, `n` selects none, Enter applies, and
+toggles a row, `A` selects all visible rows, `N` selects none, Enter applies, and
 Escape cancels. This field is separate from the global `/plugins` manager.
 
 The launcher previews the effective candidates for the current working directory

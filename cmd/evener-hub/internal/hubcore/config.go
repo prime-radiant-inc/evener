@@ -101,6 +101,7 @@ type SpawnRequest struct {
 	WorkingDir    string
 	StateDir      string
 	RunDir        string
+	PluginRoot    string // internal/plugins.Manager root handed to the child serve process; "" keeps the child's default root resolution
 	AppReplaySize int
 	Env           []string // populated by ToEnv during Spawn
 	Provider      string   // for credential injection

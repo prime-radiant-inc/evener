@@ -10,3 +10,7 @@ export function harnessUsesEvenerModels(harnessId: string, harnesses: HarnessDes
   const found = harnesses.find((h) => h.id === harnessId);
   return found ? found.kind === "evener" : false;
 }
+
+export function harnessSupportsPluginSelection(harnessId: string, harnesses: HarnessDescriptor[]): boolean {
+  return harnessUsesEvenerModels(harnessId, harnesses);
+}

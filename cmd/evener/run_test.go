@@ -253,6 +253,74 @@ func TestRunResumeWithCreatesFreshPluginSnapshot(t *testing.T) {
 	}
 }
 
+func TestRunResumeWithNonLockReservationFailureRemovesChild(t *testing.T) {
+	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+	oldAttach := runAttachAPILogger
+	oldEnsure := runEnsureUserConfigDirs
+	oldResolve := runResolvePlugins
+	oldRestore := runRestoreSession
+	t.Cleanup(func() {
+		runAttachAPILogger = oldAttach
+		runEnsureUserConfigDirs = oldEnsure
+		runResolvePlugins = oldResolve
+		runRestoreSession = oldRestore
+	})
+	runEnsureUserConfigDirs = func() error { return nil }
+	runResolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+		return plugins.LaunchPluginResolution{}, nil
+	}
+	runRestoreSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error) {
+		t.Fatal("restore called after reservation failure")
+		return nil, nil
+	}
+
+	stateDir := t.TempDir()
+	reservationErr := errors.New("quarantine API log target")
+	var childID string
+	runAttachAPILogger = func(*llm.Client, string, io.Writer) (func(string) error, func() error, error) {
+		return func(id string) error {
+			childID = id
+			return reservationErr
+		}, func() error { return nil }, nil
+	}
+
+	const sourceID = "02wMz5Txv1C3Hut0M8GCeD"
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sourceID, ProfileID: "openai", Model: "gpt-test",
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+	writer, err := transcript.NewWriter(
+		filepath.Join(stateDir, "sessions", sourceID+".transcript.jsonl"),
+		transcript.Header{SessionID: sourceID, ProfileID: "openai", Model: "gpt-test", WorkingDir: stateDir},
+	)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close writer: %v", err)
+	}
+
+	err = run(context.Background(), runConfig{
+		resumeWith: sourceID, prompt: "new prompt", workDir: stateDir, stateDir: stateDir,
+		noDefaultMarketplaces: true, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+	})
+	if !errors.Is(err, reservationErr) {
+		t.Fatalf("run error = %v, want %v", err, reservationErr)
+	}
+	if childID == "" {
+		t.Fatal("resume-with child was never reserved")
+	}
+	for _, suffix := range []string{".meta.json", ".transcript.jsonl", ".api.jsonl", ".log.jsonl"} {
+		if _, err := os.Stat(filepath.Join(stateDir, "sessions", childID+suffix)); !os.IsNotExist(err) {
+			t.Fatalf("failed resume-with child artifact %q remains: %v", suffix, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", childID)); !os.IsNotExist(err) {
+		t.Fatalf("failed resume-with child jobs directory remains: %v", err)
+	}
+}
+
 // TestRunWithArgs verifies that the run function processes a prompt from CLI args
 // and produces output on stdout.
 func TestRunWithArgs(t *testing.T) {

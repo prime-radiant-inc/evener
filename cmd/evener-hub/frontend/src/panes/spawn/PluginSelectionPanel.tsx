@@ -1,10 +1,11 @@
-import { type ReactElement, useMemo, useState } from "react";
+import { type ReactElement, useId, useMemo, useState } from "react";
 import type { PluginLaunchCandidate, PluginPreviewResponse } from "../../protocol/types.gen";
 import { Button, Input, Switch } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./pluginSelection.module.css";
 import {
   type PluginSelectionState,
+  pluginSelectionIssues,
   selectAllPlugins,
   selectNoPlugins,
   setPluginSelected,
@@ -13,6 +14,7 @@ import {
 export interface PluginSelectionPanelProps {
   preview: PluginPreviewResponse;
   selection: PluginSelectionState;
+  removeOnly?: boolean;
   onSelectionChange(next: PluginSelectionState): void;
   onRetry(): void;
 }
@@ -61,9 +63,11 @@ function matchesFilter(plugin: PluginLaunchCandidate, query: string): boolean {
 export function PluginSelectionPanel({
   preview,
   selection,
+  removeOnly = false,
   onSelectionChange,
   onRetry,
 }: PluginSelectionPanelProps): ReactElement {
+  const filterId = useId();
   const [filter, setFilter] = useState("");
   const query = filter.trim().toLocaleLowerCase();
   const visiblePlugins = useMemo(
@@ -71,26 +75,21 @@ export function PluginSelectionPanel({
     [preview.plugins, query],
   );
   const selectedNames = selection.mode === "explicit" ? new Set(selection.names) : null;
+  const issueNames =
+    selectedNames ?? new Set(preview.plugins.filter((plugin) => plugin.selected).map((plugin) => plugin.name));
   const selectedCount = preview.plugins.filter((plugin) => selectedNames?.has(plugin.name) ?? plugin.selected).length;
-  const selectionErrors = preview.selectionErrors ?? [];
-  const currentNames = new Set(preview.plugins.map((plugin) => plugin.name));
-  const reportedErrorNames = new Set(selectionErrors.map((error) => error.name));
-  const staleSelectionErrors =
-    selection.mode === "explicit"
-      ? selection.names
-          .filter((name) => !currentNames.has(name) && !reportedErrorNames.has(name))
-          .map((name) => ({ name, reason: "no longer available in the current Preview" }))
-      : [];
-  const selectionIssues = [...selectionErrors, ...staleSelectionErrors];
+  const selectionIssues = pluginSelectionIssues(selection, preview).filter(
+    (issue) => !removeOnly || issueNames.has(issue.name),
+  );
   const diagnostics = preview.diagnostics ?? [];
 
   return (
     <section className={CLASS.panel} data-testid="plugin-selection-panel" aria-label="Plugins for this session">
       <div className={CLASS.tools}>
         <div className={CLASS.filter}>
-          <label htmlFor="plugin-selection-filter">Filter plugins</label>
+          <label htmlFor={filterId}>Filter plugins</label>
           <Input
-            id="plugin-selection-filter"
+            id={filterId}
             type="search"
             value={filter}
             onChange={(event) => setFilter(event.target.value)}
@@ -104,6 +103,7 @@ export function PluginSelectionPanel({
             type="button"
             onClick={() => onSelectionChange(selectAllPlugins(preview))}
             aria-label="All"
+            disabled={removeOnly}
           >
             All
           </Button>
@@ -130,8 +130,10 @@ export function PluginSelectionPanel({
               <Switch
                 checked={selected}
                 label={plugin.name}
-                disabled={false}
-                onChange={(next) => onSelectionChange(setPluginSelected(selection, preview, plugin.name, next))}
+                disabled={removeOnly && !selected}
+                onChange={(next) => {
+                  if (!removeOnly || !next) onSelectionChange(setPluginSelected(selection, preview, plugin.name, next));
+                }}
               />
               <div className={CLASS.metadata}>
                 <span className={CLASS.source}>{sourceLabel(plugin)}</span>
@@ -150,6 +152,16 @@ export function PluginSelectionPanel({
         </div>
       )}
       {preview.plugins.length === 0 && <p className={CLASS.empty}>No plugins are available for this session.</p>}
+
+      {removeOnly && (
+        <div className={CLASS.errors} role="status">
+          <strong>Couldn't inspect plugins</strong>
+          <span>Only removing plugins is available until the preview succeeds.</span>
+          <Button variant="secondary" size="xs" type="button" onClick={onRetry}>
+            Retry
+          </Button>
+        </div>
+      )}
 
       {selectionIssues.length > 0 && (
         <div className={CLASS.errors} role="alert">

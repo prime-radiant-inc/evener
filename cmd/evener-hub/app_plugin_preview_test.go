@@ -2,10 +2,16 @@ package hub
 
 import (
 	"context"
+	"errors"
+	"os"
 	"path/filepath"
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
+	"primeradiant.com/evener/internal/plugins"
 )
 
 func TestPluginPreviewControllerMapsCandidates(t *testing.T) {
@@ -19,6 +25,181 @@ func TestPluginPreviewControllerMapsCandidates(t *testing.T) {
 	}
 	if got.Plugins == nil || got.Diagnostics == nil || got.SelectionErrors == nil {
 		t.Fatalf("preview slices must be non-nil: %+v", got)
+	}
+}
+
+func TestPluginPreviewMissingCWDMatchesStartAfterCreation(t *testing.T) {
+	pluginDir := t.TempDir()
+	writePreviewFixturePlugin(t, pluginDir, "preview-fixture", filepath.Join(t.TempDir(), "marker"))
+	launchRoot := t.TempDir()
+	pluginRoot := t.TempDir()
+	cwd := filepath.Join(t.TempDir(), "new-session")
+	selected := []string{"preview-fixture"}
+	overrides := &appwire.LaunchConfigLayer{
+		PluginDirs:     []string{pluginDir},
+		EnabledPlugins: &selected,
+	}
+	ctl := newHubPluginsController(pluginRoot, launchRoot)
+
+	preview, err := ctl.Preview(context.Background(), appwire.PluginPreviewParams{CWD: cwd, LaunchOverrides: overrides})
+	if err != nil {
+		t.Fatalf("Preview for missing cwd: %v", err)
+	}
+	if len(preview.Plugins) != 1 || preview.Plugins[0].Name != "preview-fixture" || !preview.Plugins[0].Selected {
+		t.Fatalf("Preview plugins = %+v, want selected preview-fixture", preview.Plugins)
+	}
+	if _, err := os.Stat(cwd); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Preview created cwd: stat=%v", err)
+	}
+
+	if err := os.Mkdir(cwd, 0o755); err != nil {
+		t.Fatalf("create cwd: %v", err)
+	}
+	spawner := &recordingSpawner{}
+	_, err = hubThreadStart(context.Background(), hubcore.WebConfig{
+		LaunchConfigRoot: launchRoot,
+		PluginRoot:       pluginRoot,
+		Spawner:          spawner,
+	}, appsource.NewRegistry(), appwire.ThreadStartParams{
+		CWD:             cwd,
+		Model:           "openai/gpt-5",
+		LaunchOverrides: overrides,
+	})
+	if err != nil {
+		t.Fatalf("ThreadStart after creating cwd: %v", err)
+	}
+	spawns := spawner.Spawns()
+	if len(spawns) != 1 {
+		t.Fatalf("spawn calls = %d, want 1", len(spawns))
+	}
+	if got := spawns[0].Resolved.Effective.EnabledPlugins; got == nil || len(*got) != 1 || (*got)[0] != "preview-fixture" {
+		t.Fatalf("started enabled plugins = %#v, want [preview-fixture]", got)
+	}
+}
+
+func TestPluginPreviewMissingNonGitChildMatchesStartAfterCreation(t *testing.T) {
+	projectRoot := t.TempDir()
+	missingCWD := filepath.Join(projectRoot, "new-session")
+	projectPluginDir := filepath.Join(t.TempDir(), "project-plugin")
+	writePreviewFixturePlugin(t, projectPluginDir, "project-fixture", filepath.Join(t.TempDir(), "project-marker"))
+	ancestorPluginDir := filepath.Join(t.TempDir(), "ancestor-local-plugin")
+	writePreviewFixturePlugin(t, ancestorPluginDir, "ancestor-local-fixture", filepath.Join(t.TempDir(), "ancestor-marker"))
+	if err := os.MkdirAll(filepath.Join(projectRoot, ".evener"), 0o755); err != nil {
+		t.Fatalf("create ancestor local config directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, ".evener", "launch.local.toml"), []byte("plugin_dirs = [\""+ancestorPluginDir+"\"]\n"), 0o644); err != nil {
+		t.Fatalf("write ancestor local launch config: %v", err)
+	}
+
+	launchRoot := t.TempDir()
+	if err := os.Mkdir(missingCWD, 0o755); err != nil {
+		t.Fatalf("create target for project identity setup: %v", err)
+	}
+	paths, err := launchconfig.PathsFor(launchRoot, missingCWD)
+	if err != nil {
+		t.Fatalf("PathsFor target: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(paths.LegacyProject), 0o755); err != nil {
+		t.Fatalf("create project config directory: %v", err)
+	}
+	if err := os.WriteFile(paths.LegacyProject, []byte("plugin_dirs = [\""+projectPluginDir+"\"]\n"), 0o644); err != nil {
+		t.Fatalf("write project launch config: %v", err)
+	}
+	if err := os.Remove(missingCWD); err != nil {
+		t.Fatalf("remove target before preview: %v", err)
+	}
+
+	pluginRoot := t.TempDir()
+	ctl := newHubPluginsController(pluginRoot, launchRoot)
+	preview, err := ctl.Preview(context.Background(), appwire.PluginPreviewParams{CWD: missingCWD})
+	if err != nil {
+		t.Fatalf("Preview for missing non-Git cwd: %v", err)
+	}
+	if len(preview.Plugins) != 1 || preview.Plugins[0].Name != "project-fixture" {
+		t.Fatalf("Preview plugins = %+v, want only project-fixture", preview.Plugins)
+	}
+	if _, err := os.Stat(missingCWD); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Preview created missing cwd: stat=%v", err)
+	}
+
+	if err := os.Mkdir(missingCWD, 0o755); err != nil {
+		t.Fatalf("create cwd: %v", err)
+	}
+	spawner := &recordingSpawner{}
+	_, err = hubThreadStart(context.Background(), hubcore.WebConfig{
+		LaunchConfigRoot: launchRoot,
+		PluginRoot:       pluginRoot,
+		Spawner:          spawner,
+	}, appsource.NewRegistry(), appwire.ThreadStartParams{
+		CWD:   missingCWD,
+		Model: "openai/gpt-5",
+	})
+	if err != nil {
+		t.Fatalf("ThreadStart after creating cwd: %v", err)
+	}
+	spawns := spawner.Spawns()
+	if len(spawns) != 1 {
+		t.Fatalf("spawn calls = %d, want 1", len(spawns))
+	}
+	if got := spawns[0].Resolved.Effective.PluginDirs; len(got) != 1 || got[0] != projectPluginDir {
+		t.Fatalf("started plugin dirs = %v, want [%q]", got, projectPluginDir)
+	}
+}
+
+func TestPluginPreviewMissingChildUsesProjectLayerPluginDirs(t *testing.T) {
+	projectRoot := filepath.Join(t.TempDir(), "project")
+	if err := os.MkdirAll(filepath.Join(projectRoot, ".git"), 0o755); err != nil {
+		t.Fatalf("create project: %v", err)
+	}
+	missingCWD := filepath.Join(projectRoot, "new-session")
+	pluginDir := filepath.Join(t.TempDir(), "project-plugin")
+	writePreviewFixturePlugin(t, pluginDir, "project-fixture", filepath.Join(t.TempDir(), "marker"))
+	ancestorLocalPluginDir := filepath.Join(t.TempDir(), "ancestor-local-plugin")
+	writePreviewFixturePlugin(t, ancestorLocalPluginDir, "ancestor-local-fixture", filepath.Join(t.TempDir(), "marker"))
+	if err := os.MkdirAll(filepath.Join(projectRoot, ".evener"), 0o755); err != nil {
+		t.Fatalf("create ancestor local config directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(projectRoot, ".evener", "launch.local.toml"), []byte("plugin_dirs = [\""+ancestorLocalPluginDir+"\"]\n"), 0o644); err != nil {
+		t.Fatalf("write ancestor local launch config: %v", err)
+	}
+	launchRoot := t.TempDir()
+	paths, err := launchconfig.PathsFor(launchRoot, projectRoot)
+	if err != nil {
+		t.Fatalf("PathsFor project root: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Dir(paths.LegacyProject), 0o755); err != nil {
+		t.Fatalf("create project config directory: %v", err)
+	}
+	if err := os.WriteFile(paths.LegacyProject, []byte("plugin_dirs = [\""+pluginDir+"\"]\n"), 0o644); err != nil {
+		t.Fatalf("write project launch config: %v", err)
+	}
+
+	pluginRoot := t.TempDir()
+	ctl := newHubPluginsController(pluginRoot, launchRoot)
+	preview, err := ctl.Preview(context.Background(), appwire.PluginPreviewParams{CWD: missingCWD})
+	if err != nil {
+		t.Fatalf("Preview for missing child cwd: %v", err)
+	}
+	if len(preview.Plugins) != 1 || preview.Plugins[0].Name != "project-fixture" {
+		t.Fatalf("Preview plugins = %+v, want project-fixture from project layer", preview.Plugins)
+	}
+	if _, err := os.Stat(missingCWD); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("Preview created missing child cwd: stat=%v", err)
+	}
+
+	if err := os.Mkdir(missingCWD, 0o755); err != nil {
+		t.Fatalf("create cwd: %v", err)
+	}
+	realResolved, err := launchconfig.Resolve(launchRoot, missingCWD, launchconfig.Layer{})
+	if err != nil {
+		t.Fatalf("Resolve after creating cwd: %v", err)
+	}
+	realResolution, err := plugins.NewManager(pluginRoot).ResolveForLaunch(realResolved.Effective.PluginDirs, realResolved.Effective.EnabledPlugins)
+	if err != nil {
+		t.Fatalf("ResolveForLaunch after creating cwd: %v", err)
+	}
+	if len(realResolution.Candidates) != 1 || realResolution.Candidates[0].Name != preview.Plugins[0].Name {
+		t.Fatalf("real-directory plugins = %+v, want same project-fixture inventory as preview", realResolution.Candidates)
 	}
 }
 

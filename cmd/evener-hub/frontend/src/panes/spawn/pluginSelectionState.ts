@@ -1,4 +1,4 @@
-import type { LaunchConfigLayer, PluginPreviewResponse } from "../../protocol/types.gen";
+import type { LaunchConfigLayer, PluginPreviewResponse, PluginSelectionError } from "../../protocol/types.gen";
 
 export type PluginSelectionState = { mode: "default" } | { mode: "explicit"; names: string[] };
 
@@ -20,6 +20,21 @@ export function withPluginSelection(overrides: LaunchConfigLayer, selection: Plu
   return selection.mode === "explicit"
     ? { ...withoutSelection, enabledPlugins: [...selection.names] }
     : withoutSelection;
+}
+
+export function pluginSelectionIssues(
+  selection: PluginSelectionState,
+  preview: PluginPreviewResponse,
+): PluginSelectionError[] {
+  const selectionErrors = preview.selectionErrors ?? [];
+  if (selection.mode === "default") return selectionErrors;
+
+  const previewNames = new Set(preview.plugins.map((plugin) => plugin.name));
+  const reportedErrorNames = new Set(selectionErrors.map((error) => error.name));
+  const staleSelectionErrors = selection.names
+    .filter((name) => !previewNames.has(name) && !reportedErrorNames.has(name))
+    .map((name) => ({ name, reason: "not present in current preview" }));
+  return [...selectionErrors, ...staleSelectionErrors];
 }
 
 export function reconcilePluginSelection(

@@ -164,6 +164,10 @@ test("visibleCatalogCommands fails closed for unavailable diagnostics", () => {
   expect(visibleCatalogCommands(CATALOG, null)).toEqual([CATALOG[2], CATALOG[3]]);
 });
 
+test("visibleCatalogCommands excludes plugin commands for an explicit empty inventory while keeping built-ins", () => {
+  expect(visibleCatalogCommands(CATALOG, new Set())).toEqual([CATALOG[2], CATALOG[3]]);
+});
+
 test("visibleCatalogCommands does not mutate the command catalog or its command descriptors", () => {
   const input = CATALOG.map((command) => ({ ...command }));
   const before = input.map((command) => ({ ...command }));

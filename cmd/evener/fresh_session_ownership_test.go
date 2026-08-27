@@ -6,9 +6,12 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"net"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
@@ -16,11 +19,114 @@ import (
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/cmdutil"
+	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 )
+
+func TestRunResumeWithFailedReservationPreservesForeignOwnedChild(t *testing.T) {
+	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+	oldAttach := runAttachAPILogger
+	oldEnsure := runEnsureUserConfigDirs
+	oldResolve := runResolvePlugins
+	oldRestore := runRestoreSession
+	t.Cleanup(func() {
+		runAttachAPILogger = oldAttach
+		runEnsureUserConfigDirs = oldEnsure
+		runResolvePlugins = oldResolve
+		runRestoreSession = oldRestore
+	})
+	runEnsureUserConfigDirs = func() error { return nil }
+	runResolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+		return plugins.LaunchPluginResolution{}, nil
+	}
+	runRestoreSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error) {
+		return nil, errors.New("stop after resume-with restore")
+	}
+
+	stateDir := t.TempDir()
+	var childID string
+	foreignAcquiredPublishedChild := false
+	var foreignLogger *llm.APILogger
+	runAttachAPILogger = func(client *llm.Client, gotStateDir string, warnings io.Writer) (func(string) error, func() error, error) {
+		reserveCreator, closeCreator, err := oldAttach(client, gotStateDir, warnings)
+		if err != nil {
+			return nil, nil, err
+		}
+		foreignLogger, err = llm.NewSessionAPILogger(gotStateDir)
+		if err != nil {
+			_ = closeCreator()
+			return nil, nil, err
+		}
+		reserve := func(id string) error {
+			childID = id
+			metaPath := filepath.Join(gotStateDir, "sessions", id+".meta.json")
+			if _, statErr := os.Stat(metaPath); statErr == nil {
+				if err := foreignLogger.ReserveSession(id); err != nil {
+					return fmt.Errorf("competing process reserve published child: %w", err)
+				}
+				foreignAcquiredPublishedChild = true
+				return reserveCreator(id)
+			} else if !os.IsNotExist(statErr) {
+				return fmt.Errorf("inspect child publication: %w", statErr)
+			}
+
+			if err := reserveCreator(id); err != nil {
+				return err
+			}
+			if err := foreignLogger.ReserveSession(id); !errors.Is(err, llm.ErrAPILogTargetLocked) {
+				return fmt.Errorf("competing reserve before publication = %w, want API-log ownership refusal", err)
+			}
+			return nil
+		}
+		return reserve, closeCreator, nil
+	}
+	t.Cleanup(func() {
+		if foreignLogger != nil {
+			_ = foreignLogger.Close()
+		}
+	})
+
+	const sourceID = "02wMz5Txv1C3Hut0M8GCeC"
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sourceID, ProfileID: "openai", Model: "gpt-test",
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+	writer, err := transcript.NewWriter(
+		filepath.Join(stateDir, "sessions", sourceID+".transcript.jsonl"),
+		transcript.Header{SessionID: sourceID, ProfileID: "openai", Model: "gpt-test", WorkingDir: stateDir},
+	)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close writer: %v", err)
+	}
+
+	err = run(context.Background(), runConfig{
+		resumeWith: sourceID, prompt: "new prompt", workDir: stateDir, stateDir: stateDir,
+		noDefaultMarketplaces: true, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+	})
+	if err == nil {
+		t.Fatal("run error = nil, want restore failure")
+	}
+	if !foreignAcquiredPublishedChild {
+		t.Fatal("test did not model another process acquiring the published child")
+	}
+	if childID == "" {
+		t.Fatal("resume-with child was never reserved")
+	}
+	for _, suffix := range []string{".meta.json", ".transcript.jsonl"} {
+		if _, err := os.Stat(filepath.Join(stateDir, "sessions", childID+suffix)); err != nil {
+			t.Fatalf("foreign-owned child artifact %q was removed: %v", suffix, err)
+		}
+	}
+}
 
 func TestRunFreshIdleSessionsOwnDistinctResumeTargets(t *testing.T) {
 	stateDir := t.TempDir()

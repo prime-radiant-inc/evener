@@ -18,11 +18,23 @@ func Resolve(stateRoot, cwd string, overrides Layer) (Resolved, error) {
 	return resolveFS(afero.NewOsFs(), stateRoot, cwd, overrides)
 }
 
+// ResolveWithProject resolves filesystem layers from cwd while using project
+// for project-scoped legacy state and metadata. It is used when cwd is a
+// disposable existing probe directory for a path that has not been created.
+func ResolveWithProject(stateRoot, cwd string, project identifier.Project, overrides Layer) (Resolved, error) {
+	return resolveFSWithProject(afero.NewOsFs(), stateRoot, cwd, project, overrides)
+}
+
 func resolveFS(fs afero.Fs, stateRoot, cwd string, overrides Layer) (Resolved, error) {
-	paths, err := PathsFor(stateRoot, cwd)
+	project, err := identifier.ResolveProject(cwd)
 	if err != nil {
 		return Resolved{}, fmt.Errorf("resolve project: %w", err)
 	}
+	return resolveFSWithProject(fs, stateRoot, cwd, project, overrides)
+}
+
+func resolveFSWithProject(fs afero.Fs, stateRoot, cwd string, project identifier.Project, overrides Layer) (Resolved, error) {
+	paths := pathsForProject(stateRoot, cwd, project)
 	layers := map[LayerName]Layer{}
 	var pathDiags []Diagnostic
 
