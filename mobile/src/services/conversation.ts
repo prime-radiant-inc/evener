@@ -114,6 +114,59 @@ function defaultIdFactory(): string {
   return `cmid-${Date.now()}-${defaultIdCounter}`;
 }
 
+// The 11 required capability fields that must be present and boolean in
+// every ThreadCapabilities. Extra keys from future protocol versions are
+// allowed but never retained in the extracted copy.
+const REQUIRED_CAPABILITY_FIELDS = [
+  "send",
+  "steer",
+  "interrupt",
+  "compact",
+  "clear",
+  "forkFromTurn",
+  "shutdown",
+  "changeModel",
+  "queue",
+  "goal",
+  "rename",
+] as const;
+
+// Extract and runtime-validate capabilities into a complete plain local
+// ThreadCapabilities copy. All 11 required fields must be present and
+// boolean; extra keys are allowed but not retained. Null, non-object,
+// wrong-type, or throwing-getter inputs throw before any state write,
+// leaving the ref+capabilities pair null/fail-closed. The returned copy
+// never retains the response object or its getters.
+function extractCapabilities(raw: unknown): ThreadCapabilities {
+  if (raw === null || typeof raw !== "object") {
+    throw new Error("ConversationService: capabilities is not an object");
+  }
+  const obj = raw as Record<string, unknown>;
+  const caps: ThreadCapabilities = {
+    send: false,
+    steer: false,
+    interrupt: false,
+    compact: false,
+    clear: false,
+    forkFromTurn: false,
+    shutdown: false,
+    changeModel: false,
+    queue: false,
+    goal: false,
+    rename: false,
+  };
+  for (const field of REQUIRED_CAPABILITY_FIELDS) {
+    const value = obj[field];
+    if (typeof value !== "boolean") {
+      throw new Error(
+        `ConversationService: capability "${field}" is not a boolean`,
+      );
+    }
+    caps[field] = value;
+  }
+  return caps;
+}
+
 export function createConversationService(
   client: ConversationClientLike | AppwireClient,
   options: ConversationServiceOptions = {},
@@ -189,7 +242,9 @@ export function createConversationService(
       includeTurns: false,
       subscribe: false,
     });
-    const refreshed = response.thread.evener.capabilities;
+    // Extract+validate capabilities into a plain copy; a malformed response
+    // rejects the refresh and cannot corrupt the current pair.
+    const refreshed = extractCapabilities(response.thread.evener.capabilities);
     if (
       startRef === requestedRef &&
       openEpoch === epoch &&
@@ -232,9 +287,10 @@ export function createConversationService(
       // commit the pair after projection succeeds and the epoch is still
       // current; a stale successful result returns without committing.
       const conversation = projectThread(response.thread);
+      const caps = extractCapabilities(response.thread.evener.capabilities);
       if (openEpoch === epoch) {
         ref = threadRef;
-        capabilities = response.thread.evener.capabilities;
+        capabilities = caps;
       }
       return conversation;
     },
@@ -256,9 +312,10 @@ export function createConversationService(
       const conversation = projectThread(response.thread);
       const activity = activityService.projectActivity(response.thread);
       const olderCursor = response.olderCursor ?? null;
+      const caps = extractCapabilities(response.thread.evener.capabilities);
       if (openEpoch === epoch) {
         ref = threadRef;
-        capabilities = response.thread.evener.capabilities;
+        capabilities = caps;
       }
       return {
         conversation,
