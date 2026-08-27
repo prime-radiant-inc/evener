@@ -111,7 +111,7 @@ Every shell block is self-contained. It resolves `repo_root=$(git rev-parse --sh
 - Produces kind-authoritative Custom values for Tasks 4–7.
 - Preserves the nested wire/local shape and the existing named-Full check in `TranscriptRenderProvider`.
 
-- [ ] **Step 1: Replace the old canonicalization expectation with failing Custom-identity tests**
+- [x] **Step 1: Replace the old canonicalization expectation with failing Custom-identity tests**
 
 In `config.test.ts`, replace the test that expects exact Custom vectors to become presets. Cover every preset-equivalent vector, the nested wire/local round trip, summaries, and kind-aware fingerprints:
 
@@ -134,7 +134,7 @@ test.each(LEVELS)("preserves explicit Custom identity when its vector equals %s"
 
 Also retain strict rejection tests for missing/extra nested Custom fields and invalid booleans.
 
-- [ ] **Step 2: Add failing persistence, projection, and Full-baseline transition tests**
+- [x] **Step 2: Add failing persistence, projection, and Full-baseline transition tests**
 
 In `src/stores/transcriptDisplay.test.ts`, persist a Tools-equivalent Custom through `setLocal`, local storage, and a canonical hub response; assert every resulting `content.kind` is `"custom"`. In `projector.test.ts`, compare the projected entries for a named preset and equivalent Custom vector while asserting the input kind remains Custom.
 
@@ -175,7 +175,7 @@ expect(screen.getByTestId("disclosure-tool-a").dataset.open).toBe("true");
 
 Add the inverse named Full→equivalent Custom case, manual collapse after Full entry, and remount under each kind. With no explicit choice, equivalent Custom opens through its vector fallback; with an explicit close, that choice wins. Explicit choices made after the named baseline must win.
 
-- [ ] **Step 3: Run the domain tests and verify the old normalizer fails**
+- [x] **Step 3: Run the domain tests and verify the old normalizer fails**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -185,7 +185,7 @@ npx vitest run src/transcriptDisplay/config.test.ts src/transcriptDisplay/projec
 
 Expected: FAIL because `normalizeContent` returns a named preset for equivalent Custom vectors; downstream kind, fingerprint, summary, persistence, and Custom-Full baseline assertions fail for that reason.
 
-- [ ] **Step 4: Make Custom normalization kind-authoritative**
+- [x] **Step 4: Make Custom normalization kind-authoritative**
 
 Remove `sameVector` and `presetForVector` if they have no remaining callers. Keep strict Custom validation, then clone the flat vector without canonicalizing it:
 
@@ -202,7 +202,7 @@ export function normalizeContent(content: ContentSelection): ContentSelection {
 
 Do not change `wireContent`/`readWireContent`: they continue mapping flat frontend Custom to and from the nested wire shape. Do not broaden compatibility aliases.
 
-- [ ] **Step 5: Run focused and adjacent domain suites**
+- [x] **Step 5: Run focused and adjacent domain suites**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -212,7 +212,7 @@ npx vitest run src/transcriptDisplay/config.test.ts src/transcriptDisplay/projec
 
 Expected: PASS. Named presets remain presets; equivalent Custom remains Custom; projection follows vectors; only named Full resets the baseline.
 
-- [ ] **Step 6: Format, typecheck, and commit the domain correction**
+- [x] **Step 6: Format, typecheck, and commit the domain correction**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -245,7 +245,7 @@ Expected: all commands exit zero; the commit contains only the five named paths.
 - Produces `SegmentedControl` and its types from the shared barrel for Task 4.
 - Does not alter RadioGroup or add styling/variant escape hatches.
 
-- [ ] **Step 1: Write failing validation and accessibility tests**
+- [x] **Step 1: Write failing validation and accessibility tests**
 
 Create `segmentedcontrol.test.tsx` with a reusable controlled harness and options:
 
@@ -289,7 +289,7 @@ function Harness({
 
 Assert 2 and 6 options render; 1/7 options, duplicate values, unmatched `value`, empty group label, empty option label, and empty supplied accessible label throw developer errors. Assert omitted props select `size="md"` and intrinsic width (`fullWidth=false`). Assert the group has the supplied ID, generates one when omitted, sets `aria-labelledby` to its generated visible-label ID, forwards caller-supplied `aria-describedby`, sets `aria-orientation="horizontal"`, and has exactly one checked radio. Assert Full's accessible name is **Full detail** while its complete DOM text stays **Full**; no option relies on `title` as its accessible name.
 
-- [ ] **Step 2: Add failing interaction, disabled, and CSS-contract tests**
+- [x] **Step 2: Add failing interaction, disabled, and CSS-contract tests**
 
 Cover click, native Enter/Space activation, no duplicate emission for the current value, Right/Down/Left/Up wrapping, Home/End, disabled skipping, and DOM focus after every navigation key:
 
@@ -309,7 +309,7 @@ For group disablement, assert `aria-disabled="true"`, every button has native `d
 
 In the same test file, strip CSS comments before matching. Assert root/label typography, track `--field`/`--edge`/`--shadow-inset-field`, literal 2px padding/gap, option centering/padding/radius/type, neutral hover/selection, one option-owned disabled opacity, `outline-offset: 2px`, visible track overflow, label ellipsis, 28px/32px option sizes, computed 34px/38px outer tracks, `--tap-min` Mobile block size and 50px outer track, property-scoped transitions, and reduced motion. Explicitly reject `min-inline-size: var(--tap-min)`, theme branches, accent selection, wrapping, negative-margin/full-bleed escapes, and horizontal scrolling.
 
-- [ ] **Step 3: Run all widget tests and confirm the module is absent**
+- [x] **Step 3: Run all widget tests and confirm the module is absent**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -319,7 +319,7 @@ npx vitest run src/widgets/segmentedcontrol/segmentedcontrol.test.tsx
 
 Expected: FAIL with module-not-found for `./index`/the stylesheet or missing exported component. This single RED run covers behavior and visual contracts before either production file exists.
 
-- [ ] **Step 4: Implement validated generic radio-group behavior**
+- [x] **Step 4: Implement validated generic radio-group behavior**
 
 Use RadioGroup's enabled-index/ref pattern but enforce the stricter contract:
 
@@ -366,7 +366,7 @@ Call `useId` unconditionally for generated group and label IDs, validate after h
 
 Render the supplied `id` unchanged on `role="radiogroup"`; set `aria-labelledby` to the generated visible-label ID; forward `aria-describedby` there; set `aria-disabled` only for group disablement. Every option is a real `<button type="button" role="radio">` and receives `disabled={disabled || option.disabled === true}`. The selected disabled option remains checked, but the first enabled option becomes the tab stop. No enabled option means no tab stop. Set `gridTemplateColumns` to `repeat(options.length, minmax(0, 1fr))`; `fullWidth` alone adds the 100%-width class.
 
-- [ ] **Step 5: Implement the complete visual contract**
+- [x] **Step 5: Implement the complete visual contract**
 
 Wire every class through `requireClass` and implement this stylesheet before rerunning tests:
 
@@ -466,7 +466,7 @@ Wire every class through `requireClass` and implement this stylesheet before rer
 
 The track/root never apply disabled opacity, so a disabled option is attenuated exactly once.
 
-- [ ] **Step 6: Run the complete widget suite GREEN**
+- [x] **Step 6: Run the complete widget suite GREEN**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -476,7 +476,7 @@ npx vitest run src/widgets/segmentedcontrol/segmentedcontrol.test.tsx
 
 Expected: PASS for validation, ARIA, click/keyboard, focus movement, disabled behavior, default/intrinsic/full-width classes, complete names, geometry, tokens, motion, and ellipsis.
 
-- [ ] **Step 7: Add a failing gallery test, then implement exports/docs/gallery**
+- [x] **Step 7: Add a failing gallery test, then implement exports/docs/gallery**
 
 Create `src/dev/gallery-sections/segmentedcontrol.test.tsx` first, import the absent section, and assert both theme panes expose the required labelled groups, selected values, disabled states, and narrow frames:
 
@@ -497,7 +497,7 @@ export { SegmentedControl } from "./segmentedcontrol";
 
 Add the locked API row to `docs/web-ui/design-system.md`. Build a `<section data-testid="segmentedcontrol-gallery">` under `ThemeFlip` for intrinsic `md`, full-width six-option `md`, `sm`, first/middle/last/Custom selected, one disabled option, selected disabled, group disabled, keyboard focus, and 320px/390px frames. Use real widget instances and gallery layout CSS only; do not copy widget chrome. Make the new gallery test pass. `WidgetGallery.tsx` discovers the file automatically; do not add a registry.
 
-- [ ] **Step 8: Run widget, gallery, token, type, and lint gates**
+- [x] **Step 8: Run widget, gallery, token, type, and lint gates**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -511,7 +511,7 @@ git -C "$repo_root" diff --check
 
 Expected: PASS. `WidgetGallery.test.tsx` reports no missing section, and token contracts accept both themes without a new allowlist exception.
 
-- [ ] **Step 9: Commit the complete shared widget**
+- [x] **Step 9: Commit the complete shared widget**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -541,7 +541,7 @@ Expected: one reviewed commit containing only the eight named paths.
 - Store-backed callers keep `id/defaultOpen` persistence unchanged.
 - Controlled callers use `open/onOpenChange`; Task 4 owns editor-local `useState(false)`.
 
-- [ ] **Step 1: Add failing controlled-mode tests**
+- [x] **Step 1: Add failing controlled-mode tests**
 
 Add a controlled harness to `disclosure.test.tsx`:
 
@@ -558,11 +558,11 @@ function ControlledHarness({ disabled = false }: { disabled?: boolean }) {
 
 Assert supplied `open` controls body mounting, click and native keyboard activation each request exactly one state change, an `open` prop rerender updates the DOM, and a synthetic native `toggle` event does not call `onOpenChange`.
 
-- [ ] **Step 2: Add failing disabled tests for both state branches**
+- [x] **Step 2: Add failing disabled tests for both state branches**
 
 For controlled and store-backed modes, assert `aria-disabled="true"`, `tabIndex=-1`, retained current open state, no callback/store mutation, no keyboard/pointer activation, and reenable-by-rerender. Add CSS-source assertions that only `.summary[aria-disabled="true"]` owns `opacity: 0.5`/not-allowed cursor, enabled-only hover excludes it, and `.details`/`.body` do not receive disabled opacity.
 
-- [ ] **Step 3: Run Disclosure tests and confirm the old API is red**
+- [x] **Step 3: Run Disclosure tests and confirm the old API is red**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -572,7 +572,7 @@ npx vitest run src/widgets/disclosure/disclosure.test.tsx src/widgets/disclosure
 
 Expected: type/runtime failures because the existing API requires `id`, has no `open/onOpenChange/disabled`, and always mutates the store.
 
-- [ ] **Step 4: Split controlled and store-backed internals around one renderer**
+- [x] **Step 4: Split controlled and store-backed internals around one renderer**
 
 Implement the exact discriminated union from the spec. Keep hook use unconditional by component boundary:
 
@@ -650,11 +650,11 @@ export function Disclosure(props: DisclosureProps) {
 
 `DisclosureView` always prevents native summary toggle. When disabled, it sets `aria-disabled`, `tabIndex={-1}`, and does not invoke `requestToggle`; an open body remains mounted. Do not change `disclosureStore.ts` absent a focused failing store regression.
 
-- [ ] **Step 5: Add disabled summary styling without dimming the body**
+- [x] **Step 5: Add disabled summary styling without dimming the body**
 
 Change hover to `.summary:hover:not([aria-disabled="true"])`. Add a summary-only disabled selector with not-allowed cursor and 0.5 opacity. Preserve the open `--hover-2` wash, Chevron/body motion, and reduced-motion gate.
 
-- [ ] **Step 6: Add shared export, documentation, and both disabled gallery modes**
+- [x] **Step 6: Add shared export, documentation, and both disabled gallery modes**
 
 Create `src/dev/gallery-sections/disclosure.test.tsx` first and assert each `ThemeFlip` pane contains a disabled collapsed store-backed summary plus a disabled open controlled summary whose body is present. Run it before changing the gallery:
 
@@ -668,7 +668,7 @@ Expected: FAIL because the current gallery contains only enabled store-backed op
 
 Export `Disclosure` and `DisclosureProps` from `src/widgets/index.ts`. Add a locked inventory row describing both discriminated branches and common `disabled` behavior. Under `ThemeFlip`, make the section owner `data-testid="disclosure-gallery"` and add a disabled collapsed store-backed example plus a disabled open controlled example; the latter's body must remain visibly full-opacity. Make the new gallery test pass in both theme panes.
 
-- [ ] **Step 7: Run focused regressions, format, typecheck, and lint**
+- [x] **Step 7: Run focused regressions, format, typecheck, and lint**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -682,13 +682,13 @@ git -C "$repo_root" diff --check
 
 Expected: PASS, including all existing store-backed consumers and motion tests.
 
-- [ ] **Step 8: Pass the pre-migration two-theme gallery checkpoint**
+- [x] **Step 8: Pass the pre-migration two-theme gallery checkpoint**
 
 Resolve `repo_root=$(git rev-parse --show-toplevel)`. From `"$repo_root/cmd/evener-hub/frontend"`, launch `npm run dev -- --host 127.0.0.1 --port 4173` with `exec_command(mode="background")`. After its readiness output, navigate the persistent browser to `http://127.0.0.1:4173/dev/widgets`, set a 1440×1000 viewport, and inspect the real `SegmentedControl` and `Disclosure` gallery sections. Keyboard-focus the first, middle, and last segmented options; inspect intrinsic/full-width, selected, disabled, 320px, and 390px cases; inspect disabled store-backed and controlled Disclosure with the open body undimmed. Review both `data-theme="light"` and `data-theme="dark"` panes. Stop the exact server job with `job_stop`.
 
 Expected: explicit human approval of both shared-widget sections. Any visual correction returns to the Task 2 or Task 3 RED/GREEN and two-review cycle; Task 4 remains blocked.
 
-- [ ] **Step 9: Commit the Disclosure extension**
+- [x] **Step 9: Commit the Disclosure extension**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -713,7 +713,7 @@ If the gallery stylesheet did not change, omit that one path from `git add`. Exp
 - Preserves `TranscriptDetailEditorProps` unchanged.
 - Produces a six-choice, remount-reset editor for live and Settings surfaces.
 
-- [ ] **Step 1: Replace old five-stop/readout tests with failing six-choice and Custom-memory tests**
+- [x] **Step 1: Replace old five-stop/readout tests with failing six-choice and Custom-memory tests**
 
 Assert six radios—Chat, Intent, Tools, Activity, Full detail, Custom—with Custom checked for every explicit Custom vector. Remove expectations for a separate Current detail readout and critical-row explanation.
 
@@ -745,13 +745,13 @@ expect(latestContent()).toEqual(remembered);
 
 Unmount/remount, select a preset, then select Custom; assert the dormant cache was cleared and the current preset is cloned. Verify content changes never alter Metrics or Diagnostics.
 
-- [ ] **Step 2: Add failing shared-composition and disclosure tests**
+- [x] **Step 2: Add failing shared-composition and disclosure tests**
 
 Assert `Customize & advanced · N extras` for presets and `Customize & advanced · Custom content · N extras` for Custom. Open it, rerender values, and verify it stays controlled; unmount/remount and verify it starts closed. When editor `disabled` becomes true, the Disclosure summary is inert while open controls remain disabled.
 
 Assert Hook exit messages is labelled through FormRow/Select, Switch visuals are not feature-overridden, and all three semantic fieldsets remain. `N` counts Metrics/Diagnostics only.
 
-- [ ] **Step 3: Run editor tests and confirm old UI behavior fails**
+- [x] **Step 3: Run editor tests and confirm old UI behavior fails**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -761,7 +761,7 @@ npx vitest run src/panes/session/transcript/TranscriptDetailEditor.test.tsx
 
 Expected: FAIL because the current editor renders five RadioGroup options, canonicalizes preset-equivalent Custom, shows duplicate Current/critical copy, uses a raw Advanced button and raw select, and has no mounted Custom cache.
 
-- [ ] **Step 4: Implement six choices and mounted Custom restore-or-clone**
+- [x] **Step 4: Implement six choices and mounted Custom restore-or-clone**
 
 Import shared controls from `../../../widgets`. Define `ContentChoice = ContentLevel | "custom"` and six `SegmentedControlOption<ContentChoice>` values. Use `useRef<ContentVector | undefined>` for the mounted cache:
 
@@ -783,7 +783,7 @@ function selectContent(choice: ContentChoice): void {
 
 When a Content Switch changes, write the emitted Custom vector into `lastCustom.current` before calling `onChange`. Render `SegmentedControl` with `value={config.content.kind === "preset" ? config.content.level : "custom"}`, `fullWidth`, and default `md` size.
 
-- [ ] **Step 5: Compose controlled Disclosure, Switch, FormRow, and Select**
+- [x] **Step 5: Compose controlled Disclosure, Switch, FormRow, and Select**
 
 Keep `const [advancedOpen, setAdvancedOpen] = useState(false)`. Render:
 
@@ -806,7 +806,7 @@ const disclosureSummary =
 
 Type `HOOK_EXIT_OPTIONS` as `SelectOption[]` because the shared `SelectProps.options` contract is mutable; do not broaden Select's public API. Wrap the existing Content, Metrics, and Diagnostics fieldset elements in `<Disclosure open={advancedOpen} onOpenChange={setAdvancedOpen} disabled={disabled} summary={disclosureSummary}>`; keep their existing Switch labels and domain update functions, replacing only the Hook exit row with the exact FormRow/Select block above. Delete the raw Advanced button, text triangles, Current detail paragraph, and critical-row note.
 
-- [ ] **Step 6: Replace private chrome with exact layout-only CSS**
+- [x] **Step 6: Replace private chrome with exact layout-only CSS**
 
 The editor root owns `container-type: inline-size`, `container-name: transcript-detail-editor`, `gap: var(--space-3)`, and compact `gap: var(--space-2)`. Fieldsets use reset/semantic layout only; use three columns above 34rem and one column inside:
 
@@ -818,7 +818,7 @@ The editor root owns `container-type: inline-size`, `container-name: transcript-
 
 Delete every RadioGroup role selector, Switch geometry selector, raw Select/Advanced skin, Current/Custom accent classes, critical callout, and local reduced-motion rules owned by widgets. Do not add a Mobile width rule.
 
-- [ ] **Step 7: Run focused editor/domain/widget regressions and static scans**
+- [x] **Step 7: Run focused editor/domain/widget regressions and static scans**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -834,7 +834,7 @@ fi
 
 Expected: PASS for tests and typecheck; the guarded `rg` finds no forbidden private-skin or removed-copy match and therefore exits zero.
 
-- [ ] **Step 8: Commit the editor refit**
+- [x] **Step 8: Commit the editor refit**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -860,13 +860,13 @@ Expected: one reviewed commit with only editor code/tests/shared feature layout 
 - Preserves `TranscriptDetailControlProps` and trigger-ref focus fallback.
 - Produces shared secondary Button trigger, shared footer actions, a nonmodal desktop dialog in Popover, and the existing modal bottom Sheet on Mobile.
 
-- [ ] **Step 1: Add failing shared-composition and trigger-ARIA tests**
+- [x] **Step 1: Add failing shared-composition and trigger-ARIA tests**
 
 Assert the trigger is a shared secondary `sm` Button with `aria-haspopup="dialog"` and `aria-expanded` false→true→false. Summary copy uses `extras`, not `advanced`. Desktop opens one `role="dialog"` named by **Transcript display details** with `aria-modal="false"`; Mobile retains shared Sheet modal semantics and focus return.
 
 Assert **Use hub default** is secondary and conditional; **Edit hub defaults** is quiet. Preserve browser-local layout isolation and trigger ref behavior.
 
-- [ ] **Step 2: Add failing Popover-scroll and announcement-role tests**
+- [x] **Step 2: Add failing Popover-scroll and announcement-role tests**
 
 Open Desktop, dispatch an internal/window scroll, and assert the panel remains mounted and trigger stays expanded. Assert passive loading/older-hub information is consolidated in one `role="status"`; hub/storage failures are consolidated in one inline `role="alert"`; no identical message appears in both.
 
@@ -880,7 +880,7 @@ expect(panelMatch).not.toBeNull();
 expect(panelMatch?.[1] ?? "").not.toMatch(/background|box-shadow|border-radius/);
 ```
 
-- [ ] **Step 3: Run control tests and confirm the private implementation is red**
+- [x] **Step 3: Run control tests and confirm the private implementation is red**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -890,7 +890,7 @@ npx vitest run src/panes/session/transcript/TranscriptDetailControl.test.tsx
 
 Expected: FAIL because the trigger/actions are raw buttons, desktop `aria-haspopup` is not `dialog`, the child lacks dialog semantics, Popover defaults to close on scroll, and CSS duplicates Popover chrome.
 
-- [ ] **Step 4: Compose shared Button/Popover/Sheet with exact semantics**
+- [x] **Step 4: Compose shared Button/Popover/Sheet with exact semantics**
 
 Use `useId` for the desktop heading. The trigger shape is:
 
@@ -911,11 +911,11 @@ Pass `closeOnScroll={false}` to Popover. Make its feature child `role="dialog"`,
 
 Separate passive `statusMessages` from `failureMessages`; render at most one region for each category and never duplicate text. Local editing remains enabled on older hubs.
 
-- [ ] **Step 5: Reduce live-control CSS to exact geometry and layout**
+- [x] **Step 5: Reduce live-control CSS to exact geometry and layout**
 
 Give `.detailPanel` only `box-sizing`, exact inline/max-block size, `padding: var(--space-4)`, `overflow-y: auto`, container name/type, and internal flex/grid layout. Remove background/radius/shadow/overlay motion. Arrange actions with parent grid/flex; do not target descendant buttons. Remove trigger/action button skins and feature reduced-motion blocks.
 
-- [ ] **Step 6: Run live, Popover, Sheet, store, and focus regressions**
+- [x] **Step 6: Run live, Popover, Sheet, store, and focus regressions**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -929,7 +929,7 @@ git -C "$repo_root" diff --check
 
 Expected: PASS. Internal scroll does not dismiss Desktop; Sheet still closes on Escape and restores the forwarded trigger focus.
 
-- [ ] **Step 7: Commit the live refit**
+- [x] **Step 7: Commit the live refit**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -958,7 +958,7 @@ Expected: one reviewed commit with only the three named paths.
 - Preserves `TranscriptDisplayCardProps`, Desktop/Mobile draft isolation, acknowledgement, retry, and preview data isolation.
 - Produces the exact `transcript-display-preview-canvas-${layout}` outer-well marker; Mobile is the measured phone-width owner.
 
-- [ ] **Step 1: Add failing Card hierarchy and selected-state tests**
+- [x] **Step 1: Add failing Card hierarchy and selected-state tests**
 
 Assert each semantic `<article>` wraps a shared Card and contains one heading/revision, one SegmentedControl selected-state owner, controls before preview, and no **Current detail** line or critical-row note. Assert exactly one section intro:
 
@@ -968,13 +968,13 @@ Transcript display defaults sync to devices paired with this hub. Live transcrip
 
 Retain Desktop-then-Mobile order and independent drafts/errors/retries.
 
-- [ ] **Step 2: Add failing preview-canvas and neutral-surface tests**
+- [x] **Step 2: Add failing preview-canvas and neutral-surface tests**
 
 Assert the outer well containing the **Example only—not your data** heading and production TranscriptBody has `data-testid="transcript-display-preview-canvas-mobile"`; the inner TranscriptBody host does not own phone width. Assert production fixture flow, no RPC/thread-store dependency, isolated disclosure scopes, and inventory as a separate sibling.
 
 CSS-source tests require `box-sizing: border-box`, `width: min(390px, 100%)`, and `margin-inline: auto` on the Mobile canvas; `--surface-canvas` on the preview well; `--surface-inset` on inventory; and no accent stripe, inner scroller, fake device bezel, duplicate Card border/background/padding/radius/shadow, or wildcard motion rule.
 
-- [ ] **Step 3: Add failing status/alert/Toast tests**
+- [x] **Step 3: Add failing status/alert/Toast tests**
 
 Pin these paths in separate passive-state, failure, and acknowledged-success tests:
 
@@ -988,7 +988,7 @@ expect(notifications.textContent).toContain("Settings saved");    // acknowledge
 
 Cover load failure, browser-storage failure, and per-card save failure separately. Assert one state transition produces one live-region message and failure text never appears simultaneously in Toast and an inline region. Keep shared Button for retry.
 
-- [ ] **Step 4: Add the cross-surface static contract and run all new tests red**
+- [x] **Step 4: Add the cross-surface static contract and run all new tests red**
 
 Create `designSystemContract.test.ts` before changing production sources. It reads and strips comments from all three feature stylesheets—`panes/session/transcript/transcriptDisplay.module.css`, `panes/settings/sections/transcriptDisplayCard.module.css`, and `panes/settings/sections/transcript.module.css`—and reads editor/control/card TSX. Use path-specific rule extraction and assert:
 
@@ -1009,7 +1009,7 @@ npx vitest run src/panes/settings/sections/TranscriptDisplayCard.test.tsx src/pa
 
 Expected: FAIL because the still-unmigrated Settings cards own private border/background/padding, render duplicate Current detail, use three intros, lack the outer Mobile canvas marker, and retain preview/inventory accent bars plus wildcard motion. Editor/live assertions added to the same contract should already pass from Tasks 4–5.
 
-- [ ] **Step 5: Wrap semantic articles in shared Card and simplify hierarchy**
+- [x] **Step 5: Wrap semantic articles in shared Card and simplify hierarchy**
 
 Keep `article` as the labelled/test-ID owner, then render shared Card and one layout wrapper inside it:
 
@@ -1031,13 +1031,13 @@ Keep `article` as the labelled/test-ID owner, then render shared Card and one la
 
 Keep the existing scope, status/error, preview, and inventory elements inside `CLASS.content` after the controls, in that order. Delete the duplicate Current detail line. Replace the three section paragraphs with the one approved sentence. Preserve acknowledged-save-only Toast logic; do not add failure Toasts.
 
-- [ ] **Step 6: Make the outer preview well the exact width owner**
+- [x] **Step 6: Make the outer preview well the exact width owner**
 
 Give the outer example well `data-testid={`transcript-display-preview-canvas-${layout}`}`. For Mobile only, its width class declares `box-sizing: border-box; width: min(390px, 100%); margin-inline: auto;`. Keep the heading, padding, and production host inside it; leave inventory as a sibling. The Desktop well uses available width.
 
 Use neutral surfaces and layout-only feature CSS. Card owns surface/padding/radius/shadow. Remove Mobile feature padding that would change the approved 256px/326px available widths.
 
-- [ ] **Step 7: Make the prewritten static design-system contract green**
+- [x] **Step 7: Make the prewritten static design-system contract green**
 
 Finish the exact private-skin/chrome removals named in Step 4 without weakening its matchers or rejecting legitimate preview/status layout. Run:
 
@@ -1049,7 +1049,7 @@ npx vitest run src/transcriptDisplay/designSystemContract.test.ts
 
 Expected: PASS only after all three migrated surfaces compose the shared widgets and all three feature stylesheets contain only their permitted layout/status/preview rules.
 
-- [ ] **Step 8: Run Settings, preview, static, and store regressions**
+- [x] **Step 8: Run Settings, preview, static, and store regressions**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -1063,7 +1063,7 @@ git -C "$repo_root" diff --check
 
 Expected: PASS with exactly two cards/previews, one intro, correct announcement ownership, and no preview RPC/real-store access.
 
-- [ ] **Step 9: Commit the Settings refit**
+- [x] **Step 9: Commit the Settings refit**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -1088,7 +1088,7 @@ Expected: one reviewed commit containing only the seven named paths.
 - Produces named geometry/interaction measurements for all approved widths.
 - The temporary mutation is never staged or committed.
 
-- [ ] **Step 1: Add 320px and failing segmented/preview expectations to the runner**
+- [x] **Step 1: Add 320px and failing segmented/preview expectations to the runner**
 
 Add `320` to the runner's sweep while retaining `390, 700, 899, 900, 1024, 1400`. Add assertions for this expected measurement object, but do not change `overflowharness-entry.tsx` yet:
 
@@ -1125,7 +1125,7 @@ interface HarnessMeasurements {
 
 Use `transcript-display-card-desktop`, `transcript-display-card-mobile`, and the live Detail root as stable owners. On the Settings route, require both Desktop and Mobile card tracks to be 256px with six 40px options at 320, and 326px with six 51.667px options at 390, within 0.5px tolerance; every option is at least 44px high. Measure the live editor separately for one-row containment/no scroll rather than conflating it with Settings geometry. Require stable selected geometry and zero horizontal scroll on every ancestor that is an actual scroll container.
 
-- [ ] **Step 2: Add failing focus, boundary, container, preview, and Popover-scroll assertions**
+- [x] **Step 2: Add failing focus, boundary, container, preview, and Popover-scroll assertions**
 
 For first/middle/last segments, send keyboard focus, verify `document.activeElement`, calculate painted outline bounds from `outlineWidth + outlineOffset`, and reject viewport/overflow clipping. Assert 899 uses Sheet and 900 uses Popover; both remain contained and the trigger is fully reachable. Assert one-column fieldsets only when the named editor container is at most 34rem, including the narrow-dock probe.
 
@@ -1133,7 +1133,7 @@ Measure `transcript-display-preview-canvas-mobile` as `min(390, available previe
 
 On Desktop, set panel `scrollTop`, dispatch the internal scroll, await the existing condition/frame helper, and assert the dialog remains connected, viewport-contained, and `aria-expanded="true"`.
 
-- [ ] **Step 3: Run the focused guard and confirm new assertions are initially red**
+- [x] **Step 3: Run the focused guard and confirm new assertions are initially red**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -1145,7 +1145,7 @@ npm run overflowguard -- 320 390 899 900 1024
 
 Expected: FAIL because the updated runner requests named segmented/canvas/focus/scroll fields that the unchanged production harness does not return. Do not weaken existing generic overflow, Sheet anchoring, Popover anchoring, target-height, card-count, or preview-count checks.
 
-- [ ] **Step 4: Implement the harness measurements and rerun the complete sweep**
+- [x] **Step 4: Implement the harness measurements and rerun the complete sweep**
 
 Update `overflowharness-entry.tsx` to supply the object required by Steps 1–2, using its existing realized-viewport, condition/frame, production editor, and scroll-container helpers. Adjust runner plumbing only where needed to consume those fields; keep the failing assertions unchanged.
 
@@ -1162,7 +1162,7 @@ npm run overflowguard
 
 Expected: PASS for every command. The default sweep includes all seven required widths plus retained 700 coverage, and the special 1024 narrow-dock probe still runs.
 
-- [ ] **Step 5: Commit only legitimate guard changes before mutation**
+- [x] **Step 5: Commit only legitimate guard changes before mutation**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -1174,7 +1174,7 @@ git -C "$repo_root" commit -m "test(web): guard transcript detail geometry"
 
 Expected: the SegmentedControl stylesheet is unchanged and unstaged.
 
-- [ ] **Step 6: Run the required path-scoped mutation RED proof and restore exactly**
+- [x] **Step 6: Run the required path-scoped mutation RED proof and restore exactly**
 
 From `cmd/evener-hub/frontend`, preserve the one target file outside the worktree, inject only the rejected Mobile inline minimum, and require the guard to fail for the named 40px/256px measurement:
 
@@ -1218,7 +1218,7 @@ npm run overflowguard -- 320
 
 Expected: mutated run exits nonzero because option width is at least 44px and the rightmost local edge reaches at least 257px beyond the 256px track; restoration diff is empty; the same 320 guard exits zero. Remove the scratch log after recording evidence in the ignored proof report.
 
-- [ ] **Step 7: Verify no mutation or guard residue remains**
+- [x] **Step 7: Verify no mutation or guard residue remains**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -1245,7 +1245,7 @@ Expected: clean worktree; no SegmentedControl CSS diff; committed guard changes 
 - Produces human-reviewed light/dark proof, complete deterministic gate evidence, a clean branch, and checked plan tracking.
 - No new product behavior belongs here except minimal root-cause fixes for a discovered failure.
 
-- [ ] **Step 1: Format every touched frontend source path and run the full focused surface**
+- [x] **Step 1: Format every touched frontend source path and run the full focused surface**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -1258,7 +1258,7 @@ npm run lint
 
 Expected: every command exits zero. Review formatter changes; commit only genuine root-cause fixes with named paths before continuing.
 
-- [ ] **Step 2: Capture separate corrected gallery and feature proof in both themes**
+- [x] **Step 2: Capture separate corrected gallery and feature proof in both themes**
 
 Resolve `repo_root`, create `proof_dir="$repo_root/.superpowers/sdd/2026-08-26-transcript-detail-design-system-correction/proof"`, and launch this exact command with `exec_command(cwd="$repo_root/cmd/evener-hub/frontend", mode="background")`:
 
@@ -1295,11 +1295,11 @@ Record the returned shell `job_id`; create a narrow readiness watch on `Local:.*
 
 Save each capture under `proof_dir` with the exact filename. Record viewport, track/segment/canvas dimensions, Popover/Sheet containment, and no-inner-scroll measurements in `proof/README.md`. In a `finally` cleanup, call `job_stop` with `target` set to the exact `job_id` returned by the server's `exec_command`, `include_children=true`, and `max_wait_ms=5000`; then verify the server stopped. A detached or leftover dev server fails this step.
 
-- [ ] **Step 3: Obtain human visual approval before canonical gates**
+- [x] **Step 3: Obtain human visual approval before canonical gates**
 
 Present all sixteen captures and measurements. Require explicit approval of both themes, selected/disabled/focus-visible/Custom states, 320px/390px frames, disabled Disclosure modes, Desktop closed/open, Mobile closed/open, and both complete stacked Settings cards. If review finds a defect, return to the owning task's RED/GREEN/review cycle; do not patch visually in this final task without a focused failing test.
 
-- [ ] **Step 4: Run canonical frontend gates**
+- [x] **Step 4: Run canonical frontend gates**
 
 From repository root:
 
@@ -1312,7 +1312,7 @@ make test-web-browser
 
 Expected: both exit zero. A missing Chrome/dependency, timeout, or sandbox denial is incomplete, not a pass.
 
-- [ ] **Step 5: Run repository lint and static analysis**
+- [x] **Step 5: Run repository lint and static analysis**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -1323,7 +1323,7 @@ make vet
 
 Expected: both exit zero. Read every warning and generated-output check; do not dismiss unrelated failures.
 
-- [ ] **Step 6: Run the full deterministic test gate**
+- [x] **Step 6: Run the full deterministic test gate**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
@@ -1333,11 +1333,11 @@ make test
 
 Expected: exit zero. Read every warning, skip, nonzero subprocess, and retained-log path.
 
-- [ ] **Step 7: Run whole-branch specification and quality review**
+- [x] **Step 7: Run whole-branch specification and quality review**
 
 Give an independent reviewer the approved spec, this plan, and the complete branch diff from `347f6ed9f`. Require explicit dispositions for all 21 acceptance criteria, all stated non-goals, the exact 320px mutation evidence, light/dark proof, and any Critical/Important findings. Fix every Critical/Important finding through a focused RED/GREEN cycle and rerun the affected canonical gate.
 
-- [ ] **Step 8: Mark accepted plan steps and verify final repository state**
+- [x] **Step 8: Mark accepted plan steps and verify final repository state**
 
 After visual approval, all five canonical gates, and clean final review, mark every completed checkbox in this plan. Then run:
 
@@ -1351,7 +1351,7 @@ git -C "$repo_root" log --oneline --decorate -15
 
 Expected: only this plan's checkbox changes remain; no production/test mutation, scratch file, unexpected untracked file, or ignored server process remains.
 
-- [ ] **Step 9: Commit plan tracking only**
+- [x] **Step 9: Commit plan tracking only**
 
 ```bash
 repo_root=$(git rev-parse --show-toplevel)
