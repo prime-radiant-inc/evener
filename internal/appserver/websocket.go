@@ -140,7 +140,7 @@ func (s *Server) ServeWebSocket(w http.ResponseWriter, r *http.Request) {
 	}()
 
 	gate := newWebSocketReadGate()
-	go runWebSocketKeepaliveWithTicker(ctx, ws, cancel, gate, s.keepalivePongTimeout, s.keepaliveTickerFactory(s.keepalivePingInterval), s.keepaliveDecision)
+	go runWebSocketKeepaliveWithTicker(ctx, ws, cancel, gate, keepalivePongTimeout, s.keepaliveTickerFactory(keepalivePingInterval), s.keepaliveDecision)
 
 	runWebSocketReceiveLoop(ctx, ws, transport, conn, gate)
 }

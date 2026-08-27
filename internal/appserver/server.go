@@ -35,8 +35,6 @@ type Server struct {
 	cfg                            ServerConfig
 	router                         *Router
 	subs                           *Subscriptions
-	keepalivePingInterval          time.Duration
-	keepalivePongTimeout           time.Duration
 	keepaliveTickerFactory         func(time.Duration) webSocketKeepaliveTicker
 	keepaliveDecision              func(bool)
 	projectionMu                   sync.Mutex
@@ -56,8 +54,6 @@ func NewServer(cfg ServerConfig) *Server {
 		router:                 NewRouter(),
 		subs:                   NewSubscriptions(),
 		conns:                  map[string]*Connection{},
-		keepalivePingInterval:  keepalivePingInterval,
-		keepalivePongTimeout:   keepalivePongTimeout,
 		keepaliveTickerFactory: newRealWebSocketKeepaliveTicker,
 	}
 	HandleTyped(s.router, appwire.MethodInitialize, s.initialize)
