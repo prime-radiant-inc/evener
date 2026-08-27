@@ -67,6 +67,74 @@ function truncateToValidUtf8(encoded: Uint8Array, targetBytes: number): string {
 // I4: If content fits within cap, preserve as-is (a trailing marker means
 // the store already truncated it). If content exceeds cap, strip ALL existing
 // markers so the output has exactly one, then truncate and add a single marker.
+
+// Operation counter for the linear-work oracle (test-only). Each increment
+// represents one Unicode scalar processed by the strip algorithm.
+let _stripOps = 0;
+
+export function _resetStripOpCount(): void {
+  _stripOps = 0;
+}
+
+export function _stripOpCount(): number {
+  return _stripOps;
+}
+
+// Build the KMP failure (partial match) table for the marker. failure[i] is
+// the length of the longest proper prefix of marker[0..i) that is also a
+// suffix of marker[0..i).
+function buildKmpFailure(marker: string): number[] {
+  const fail = new Array<number>(marker.length).fill(0);
+  let k = 0;
+  for (let i = 1; i < marker.length; i++) {
+    while (k > 0 && marker[i] !== marker[k]) k = fail[k - 1] ?? 0;
+    if (marker[i] === marker[k]) k++;
+    fail[i] = k;
+  }
+  return fail;
+}
+
+// Linear-time removal of all occurrences of `marker` from `text`, including
+// occurrences formed by joining text across a removed marker. Uses a stack
+// of (char, kmpState) pairs: each character is pushed once and popped at most
+// once, giving O(n) total work. When a full marker match completes, the
+// matched characters are popped, and the KMP state of the new stack top
+// restores the prior match state so join-created markers are detected
+// immediately without rescanning.
+function stripMarkersLinear(text: string, marker: string): string {
+  if (marker.length === 0) return text;
+  const fail = buildKmpFailure(marker);
+  // Stack entries: [character, kmpState]. kmpState is the length of the
+  // longest prefix of marker that matches ending at this stack position.
+  const stack: Array<[string, number]> = [];
+
+  for (const ch of text) {
+    _stripOps++;
+    // Compute the KMP state for this character based on the current stack top.
+    const top = stack.length > 0 ? stack[stack.length - 1] : undefined;
+    let state = top ? top[1] : 0;
+    while (state > 0 && ch !== marker[state]) state = fail[state - 1] ?? 0;
+    if (ch === marker[state]) state++;
+
+    if (state === marker.length) {
+      // Full marker matched — pop the marker-length characters off the stack.
+      // The marker itself was never fully pushed (we detect at the last char),
+      // so we need to pop (marker.length - 1) characters that were pushed as
+      // partial matches, plus we don't push this character.
+      const popCount = marker.length - 1;
+      stack.length -= popCount;
+      // After popping, restore the match state from the new stack top (if any).
+      // This is the key to detecting join-created markers in O(1) per char.
+    } else {
+      stack.push([ch, state]);
+    }
+  }
+
+  let result = "";
+  for (const [ch] of stack) result += ch;
+  return result;
+}
+
 function truncate(text: string): { body: string; truncated: boolean } {
   const encoded = textEncoder.encode(text);
 
@@ -74,15 +142,11 @@ function truncate(text: string): { body: string; truncated: boolean } {
     return { body: text, truncated: text.endsWith(TRUNCATION_MARKER) };
   }
 
-  // Oversized: strip ALL existing markers to a fixed point, then truncate +
-  // add exactly one. Removing an occurrence can join surrounding text to form
-  // a new occurrence across the join boundary, so we iterate until stable.
-  let stripped = text;
-  for (;;) {
-    const next = stripped.split(TRUNCATION_MARKER).join("");
-    if (next === stripped) break;
-    stripped = next;
-  }
+  // Oversized: strip ALL existing markers in O(n), then truncate + add
+  // exactly one. The linear strip uses a KMP stack-based reducer that
+  // removes markers immediately and restores prior match state so
+  // join-created markers are detected without rescanning.
+  const stripped = stripMarkersLinear(text, TRUNCATION_MARKER);
   const strippedEncoded = textEncoder.encode(stripped);
 
   const targetBytes = MAX_LIVE_BYTES - markerBytes.length;
