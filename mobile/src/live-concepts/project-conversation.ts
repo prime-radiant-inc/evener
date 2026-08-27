@@ -74,8 +74,15 @@ function truncate(text: string): { body: string; truncated: boolean } {
     return { body: text, truncated: text.endsWith(TRUNCATION_MARKER) };
   }
 
-  // Oversized: strip ALL existing markers, then truncate + add exactly one.
-  const stripped = text.split(TRUNCATION_MARKER).join("");
+  // Oversized: strip ALL existing markers to a fixed point, then truncate +
+  // add exactly one. Removing an occurrence can join surrounding text to form
+  // a new occurrence across the join boundary, so we iterate until stable.
+  let stripped = text;
+  for (;;) {
+    const next = stripped.split(TRUNCATION_MARKER).join("");
+    if (next === stripped) break;
+    stripped = next;
+  }
   const strippedEncoded = textEncoder.encode(stripped);
 
   const targetBytes = MAX_LIVE_BYTES - markerBytes.length;
@@ -105,49 +112,50 @@ export class ProjectionCapacityError extends Error {
 
 // A genuinely immutable map: set/delete/clear are defined (so casts to Map
 // hit them) but throw without mutating the underlying data. The backing Map
-// is private with no escape hatch.
+// is hidden behind a #private field — no escape hatch via casts or property
+// enumeration.
 class FrozenMap<K, V> implements ReadonlyMap<K, V> {
-  private readonly _map: Map<K, V>;
+  #map: Map<K, V>;
 
   constructor(entries: Iterable<[K, V]>) {
-    this._map = new Map(entries);
+    this.#map = new Map(entries);
   }
 
   get size(): number {
-    return this._map.size;
+    return this.#map.size;
   }
 
   get(key: K): V | undefined {
-    return this._map.get(key);
+    return this.#map.get(key);
   }
 
   has(key: K): boolean {
-    return this._map.has(key);
+    return this.#map.has(key);
   }
 
   keys(): MapIterator<K> {
-    return this._map.keys();
+    return this.#map.keys();
   }
 
   values(): MapIterator<V> {
-    return this._map.values();
+    return this.#map.values();
   }
 
   entries(): MapIterator<[K, V]> {
-    return this._map.entries();
+    return this.#map.entries();
   }
 
   forEach(
     callback: (value: V, key: K, map: ReadonlyMap<K, V>) => void,
     thisArg?: unknown,
   ): void {
-    this._map.forEach((value, key) => {
+    this.#map.forEach((value, key) => {
       callback.call(thisArg, value, key, this);
     });
   }
 
   [Symbol.iterator](): MapIterator<[K, V]> {
-    return this._map.entries();
+    return this.#map.entries();
   }
 
   get [Symbol.toStringTag](): string {
@@ -186,7 +194,7 @@ class TupleRegistry<V> {
       if (node === undefined) return undefined;
     }
     const last = path[path.length - 1] as string;
-    return node!.get(last) as V | undefined;
+    return node?.get(last) as V | undefined;
   }
 
   has(path: readonly string[]): boolean {
@@ -197,7 +205,7 @@ class TupleRegistry<V> {
       if (node === undefined) return false;
     }
     const last = path[path.length - 1] as string;
-    return node!.has(last);
+    return node?.has(last) ?? false;
   }
 
   set(path: readonly string[], val: V): boolean {
@@ -269,10 +277,22 @@ class TupleRegistry<V> {
 
 // --- operational map (snapshot) ----------------------------------------------
 
+export interface QuestionLink {
+  readonly callId: string;
+  readonly questionKey: string;
+}
+
+export interface OptionLink {
+  readonly callId: string;
+  readonly questionKey: string;
+  readonly label: string;
+  readonly detail: string;
+}
+
 export interface ConversationOperationalMap {
   readonly itemKeys: ReadonlyMap<string, string>;
-  readonly questionKeys: ReadonlyMap<string, string>;
-  readonly optionKeys: ReadonlyMap<string, string>;
+  readonly questionKeys: ReadonlyMap<string, QuestionLink>;
+  readonly optionKeys: ReadonlyMap<string, OptionLink>;
 }
 
 // --- projector options -------------------------------------------------------
@@ -421,8 +441,8 @@ export function createLiveConversationProjector(options?: {
       // --- Build question views and key mappings (C1: callId in identity) ---
       const questions: LiveQuestionView[] = [];
       const keyMap = new Map<string, Map<string, string>>(); // callId → q.key → qKey
-      const opQuestionKeys = new Map<string, string>();
-      const opOptionKeys = new Map<string, string>();
+      const opQuestionKeys = new Map<string, QuestionLink>();
+      const opOptionKeys = new Map<string, OptionLink>();
       const seenQuestions = new Set<string>();
 
       for (const item of conv.items) {
@@ -444,7 +464,10 @@ export function createLiveConversationProjector(options?: {
           const qKey = stageKey([scope, "question", callId, q.key]);
           if (!keyMap.has(callId)) keyMap.set(callId, new Map());
           keyMap.get(callId)?.set(q.key, qKey);
-          opQuestionKeys.set(qKey, q.key);
+          opQuestionKeys.set(
+            qKey,
+            Object.freeze({ callId, questionKey: q.key }),
+          );
 
           // Detect duplicate options within this question (exact label+detail).
           const seenOptions = new Set<string>();
@@ -462,7 +485,15 @@ export function createLiveConversationProjector(options?: {
               o.label,
               o.detail,
             ]);
-            opOptionKeys.set(optKey, JSON.stringify([o.label, o.detail]));
+            opOptionKeys.set(
+              optKey,
+              Object.freeze({
+                callId,
+                questionKey: q.key,
+                label: o.label,
+                detail: o.detail,
+              }),
+            );
             return { key: optKey, label: o.label, detail: o.detail };
           });
 
