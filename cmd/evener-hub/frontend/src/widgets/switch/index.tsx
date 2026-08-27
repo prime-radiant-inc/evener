@@ -13,6 +13,7 @@ export interface SwitchProps {
 
 const BASE_CLASS = {
   wrapper: requireClass(styles.wrapper, "switch.module.css", "wrapper"),
+  control: requireClass(styles.control, "switch.module.css", "control"),
   track: requireClass(styles.track, "switch.module.css", "track"),
   thumb: requireClass(styles.thumb, "switch.module.css", "thumb"),
   label: requireClass(styles.label, "switch.module.css", "label"),
@@ -45,10 +46,12 @@ export function Switch({ checked, onChange, disabled = false, label }: SwitchPro
         aria-checked={checked}
         aria-labelledby={labelId}
         disabled={disabled}
-        className={BASE_CLASS.track}
+        className={BASE_CLASS.control}
         onClick={toggle}
       >
-        <span className={BASE_CLASS.thumb} />
+        <span className={BASE_CLASS.track} aria-hidden="true">
+          <span className={BASE_CLASS.thumb} />
+        </span>
       </button>
       {/* Mouse-only convenience mirroring a native <label for=...> click
           target for the switch above (see this file's own top comment for

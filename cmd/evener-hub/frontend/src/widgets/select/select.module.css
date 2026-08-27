@@ -34,3 +34,10 @@
   outline: var(--focus-ring);
   outline-offset: 2px;
 }
+
+@media (max-width: 899px) {
+  .select {
+    min-height: var(--tap-min);
+    height: var(--tap-min);
+  }
+}
