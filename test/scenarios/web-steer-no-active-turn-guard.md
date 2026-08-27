@@ -21,8 +21,9 @@ AppWire request in the first place.
 - Hub running on an isolated `$HOME` and free port (never `9180`, Jesse's
   real one — see the Setup checklist in
   `docs/developing-evener/agentic-testing.md`) with `--evener` resolvable.
-- A provider credential good enough to run one trivial turn. Anthropic Haiku
-  is enough; no OAuth is required.
+- `$MODEL` set to a model ID the isolated hub can launch, including any
+  provider configuration or credential that launch validation requires. This
+  scenario starts no model turn and makes no completion request.
 - `$HOME/.evener/auth-token` readable (that isolated `$HOME`).
 - The SPA must be built (`make build-web`) before the hub, or the browser gets
   a placeholder.
@@ -35,20 +36,15 @@ TOKEN=$(cat "$HOME/.evener/auth-token")
 HUB=http://127.0.0.1:$PORT
 ```
 
-1. **Spawn a short session and let it reach idle.** Haiku plus a trivial
-   prompt finishes in seconds:
+1. **Spawn a dormant session.** A blank prompt establishes the exact idle,
+   no-active-turn precondition without issuing a model completion:
    ```bash
    resp=$(curl -s -X POST -H "Content-Type: application/json" \
      -H "Authorization: Bearer $TOKEN" \
-     -d "{\"prompt\":\"please run \\\"echo hello\\\" via exec_command then stop\",\"model\":\"anthropic/claude-haiku-4-5-20251001\",\"working_dir\":\"$tmpdir\",\"harness\":\"evener\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
+     -d "{\"prompt\":\"\",\"model\":\"$MODEL\",\"working_dir\":\"$tmpdir\",\"harness\":\"evener\",\"branch\":\"\",\"access_mode\":\"full\",\"agent\":\"default\",\"launch_overrides\":{}}" \
      $HUB/api/spawn)
    SID=$(echo "$resp" | jq -r '.session_id')
-   for i in $(seq 1 60); do
-     detail=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID")
-     state=$(echo "$detail" | jq -r '.state // ""')
-     [ "$state" = "idle" ] && break
-     sleep 1
-   done
+   detail=$(curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/sessions/local:$SID")
    echo "$detail" | jq '{state, active_turn_id, steer: .capabilities.steer, queue: .capabilities.queue}'
    ```
 
@@ -104,6 +100,9 @@ rm -rf "$tmpdir"
 - **AppWire frames are not part of this card.** A direct idle AppWire steer is
   intentionally accepted in v3 and may start a steering-carrier turn. A
   carrier-acceptance scenario would be a separate card.
+- The dormant spawn is only a deterministic way to establish `state=idle`
+  with no active turn. Its own zero-turn contract is covered by
+  `spawn-empty-prompt-starts-dormant.md`.
 - **Shift+Enter is only the Steer chord while `enterToSend` is off** — with
   `evener.prefs.enterToSend` on, Shift+Enter inserts a literal newline.
 - React's controlled textarea ignores a plain `ta.value = "..."` assignment;
