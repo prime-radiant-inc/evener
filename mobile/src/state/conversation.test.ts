@@ -7731,4 +7731,581 @@ describe("ConversationStore", () => {
       expect(ids.filter((id) => id === "page-A").length).toBe(1);
     });
   });
+
+  // --- Task 2A-Truncation residual: exact reconciliation of truncation ownership
+  // from FINAL retained/merged items on every authoritative install path
+  // (open/openProjected/rehydrate/page/lifecycle). Replaces add-only frozen
+  // tracking: an authoritative short version unfreezes; omitted/capped IDs are
+  // removed; newer superseded live/page versions are preserved based on final
+  // actual content. item/agentMessage/reset explicitly unfreezes the ID before
+  // the empty reset so a later delta applies.
+  //
+  // C3: authoritative oversized→short→delta applies (open + rehydrate + openProjected)
+  // C4: omitted/capped ID removed from truncatedItemIds
+  // protocol reset→delta: reset unfreezes before empty reset
+  // paged oversized item freezes and marker once
+  // lifecycle started/completed oversized then untruncate
+  // No vacuous `if` assertions — direct expects on the resolved item.
+  describe("Task 2A-Truncation residual: exact reconciliation", () => {
+    // Helper: open a conversation via openProjected with the given raw ThreadItem
+    // array (uses projectThread so families are set from the canonical projector).
+    async function openProjectedWithItems(items: ThreadItem[]): Promise<{
+      store: ReturnType<typeof createConversationStore>;
+      service: FakeConversationService;
+    }> {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ turns: [makeTurn({ id: "t0", items })] }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      return { store, service };
+    }
+
+    it("C3 open: authoritative oversized→short unfreezes so later delta applies", async () => {
+      // Open with an oversized assistant item, then re-open (openProjected) with
+      // the SAME id but short content — the freeze must be removed so a later
+      // delta appends.
+      const { store } = await openProjectedWithItems([
+        userMessageItem("B", "base"),
+        agentMessageItem("X", "x".repeat(MAX_ITEM_BYTES + 100), "inProgress"),
+      ]);
+      const xBefore = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xBefore?.kind).toBe("assistant");
+      expect(
+        xBefore?.kind === "assistant" &&
+          xBefore.markdown.endsWith("… truncated"),
+      ).toBe(true);
+
+      // Re-open with short content for the same id.
+      const service2 = new FakeConversationService();
+      service2.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [
+                userMessageItem("B", "base"),
+                agentMessageItem("X", "short", "completed"),
+              ],
+            }),
+          ],
+        }),
+      );
+      await store.getState().openProjected(service2, createFakeSink(), "ref-1");
+      const xAfter = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xAfter?.kind).toBe("assistant");
+      expect(xAfter?.kind === "assistant" && xAfter.markdown).toBe("short");
+
+      // Delta should now append — freeze removed by authoritative short version.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+          delta: " appended",
+        },
+      } as AnyNotification);
+      const xDelta = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xDelta?.kind).toBe("assistant");
+      expect(xDelta?.kind === "assistant" && xDelta.markdown).toBe(
+        "short appended",
+      );
+    });
+
+    it("C3 rehydrate: authoritative oversized→short unfreezes so later delta applies", async () => {
+      // Open oversized, then rehydrate with short content for the same id — the
+      // freeze must be removed so a later delta appends.
+      const { store, service } = await openProjectedWithItems([
+        userMessageItem("B", "base"),
+        agentMessageItem("X", "x".repeat(MAX_ITEM_BYTES + 100), "inProgress"),
+      ]);
+      const xBefore = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xBefore?.kind).toBe("assistant");
+      expect(
+        xBefore?.kind === "assistant" &&
+          xBefore.markdown.endsWith("… truncated"),
+      ).toBe(true);
+
+      // Rehydrate with short content for the same id.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [
+                userMessageItem("B", "base"),
+                agentMessageItem("X", "short", "completed"),
+              ],
+            }),
+          ],
+        }),
+      );
+      await store.getState().rehydrate(service, createFakeSink());
+      const xAfter = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xAfter?.kind).toBe("assistant");
+      expect(xAfter?.kind === "assistant" && xAfter.markdown).toBe("short");
+
+      // Delta should now append — freeze removed by authoritative short version.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+          delta: " appended",
+        },
+      } as AnyNotification);
+      const xDelta = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xDelta?.kind).toBe("assistant");
+      expect(xDelta?.kind === "assistant" && xDelta.markdown).toBe(
+        "short appended",
+      );
+    });
+
+    it("C4 open: omitted ID is removed from truncation ownership (no stale freeze)", async () => {
+      // Open with oversized X, then re-open omitting X — a later delta to X (if
+      // it reappears via a live notification) must not be frozen by the stale
+      // entry. We verify the freeze does not persist for the omitted id by
+      // re-adding X via item/completed with short content and then delta.
+      const { store } = await openProjectedWithItems([
+        userMessageItem("B", "base"),
+        agentMessageItem("X", "x".repeat(MAX_ITEM_BYTES + 100), "inProgress"),
+      ]);
+      // Re-open omitting X entirely.
+      const service2 = new FakeConversationService();
+      service2.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({ id: "t0", items: [userMessageItem("B", "base")] }),
+          ],
+        }),
+      );
+      await store.getState().openProjected(service2, createFakeSink(), "ref-1");
+      expect(
+        store.getState().conversation?.items.find((i) => i.id === "X"),
+      ).toBeUndefined();
+
+      // Re-introduce X via item/started with short content, then delta.
+      store.getState().applyNotification({
+        method: "item/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          item: agentMessageItem("X", "fresh-short", "inProgress"),
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+          delta: " appended",
+        },
+      } as AnyNotification);
+      const xItem = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xItem?.kind).toBe("assistant");
+      expect(xItem?.kind === "assistant" && xItem.markdown).toBe(
+        "fresh-short appended",
+      );
+    });
+
+    it("C4 rehydrate: omitted ID is removed from truncation ownership", async () => {
+      // Open with oversized X, then rehydrate omitting X. The stale freeze for
+      // X must be removed. Re-introduce X via item/completed short + delta.
+      const { store, service } = await openProjectedWithItems([
+        userMessageItem("B", "base"),
+        agentMessageItem("X", "x".repeat(MAX_ITEM_BYTES + 100), "inProgress"),
+      ]);
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({ id: "t0", items: [userMessageItem("B", "base")] }),
+          ],
+        }),
+      );
+      await store.getState().rehydrate(service, createFakeSink());
+      expect(
+        store.getState().conversation?.items.find((i) => i.id === "X"),
+      ).toBeUndefined();
+
+      // Re-introduce X via item/completed with short content, then delta.
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          item: agentMessageItem("X", "fresh-short", "completed"),
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+          delta: " appended",
+        },
+      } as AnyNotification);
+      const xItem = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xItem?.kind).toBe("assistant");
+      expect(xItem?.kind === "assistant" && xItem.markdown).toBe(
+        "fresh-short appended",
+      );
+    });
+
+    it("C4 capped ID is removed from truncation ownership (500-cap trims oldest)", async () => {
+      // Fill past the 500-cap so the oldest items are trimmed. Only the first
+      // few items are oversized (to seed a freeze entry that must be removed
+      // when trimmed); the rest are small so truncation is fast.
+      const oversized = "x".repeat(MAX_ITEM_BYTES + 100);
+      const items: ThreadItem[] = [
+        userMessageItem("keep", "base"),
+        // 3 oversized items at the front — these get trimmed by the cap.
+        agentMessageItem("a-0", oversized, "completed"),
+        agentMessageItem("a-1", oversized, "completed"),
+        agentMessageItem("a-2", oversized, "completed"),
+      ];
+      // 498 small items → total 502, oldest (a-0,a-1,a-2) trimmed by cap.
+      for (let i = 3; i < 501; i++) {
+        items.push(agentMessageItem(`a-${i}`, "small", "completed"));
+      }
+      const { store } = await openProjectedWithItems(items);
+      const retained = store.getState().conversation?.items ?? [];
+      expect(retained.length).toBeLessThanOrEqual(500);
+      // a-0 should have been trimmed (it's the oldest oversized after "keep").
+      expect(retained.find((i) => i.id === "a-0")).toBeUndefined();
+
+      // Re-introduce a-0 via item/completed with short content, then delta.
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          item: agentMessageItem("a-0", "fresh-short", "completed"),
+        },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "a-0",
+          delta: " appended",
+        },
+      } as AnyNotification);
+      const xItem = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "a-0");
+      expect(xItem?.kind).toBe("assistant");
+      expect(xItem?.kind === "assistant" && xItem.markdown).toBe(
+        "fresh-short appended",
+      );
+    });
+
+    it("protocol reset→delta: reset unfreezes ID before empty reset so later delta applies", async () => {
+      // Open with an oversized assistant item. item/agentMessage/reset clears
+      // the markdown to "" AND must unfreeze the id so a subsequent delta applies.
+      const { store } = await openProjectedWithItems([
+        userMessageItem("B", "base"),
+        agentMessageItem("X", "x".repeat(MAX_ITEM_BYTES + 100), "inProgress"),
+      ]);
+      const xBefore = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xBefore?.kind).toBe("assistant");
+      expect(
+        xBefore?.kind === "assistant" &&
+          xBefore.markdown.endsWith("… truncated"),
+      ).toBe(true);
+
+      // Protocol reset — must unfreeze the id before the empty reset.
+      store.getState().applyNotification({
+        method: "item/agentMessage/reset",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+        },
+      } as AnyNotification);
+      const xReset = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xReset?.kind).toBe("assistant");
+      expect(xReset?.kind === "assistant" && xReset.markdown).toBe("");
+
+      // Delta after reset must apply — the freeze was removed.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+          delta: "fresh content",
+        },
+      } as AnyNotification);
+      const xDelta = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xDelta?.kind).toBe("assistant");
+      expect(xDelta?.kind === "assistant" && xDelta.markdown).toBe(
+        "fresh content",
+      );
+    });
+
+    it("paged oversized item freezes and marker appears once", async () => {
+      // Load an oversized item via loadOlder — it must be truncated with the
+      // marker appearing exactly once, and frozen against a later delta.
+      const { store, service } = await openProjectedWithItems([
+        userMessageItem("base", "base"),
+      ]);
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [
+          {
+            kind: "activity",
+            id: "page-tool",
+            label: "shell",
+            state: "completed",
+            detail: {
+              output: "x".repeat(MAX_ITEM_BYTES + 100),
+              callId: "call-A",
+            },
+          },
+        ],
+        nextCursor: "cursor-2",
+      };
+      await store.getState().loadOlder(service);
+      const item = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "page-tool");
+      expect(item?.kind).toBe("activity");
+      expect(
+        item?.kind === "activity" &&
+          item.detail.output?.endsWith("… truncated"),
+      ).toBe(true);
+      const markerCount =
+        item?.kind === "activity"
+          ? (item.detail.output?.split("… truncated").length ?? 0)
+          : 0;
+      expect(markerCount - 1).toBe(1);
+
+      // A later tool-output delta must be frozen (marker once, no new content).
+      store.getState().applyNotification({
+        method: "item/toolOutput/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "page-tool",
+          callId: "call-A",
+          delta: " MORE",
+        },
+      } as AnyNotification);
+      const item2 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "page-tool");
+      expect(item2?.kind).toBe("activity");
+      expect(
+        item2?.kind === "activity" &&
+          item2.detail.output?.endsWith("… truncated"),
+      ).toBe(true);
+      const markerCount2 =
+        item2?.kind === "activity"
+          ? (item2.detail.output?.split("… truncated").length ?? 0)
+          : 0;
+      expect(markerCount2 - 1).toBe(1);
+    });
+
+    it("lifecycle item/started oversized then item/completed untruncates", async () => {
+      // An item arrives oversized via item/started (frozen), then item/completed
+      // arrives with short content — the freeze is removed and a later delta
+      // applies.
+      const { store } = await openProjectedWithItems([
+        userMessageItem("B", "base"),
+      ]);
+      // item/started with oversized output.
+      store.getState().applyNotification({
+        method: "item/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          item: {
+            type: "commandExecution",
+            id: "tool-1",
+            toolName: "shell",
+            status: "inProgress",
+            callId: "call-A",
+            output: "x".repeat(MAX_ITEM_BYTES + 100),
+          } as ThreadItem,
+        },
+      } as AnyNotification);
+      const item0 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-1");
+      expect(item0?.kind).toBe("activity");
+      expect(
+        item0?.kind === "activity" &&
+          item0.detail.output?.endsWith("… truncated"),
+      ).toBe(true);
+
+      // item/completed with short output — untruncates (unfreezes).
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          item: {
+            type: "commandExecution",
+            id: "tool-1",
+            toolName: "shell",
+            status: "completed",
+            callId: "call-A",
+            output: "short-result",
+          } as ThreadItem,
+        },
+      } as AnyNotification);
+      const item1 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-1");
+      expect(item1?.kind).toBe("activity");
+      expect(item1?.kind === "activity" && item1.detail.output).toBe(
+        "short-result",
+      );
+      expect(
+        item1?.kind === "activity" &&
+          item1.detail.output?.endsWith("… truncated"),
+      ).toBe(false);
+
+      // A later delta applies — freeze removed.
+      store.getState().applyNotification({
+        method: "item/toolOutput/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "tool-1",
+          callId: "call-A",
+          delta: " appended",
+        },
+      } as AnyNotification);
+      const item2 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-1");
+      expect(item2?.kind).toBe("activity");
+      expect(item2?.kind === "activity" && item2.detail.output).toBe(
+        "short-result appended",
+      );
+    });
+
+    it("rehydrate preserves newer superseded live truncated version based on final content", async () => {
+      // Open with a SHORT X. Start a hanging rehydrate whose reread has X SHORT.
+      // While reread is in-flight, a live delta makes X oversized (frozen). The
+      // rehydrate must preserve the live (truncated) version AND keep it frozen
+      // (final actual content is oversized). A later delta must stay frozen.
+      const { store, service } = await openProjectedWithItems([
+        userMessageItem("B", "base"),
+        agentMessageItem("X", "short", "inProgress"),
+      ]);
+      const ctrl = makeControlledRead(service);
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [
+                userMessageItem("B", "base"),
+                agentMessageItem("X", "reread-short", "completed"),
+              ],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      // Live delta makes X oversized → frozen.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+          delta: "x".repeat(MAX_ITEM_BYTES + 100),
+        },
+      } as AnyNotification);
+      const xLive = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(
+        xLive?.kind === "assistant" && xLive.markdown.endsWith("… truncated"),
+      ).toBe(true);
+      // Release rehydrate — it must preserve the live truncated version.
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      const xAfter = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xAfter?.kind).toBe("assistant");
+      expect(
+        xAfter?.kind === "assistant" && xAfter.markdown.endsWith("… truncated"),
+      ).toBe(true);
+      // A later delta must stay frozen — final content is oversized.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+          delta: " should-not-append",
+        },
+      } as AnyNotification);
+      const xFinal = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(
+        xFinal?.kind === "assistant" && xFinal.markdown.endsWith("… truncated"),
+      ).toBe(true);
+      expect(
+        xFinal?.kind === "assistant" &&
+          xFinal.markdown.includes("should-not-append"),
+      ).toBe(false);
+    });
+  });
 });

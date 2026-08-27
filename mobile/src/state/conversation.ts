@@ -844,11 +844,57 @@ export function createConversationStore() {
   // Called from open/openProjected/rehydrate to seed the truncation set.
   // Task 2A-Items: also records activity item families (reasoning vs tool)
   // from the mobile item's label, matching the projector's labeling.
+  // Task 2A-Truncation: truncateAndRecord is now PURE truncation + family
+  // recording — it no longer mutates truncatedItemIds. Authoritative paths
+  // call reconcileTruncationFrom (on the pre-truncation capped items) to
+  // rebuild the truncation set exactly: oversized originals are frozen,
+  // short originals unfreeze, omitted/capped IDs are removed, and already-
+  // frozen superseded live versions (truncated by a prior live delta) stay
+  // frozen.
   function truncateAndRecord(
     items: MobileTimelineItem[],
   ): MobileTimelineItem[] {
     return items.map((item) => {
-      // Check if any text-bearing field exceeds the byte limit.
+      if (item.kind === "activity") {
+        // Task 2A-Items: record the activity family from the label. The
+        // projector labels reasoning items "Reasoning" and tool items with
+        // the toolName. This matches project.ts projectItem exactly.
+        itemFamilies.set(
+          item.id,
+          item.label === "Reasoning" ? "reasoning" : "tool",
+        );
+      }
+      return truncateItem(item);
+    });
+  }
+
+  // Task 2A-Truncation: Exact reconciliation of truncation ownership from the
+  // FINAL retained/merged items (pre-truncation content). Replaces add-only
+  // frozen tracking on every authoritative install path
+  // (open/openProjected/rehydrate/loadOlder). Rebuilds truncatedItemIds and
+  // itemFamilies exactly from the final actual content:
+  //   - An item whose original content exceeds the byte limit → frozen.
+  //   - An item whose original content is short → unfrozen, even if it was
+  //     frozen before (authoritative short version unfreezes).
+  //   - An ID omitted/capped from the final set → removed (no stale freeze).
+  //   - A superseded item (a live version that replaced the reread's version
+  //     during the rehydrate await — already truncated by a prior live delta,
+  //     so its text is ≤ MAX_ITEM_BYTES and exceedsByteLimit is false) stays
+  //     frozen: it was frozen by the live delta and the live version is newer.
+  //   - Activity families are rebuilt from labels so family discrimination
+  //     continues to work for retained items.
+  // `items` are the FINAL retained items BEFORE truncateItem runs (so
+  // exceedsByteLimit sees the original oversized content). `supersededIds`
+  // identifies items whose freeze must be preserved (live-owned versions that
+  // replaced the reread during the await); for open/openProjected/loadOlder
+  // this is empty (no superseded items).
+  function reconcileTruncationFrom(
+    items: MobileTimelineItem[],
+    supersededIds: Set<string> = new Set(),
+  ): void {
+    truncatedItemIds.clear();
+    itemFamilies.clear();
+    for (const item of items) {
       let needsTruncation = false;
       if (item.kind === "assistant") {
         needsTruncation = exceedsByteLimit(item.markdown, MAX_ITEM_BYTES);
@@ -860,32 +906,48 @@ export function createConversationStore() {
             exceedsByteLimit(item.detail.output, MAX_ITEM_BYTES)) ||
           (item.detail.error !== undefined &&
             exceedsByteLimit(item.detail.error, MAX_ITEM_BYTES));
-        // Task 2A-Items: record the activity family from the label. The
-        // projector labels reasoning items "Reasoning" and tool items with
-        // the toolName. This matches project.ts projectItem exactly.
         itemFamilies.set(
           item.id,
           item.label === "Reasoning" ? "reasoning" : "tool",
         );
       }
-      if (needsTruncation) {
+      if (needsTruncation || supersededIds.has(item.id)) {
         truncatedItemIds.add(item.id);
       }
-      return truncateItem(item);
-    });
+    }
   }
 
   // Task 2A-Items: truncate a single item and record its truncation/family
   // state. Returns a non-undefined MobileTimelineItem (the input is known
   // non-null). Used by item/started and item/completed for authoritative
-  // replacement — also removes any stale freeze entry first so the new
-  // content can accept future deltas.
+  // replacement — the caller removes any stale freeze entry first so the new
+  // content can accept future deltas; this re-freezes if the replacement is
+  // oversized and records the activity family.
   function truncateAndRecordSingle(
     item: MobileTimelineItem,
   ): MobileTimelineItem {
-    const [result] = truncateAndRecord([item]);
-    if (result === undefined) return item;
-    return result;
+    if (item.kind === "activity") {
+      itemFamilies.set(
+        item.id,
+        item.label === "Reasoning" ? "reasoning" : "tool",
+      );
+    }
+    let needsTruncation = false;
+    if (item.kind === "assistant") {
+      needsTruncation = exceedsByteLimit(item.markdown, MAX_ITEM_BYTES);
+    } else if (item.kind === "activity") {
+      needsTruncation =
+        (item.detail.arguments !== undefined &&
+          exceedsByteLimit(item.detail.arguments, MAX_ITEM_BYTES)) ||
+        (item.detail.output !== undefined &&
+          exceedsByteLimit(item.detail.output, MAX_ITEM_BYTES)) ||
+        (item.detail.error !== undefined &&
+          exceedsByteLimit(item.detail.error, MAX_ITEM_BYTES));
+    }
+    if (needsTruncation) {
+      truncatedItemIds.add(item.id);
+    }
+    return truncateItem(item);
   }
 
   return create<LiveConversationState>((rawSet, get) => {
@@ -950,10 +1012,17 @@ export function createConversationStore() {
           const conv = await service.open(ref);
           // Reject if a newer conversation generation was opened during the await.
           if (gen !== conversationGen) return;
+          // Task 2A-Truncation: cap the original items, reconcile truncation
+          // ownership exactly from the FINAL retained (capped) pre-truncation
+          // items (authoritative short versions unfreeze; omitted/capped IDs
+          // are removed), then truncate the text.
+          const openCapped = capItems(conv.items);
+          reconcileTruncationFrom(openCapped);
+          const openItems = truncateAndRecord(openCapped);
           set({
             conversation: {
               ...conv,
-              items: capItems(truncateAndRecord(conv.items)),
+              items: openItems,
             },
             status: "open",
             olderCursor: null,
@@ -1019,10 +1088,16 @@ export function createConversationStore() {
           // atomically consistent under the same exact identity tuple.
           const accepted = sink.setLiveView(activity, identity);
           if (!accepted) return;
+          // Task 2A-Truncation: cap the original items, reconcile truncation
+          // ownership exactly from the FINAL retained (capped) pre-truncation
+          // items, then truncate the text.
+          const openProjCapped = capItems(conversation.items);
+          reconcileTruncationFrom(openProjCapped);
+          const openProjItems = truncateAndRecord(openProjCapped);
           set({
             conversation: {
               ...conversation,
-              items: capItems(truncateAndRecord(conversation.items)),
+              items: openProjItems,
             },
             status: "open",
             olderCursor,
@@ -1247,9 +1322,20 @@ export function createConversationStore() {
           const preservedCaps = capOwnerChanged
             ? currentConv?.capabilities
             : undefined;
+          // Task 2A-Truncation: cap the merged items, reconcile truncation
+          // ownership exactly from the FINAL retained (capped) pre-truncation
+          // items. mergedItems already contains superseded live/page
+          // replacements (newer versions preserved based on final actual
+          // content). Superseded items (frozen by a prior live delta — their
+          // text is already ≤ MAX_ITEM_BYTES so exceedsByteLimit is false) stay
+          // frozen via supersededIds. Non-superseded short versions unfreeze.
+          // Then truncate the text.
+          const rehydrateCapped = capItems(mergedItems);
+          reconcileTruncationFrom(rehydrateCapped, supersededIds);
+          const committedItems = truncateAndRecord(rehydrateCapped);
           const committedConversation = {
             ...conversation,
-            items: capItems(truncateAndRecord(mergedItems)),
+            items: committedItems,
             ...(preservedCaps ? { capabilities: preservedCaps } : {}),
           };
           // Fix round 1: Reconcile liveOwnedRevs — for items in the
@@ -1344,12 +1430,14 @@ export function createConversationStore() {
             }
             // Prepend older (deduped) items, then trim from the oldest (front)
             // so the newest live tail is retained (finding 8).
-            // Task 2A-Items: use truncateAndRecord so activity families are
-            // recorded for paged items too.
-            const merged = capItems([
-              ...truncateAndRecord(deduped),
-              ...currentConv.items,
-            ]);
+            // Task 2A-Truncation: cap the pre-truncation merged items, reconcile
+            // truncation ownership exactly from the FINAL retained (capped)
+            // items (paged oversized items freeze and marker appears once;
+            // already-frozen current items stay frozen; items trimmed by the
+            // cap are removed), then truncate the text.
+            const pageMerged = capItems([...deduped, ...currentConv.items]);
+            reconcileTruncationFrom(pageMerged);
+            const merged = truncateAndRecord(pageMerged);
             // F8: If we're at the cap and the merge trimmed older items,
             // disable further paging honestly — set cursor to null so
             // we don't repeatedly load rows that will be discarded.
@@ -1879,6 +1967,10 @@ export function createConversationStore() {
               (i) => i.id === params.itemId && i.kind === "assistant",
             );
             if (existing) {
+              // Task 2A-Truncation: explicitly unfreeze the ID before the empty
+              // reset so a later delta applies. The reset clears the markdown
+              // to "" (short content), so the item must no longer be frozen.
+              truncatedItemIds.delete(params.itemId);
               // Fix round 1: Mark as live-owned — accepted reset update.
               markLiveOwned(params.itemId);
               set({
