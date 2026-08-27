@@ -412,6 +412,47 @@ test("stale client completion cannot overwrite newer client", async () => {
   expect(navigationStore.getState().manifest?.generationID).not.toBe("old");
 });
 
+test("same-generation reconnect during manifest load continues booting resources", async () => {
+  const firstManifest = deferred<Response>();
+  const calls: string[] = [];
+  let manifestCalls = 0;
+  const m = emptyManifest({
+    sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+    catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn((url: string) => {
+      calls.push(url);
+      if (url === "/api/navigation") {
+        manifestCalls++;
+        return manifestCalls === 1 ? firstManifest.promise : json(m);
+      }
+      if (url.includes("/sections/live")) return json({ sessions: [], remaining: 0, truncated: false });
+      return json({ projects: [], remaining: 0 });
+    }),
+  );
+  const client = new FakeClient("ready");
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v3",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: capability(),
+  }));
+
+  initNavigation(client, capability());
+  await flush();
+  client.emitStateChange("reconnecting");
+  client.emitReady();
+  await flush();
+  firstManifest.resolve(json(m));
+  await flush();
+
+  expect(calls).toContain("/api/navigation/sections/live?offset=0&limit=50");
+  expect(calls).toContain("/api/navigation/catalogs/projects?offset=0&limit=100");
+});
+
 test("a stale malformed response cannot poison or force the active client", async () => {
   const old = deferred<Response>();
   let activeManifestCalls = 0;
