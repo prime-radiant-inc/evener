@@ -59,6 +59,11 @@ export interface LaunchConfigFormProps {
   /** The (separately-fetched) global layer, project-layer callers only -
    * drives the inline "default: {value}" hints. */
   globalDefaults?: LaunchConfigLayer;
+  /** The effective layer of the caller's launch/resolve for this cwd
+   * (undefined until it lands or after it fails): unset fields whose empty
+   * marker is the generic one prepend their entry here - "high (default)",
+   * "true (use global default)". */
+  resolvedDefaults?: LaunchConfigLayer;
   successToast: string;
   validatePath: (path: string, kind: string) => Promise<PathValidateResponse>;
   onSave: (config: LaunchConfigLayer) => Promise<LaunchConfigResolved>;
@@ -74,6 +79,7 @@ export function LaunchConfigForm({
   layer,
   current,
   globalDefaults,
+  resolvedDefaults,
   successToast,
   validatePath,
   onSave,
@@ -231,6 +237,7 @@ export function LaunchConfigForm({
         onChange={(v) => updateScalar(opt.wireField, v)}
         globalDefaultHint={globalDefaultHint(opt.wireField, layer, globalDefaults)}
         error={fieldErrors[opt.wireField]}
+        resolvedDefaults={resolvedDefaults}
       />
     );
   }

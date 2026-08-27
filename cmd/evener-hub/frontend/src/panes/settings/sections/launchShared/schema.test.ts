@@ -13,6 +13,7 @@ import {
   optionSupportsLayer,
   PROMPT_COMPOSITE_SPECS,
   PROMPT_DEPENDENT_WIRE_FIELDS,
+  resolvedDefaultLabel,
   resolvedEmptyChoice,
   schemaPathKind,
 } from "./schema";
@@ -203,6 +204,74 @@ describe("resolvedEmptyChoice / emptyChoiceLabel", () => {
   test("emptyChoiceLabel is the generic per-layer placeholder text alone", () => {
     expect(emptyChoiceLabel("global")).toBe("(default)");
     expect(emptyChoiceLabel("project")).toBe("(use global default)");
+  });
+});
+
+describe("resolvedDefaultLabel", () => {
+  const booleanOpt = opt({ field: "sandbox_net", wireField: "sandboxNet", kind: "boolean" });
+  const selectOpt = opt({
+    field: "reasoning_effort",
+    wireField: "reasoningEffort",
+    kind: "select",
+    choices: [
+      { value: "", label: "(default)" },
+      { value: "high", label: "high" },
+    ],
+  });
+
+  test("undefined when there is no effective layer (the resolve hasn't landed or failed)", () => {
+    expect(resolvedDefaultLabel(selectOpt, "global", undefined)).toBeUndefined();
+  });
+
+  test("undefined when the effective layer doesn't set the field, or sets it empty", () => {
+    expect(resolvedDefaultLabel(selectOpt, "global", {})).toBeUndefined();
+    expect(resolvedDefaultLabel(selectOpt, "global", { reasoningEffort: "" })).toBeUndefined();
+  });
+
+  test("a boolean names the resolved value in the field's own true/false wording", () => {
+    expect(resolvedDefaultLabel(booleanOpt, "global", { sandboxNet: true })).toBe("true (default)");
+    expect(resolvedDefaultLabel(booleanOpt, "global", { sandboxNet: false })).toBe("false (default)");
+  });
+
+  test("the project layer keeps its own marker wording, value prepended", () => {
+    expect(resolvedDefaultLabel(booleanOpt, "project", { sandboxNet: true })).toBe("true (use global default)");
+    expect(resolvedDefaultLabel(selectOpt, "project", { reasoningEffort: "high" })).toBe("high (use global default)");
+  });
+
+  test("a select whose empty marker is the generic one names the resolved value", () => {
+    expect(resolvedDefaultLabel(selectOpt, "global", { reasoningEffort: "high" })).toBe("high (default)");
+  });
+
+  test("a modelPicker names the resolved model", () => {
+    const modelOpt = opt({ field: "model", wireField: "model", kind: "modelPicker" });
+    expect(resolvedDefaultLabel(modelOpt, "global", { model: "anthropic/claude-sonnet-4" })).toBe(
+      "anthropic/claude-sonnet-4 (default)",
+    );
+  });
+
+  test("a schema-supplied custom empty label is NOT rewritten - it already says what unset means", () => {
+    // sandbox's own "" choice is "(inherit)"; the Go "(default: off)" family
+    // likewise stays verbatim (out of scope for resolved labels).
+    const sandboxOpt = opt({
+      field: "sandbox",
+      wireField: "sandbox",
+      kind: "select",
+      choices: [
+        { value: "", label: "(inherit)" },
+        { value: "off", label: "off" },
+      ],
+    });
+    expect(resolvedDefaultLabel(sandboxOpt, "global", { sandbox: "workspace-write" })).toBeUndefined();
+    const continuationOpt = opt({
+      field: "openai_responses_continuation",
+      wireField: "openAIResponsesContinuation",
+      kind: "select",
+      choices: [
+        { value: "", label: "(default: off)" },
+        { value: "off", label: "off" },
+      ],
+    });
+    expect(resolvedDefaultLabel(continuationOpt, "global", { openAIResponsesContinuation: "auto" })).toBeUndefined();
   });
 });
 

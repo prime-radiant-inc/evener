@@ -166,6 +166,23 @@ test("a disabled reasoning row is read-only and exposes no picker affordance", (
   expect(row.textContent).not.toContain("›");
 });
 
+// The Reasoning effort row's resting label is looked up by value in the same
+// options list the desktop Effort select renders (Spawn.tsx's effortOptions),
+// so once launch/resolve names the inherited effort there - "high (default)"
+// - the row says it too, with no mobile-side code of its own.
+test("the reasoning row inherits a resolved-default label from its options list", () => {
+  renderRows({
+    reasoningEffort: "",
+    reasoningOptions: [
+      { value: "", label: "high (default)" },
+      { value: "low", label: "low" },
+    ],
+  });
+
+  const row = screen.getByTestId("mobile-spawn-config").querySelector('[data-label="Reasoning effort"]');
+  expect(row?.textContent).toContain("high (default)");
+});
+
 test("plugin sheet stays open across toggles, Done applies, and Cancel restores focus", async () => {
   const user = userEvent.setup();
   const onPluginSelectionChange = vi.fn();

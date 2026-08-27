@@ -72,6 +72,12 @@ export interface ProjectSectionProps {
 export function ProjectSection(_props: ProjectSectionProps) {
   const cwd = useQueryCwd();
   const [load, setLoad] = useState<LoadState>({ phase: "loading" });
+  // The effective layer of a best-effort resolve(cwd): unset fields whose
+  // empty marker is generic prepend their entry here ("high (use global
+  // default)"). Undefined until the resolve lands, on a resolve failure, and
+  // cleared on every cwd change so one project's labels never leak into the
+  // next project's form.
+  const [resolvedDefaults, setResolvedDefaults] = useState<LaunchConfigLayer | undefined>(undefined);
 
   // useConnectedEffect (not a bare useEffect): a direct deep link to
   // /settings/project?cwd= can mount this section before AppShell's own
@@ -83,12 +89,20 @@ export function ProjectSection(_props: ProjectSectionProps) {
     async (isCancelled) => {
       if (!cwd) return;
       setLoad({ phase: "loading" });
+      setResolvedDefaults(undefined);
       try {
         const schema = await launchConfigStore.getState().schema();
         const current = await launchConfigStore.getState().getLayer(cwd, "project");
         const globalDefaults = await launchConfigStore.getState().getLayer(cwd, "global");
         if (isCancelled()) return;
         setLoad({ phase: "ready", options: schema.options, current, globalDefaults });
+        try {
+          const resolved = await launchConfigStore.getState().resolve(cwd);
+          if (!isCancelled()) setResolvedDefaults(resolved.effective);
+        } catch {
+          // non-fatal: the form is fully usable with the plain
+          // "(use global default)" markers
+        }
       } catch (err) {
         if (!isCancelled()) setLoad({ phase: "error", message: friendlyErrorMessage(err) });
       }
@@ -124,9 +138,11 @@ export function ProjectSection(_props: ProjectSectionProps) {
           layer="project"
           current={load.current}
           globalDefaults={load.globalDefaults}
+          resolvedDefaults={resolvedDefaults}
           successToast="Project launch settings saved"
           validatePath={(path, kind) => launchConfigStore.getState().validatePath(path, kind)}
           onSave={(config) => launchConfigStore.getState().setLayer(cwd, "project", config)}
+          onSaved={(resolved) => setResolvedDefaults(resolved.effective)}
         />
       )}
     </div>

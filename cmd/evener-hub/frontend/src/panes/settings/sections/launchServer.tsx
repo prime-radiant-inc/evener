@@ -58,6 +58,11 @@ export interface LaunchServerSectionProps {
 export function LaunchServerSection(_props: LaunchServerSectionProps) {
   const [load, setLoad] = useState<LoadState>({ phase: "loading" });
   const [diagnostics, setDiagnostics] = useState<LaunchConfigDiagnostic[]>([]);
+  // The effective layer of the same resolve() that seeds the diagnostics
+  // panel: unset fields whose empty marker is generic prepend their entry
+  // here ("high (default)"). Undefined until the resolve lands - and forever,
+  // if it fails (the same non-fatal contract as the diagnostics).
+  const [resolvedDefaults, setResolvedDefaults] = useState<LaunchConfigLayer | undefined>(undefined);
 
   // useConnectedEffect (not a bare useEffect): a direct deep link to
   // /settings/launch-evener can mount this section before AppShell's own
@@ -73,9 +78,13 @@ export function LaunchServerSection(_props: LaunchServerSectionProps) {
       setLoad({ phase: "ready", options: schema.options, current });
       try {
         const resolved = await launchConfigStore.getState().resolve("/");
-        if (!isCancelled()) setDiagnostics(resolved.diagnostics ?? []);
+        if (!isCancelled()) {
+          setDiagnostics(resolved.diagnostics ?? []);
+          setResolvedDefaults(resolved.effective);
+        }
       } catch {
         // non-fatal: the form is fully usable without the diagnostics hint
+        // and the resolved-default labels
       }
     } catch (err) {
       if (!isCancelled()) setLoad({ phase: "error", message: friendlyErrorMessage(err) });
@@ -97,10 +106,14 @@ export function LaunchServerSection(_props: LaunchServerSectionProps) {
             options={load.options}
             layer="global"
             current={load.current}
+            resolvedDefaults={resolvedDefaults}
             successToast="Launch defaults saved"
             validatePath={(path, kind) => launchConfigStore.getState().validatePath(path, kind)}
             onSave={(config) => launchConfigStore.getState().setLayer("/", "global", config)}
-            onSaved={(resolved) => setDiagnostics(resolved.diagnostics ?? [])}
+            onSaved={(resolved) => {
+              setDiagnostics(resolved.diagnostics ?? []);
+              setResolvedDefaults(resolved.effective);
+            }}
           />
         </>
       )}

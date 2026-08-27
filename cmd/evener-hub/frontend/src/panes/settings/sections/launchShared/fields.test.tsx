@@ -369,6 +369,124 @@ describe("ScalarField: boolean renders a literal true/false 3-state select", () 
   });
 });
 
+describe("ScalarField: resolved-default labels", () => {
+  const booleanOption = textOption({
+    field: "sandbox_net",
+    wireField: "sandboxNet",
+    label: "Sandbox network egress",
+    kind: "boolean",
+  });
+  const reasoningOption = textOption({
+    field: "reasoning_effort",
+    wireField: "reasoningEffort",
+    label: "Reasoning effort",
+    kind: "select",
+    choices: [
+      { value: "", label: "(default)" },
+      { value: "high", label: "high" },
+      { value: "max", label: "max" },
+    ],
+  });
+
+  test("a boolean's empty option names the resolved value in true/false wording", () => {
+    render(
+      <ScalarField
+        option={booleanOption}
+        layer="global"
+        value=""
+        onChange={() => {}}
+        resolvedDefaults={{ sandboxNet: true }}
+      />,
+    );
+    const select = screen.getByLabelText("Sandbox network egress") as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["true (default)", "true", "false"]);
+  });
+
+  test("a select's empty option names the resolved value, with the layer's own marker wording", () => {
+    render(
+      <ScalarField
+        option={reasoningOption}
+        layer="global"
+        value=""
+        onChange={() => {}}
+        resolvedDefaults={{ reasoningEffort: "high" }}
+      />,
+    );
+    const globalSelect = screen.getByLabelText("Reasoning effort") as HTMLSelectElement;
+    expect(Array.from(globalSelect.options).map((o) => o.textContent)).toEqual(["high (default)", "high", "max"]);
+    cleanup();
+
+    render(
+      <ScalarField
+        option={reasoningOption}
+        layer="project"
+        value=""
+        onChange={() => {}}
+        resolvedDefaults={{ reasoningEffort: "high" }}
+      />,
+    );
+    const projectSelect = screen.getByLabelText("Reasoning effort") as HTMLSelectElement;
+    expect(Array.from(projectSelect.options).map((o) => o.textContent)).toEqual([
+      "high (use global default)",
+      "high",
+      "max",
+    ]);
+  });
+
+  test("a modelPicker's closed trigger names the resolved model", () => {
+    render(
+      <ScalarField
+        option={modelPickerOption()}
+        layer="global"
+        value=""
+        onChange={() => {}}
+        resolvedDefaults={{ model: "anthropic/claude-sonnet-4" }}
+      />,
+    );
+    expect(screen.getByRole("button", { name: /change model/i }).textContent).toContain(
+      "anthropic/claude-sonnet-4 (default)",
+    );
+  });
+
+  test("a radio with a schema-supplied custom empty label is left unchanged", () => {
+    render(
+      <ScalarField
+        option={textOption({
+          field: "sandbox",
+          wireField: "sandbox",
+          label: "Sandbox",
+          kind: "radio",
+          choices: [
+            { value: "", label: "(inherit)" },
+            { value: "off", label: "off" },
+            { value: "workspace-write", label: "workspace-write" },
+          ],
+        })}
+        layer="global"
+        value=""
+        onChange={() => {}}
+        resolvedDefaults={{ sandbox: "workspace-write" }}
+      />,
+    );
+    const options = screen.getAllByRole("radio");
+    expect(options.map((o) => o.textContent)).toEqual(["(inherit)", "off", "workspace-write"]);
+  });
+
+  test("an unset field the effective layer doesn't set keeps the plain marker", () => {
+    render(
+      <ScalarField
+        option={reasoningOption}
+        layer="global"
+        value=""
+        onChange={() => {}}
+        resolvedDefaults={{ model: "anthropic/claude-sonnet-4" }}
+      />,
+    );
+    const select = screen.getByLabelText("Reasoning effort") as HTMLSelectElement;
+    expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["(default)", "high", "max"]);
+  });
+});
+
 describe("ScalarField: radio renders RadioGroup bare (no FormRow double-labeling)", () => {
   test("renders a radiogroup with the schema's own choices plus the dedup'd empty entry", () => {
     render(

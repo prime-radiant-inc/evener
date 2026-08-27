@@ -56,6 +56,12 @@ export interface AdvancedOptionsProps {
   /** Rendered first inside the expanded panel, ahead of the schema controls
    * (9ct0: hosts the Access-mode field moved in from the top-level bar). */
   children?: ReactNode;
+  /** The effective layer of the pane's own launch/resolve for the current
+   * cwd (undefined until it lands or after it fails): a control whose unset
+   * state reads "(default)" prepends its entry here - "On (default)",
+   * "high (default)", "openai/gpt-5 (default)" - so the empty marker names
+   * what a session started now would actually inherit. */
+  resolvedDefaults?: LaunchConfigLayer;
 }
 
 export function AdvancedOptions({
@@ -66,6 +72,7 @@ export function AdvancedOptions({
   loadCatalog,
   complete,
   children,
+  resolvedDefaults,
 }: AdvancedOptionsProps) {
   const [open, setOpen] = useState(false);
   const [values, setValues] = useState<AdvancedValues>({});
@@ -130,6 +137,7 @@ export function AdvancedOptions({
               loadCatalog={loadCatalog}
               complete={complete}
               validatePath={validatePath}
+              resolvedDefaults={resolvedDefaults}
               onScalar={(v) => updateScalar(opt, v)}
               onValue={(field) => update(opt.wireField, field)}
             />
@@ -164,8 +172,33 @@ interface ControlProps {
   complete: (prefix: string, includeFiles: boolean) => Promise<string[]>;
   /** Gates a pathList add (the scalar path kinds validate through onScalar). */
   validatePath: (path: string, kind: string) => Promise<PathValidation>;
+  resolvedDefaults?: LaunchConfigLayer;
   onScalar: (value: string) => void;
   onValue: (field: AdvancedFieldValue) => void;
+}
+
+/** The effective layer's raw value for this field, or undefined when no layer
+ * sets it (or the resolve hasn't landed) - the source for every "<value>
+ * (default)" label below. */
+function resolvedValue(option: LaunchOption, resolvedDefaults: LaunchConfigLayer | undefined): unknown {
+  if (!resolvedDefaults) return undefined;
+  return (resolvedDefaults as Record<string, unknown>)[option.wireField];
+}
+
+/** The "<value> (default)" label for an unset string-valued control, or plain
+ * "(default)" when the effective layer doesn't set the field. */
+function stringDefaultLabel(option: LaunchOption, resolvedDefaults: LaunchConfigLayer | undefined): string {
+  const value = resolvedValue(option, resolvedDefaults);
+  return typeof value === "string" && value !== "" ? `${value} (default)` : "(default)";
+}
+
+/** The "<On|Off> (default)" label for an unset boolean control - the panel's
+ * own On/Off wording, matching the set values' display labels. */
+function booleanDefaultLabel(option: LaunchOption, resolvedDefaults: LaunchConfigLayer | undefined): string {
+  const value = resolvedValue(option, resolvedDefaults);
+  if (value === true) return "On (default)";
+  if (value === false) return "Off (default)";
+  return "(default)";
 }
 
 /** The schema's browsable path kinds, mapped onto the widget's. A "command"
@@ -182,7 +215,17 @@ function pathFieldKind(pathKind: string | undefined): PathFieldKind | null {
   }
 }
 
-function Control({ option, value, error, loadCatalog, complete, validatePath, onScalar, onValue }: ControlProps) {
+function Control({
+  option,
+  value,
+  error,
+  loadCatalog,
+  complete,
+  validatePath,
+  resolvedDefaults,
+  onScalar,
+  onValue,
+}: ControlProps) {
   const controlId = useId();
   const current = typeof value?.value === "string" ? value.value : "";
 
@@ -206,7 +249,7 @@ function Control({ option, value, error, loadCatalog, complete, validatePath, on
             value={current === "" ? BOOLEAN_DEFAULT : current}
             onChange={(e) => onScalar(e.target.value === BOOLEAN_DEFAULT ? "" : e.target.value)}
             options={[
-              { value: BOOLEAN_DEFAULT, label: "(default)" },
+              { value: BOOLEAN_DEFAULT, label: booleanDefaultLabel(option, resolvedDefaults) },
               { value: "true", label: "On" },
               { value: "false", label: "Off" },
             ]}
@@ -230,8 +273,14 @@ function Control({ option, value, error, loadCatalog, complete, validatePath, on
             value={current}
             onChange={(e) => onScalar(e.target.value)}
             options={[
-              { value: "", label: "(default)" },
-              ...(option.choices ?? []).map((c) => ({ value: c.value, label: c.label })),
+              // The panel owns the one empty option: the schema ships its own
+              // value:"" choice for some fields (reasoning_effort,
+              // context_strategy), which is dropped here rather than rendered
+              // as a second, indistinguishable "(default)".
+              { value: "", label: stringDefaultLabel(option, resolvedDefaults) },
+              ...(option.choices ?? [])
+                .filter((c) => (c.value ?? "") !== "")
+                .map((c) => ({ value: c.value, label: c.label })),
             ]}
           />
         </FormRow>
@@ -264,7 +313,12 @@ function Control({ option, value, error, loadCatalog, complete, validatePath, on
       return (
         <div className={CLASS.fieldBlock}>
           <span className={CLASS.fieldLabel}>{option.label}</span>
-          <ModelCatalog value={current} onChange={onScalar} loadCatalog={loadCatalog} />
+          <ModelCatalog
+            value={current}
+            onChange={onScalar}
+            loadCatalog={loadCatalog}
+            emptyLabel={stringDefaultLabel(option, resolvedDefaults)}
+          />
           {option.description && <p className={CLASS.fieldHelp}>{option.description}</p>}
         </div>
       );
