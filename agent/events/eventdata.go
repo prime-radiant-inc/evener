@@ -62,27 +62,28 @@ func (ModelChangedData) eventKind() EventKind       { return EventModelChanged }
 func (ReasoningEffortChangedData) eventKind() EventKind {
 	return EventReasoningEffortChanged
 }
-func (TurnLimitData) eventKind() EventKind         { return EventTurnLimit }
-func (LoopDetectionData) eventKind() EventKind     { return EventLoopDetection }
-func (CommunicateData) eventKind() EventKind       { return EventCommunicate }
-func (SkillActivatedData) eventKind() EventKind    { return EventSkillActivated }
-func (ContextCompactionData) eventKind() EventKind { return EventContextCompaction }
-func (CompactionTurnData) eventKind() EventKind    { return EventCompactionTurn }
-func (WarningData) eventKind() EventKind           { return EventWarning }
-func (ErrorData) eventKind() EventKind             { return EventError }
-func (JobStartedData) eventKind() EventKind        { return EventJobStarted }
-func (JobFinishedData) eventKind() EventKind       { return EventJobFinished }
-func (DelegateUpdatedData) eventKind() EventKind   { return EventDelegateUpdated }
-func (PluginLoadedData) eventKind() EventKind      { return EventPluginLoaded }
-func (HookStartData) eventKind() EventKind         { return EventHookStart }
-func (HookEndData) eventKind() EventKind           { return EventHookEnd }
-func (ForkSummaryData) eventKind() EventKind       { return EventForkSummary }
-func (PromptLoadedData) eventKind() EventKind      { return EventPromptLoaded }
-func (RoundTimings) eventKind() EventKind          { return EventRoundTimings }
-func (TurnEndedData) eventKind() EventKind         { return EventTurnEnded }
-func (TurnStartedData) eventKind() EventKind       { return EventTurnStarted }
-func (GoalContinuationData) eventKind() EventKind  { return EventGoalContinuation }
-func (GoalEndedData) eventKind() EventKind         { return EventGoalEnded }
+func (VisionModelChangedData) eventKind() EventKind { return EventVisionModelChanged }
+func (TurnLimitData) eventKind() EventKind          { return EventTurnLimit }
+func (LoopDetectionData) eventKind() EventKind      { return EventLoopDetection }
+func (CommunicateData) eventKind() EventKind        { return EventCommunicate }
+func (SkillActivatedData) eventKind() EventKind     { return EventSkillActivated }
+func (ContextCompactionData) eventKind() EventKind  { return EventContextCompaction }
+func (CompactionTurnData) eventKind() EventKind     { return EventCompactionTurn }
+func (WarningData) eventKind() EventKind            { return EventWarning }
+func (ErrorData) eventKind() EventKind              { return EventError }
+func (JobStartedData) eventKind() EventKind         { return EventJobStarted }
+func (JobFinishedData) eventKind() EventKind        { return EventJobFinished }
+func (DelegateUpdatedData) eventKind() EventKind    { return EventDelegateUpdated }
+func (PluginLoadedData) eventKind() EventKind       { return EventPluginLoaded }
+func (HookStartData) eventKind() EventKind          { return EventHookStart }
+func (HookEndData) eventKind() EventKind            { return EventHookEnd }
+func (ForkSummaryData) eventKind() EventKind        { return EventForkSummary }
+func (PromptLoadedData) eventKind() EventKind       { return EventPromptLoaded }
+func (RoundTimings) eventKind() EventKind           { return EventRoundTimings }
+func (TurnEndedData) eventKind() EventKind          { return EventTurnEnded }
+func (TurnStartedData) eventKind() EventKind        { return EventTurnStarted }
+func (GoalContinuationData) eventKind() EventKind   { return EventGoalContinuation }
+func (GoalEndedData) eventKind() EventKind          { return EventGoalEnded }
 func (SandboxEscalationRequestedData) eventKind() EventKind {
 	return EventSandboxEscalationRequested
 }
@@ -114,6 +115,7 @@ var (
 	_ EventData = TaskUpdatedData{}
 	_ EventData = SessionNameChangedData{}
 	_ EventData = ModelChangedData{}
+	_ EventData = VisionModelChangedData{}
 	_ EventData = ReasoningEffortChangedData{}
 	_ EventData = TurnLimitData{}
 	_ EventData = LoopDetectionData{}
