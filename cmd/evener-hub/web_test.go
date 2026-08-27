@@ -3278,7 +3278,7 @@ func TestWeb_APIHealth(t *testing.T) {
 	if got.Version == "" || got.HubAddr != "127.0.0.1:9180" {
 		t.Fatalf("unexpected health: %+v", got)
 	}
-	if !got.Capabilities.SpawnSchema || !got.Capabilities.TranscriptFollow {
+	if !got.Capabilities.Spawn || !got.Capabilities.TranscriptFollow {
 		t.Fatalf("missing capabilities: %+v", got.Capabilities)
 	}
 }
@@ -3619,63 +3619,6 @@ func TestWeb_ManagedCodexLiveWorkspaceCapabilitiesDoNotExposeMutations(t *testin
 	caps := web.liveWorkspaceCapabilities("codex-managed:th_fake", hubapi.SessionCapabilities{})
 	if caps.Send || caps.Steer || caps.Interrupt || caps.Queue || caps.Clear {
 		t.Fatalf("capabilities=%+v", caps)
-	}
-}
-
-func TestWeb_APISpawnSchema(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{
-		HubAddr: "127.0.0.1:9180",
-		CodexSources: []appsource.CodexSourceConfig{{
-			ID: "codex-local",
-		}},
-		CodexLaunches: []codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}},
-	})
-	req := httptest.NewRequest(http.MethodGet, "/api/spawn-schema", nil)
-	req.Host = "127.0.0.1:9180"
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%q", rec.Code, rec.Body.String())
-	}
-	var got hubapi.SpawnSchema
-	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
-		t.Fatalf("decode: %v", err)
-	}
-	names := map[string]bool{}
-	for _, f := range got.Fields {
-		names[f.Name] = true
-	}
-	for _, want := range []string{"prompt", "harness", "working_dir", "model", "agent", "reasoning_effort"} {
-		if !names[want] {
-			t.Fatalf("schema missing %q: %+v", want, got.Fields)
-		}
-	}
-	harnessValues := []string{}
-	for _, f := range got.Fields {
-		if f.Name == "harness" {
-			harnessValues = f.Values
-		}
-	}
-	if len(harnessValues) != 3 || harnessValues[0] != "evener" || harnessValues[1] != "codex-local" || harnessValues[2] != "codex-managed" {
-		t.Fatalf("harness values=%+v", harnessValues)
-	}
-	effortValues := map[string]bool{}
-	for _, f := range got.Fields {
-		if f.Name == "reasoning_effort" {
-			for _, v := range f.Values {
-				effortValues[v] = true
-			}
-		}
-	}
-	// "none" is offered in the launch schema: in layered launch config it clears
-	// an inherited default (distinct from "(default)" which inherits).
-	for _, want := range []string{"minimal", "low", "medium", "high", "xhigh", "max", "none"} {
-		if !effortValues[want] {
-			t.Fatalf("reasoning_effort schema missing %q: %+v", want, effortValues)
-		}
-	}
-	if names["branch"] || names["access_mode"] {
-		t.Fatalf("schema exposes unsupported field: %+v", got.Fields)
 	}
 }
 

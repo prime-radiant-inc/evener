@@ -100,7 +100,7 @@ if command -v curl >/dev/null 2>&1; then
 	fi
 
 	for route in / /api/health /api/models /api/tree "/api/search?q=x" \
-		/api/spawn-schema /credentials /auth \
+		/credentials /auth \
 		/api/sessions/nonexistent /doc/file /nonexistent-route; do
 		curl -fsS --max-time 5 "$base$route" >/dev/null 2>&1 || true
 	done

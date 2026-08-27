@@ -176,7 +176,6 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/api/pin-sections/", s.handleAPIPinSection)
 	mux.HandleFunc("/api/session-pin", s.handleAPISessionPin)
 	mux.HandleFunc("/api/project/delete", s.handleAPIProjectDelete)
-	mux.HandleFunc("/api/spawn-schema", s.handleAPISpawnSchema)
 	mux.HandleFunc("/api/sessions/", s.handleAPISession)
 
 	mux.HandleFunc("/auth", hubedge.HandleAuth(s.cfg.AuthToken))
