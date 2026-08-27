@@ -7,6 +7,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/modelavailability"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
 )
 
 func registerModelListTool(reg *tool.Registry, s *Session) error {
@@ -28,4 +29,26 @@ func registerModelListTool(reg *tool.Registry, s *Session) error {
 			return s.modelSnapshot.Page(cursor, count, bytes)
 		},
 	})
+}
+
+func enforceModelListJSONLimits(reg *tool.Registry) {
+	if reg == nil {
+		return
+	}
+	registered := reg.Get("model_list")
+	if registered == nil {
+		return
+	}
+
+	override := schema.ToolOutputLimit{Strategy: registered.Limit.Strategy}
+	if registered.Limit.MaxChars < modelavailability.DefaultInlineMaxBytes {
+		override.MaxChars = modelavailability.DefaultInlineMaxBytes
+	}
+	if registered.Limit.MaxLines > 0 && registered.Limit.MaxLines <= modelavailability.DefaultInlineMaxBytes {
+		override.MaxLines = modelavailability.DefaultInlineMaxBytes + 1
+	}
+	if override.MaxChars == 0 && override.MaxLines == 0 {
+		return
+	}
+	reg.OverrideLimits(map[string]schema.ToolOutputLimit{"model_list": override})
 }

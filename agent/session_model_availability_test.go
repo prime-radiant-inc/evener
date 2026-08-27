@@ -405,6 +405,34 @@ func TestModelListToolReturnsEveryChoiceExactlyOnceWithinPageBound(t *testing.T)
 	}
 }
 
+func TestModelListToolPreservesJSONUnderConfiguredOutputLimit(t *testing.T) {
+	models := make([]llm.ModelInfo, modelavailability.DefaultInlineMaxCount)
+	for i := range models {
+		models[i].ID = fmt.Sprintf("model-%02d-%s", i, strings.Repeat("x", 12))
+	}
+	adapter := &modelAvailabilityAdapter{models: models}
+	adapter.name = "openai"
+	client := llm.NewClient()
+	client.Register(adapter)
+	sess, err := NewSession(
+		client,
+		NewOpenAIProfile(models[0].ID),
+		execenv.NewLocalExecutionEnvironment(t.TempDir()),
+		SessionConfig{ToolOutputLimits: map[string]schema.ToolOutputLimit{
+			"model_list": {MaxChars: 64, MaxLines: 1, Strategy: schema.TruncTail},
+		}},
+	)
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	page := executeModelListPage(t, sess, "", modelavailability.DefaultPageMaxCount, 512)
+	if len(page.Choices) == 0 {
+		t.Fatal("model_list returned no choices")
+	}
+}
+
 func TestModelListToolReturnsBoundedEmptyTerminalPage(t *testing.T) {
 	adapter := &modelAvailabilityAdapter{listErr: errors.New("enumeration unavailable")}
 	adapter.name = "openai"
@@ -439,6 +467,9 @@ func executeModelListPage(t *testing.T, sess *Session, cursor string, maxCount, 
 	})
 	if result.IsError {
 		t.Fatalf("model_list: %s", result.Output)
+	}
+	if result.Truncated {
+		t.Fatal("model_list output was generically truncated")
 	}
 	if len([]byte(result.Output)) > maxBytes {
 		t.Fatalf("public model_list output = %d bytes, exceeds %d", len([]byte(result.Output)), maxBytes)
