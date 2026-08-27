@@ -146,10 +146,10 @@ export interface SlashMatchEvaluation {
 }
 
 // evaluateSlashLabel finds the best valid embedding without enumerating all
-// subsequences. It first computes the maximum possible contiguous run (the
-// longest common substring), then considers every matching block of that
-// length. Prefix/suffix bounds represent every embedding that can achieve the
-// winning contiguousness while keeping the work polynomial.
+// subsequences. It considers every contiguous block that can participate in a
+// full embedding, using precomputed prefix/suffix bounds to keep the search
+// polynomial. Unlike an unconstrained longest-common-substring shortcut, a
+// block is scored only when the rest of the query can be embedded around it.
 export function evaluateSlashLabel(rawLabel: string, rawQuery: string): SlashMatchEvaluation {
   const label = rawLabel.toLowerCase();
   const query = rawQuery.toLowerCase();
@@ -157,25 +157,25 @@ export function evaluateSlashLabel(rawLabel: string, rawQuery: string): SlashMat
   const labelLength = label.length;
   let operations = 0;
   if (queryLength === 0 || labelLength === 0) return { embedding: null, operations };
+  const firstCharacter = query[0];
+  if (firstCharacter === undefined) return { embedding: null, operations };
   if (label === query) {
     return { embedding: { start: 0, end: queryLength - 1, longestRun: queryLength }, operations };
   }
 
-  let longestRun = 0;
-  let previousRuns = new Array<number>(labelLength).fill(0);
-  for (let queryIndex = 0; queryIndex < queryLength; queryIndex += 1) {
-    const currentRuns = new Array<number>(labelLength).fill(0);
-    for (let labelIndex = 0; labelIndex < labelLength; labelIndex += 1) {
+  const nextPositions = new Map<string, Array<number | undefined>>();
+  for (const character of new Set(query)) {
+    const row = new Array<number | undefined>(labelLength + 1).fill(undefined);
+    let next: number | undefined;
+    for (let labelIndex = labelLength; labelIndex >= 0; labelIndex -= 1) {
       operations += 1;
-      if (query[queryIndex] !== label[labelIndex]) continue;
-      const previousRun = previousRuns[labelIndex - 1] ?? 0;
-      const run = queryIndex === 0 || labelIndex === 0 ? 1 : previousRun + 1;
-      currentRuns[labelIndex] = run;
-      longestRun = Math.max(longestRun, run);
+      row[labelIndex] = next;
+      if (labelIndex > 0 && label[labelIndex - 1] === character) next = labelIndex - 1;
     }
-    previousRuns = currentRuns;
+    nextPositions.set(character, row);
   }
-  if (longestRun === 0) return { embedding: null, operations };
+  const nextPosition = (character: string, bound: number): number | undefined =>
+    nextPositions.get(character)?.[Math.min(bound, labelLength)];
 
   const fixedEnds = Array.from({ length: labelLength }, () =>
     new Array<number | undefined>(queryLength + 1).fill(undefined),
@@ -183,7 +183,7 @@ export function evaluateSlashLabel(rawLabel: string, rawQuery: string): SlashMat
   for (let start = 0; start < labelLength; start += 1) {
     operations += 1;
     const row = fixedEnds[start];
-    if (!row || label[start] !== query[0]) continue;
+    if (!row || nextPosition(firstCharacter, start) !== start) continue;
     row[1] = start;
     for (let length = 2; length <= queryLength; length += 1) {
       operations += 1;
@@ -191,9 +191,9 @@ export function evaluateSlashLabel(rawLabel: string, rawQuery: string): SlashMat
       if (previousEnd === undefined) break;
       const character = query[length - 1];
       if (character === undefined) break;
-      const end = label.indexOf(character, previousEnd + 1);
+      const end = nextPosition(character, previousEnd + 1);
       operations += 1;
-      if (end < 0) break;
+      if (end === undefined) break;
       row[length] = end;
     }
   }
@@ -204,42 +204,36 @@ export function evaluateSlashLabel(rawLabel: string, rawQuery: string): SlashMat
   for (let length = 1; length <= queryLength; length += 1) {
     const row = latestStarts[length];
     if (!row) continue;
+    const startsByEnd = Array.from({ length: labelLength }, () => [] as number[]);
+    for (let start = 0; start < labelLength; start += 1) {
+      const end = fixedEnds[start]?.[length];
+      if (end !== undefined) startsByEnd[end]?.push(start);
+    }
+    let latest: number | undefined;
     for (let bound = 1; bound <= labelLength; bound += 1) {
-      for (let start = bound - 1; start >= 0; start -= 1) {
-        operations += 1;
-        const end = fixedEnds[start]?.[length];
-        if (end !== undefined && end < bound) {
-          row[bound] = start;
-          break;
-        }
-      }
+      operations += 1;
+      for (const start of startsByEnd[bound - 1] ?? []) latest = Math.max(latest ?? -1, start);
+      row[bound] = latest;
     }
   }
 
   const suffixEnds = Array.from({ length: queryLength + 1 }, () =>
     new Array<number | undefined>(labelLength + 1).fill(undefined),
   );
-  for (let start = 0; start < queryLength; start += 1) {
+  const emptySuffix = suffixEnds[queryLength];
+  if (emptySuffix) {
+    for (let bound = 0; bound <= labelLength; bound += 1) emptySuffix[bound] = bound - 1;
+  }
+  for (let start = queryLength - 1; start >= 0; start -= 1) {
     const row = suffixEnds[start];
-    if (!row) continue;
+    const nextRow = suffixEnds[start + 1];
+    if (!row || !nextRow) continue;
     for (let bound = 0; bound <= labelLength; bound += 1) {
-      let end = bound - 1;
-      let matched = true;
-      for (let queryIndex = start; queryIndex < queryLength; queryIndex += 1) {
-        operations += 1;
-        const character = query[queryIndex];
-        if (character === undefined) {
-          matched = false;
-          break;
-        }
-        end = label.indexOf(character, end + 1);
-        operations += 1;
-        if (end < 0) {
-          matched = false;
-          break;
-        }
-      }
-      if (matched) row[bound] = end;
+      operations += 1;
+      const character = query[start];
+      if (character === undefined) continue;
+      const first = nextPosition(character, bound);
+      if (first !== undefined) row[bound] = nextRow[first + 1];
     }
   }
 
@@ -247,23 +241,31 @@ export function evaluateSlashLabel(rawLabel: string, rawQuery: string): SlashMat
   const consider = (candidate: SlashEmbedding) => {
     if (!best || compareEmbeddings(candidate, best) < 0) best = candidate;
   };
-  for (let queryStart = 0; queryStart + longestRun <= queryLength; queryStart += 1) {
-    const block = query.slice(queryStart, queryStart + longestRun);
-    for (let labelStart = 0; labelStart + longestRun <= labelLength; labelStart += 1) {
-      operations += 1;
-      if (!label.startsWith(block, labelStart)) continue;
-      const blockEnd = labelStart + longestRun - 1;
-      const end =
-        queryStart + longestRun === queryLength ? blockEnd : suffixEnds[queryStart + longestRun]?.[blockEnd + 1];
-      if (end === undefined) continue;
+  for (let queryStart = 0; queryStart < queryLength; queryStart += 1) {
+    for (let labelStart = 0; labelStart < labelLength; labelStart += 1) {
+      let blockLength = 0;
+      while (
+        queryStart + blockLength < queryLength &&
+        labelStart + blockLength < labelLength &&
+        query[queryStart + blockLength] === label[labelStart + blockLength]
+      ) {
+        operations += 1;
+        blockLength += 1;
+        const blockEnd = labelStart + blockLength - 1;
+        const end =
+          queryStart + blockLength === queryLength ? blockEnd : suffixEnds[queryStart + blockLength]?.[blockEnd + 1];
+        if (end === undefined) continue;
 
-      const start = queryStart === 0 ? labelStart : latestStarts[queryStart]?.[labelStart];
-      if (start !== undefined) consider({ start, end, longestRun });
+        const start = queryStart === 0 ? labelStart : latestStarts[queryStart]?.[labelStart];
+        if (start !== undefined) consider({ start, end, longestRun: blockLength });
 
-      const beginningPrefixEnd = fixedEnds[0]?.[queryStart];
-      const begins =
-        queryStart === 0 ? labelStart === 0 : beginningPrefixEnd !== undefined && beginningPrefixEnd < labelStart;
-      if (begins && (start !== 0 || queryStart !== 0)) consider({ start: 0, end, longestRun });
+        const beginningPrefixEnd = fixedEnds[0]?.[queryStart];
+        const begins =
+          queryStart === 0 ? labelStart === 0 : beginningPrefixEnd !== undefined && beginningPrefixEnd < labelStart;
+        if (begins && (start !== 0 || queryStart !== 0)) {
+          consider({ start: 0, end, longestRun: blockLength });
+        }
+      }
     }
   }
   return { embedding: best, operations };

@@ -219,6 +219,11 @@ test("repeated characters retain a beginning embedding that catches up later", (
   expect(filterSlashMenuItems(items, "abba").map((item) => item.key)).toEqual(["repeated", "competitor"]);
 });
 
+test("a full repeated subsequence is preserved when its best contiguous block is interior", () => {
+  const result = evaluateSlashLabel("babaa", "baaa");
+  expect(result.embedding).toEqual({ start: 0, end: 4, longestRun: 2 });
+});
+
 test("command and skill rows with the same name retain distinct keys", () => {
   const items = mergeSlashCommands(
     [builtin("review", "review command")],
