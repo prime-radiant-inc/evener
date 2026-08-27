@@ -7,13 +7,12 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
-import type { TreeNode as ApiTreeNode } from "../../stores/tree";
+import type { NavigationSessionSummary } from "../../protocol/types.gen";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
 import { SessionMenu, type SessionMenuActions, type SessionMenuProps } from "./SessionMenu";
 
-function treeNode(overrides: Partial<ApiTreeNode> = {}): ApiTreeNode {
+function treeNode(overrides: Partial<NavigationSessionSummary> = {}): NavigationSessionSummary {
   return {
-    row_id: "row_1",
     ref: "ref_a",
     host_id: "local",
     session_id: "sess_a",

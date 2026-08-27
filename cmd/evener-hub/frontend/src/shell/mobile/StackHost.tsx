@@ -149,7 +149,7 @@ export interface StackHostProps {
   // rail-agnostic, exactly like TreeDrawer.
   railSlot?: ReactNode;
   // True while the shell has parsed the address bar's route but cannot place
-  // it yet — a /s/{ref} deep link waits for /api/tree before it can tell a
+  // it yet — a /s/{ref} deep link waits for its navigation location resource before it can tell a
   // nested ref from a top-level one (AppShell's openRouteAsPane). AppShell
   // owns that condition and passes it down; StackHost's only duty is not to
   // publish a URL over a route in that state. See the URL-sync effect.
@@ -254,7 +254,7 @@ export function StackHost({ railSlot, routeDeferred = false }: StackHostProps = 
   // first (the common case in the real app).
   //
   // routeDeferred suspends the sync (kata bbsv): a deep-linked session route
-  // takes a beat to place (it waits on /api/tree, which cannot resolve inside
+  // takes a beat to place (it waits on its navigation location resource, which cannot resolve inside
   // the first commit), and the backstop below fills that beat with welcome.
   // Publishing welcome's "/" then would overwrite the very deep link the
   // shell is still working on, discarding it before the tree it waits for

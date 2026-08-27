@@ -52,6 +52,13 @@ const JSON_INIT = (body: unknown) => ({
 });
 
 describe("named pin sections", () => {
+  test("returns the backend navigation receipt without discarding its targets", async () => {
+    const navigation = { generation_id: "generation-2", targets: [{ kind: "pin_catalog" as const, revision: 7 }] };
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true, navigation }));
+
+    await expect(setFavorite("project", "p", true)).resolves.toEqual({ ok: true, navigation });
+  });
+
   test("lists all pin sections with same-origin credentials and parses the response", async () => {
     const sections = [{ id: "section/one", name: "Research", member_count: 2 }];
     fetchMock.mockResolvedValueOnce(jsonResponse(sections));
@@ -118,9 +125,10 @@ describe("named pin sections", () => {
 
   test("renames through an encoded section URL and returns the canonical summary", async () => {
     const section = { id: "section/one", name: "New name", member_count: 3 };
-    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true, changed: true, section }));
+    const navigation = { generation_id: "g", targets: [] };
+    fetchMock.mockResolvedValueOnce(jsonResponse({ ok: true, changed: true, section, navigation }));
 
-    await expect(renamePinSection("section/one", "New name")).resolves.toEqual(section);
+    await expect(renamePinSection("section/one", "New name")).resolves.toEqual({ section, navigation });
     expect(fetchMock).toHaveBeenCalledWith(
       "/api/pin-sections/section%2Fone",
       expect.objectContaining({

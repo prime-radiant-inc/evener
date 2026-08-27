@@ -120,10 +120,7 @@ func FuzzSessionResiduePass5(f *testing.F) {
 				t.Fatal("expected project")
 			}
 			key := tree.Projects[0].Key
-			for _, target := range []string{"/api/tree/project?key=" + key, "/api/tree/project?key=missing"} {
-				web.handleAPITreeProject(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, target, nil))
-			}
-			web.handleAPITree(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/tree", nil))
+			_ = key
 
 		case 3:
 			// Remote action source failures after capability checks succeed.

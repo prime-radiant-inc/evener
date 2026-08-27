@@ -2,7 +2,7 @@
 
 **What this covers**: the server-side project classification in
 `cmd/evener-hub/internal/hubcore/tree.go` (`TreeProject.IsArchived`/`IsTestRun`,
-`:126-134,939-940`) and `/api/tree`'s projection of it into
+`:126-134,939-940`) and `/api/navigation`'s projection of it into
 `archived_projects[]` / `test_runs[]`, where TestRuns takes precedence over
 Archived (`navigationProjectBuckets`, `cmd/evener-hub/web_api_tree.go#navigationProjectBuckets`;
 the ordered emit at `:161-176`). Covers the full archive→unarchive round trip,
@@ -16,6 +16,8 @@ drive `sidebar.js`'s `pushArchivedSection`/`pushTestRunsSection`, poke
 `window.EvenerSidebar.refresh()`, and match `[data-row-id="section:test-runs"]`.
 All of that died with the vanilla frontend (`660376f78`); the rail is React
 (`cmd/evener-hub/frontend/src/shell/rail/`) and none of those handles exist.
+
+**Navigation resource request counts are bounded** (`docs/superpowers/specs/2026-08-25-tree-transport-optimization-design.md`): archive/unarchive/delete mutations trigger at most one request per affected loaded navigation representation (manifest, catalog page, project root); an idle rail issues zero navigation HTTP requests after hydration, and a mutation plus its AppWire notification do not duplicate a resource fetch.
 
 **Two section shapes, and only one of them is a disclosure** — this is the
 biggest change from the card's old text:
@@ -50,15 +52,15 @@ a browser, and only assert what the rail renders.
 
 1. Spawn a session in `$A` (plain `POST /api/spawn`, no `launch_overrides`),
    let it finish, then `POST /api/sessions/local:$SID_A/shutdown`.
-   `GET /api/tree`: `$A`'s project key is in `projects[]`.
+   `GET /api/navigation`: `$A`'s project key is in `projects[]`.
 2. Spawn a session in `$B` with
    `launch_overrides:{env:{EVENER_SESSION_ORIGIN:"test"}}`, let it finish, then
-   `POST /api/sessions/local:$SID_B/shutdown`. `GET /api/tree`: `$B`'s key is
+   `POST /api/sessions/local:$SID_B/shutdown`. `GET /api/navigation`: `$B`'s key is
    in `test_runs[]` and in neither `projects[]` nor `archived_projects[]`.
 3. **Archive `$A`.** `POST /api/archive` with
-   `{"kind":"project","id":"<A key>","archived":true,"working_dir":"<A working_dir from /api/tree>"}`.
-   Re-`GET /api/tree`.
-4. **Unarchive `$A`.** Same POST with `"archived":false`. Re-`GET /api/tree`.
+   `{"kind":"project","id":"<A key>","archived":true,"working_dir":"<A working_dir from /api/navigation>"}`.
+   Re-`GET /api/navigation`.
+4. **Unarchive `$A`.** Same POST with `"archived":false`. Re-`GET /api/navigation`.
 5. **Browser, baseline.** Navigate to `/auth?token=$TOKEN&next=/`. Read the
    section shapes:
    ```javascript
@@ -71,10 +73,10 @@ a browser, and only assert what the rail renders.
    })
    ```
 6. **Archive `$A` again** (step 3's POST) and let the rail refetch on its own —
-   the archive handler broadcasts `evener/tree/changed` unconditionally
+   the archive handler broadcasts `navigation invalidation` unconditionally
    (`web_api_archive.go:71` → `notifyMutation`, `web_api_tree.go#notifyMutation`) and
    the store refetches on a 250ms debounce
-   (`stores/tree.ts:443-450,455-467`). Re-read step 5's probe,
+   (`stores/navigation/store.ts:443-450,455-467`). Re-read step 5's probe,
    then click the `Archived sessions (…)` button and confirm `$A`'s project row
    appears inside it.
 7. Open `$A`'s row menu — the `⋯` trigger is
@@ -88,8 +90,8 @@ a browser, and only assert what the rail renders.
    a dialog. (If you do want the UI path, see Sharp edges: it is a real
    in-app `Dialog`, never `window.confirm`.)
 9. **Delete `$B`.** `POST /api/project/delete` with
-   `{"key":"<B key>","working_dir":"<B working_dir from /api/tree>"}`.
-10. `GET /api/tree` and check the disk under the isolated state root.
+   `{"key":"<B key>","working_dir":"<B working_dir from /api/navigation>"}`.
+10. `GET /api/navigation` and check the disk under the isolated state root.
 
 ## Expected
 
@@ -166,7 +168,7 @@ a browser, and only assert what the rail renders.
   project is expanded too. An ended session's project inside a freshly
   expanded section legitimately shows a header with nothing under it.
 - **An archived project's sessions are not in the payload.** They ship as
-  stubs and lazy-load from `/api/tree/project?key=<key>` on the project row's
+  stubs and lazy-load from `/api/navigation/project?key=<key>` on the project row's
   first expand (`Rail.tsx:241-253`, handler at `web_api_tree.go:285-322`).
   Until that resolves the row has a single placeholder child
   (`railNodes.ts:365-367`) rendering `Loading…` with `role="status"`

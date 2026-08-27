@@ -16,6 +16,12 @@ type ServerConfig struct {
 	Version    string
 	SourceID   string
 	Features   appwire.FeatureSet
+	// Navigation is absent until a server supports navigation HTTP resources.
+	Navigation *appwire.NavigationCapability
+	// NavigationCapability is evaluated for every initialize request. It lets a
+	// hub advertise a current generation/sequence rather than freezing those
+	// values when its RPC server was constructed.
+	NavigationCapability func() *appwire.NavigationCapability
 	// AdapterNativeInitialize keeps the shared JSON-RPC server usable in tests
 	// for adapters whose upstream protocol owns a different initialize shape.
 	AdapterNativeInitialize bool
@@ -254,12 +260,25 @@ func (s *Server) initialize(_ context.Context, params appwire.InitializeParams) 
 	if s.cfg.AdapterNativeInitialize {
 		protocolVersion = ""
 	}
+	capability := s.cfg.Navigation
+	if s.cfg.NavigationCapability != nil {
+		capability = s.cfg.NavigationCapability()
+	}
 	return appwire.InitializeResponse{
 		ServerInfo:      appwire.ServerInfo{Name: s.cfg.ServerName, Version: s.cfg.Version},
 		ProtocolVersion: protocolVersion,
 		SourceID:        s.cfg.SourceID,
 		Features:        s.cfg.Features,
+		Navigation:      navigationCapability(capability),
 	}, nil
+}
+
+func navigationCapability(capability *appwire.NavigationCapability) *appwire.NavigationCapability {
+	if capability == nil {
+		return nil
+	}
+	clone := *capability
+	return &clone
 }
 
 type Connection struct {

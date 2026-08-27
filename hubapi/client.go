@@ -5,8 +5,10 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
+	"strconv"
 	"strings"
 
 	"primeradiant.com/evener/agent/task"
@@ -17,6 +19,28 @@ type Client struct {
 	baseURL    *url.URL
 	httpClient *http.Client
 }
+
+// ConditionalResult is the result of a conditional navigation request.
+// Value is the zero value when NotModified is true.
+type ConditionalResult[T any] struct {
+	NotModified bool
+	ETag        string
+	Value       T
+}
+
+// HTTPError describes a non-successful HTTP response from the hub.
+type HTTPError struct {
+	Status   int
+	Response ErrorResponse
+}
+
+func (e *HTTPError) Error() string {
+	if e.Response.Error != "" {
+		return fmt.Sprintf("hub returned %d: %s", e.Status, e.Response.Error)
+	}
+	return fmt.Sprintf("hub returned %d", e.Status)
+}
+func (e *HTTPError) StatusCode() int { return e.Status }
 
 func NewClient(base string, httpClient *http.Client) (*Client, error) {
 	if !strings.Contains(base, "://") {
@@ -65,6 +89,145 @@ func (c *Client) get(ctx context.Context, path string, out any) error {
 	return json.NewDecoder(resp.Body).Decode(out)
 }
 
+func conditionalGet[T any](ctx context.Context, c *Client, target, etag string) (ConditionalResult[T], error) {
+	var result ConditionalResult[T]
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, target, nil)
+	if err != nil {
+		return result, err
+	}
+	if etag != "" {
+		req.Header.Set("If-None-Match", etag)
+	}
+	resp, err := c.httpClient.Do(req)
+	if err != nil {
+		return result, err
+	}
+	defer resp.Body.Close() //nolint:errcheck // response body close is not actionable
+	result.ETag = resp.Header.Get("ETag")
+	if resp.StatusCode == http.StatusNotModified {
+		if result.ETag == "" {
+			result.ETag = etag
+		}
+		return ConditionalResult[T]{NotModified: true, ETag: result.ETag}, nil
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		var response ErrorResponse
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, navigationDecodeLimit+1))
+		if readErr == nil {
+			_ = json.Unmarshal(body, &response)
+		}
+		return result, &HTTPError{Status: resp.StatusCode, Response: response}
+	}
+	body, err := io.ReadAll(io.LimitReader(resp.Body, navigationDecodeLimit+1))
+	if err != nil {
+		return result, err
+	}
+	if len(body) > navigationDecodeLimit {
+		return result, fmt.Errorf("navigation response exceeds %d bytes", navigationDecodeLimit)
+	}
+	if err := json.Unmarshal(body, &result.Value); err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+const navigationDecodeLimit = 2 << 20
+
+func navigationPath(path string, values url.Values) string {
+	if encoded := values.Encode(); encoded != "" {
+		return path + "?" + encoded
+	}
+	return path
+}
+
+func navigationSegment(value string) string { return url.PathEscape(value) }
+
+func navigationGet[T any](ctx context.Context, c *Client, path, etag string, query url.Values) (ConditionalResult[T], error) {
+	targetPath := navigationPath(path, query)
+	u := *c.baseURL
+	basePath := strings.TrimRight(c.baseURL.Path, "/")
+	escapedPath := basePath + "/" + strings.TrimLeft(strings.SplitN(targetPath, "?", 2)[0], "/")
+	decoded, err := url.PathUnescape(escapedPath)
+	if err != nil {
+		return ConditionalResult[T]{}, err
+	}
+	u.Path = decoded
+	u.RawPath = escapedPath
+	if encoded := query.Encode(); encoded != "" {
+		u.RawQuery = encoded
+	} else {
+		u.RawQuery = ""
+	}
+	return conditionalGet[T](ctx, c, u.String(), etag)
+}
+
+func (c *Client) NavigationManifest(ctx context.Context, etag string) (ConditionalResult[NavigationManifest], error) {
+	return navigationGet[NavigationManifest](ctx, c, "/api/navigation", etag, nil)
+}
+
+func (c *Client) NavigationSection(ctx context.Context, section string, offset, limit uint32, etag string) (ConditionalResult[NavigationSectionResource], error) {
+	query, err := navigationPageQuery(offset, limit, 50)
+	if err != nil {
+		return ConditionalResult[NavigationSectionResource]{}, err
+	}
+	return navigationGet[NavigationSectionResource](ctx, c, "/api/navigation/sections/"+navigationSegment(section), etag, query)
+}
+
+func (c *Client) NavigationPinSections(ctx context.Context, offset, limit uint32, etag string) (ConditionalResult[NavigationPinSectionCatalog], error) {
+	query, err := navigationPageQuery(offset, limit, 100)
+	if err != nil {
+		return ConditionalResult[NavigationPinSectionCatalog]{}, err
+	}
+	return navigationGet[NavigationPinSectionCatalog](ctx, c, "/api/navigation/pin-sections", etag, query)
+}
+
+func (c *Client) NavigationPinSection(ctx context.Context, id string, offset, limit uint32, etag string) (ConditionalResult[NavigationSectionResource], error) {
+	query, err := navigationPageQuery(offset, limit, 50)
+	if err != nil {
+		return ConditionalResult[NavigationSectionResource]{}, err
+	}
+	return navigationGet[NavigationSectionResource](ctx, c, "/api/navigation/pin-sections/"+navigationSegment(id), etag, query)
+}
+
+func (c *Client) NavigationCatalog(ctx context.Context, catalog string, offset, limit uint32, etag string) (ConditionalResult[NavigationProjectCatalog], error) {
+	query, err := navigationPageQuery(offset, limit, 100)
+	if err != nil {
+		return ConditionalResult[NavigationProjectCatalog]{}, err
+	}
+	return navigationGet[NavigationProjectCatalog](ctx, c, "/api/navigation/catalogs/"+navigationSegment(catalog), etag, query)
+}
+
+func (c *Client) NavigationProject(ctx context.Context, key, etag string) (ConditionalResult[NavigationProjectResource], error) {
+	return navigationGet[NavigationProjectResource](ctx, c, "/api/navigation/projects/"+navigationSegment(key), etag, nil)
+}
+
+func (c *Client) NavigationProjectPage(ctx context.Context, key, tier string, offset, limit uint32, etag string) (ConditionalResult[NavigationProjectPage], error) {
+	query, err := navigationPageQuery(offset, limit, 50)
+	if err != nil {
+		return ConditionalResult[NavigationProjectPage]{}, err
+	}
+	query.Set("tier", tier)
+	return navigationGet[NavigationProjectPage](ctx, c, "/api/navigation/projects/"+navigationSegment(key), etag, query)
+}
+
+func (c *Client) NavigationSessionLocation(ctx context.Context, ref, etag string) (ConditionalResult[NavigationSessionLocation], error) {
+	return navigationGet[NavigationSessionLocation](ctx, c, "/api/navigation/sessions/"+navigationSegment(ref), etag, nil)
+}
+
+func navigationPageQuery(offset, limit, maximum uint32) (url.Values, error) {
+	query := make(url.Values)
+	if limit > maximum {
+		return nil, fmt.Errorf("navigation limit must be at most %d", maximum)
+	}
+	if offset != 0 {
+		query.Set("offset", strconv.FormatUint(uint64(offset), 10))
+	}
+	if limit != 0 {
+		query.Set("limit", strconv.FormatUint(uint64(limit), 10))
+	}
+	return query, nil
+}
+
 func (c *Client) post(ctx context.Context, path string, body any, out any) error {
 	var rbody *bytes.Reader
 	if body == nil {
@@ -98,12 +261,6 @@ func (c *Client) post(ctx context.Context, path string, body any, out any) error
 func (c *Client) Health(ctx context.Context) (HealthResponse, error) {
 	var out HealthResponse
 	err := c.get(ctx, "/api/health", &out)
-	return out, err
-}
-
-func (c *Client) Tree(ctx context.Context) (TreeResponse, error) {
-	var out TreeResponse
-	err := c.get(ctx, "/api/tree", &out)
 	return out, err
 }
 

@@ -104,7 +104,7 @@ func FuzzFinalSessionTree(f *testing.F) {
 				hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "ended-live", WorkingDir: "/work/end", StartedAt: now}, SessionID: "ended-live", Status: "ended"},
 			)
 			web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster})
-			web.handleAPITree(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/tree", nil))
+			_ = web
 		case 7:
 			past := hubcore.NewPastIndex("")
 			past.SeedForTest([]schema.SessionMeta{{ID: "fav", Name: "fav", CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/work/fav"}}})
@@ -112,7 +112,7 @@ func FuzzFinalSessionTree(f *testing.F) {
 			fav := hubcore.NewFavoriteStore(filepath.Join(dir, "index.db"))
 			_ = fav.Set("session", "fav", true, now)
 			web := NewWebServer(hubcore.WebConfig{Past: past, Favorite: fav})
-			web.handleAPITree(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/tree", nil))
+			_ = web
 		case 8:
 			cache := &hubcore.RemoteThreadCache{}
 			cache.Store([]appwire.Thread{{ID: "r", Source: "remote", Status: appwire.ThreadStatus{Type: "closed"}}})

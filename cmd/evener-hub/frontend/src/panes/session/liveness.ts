@@ -26,7 +26,7 @@ export function useSessionNow(): number {
 // Deliberately a SEPARATE function from shell/rail/RailRow.tsx's own
 // cadenceStateFor: that one consumes hubcore.NormalizeState's ALREADY-
 // remapped output (closed->ended, systemError->errored folded in) from the
-// REST /api/tree snapshot, not the raw wire vocabulary a live ThreadModel
+// navigation session summary, not the raw wire vocabulary a live ThreadModel
 // carries - collapsing the raw wire vocabulary straight to CadenceState in
 // one hop here mirrors NormalizeState's own remapping without making
 // either caller depend on shell/rail's module for it.

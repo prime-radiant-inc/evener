@@ -112,26 +112,16 @@ func FuzzSessionTreePass3(f *testing.F) {
 			_ = web.listThreadsWithFallback(context.Background(), l)
 		case 9:
 			web := NewWebServer(hubcore.WebConfig{})
-			for _, method := range []string{http.MethodGet, http.MethodPost} {
-				rec := httptest.NewRecorder()
-				web.handleAPITree(rec, httptest.NewRequest(method, "/api/tree?summary=1", nil))
-			}
-			for _, target := range []string{"/api/tree/project", "/api/tree/project?key=missing"} {
-				rec := httptest.NewRecorder()
-				web.handleAPITreeProject(rec, httptest.NewRequest(http.MethodGet, target, nil))
-			}
-			rec := httptest.NewRecorder()
-			web.handleAPITreeProject(rec, httptest.NewRequest(http.MethodPost, "/api/tree/project", nil))
+			_ = web
+
 		case 10:
 			roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "live", Model: "m"}, SessionID: "live", Status: "active"})
 			web := NewWebServer(hubcore.WebConfig{Roster: roster})
 			_ = web.isLive("live")
 			_ = web.isLive("missing")
 			_, _ = web.liveEntry("live")
-			_ = web.apiTreeNode("project", "key", hubcore.TreeNode{ID: "live", Children: []hubcore.TreeNode{{ID: "child", State: "ended"}}}, true)
 			p := hubcore.TreeProject{Key: "key", Current: []hubcore.TreeNode{{ID: "live", State: "active"}}, Recent: []hubcore.TreeNode{{ID: "recent", State: "ended"}}, Archived: []hubcore.TreeNode{{ID: "old", State: "closed"}}}
-			_ = projectSessions(p)
-			_ = web.apiTreeProject("project", map[hubcore.ArchiveKey]bool{{Kind: "session", ID: "live"}: true}, p)
+			_ = p
 			_ = web.rowRenameable("live")
 			_ = hubAttentionSummaryFromCore(appwire.AttentionSummary{NeedsYou: 1})
 			_ = web.apiTreeSources()

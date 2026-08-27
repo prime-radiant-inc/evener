@@ -7,9 +7,10 @@ import type { Thread, ThreadCapabilities } from "../../protocol/types.gen";
 import "../../panes/sessionPanels";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { keyID } from "../../stores/navigation/types";
 import { prefsStore, resetPrefsStoreForTests } from "../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
-import { resetTreeStoreForTests, treeStore } from "../../stores/tree";
 import { registerPaneForTests } from "../paneRegistry";
 import * as railController from "../rail/railController";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
@@ -204,7 +205,9 @@ beforeEach(() => {
   useCommandCatalog.setState({ commands: [], loaded: false });
   resetWorkspaceStoreForTests();
   resetPrefsStoreForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
+  resetNavigationStoreForTests();
+  navigationStore.setState({ mode: "v1" });
   localStorage.clear();
   window.history.pushState({}, "", "/");
   pushes.length = 0;
@@ -684,43 +687,55 @@ test("next-needs-you is a global command", () => {
 });
 
 test("next-needs-you opens the first needs-you session when nothing is focused", () => {
-  treeStore.setState({
-    tree: {
-      generated_at: "2026-01-01T00:00:00Z",
-      sources: [],
-      live: [],
-      needs_you: [
+  const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
+  navigationStore.setState({
+    mode: "v1",
+    resources: new Map([
+      [
+        keyID(key),
         {
-          row_id: "r1",
-          ref: "local:ny1",
-          host_id: "local",
-          session_id: "ny1",
-          title: "A",
-          project: "P",
-          state: "awaiting",
-          kind: "session",
-          live: true,
-          children: [],
-        },
-        {
-          row_id: "r2",
-          ref: "local:ny2",
-          host_id: "local",
-          session_id: "ny2",
-          title: "B",
-          project: "P",
-          state: "awaiting",
-          kind: "session",
-          live: true,
-          children: [],
+          key,
+          data: {
+            generation_id: "test",
+            revision: 1,
+            sessions: [
+              {
+                ref: "local:ny1",
+                host_id: "local",
+                session_id: "ny1",
+                title: "A",
+                project: "P",
+                state: "awaiting",
+                kind: "session",
+                live: true,
+                children: [],
+              },
+              {
+                ref: "local:ny2",
+                host_id: "local",
+                session_id: "ny2",
+                title: "B",
+                project: "P",
+                state: "awaiting",
+                kind: "session",
+                live: true,
+                children: [],
+              },
+            ],
+            remaining: 0,
+            truncated: false,
+          },
+          loadedRevision: 1,
+          targetRevision: 1,
+          forceToken: 0,
+          etag: '"test"',
+          loading: false,
+          stale: false,
+          error: null,
+          generationID: "test",
         },
       ],
-      pin_sections: [],
-      projects: [],
-      archived_projects: [],
-      test_runs: [],
-      attentionSummary: { needsYou: 2, error: 0, working: 0 },
-    },
+    ]),
   });
 
   cmd("next-needs-you").run?.(runContext());
@@ -728,44 +743,100 @@ test("next-needs-you opens the first needs-you session when nothing is focused",
   expect(window.location.pathname).toBe("/s/local%3Any1");
 });
 
-test("next-needs-you cycles from the focused session to the next needs-you session, wrapping", () => {
-  treeStore.setState({
-    tree: {
-      generated_at: "2026-01-01T00:00:00Z",
-      sources: [],
-      live: [],
-      needs_you: [
+test("v1 next-needs-you ignores stale legacy tree rows", () => {
+  const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
+  navigationStore.setState({
+    mode: "v1",
+    resources: new Map([
+      [
+        keyID(key),
         {
-          row_id: "r1",
-          ref: "local:ny1",
-          host_id: "local",
-          session_id: "ny1",
-          title: "A",
-          project: "P",
-          state: "awaiting",
-          kind: "session",
-          live: true,
-          children: [],
-        },
-        {
-          row_id: "r2",
-          ref: "local:ny2",
-          host_id: "local",
-          session_id: "ny2",
-          title: "B",
-          project: "P",
-          state: "awaiting",
-          kind: "session",
-          live: true,
-          children: [],
+          key,
+          data: {
+            generation_id: "generation_test",
+            revision: 1,
+            sessions: [
+              {
+                ref: "local:navigation",
+                title: "Navigation",
+                host_id: "local",
+                session_id: "navigation",
+                project: "",
+                state: "awaiting",
+                kind: "session",
+                live: false,
+                children: [],
+              },
+            ],
+            remaining: 0,
+            truncated: false,
+          },
+          loadedRevision: 1,
+          targetRevision: 1,
+          forceToken: 0,
+          etag: "n",
+          loading: false,
+          stale: false,
+          error: null,
+          generationID: "generation_test",
         },
       ],
-      pin_sections: [],
-      projects: [],
-      archived_projects: [],
-      test_runs: [],
-      attentionSummary: { needsYou: 2, error: 0, working: 0 },
-    },
+    ]),
+  });
+  cmd("next-needs-you").run?.(runContext());
+  expect(window.location.pathname).toBe("/s/local%3Anavigation");
+});
+
+test("next-needs-you cycles from the focused session to the next needs-you session, wrapping", () => {
+  const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
+  navigationStore.setState({
+    mode: "v1",
+    resources: new Map([
+      [
+        keyID(key),
+        {
+          key,
+          data: {
+            generation_id: "test",
+            revision: 1,
+            sessions: [
+              {
+                ref: "local:ny1",
+                host_id: "local",
+                session_id: "ny1",
+                title: "A",
+                project: "P",
+                state: "awaiting",
+                kind: "session",
+                live: true,
+                children: [],
+              },
+              {
+                ref: "local:ny2",
+                host_id: "local",
+                session_id: "ny2",
+                title: "B",
+                project: "P",
+                state: "awaiting",
+                kind: "session",
+                live: true,
+                children: [],
+              },
+            ],
+            remaining: 0,
+            truncated: false,
+          },
+          loadedRevision: 1,
+          targetRevision: 1,
+          forceToken: 0,
+          etag: '"test"',
+          loading: false,
+          stale: false,
+          error: null,
+          generationID: "test",
+        },
+      ],
+    ]),
   });
   focusSession("local:ny2");
 

@@ -13,8 +13,9 @@ import { ClientProvider } from "../../shell/clientContext";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../../shell/workspace";
 import { connectionStore } from "../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../stores/mutationOutboxIndexedDB";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { keyID } from "../../stores/navigation/types";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../stores/threads";
-import { resetTreeStoreForTests, type TreeNode, type TreeResponse, treeStore } from "../../stores/tree";
 import { Toast } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import virtualListStyles from "../../widgets/virtuallist/virtuallist.module.css";
@@ -173,7 +174,7 @@ beforeEach(() => {
   globalThis.indexedDB = new IDBFactory();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
   mutationStorage = new MutationOutboxIndexedDB();
   setMutationStorageForTests(mutationStorage);
   resetPendingTurnsStoreForTests();
@@ -316,37 +317,47 @@ test("falls back to the raw ref as the title when the thread has no name yet", a
   await waitFor(() => expect(screen.getByText("ref_a")).toBeTruthy());
 });
 
-// Minimal, well-formed TreeNode - only the fields findSessionNode/title
-// resolution actually touch (mirrors shell/DockHost.test.tsx's identical
-// fixture, kept separate per-file rather than shared: the two suites don't
-// otherwise import from each other).
-function fixtureTreeNode(ref: string, title: string): TreeNode {
-  return {
-    row_id: `row_${ref}`,
+function setNavigationTitle(ref: string, title: string): void {
+  const key = { kind: "location", ref } as const;
+  const data = {
+    generation_id: "generation_test",
+    revision: 1,
     ref,
-    host_id: "local",
-    session_id: ref,
-    title,
-    project: "test-project",
-    state: "idle",
-    kind: "session",
-    live: true,
-    children: [],
+    top_level_ref: ref,
+    top_level: true,
+    session: {
+      ref,
+      host_id: "local",
+      session_id: ref,
+      title,
+      project: "test-project",
+      state: "idle",
+      kind: "session",
+      live: true,
+      children: [],
+    },
   };
-}
-
-function fixtureTree(nodes: TreeNode[]): TreeResponse {
-  return {
-    generated_at: "2026-01-01T00:00:00Z",
-    sources: [],
-    live: nodes,
-    needs_you: [],
-    pin_sections: [],
-    projects: [],
-    archived_projects: [],
-    test_runs: [],
-    attentionSummary: { needsYou: 0, error: 0, working: 0 },
-  };
+  navigationStore.setState({
+    mode: "v1",
+    clientGenerationID: "generation_test",
+    resources: new Map([
+      [
+        keyID(key),
+        {
+          key,
+          data,
+          loadedRevision: 1,
+          targetRevision: null,
+          forceToken: 0,
+          etag: "etag",
+          loading: false,
+          stale: false,
+          error: null,
+          generationID: "generation_test",
+        },
+      ],
+    ]),
+  });
 }
 
 // kata (session-pane header fix): the pane's own in-pane header (this
@@ -355,8 +366,8 @@ function fixtureTree(nodes: TreeNode[]): TreeResponse {
 // tree store knew the real title - the same bug DockHost.test.tsx's "tab
 // title falls back to the tree store's title" test pins for the dockview
 // tab. This is that same fallback, applied to the in-pane header.
-test("falls back to the tree store's title as the header when no thread name is known yet", async () => {
-  treeStore.setState({ tree: fixtureTree([fixtureTreeNode("ref_a", "Fix the flaky CI job")]) });
+test("falls back to the navigation location title as the header when no thread name is known yet", async () => {
+  setNavigationTitle("ref_a", "Fix the flaky CI job");
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
 

@@ -27,7 +27,7 @@ checkable:
   (`cmd/evener-hub/web_session.go#inputItemsForText`).
 - **Presentation**: the fact rides beside the state, not inside it —
   `hubcore.TreeNode.Dormant` (`cmd/evener-hub/internal/hubcore/tree.go#Dormant`),
-  wired to `/api/tree` as `"dormant"` (`hubapi/types.go#Dormant`,
+  wired to `/api/tree` as `"dormant"` (``,
   `web_api_tree.go:1334`) and to the rail as
   `[data-testid="rail-row-not-started"]`.
 

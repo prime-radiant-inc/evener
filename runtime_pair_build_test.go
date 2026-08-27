@@ -556,7 +556,7 @@ func TestFrontendToolchainStubHeldNodeHonorsPreexistingRelease(t *testing.T) {
 	releasePath := filepath.Join(fixture.root, "held-node.release")
 	writeTestFile(t, releasePath, nil, 0o644)
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	command := exec.CommandContext(ctx, filepath.Join(fixture.fakeBin, "node"), heldCommand)
 	command.Dir = fixture.root

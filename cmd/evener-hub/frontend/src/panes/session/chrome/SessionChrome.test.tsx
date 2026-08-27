@@ -5,12 +5,18 @@ import { act, cleanup, render, screen, waitFor, within } from "@testing-library/
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
+import type {
+  NavigationSessionLocation,
+  Thread,
+  ThreadCapabilities,
+  ThreadReadResponse,
+} from "../../../protocol/types.gen";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { activitySummaryStore, resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
+import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
+import { keyID } from "../../../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
-import { resetTreeStoreForTests, type TreeResponse, treeStore } from "../../../stores/tree";
 import "../../sessionPanels";
 import { ActivityPanelBody } from "./ActivityPanel";
 import { resetGoalOverridesForTests } from "./GoalControl";
@@ -69,36 +75,51 @@ function emptyActivityTree() {
   };
 }
 
-// A minimal normalized TreeResponse carrying exactly one top-level local
-// session node for `ref` (the shape normalizeTree produces - see
-// stores/tree.ts's TreeResponse): enough for findSessionNode to resolve the
-// node and for SessionMenu's Pin/Archive/Delete gating to see a top-level,
-// local-host session.
-function treeWithSession(ref: string): TreeResponse {
+function locationWithSession(ref: string): NavigationSessionLocation {
   return {
-    generated_at: "2026-08-06T00:00:00Z",
-    sources: [],
-    live: [
-      {
-        row_id: `row_${ref}`,
-        ref,
-        host_id: "local",
-        session_id: `sess_${ref}`,
-        title: `Session ${ref}`,
-        project: "",
-        state: "idle",
-        kind: "session",
-        live: true,
-        children: [],
-      },
-    ],
-    needs_you: [],
-    pin_sections: [],
-    projects: [],
-    archived_projects: [],
-    test_runs: [],
-    attentionSummary: { needsYou: 0, error: 0, working: 0 },
+    generation_id: "generation_test",
+    revision: 1,
+    ref,
+    top_level_ref: ref,
+    top_level: true,
+    tier: "current",
+    session: {
+      ref,
+      host_id: "local",
+      session_id: `sess_${ref}`,
+      title: `Session ${ref}`,
+      project: "",
+      state: "idle",
+      kind: "session",
+      live: true,
+      children: [],
+    },
   };
+}
+function setLocation(ref: string): void {
+  const key = { kind: "location", ref } as const;
+  const data = locationWithSession(ref);
+  navigationStore.setState({
+    mode: "v1",
+    clientGenerationID: "generation_test",
+    resources: new Map([
+      [
+        keyID(key),
+        {
+          key,
+          data,
+          loadedRevision: 1,
+          targetRevision: null,
+          forceToken: 0,
+          etag: "etag",
+          loading: false,
+          stale: false,
+          error: null,
+          generationID: "generation_test",
+        },
+      ],
+    ]),
+  });
 }
 
 function connectFakeClient(): FakeClient {
@@ -113,7 +134,7 @@ beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetActivitySummaryStoreForTests();
   resetGoalOverridesForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
 });
 
 afterEach(() => {
@@ -285,7 +306,7 @@ test("menu offers Pin/Archive/Delete when the session is in the tree; omits them
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_a"));
   await threadsStore.getState().ensureThread("ref_a");
-  treeStore.setState({ tree: treeWithSession("ref_a") });
+  setLocation("ref_a");
 
   render(<SessionChrome ref="ref_a" />);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
@@ -294,9 +315,8 @@ test("menu offers Pin/Archive/Delete when the session is in the tree; omits them
   expect(screen.getByRole("menuitem", { name: "Delete…" })).toBeTruthy();
   await user.keyboard("{Escape}");
 
-  // No tree node for the ref (tree empty/unloaded): the organization and
-  // delete items are absent - they are decisions about a rail row.
-  act(() => treeStore.setState({ tree: null }));
+  // A missing location keeps organization actions absent.
+  act(() => resetNavigationStoreForTests());
   await user.click(screen.getByRole("button", { name: /session actions/i }));
   expect(screen.queryByRole("menuitem", { name: "Pin this session…" })).toBeNull();
   expect(screen.queryByRole("menuitem", { name: "Archive" })).toBeNull();

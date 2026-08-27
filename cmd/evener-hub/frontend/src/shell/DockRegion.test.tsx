@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import { connectionStore } from "../stores/connection";
-import { resetTreeStoreForTests } from "../stores/tree";
+import { resetNavigationStoreForTests } from "../stores/navigation/store";
 import { AppShell } from "./AppShell";
 import { DockRegion, resetDockChunkForTests } from "./DockRegion";
 import * as dockHostChunk from "./dockHostChunk";
@@ -44,16 +44,13 @@ function StubDockHost() {
   return <p>dock host mounted</p>;
 }
 
-const EMPTY_TREE = {
-  generated_at: "2026-01-01T00:00:00Z",
+const EMPTY_NAV_RESPONSE = {
+  generation_id: "test-generation",
+  revision: 1,
   sources: [],
-  live: [],
-  needs_you: [],
-  pin_sections: [],
-  projects: [],
-  archived_projects: [],
-  test_runs: [],
   attentionSummary: { needsYou: 0, error: 0, working: 0 },
+  sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+  catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
 };
 
 function jsonResponse(body: unknown): Response {
@@ -88,7 +85,7 @@ beforeEach(() => {
   });
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetWorkspaceStoreForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
   loadDockHost.mockReset();
   loadDockHost.mockImplementation(realLoadDockHost);
   // The chunk is one shared lazy() payload per page load, so each test needs
@@ -96,7 +93,21 @@ beforeEach(() => {
   // never call this test's loader at all.
   resetDockChunkForTests();
   resetDockHostLoaderForTests();
-  vi.stubGlobal("fetch", (url: string) => Promise.resolve(jsonResponse(url === "/api/tree" ? EMPTY_TREE : {})));
+  vi.stubGlobal("fetch", (url: string) => {
+    if (url === "/api/navigation") {
+      return Promise.resolve(
+        new Response(JSON.stringify(EMPTY_NAV_RESPONSE), {
+          headers: {
+            "Content-Type": "application/json",
+            etag: '"test"',
+            "X-Evener-Navigation-Generation": "test-generation",
+            "X-Evener-Navigation-Revision": "1",
+          },
+        }),
+      );
+    }
+    return Promise.resolve(jsonResponse({}));
+  });
 });
 
 afterEach(() => {
@@ -123,7 +134,7 @@ afterEach(() => {
   // isolate:false worker - so it is re-run immediately below, restoring the
   // same state a fresh module evaluation would have left (kata p5w9's
   // identical pattern in AppShell.test.tsx). initNotifications() seeds its
-  // `sawReady`/baseline snapshot from whatever connectionStore/treeStore
+  // `sawReady`/baseline snapshot from whatever connectionStore/navigationStore
   // hold AT THIS MOMENT, so both are forced back to their neutral
   // pre-render values FIRST (this file's own beforeEach does the same for
   // the NEXT test in this file; nothing else does it for the NEXT FILE) -
@@ -131,11 +142,11 @@ afterEach(() => {
   // left it moments ago) would wrongly arm the "reconnect" detector this
   // reset exists to neutralize, exactly the failure mode App.test.tsx's own
   // comment above describes. Run before vi.unstubAllGlobals() below so
-  // initNotifications()'s baseline ensureLoaded() fetch (treeStore's tree is
+  // initNotifications()'s baseline ensureLoaded() fetch (navigationStore's manifest is
   // null again below) still hits this file's own beforeEach fetch stub
   // instead of a real network call.
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
   resetNotificationsForTests();
   initNotifications();
   vi.unstubAllGlobals();
@@ -144,7 +155,15 @@ afterEach(() => {
 test("a rejected DockHost chunk degrades the dock region, never the whole shell", async () => {
   vi.mocked(loadDockHost).mockRejectedValue(new Error(CHUNK_ERROR));
 
-  render(<AppShell client={new FakeClient("ready")} />);
+  const client = new FakeClient("ready");
+  client.scriptConnect(() => ({
+    serverInfo: { name: "fake", version: "1" },
+    protocolVersion: "evener-appwire-v3",
+    sourceId: "fake",
+    features: {} as never,
+    navigation: { version: 1, generationId: "test-generation", sequence: 0 },
+  }));
+  render(<AppShell client={client} />);
 
   expect(await screen.findByText("Couldn't load the workspace")).toBeTruthy();
   expect(screen.getByText(CHUNK_ERROR)).toBeTruthy();

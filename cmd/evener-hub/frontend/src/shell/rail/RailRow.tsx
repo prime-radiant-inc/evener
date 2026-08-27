@@ -36,7 +36,7 @@
 // with no hover to reveal them).
 import type { ReactNode } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
-import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject, PinSectionSummary } from "../../stores/tree";
+
 import {
   Badge,
   Cadence,
@@ -59,6 +59,8 @@ import {
   type OverflowRailNode,
   type ProjectRailNode,
   type RailNode,
+  type RailProject,
+  type RailSession,
   type SessionRailNode,
   workingDescendantCount,
 } from "./railNodes";
@@ -87,7 +89,7 @@ const CLASS = {
   srOnly: requireClass(styles.srOnly, "RailRow.module.css", "srOnly"),
 };
 
-// frameTimes is always [] here: the REST /api/tree snapshot carries no
+// frameTimes is always [] here: navigation summaries carry no
 // per-frame timestamps, only a point-in-time `state`. Cadence still renders
 // correctly with an empty trace (just the state dot, no ticks) - wave-4's
 // live-socket enrichment is what will thread real frame arrivals through
@@ -240,7 +242,7 @@ function Signal({ wireState }: { wireState: string }) {
 // on the main line it charged its width to the title at the rail's default
 // 280px. Exported for direct testing of the join, which the rendered line can
 // only assert on as one flat string.
-export function activityGloss(session: ApiTreeNode): string {
+export function activityGloss(session: RailSession): string {
   const workingCount = workingDescendantCount(session);
   const parts = [
     workingCount === 0
@@ -260,7 +262,7 @@ export function activityGloss(session: ApiTreeNode): string {
 // the project it belongs to is the row it is indented under. Project leads
 // the line (state is what's happening, project is where) the same way
 // activityGloss already leads with state before branch.
-function secondLine(session: ApiTreeNode, showsGloss: boolean, showsProject: boolean): string {
+function secondLine(session: RailSession, showsGloss: boolean, showsProject: boolean): string {
   const parts: string[] = [];
   // An empty project name has nothing to join, so it must not contribute a
   // leading " · " separator with no text before it (UX fix).
@@ -270,20 +272,24 @@ function secondLine(session: ApiTreeNode, showsGloss: boolean, showsProject: boo
 }
 
 export interface RailRowActions {
-  onOpenSessionPane(session: ApiTreeNode, pane: SessionPanelKind): void;
-  onRenameSession(session: ApiTreeNode, name: string): Promise<void>;
-  onShutdownSession(session: ApiTreeNode): Promise<void>;
-  onPinSession(session: ApiTreeNode, target: PinTarget, section?: PinSectionSummary): Promise<void>;
+  onOpenSessionPane(session: RailSession, pane: SessionPanelKind): void;
+  onRenameSession(session: RailSession, name: string): Promise<void>;
+  onShutdownSession(session: RailSession): Promise<void>;
+  onPinSession(
+    session: RailSession,
+    target: PinTarget,
+    section?: { id: string; name: string; member_count: number },
+  ): Promise<void>;
   // Unpin/archive/delete return the mutation's promise so a rejection
   // reaches SessionMenu's confirm helper (the failure convention in
   // SessionMenu.tsx's header comment): Rail's runAction already toasts,
   // and the propagated rejection keeps the menu's dialog open.
-  onUnpinRequest(session: ApiTreeNode): Promise<void>;
-  onToggleArchiveSession(session: ApiTreeNode): Promise<void>;
-  onDeleteSession(session: ApiTreeNode): Promise<void>;
-  onToggleFavoriteProject(project: ApiTreeProject): void;
-  onToggleArchiveProject(project: ApiTreeProject): void;
-  onDeleteProjectRequest(project: ApiTreeProject): void;
+  onUnpinRequest(session: RailSession): Promise<void>;
+  onToggleArchiveSession(session: RailSession): Promise<void>;
+  onDeleteSession(session: RailSession): Promise<void>;
+  onToggleFavoriteProject(project: RailProject): void;
+  onToggleArchiveProject(project: RailProject): void;
+  onDeleteProjectRequest(project: RailProject): void;
 }
 
 export interface RailRowProps {
@@ -383,11 +389,11 @@ const NO_PROJECT_KEY = "no-project";
 // (shouldn't happen for a real project, but degrades gracefully rather than
 // silently doing nothing) - NO_PROJECT_KEY itself is excluded before this is
 // ever called, same as every other project-scoped action here.
-function spawnInProject(project: ApiTreeProject): void {
+function spawnInProject(project: RailProject): void {
   navigate(project.working_dir ? `/new?dir=${encodeURIComponent(project.working_dir)}` : "/new");
 }
 
-function projectMenuItems(project: ApiTreeProject, actions: RailRowActions): MenuItem[] {
+function projectMenuItems(project: RailProject, actions: RailRowActions): MenuItem[] {
   if (project.key === NO_PROJECT_KEY) return [];
   return [
     {
@@ -419,7 +425,7 @@ function projectMenuItems(project: ApiTreeProject, actions: RailRowActions): Men
 // reachable on hover without costing the list a line. The title always leads, so
 // a truncated title is still recoverable from it (the case this tooltip
 // originally existed for).
-function rowTooltip(session: ApiTreeNode, showsGloss: boolean, saysNotStarted: boolean): string {
+function rowTooltip(session: RailSession, showsGloss: boolean, saysNotStarted: boolean): string {
   const parts = [session.title];
   // A signal row already prints its state; a quiet one doesn't, so only the
   // quiet case needs the word here. A row that has never run reports THAT
@@ -445,16 +451,16 @@ function rowTooltip(session: ApiTreeNode, showsGloss: boolean, saysNotStarted: b
 // still calling it "Not started" would be flatly wrong. So this is only ever
 // true on a row that is otherwise quiet - which is exactly the row that had
 // nothing to say before.
-function saysNotStarted(session: ApiTreeNode, showsGloss: boolean): boolean {
+function saysNotStarted(session: RailSession, showsGloss: boolean): boolean {
   return session.dormant === true && !showsGloss;
 }
 
 // The rail-row use of the shared session menu: same component the session
-// pane's chrome renders, fed from the ApiTreeNode instead of a ThreadModel.
+// pane's chrome renders, fed from the RailSession instead of a ThreadModel.
 // panesOpen drives the ✓ markers via the workspace store; triggerTabIndex
 // -1 keeps the Tree widget's single-roving-Tab-stop contract (see
 // ActionsMenu's own comment, which this replaces for session rows).
-function SessionMenuRow({ session, actions }: { session: ApiTreeNode; actions: RailRowActions }) {
+function SessionMenuRow({ session, actions }: { session: RailSession; actions: RailRowActions }) {
   const ref = session.ref;
   // Three separate boolean selectors, NOT one object-literal selector: a
   // fresh { details, tasks, activity } object every call would fail the
@@ -628,6 +634,17 @@ function ProjectRow({ node, info, actions }: { node: ProjectRailNode; info: Tree
           <span className={CLASS.label} onClick={info.activate}>
             {node.displayName ?? project.name}
           </span>
+          {node.resourceError && node.retry && (
+            <button
+              type="button"
+              onClick={(event) => {
+                event.stopPropagation();
+                node.retry?.();
+              }}
+            >
+              Retry
+            </button>
+          )}
           <TrailingChevron info={info} />
         </span>
       </span>

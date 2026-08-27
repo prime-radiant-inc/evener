@@ -5,8 +5,14 @@ import (
 	"net/http"
 	"time"
 
+	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
 )
+
+type archiveMutationResponse struct {
+	OK         bool                      `json:"ok"`
+	Navigation hubapi.NavigationMutation `json:"navigation"`
+}
 
 // handleAPIArchive handles POST /api/archive.
 // Body: {"kind":"session"|"project","id":"...","archived":true|false}
@@ -68,6 +74,15 @@ func (s *WebServer) handleAPIArchive(w http.ResponseWriter, r *http.Request) {
 	// An archive decision can move a session in or out of tier eligibility;
 	// nudge the attention watcher so the badge/notification state doesn't lag
 	// behind the sidebar until the next tick, and push the sidebar to refetch.
+	hint := navigationChangeHint{AllLoadedProjects: body.Kind == "session"}
+	if body.Kind == "project" {
+		hint.Projects = []string{body.ID}
+	}
+	navigation, err := s.navigation.Refresh(r.Context(), hint)
+	if err != nil {
+		writeAPIError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
 	s.notifyMutation()
-	writeAPIJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeAPIJSON(w, http.StatusOK, archiveMutationResponse{OK: true, Navigation: navigation})
 }

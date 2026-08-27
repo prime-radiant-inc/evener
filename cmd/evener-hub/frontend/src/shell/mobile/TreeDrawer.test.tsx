@@ -2,14 +2,14 @@ import { act, cleanup, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from "vitest";
-import { resetTreeStoreForTests, treeStore } from "../../stores/tree";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { keyID } from "../../stores/navigation/types";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { TreeDrawer } from "./TreeDrawer";
 
 function needsYouNode(n: number) {
   return {
-    row_id: `r${n}`,
     ref: `local:s${n}`,
     host_id: "local",
     session_id: `s${n}`,
@@ -21,23 +21,30 @@ function needsYouNode(n: number) {
     children: [],
   };
 }
-
-// FIX 4: needs_you (not attentionSummary.needsYou) is the trigger's real
-// source now - see TreeDrawer.tsx's own comment - so this fixture builds a
-// needs_you list of the requested length, matching attentionSummary for the
-// tests that don't care about the two diverging.
-function emptyTree(needsYou = 0) {
-  return {
-    generated_at: "2026-01-01T00:00:00Z",
-    sources: [],
-    live: [],
-    needs_you: Array.from({ length: needsYou }, (_, i) => needsYouNode(i)),
-    pin_sections: [],
-    projects: [],
-    archived_projects: [],
-    test_runs: [],
-    attentionSummary: { needsYou, error: 0, working: 0 },
-  };
+function setNeedsYou(count: number): void {
+  const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
+  const rows = Array.from({ length: count }, (_, i) => needsYouNode(i));
+  navigationStore.setState({
+    mode: "v1",
+    clientGenerationID: "generation_test",
+    resources: new Map([
+      [
+        keyID(key),
+        {
+          key,
+          data: { generation_id: "generation_test", revision: 1, sessions: rows, remaining: 0, truncated: false },
+          loadedRevision: 1,
+          targetRevision: null,
+          forceToken: 0,
+          etag: "etag",
+          loading: false,
+          stale: false,
+          error: null,
+          generationID: "generation_test",
+        },
+      ],
+    ]),
+  });
 }
 
 function DocFixture() {
@@ -66,12 +73,7 @@ afterAll(() => {
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
-  // treeStore is a module singleton (stores/tree.ts) shared across every
-  // file in the worker; RailHost reads it directly, so a project fixture
-  // left behind by an earlier file (e.g. one named "prime-radiant") shows
-  // up as an extra "New session in <project>" button here otherwise,
-  // breaking this file's own /new session/i role lookups.
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
 });
 
 afterEach(() => {
@@ -87,13 +89,13 @@ test("renders a trigger button labeled Sessions", () => {
 // Badge(needsYou) - the mobile trigger carries the same overlay so attention
 // is visible without opening the drawer first.
 test("the trigger carries the same needs-you Badge overlay the desktop chip has", () => {
-  treeStore.setState({ tree: emptyTree(2) });
+  setNeedsYou(2);
   render(<TreeDrawer />);
   expect(screen.getByText("2")).toBeTruthy();
 });
 
 test("no Badge overlay when nothing needs attention", () => {
-  treeStore.setState({ tree: emptyTree(0) });
+  setNeedsYou(0);
   render(<TreeDrawer />);
   expect(screen.queryByText("0")).toBeNull();
 });
@@ -110,8 +112,8 @@ test("no Badge overlay when nothing needs attention", () => {
 // trigger stayed unbadged. Keying the badge off tree.needs_you.length
 // instead matches every other needs-you surface and can never disagree
 // with what the drawer's own rows show once opened.
-test("the trigger badges off tree.needs_you, not the narrower attentionSummary aggregate", () => {
-  treeStore.setState({ tree: { ...emptyTree(0), needs_you: [needsYouNode(1)] } });
+test("the trigger badge follows the bounded needs-you rows", () => {
+  setNeedsYou(1);
   render(<TreeDrawer />);
   expect(screen.getByText("1")).toBeTruthy();
 });

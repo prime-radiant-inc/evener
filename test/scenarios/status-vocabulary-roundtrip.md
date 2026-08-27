@@ -48,7 +48,7 @@ of which died with the vanilla frontend (`660376f78`). The rail row is now
          [ .. | objects | select(.ref? == $ref)
            | {row_id, ref, state, ask_pending: (.ask_pending // false)} ]'
    ```
-   Fields are `hubapi.TreeNode` (`hubapi/types.go#TreeNode`): `row_id`, `ref`,
+   Fields are `NavigationSessionSummary` (``): `row_id`, `ref`,
    `state`, `ask_pending`.
 
 3. **[browser] The rail renders what the wire said.** Navigate to

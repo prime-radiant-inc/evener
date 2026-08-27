@@ -134,10 +134,24 @@ func hubLaunchConfigRoot(cfg hubcore.WebConfig) string {
 }
 
 func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
+	return newHubAppServerWithNavigation(cfg, sources, nil)
+}
+
+func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService) *appserver.Server {
+	capability := &appwire.NavigationCapability{Version: 1}
+	var capabilityProvider func() *appwire.NavigationCapability
+	if navigation != nil {
+		capability = nil
+		capabilityProvider = func() *appwire.NavigationCapability {
+			return navigation.Capability()
+		}
+	}
 	server := appserver.NewServer(appserver.ServerConfig{
-		ServerName: "evener-hub",
-		Version:    Version,
-		SourceID:   "local",
+		ServerName:           "evener-hub",
+		Version:              Version,
+		SourceID:             "local",
+		Navigation:           capability,
+		NavigationCapability: capabilityProvider,
 		Logf: func(format string, args ...any) {
 			fmt.Fprintf(os.Stderr, "[hub] "+format+"\n", args...)
 		},

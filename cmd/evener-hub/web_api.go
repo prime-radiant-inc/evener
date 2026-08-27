@@ -157,7 +157,6 @@ func (s *WebServer) handleAPIHealth(w http.ResponseWriter, r *http.Request) {
 		BackendGitSha:    buildinfo.GitSHA,
 		FrontendHash:     s.frontendHash,
 		Capabilities: hubapi.HealthCapabilities{
-			Tree:             true,
 			TranscriptFollow: true,
 			SpawnSchema:      true,
 			Spawn:            s.cfg.Spawner != nil || len(s.cfg.CodexSources) > 0 || len(s.cfg.CodexLaunches) > 0 || s.cfg.CodexLauncher != nil,

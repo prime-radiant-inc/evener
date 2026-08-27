@@ -11,6 +11,11 @@ import (
 	"primeradiant.com/evener/hubapi"
 )
 
+type favoriteMutationResponse struct {
+	OK         bool                      `json:"ok"`
+	Navigation hubapi.NavigationMutation `json:"navigation"`
+}
+
 // handleAPIFavorite handles POST /api/favorite.
 // Body: {"kind":"project","id":"...","favorited":true|false}
 func (s *WebServer) handleAPIFavorite(w http.ResponseWriter, r *http.Request) {
@@ -47,8 +52,13 @@ func (s *WebServer) handleAPIFavorite(w http.ResponseWriter, r *http.Request) {
 		writeAPIError(w, http.StatusInternalServerError, "favorite store error: "+err.Error())
 		return
 	}
+	navigation, err := s.navigation.Refresh(r.Context(), navigationChangeHint{Projects: []string{body.ID}})
+	if err != nil {
+		writeAPIError(w, http.StatusServiceUnavailable, err.Error())
+		return
+	}
 	s.notifyMutation()
-	writeAPIJSON(w, http.StatusOK, map[string]bool{"ok": true})
+	writeAPIJSON(w, http.StatusOK, favoriteMutationResponse{OK: true, Navigation: navigation})
 }
 
 func (s *WebServer) topLevelFavoriteSessionID(ctx context.Context, requested string) (string, bool) {

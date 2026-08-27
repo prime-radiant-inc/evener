@@ -628,7 +628,7 @@ test("back navigation updates the URL to match the pane it returns to", async ()
   expect(window.location.pathname).toBe("/s/local%3Aref_x");
 });
 
-// kata bbsv. AppShell needs /api/tree before it can place a /s/{ref} deep
+// kata bbsv. AppShell needs /api/navigation before it can place a /s/{ref} deep
 // link, and no fetch resolves inside the first commit - so the shell spends a
 // beat with the route parsed and unplaced, which the fallback below fills with
 // welcome. Publishing welcome's "/" then would throw away the deep link the

@@ -5,16 +5,22 @@
 // - onToggleArchive error catch (207-208)
 // - onDelete error catch (221-222) + skipped warning (216-218)
 
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
+import type {
+  NavigationSessionLocation,
+  Thread,
+  ThreadCapabilities,
+  ThreadReadResponse,
+} from "../../../protocol/types.gen";
 import { resetWorkspaceStoreForTests } from "../../../shell/workspace";
 import { resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
+import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
+import { keyID } from "../../../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
-import { resetTreeStoreForTests, type TreeResponse, treeStore } from "../../../stores/tree";
 import { Toast } from "../../../widgets";
 import "../../sessionPanels";
 import { resetGoalOverridesForTests } from "./GoalControl";
@@ -56,31 +62,48 @@ function readResponse(ref: string, overrides: Partial<Thread> = {}): ThreadReadR
   return { thread: testThread(ref, overrides) };
 }
 
-function treeWithSession(ref: string): TreeResponse {
-  return {
-    generated_at: "2026-08-06T00:00:00Z",
-    sources: [],
-    live: [
-      {
-        row_id: `row_${ref}`,
-        ref,
-        host_id: "local",
-        session_id: `sess_${ref}`,
-        title: `Session ${ref}`,
-        project: "",
-        state: "idle",
-        kind: "session",
-        live: true,
-        children: [],
-      },
-    ],
-    needs_you: [],
-    pin_sections: [],
-    projects: [],
-    archived_projects: [],
-    test_runs: [],
-    attentionSummary: { needsYou: 0, error: 0, working: 0 },
+function setLocation(ref: string): void {
+  const key = { kind: "location", ref } as const;
+  const data: NavigationSessionLocation = {
+    generation_id: "generation_test",
+    revision: 1,
+    ref,
+    top_level_ref: ref,
+    top_level: true,
+    tier: "current",
+    session: {
+      ref,
+      host_id: "local",
+      session_id: `sess_${ref}`,
+      title: `Session ${ref}`,
+      project: "",
+      state: "idle",
+      kind: "session",
+      live: true,
+      children: [],
+    },
   };
+  navigationStore.setState({
+    mode: "v1",
+    clientGenerationID: "generation_test",
+    resources: new Map([
+      [
+        keyID(key),
+        {
+          key,
+          data,
+          loadedRevision: 1,
+          targetRevision: null,
+          forceToken: 0,
+          etag: "etag",
+          loading: false,
+          stale: false,
+          error: null,
+          generationID: "generation_test",
+        },
+      ],
+    ]),
+  });
 }
 
 function connectFakeClient(): FakeClient {
@@ -114,7 +137,7 @@ beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetActivitySummaryStoreForTests();
   resetGoalOverridesForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
 });
 
 afterEach(() => {
@@ -181,6 +204,164 @@ test("shutdown failure toasts an error", async () => {
   expect(screen.getByRole("dialog", { name: "Shut down this session?" })).toBeTruthy();
 });
 
+// --- v1 rename convergence (R49 finding 1) ---
+
+test("v1 rename uses HTTP renameSession and applies the navigation mutation", async () => {
+  const user = userEvent.setup();
+  const fetchMock = vi.fn();
+  fetchMock.mockResolvedValue(
+    okResponse({
+      navigation: { generation_id: "generation_test", targets: [{ kind: "all_loaded_projects" }] },
+    }),
+  );
+  vi.stubGlobal("fetch", fetchMock);
+
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_v1rename", { name: "Old" }));
+  await threadsStore.getState().ensureThread("ref_v1rename");
+  setLocation("ref_v1rename");
+
+  renderWithToast(<SessionChrome ref="ref_v1rename" />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+  const dialog = await screen.findByRole("dialog");
+  const input = dialog.querySelector("input");
+  if (!input) throw new Error("rename dialog missing its input");
+  await user.clear(input);
+  await user.type(input, "New Name");
+  await user.click(screen.getByRole("button", { name: "Rename" }));
+
+  await waitFor(() => {
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/api/sessions/ref_v1rename/rename",
+      expect.objectContaining({ method: "POST", body: JSON.stringify({ name: "New Name" }) }),
+    );
+  });
+});
+
+test("v1 rename failure toasts an error and leaves the dialog open", async () => {
+  const user = userEvent.setup();
+  const fetchMock = vi.fn();
+  fetchMock.mockResolvedValue(failResponse(500, { error: "rename blocked" }));
+  vi.stubGlobal("fetch", fetchMock);
+
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_v1rfail", { name: "Old" }));
+  await threadsStore.getState().ensureThread("ref_v1rfail");
+  setLocation("ref_v1rfail");
+
+  renderWithToast(<SessionChrome ref="ref_v1rfail" />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Rename" }));
+  const dialog = await screen.findByRole("dialog");
+  const input = dialog.querySelector("input");
+  if (!input) throw new Error("rename dialog missing its input");
+  await user.clear(input);
+  await user.type(input, "New Name");
+  await user.click(screen.getByRole("button", { name: "Rename" }));
+
+  expect(await screen.findByText("Couldn't rename session: rename blocked")).toBeTruthy();
+  const openDialog = screen.getByRole("dialog", { name: "Rename session" });
+  expect(within(openDialog).getByRole("button", { name: "Rename" }).hasAttribute("disabled")).toBe(false);
+});
+
+// --- v1 shutdown convergence (R49 finding 1) ---
+
+test("v1 shutdown installs an invalidation waiter and converges after the RPC", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_v1sd"));
+  fake.on("thread/shutdown", () => ({}));
+  await threadsStore.getState().ensureThread("ref_v1sd");
+  setLocation("ref_v1sd");
+
+  // Spy on the invalidation waiter: capture the predicate but never resolve,
+  // so we can prove the shutdown promise waits and then resolves when we
+  // deliver a matching payload.
+  let waiterPredicate: ((payload: { targets: unknown[]; generationId: string }) => boolean) | undefined;
+  let resolveWaiter!: () => void;
+  const awaitNavigationInvalidation = vi.fn(
+    (predicate?: (payload: { targets: unknown[]; generationId: string }) => boolean) => {
+      waiterPredicate = predicate;
+      return {
+        promise: new Promise<{ targets: unknown[]; generationId: string }>((resolve) => {
+          resolveWaiter = () =>
+            resolve({ targets: [{ kind: "section", section: "live" }], generationId: "generation_test" });
+        }),
+        cancel: vi.fn(),
+      };
+    },
+  );
+  const awaitNavigationTargets = vi.fn(() => Promise.resolve());
+  navigationStore.setState({
+    mode: "v1",
+    awaitNavigationInvalidation: awaitNavigationInvalidation as never,
+    awaitNavigationTargets: awaitNavigationTargets as never,
+  });
+
+  renderWithToast(<SessionChrome ref="ref_v1sd" />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Shut down" }));
+  const dialog = await screen.findByRole("dialog");
+  const buttons = dialog.querySelectorAll("button");
+  for (const btn of buttons) {
+    if (btn.textContent?.match(/shut down/i)) {
+      await user.click(btn);
+      break;
+    }
+  }
+
+  // The invalidation waiter was installed before the RPC fired.
+  await waitFor(() => expect(awaitNavigationInvalidation).toHaveBeenCalledTimes(1));
+  expect(waiterPredicate).toBeDefined();
+  // An unrelated invalidation (no matching targets) must NOT resolve the waiter.
+  expect(
+    waiterPredicate!({ targets: [{ kind: "pin_section", sectionId: "other" }], generationId: "generation_test" }),
+  ).toBe(false);
+  // A matching invalidation resolves it, and awaitNavigationTargets is called.
+  resolveWaiter();
+  await waitFor(() => expect(awaitNavigationTargets).toHaveBeenCalledTimes(1));
+});
+
+test("v1 shutdown cancels the invalidation waiter on RPC failure", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_v1sdf"));
+  fake.on("thread/shutdown", () => {
+    throw new Error("v1 shutdown failed");
+  });
+  await threadsStore.getState().ensureThread("ref_v1sdf");
+  setLocation("ref_v1sdf");
+
+  const cancel = vi.fn();
+  const awaitNavigationInvalidation = vi.fn(() => ({
+    promise: new Promise<never>(() => undefined),
+    cancel,
+  }));
+  const awaitNavigationTargets = vi.fn(() => Promise.resolve());
+  navigationStore.setState({
+    mode: "v1",
+    awaitNavigationInvalidation: awaitNavigationInvalidation as never,
+    awaitNavigationTargets: awaitNavigationTargets as never,
+  });
+
+  renderWithToast(<SessionChrome ref="ref_v1sdf" />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Shut down" }));
+  const dialog = await screen.findByRole("dialog");
+  const buttons = dialog.querySelectorAll("button");
+  for (const btn of buttons) {
+    if (btn.textContent?.match(/shut down/i)) {
+      await user.click(btn);
+      break;
+    }
+  }
+
+  expect(await screen.findByText("Couldn't shut down session: v1 shutdown failed")).toBeTruthy();
+  await waitFor(() => expect(cancel).toHaveBeenCalledTimes(1));
+  expect(awaitNavigationTargets).not.toHaveBeenCalled();
+});
+
 // --- onToggleArchive error (lines 207-208) ---
 
 test("archive toggle failure toasts an error", async () => {
@@ -192,7 +373,7 @@ test("archive toggle failure toasts an error", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_archive"));
   await threadsStore.getState().ensureThread("ref_archive");
-  treeStore.setState({ tree: treeWithSession("ref_archive") });
+  setLocation("ref_archive");
 
   renderWithToast(<SessionChrome ref="ref_archive" />);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
@@ -219,7 +400,7 @@ test("delete failure toasts an error", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_del", { name: "Del Session" }));
   await threadsStore.getState().ensureThread("ref_del");
-  treeStore.setState({ tree: treeWithSession("ref_del") });
+  setLocation("ref_del");
 
   renderWithToast(<SessionChrome ref="ref_del" />);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
@@ -255,7 +436,7 @@ test("delete with skipped sessions shows a warning toast", async () => {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_skip", { name: "Skip Session" }));
   await threadsStore.getState().ensureThread("ref_skip");
-  treeStore.setState({ tree: treeWithSession("ref_skip") });
+  setLocation("ref_skip");
 
   renderWithToast(<SessionChrome ref="ref_skip" />);
   await user.click(screen.getByRole("button", { name: /session actions/i }));

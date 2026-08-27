@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -36,7 +35,7 @@ func TestRenameEndedSessionEditsMetaAndRefreshesIndex(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusNoContent {
+	if rec.Code != http.StatusOK {
 		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
 	}
 	got, _ := past.Find(renameSessionID)
@@ -101,7 +100,7 @@ func TestRenameLiveRaceDaemonFailureHardFails(t *testing.T) {
 	}
 }
 
-func TestRenameEndedSessionBroadcastsTreeChangedExactlyOnce(t *testing.T) {
+func TestRenameEndedSessionSucceeds(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-rename-0123456789")
 	m := schema.SessionMeta{ID: renameSessionID, Name: "old", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}
@@ -113,34 +112,26 @@ func TestRenameEndedSessionBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
 	defer hub.Close()
 	// Mirror runMain's composed wiring (main.go): PastIndex.UpdateMeta's own
-	// onChange hook is the sole broadcast source for this path — the handler
-	// no longer calls notifyTreeChanged directly (it would double-broadcast).
-	past.SetOnChange(func() { notifyTreeChanged(web.appRPC) })
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	// onChange hook invalidates navigation — the handler no longer broadcasts
+	// a tree-changed notification directly.
+	past.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
 
 	resp, err := http.Post(hub.URL+"/api/sessions/local:"+renameSessionID+"/rename", "application/json", strings.NewReader(`{"name":"new title"}`))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusNoContent {
+	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
-
-	assertSingleNotification(t, client, web.appRPC, appwire.NotifyEvenerTreeChanged)
 }
 
-// TestRefreshRenamedMetaBroadcastsTreeChangedExactlyOnce covers the
-// live-daemon rename path's success site: handleAPIRename delegates both the
-// live and became-live branches to refreshRenamedMeta after a successful
-// daemon SetThreadName, so this calls it directly rather than scripting a
-// fake daemon through scriptedAppSource (which only models SetThreadName
-// failure today).
-func TestRefreshRenamedMetaBroadcastsTreeChangedExactlyOnce(t *testing.T) {
+// TestRefreshRenamedMetaInvalidatesNavigation covers the live-daemon rename
+// path's success site: handleAPIRename delegates both the live and became-live
+// branches to refreshRenamedMeta after a successful daemon SetThreadName, so
+// this calls it directly rather than scripting a fake daemon through
+// scriptedAppSource (which only models SetThreadName failure today).
+func TestRefreshRenamedMetaInvalidatesNavigation(t *testing.T) {
 	root := t.TempDir()
 	stateDir := filepath.Join(root, "projects", "project-rename-0123456789")
 	m := schema.SessionMeta{ID: renameSessionID, Name: "old", UpdatedAt: time.Unix(1_700_000_000, 0), EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w"}}
@@ -153,14 +144,7 @@ func TestRefreshRenamedMetaBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 	}
 	web := NewWebServer(hubcore.WebConfig{Past: past})
 	// Mirror runMain's composed wiring (main.go) — see comment above.
-	past.SetOnChange(func() { notifyTreeChanged(web.appRPC) })
-	hubHTTP := httptest.NewServer(http.HandlerFunc(web.appRPC.ServeWebSocket))
-	defer hubHTTP.Close()
-	client := dialHubRPC(t, hubHTTP)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	past.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
 
 	// Simulate the daemon's out-of-process meta rewrite (the real
 	// SetThreadName handler) that refreshRenamedMeta re-reads: without an
@@ -176,19 +160,17 @@ func TestRefreshRenamedMetaBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 	}
 
 	web.refreshRenamedMeta(renameSessionID, "new title")
-
-	assertSingleNotification(t, client, web.appRPC, appwire.NotifyEvenerTreeChanged)
 }
 
-// TestRefreshRenamedMetaBroadcastsTreeChangedExactlyOnceWhenSessionNotIndexed
-// covers the miss path: a live-daemon rename for a session PastIndex has
-// never indexed (e.g. renamed within the first Rebuild interval of being
-// spawned). Find's own on-miss self-heal (an internal Rebuild) still can't
-// find it, so UpdateMeta is never called and the composed onChange hook
-// never fires — refreshRenamedMeta's trailing notifyTreeChanged must be the
-// sole, single source of the broadcast for a rename that genuinely
-// succeeded on the daemon side.
-func TestRefreshRenamedMetaBroadcastsTreeChangedExactlyOnceWhenSessionNotIndexed(t *testing.T) {
+// TestRefreshRenamedMetaInvalidatesNavigationWhenSessionNotIndexed covers the
+// miss path: a live-daemon rename for a session PastIndex has never indexed
+// (e.g. renamed within the first Rebuild interval of being spawned). Find's
+// own on-miss self-heal (an internal Rebuild) still can't find it, so
+// UpdateMeta is never called and the composed onChange hook never fires —
+// refreshRenamedMeta's trailing navigation invalidation must be the sole
+// source of the invalidation for a rename that genuinely succeeded on the
+// daemon side.
+func TestRefreshRenamedMetaInvalidatesNavigationWhenSessionNotIndexed(t *testing.T) {
 	root := t.TempDir()
 	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
 	// Seed once, matching runMain's startup rebuild, so Find's internal
@@ -198,18 +180,9 @@ func TestRefreshRenamedMetaBroadcastsTreeChangedExactlyOnceWhenSessionNotIndexed
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{Past: past})
-	past.SetOnChange(func() { notifyTreeChanged(web.appRPC) }) // mirrors runMain's composed wiring
-	hubHTTP := httptest.NewServer(http.HandlerFunc(web.appRPC.ServeWebSocket))
-	defer hubHTTP.Close()
-	client := dialHubRPC(t, hubHTTP)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	past.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) }) // mirrors runMain's composed wiring
 
 	web.refreshRenamedMeta(renameSessionID, "new title") // renameSessionID was never written to disk or indexed
-
-	assertSingleNotification(t, client, web.appRPC, appwire.NotifyEvenerTreeChanged)
 }
 
 // TestRenameNotFoundBroadcastsNothing pins the invariant's other half: a
@@ -230,12 +203,7 @@ func TestRenameNotFoundBroadcastsNothing(t *testing.T) {
 	}
 	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
 	defer hub.Close()
-	past.SetOnChange(func() { notifyTreeChanged(web.appRPC) })
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	past.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
 
 	resp, err := http.Post(hub.URL+"/api/sessions/local:"+renameRaceSessionID+"/rename", "application/json", strings.NewReader(`{"name":"new title"}`))
 	if err != nil {
@@ -245,6 +213,4 @@ func TestRenameNotFoundBroadcastsNothing(t *testing.T) {
 	if resp.StatusCode != http.StatusNotFound {
 		t.Fatalf("status=%d, want 404", resp.StatusCode)
 	}
-
-	assertNoNotification(t, client, web.appRPC, appwire.NotifyEvenerTreeChanged)
 }

@@ -14,7 +14,7 @@ Layer (1) is already pinned deterministically by two scenarios —
 `…OrdersProjectsByLastActivityNotCreatedAt`
 (`internal/hubcore/tree_test.go:958,984`, replayed by `FuzzHubcoreScenarios`,
 `internal/hubcore/scenarios_fuzz_test.go#FuzzHubcoreScenarios`). This card exists for layer
-(2), which unit tests cannot see: `/api/tree` builds from
+(2), which unit tests cannot see: `/api/navigation` builds from
 `cfg.Past.AllMetas()` (`cmd/evener-hub/web_api_tree.go:389`, memoized on the
 inputs version at `:261-280`), an in-memory index that has to *learn* a
 session's meta changed.
@@ -30,7 +30,7 @@ authoritative for the session verbs this card drives. The old text used
 
 The 2026-07-06 run recorded a real, live-observed propagation gap: a follow-up
 turn on the oldest project's session landed on disk at 12:31:50Z, and
-`/api/tree` did not reflect the new order until 12:33:16Z — **~86s**. At the
+`/api/navigation` did not reflect the new order until 12:33:16Z — **~86s**. At the
 time nothing on the turn-completion path refreshed the past index; only a
 `time.NewTicker(cfg.PastIndexRebuild)` (default 60s,
 `cmd/evener-hub/config.go:62,134-136`; started at `cmd/evener-hub/main.go:400`)
@@ -51,9 +51,9 @@ chain is:
    `meta.json` and folds it in via `UpdateMeta`
    (`internal/hubcore/past.go:371-397,327-350`) — no full rescan.
 4. `past.SetOnChange(func(){ bump(); notifyTreeChanged(web.appRPC) })`
-   (`main.go:372`) busts the `/api/tree` memo *and* pushes `evener/tree/changed`,
+   (`main.go:372`) busts the `/api/navigation` memo *and* pushes `navigation invalidation`,
    so an open rail refetches on its own 250ms debounce
-   (`frontend/src/stores/tree.ts:443-450,455-467`).
+   (`frontend/src/stores/navigation/store.ts:443-450,455-467`).
 
 So the expectation flipped: the order should now update in **seconds**, not on
 the next 60s tick. If the ~86s lag reproduces, one of those four links is
@@ -79,7 +79,7 @@ broken — that is the failure this card now catches.
 ## Steps
 
 Every step here is **browser-free**: the assertion is the order of
-`/api/tree`'s `projects[]`, and the rail renders that order verbatim
+`/api/navigation`'s `projects[]`, and the rail renders that order verbatim
 (`Rail.tsx:588-594` maps `tree.projects` straight through `projectNodes`,
 which preserves incoming order). Open the rail if you want to eyeball it; the
 verdict comes from the JSON.
@@ -92,13 +92,13 @@ verdict comes from the JSON.
 3. Wait ~45s, then spawn S2 in `proj-mid`; poll to settled.
 4. Wait ~45s, then spawn S3 in `proj-new`; poll to settled. `proj-new` is now
    both the most-recently-created and most-recently-touched project.
-5. Capture `GET /api/tree` as the baseline, and record the wall-clock time.
+5. Capture `GET /api/navigation` as the baseline, and record the wall-clock time.
 6. Send a follow-up turn to **S1** — the OLDEST-created project — via
    `POST /api/sessions/local:$SID1/send` with body `{"text":"…"}`. Poll until
    it settles again with an incremented turn count. Record the moment S1's
    on-disk `meta.json` `UpdatedAt` changes (that is the ground truth the tree
    is supposed to catch up to).
-7. Poll `GET /api/tree` every ~2s for up to 120s, recording the first capture
+7. Poll `GET /api/navigation` every ~2s for up to 120s, recording the first capture
    at which `proj-old` ranks first. Compare that timestamp against step 6's
    disk write.
 
@@ -122,7 +122,7 @@ verdict comes from the JSON.
   - Falsify: `proj-old` only reaches rank 1 at ~60s or later, or its reported
     `updated_at` stays at the pre-touch value while its rank changes. Either
     means the `SetOnStatusChange` → `RefreshOne` → `UpdateMeta` → `bump` chain
-    is broken and `/api/tree` is back to waiting on the periodic rebuild.
+    is broken and `/api/navigation` is back to waiting on the periodic rebuild.
 - **The original falsification still applies too**: "a project only recently
   CREATED but not touched outranking a project JUST touched." It did not
   reproduce in the 2026-07-06 run and must not now.
@@ -131,7 +131,7 @@ verdict comes from the JSON.
 
 Baseline order `proj-new` (12:30:11Z) → `proj-mid` (12:30:05Z) → `proj-old`
 (12:28:29Z), correct. S1 touched: request 12:31:47Z, meta write 12:31:50Z. The
-`/api/tree` capture at 12:31:59Z still ranked `proj-new` first and still
+`/api/navigation` capture at 12:31:59Z still ranked `proj-new` first and still
 reported `proj-old`'s `updated_at` as **12:28:29Z** — the stale pre-touch
 value. `proj-old` did not reach rank 1 until 12:33:16Z, ~86s after the write.
 The comparator was correct throughout; only the pipeline feeding it lagged.

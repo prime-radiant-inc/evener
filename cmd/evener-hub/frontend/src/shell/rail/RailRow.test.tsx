@@ -6,11 +6,12 @@ import userEvent from "@testing-library/user-event";
 import { lazy } from "react";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
-import type { TreeNode as ApiTreeNode, TreeProject as ApiTreeProject } from "../../stores/tree";
+import type { NavigationPinSectionCatalog } from "../../protocol/types.gen";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { keyID, type ResourceState } from "../../stores/navigation/types";
 import { Tree, type TreeRowInfo } from "../../widgets";
 import { registerPaneForTests } from "../paneRegistry";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
-import * as railActions from "./actions";
 import { activityGloss, cadenceStateFor, RailRow, type RailRowActions } from "./RailRow";
 import railStyles from "./RailRow.module.css";
 import type {
@@ -18,19 +19,45 @@ import type {
   LoadingRailNode,
   OverflowRailNode,
   ProjectRailNode,
+  RailProject,
+  RailSession,
   SessionRailNode,
 } from "./railNodes";
 
-// "Pin this session…" mounts the real PinSectionPicker, which fetches its
-// section list on mount - stub that fetch. vi.spyOn, not vi.mock: under a
-// shared module registry (isolate:false) some other file (e.g.
-// shell/rail/PinSectionPicker.test.tsx or Rail.test.tsx) may already have
-// loaded "./actions" for real before this file's vi.mock() factory
-// registers, in which case PinSectionPicker.tsx's own
-// `import { listPinSections }` binding is fixed forever and a vi.mock()
-// here can't retroactively change what it calls internally - see
-// PinSectionPicker.test.tsx's own comment on the identical hazard.
-let mockedListPinSections = vi.spyOn(railActions, "listPinSections");
+// "Pin this session…" mounts the real PinSectionPicker, which now reads
+// pin sections from the navigation store's bounded pin-catalog resource
+// (loadPinCatalog + selectPinSections) instead of the legacy unbounded
+// GET /api/pin-sections. Seed the store with a pin_catalog resource and
+// stub loadPinCatalog so the picker's mount effect resolves without a
+// real network fetch.
+const pinKey = { kind: "pin_catalog" as const, offset: 0, limit: 100 };
+const generation = "generation_test";
+
+type LoadPinCatalog = (offset?: number, limit?: number) => Promise<ResourceState<NavigationPinSectionCatalog>>;
+
+function seedPinCatalogForPicker(): void {
+  const resource: ResourceState = {
+    key: pinKey,
+    data: {
+      generation_id: generation,
+      revision: 1,
+      pin_sections: [{ id: "sec_1", name: "Client", count: 0 }],
+      remaining: 0,
+    },
+    loadedRevision: 1,
+    targetRevision: 1,
+    forceToken: 0,
+    etag: "a",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: generation,
+  };
+  navigationStore.setState({ mode: "v1", resources: new Map([[keyID(resource.key), resource]]) });
+  const impl = async () =>
+    navigationStore.getState().resources.get(keyID(pinKey)) as ResourceState<NavigationPinSectionCatalog>;
+  navigationStore.setState({ loadPinCatalog: vi.fn(impl) as LoadPinCatalog });
+}
 
 function PaneFixture() {
   return <div>pane</div>;
@@ -67,22 +94,20 @@ beforeAll(() => {
 
 afterAll(() => {
   for (const restore of restorePaneFixtures) restore();
-  mockedListPinSections.mockRestore();
 });
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
-  // Re-spied here, not just once above: shell/rail/Rail.test.tsx's own
-  // afterEach calls vi.restoreAllMocks(), which is a GLOBAL operation - it
-  // un-does this spy the moment ANY test anywhere in the worker restores
-  // mocks, not just that file's own.
-  mockedListPinSections = vi.spyOn(railActions, "listPinSections");
-  mockedListPinSections.mockResolvedValue([{ id: "sec_1", name: "Client", member_count: 0 }]);
+  resetNavigationStoreForTests();
+  seedPinCatalogForPicker();
 });
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  resetNavigationStoreForTests();
+});
 
-function apiNode(overrides: Partial<ApiTreeNode> = {}): ApiTreeNode {
+function apiNode(overrides: Partial<RailSession> = {}): RailSession {
   return {
     row_id: "project:p1:local:a",
     ref: "local:a",
@@ -98,15 +123,25 @@ function apiNode(overrides: Partial<ApiTreeNode> = {}): ApiTreeNode {
   };
 }
 
-function apiProject(overrides: Partial<ApiTreeProject> = {}): ApiTreeProject {
-  return { key: "p1", name: "Proj", sessions: [], ...overrides };
+function apiProject(overrides: Partial<RailProject> = {}): RailProject {
+  return {
+    key: "p1",
+    name: "Proj",
+    sessions: [],
+    more_current: 0,
+    more_recent: 0,
+    more_archived: 0,
+    loaded: false,
+    nextOffsets: {},
+    ...overrides,
+  };
 }
 
-function sessionRailNode(session: ApiTreeNode, overrides: Partial<SessionRailNode> = {}): SessionRailNode {
+function sessionRailNode(session: RailSession, overrides: Partial<SessionRailNode> = {}): SessionRailNode {
   return { id: session.row_id, kind: "session", session, expanded: false, children: [], ...overrides };
 }
 
-function projectRailNode(project: ApiTreeProject, children: ProjectRailNode["children"] = []): ProjectRailNode {
+function projectRailNode(project: RailProject, children: ProjectRailNode["children"] = []): ProjectRailNode {
   return { id: `projectnode:${project.key}`, kind: "project", project, expanded: false, children };
 }
 
@@ -145,7 +180,7 @@ function actions(overrides: Partial<RailRowActions> = {}): RailRowActions {
 // renderRow mounts a top-level local session row with the menu fully
 // populated (renameable, live, deletable), the way the rail's own tiers
 // would render it.
-function renderRow(sessionOverrides: Partial<ApiTreeNode> = {}, acts: RailRowActions = actions()) {
+function renderRow(sessionOverrides: Partial<RailSession> = {}, acts: RailRowActions = actions()) {
   const session = apiNode({ rename: true, ...sessionOverrides });
   render(<RailRow node={sessionRailNode(session)} info={info()} actions={acts} />);
   return session;
