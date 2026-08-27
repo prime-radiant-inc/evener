@@ -23,7 +23,7 @@ setting, `vision_model`, with three states:
 
 The setting is a launch-time CLI flag (`--vision-model`), a persisted session
 config field, a runtime mutation (`thread/vision-model/set`), a picker in the
-hub web UI, and a `/vision` command in the TUI. Both pickers offer **Current
+hub web UI, and a `/vision-model` command in the TUI. Both pickers offer **Current
 model**, **Off**, and the vision-capable models from the catalog. Picking the
 current model reproduces today's same-model behavior, so one concept is the
 whole user surface. Every consumer — web frontend, TUI, hub — reaches the
@@ -229,11 +229,11 @@ how the model fields reach `pastEntryThread` today.
 
 ### TUI
 
-`evener-tui` gains a `/vision` hub command mirroring `/model`. Bare `/vision`
+`evener-tui` gains a `/vision-model` hub command mirroring `/model`. Bare `/vision-model`
 opens the shared model picker with **Current model**, **Off**, and the
 vision-capable catalog entries (filtered on `supports_vision`, with the active
-setting marked like `/model`'s "(active)" tag); `/vision <ref>` and
-`/vision off` set directly. Both forms call
+setting marked like `/model`'s "(active)" tag); `/vision-model <ref>` and
+`/vision-model off` set directly. Both forms call
 `appwire.Client.ThreadVisionModelSet`, and the result lands through the
 existing `hubActionMsg` path with a "Vision model updated." confirmation.
 Mid-turn Conflicts surface the same way `/model` conflicts do.
@@ -277,7 +277,7 @@ All gates run per AGENTS.md: `make lint`, `make vet`, `make test`, plus
 - **frontend**: store action and reducer tests; `VisionModelSwitch` renders
   the three entry kinds, filters by `supports_vision`, sends the right wire
   values, and disables on capability.
-- **TUI**: `/vision` registry tests mirroring the `/model` command tests —
+- **TUI**: `/vision-model` registry tests mirroring the `/model` command tests —
   direct set with a ref and with `off`, picker opens with the three entry
   kinds, wire call carries the ref; tmux e2e alongside the existing `/model`
   e2e where the harness supports it.
