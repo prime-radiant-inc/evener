@@ -96,6 +96,31 @@ export interface ActivityService {
   projectActivity(thread: Thread): ActivityView;
 }
 
+// --- projection errors -------------------------------------------------------
+
+export type ActivityProjectionErrorCode =
+  | "duplicate-delegate"
+  | "duplicate-job"
+  | "cross-kind-collision"
+  | "self-parent"
+  | "delegate-cycle"
+  | "missing-parent";
+
+export class ActivityProjectionError extends Error {
+  readonly code: ActivityProjectionErrorCode;
+  readonly rawId: string;
+  constructor(
+    code: ActivityProjectionErrorCode,
+    rawId: string,
+    message?: string,
+  ) {
+    super(message ?? `activity projection error: ${code} (${rawId})`);
+    this.name = "ActivityProjectionError";
+    this.code = code;
+    this.rawId = rawId;
+  }
+}
+
 // --- tone classification -----------------------------------------------------
 
 const RUNNING_STATUSES = new Set([
@@ -179,6 +204,100 @@ function redactDelegate(dlg: EvenerDelegateInfo): RedactedDiagnostic {
   };
 }
 
+// --- hierarchy validation ----------------------------------------------------
+
+// Validates all delegate/job operational IDs before recursive projection.
+// Throws ActivityProjectionError (never recurses forever, flattens, or shares
+// entries) when the hierarchy is malformed:
+//   - duplicate delegate IDs within the delegate kind
+//   - duplicate job IDs within the job kind
+//   - cross-kind collision (delegate ID == job ID) — ambiguous
+//   - self-parent (delegate whose parentDelegateId === its own delegateId)
+//   - delegate parent cycle (A→B→A, A→B→C→A, …)
+//   - missing delegate parent (parentDelegateId not in the delegate set) for
+//     delegates or jobs
+function validateHierarchy(
+  delegates: EvenerDelegateInfo[],
+  jobs: EvenerJobInfo[],
+): void {
+  // --- no duplicate within kind ---
+  const delegateIds = new Set<string>();
+  for (const dlg of delegates) {
+    if (delegateIds.has(dlg.delegateId)) {
+      throw new ActivityProjectionError("duplicate-delegate", dlg.delegateId);
+    }
+    delegateIds.add(dlg.delegateId);
+  }
+
+  const jobIds = new Set<string>();
+  for (const j of jobs) {
+    if (jobIds.has(j.jobId)) {
+      throw new ActivityProjectionError("duplicate-job", j.jobId);
+    }
+    jobIds.add(j.jobId);
+  }
+
+  // --- no cross-kind collision ---
+  for (const dlg of delegates) {
+    if (jobIds.has(dlg.delegateId)) {
+      throw new ActivityProjectionError("cross-kind-collision", dlg.delegateId);
+    }
+  }
+
+  // --- no self-parent ---
+  for (const dlg of delegates) {
+    if (
+      dlg.parentDelegateId !== undefined &&
+      dlg.parentDelegateId !== "" &&
+      dlg.parentDelegateId === dlg.delegateId
+    ) {
+      throw new ActivityProjectionError("self-parent", dlg.delegateId);
+    }
+  }
+
+  // --- no delegate parent cycle ---
+  // Walk the parent chain from each delegate; if we revisit a node already
+  // on the current path, the chain is cyclic. The "visiting" set detects
+  // the cycle; "visited" avoids re-walking already-proven-clean chains.
+  const visited = new Set<string>();
+  for (const dlg of delegates) {
+    if (visited.has(dlg.delegateId)) continue;
+    const visiting = new Set<string>();
+    let cursor: EvenerDelegateInfo | undefined = dlg;
+    while (cursor !== undefined) {
+      const id = cursor.delegateId;
+      if (visiting.has(id)) {
+        // Cycle detected — the cursor's id is on the current path.
+        throw new ActivityProjectionError("delegate-cycle", id);
+      }
+      visiting.add(id);
+      const parent: string | undefined =
+        cursor.parentDelegateId !== undefined && cursor.parentDelegateId !== ""
+          ? cursor.parentDelegateId
+          : undefined;
+      if (parent === undefined) break;
+      cursor = delegates.find((d) => d.delegateId === parent);
+    }
+    for (const id of visiting) visited.add(id);
+  }
+
+  // --- no missing delegate parent for nested delegates ---
+  for (const dlg of delegates) {
+    const parent = dlg.parentDelegateId;
+    if (parent !== undefined && parent !== "" && !delegateIds.has(parent)) {
+      throw new ActivityProjectionError("missing-parent", parent);
+    }
+  }
+
+  // --- no missing delegate parent for nested jobs ---
+  for (const j of jobs) {
+    const parent = j.parentDelegateId;
+    if (parent !== undefined && parent !== "" && !delegateIds.has(parent)) {
+      throw new ActivityProjectionError("missing-parent", parent);
+    }
+  }
+}
+
 // --- work projection ---------------------------------------------------------
 
 function projectJobEntry(job: EvenerJobInfo): WorkEntry {
@@ -218,6 +337,11 @@ function projectWork(diagnostics: EvenerDiagnostics | undefined): WorkEntry[] {
 
   const delegates = diagnostics.delegates ?? [];
   const jobs = diagnostics.jobs ?? [];
+
+  // Validate all operational IDs before any recursive projection. A
+  // malformed hierarchy (duplicate, cross-kind collision, self-parent,
+  // cycle, missing parent) fails closed with ActivityProjectionError.
+  validateHierarchy(delegates, jobs);
 
   // Partition jobs by their parent delegate id.
   const jobsByParent = new Map<string, EvenerJobInfo[]>();
