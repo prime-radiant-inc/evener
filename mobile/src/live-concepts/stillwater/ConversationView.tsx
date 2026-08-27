@@ -14,16 +14,29 @@ export interface ConversationViewProps {
   dispatch(intent: LiveConceptIntent): void;
 }
 
+function buildDraft(selected: readonly string[], note: string): QuestionDraft {
+  return {
+    selectedOptionKeys: selected,
+    note,
+    resolution: null,
+  };
+}
+
 function QuestionCard({
   question,
   draft,
   dispatch,
+  canSend,
+  hasPending,
 }: {
   question: LiveQuestionView;
   draft: QuestionDraft | undefined;
   dispatch(intent: LiveConceptIntent): void;
+  canSend: boolean;
+  hasPending: boolean;
 }) {
   const selected = draft?.selectedOptionKeys ?? [];
+  const note = draft?.note ?? "";
   const resolution = draft?.resolution ?? null;
 
   if (resolution !== null) {
@@ -48,6 +61,9 @@ function QuestionCard({
       </section>
     );
   }
+
+  const hasSelection = selected.length > 0;
+  const canSubmitAnswer = hasSelection && canSend && !hasPending;
 
   return (
     <form
@@ -76,17 +92,17 @@ function QuestionCard({
                   aria-label={option.label}
                   aria-describedby={detailId}
                   checked={selected.includes(option.key)}
+                  disabled={!canSend || hasPending}
                   onChange={(event) =>
                     dispatch({
                       type: "setQuestionDraft",
                       key: question.key,
-                      value: {
-                        selectedOptionKeys: event.currentTarget.checked
+                      value: buildDraft(
+                        event.currentTarget.checked
                           ? [...selected, option.key]
                           : selected.filter((key) => key !== option.key),
-                        note: draft?.note ?? "",
-                        resolution: null,
-                      },
+                        note,
+                      ),
                     })
                   }
                 />
@@ -104,23 +120,24 @@ function QuestionCard({
         <span>Note</span>
         <textarea
           aria-label="Note"
-          value={draft?.note ?? ""}
+          value={note}
+          disabled={!canSend || hasPending}
           onChange={(event) =>
             dispatch({
               type: "setQuestionDraft",
               key: question.key,
-              value: {
-                selectedOptionKeys: selected,
-                note: event.currentTarget.value,
-                resolution: null,
-              },
+              value: buildDraft(selected, event.currentTarget.value),
             })
           }
         />
       </label>
 
       <div className="sw-question-actions">
-        <button className="sw-primary-action" type="submit">
+        <button
+          className="sw-primary-action"
+          type="submit"
+          disabled={!canSubmitAnswer}
+        >
           Submit answer
         </button>
       </div>
@@ -137,6 +154,10 @@ function TranscriptContent({
   state: LiveConceptState;
   dispatch(intent: LiveConceptIntent): void;
 }): ReactNode {
+  const composer = state.composer;
+  const canSend = composer.canSend || composer.canSteer || composer.canQueue;
+  const hasPending = composer.pending !== null;
+
   switch (item.kind) {
     case "user":
       return <p className="sw-user-message">{item.body}</p>;
@@ -158,13 +179,34 @@ function TranscriptContent({
         </div>
       );
     case "question": {
+      if (!item.questionKey) {
+        return (
+          <section className="sw-inline-state" role="alert">
+            <h2>Question unavailable</h2>
+            <p>This transcript item has no linked question.</p>
+          </section>
+        );
+      }
       const question = state.conversation?.questions.find(
-        ({ key }) => key === item.key,
+        ({ key }) => key === item.questionKey,
       );
-      if (!question) return null;
+      if (!question) {
+        return (
+          <section className="sw-inline-state" role="alert">
+            <h2>Question unavailable</h2>
+            <p>The linked question could not be found.</p>
+          </section>
+        );
+      }
       const draft = state.ui.questionDrafts[question.key];
       return (
-        <QuestionCard question={question} draft={draft} dispatch={dispatch} />
+        <QuestionCard
+          question={question}
+          draft={draft}
+          dispatch={dispatch}
+          canSend={canSend}
+          hasPending={hasPending}
+        />
       );
     }
     case "failure":
@@ -188,7 +230,7 @@ function TranscriptContent({
 
 const composerModes = ["send", "steer", "queue"] as const;
 
-function canSubmit(
+function canUseMode(
   mode: "send" | "steer" | "queue",
   composer: LiveConceptState["composer"],
 ): boolean {
@@ -209,6 +251,13 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
   }
 
   const mode = ui.composerMode;
+  const hasPending = composer.pending !== null;
+  const anyTextMode =
+    composer.canSend || composer.canSteer || composer.canQueue;
+  const canSubmit =
+    canUseMode(mode, composer) &&
+    composer.draft.trim().length > 0 &&
+    !hasPending;
 
   return (
     <div className="sw-conversation">
@@ -217,8 +266,11 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
           <p className="sw-eyebrow">{conversation.project}</p>
           <h2>{conversation.title}</h2>
           <p>{conversation.status}</p>
+          {conversation.updatedLabel ? (
+            <p className="sw-updated-label">{conversation.updatedLabel}</p>
+          ) : null}
         </div>
-        <StatusLabel state="running" />
+        <StatusLabel state={conversation.tone} />
       </section>
 
       <fieldset className="sw-session-actions">
@@ -297,9 +349,9 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
             <button
               type="button"
               aria-pressed={mode === m}
-              disabled={!canSubmit(m, composer)}
+              disabled={!canUseMode(m, composer)}
               key={m}
-              onClick={() => dispatch({ type: "submit", mode: m })}
+              onClick={() => dispatch({ type: "setComposerMode", mode: m })}
             >
               {m.charAt(0).toUpperCase() + m.slice(1)}
             </button>
@@ -311,11 +363,21 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
             aria-label="Message"
             placeholder="Message or steer…"
             value={composer.draft}
+            disabled={!anyTextMode || hasPending}
             onChange={(event) =>
               dispatch({ type: "setDraft", value: event.currentTarget.value })
             }
           />
         </label>
+        <button
+          className="sw-primary-action sw-composer__submit"
+          type="button"
+          disabled={!canSubmit}
+          onClick={() => dispatch({ type: "submit", mode })}
+        >
+          <Icon name="send" decorative />
+          <span>Submit</span>
+        </button>
       </section>
     </div>
   );

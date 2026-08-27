@@ -379,7 +379,7 @@
 }
 
 .concept-stillwater [data-status-state="running"],
-.concept-stillwater [data-status-state="complete"] {
+.concept-stillwater [data-status-state="success"] {
   color: var(--sw-accent);
 }
 
@@ -387,7 +387,6 @@
   color: var(--sw-danger);
 }
 
-.concept-stillwater [data-status-state="waiting"],
 .concept-stillwater [data-status-state="idle"],
 .concept-stillwater [data-status-state="unknown"] {
   color: var(--sw-muted);
@@ -735,6 +734,26 @@
   outline: 0;
   background: transparent;
   color: inherit;
+}
+
+.concept-stillwater .sw-composer__submit {
+  display: grid;
+  width: 3rem;
+  padding: 0;
+  place-items: center;
+}
+
+.concept-stillwater .sw-composer__submit span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  clip-path: inset(50%);
+  overflow: hidden;
+}
+
+.concept-stillwater .sw-updated-label {
+  color: var(--sw-muted);
+  font-size: 0.75rem;
 }
 
 .concept-stillwater .sw-work-panel {
