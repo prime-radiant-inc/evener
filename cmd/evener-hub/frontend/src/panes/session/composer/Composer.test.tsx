@@ -2674,7 +2674,11 @@ test("slash completion keeps built-ins while hiding plugin commands for an expli
 
   await user.type(textarea(), "hi /re");
 
-  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/reasoning-effort")]);
+  expect(slashOptions().map((el) => el.textContent)).toEqual([
+    expect.stringContaining("/reasoning-effort"),
+    expect.stringContaining("/project"),
+    expect.stringContaining("/drain-as-steer"),
+  ]);
 });
 
 test("a focused thread skill completes inline text and submits the unchanged prose", async () => {
