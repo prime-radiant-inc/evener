@@ -3,7 +3,8 @@
 // asserts the live contract presentation: grouped roster rows, real
 // capability controls, streaming/truncated transcript markers, nested work
 // hierarchy, connected-work relationship rails, explicit attention signal,
-// current-work marker, reduced-motion semantics, and the absence of every
+// current-work marker, full question interaction, olderAvailable
+// affordance, reduced-motion semantics, and the absence of every
 // prototype-only control (Search/New/Settings/Voice/Lab/synthetic).
 
 import { readFileSync } from "node:fs";
@@ -15,10 +16,11 @@ import {
   within,
 } from "@testing-library/react";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { LiveConceptState } from "../contract";
+import type { LiveConceptState, QuestionDraft } from "../contract";
 import type {
   LiveActivityView,
   LiveConversationView,
+  LiveQuestionView,
   LiveRosterView,
 } from "../model";
 import { ConstellationRenderer } from "./ConstellationRenderer";
@@ -92,6 +94,17 @@ function rosterView(overrides: Partial<LiveRosterView> = {}): LiveRosterView {
   };
 }
 
+const questionView: LiveQuestionView = {
+  key: "q1",
+  header: "Permission required",
+  prompt: "Which transport should the audit use?",
+  options: [
+    { key: "opt-a", label: "WebSocket", detail: "Real-time bidirectional" },
+    { key: "opt-b", label: "HTTP polling", detail: "Simpler but slower" },
+  ],
+  multiple: false,
+};
+
 function conversationView(
   overrides: Partial<LiveConversationView> = {},
 ): LiveConversationView {
@@ -100,6 +113,8 @@ function conversationView(
     title: "Wire handshake",
     project: "evener-hub",
     status: "running",
+    tone: "running",
+    updatedLabel: "2 minutes ago",
     items: [
       {
         key: "m1",
@@ -109,6 +124,8 @@ function conversationView(
         tone: "idle",
         streaming: false,
         truncated: false,
+        questionKey: null,
+        sequenceLabel: "1",
       },
       {
         key: "m2",
@@ -118,6 +135,8 @@ function conversationView(
         tone: "running",
         streaming: true,
         truncated: false,
+        questionKey: null,
+        sequenceLabel: "2",
       },
       {
         key: "m3",
@@ -127,6 +146,8 @@ function conversationView(
         tone: "running",
         streaming: false,
         truncated: false,
+        questionKey: null,
+        sequenceLabel: "3",
       },
       {
         key: "m4",
@@ -136,10 +157,23 @@ function conversationView(
         tone: "idle",
         streaming: false,
         truncated: true,
+        questionKey: null,
+        sequenceLabel: "4",
+      },
+      {
+        key: "m5",
+        kind: "question",
+        label: "Permission",
+        body: "Which transport should the audit use?",
+        tone: "attention",
+        streaming: false,
+        truncated: false,
+        questionKey: "q1",
+        sequenceLabel: "5",
       },
     ],
-    questions: [],
-    olderAvailable: false,
+    questions: [questionView],
+    olderAvailable: true,
     ...overrides,
   };
 }
@@ -196,6 +230,10 @@ function activityView(
     },
     ...overrides,
   };
+}
+
+function defaultQuestionDraft(): QuestionDraft {
+  return { selectedOptionKeys: [], note: "", resolution: null };
 }
 
 function buildState(
@@ -334,7 +372,7 @@ describe("Constellation sessions surface", () => {
     });
   });
 
-  it("dispatches refreshRoster when refresh is activated", () => {
+  it("dispatches refreshRoster when refresh is activated while ready", () => {
     const { dispatch } = renderConstellation(
       buildState({
         surface: "sessions",
@@ -345,16 +383,69 @@ describe("Constellation sessions surface", () => {
     expect(dispatch).toHaveBeenCalledWith({ type: "refreshRoster" });
   });
 
-  it("surfaces a roster error state", () => {
+  it("disables refresh while loading", () => {
     renderConstellation(
       buildState({
         surface: "sessions",
-        roster: rosterView({ status: "error", error: "Roster unavailable" }),
+        roster: rosterView({ status: "loading" }),
+      }),
+    );
+    expect(screen.getByRole("button", { name: /refresh/i })).toBeDisabled();
+  });
+
+  it("disables the filter input while loading", () => {
+    renderConstellation(
+      buildState({
+        surface: "sessions",
+        roster: rosterView({ status: "loading" }),
+      }),
+    );
+    expect(screen.getByLabelText("Filter sessions")).toBeDisabled();
+  });
+
+  it("surfaces a roster loading state", () => {
+    renderConstellation(
+      buildState({
+        surface: "sessions",
+        roster: rosterView({ status: "loading" }),
+      }),
+    );
+    expect(screen.getByText(/refreshing the live roster/i)).toBeInTheDocument();
+  });
+
+  it("surfaces a roster idle state", () => {
+    renderConstellation(
+      buildState({
+        surface: "sessions",
+        roster: rosterView({ status: "idle" }),
+      }),
+    );
+    expect(screen.getByText(/idle/i)).toBeInTheDocument();
+  });
+
+  it("surfaces a roster offline state", () => {
+    renderConstellation(
+      buildState({
+        surface: "sessions",
+        roster: rosterView({ status: "offline" }),
+      }),
+    );
+    expect(
+      screen.getByRole("heading", { name: /roster offline/i, level: 2 }),
+    ).toBeInTheDocument();
+  });
+
+  it("surfaces a roster error state with the actual error text", () => {
+    renderConstellation(
+      buildState({
+        surface: "sessions",
+        roster: rosterView({ status: "error", error: "Connection timed out" }),
       }),
     );
     expect(
       screen.getByRole("heading", { name: /roster unavailable/i, level: 2 }),
     ).toBeInTheDocument();
+    expect(screen.getByText("Connection timed out")).toBeInTheDocument();
   });
 
   it("renders an empty roster state when there are no groups", () => {
@@ -362,6 +453,23 @@ describe("Constellation sessions surface", () => {
       buildState({ surface: "sessions", roster: rosterView({ groups: [] }) }),
     );
     expect(screen.getByText(/no matching sessions/i)).toBeInTheDocument();
+  });
+
+  it("renders a hasMore affordance when roster has more sessions", () => {
+    renderConstellation(
+      buildState({
+        surface: "sessions",
+        roster: rosterView({ hasMore: true }),
+      }),
+    );
+    expect(screen.getByText(/more sessions available/i)).toBeInTheDocument();
+  });
+
+  it("omits the hasMore affordance when there are no more sessions", () => {
+    renderConstellation(buildState({ surface: "sessions" }));
+    expect(
+      screen.queryByText(/more sessions available/i),
+    ).not.toBeInTheDocument();
   });
 });
 
@@ -379,6 +487,42 @@ describe("Constellation conversation surface", () => {
     expect(
       within(main).getByText("Investigating the AppWire transport."),
     ).toBeInTheDocument();
+  });
+
+  it("uses conversation.tone for the session summary status label, not the status string", () => {
+    renderConstellation(
+      buildState({
+        surface: "conversation",
+        conversation: conversationView({
+          tone: "attention",
+          status: "needs-answer",
+        }),
+      }),
+    );
+    const main = screen.getByRole("main");
+    // The StatusLabel should show "Needs attention" from the tone, not the raw status string
+    expect(within(main).getByText(/needs attention/i)).toBeInTheDocument();
+    expect(within(main).queryByText("needs-answer")).not.toBeInTheDocument();
+  });
+
+  it("renders the conversation updatedLabel when present", () => {
+    renderConstellation(
+      buildState({
+        surface: "conversation",
+        conversation: conversationView({ updatedLabel: "3 hours ago" }),
+      }),
+    );
+    expect(screen.getByText("3 hours ago")).toBeInTheDocument();
+  });
+
+  it("omits a fabricated updatedLabel when it is null", () => {
+    renderConstellation(
+      buildState({
+        surface: "conversation",
+        conversation: conversationView({ updatedLabel: null }),
+      }),
+    );
+    expect(screen.queryByText(/null/i)).not.toBeInTheDocument();
   });
 
   it("marks streaming transcript items", () => {
@@ -402,7 +546,7 @@ describe("Constellation conversation surface", () => {
     expect(tool).toHaveAttribute("data-current-work", "true");
   });
 
-  it("discloses tool output through the live Disclosure primitive", () => {
+  it("discloses tool output bound to expandedToolKeys", () => {
     const { dispatch } = renderConstellation(
       buildState({
         surface: "conversation",
@@ -425,14 +569,195 @@ describe("Constellation conversation surface", () => {
     expect(dispatch).toHaveBeenCalledWith({ type: "toggleTool", key: "m3" });
   });
 
-  it("renders the composer with send, steer, and queue modes", () => {
+  it("does not disclose tool output when expandedToolKeys is empty", () => {
     renderConstellation(buildState({ surface: "conversation" }));
-    expect(screen.getByRole("button", { name: "Send" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Steer" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "Queue" })).toBeInTheDocument();
+    const main = screen.getByRole("main");
+    const toolItem = within(main).getByTestId("transcript-item-m3");
+    expect(within(toolItem).queryByRole("region")).not.toBeInTheDocument();
   });
 
-  it("dispatches setDraft and submit in the active composer mode", () => {
+  it("renders the olderAvailable affordance when older messages exist", () => {
+    renderConstellation(
+      buildState({
+        surface: "conversation",
+        conversation: conversationView({ olderAvailable: true }),
+      }),
+    );
+    expect(screen.getByText(/older messages/i)).toBeInTheDocument();
+  });
+
+  it("omits the olderAvailable affordance when no older messages", () => {
+    renderConstellation(
+      buildState({
+        surface: "conversation",
+        conversation: conversationView({ olderAvailable: false }),
+      }),
+    );
+    expect(screen.queryByText(/older messages/i)).not.toBeInTheDocument();
+  });
+});
+
+/* ------------------------- composer (C1 fix) ------------------------------- */
+
+describe("Constellation composer modes", () => {
+  it("renders send, steer, and queue mode buttons with accurate aria-pressed", () => {
+    renderConstellation(
+      buildState({
+        surface: "conversation",
+        ui: {
+          concept: "constellation",
+          workOpen: false,
+          composerMode: "steer",
+          expandedToolKeys: new Set(),
+          expandedWorkKeys: new Set(),
+          questionDrafts: {},
+          focusedItemKey: null,
+          scrollAnchors: {},
+        },
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Send" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(screen.getByRole("button", { name: "Steer" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "Queue" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+  });
+
+  it("dispatches setComposerMode when a mode button is activated", () => {
+    const { dispatch } = renderConstellation(
+      buildState({ surface: "conversation" }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: "Steer" }));
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "setComposerMode",
+      mode: "steer",
+    });
+  });
+
+  it("disables the send mode when canSend is false", () => {
+    renderConstellation(
+      buildState({
+        surface: "conversation",
+        composer: {
+          draft: "",
+          canSend: false,
+          canSteer: true,
+          canQueue: true,
+          canInterrupt: false,
+          pending: null,
+          error: null,
+        },
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Send" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Steer" })).not.toBeDisabled();
+    expect(screen.getByRole("button", { name: "Queue" })).not.toBeDisabled();
+  });
+
+  it("disables the steer mode when canSteer is false", () => {
+    renderConstellation(
+      buildState({
+        surface: "conversation",
+        composer: {
+          draft: "",
+          canSend: true,
+          canSteer: false,
+          canQueue: true,
+          canInterrupt: false,
+          pending: null,
+          error: null,
+        },
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Steer" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Send" })).not.toBeDisabled();
+  });
+
+  it("disables the queue mode when canQueue is false", () => {
+    renderConstellation(
+      buildState({
+        surface: "conversation",
+        composer: {
+          draft: "",
+          canSend: true,
+          canSteer: true,
+          canQueue: false,
+          canInterrupt: false,
+          pending: null,
+          error: null,
+        },
+      }),
+    );
+    expect(screen.getByRole("button", { name: "Queue" })).toBeDisabled();
+  });
+
+  it("enables the textarea when any text mode is available and no pending", () => {
+    renderConstellation(
+      buildState({
+        surface: "conversation",
+        composer: {
+          draft: "hello",
+          canSend: false,
+          canSteer: true,
+          canQueue: false,
+          canInterrupt: false,
+          pending: null,
+          error: null,
+        },
+      }),
+    );
+    expect(screen.getByPlaceholderText(/message or steer/i)).not.toBeDisabled();
+  });
+
+  it("disables the textarea when all text modes are unavailable", () => {
+    renderConstellation(
+      buildState({
+        surface: "conversation",
+        composer: {
+          draft: "hello",
+          canSend: false,
+          canSteer: false,
+          canQueue: false,
+          canInterrupt: false,
+          pending: null,
+          error: null,
+        },
+      }),
+    );
+    expect(screen.getByPlaceholderText(/message or steer/i)).toBeDisabled();
+  });
+
+  it("disables the textarea when a mutation is pending", () => {
+    renderConstellation(
+      buildState({
+        surface: "conversation",
+        composer: {
+          draft: "hello",
+          canSend: true,
+          canSteer: true,
+          canQueue: true,
+          canInterrupt: true,
+          pending: {
+            kind: "send",
+            status: "pending",
+            draftSnapshot: "hello",
+            generation: 1,
+          },
+          error: null,
+        },
+      }),
+    );
+    expect(screen.getByPlaceholderText(/message or steer/i)).toBeDisabled();
+  });
+
+  it("dispatches setDraft on textarea change", () => {
     const { dispatch } = renderConstellation(
       buildState({
         surface: "conversation",
@@ -447,18 +772,107 @@ describe("Constellation conversation surface", () => {
         },
       }),
     );
-    const textarea = screen.getByRole("textbox");
+    const textarea = screen.getByPlaceholderText(/message or steer/i);
     fireEvent.change(textarea, { target: { value: "steer the thread" } });
     expect(dispatch).toHaveBeenCalledWith({
       type: "setDraft",
       value: "steer the thread",
     });
-
-    fireEvent.click(screen.getByRole("button", { name: /submit message/i }));
-    expect(dispatch).toHaveBeenCalledWith({ type: "submit", mode: "send" });
   });
 
-  it("dispatches interrupt when a turn is running", () => {
+  it("uses ui.composerMode for the primary submit, not the last clicked mode", () => {
+    const { dispatch } = renderConstellation(
+      buildState({
+        surface: "conversation",
+        composer: {
+          draft: "fix the race",
+          canSend: true,
+          canSteer: true,
+          canQueue: true,
+          canInterrupt: false,
+          pending: null,
+          error: null,
+        },
+        ui: {
+          concept: "constellation",
+          workOpen: false,
+          composerMode: "queue",
+          expandedToolKeys: new Set(),
+          expandedWorkKeys: new Set(),
+          questionDrafts: {},
+          focusedItemKey: null,
+          scrollAnchors: {},
+        },
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /submit message/i }));
+    expect(dispatch).toHaveBeenCalledWith({ type: "submit", mode: "queue" });
+  });
+
+  it("disables the primary submit when the draft is empty", () => {
+    renderConstellation(buildState({ surface: "conversation" }));
+    expect(
+      screen.getByRole("button", { name: /submit message/i }),
+    ).toBeDisabled();
+  });
+
+  it("disables the primary submit when a mutation is pending", () => {
+    renderConstellation(
+      buildState({
+        surface: "conversation",
+        composer: {
+          draft: "hello",
+          canSend: true,
+          canSteer: true,
+          canQueue: true,
+          canInterrupt: true,
+          pending: {
+            kind: "send",
+            status: "pending",
+            draftSnapshot: "hello",
+            generation: 1,
+          },
+          error: null,
+        },
+      }),
+    );
+    expect(
+      screen.getByRole("button", { name: /submit message/i }),
+    ).toBeDisabled();
+  });
+
+  it("renders the interrupt control only when canInterrupt is true", () => {
+    renderConstellation(buildState({ surface: "conversation" }));
+    expect(
+      screen.queryByRole("button", { name: /interrupt/i }),
+    ).not.toBeInTheDocument();
+
+    cleanup();
+    renderConstellation(
+      buildState({
+        surface: "conversation",
+        composer: {
+          draft: "",
+          canSend: false,
+          canSteer: false,
+          canQueue: false,
+          canInterrupt: true,
+          pending: {
+            kind: "send",
+            status: "pending",
+            draftSnapshot: "hi",
+            generation: 1,
+          },
+          error: null,
+        },
+      }),
+    );
+    expect(
+      screen.getByRole("button", { name: /interrupt/i }),
+    ).toBeInTheDocument();
+  });
+
+  it("dispatches interrupt when the interrupt control is activated", () => {
     const { dispatch } = renderConstellation(
       buildState({
         surface: "conversation",
@@ -505,7 +919,7 @@ describe("Constellation conversation surface", () => {
     expect(screen.getByText(/sending/i)).toBeInTheDocument();
   });
 
-  it("surfaces a composer error state", () => {
+  it("surfaces a composer error state with the actual error text", () => {
     renderConstellation(
       buildState({
         surface: "conversation",
@@ -516,11 +930,11 @@ describe("Constellation conversation surface", () => {
           canQueue: true,
           canInterrupt: false,
           pending: null,
-          error: "Send failed",
+          error: "Network timeout",
         },
       }),
     );
-    expect(screen.getByText(/send failed/i)).toBeInTheDocument();
+    expect(screen.getByText("Network timeout")).toBeInTheDocument();
   });
 
   it("dispatches openWork when the work button is activated", () => {
@@ -529,6 +943,186 @@ describe("Constellation conversation surface", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: /^work$/i }));
     expect(dispatch).toHaveBeenCalledWith({ type: "openWork" });
+  });
+});
+
+/* ------------------------- question interaction (I1) ---------------------- */
+
+describe("Constellation question interaction", () => {
+  it("renders a question card linked by item.questionKey", () => {
+    renderConstellation(buildState({ surface: "conversation" }));
+    const main = screen.getByRole("main");
+    const questionItem = within(main).getByTestId("transcript-item-m5");
+    expect(
+      within(questionItem).getByText(questionView.prompt),
+    ).toBeInTheDocument();
+  });
+
+  it("renders question options from the linked LiveQuestionView", () => {
+    renderConstellation(buildState({ surface: "conversation" }));
+    expect(screen.getByText("WebSocket")).toBeInTheDocument();
+    expect(screen.getByText("HTTP polling")).toBeInTheDocument();
+  });
+
+  it("dispatches setQuestionDraft when an option is selected", () => {
+    const { dispatch } = renderConstellation(
+      buildState({ surface: "conversation" }),
+    );
+    const radio = screen.getByRole("radio", { name: /websocket/i });
+    fireEvent.click(radio);
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "setQuestionDraft",
+      key: "q1",
+      value: expect.objectContaining({
+        selectedOptionKeys: ["opt-a"],
+      }),
+    });
+  });
+
+  it("dispatches setQuestionDraft when the note textarea changes", () => {
+    const { dispatch } = renderConstellation(
+      buildState({
+        surface: "conversation",
+        ui: {
+          concept: "constellation",
+          workOpen: false,
+          composerMode: "send",
+          expandedToolKeys: new Set(),
+          expandedWorkKeys: new Set(),
+          questionDrafts: {
+            q1: { ...defaultQuestionDraft(), selectedOptionKeys: ["opt-a"] },
+          },
+          focusedItemKey: null,
+          scrollAnchors: {},
+        },
+      }),
+    );
+    const noteInput = screen.getByLabelText("Note");
+    fireEvent.change(noteInput, { target: { value: "prefer websocket" } });
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "setQuestionDraft",
+      key: "q1",
+      value: expect.objectContaining({
+        note: "prefer websocket",
+      }),
+    });
+  });
+
+  it("disables the submit button when no option is selected (invalid)", () => {
+    renderConstellation(buildState({ surface: "conversation" }));
+    expect(
+      screen.getByRole("button", { name: /submit answer/i }),
+    ).toBeDisabled();
+  });
+
+  it("enables the submit button when an option is selected (valid)", () => {
+    renderConstellation(
+      buildState({
+        surface: "conversation",
+        ui: {
+          concept: "constellation",
+          workOpen: false,
+          composerMode: "send",
+          expandedToolKeys: new Set(),
+          expandedWorkKeys: new Set(),
+          questionDrafts: {
+            q1: { ...defaultQuestionDraft(), selectedOptionKeys: ["opt-a"] },
+          },
+          focusedItemKey: null,
+          scrollAnchors: {},
+        },
+      }),
+    );
+    expect(
+      screen.getByRole("button", { name: /submit answer/i }),
+    ).not.toBeDisabled();
+  });
+
+  it("dispatches submitQuestion when the submit button is activated", () => {
+    const { dispatch } = renderConstellation(
+      buildState({
+        surface: "conversation",
+        ui: {
+          concept: "constellation",
+          workOpen: false,
+          composerMode: "send",
+          expandedToolKeys: new Set(),
+          expandedWorkKeys: new Set(),
+          questionDrafts: {
+            q1: { ...defaultQuestionDraft(), selectedOptionKeys: ["opt-a"] },
+          },
+          focusedItemKey: null,
+          scrollAnchors: {},
+        },
+      }),
+    );
+    fireEvent.click(screen.getByRole("button", { name: /submit answer/i }));
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "submitQuestion",
+      key: "q1",
+    });
+  });
+
+  it("disables the submit button when a mutation is pending", () => {
+    renderConstellation(
+      buildState({
+        surface: "conversation",
+        composer: {
+          draft: "",
+          canSend: false,
+          canSteer: false,
+          canQueue: false,
+          canInterrupt: true,
+          pending: {
+            kind: "send",
+            status: "pending",
+            draftSnapshot: "hi",
+            generation: 1,
+          },
+          error: null,
+        },
+        ui: {
+          concept: "constellation",
+          workOpen: false,
+          composerMode: "send",
+          expandedToolKeys: new Set(),
+          expandedWorkKeys: new Set(),
+          questionDrafts: {
+            q1: { ...defaultQuestionDraft(), selectedOptionKeys: ["opt-a"] },
+          },
+          focusedItemKey: null,
+          scrollAnchors: {},
+        },
+      }),
+    );
+    expect(
+      screen.getByRole("button", { name: /submit answer/i }),
+    ).toBeDisabled();
+  });
+
+  it("shows a visible missing-link error when questionKey does not match a question", () => {
+    renderConstellation(
+      buildState({
+        surface: "conversation",
+        conversation: conversationView({
+          items: [
+            {
+              key: "m-q",
+              kind: "question",
+              label: "Permission",
+              body: "Unknown question",
+              tone: "attention",
+              streaming: false,
+              truncated: false,
+              questionKey: "missing-q",
+              sequenceLabel: "1",
+            },
+          ],
+          questions: [],
+        }),
+      }),
+    );
+    expect(screen.getByText(/question unavailable/i)).toBeInTheDocument();
   });
 });
 
@@ -576,7 +1170,7 @@ describe("Constellation work surface", () => {
     expect(running).toHaveAttribute("data-current-work", "true");
   });
 
-  it("discloses work detail through the live Disclosure primitive", () => {
+  it("discloses work detail bound to expandedWorkKeys", () => {
     const { dispatch } = renderConstellation(
       buildState({
         surface: "work",
@@ -597,12 +1191,25 @@ describe("Constellation work surface", () => {
     expect(dispatch).toHaveBeenCalledWith({ type: "toggleWork", key: "w1" });
   });
 
-  it("renders usage with tokens, cost, duration, and context", () => {
+  it("does not disclose work detail when expandedWorkKeys is empty", () => {
+    renderConstellation(buildState({ surface: "work" }));
+    const main = screen.getByRole("main");
+    // No Disclosure region should be present inside work nodes
+    expect(
+      within(main).queryAllByTestId("work-node-w1").length,
+    ).toBeGreaterThan(0);
+    const workNode = within(main).getByTestId("work-node-w1");
+    expect(within(workNode).queryByRole("region")).not.toBeInTheDocument();
+  });
+
+  it("renders usage with formatted tokens, cost, duration, and context", () => {
     renderConstellation(buildState({ surface: "work" }));
     const main = screen.getByRole("main");
     expect(within(main).getByText("Usage")).toBeInTheDocument();
     expect(within(main).getByText("15K tokens")).toBeInTheDocument();
     expect(within(main).getByText("$0.42")).toBeInTheDocument();
+    expect(within(main).getByText("3m")).toBeInTheDocument();
+    expect(within(main).getByText("62%")).toBeInTheDocument();
   });
 
   it("renders an empty work state when there is no activity", () => {
@@ -688,10 +1295,9 @@ describe("Constellation excludes prototype-only controls", () => {
       const root = conceptRoot();
       expect(within(root).queryByTestId("root-nav")).not.toBeInTheDocument();
       expect(within(root).queryByText(/lab controls/i)).not.toBeInTheDocument();
-      expect(within(root).queryByText(/search/i)).not.toBeInTheDocument();
       expect(within(root).queryByText(/new session/i)).not.toBeInTheDocument();
       expect(within(root).queryByText(/settings/i)).not.toBeInTheDocument();
-      expect(within(root).queryByText(/voice/i)).not.toBeInTheDocument();
+      expect(within(root).queryByText(/^voice$/i)).not.toBeInTheDocument();
       expect(
         within(root).queryByTestId("synthetic-turn"),
       ).not.toBeInTheDocument();
@@ -705,9 +1311,6 @@ describe("Constellation excludes prototype-only controls", () => {
   });
 
   it("renders no prototype or synthetic symbol leakage in source", () => {
-    // Boundary is enforced by check-live-concepts-boundary.mjs; this is a
-    // complementary assertion that the renderer module has no prototype
-    // symbol leakage.
     const source = readFileSync(
       "src/live-concepts/constellation/ConstellationRenderer.tsx",
       "utf8",

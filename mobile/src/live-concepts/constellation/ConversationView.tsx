@@ -1,4 +1,8 @@
-import type { LiveConceptIntent, LiveConceptState } from "../contract";
+import type {
+  LiveConceptIntent,
+  LiveConceptState,
+  QuestionDraft,
+} from "../contract";
 import type { LiveTranscriptItem } from "../model";
 import { Disclosure } from "../shared/Disclosure";
 import { Icon } from "../shared/Icon";
@@ -8,6 +12,158 @@ export interface ConversationViewProps {
   state: LiveConceptState;
   dispatch(intent: LiveConceptIntent): void;
 }
+
+const COMPOSER_MODES = ["send", "steer", "queue"] as const;
+type ComposerMode = (typeof COMPOSER_MODES)[number];
+
+function capabilityForMode(
+  composer: LiveConceptState["composer"],
+  mode: ComposerMode,
+): boolean {
+  if (mode === "send") return composer.canSend;
+  if (mode === "steer") return composer.canSteer;
+  return composer.canQueue;
+}
+
+/* --------------------------- question card --------------------------- */
+
+function isQuestionValid(draft: QuestionDraft): boolean {
+  return draft.selectedOptionKeys.length > 0;
+}
+
+function QuestionCard({
+  questionKey,
+  state,
+  dispatch,
+}: {
+  questionKey: string;
+  state: LiveConceptState;
+  dispatch(intent: LiveConceptIntent): void;
+}) {
+  const conversation = state.conversation;
+  const composer = state.composer;
+  const draft = state.ui.questionDrafts[questionKey] ?? {
+    selectedOptionKeys: [],
+    note: "",
+    resolution: null,
+  };
+  const pending = composer.pending !== null;
+
+  if (!conversation) {
+    return (
+      <section
+        className="co-question-card co-question-card--missing"
+        data-question-missing="true"
+      >
+        <p>Question unavailable</p>
+        <p>This transcript item has no linked question view.</p>
+      </section>
+    );
+  }
+
+  const question = conversation.questions.find((q) => q.key === questionKey);
+
+  if (!question) {
+    return (
+      <section
+        className="co-question-card co-question-card--missing"
+        data-question-missing="true"
+        role="alert"
+      >
+        <p className="co-question-card__error">Question unavailable</p>
+        <p>This transcript item has no linked question view.</p>
+      </section>
+    );
+  }
+
+  const valid = isQuestionValid(draft);
+
+  return (
+    <form
+      className="co-question-card"
+      data-question-key={question.key}
+      onSubmit={(event) => {
+        event.preventDefault();
+        dispatch({ type: "submitQuestion", key: question.key });
+      }}
+    >
+      <fieldset>
+        <legend>
+          <span className="co-eyebrow">
+            {question.multiple ? "Choose one or more" : "Choose one"}
+          </span>
+          <span>{question.prompt}</span>
+        </legend>
+        <div className="co-question-options">
+          {question.options.map((option) => {
+            const detailId = `co-question-${question.key}-option-${option.key}`;
+            const checked = draft.selectedOptionKeys.includes(option.key);
+            return (
+              <label className="co-question-option" key={option.key}>
+                <input
+                  type={question.multiple ? "checkbox" : "radio"}
+                  name={`co-question-${question.key}`}
+                  aria-label={option.label}
+                  aria-describedby={detailId}
+                  checked={checked}
+                  disabled={pending}
+                  onChange={() => {
+                    const next = question.multiple
+                      ? checked
+                        ? draft.selectedOptionKeys.filter(
+                            (k) => k !== option.key,
+                          )
+                        : [...draft.selectedOptionKeys, option.key]
+                      : checked
+                        ? []
+                        : [option.key];
+                    dispatch({
+                      type: "setQuestionDraft",
+                      key: question.key,
+                      value: { ...draft, selectedOptionKeys: next },
+                    });
+                  }}
+                />
+                <span>
+                  <strong>{option.label}</strong>
+                  <small id={detailId}>{option.detail}</small>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      </fieldset>
+
+      <label className="co-field">
+        <span>Note</span>
+        <textarea
+          aria-label="Note"
+          value={draft.note}
+          disabled={pending}
+          onChange={(event) =>
+            dispatch({
+              type: "setQuestionDraft",
+              key: question.key,
+              value: { ...draft, note: event.currentTarget.value },
+            })
+          }
+        />
+      </label>
+
+      <div className="co-question-actions">
+        <button
+          className="co-primary-action"
+          type="submit"
+          disabled={!valid || pending}
+        >
+          Submit answer
+        </button>
+      </div>
+    </form>
+  );
+}
+
+/* --------------------------- transcript content --------------------------- */
 
 function TranscriptContent({
   item,
@@ -39,10 +195,23 @@ function TranscriptContent({
         </div>
       );
     case "question":
+      if (item.questionKey) {
+        return (
+          <QuestionCard
+            questionKey={item.questionKey}
+            state={state}
+            dispatch={dispatch}
+          />
+        );
+      }
       return (
-        <section className="co-transcript-question">
-          <StatusLabel state={item.tone} />
-          <p>{item.body}</p>
+        <section
+          className="co-question-card co-question-card--missing"
+          data-question-missing="true"
+          role="alert"
+        >
+          <p className="co-question-card__error">Question unavailable</p>
+          <p>This transcript item has no linked question.</p>
         </section>
       );
     case "failure":
@@ -62,12 +231,16 @@ function TranscriptContent({
   }
 }
 
+/* ------------------------------ conversation view ------------------------------ */
+
 export function ConversationView({ state, dispatch }: ConversationViewProps) {
   const conversation = state.conversation;
   const composer = state.composer;
   const ui = state.ui;
-  const running = composer.pending !== null;
-  const disabled = running || !composer.canSend;
+  const pending = composer.pending !== null;
+  const anyTextMode =
+    composer.canSend || composer.canSteer || composer.canQueue;
+  const textareaDisabled = pending || !anyTextMode;
 
   if (!conversation) {
     return (
@@ -86,11 +259,13 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
         <div>
           <p className="co-eyebrow">{conversation.project}</p>
           <h2>{conversation.title}</h2>
-          <p>{conversation.status}</p>
+          {conversation.updatedLabel ? (
+            <p className="co-session-summary__updated">
+              {conversation.updatedLabel}
+            </p>
+          ) : null}
         </div>
-        <StatusLabel
-          state={conversation.status === "running" ? "running" : "idle"}
-        />
+        <StatusLabel state={conversation.tone} />
       </section>
 
       <fieldset className="co-session-actions">
@@ -100,6 +275,22 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
           Work
         </button>
       </fieldset>
+
+      {conversation.olderAvailable ? (
+        <div className="co-older-available" data-older-available="true">
+          <button
+            type="button"
+            onClick={() =>
+              dispatch({
+                type: "openConversation",
+                key: conversation.threadKey,
+              })
+            }
+          >
+            Load older messages
+          </button>
+        </div>
+      ) : null}
 
       <section className="co-transcript" aria-label="Transcript">
         {conversation.items.length === 0 ? (
@@ -157,13 +348,13 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
       <section className="co-composer" aria-label="Message composer">
         <fieldset className="co-composer__modes">
           <legend className="co-visually-hidden">Composer mode</legend>
-          {(["send", "steer", "queue"] as const).map((mode) => (
+          {COMPOSER_MODES.map((mode) => (
             <button
               type="button"
               aria-pressed={ui.composerMode === mode}
-              disabled={running}
+              disabled={pending || !capabilityForMode(composer, mode)}
               key={mode}
-              onClick={() => dispatch({ type: "submit", mode })}
+              onClick={() => dispatch({ type: "setComposerMode", mode })}
             >
               {mode.charAt(0).toUpperCase() + mode.slice(1)}
             </button>
@@ -175,7 +366,7 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
             className="co-composer__input"
             placeholder="Message or steer…"
             value={composer.draft}
-            disabled={disabled}
+            disabled={textareaDisabled}
             onChange={(event) =>
               dispatch({ type: "setDraft", value: event.currentTarget.value })
             }
@@ -185,7 +376,7 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
           className="co-primary-action co-composer__submit"
           type="button"
           aria-label="Submit message"
-          disabled={composer.draft.trim().length === 0 || running}
+          disabled={composer.draft.trim().length === 0 || pending}
           onClick={() => dispatch({ type: "submit", mode: ui.composerMode })}
         >
           <Icon name="send" decorative />

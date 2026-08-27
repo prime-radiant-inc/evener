@@ -659,6 +659,135 @@
   font-size: 0.8rem;
 }
 
+/* ----------------------------- question card ------------------------------ */
+
+.concept-constellation .co-question-card {
+  padding: 1rem;
+  border: 1px solid var(--co-line);
+  border-radius: 0.9rem;
+  background: var(--co-surface);
+}
+
+.concept-constellation .co-question-card--missing {
+  border-color: color-mix(in srgb, var(--co-danger) 50%, var(--co-line));
+  background: color-mix(in srgb, var(--co-danger) 6%, transparent);
+}
+
+.concept-constellation .co-question-card__error {
+  color: var(--co-danger);
+  font-weight: 720;
+}
+
+.concept-constellation .co-question-card fieldset {
+  padding: 0;
+  border: 0;
+  margin: 0;
+}
+
+.concept-constellation .co-question-card legend {
+  display: grid;
+  width: 100%;
+  margin-bottom: 0.75rem;
+  gap: 0.25rem;
+  font-size: 1.12rem;
+  font-weight: 720;
+  line-height: 1.35;
+}
+
+.concept-constellation .co-question-options {
+  border-block: 1px solid var(--co-line);
+}
+
+.concept-constellation .co-question-option {
+  display: grid;
+  padding: 0.7rem 0;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.7rem;
+  cursor: pointer;
+}
+
+.concept-constellation .co-question-option + .co-question-option {
+  border-top: 1px solid var(--co-line);
+}
+
+.concept-constellation .co-question-option input {
+  width: 1.2rem;
+  height: 1.2rem;
+  accent-color: var(--co-accent);
+}
+
+.concept-constellation .co-question-option > span {
+  display: grid;
+  gap: 0.12rem;
+}
+
+.concept-constellation .co-question-option small {
+  color: var(--co-muted);
+  font-size: 0.72rem;
+}
+
+.concept-constellation .co-question-actions {
+  display: flex;
+  margin-top: 0.8rem;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.concept-constellation .co-question-actions button {
+  padding-inline: 0.85rem;
+}
+
+/* --------------------------- older available ------------------------------ */
+
+.concept-constellation .co-older-available {
+  display: flex;
+  width: min(100%, 46rem);
+  margin-inline: auto;
+  justify-content: center;
+}
+
+.concept-constellation .co-older-available button {
+  padding: 0.4rem 1rem;
+  border: 1px solid var(--co-control-line);
+  border-radius: 999px;
+  background: transparent;
+  color: var(--co-muted);
+  cursor: pointer;
+  font-size: 0.78rem;
+}
+
+/* ----------------------- conversation updated label ----------------------- */
+
+.concept-constellation .co-session-summary__updated {
+  color: var(--co-muted);
+  font-size: 0.75rem;
+}
+
+/* ------------------------------- note field ------------------------------- */
+
+.concept-constellation .co-field {
+  display: grid;
+  margin-top: 0.75rem;
+  gap: 0.35rem;
+  color: var(--co-muted);
+  font-size: 0.78rem;
+  font-weight: 690;
+}
+
+.concept-constellation .co-field textarea {
+  width: 100%;
+  min-height: 3rem;
+  padding: 0.65rem 0.75rem;
+  border: 1px solid var(--co-control-line);
+  border-radius: 0.65rem;
+  outline: 0;
+  background: var(--co-bg);
+  color: var(--co-ink);
+  resize: vertical;
+  line-height: 1.5;
+}
+
 .concept-constellation .co-primary-action {
   border: 0;
   border-radius: 0.75rem;
