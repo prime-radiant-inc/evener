@@ -231,11 +231,16 @@ func discoverPastThreadSkills(entry hubcore.PastEntry) []appwire.EvenerSkillInfo
 		maps.Copy(all, skill.DiscoverSkills(env, entry.Meta.Config.SkillsDirs...))
 	}
 
+	seenPluginNames := make(map[string]struct{}, len(entry.Meta.Config.PluginDirs))
 	for _, dir := range entry.Meta.Config.PluginDirs {
 		pluginName, ok := pastThreadPluginName(dir)
 		if !ok {
 			continue
 		}
+		if _, seen := seenPluginNames[pluginName]; seen {
+			continue
+		}
+		seenPluginNames[pluginName] = struct{}{}
 		pluginSkills := make(map[string]skill.SkillMeta)
 		skill.ScanSkillsDir(filepath.Join(dir, "skills"), pluginSkills)
 		for name, meta := range pluginSkills {
