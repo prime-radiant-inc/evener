@@ -699,7 +699,7 @@ func TestCovValidateLocalLaunchPathOutputFileParentMissing(t *testing.T) {
 // --- layerRows ---
 
 func TestCovLayerRowsWithNilPointers(t *testing.T) {
-	rows := layerRows(appwire.LaunchConfigLayer{})
+	rows := layerRows(appwire.LaunchConfigLayer{}, appwire.LaunchConfigLayer{})
 	byField := make(map[string]layerRow, len(rows))
 	for _, row := range rows {
 		byField[row.field] = row
@@ -719,7 +719,7 @@ func TestCovLayerRowsWithNilPointers(t *testing.T) {
 func TestCovLayerRowsWithSetPointers(t *testing.T) {
 	n := 5
 	b := true
-	rows := layerRows(appwire.LaunchConfigLayer{MaxRounds: &n, NoProjectPrompts: &b})
+	rows := layerRows(appwire.LaunchConfigLayer{MaxRounds: &n, NoProjectPrompts: &b}, appwire.LaunchConfigLayer{})
 	byField := make(map[string]layerRow, len(rows))
 	for _, row := range rows {
 		byField[row.field] = row

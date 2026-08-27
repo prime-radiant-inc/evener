@@ -309,12 +309,12 @@ func exerciseRemainingStates(t *testing.T) {
 	panel.tab = launchTabProject
 	_ = panel.tabName()
 	_ = panel.currentLayer()
-	_ = launchSchemaRows(nil, appwire.LaunchConfigLayer{}, "global", launchSchemaRowsSettings)
-	_ = layerRowForOption(appwire.LaunchOption{Field: "model"}, appwire.LaunchConfigLayer{})
+	_ = launchSchemaRows(nil, appwire.LaunchConfigLayer{}, "global", launchSchemaRowsSettings, appwire.LaunchConfigLayer{})
+	_ = layerRowForOption(appwire.LaunchOption{Field: "model"}, appwire.LaunchConfigLayer{}, appwire.LaunchConfigLayer{})
 	b := true
-	_, _ = launchOptionValue(appwire.LaunchOption{Field: "sandbox_net"}, appwire.LaunchConfigLayer{SandboxNet: &b})
-	_, _ = launchOptionValue(appwire.LaunchOption{Field: "sandbox"}, appwire.LaunchConfigLayer{Sandbox: "x"})
-	_, _ = launchOptionValue(appwire.LaunchOption{Field: "mcps"}, appwire.LaunchConfigLayer{})
+	_, _ = launchOptionValue(appwire.LaunchOption{Field: "sandbox_net"}, appwire.LaunchConfigLayer{SandboxNet: &b}, appwire.LaunchConfigLayer{})
+	_, _ = launchOptionValue(appwire.LaunchOption{Field: "sandbox"}, appwire.LaunchConfigLayer{Sandbox: "x"}, appwire.LaunchConfigLayer{})
+	_, _ = launchOptionValue(appwire.LaunchOption{Field: "mcps"}, appwire.LaunchConfigLayer{}, appwire.LaunchConfigLayer{})
 	exerciseApplyEditBranches(t)
 
 	plugins := NewPluginsPanel()
@@ -381,7 +381,7 @@ func exerciseApplyEditBranches(t *testing.T) {
 	}
 	i := 1
 	tr := true
-	_ = layerRows(appwire.LaunchConfigLayer{MaxRounds: &i, NoProjectPrompts: &tr})
+	_ = layerRows(appwire.LaunchConfigLayer{MaxRounds: &i, NoProjectPrompts: &tr}, appwire.LaunchConfigLayer{})
 	originalMarshal := marshalMCPEditSpecs
 	marshalMCPEditSpecs = func([]mcpEditSpec) ([]byte, error) { return nil, errors.New("x") }
 	_ = mcpEditValue([]appwire.MCPServerSpec{{Name: "x"}})
