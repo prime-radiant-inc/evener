@@ -3992,7 +3992,9 @@ describe("ConversationStore", () => {
       // Total reads: 1 original R + trailing reads. The exact count depends
       // on whether the trailing reread's rehydrate also detects a mutation
       // owner change. Key invariant: both reread and cap refresh ran.
-      expect(service.readProjectionCalls.length).toBeGreaterThanOrEqual(readsBefore + 2);
+      expect(service.readProjectionCalls.length).toBeGreaterThanOrEqual(
+        readsBefore + 2,
+      );
       expect(service.refreshCapsCallCount).toBe(capsBefore + 1);
       expect(store.getState().conversation?.capabilities.send).toBe(false);
       expect(store.getState().error).not.toBeNull();
@@ -6157,9 +6159,7 @@ describe("ConversationStore", () => {
       initialThreadItems.push(userMessageItem("B", ""));
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({
-          turns: [
-            makeTurn({ id: "t0", items: initialThreadItems }),
-          ],
+          turns: [makeTurn({ id: "t0", items: initialThreadItems })],
         }),
       );
       const store = createConversationStore();
@@ -6265,7 +6265,10 @@ describe("ConversationStore", () => {
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({
           turns: [
-            makeTurn({ id: "t0", items: [userMessageItem("B", "base"), initialX] }),
+            makeTurn({
+              id: "t0",
+              items: [userMessageItem("B", "base"), initialX],
+            }),
           ],
         }),
       );
@@ -6277,9 +6280,7 @@ describe("ConversationStore", () => {
       // R's projection may or may not include X (stale or omitted).
       service.readProjectionResult = makeReadProjectionResult(
         makeThread({
-          turns: [
-            makeTurn({ id: "t0", items: rereadItems }),
-          ],
+          turns: [makeTurn({ id: "t0", items: rereadItems })],
         }),
       );
       store.getState().applyNotification({
@@ -6307,7 +6308,10 @@ describe("ConversationStore", () => {
       const { store } = await setupLiveUpdateX(
         agentMessageItem("X", "original", "inProgress"),
         // Reread includes stale X (same id, old text).
-        [userMessageItem("B", "base"), agentMessageItem("X", "stale-from-reread", "completed")],
+        [
+          userMessageItem("B", "base"),
+          agentMessageItem("X", "stale-from-reread", "completed"),
+        ],
         // Live notification: item/completed replaces X with final text.
         {
           method: "item/completed",
@@ -6364,7 +6368,10 @@ describe("ConversationStore", () => {
       const { store } = await setupLiveUpdateX(
         agentMessageItem("X", "base-text", "inProgress"),
         // Reread includes stale X (base text, no delta).
-        [userMessageItem("B", "base"), agentMessageItem("X", "base-text", "inProgress")],
+        [
+          userMessageItem("B", "base"),
+          agentMessageItem("X", "base-text", "inProgress"),
+        ],
         // Live notification: delta appends to X.
         {
           method: "item/agentMessage/delta",
@@ -6425,7 +6432,10 @@ describe("ConversationStore", () => {
       const { store } = await setupLiveUpdateX(
         agentMessageItem("X", "will-be-reset", "inProgress"),
         // Reread includes stale X (old text).
-        [userMessageItem("B", "base"), agentMessageItem("X", "will-be-reset", "inProgress")],
+        [
+          userMessageItem("B", "base"),
+          agentMessageItem("X", "will-be-reset", "inProgress"),
+        ],
         // Live notification: reset clears X's markdown.
         {
           method: "item/agentMessage/reset",
@@ -6477,7 +6487,10 @@ describe("ConversationStore", () => {
       const { store } = await setupLiveUpdateX(
         reasoningItem("X", "reasoning-base", "inProgress"),
         // Reread includes stale X (base text).
-        [userMessageItem("B", "base"), reasoningItem("X", "reasoning-base", "inProgress")],
+        [
+          userMessageItem("B", "base"),
+          reasoningItem("X", "reasoning-base", "inProgress"),
+        ],
         // Live notification: reasoning delta appends to X.
         {
           method: "item/reasoning/summaryTextDelta",
@@ -6503,7 +6516,10 @@ describe("ConversationStore", () => {
       const { store } = await setupLiveUpdateX(
         commandExecItem("X", "mytool", "inProgress"),
         // Reread includes stale X (no output yet).
-        [userMessageItem("B", "base"), commandExecItem("X", "mytool", "inProgress")],
+        [
+          userMessageItem("B", "base"),
+          commandExecItem("X", "mytool", "inProgress"),
+        ],
         // Live notification: tool output delta appends to X.
         {
           method: "item/toolOutput/delta",
@@ -6584,7 +6600,9 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       // X should be truncated after openProjected.
-      const xBefore = store.getState().conversation?.items.find((i) => i.id === "X");
+      const xBefore = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
       expect(xBefore?.kind).toBe("assistant");
       if (xBefore?.kind === "assistant") {
         expect(xBefore.markdown).toContain("… truncated");
@@ -6635,6 +6653,417 @@ describe("ConversationStore", () => {
         // Reread version accepted (frozen delta did not mark).
         expect(xItem.markdown).toBe("reread-short");
       }
+    });
+  });
+
+  // --- Task 2A live-matrix: table-driven PAGE-RACE with real pageItems ---
+  //
+  // 6 cases × page-race: completed-replacement include+omit, agent-delta
+  // include+omit, reset include+omit. Every case starts a controlled reread,
+  // commits page P + cursor while the reread is pending, accepts an
+  // existing-X live update AFTER the reread snapshot is taken, then resolves.
+  // Assertions: page/history order, cursor preserved, included-X live version
+  // stays in the authoritative position, omitted-X appears once at live tail,
+  // dedupe (X never duplicated), unowned old history drops.
+  describe("Task 2A live-matrix: PAGE-RACE × live-ownership for all 6 cases", () => {
+    // Table: one row per (mutationKind, rereadIncludesX). Each row defines the
+    // initial X fixture, the reread items (stale X or omit X), and the live
+    // notification that updates X while the reread is pending. The expected
+    // live-updated markdown/output is checked in the assertions.
+    type MutKind = "completed" | "delta" | "reset";
+
+    const matrixCases: {
+      label: string;
+      kind: MutKind;
+      rereadIncludesX: boolean;
+      initialX: ThreadItem;
+      rereadItems: ThreadItem[];
+      liveNotification: AnyNotification;
+      // Expected live-updated value after merge:
+      // - completed/delta include → X stays in authoritative position with live text
+      // - completed/delta/reset omit → X at live tail with live text
+      expectedXMarkdown: string;
+    }[] = [
+      // (a) completed replacement — include
+      {
+        label: "completed replacement, reread includes stale X",
+        kind: "completed",
+        rereadIncludesX: true,
+        initialX: agentMessageItem("X", "original", "inProgress"),
+        rereadItems: [
+          userMessageItem("B", "base"),
+          agentMessageItem("X", "stale-from-reread", "completed"),
+          userMessageItem("C", "fresh-authoritative"),
+        ],
+        liveNotification: {
+          method: "item/completed",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t0",
+            item: agentMessageItem("X", "live-final-text", "completed"),
+          },
+        } as AnyNotification,
+        expectedXMarkdown: "live-final-text",
+      },
+      // (b) completed replacement — omit
+      {
+        label: "completed replacement, reread omits X",
+        kind: "completed",
+        rereadIncludesX: false,
+        initialX: agentMessageItem("X", "original", "inProgress"),
+        rereadItems: [
+          userMessageItem("B", "base"),
+          userMessageItem("C", "fresh-authoritative"),
+        ],
+        liveNotification: {
+          method: "item/completed",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t0",
+            item: agentMessageItem("X", "live-final-text", "completed"),
+          },
+        } as AnyNotification,
+        expectedXMarkdown: "live-final-text",
+      },
+      // (c) agent delta — include
+      {
+        label: "agent delta, reread includes stale X",
+        kind: "delta",
+        rereadIncludesX: true,
+        initialX: agentMessageItem("X", "base-text", "inProgress"),
+        rereadItems: [
+          userMessageItem("B", "base"),
+          agentMessageItem("X", "base-text", "inProgress"),
+          userMessageItem("C", "fresh-authoritative"),
+        ],
+        liveNotification: {
+          method: "item/agentMessage/delta",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            itemId: "X",
+            delta: "-appended",
+          },
+        } as AnyNotification,
+        expectedXMarkdown: "base-text-appended",
+      },
+      // (d) agent delta — omit
+      {
+        label: "agent delta, reread omits X",
+        kind: "delta",
+        rereadIncludesX: false,
+        initialX: agentMessageItem("X", "base-text", "inProgress"),
+        rereadItems: [
+          userMessageItem("B", "base"),
+          userMessageItem("C", "fresh-authoritative"),
+        ],
+        liveNotification: {
+          method: "item/agentMessage/delta",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            itemId: "X",
+            delta: "-appended",
+          },
+        } as AnyNotification,
+        expectedXMarkdown: "base-text-appended",
+      },
+      // (e) reset — include
+      {
+        label: "reset, reread includes stale X",
+        kind: "reset",
+        rereadIncludesX: true,
+        initialX: agentMessageItem("X", "will-be-reset", "inProgress"),
+        rereadItems: [
+          userMessageItem("B", "base"),
+          agentMessageItem("X", "will-be-reset", "inProgress"),
+          userMessageItem("C", "fresh-authoritative"),
+        ],
+        liveNotification: {
+          method: "item/agentMessage/reset",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            itemId: "X",
+          },
+        } as AnyNotification,
+        expectedXMarkdown: "",
+      },
+      // (f) reset — omit
+      {
+        label: "reset, reread omits X",
+        kind: "reset",
+        rereadIncludesX: false,
+        initialX: agentMessageItem("X", "will-be-reset", "inProgress"),
+        rereadItems: [
+          userMessageItem("B", "base"),
+          userMessageItem("C", "fresh-authoritative"),
+        ],
+        liveNotification: {
+          method: "item/agentMessage/reset",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            itemId: "X",
+          },
+        } as AnyNotification,
+        expectedXMarkdown: "",
+      },
+    ];
+
+    // Shared setup for all 6 matrix cases: creates a store with initial B + X + A
+    // (A is unowned old history that will be omitted from reread and dropped),
+    // starts a hanging rehydrate, commits page P + cursor while pending,
+    // accepts the live notification to X after the reread snapshot, then releases.
+    async function setupPageRaceMatrix(
+      initialX: ThreadItem,
+      rereadItems: ThreadItem[],
+      liveNotification: AnyNotification,
+    ): Promise<{
+      store: ReturnType<typeof createConversationStore>;
+      service: FakeConversationService;
+    }> {
+      const service = new FakeConversationService();
+      // Initial projection: B + X + A (A is old, will be omitted from reread).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [
+                userMessageItem("B", "base"),
+                initialX,
+                userMessageItem("A", "old-unowned"),
+              ],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+
+      // Start a rehydrate (R) that hangs — captures the reread snapshot.
+      const ctrl = makeControlledRead(service);
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [makeTurn({ id: "t0", items: rereadItems })],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+
+      // While R is in-flight, loadOlder commits page items P + cursor.
+      service.olderItems = {
+        items: [{ kind: "user", id: "P", text: "page-old" }],
+        nextCursor: "cursor-2",
+      };
+      await store.getState().loadOlder(service);
+      // Verify page items committed while R is pending.
+      const itemsAfterL = store.getState().conversation?.items ?? [];
+      expect(itemsAfterL.some((i) => i.id === "P")).toBe(true);
+      expect(store.getState().olderCursor).toBe("cursor-2");
+
+      // While R is still in-flight, accept the existing-X live update.
+      store.getState().applyNotification(liveNotification);
+
+      // Release R — the page-race merge resolves.
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      return { store, service };
+    }
+
+    for (const tc of matrixCases) {
+      it(`PAGE-RACE: ${tc.label} — page order, cursor preserved, X correct, dedupe, A drops`, async () => {
+        const { store } = await setupPageRaceMatrix(
+          tc.initialX,
+          tc.rereadItems,
+          tc.liveNotification,
+        );
+        const items = store.getState().conversation?.items ?? [];
+        const ids = items.map((i) => i.id);
+
+        // Page item P is retained (page-owned history prepended).
+        expect(ids).toContain("P");
+        // B and C are retained (authoritative reread).
+        expect(ids).toContain("B");
+        expect(ids).toContain("C");
+        // A is dropped (owned by neither page nor live, omitted from reread).
+        expect(ids).not.toContain("A");
+
+        // X appears exactly once (dedupe).
+        const xCount = ids.filter((id) => id === "X").length;
+        expect(xCount).toBe(1);
+        expect(ids).toContain("X");
+
+        // X has the live-updated value, not the stale reread value.
+        const xItem = items.find((i) => i.id === "X");
+        expect(xItem).toBeDefined();
+        expect(xItem?.kind).toBe("assistant");
+        if (xItem?.kind === "assistant") {
+          expect(xItem.markdown).toBe(tc.expectedXMarkdown);
+        }
+
+        // Cursor from page is preserved (not overwritten by reread).
+        expect(store.getState().olderCursor).toBe("cursor-2");
+
+        // Order: P (page history) before B/C (authoritative reread) before
+        // live tail. For include cases, X is in the authoritative reread
+        // position (where the reread placed it). For omit cases, X is appended
+        // as the live tail after the authoritative items.
+        const pIdx = ids.indexOf("P");
+        const bIdx = ids.indexOf("B");
+        const cIdx = ids.indexOf("C");
+        const xIdx = ids.indexOf("X");
+
+        // P always precedes the authoritative reread items.
+        expect(pIdx).toBeLessThan(bIdx);
+        expect(pIdx).toBeLessThan(cIdx);
+
+        if (tc.rereadIncludesX) {
+          // Included X stays in the authoritative reread position. The
+          // reread placed it between B and C, so X must be between B and C.
+          expect(bIdx).toBeLessThan(xIdx);
+          expect(xIdx).toBeLessThan(cIdx);
+        } else {
+          // Omitted X appears once at the live tail (after all reread items).
+          expect(xIdx).toBeGreaterThan(bIdx);
+          expect(xIdx).toBeGreaterThan(cIdx);
+          // X is the last item.
+          expect(xIdx).toBe(ids.length - 1);
+        }
+      });
+    }
+
+    // Cap case: newest live X survives the 500-item cap while page oldest
+    // precedes X. Fill to near cap with page items, add live X, ensure X
+    // survives the merge and page items still precede it.
+    it("PAGE-RACE cap: newest live X survives 500 while page oldest precedes X, A drops", async () => {
+      const service = new FakeConversationService();
+      // Initial: B + X + A (3 items; A is unowned old history).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [
+                userMessageItem("B", "base"),
+                agentMessageItem("X", "original", "inProgress"),
+                userMessageItem("A", "old-unowned"),
+              ],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+
+      // Start a rehydrate (R) that hangs.
+      const ctrl = makeControlledRead(service);
+      // Reread omits X and A: B + C only.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [
+                userMessageItem("B", "base"),
+                userMessageItem("C", "fresh"),
+              ],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+
+      // While R is in-flight, loadOlder commits 497 page items + cursor.
+      // After loadOlder: 497 P items + B + X + A = 500 (at cap). The cap
+      // trims A from the front (oldest), so 497 P + B + X = 500 survives.
+      // At cap, the cursor is set to null (honest: further paging would
+      // discard rows). This is correct behavior, not a bug.
+      const pageItems: MobileConversation["items"] = [];
+      for (let i = 0; i < 497; i++) {
+        pageItems.push({ kind: "user", id: `P-${i}`, text: "" });
+      }
+      service.olderItems = { items: pageItems, nextCursor: "cursor-2" };
+      await store.getState().loadOlder(service);
+      // Verify page items committed (A may be trimmed by cap; check P-0).
+      const itemsAfterL = store.getState().conversation?.items ?? [];
+      expect(itemsAfterL.some((i) => i.id === "P-0")).toBe(true);
+
+      // While R is still in-flight, accept live delta to X.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          itemId: "X",
+          delta: "-updated",
+        },
+      } as AnyNotification);
+
+      // Release R — the page-race merge resolves.
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+
+      const items = store.getState().conversation?.items ?? [];
+      const ids = items.map((i) => i.id);
+
+      // Within cap.
+      expect(items.length).toBeLessThanOrEqual(500);
+
+      // X survives the cap (live-owned tail).
+      expect(ids).toContain("X");
+      const xCount = ids.filter((id) => id === "X").length;
+      expect(xCount).toBe(1);
+
+      // X has the live-updated value.
+      const xItem = items.find((i) => i.id === "X");
+      expect(xItem?.kind).toBe("assistant");
+      if (xItem?.kind === "assistant") {
+        expect(xItem.markdown).toBe("original-updated");
+      }
+
+      // B and C are retained (authoritative reread).
+      expect(ids).toContain("B");
+      expect(ids).toContain("C");
+
+      // A is dropped (owned by neither).
+      expect(ids).not.toContain("A");
+
+      // Page oldest (P-0) precedes X. P-0 is the oldest surviving page item.
+      const xIdx = ids.indexOf("X");
+      const p0Idx = ids.indexOf("P-0");
+      // P-0 should survive — 497 page items + B + C + X = 500, so all fit.
+      if (p0Idx >= 0) {
+        expect(p0Idx).toBeLessThan(xIdx);
+      }
+
+      // At least some page items survive and precede X.
+      const pageIdxs = ids
+        .map((id, idx) => ({ id, idx }))
+        .filter(({ id }) => id.startsWith("P-"));
+      expect(pageIdxs.length).toBeGreaterThan(0);
+      const oldestPageIdx = Math.min(...pageIdxs.map((p) => p.idx));
+      expect(oldestPageIdx).toBeLessThan(xIdx);
+
+      // X is after B and C (live tail).
+      expect(xIdx).toBeGreaterThan(ids.indexOf("B"));
+      expect(xIdx).toBeGreaterThan(ids.indexOf("C"));
     });
   });
 });
