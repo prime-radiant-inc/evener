@@ -23,17 +23,20 @@
 // goal chip + clear popover only.
 import { useRef } from "react";
 import { sessionActionError } from "../../../protocol/errors";
+import type { NavigationSessionLocation } from "../../../protocol/types.gen";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
-import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
+import { assignSessionPin, deleteSession, renameSession, setArchived, unpinSession } from "../../../shell/rail/actions";
 import { SessionMenu } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { isPaneOpen, useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
 import { useActivitySummaryStore } from "../../../stores/activitySummary";
+import { selectLocation } from "../../../stores/navigation/selectors";
+import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
-import { findSessionNode, treeStore, useTreeStore } from "../../../stores/tree";
 import { Cadence, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { cadenceStateForStatus, NOW_TICK_MS, useNowTick } from "../liveness";
+import { navigationSummaryFor } from "../threadTitle";
 import { ActivityPanel, type ActivityPanelHandle } from "./ActivityPanel";
 import { DetailsPanel, type DetailsPanelHandle } from "./DetailsPanel";
 import { GoalControl } from "./GoalControl";
@@ -70,11 +73,36 @@ export function SessionChrome({ ref: sessionRef, placement = "footer" }: Session
   const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref: sessionRef }));
   const activityOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref: sessionRef }));
   const activitySummary = useActivitySummaryStore((s) => s.entries.get(sessionRef));
-  // The rail's tree is what tells the menu whether THIS session has a rail
-  // row at all: Pin/Archive/Delete are decisions about a top-level tree row,
-  // so the menu sees the node only when findSessionNode resolves one.
-  const tree = useTreeStore((s) => s.tree);
-  const treeNode = tree ? findSessionNode(tree, sessionRef) : undefined;
+  // Route-demanded locations carry the authoritative owner/tier/pin metadata;
+  // no project is expanded merely to decide menu eligibility.
+  const navigation = useNavigationStore();
+  const locationResource = selectLocation(sessionRef)(navigation);
+  const locationStatus = (locationResource?.error as { status?: unknown } | null)?.status;
+  const location =
+    locationStatus === 404 ? undefined : (locationResource?.data as NavigationSessionLocation | undefined);
+  const navigationSession = location?.session;
+  const fallbackSession = navigationSession ?? navigationSummaryFor(sessionRef, navigation);
+  const eligibleFallback = fallbackSession && !["subagent", "fork", "cluster"].includes(fallbackSession.kind);
+  const validIdentity =
+    typeof fallbackSession?.host_id === "string" &&
+    fallbackSession.host_id.trim() !== "" &&
+    typeof fallbackSession.session_id === "string" &&
+    fallbackSession.session_id.trim() !== "" &&
+    typeof fallbackSession.kind === "string" &&
+    fallbackSession.kind.trim() !== "";
+  const menuSession =
+    fallbackSession && validIdentity
+      ? {
+          ref: sessionRef,
+          title: fallbackSession.title || model?.name || sessionRef,
+          host_id: fallbackSession.host_id,
+          session_id: fallbackSession.session_id,
+          kind: fallbackSession.kind,
+          top_level: location?.top_level ?? eligibleFallback,
+          tier: location?.tier,
+          pin_section_id: location?.pin_section_id,
+        }
+      : undefined;
   // The cadence that used to live in the pane header's cadence slot: the
   // header is hidden on mobile (2026-07-30-mobile-session-layout-design.md,
   // decision 3), so the liveness marker relocates here. Rendered always,
@@ -150,7 +178,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer" }: Session
           triggerLabel="Session actions"
           canRename={model.capabilities.rename}
           canShutdown={model.capabilities.shutdown}
-          treeNode={treeNode}
+          session={menuSession}
           panesOpen={{ details: detailsOpen, tasks: tasksOpen, activity: activityOpen }}
           taskLabel={model.tasks ? `Tasks ${model.tasks.done}/${model.tasks.total}` : undefined}
           activityLabel={activityLabel}
@@ -166,24 +194,50 @@ export function SessionChrome({ ref: sessionRef, placement = "footer" }: Session
             // confirm button re-enabled; only success closes it.
             onRename: async (name) => {
               try {
-                await threadsStore.getState().rename(sessionRef, name);
+                if (navigation.mode === "v1") {
+                  const result = await renameSession(sessionRef, name);
+                  await navigationStore.getState().applyNavigationMutation(result.navigation);
+                } else {
+                  await threadsStore.getState().rename(sessionRef, name);
+                }
               } catch (err) {
                 toasts.push("error", sessionActionError("Couldn't rename session", err));
                 throw err;
               }
             },
             onShutdown: async () => {
+              const invalidation =
+                navigation.mode === "v1"
+                  ? navigationStore
+                      .getState()
+                      .awaitNavigationInvalidation((payload) =>
+                        payload.targets.some(
+                          (target) =>
+                            target.kind === "all_loaded_projects" ||
+                            (target.kind === "section" &&
+                              (target.section === "live" || target.section === "needs_you")) ||
+                            (target.kind === "pin_section" && target.sectionId === menuSession?.pin_section_id) ||
+                            (target.kind === "project" && target.projectKey === location?.project_key),
+                        ),
+                      )
+                  : null;
+              void invalidation?.promise.catch(() => undefined);
               try {
                 await threadsStore.getState().shutdown(sessionRef);
+                if (invalidation) {
+                  const payload = await invalidation.promise;
+                  await navigationStore.getState().awaitNavigationTargets(payload.targets, payload.generationId);
+                }
               } catch (err) {
+                invalidation?.cancel();
                 toasts.push("error", sessionActionError("Couldn't shut down session", err));
                 throw err;
               }
             },
             onPin: async (target) => {
               try {
-                await assignSessionPin(sessionRef, target);
-                await treeStore.getState().refresh();
+                const result = await assignSessionPin(sessionRef, target);
+                if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
               } catch (err) {
                 toasts.push("error", sessionActionError("Couldn't assign pinned session", err));
                 throw err;
@@ -191,18 +245,18 @@ export function SessionChrome({ ref: sessionRef, placement = "footer" }: Session
             },
             onUnpin: async () => {
               try {
-                await unpinSession(sessionRef);
-                await treeStore.getState().refresh();
+                const result = await unpinSession(sessionRef);
+                if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
               } catch (err) {
                 toasts.push("error", sessionActionError("Couldn't unpin session", err));
                 throw err;
               }
             },
             onToggleArchive: async () => {
-              if (!treeNode) return;
+              if (!menuSession) return;
               try {
-                await setArchived("session", treeNode.session_id, treeNode.tier !== "archived");
-                await treeStore.getState().refresh();
+                const result = await setArchived("session", menuSession.session_id, menuSession.tier !== "archived");
+                if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
               } catch (err) {
                 toasts.push("error", sessionActionError("Couldn't update archive state", err));
                 throw err;
@@ -211,7 +265,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer" }: Session
             onDelete: async () => {
               try {
                 const result = await deleteSession(sessionRef);
-                await treeStore.getState().refresh();
+                if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
                 closePanesForDeletedSessions(result.deleted);
                 if (result.skipped.length > 0) {
                   const reason = result.skipped[0]?.reason ?? "still in use";

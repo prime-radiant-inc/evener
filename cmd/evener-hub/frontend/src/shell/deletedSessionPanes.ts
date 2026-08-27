@@ -16,7 +16,7 @@ import { workspaceStore } from "./workspace";
 // web_api_session_delete.go ships the same shape for one target), and both
 // only ever delete LOCAL sessions - so a bare id names the "local:<id>" ref
 // a pane carries. An id that already carries a source prefix passes through
-// unchanged, the same both-forms tolerance stores/tree.ts's sessionIDMatches
+// unchanged, the same both-forms tolerance the navigation store's
 // applies to this very field.
 export function closePanesForDeletedSessions(deletedIDs: string[]): void {
   const goneRefs = new Set(deletedIDs.map((id) => (id.includes(":") ? id : `local:${id}`)));

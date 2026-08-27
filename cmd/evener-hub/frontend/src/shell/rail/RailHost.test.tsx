@@ -1,8 +1,9 @@
 import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { manifest as navigationManifest } from "../../stores/navigation/testing";
 import { prefsStore, resetPrefsStoreForTests, SIDEBAR_WIDTH_MAX } from "../../stores/prefs";
-import { resetTreeStoreForTests, treeStore } from "../../stores/tree";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import { RailHost } from "./RailHost";
 import { revealSessionInRail, setRailRevealHandler } from "./railController";
@@ -26,17 +27,14 @@ class MemoryStorage {
   }
 }
 
-function emptyTree(needsYou = 0) {
+function emptyNavResponse(needsYou = 0) {
   return {
-    generated_at: "2026-01-01T00:00:00Z",
+    generation_id: "test-generation",
+    revision: 1,
     sources: [],
-    live: [],
-    needs_you: [],
-    pin_sections: [],
-    projects: [],
-    archived_projects: [],
-    test_runs: [],
     attentionSummary: { needsYou, error: 0, working: 0 },
+    sections: { live: { count: 0 }, needs_you: { count: needsYou }, pin_sections: { count: 0 } },
+    catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
   };
 }
 
@@ -52,12 +50,14 @@ beforeAll(() => {
 beforeEach(() => {
   localStorage.clear();
   resetPrefsStoreForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
+  resetNavigationStoreForTests();
+  navigationStore.setState({ mode: "v1" });
   resetWorkspaceStoreForTests();
   // Quiet, resolving fetch so any mounted <Rail/> refresh() doesn't throw.
   vi.stubGlobal(
     "fetch",
-    vi.fn(async () => jsonResponse(emptyTree())),
+    vi.fn(async () => jsonResponse(emptyNavResponse())),
   );
 });
 
@@ -108,10 +108,49 @@ describe("hide / show", () => {
 
   test("the chip surfaces the needs-you count in its accessible name (color-is-attention badge)", () => {
     prefsStore.getState().setSidebarHidden(true);
-    treeStore.setState({ tree: emptyTree(3) });
+    navigationStore.setState({
+      mode: "v1",
+      manifest: {
+        key: { kind: "manifest" },
+        data: navigationManifest({
+          sections: { live: { count: 0 }, needs_you: { count: 3 }, pin_sections: { count: 0 } },
+        }),
+        loadedRevision: 1,
+        targetRevision: 1,
+        forceToken: 0,
+        etag: '"manifest"',
+        loading: false,
+        stale: false,
+        error: null,
+        generationID: "test-generation",
+      },
+    });
     render(<RailHost />);
     expect(screen.getByRole("button", { name: /show sidebar.*3 need attention/i })).toBeTruthy();
   });
+});
+
+test("v1 badge ignores stale legacy tree attention and uses manifest section count", () => {
+  prefsStore.getState().setSidebarHidden(true);
+  navigationStore.setState({
+    mode: "v1",
+    manifest: {
+      key: { kind: "manifest" },
+      data: navigationManifest({
+        sections: { live: { count: 0 }, needs_you: { count: 2 }, pin_sections: { count: 0 } },
+      }),
+      loadedRevision: 1,
+      targetRevision: 1,
+      forceToken: 0,
+      etag: '"manifest"',
+      loading: false,
+      stale: false,
+      error: null,
+      generationID: "generation_test",
+    },
+  });
+  render(<RailHost />);
+  expect(screen.getByRole("button", { name: /show sidebar.*2 need attention/i })).toBeTruthy();
 });
 
 describe("⌘B toggles hidden", () => {

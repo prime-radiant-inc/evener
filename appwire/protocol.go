@@ -239,11 +239,11 @@ var Notifications = []NotificationSpec{
 	{NotifyEvenerAuthUpdated, EvenerAuthUpdatedParams{}, "Broadcast after a successful auth mutation. Clients refresh auth state."},
 	{NotifyEvenerLaunchUpdated, EvenerLaunchUpdatedParams{}, "Broadcast after a launch layer/trust mutation. Clients refresh launch config."},
 	{NotifyEvenerAttentionChanged, AttentionChangedPayload{}, "Hub-derived attention transitions for live sessions plus authoritative badge summary. Hub-originated; never sent by daemons."},
+	{NotifyEvenerNavigationInvalidated, NavigationInvalidatedPayload{}, "Hub-derived scoped navigation-resource invalidation. Clients conditionally revalidate only the named loaded resources."},
 	{NotifyEvenerMarketplaceUpdated, EmptyParams{}, "Broadcast after a marketplace mutation (add/remove/refresh); no payload. Clients refresh the marketplace list."},
 	{NotifyEvenerPluginUpdated, EmptyParams{}, "Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); no payload. Clients refresh the plugin list."},
 	{NotifyEvenerThreadResync, ThreadResyncParams{}, "Hub-originated hint asking clients to re-read one thread after relay recovery."},
 	{NotifyEvenerTaskUpdated, TaskUpdatedParams{}, "The session's task-list progress (total/done) changed."},
 	{NotifyEvenerSandboxEscalationRequested, SandboxEscalationRequested{}, "A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via evener/sandbox/escalation/resolve."},
 	{NotifyEvenerSandboxEscalationResolved, SandboxEscalationResolved{}, "A previously-raised sandbox escalation left the pending set — resolved, turn-interrupted, or cleared by session close (M7); every OTHER subscribed client clears its now-stale copy of the card."},
-	{NotifyEvenerTreeChanged, EmptyParams{}, "Broadcast after tree-relevant state changes (roster delta, past-index change, or an archive/favorite/rename/project-delete mutation); no payload. Clients refetch /api/tree (debounced). Hub-originated; never sent by daemons."},
 }

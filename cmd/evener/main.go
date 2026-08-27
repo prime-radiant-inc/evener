@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/signal"
 	"text/tabwriter"
+	"time"
 
 	"primeradiant.com/evener/agent"
 	"primeradiant.com/evener/buildinfo"
@@ -63,6 +64,7 @@ type runCLIFlags struct {
 	systemPromptAppend          stringSliceFlag
 	sandbox                     *string
 	sandboxNet                  *string
+	runTimeout                  *time.Duration
 }
 
 func main() {
@@ -189,6 +191,11 @@ func mainWithDeps(deps mainDeps) {
 		deps.exit(1)
 		return
 	}
+	if *flags.runTimeout < 0 {
+		_, _ = fmt.Fprintf(deps.stderr, "evener: invalid --timeout %s: must be non-negative\n", flags.runTimeout.String())
+		deps.exit(2)
+		return
+	}
 
 	ctx, cancel := deps.notify(context.Background(), os.Interrupt)
 	defer cancel()
@@ -225,6 +232,7 @@ func mainWithDeps(deps mainDeps) {
 		openAIResponsesContinuation: *flags.openAIResponsesContinuation,
 		sandboxMode:                 *flags.sandbox,
 		sandboxNet:                  *flags.sandboxNet,
+		runTimeout:                  *flags.runTimeout,
 		stdout:                      deps.stdout,
 		stderr:                      deps.stderr,
 		resume:                      *flags.resume,
@@ -281,6 +289,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 	fs.Var(&flags.systemPromptAppend, "system-prompt-append", "path to append to system prompt `file` (repeatable)")
 	flags.sandbox = fs.String("sandbox", "off", "sandbox `mode`: off (default), read-only, workspace-write, or restricted")
 	flags.sandboxNet = fs.String("sandbox-net", "on", "sandbox network egress `on|off` (default on; only applies with a non-off --sandbox mode)")
+	flags.runTimeout = fs.Duration("timeout", 0, "overall one-shot run timeout (0 disables; rate-limit retries use their finite fallback)")
 
 	fs.Usage = func() {
 		printRunUsage(stderr, fs)

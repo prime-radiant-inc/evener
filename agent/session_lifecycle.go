@@ -1030,6 +1030,12 @@ func (s *Session) processInputKindWithProvenance(ctx context.Context, input stri
 }
 
 func (s *Session) processOneInput(ctx context.Context, input string, images []ImageAttachment, kind EntryKind, inputProvenance *provenance.Causal) (out string, progressed bool, err error) {
+	communicatePreviewCalls := map[string]struct{}{}
+	defer func() {
+		for callID := range communicatePreviewCalls {
+			s.emit(events.EventCommunicatePreviewReset, events.CommunicatePreviewResetData{CallID: callID})
+		}
+	}()
 	// Flush meta.json on every exit from this function — normal return, error
 	// return, ctx cancellation, retry-budget exhaustion, or panic. Without
 	// this, in-memory modelResponses bumps that happen between happy-path
@@ -1280,6 +1286,9 @@ func (s *Session) processOneInput(ctx context.Context, input string, images []Im
 
 		s.noteParentJobActivity(jobPhaseAwaitingModel)
 		modelResp, req, attempt, err := s.callModelWithFallback(ctx, profile, req, reqEffort, round)
+		for _, callID := range modelResp.CommunicatePreviewCallIDs {
+			communicatePreviewCalls[callID] = struct{}{}
+		}
 		resp := modelResp.Response
 
 		timings.LLMCall = time.Since(tPhaseStart)

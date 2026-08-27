@@ -1,5 +1,7 @@
 # Approved Evener Decisions Design
 
+
+> **Current contract / partial supersession (2026-08-26, Task31/PR480).** Any delegate `JobRecord`, public delegate `job_id`, delegate `job.notification`, or `job:` transcript claim in this historical design is not shipped and is superseded. Delegates use stable `dlg_...` resources with private run generations; lifecycle attention is `<delegate-notification>`; delegate conversation/result history uses session transcript refs. `job_...`, `job.notification`, and `job:` output remain shell-only. Non-delegate design material below remains applicable unless a newer evergreen contract says otherwise.
 Date: 2026-08-02
 Status: Approved implementation record
 
@@ -40,8 +42,9 @@ ledger; callers own the session/job, branch, and revision provenance.
 ## Transcript surface
 
 `read_transcript` is the sole model-facing transcript reader. It accepts both
-session references and `job:<job_id>` references, including shell and delegate
-jobs. `read_session_transcript` is removed from the callable tool surface.
+session references and shell-only `job:<job_id>` references. Delegate
+conversation/result history is read through the delegate session reference.
+`read_session_transcript` is removed from the callable tool surface.
 Public transcript reads do not expose API-log selectors or body/attempt options;
 API-log inspection remains an internal/doctor concern, and historical
 transcript projection still redacts private API-log evidence.

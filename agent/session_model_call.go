@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"math"
+	"sort"
 	"strings"
 	"time"
 
@@ -823,6 +824,29 @@ func (s *Session) buildModelRequest(profile *provider.Profile, sys string, histo
 // order. It returns the (possibly fallback-updated) request actually used so
 // downstream logging reflects the model that answered.
 func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.Profile, req llm.Request, requestedEffort string, _ int) (sessionModelResponse, llm.Request, ModelAttemptMetadata, error) {
+	previewCalls := map[string]struct{}{}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			for callID := range previewCalls {
+				s.emit(events.EventCommunicatePreviewReset, events.CommunicatePreviewResetData{CallID: callID})
+			}
+			panic(recovered)
+		}
+	}()
+	rememberPreviews := func(resp sessionModelResponse) {
+		for _, callID := range resp.CommunicatePreviewCallIDs {
+			previewCalls[callID] = struct{}{}
+		}
+	}
+	withPreviews := func(resp sessionModelResponse) sessionModelResponse {
+		ids := make([]string, 0, len(previewCalls))
+		for callID := range previewCalls {
+			ids = append(ids, callID)
+		}
+		sort.Strings(ids)
+		resp.CommunicatePreviewCallIDs = ids
+		return resp
+	}
 	policy := llm.DefaultRetryPolicy()
 	if s.cfg.LLMRetryPolicy != nil {
 		policy = *s.cfg.LLMRetryPolicy
@@ -838,6 +862,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	recorder := s.roundSalvageRecorder()
 	var primaryRecord groupRecord
 	modelResp, err := s.callModel(callCtx, policy, profile, req, &primaryRecord)
+	rememberPreviews(modelResp)
 	recorder.Groups = append(recorder.Groups, primaryRecord)
 	if err != nil && shouldRetryResponsesContinuationAsFullHistory(req, err) {
 		s.disableResponsesContinuationForRequest(req, profile.SupportsStreaming())
@@ -853,6 +878,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 		}
 		var recoveryRecord groupRecord
 		modelResp, err = s.callModel(callCtx, policy, profile, retryReq, &recoveryRecord)
+		rememberPreviews(modelResp)
 		recorder.Groups = append(recorder.Groups, recoveryRecord)
 		if err == nil {
 			req = retryReq
@@ -951,6 +977,7 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 			}
 			var fallbackRecord groupRecord
 			modelResp, err = s.callModel(callCtx, policy, fbProfile, fbReq, &fallbackRecord)
+			rememberPreviews(modelResp)
 			recorder.Groups = append(recorder.Groups, fallbackRecord)
 			if err == nil {
 				// Reflect the model that actually answered in the
@@ -973,11 +1000,11 @@ func (s *Session) callModelWithFallback(ctx context.Context, profile *provider.P
 	}
 	if err != nil {
 		group.SettleResult(callCtx, err)
-		return modelResp, req, attempt, err
+		return withPreviews(modelResp), req, attempt, err
 	}
 	attempt = completeAttemptMetadata(attempt, modelResp.Response)
 	group.SettleResult(callCtx, nil)
-	return modelResp, req, attempt, nil
+	return withPreviews(modelResp), req, attempt, nil
 }
 
 func shouldRetryResponsesContinuationAsFullHistory(req llm.Request, err error) bool {
@@ -1071,7 +1098,7 @@ func (rs replayScope) active() bool { return strings.TrimSpace(rs.BehaviorTag) !
 // builderFamily maps a behavior tag to the wire-format family whose request
 // builder serves it. web_search raw blocks are foreign JSON across families, and
 // the thinking rule is scoped per family (exact-model for anthropic, same-
-// provider for google). An unrecognized tag maps to itself so an unknown
+// provider for google and openai). An unrecognized tag maps to itself so an unknown
 // provider never silently shares a family with a known one.
 //
 // Sibling tags collapse to one family because they emit the *same* raw block
@@ -1100,10 +1127,13 @@ func builderFamily(tag string) string {
 // Empty provenance (legacy transcripts) is always eligible. anthropic-family
 // targets require an exact (instance id, requested model) match — the requested
 // model taken from ResponseRequestModel, or catalog-canonicalized ResponseModel
-// when the request-model field is empty (closes G12). google targets require
-// only the same instance id (its builder must replay prior tool-call thought
-// signatures regardless of model). Every other target keeps its own builder
-// guard, so expansion never strips thinking for it.
+// when the request-model field is empty (closes G12). google and openai targets
+// require the same instance id: google's builder must replay prior tool-call
+// thought signatures regardless of model, and openai Responses carries an
+// opaque encrypted_content blob that only its issuing deployment can decrypt
+// (a cross-deployment replay yields "Encrypted content is not supported").
+// Every other target keeps its own builder guard, so expansion never strips
+// thinking for it.
 func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
 	if strings.TrimSpace(t.ResponseProvider) == "" {
 		return true
@@ -1111,7 +1141,7 @@ func (rs replayScope) thinkingReplayEligible(t schema.Turn) bool {
 	switch builderFamily(rs.BehaviorTag) {
 	case "anthropic":
 		return rs.Provider == t.ResponseProvider && rs.requestedModelMatches(t)
-	case "google":
+	case "google", "openai":
 		return rs.Provider == t.ResponseProvider
 	default:
 		return true

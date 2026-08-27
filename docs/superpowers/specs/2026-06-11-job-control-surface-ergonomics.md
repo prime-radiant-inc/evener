@@ -1,5 +1,7 @@
 # Job-Control Surface Ergonomics Addendum
 
+
+> **Current contract / partial supersession (2026-08-26, Task31/PR480).** Any delegate `JobRecord`, public delegate `job_id`, delegate `job.notification`, or `job:` transcript claim in this historical design is not shipped and is superseded. Delegates use stable `dlg_...` resources with private run generations; lifecycle attention is `<delegate-notification>`; delegate conversation/result history uses session transcript refs. `job_...`, `job.notification`, and `job:` output remain shell-only. Non-delegate design material below remains applicable unless a newer evergreen contract says otherwise.
 Date: 2026-06-11
 Status: approved direction (Jesse: "fold stuff in… best possible implementations that are as easy as possible for agents to use… look really hard at tool descriptions and prompting… look also at 'bad' or 'useless' parameters")
 Companion to: `docs/superpowers/specs/2026-06-11-job-control-watch-mailbox-design.md` (the mailbox spec) and `docs/superpowers/plans/2026-06-11-watch-mailbox.md` (the plan). This addendum becomes **Phase 1.9 — surface ergonomics**, executed after the Phase-1 merge and BEFORE Phases 2/3 launch (so no further tests get written against the old parameter surface).

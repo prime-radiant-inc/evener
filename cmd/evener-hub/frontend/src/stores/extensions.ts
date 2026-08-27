@@ -281,7 +281,7 @@ export function useExtensionsStore<T>(selector?: (state: ExtensionsStoreState) =
 // after a successful mutation from ANY of them - the cross-client staleness
 // gap this store had until now (a change made in one browser tab never
 // reached any other tab's already-loaded marketplaces/plugins/launchLayer
-// until a manual re-open of the section). Mirrors stores/tree.ts's own
+// until a manual re-open of the section). Mirrors the navigation store's
 // identical wiring for the sidebar's REST-backed refetch, applied here to
 // this store's three RPC-backed fetches - three independent debounced
 // channels (not one shared one like tree.ts's) since the three lists are
@@ -289,7 +289,7 @@ export function useExtensionsStore<T>(selector?: (state: ExtensionsStoreState) =
 // waiting on each other. All three notifications' generated payload types
 // are empty ({}) in protocol/types.gen.ts, so there is nothing to apply
 // directly and a debounced re-fetch of the affected list is the only
-// option, exactly like evener/tree/changed's own "just refetch" contract.
+// option, exactly like evener/navigation/invalidated's own "just refetch" contract.
 // On the wire evener/marketplace/updated and evener/plugin/updated genuinely
 // send empty maps (notifyMarketplaceUpdated/notifyPluginUpdated,
 // cmd/evener-hub/app_rpc.go:657,663), while evener/launch/updated carries
@@ -339,7 +339,7 @@ function attachNotifications(client: AppwireClientLike): void {
 }
 
 // Watches connectionStore for the client becoming available and attaches
-// this store's own notification handler to it - see stores/tree.ts's
+// this store's own notification handler to it - see the navigation store's
 // identical wiring for the full "why react to the store instead of reading
 // it once" rationale (a mount-order race between this module and AppShell's
 // own connect() effect).

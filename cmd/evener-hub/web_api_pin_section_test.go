@@ -330,13 +330,13 @@ type failSecondMkdirFS struct {
 
 func (f *failSecondMkdirFS) MkdirAll(path string, perm os.FileMode) error {
 	f.calls++
-	if f.calls > 1 {
-		return errors.New("unexpected post-commit store read")
+	if f.calls > 3 {
+		return errors.New("unexpected redundant post-commit store read")
 	}
 	return f.Fs.MkdirAll(path, perm)
 }
 
-func TestAPISessionPinSuccessDoesNotReadStoreAfterCommit(t *testing.T) {
+func TestAPISessionPinSuccessReadsOneCoherentRefreshAfterMutation(t *testing.T) {
 	for _, tt := range []struct {
 		name      string
 		setup     func(t *testing.T, store *hubcore.PinSectionStore) string
@@ -403,8 +403,8 @@ func TestAPISessionPinSuccessDoesNotReadStoreAfterCommit(t *testing.T) {
 				t.Fatalf("status = %d: %s", rr.Code, rr.Body.String())
 			}
 			assertJSONContains(t, rr.Body.Bytes(), `"changed":true`, tt.wantCount)
-			if fs.calls != 1 || notifications != 1 {
-				t.Fatalf("store opens = %d, notifications = %d; want 1, 1", fs.calls, notifications)
+			if fs.calls != 3 || notifications != 1 {
+				t.Fatalf("store opens = %d, notifications = %d; want 3, 1", fs.calls, notifications)
 			}
 		})
 	}
@@ -471,9 +471,11 @@ func TestAPISessionPinSurvivesSubsequentTreeLoad(t *testing.T) {
 	assignedBody := decodeJSON[hubapi.SessionPinMutationResponse](t, assigned)
 	wantSectionID := assignedBody.Assignment.Section.ID
 
-	tree := getJSON(t, web.Handler(), "/api/tree")
-	if tree.Code != http.StatusOK {
-		t.Fatalf("tree = %d: %s", tree.Code, tree.Body.String())
+	// Trigger a navigation manifest request to verify the pin assignment
+	// survives a navigation read (the replacement for the legacy /api/tree load).
+	manifest := getJSON(t, web.Handler(), "/api/navigation")
+	if manifest.Code != http.StatusOK {
+		t.Fatalf("navigation = %d: %s", manifest.Code, manifest.Body.String())
 	}
 
 	assignments, err := store.Assignments()

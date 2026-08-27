@@ -3,12 +3,37 @@ package hub
 import (
 	"errors"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 )
+
+type sessionNavigationDeleteResponse struct {
+	Deleted    []string                  `json:"deleted"`
+	Skipped    []projectDeleteSkip       `json:"skipped"`
+	Navigation hubapi.NavigationMutation `json:"navigation"`
+}
+
+func (s *WebServer) writeSessionDelete(w http.ResponseWriter, r *http.Request, deleted []string, skipped []projectDeleteSkip, changed bool, project string) {
+	navigation := s.emptyNavigationMutation()
+	if changed {
+		var err error
+		hint := navigationChangeHint{AllLoadedProjects: project == ""}
+		if project != "" {
+			hint.Projects = []string{project}
+		}
+		navigation, err = s.navigation.Refresh(r.Context(), hint)
+		if err != nil {
+			writeAPIError(w, http.StatusServiceUnavailable, err.Error())
+			return
+		}
+	}
+	writeAPIJSON(w, http.StatusOK, sessionNavigationDeleteResponse{Deleted: deleted, Skipped: skipped, Navigation: navigation})
+}
 
 // handleAPISessionDelete removes one ended or confirmed-crashed LOCAL session
 // (kata n15j) without touching any project sibling. It is the single-target
@@ -58,7 +83,7 @@ func (s *WebServer) handleAPISessionDelete(w http.ResponseWriter, r *http.Reques
 			writeAPIError(w, http.StatusInternalServerError, strings.Join(decisionErrors, "; "))
 			return
 		}
-		writeAPIJSON(w, http.StatusOK, map[string]any{"deleted": []string{}, "skipped": []projectDeleteSkip{}})
+		s.writeSessionDelete(w, r, []string{}, []projectDeleteSkip{}, false, "")
 		return
 	}
 
@@ -73,14 +98,18 @@ func (s *WebServer) handleAPISessionDelete(w http.ResponseWriter, r *http.Reques
 		} else {
 			skipped = []projectDeleteSkip{{ID: threadID, Reason: ownerErr.Error()}}
 		}
-		writeAPIJSON(w, http.StatusOK, map[string]any{"deleted": []string{}, "skipped": skipped})
+		s.writeSessionDelete(w, r, []string{}, skipped, false, peProjectKey(pe.StateDir))
 		return
 	}
-	defer release()
+	defer func() {
+		if release != nil {
+			release()
+		}
+	}()
 
 	deleted, skip, decisionErrors := s.cleanupProjectDeletionTargetAndDecisions(pe.StateDir, threadID)
 	if !deleted {
-		writeAPIJSON(w, http.StatusOK, map[string]any{"deleted": []string{}, "skipped": []projectDeleteSkip{*skip}})
+		s.writeSessionDelete(w, r, []string{}, []projectDeleteSkip{*skip}, false, peProjectKey(pe.StateDir))
 		return
 	}
 
@@ -93,9 +122,9 @@ func (s *WebServer) handleAPISessionDelete(w http.ResponseWriter, r *http.Reques
 		}
 	}
 	// Same post-delete freshness contract as cleanupProjectDeletion: refresh
-	// the roster before the bump and broadcast so the UI's immediate
-	// follow-up GET /api/tree carries no ghost row, and bust the tree memo
-	// even when the past rebuild reported no delta.
+	// the roster before the bump so the UI's immediate follow-up carries no
+	// ghost row, and bust the tree memo even when the past rebuild reported no
+	// delta.
 	if s.cfg.Roster != nil {
 		hubRosterRefresh(s.cfg.Roster)
 	}
@@ -106,11 +135,15 @@ func (s *WebServer) handleAPISessionDelete(w http.ResponseWriter, r *http.Reques
 		s.cfg.PokeAttention()
 	}
 	if !rebuilt {
-		notifyTreeChanged(s.appRPC)
+		s.navigation.Invalidate(navigationChangeHint{})
 	}
 	if len(decisionErrors) > 0 {
 		writeAPIError(w, http.StatusInternalServerError, strings.Join(decisionErrors, "; "))
 		return
 	}
-	writeAPIJSON(w, http.StatusOK, map[string]any{"deleted": []string{threadID}, "skipped": []projectDeleteSkip{}})
+	release()
+	release = nil
+	s.writeSessionDelete(w, r, []string{threadID}, []projectDeleteSkip{}, true, peProjectKey(pe.StateDir))
 }
+
+func peProjectKey(stateDir string) string { return filepath.Base(filepath.Dir(stateDir)) }

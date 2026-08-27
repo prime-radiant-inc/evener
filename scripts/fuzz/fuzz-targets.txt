@@ -670,3 +670,5 @@ native:.:./cmd/evener:FuzzSandboxHelpers
 native:.:./cmd/evener:FuzzServeResidualCoverage
 native:.:./cmd/evener:FuzzServeSeedCoverage
 native:.:./cmd/evener:FuzzUpgradeErrorSeedCoverage
+
+native:agent:./internal/modelavailability:FuzzCursorDecode

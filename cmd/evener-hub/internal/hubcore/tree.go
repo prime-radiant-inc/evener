@@ -1,6 +1,7 @@
 package hubcore
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -35,6 +36,90 @@ type Tree struct {
 	Projects         []TreeProject
 	ArchivedProjects []TreeProject
 	favoriteLive     []TreeNode
+}
+
+// Snapshot returns a deep immutable copy of a tree, including the uncapped
+// private tier slices retained for pagination. Consumers that retain a tree
+// beyond their input snapshot must use this instead of copying Tree values.
+func (t Tree) Snapshot() Tree {
+	out, _ := t.SnapshotContext(context.Background())
+	return out
+}
+
+// SnapshotContext is Snapshot with cancellation checks at every collection and
+// recursive node boundary. It lets bounded navigation builds stop before a
+// large retained tree has been copied in full.
+func (t Tree) SnapshotContext(ctx context.Context) (Tree, error) {
+	needsYou, err := cloneTreeNodesContext(ctx, t.NeedsYou)
+	if err != nil {
+		return Tree{}, err
+	}
+	live, err := cloneTreeNodesContext(ctx, t.Live)
+	if err != nil {
+		return Tree{}, err
+	}
+	projects, err := cloneTreeProjectsContext(ctx, t.Projects)
+	if err != nil {
+		return Tree{}, err
+	}
+	archived, err := cloneTreeProjectsContext(ctx, t.ArchivedProjects)
+	if err != nil {
+		return Tree{}, err
+	}
+	favorites, err := cloneTreeNodesContext(ctx, t.favoriteLive)
+	if err != nil {
+		return Tree{}, err
+	}
+	return Tree{NeedsYou: needsYou, Live: live, Projects: projects, ArchivedProjects: archived, favoriteLive: favorites}, nil
+}
+
+func cloneTreeProjectsContext(ctx context.Context, projects []TreeProject) ([]TreeProject, error) {
+	out := make([]TreeProject, len(projects))
+	for index, project := range projects {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		out[index] = project
+		var err error
+		if out[index].Current, err = cloneTreeNodesContext(ctx, project.Current); err != nil {
+			return nil, err
+		}
+		if out[index].Recent, err = cloneTreeNodesContext(ctx, project.Recent); err != nil {
+			return nil, err
+		}
+		if out[index].Archived, err = cloneTreeNodesContext(ctx, project.Archived); err != nil {
+			return nil, err
+		}
+		if out[index].allCurrent, err = cloneTreeNodesContext(ctx, project.allCurrent); err != nil {
+			return nil, err
+		}
+		if out[index].allRecent, err = cloneTreeNodesContext(ctx, project.allRecent); err != nil {
+			return nil, err
+		}
+		if out[index].allArchived, err = cloneTreeNodesContext(ctx, project.allArchived); err != nil {
+			return nil, err
+		}
+	}
+	return out, nil
+}
+
+func cloneTreeNodesContext(ctx context.Context, nodes []TreeNode) ([]TreeNode, error) {
+	if nodes == nil {
+		return nil, ctx.Err()
+	}
+	out := make([]TreeNode, len(nodes))
+	for index, node := range nodes {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		out[index] = node
+		children, err := cloneTreeNodesContext(ctx, node.Children)
+		if err != nil {
+			return nil, err
+		}
+		out[index].Children = children
+	}
+	return out, nil
 }
 
 // FavoriteCandidates returns every uncapped, top-level session row that is
@@ -254,24 +339,8 @@ func (p TreeProject) Page(tier string, offset, limit int) ([]TreeNode, int, bool
 	if offset < 0 || limit <= 0 {
 		return nil, 0, false
 	}
-	var rows []TreeNode
-	switch tier {
-	case "current":
-		rows = p.allCurrent
-		if rows == nil {
-			rows = p.Current
-		}
-	case "recent":
-		rows = p.allRecent
-		if rows == nil {
-			rows = p.Recent
-		}
-	case "archived":
-		rows = p.allArchived
-		if rows == nil {
-			rows = p.Archived
-		}
-	default:
+	rows, ok := p.TierRows(tier)
+	if !ok {
 		return nil, 0, false
 	}
 	if offset >= len(rows) {
@@ -280,6 +349,31 @@ func (p TreeProject) Page(tier string, offset, limit int) ([]TreeNode, int, bool
 	end := offset + limit
 	end = min(end, len(rows))
 	return rows[offset:end], len(rows) - end, true
+}
+
+// TierRows returns a project's authoritative, ordered tier rows. It exposes
+// the retained uncapped slices to immutable snapshot consumers without making
+// them reconstruct a page by scanning or using an artificial offset.
+func (p TreeProject) TierRows(tier string) ([]TreeNode, bool) {
+	switch tier {
+	case "current":
+		if p.allCurrent != nil {
+			return p.allCurrent, true
+		}
+		return p.Current, true
+	case "recent":
+		if p.allRecent != nil {
+			return p.allRecent, true
+		}
+		return p.Recent, true
+	case "archived":
+		if p.allArchived != nil {
+			return p.allArchived, true
+		}
+		return p.Archived, true
+	default:
+		return nil, false
+	}
 }
 
 // classifySession returns a session's sidebar tier from its last activity and
@@ -422,7 +516,7 @@ func truncateTitle(s string) string {
 	if len(r) <= maxTitleRunes {
 		return s
 	}
-	return string(r[:maxTitleRunes]) + "…"
+	return string(r[:maxTitleRunes-1]) + "…"
 }
 
 // ShortID renders an unnamed session ID compactly.

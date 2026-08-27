@@ -2,6 +2,7 @@ package appwire
 
 import (
 	"encoding/json"
+	"errors"
 	"fmt"
 )
 
@@ -138,6 +139,7 @@ const (
 	NotifyEvenerAuthUpdated            = "evener/auth/updated"
 	NotifyEvenerLaunchUpdated          = "evener/launch/updated"
 	NotifyEvenerAttentionChanged       = "evener/attention/changed"
+	NotifyEvenerNavigationInvalidated  = "evener/navigation/invalidated"
 	NotifyEvenerMarketplaceUpdated     = "evener/marketplace/updated"
 	NotifyEvenerPluginUpdated          = "evener/plugin/updated"
 	// NotifyEvenerSandboxEscalationRequested pushes a harness-raised, human-gated
@@ -151,11 +153,6 @@ const (
 	// card. Emitted exactly once per escalation, from the convergence point in
 	// agent/session_escalation.go's escalateOnSandboxDenial.
 	NotifyEvenerSandboxEscalationResolved = "evener/sandbox/escalation/resolved"
-	// NotifyEvenerTreeChanged pushes a hint that tree-relevant state changed
-	// (roster delta, past-index change, or an archive/favorite/rename/
-	// project-delete mutation) so the web sidebar can refetch /api/tree
-	// instead of polling. Hub-originated; never sent by daemons.
-	NotifyEvenerTreeChanged = "evener/tree/changed"
 )
 
 const (
@@ -192,10 +189,19 @@ type Capabilities struct {
 }
 
 type InitializeResponse struct {
-	ServerInfo      ServerInfo `json:"serverInfo"`
-	ProtocolVersion string     `json:"protocolVersion"`
-	SourceID        string     `json:"sourceId"`
-	Features        FeatureSet `json:"features"`
+	ServerInfo      ServerInfo            `json:"serverInfo"`
+	ProtocolVersion string                `json:"protocolVersion"`
+	SourceID        string                `json:"sourceId"`
+	Features        FeatureSet            `json:"features"`
+	Navigation      *NavigationCapability `json:"navigation,omitempty"`
+}
+
+// NavigationCapability advertises the version and current ordered AppWire
+// invalidation stream for navigation HTTP resources.
+type NavigationCapability struct {
+	Version      int    `json:"version"`
+	GenerationID string `json:"generationId"`
+	Sequence     uint64 `json:"sequence"`
 }
 
 type ServerInfo struct {
@@ -1891,6 +1897,162 @@ type EvenerJobParams struct {
 type EvenerAuthUpdatedParams struct {
 	Provider     string `json:"provider,omitempty"`
 	ActiveSource string `json:"activeSource,omitempty"`
+}
+
+// NavigationTargetKind identifies one exact invalidation target variant.
+type NavigationTargetKind string
+
+const (
+	NavigationTargetManifest          NavigationTargetKind = "manifest"
+	NavigationTargetSection           NavigationTargetKind = "section"
+	NavigationTargetPinCatalog        NavigationTargetKind = "pin_catalog"
+	NavigationTargetPinSection        NavigationTargetKind = "pin_section"
+	NavigationTargetCatalog           NavigationTargetKind = "catalog"
+	NavigationTargetProject           NavigationTargetKind = "project"
+	NavigationTargetAllLoadedProjects NavigationTargetKind = "all_loaded_projects"
+)
+
+// AllNavigationTargetKinds is the complete wire-level target-kind set.
+var AllNavigationTargetKinds = []NavigationTargetKind{
+	NavigationTargetManifest,
+	NavigationTargetSection,
+	NavigationTargetPinCatalog,
+	NavigationTargetPinSection,
+	NavigationTargetCatalog,
+	NavigationTargetProject,
+	NavigationTargetAllLoadedProjects,
+}
+
+// NavigationInvalidationTarget identifies one loaded navigation resource that
+// clients must revalidate. Revision is omitted only by the wildcard target.
+type NavigationInvalidationTarget struct {
+	Kind       NavigationTargetKind `json:"kind"`
+	Section    string               `json:"section,omitempty"`
+	SectionID  string               `json:"sectionId,omitempty"`
+	Catalog    string               `json:"catalog,omitempty"`
+	ProjectKey string               `json:"projectKey,omitempty"`
+	Revision   uint64               `json:"revision,omitempty"`
+}
+
+// MarshalJSON emits only the fields valid for target's kind. Every scoped
+// target includes a revision, including revision zero; the wildcard has no
+// revision or selector.
+func (target NavigationInvalidationTarget) MarshalJSON() ([]byte, error) {
+	if err := target.validate(false); err != nil {
+		return nil, err
+	}
+	if target.Kind == NavigationTargetAllLoadedProjects {
+		return json.Marshal(struct {
+			Kind NavigationTargetKind `json:"kind"`
+		}{Kind: target.Kind})
+	}
+	return json.Marshal(struct {
+		Kind       NavigationTargetKind `json:"kind"`
+		Section    string               `json:"section,omitempty"`
+		SectionID  string               `json:"sectionId,omitempty"`
+		Catalog    string               `json:"catalog,omitempty"`
+		ProjectKey string               `json:"projectKey,omitempty"`
+		Revision   uint64               `json:"revision"`
+	}{
+		Kind:       target.Kind,
+		Section:    target.Section,
+		SectionID:  target.SectionID,
+		Catalog:    target.Catalog,
+		ProjectKey: target.ProjectKey,
+		Revision:   target.Revision,
+	})
+}
+
+// UnmarshalJSON rejects unknown fields and every invalid target variant so an
+// incomplete or widened invalidation cannot silently reach a client.
+func (target *NavigationInvalidationTarget) UnmarshalJSON(data []byte) error {
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(data, &fields); err != nil {
+		return err
+	}
+	if fields == nil {
+		return errors.New("navigation invalidation target must be an object")
+	}
+	for name := range fields {
+		switch name {
+		case "kind", "section", "sectionId", "catalog", "projectKey", "revision":
+		default:
+			return fmt.Errorf("navigation invalidation target has unknown field %q", name)
+		}
+	}
+	var decoded struct {
+		Kind       NavigationTargetKind `json:"kind"`
+		Section    string               `json:"section"`
+		SectionID  string               `json:"sectionId"`
+		Catalog    string               `json:"catalog"`
+		ProjectKey string               `json:"projectKey"`
+		Revision   uint64               `json:"revision"`
+	}
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	_, hasRevision := fields["revision"]
+	if decoded.Kind == NavigationTargetAllLoadedProjects && hasRevision {
+		return fmt.Errorf("navigation target %q permits no selector or revision", decoded.Kind)
+	}
+	candidate := NavigationInvalidationTarget{
+		Kind:       decoded.Kind,
+		Section:    decoded.Section,
+		SectionID:  decoded.SectionID,
+		Catalog:    decoded.Catalog,
+		ProjectKey: decoded.ProjectKey,
+		Revision:   decoded.Revision,
+	}
+	if err := candidate.validate(!hasRevision); err != nil {
+		return err
+	}
+	*target = candidate
+	return nil
+}
+
+func (target NavigationInvalidationTarget) validate(revisionMissing bool) error {
+	if target.Kind == NavigationTargetAllLoadedProjects {
+		if target.Section != "" || target.SectionID != "" || target.Catalog != "" || target.ProjectKey != "" || target.Revision != 0 {
+			return fmt.Errorf("navigation target %q permits no selector or revision", target.Kind)
+		}
+		return nil
+	}
+	if revisionMissing {
+		return fmt.Errorf("navigation target %q requires revision", target.Kind)
+	}
+	switch target.Kind {
+	case NavigationTargetManifest, NavigationTargetPinCatalog:
+		if target.Section != "" || target.SectionID != "" || target.Catalog != "" || target.ProjectKey != "" {
+			return fmt.Errorf("navigation target %q permits no selector", target.Kind)
+		}
+	case NavigationTargetSection:
+		if target.Section == "" || target.SectionID != "" || target.Catalog != "" || target.ProjectKey != "" {
+			return fmt.Errorf("navigation target %q requires only section", target.Kind)
+		}
+	case NavigationTargetPinSection:
+		if target.Section != "" || target.SectionID == "" || target.Catalog != "" || target.ProjectKey != "" {
+			return fmt.Errorf("navigation target %q requires only sectionId", target.Kind)
+		}
+	case NavigationTargetCatalog:
+		if target.Section != "" || target.SectionID != "" || target.Catalog == "" || target.ProjectKey != "" {
+			return fmt.Errorf("navigation target %q requires only catalog", target.Kind)
+		}
+	case NavigationTargetProject:
+		if target.Section != "" || target.SectionID != "" || target.Catalog != "" || target.ProjectKey == "" {
+			return fmt.Errorf("navigation target %q requires only projectKey", target.Kind)
+		}
+	default:
+		return fmt.Errorf("unknown navigation target kind %q", target.Kind)
+	}
+	return nil
+}
+
+// NavigationInvalidatedPayload is the evener/navigation/invalidated
+// notification body. Sequence orders notifications within GenerationID.
+type NavigationInvalidatedPayload struct {
+	GenerationID string                         `json:"generationId"`
+	Sequence     uint64                         `json:"sequence"`
+	Targets      []NavigationInvalidationTarget `json:"targets"`
 }
 
 // EvenerLaunchUpdatedParams is the params shape for the evener/launch/updated

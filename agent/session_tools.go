@@ -8,6 +8,7 @@ import (
 	"maps"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -280,6 +281,8 @@ const (
 	visionSideChannelTimeout = 2 * time.Minute
 )
 
+var errVisionSideChannelTimeout = errors.New("vision side-channel deadline")
+
 func (s *Session) visionSideChannelDuration() time.Duration {
 	if timeout := s.cfg.testOnly.visionSideChannelTimeout; timeout > 0 {
 		return timeout
@@ -287,10 +290,27 @@ func (s *Session) visionSideChannelDuration() time.Duration {
 	return visionSideChannelTimeout
 }
 
+type visionSideChannelOutcome uint8
+
+const (
+	visionSideChannelSuccess visionSideChannelOutcome = iota
+	visionSideChannelOwnedTimeout
+	visionSideChannelParentCanceled
+	visionSideChannelProviderFailure
+)
+
 type visionSideChannelResult struct {
 	description string
 	elapsed     time.Duration
 	usage       llm.Usage
+	outcome     visionSideChannelOutcome
+	err         error
+}
+
+// describeImage makes a side-channel API call with no tools to describe an image
+// using the model's native vision. Returns the text description, or "" on error.
+func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
+	return s.describeImageCall(ctx, r).description
 }
 
 // visionSideChannelStats is the machine-readable accounting contract carried
@@ -315,23 +335,21 @@ const (
 	visionRequestContract       = "Observe the image faithfully and answer the caller's request. Vision is non-authoritative for exact text or bytes; use OCR or the source when exactness matters."
 )
 
-// describeImage makes a side-channel API call with no tools to describe an image
-// using the model's native vision. Returns the text description, or "" on error.
-// The call includes context from the current task so the description is relevant.
-func (s *Session) describeImage(ctx context.Context, r tool.ExecResult) string {
-	return s.describeImageCall(ctx, r).description
+func visionUnavailableSteering(path string) string {
+	if path == "" {
+		return "Vision is unavailable. Use OCR or inspect the source data, or continue without vision."
+	}
+	return fmt.Sprintf("Vision is unavailable for %s. Use OCR or inspect the source data, or continue without vision.", strconv.Quote(path))
 }
 
-// describeImageSteering preserves describeImage's text contract while appending
-// machine-readable side-channel accounting to the model-facing steering
-// message. The accounting is emitted only after a non-empty response succeeds,
-// so failures cannot claim successful usage or latency.
-func (s *Session) describeImageSteering(ctx context.Context, r tool.ExecResult) string {
-	result := s.describeImageCall(ctx, r)
-	if result.description == "" {
-		return ""
+func visionFailureSteering(path string, result visionSideChannelResult) string {
+	if result.outcome == visionSideChannelProviderFailure {
+		if path == "" {
+			return "Vision is unavailable because the vision provider failed. Use OCR or inspect the source data, or continue without vision."
+		}
+		return fmt.Sprintf("Vision is unavailable for %s because the vision provider failed. Use OCR or inspect the source data, or continue without vision.", strconv.Quote(path))
 	}
-	return result.description + "\n" + formatVisionSideChannelStats(result)
+	return visionUnavailableSteering(path)
 }
 
 func formatVisionSideChannelStats(result visionSideChannelResult) string {
@@ -368,11 +386,11 @@ func visionUsageAvailable(usage llm.Usage) bool {
 
 func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visionSideChannelResult {
 	if len(r.ImageData) == 0 {
-		return visionSideChannelResult{}
+		return visionSideChannelResult{outcome: visionSideChannelSuccess}
 	}
 	// Skip for explorer agents — they're just inventorying files, not analyzing images.
 	if s.cfg.AgentName == "explorer" {
-		return visionSideChannelResult{}
+		return visionSideChannelResult{outcome: visionSideChannelSuccess}
 	}
 
 	// Use the caller's stated purpose as the vision prompt. The calling LLM
@@ -411,7 +429,7 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	s.mu.Unlock()
 
 	visionTimeout := s.visionSideChannelDuration()
-	visionCtx, cancel := context.WithTimeout(ctx, visionTimeout)
+	visionCtx, cancel := context.WithTimeoutCause(ctx, visionTimeout, errVisionSideChannelTimeout)
 	defer cancel()
 	req := llm.Request{
 		Model:    profile.Model(),
@@ -448,14 +466,31 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 	elapsed := s.sclock().Now().Sub(start)
 	elapsed = max(elapsed, 0)
 	if err != nil {
-		s.emit(events.EventWarning, events.WarningData{Message: fmt.Sprintf("vision side-channel failed: %v", err)})
-		return visionSideChannelResult{}
+		outcome := visionSideChannelProviderFailure
+		cause := context.Cause(visionCtx)
+		if errors.Is(cause, errVisionSideChannelTimeout) {
+			outcome = visionSideChannelOwnedTimeout
+		} else if ctx.Err() != nil {
+			// Parent cancellation owns races with the side-channel deadline. This
+			// prevents a stale unavailable steering message after a canceled turn.
+			outcome = visionSideChannelParentCanceled
+		} else if errors.Is(visionCtx.Err(), context.DeadlineExceeded) {
+			outcome = visionSideChannelOwnedTimeout
+		}
+		if outcome != visionSideChannelParentCanceled {
+			// Provider errors can contain request URLs, bodies, IDs, or credentials.
+			// The user-facing steering below is deliberately sanitized, so keep the
+			// warning sanitized too rather than reintroducing the raw adapter error.
+			s.emit(events.EventWarning, events.WarningData{Message: "vision side-channel unavailable"})
+		}
+		return visionSideChannelResult{elapsed: elapsed, outcome: outcome, err: err}
 	}
 
 	return visionSideChannelResult{
 		description: strings.TrimSpace(resp.Message.Text()),
 		elapsed:     elapsed,
 		usage:       resp.Usage,
+		outcome:     visionSideChannelSuccess,
 	}
 }
 
@@ -1189,7 +1224,9 @@ func (s *Session) delegateCapabilityRoster() string {
 }
 
 func (s *Session) delegateToolDefinition() llm.ToolDefinition {
-	definition := tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), s.delegateSandboxSchemaForEnv(s.env))
+	sandboxSchema := s.delegateSandboxSchemaForEnv(s.env)
+	sandboxSchema.ModelDescription = s.delegateModelDescription
+	definition := tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), sandboxSchema)
 	roster := s.delegateCapabilityRoster()
 	if roster == "" {
 		return definition
@@ -1247,7 +1284,9 @@ func (s *Session) profileWireToolDefs() []llm.ToolDefinition {
 	defs := s.profile.ToolDefinitions()
 	for i := range defs {
 		if defs[i].Name == "delegate" {
-			defs[i] = tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), s.delegateSandboxSchemaForEnv(s.env))
+			sandboxSchema := s.delegateSandboxSchemaForEnv(s.env)
+			sandboxSchema.ModelDescription = s.delegateModelDescription
+			defs[i] = tool.DefDelegateWithSandbox(s.delegateAgentTypeNames(), sandboxSchema)
 		}
 		defs[i] = wireToolDef(defs[i], nameMap, s.resultToolName())
 	}

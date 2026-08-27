@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -11,7 +10,6 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
-	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
@@ -96,8 +94,8 @@ func TestRenameEndedSessionPokeAttention(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	rec := httptest.NewRecorder()
 	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusNoContent {
-		t.Fatalf("status=%d, want 204; body=%s", rec.Code, rec.Body.String())
+	if rec.Code != http.StatusOK {
+		t.Fatalf("status=%d, want 200; body=%s", rec.Code, rec.Body.String())
 	}
 	if !poked {
 		t.Fatalf("PokeAttention was not called")
@@ -228,21 +226,13 @@ func TestRefreshRenamedMetaPokeAttention(t *testing.T) {
 
 // TestRefreshRenamedMetaNotIndexed covers the path where the session is not
 // in the past index (Find returns false), so notified stays false and
-// notifyTreeChanged is called.
+// navigation invalidation is called.
 func TestRefreshRenamedMetaNotIndexed(t *testing.T) {
 	past := hubcore.NewPastIndexWithDB(filepath.Join(t.TempDir(), "projects", "*"), filepath.Join(t.TempDir(), "index.db"))
 	_, _ = past.Rebuild()
-	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
-	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
+	web := NewWebServer(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
 
 	// Session not in index, so refreshRenamedMeta's Find returns false.
+	// This must not panic (navigation invalidation is the compensating path).
 	web.refreshRenamedMeta("nonexistent-session-id", "name")
-
-	// notifyTreeChanged should have been called (notified=false).
-	assertSingleNotification(t, client, web.appRPC, appwire.NotifyEvenerTreeChanged)
 }

@@ -294,8 +294,8 @@ func fuzzScenarioBuildTree_TruncatesLongOriginalPromptTitles(t *testing.T) {
 		t.Fatalf("unexpected tree shape: %#v", tree)
 	}
 	got := allSessions(tree.Projects[0])[0].Title
-	if want := strings.Repeat("é", 200) + "…"; got != want {
-		t.Fatalf("title = %d runes (%.30q...), want 200 runes + ellipsis", len([]rune(got)), got)
+	if want := strings.Repeat("é", 199) + "…"; got != want {
+		t.Fatalf("title = %d runes (%.30q...), want 200 runes including ellipsis", len([]rune(got)), got)
 	}
 }
 
@@ -308,7 +308,7 @@ func fuzzScenarioBuildTree_TruncatesLongForkBaseTitleKeepingLabel(t *testing.T) 
 		UpdatedAt:      time.Now(),
 	}}, nil)
 	got := allSessions(tree.Projects[0])[0].Title
-	if want := strings.Repeat("x", 200) + "… · before TDD"; got != want {
+	if want := strings.Repeat("x", 199) + "… · before TDD"; got != want {
 		t.Fatalf("fork title = %q, want truncated base plus label", got)
 	}
 }
@@ -1798,6 +1798,32 @@ func TestTreeProjectPageReturnsCappedAwayTierRows(t *testing.T) {
 	}
 	if page[0].ID == project.Current[0].ID {
 		t.Fatalf("page repeated a retained row %q", page[0].ID)
+	}
+	rows, ok := project.TierRows("current")
+	if !ok || len(rows) != 60 {
+		t.Fatalf("authoritative rows = %d, ok=%v, want 60, true", len(rows), ok)
+	}
+	if rows[50].ID != page[0].ID {
+		t.Fatalf("tier rows lost page order: rows[50]=%q page[0]=%q", rows[50].ID, page[0].ID)
+	}
+}
+
+func TestTreeSnapshotClonesAuthoritativeTierRows(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	metas := make([]schema.SessionMeta, 0, 60)
+	for index := range 60 {
+		metas = append(metas, schema.SessionMeta{ID: fmt.Sprintf("01SNAP%02d", index), CreatedAt: now, UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/w/snapshot"}})
+	}
+	tree := BuildTreeAt(metas, nil, map[ArchiveKey]bool{}, now)
+	snapshot := tree.Snapshot()
+	original, _ := tree.Projects[0].TierRows("current")
+	cloned, _ := snapshot.Projects[0].TierRows("current")
+	if len(original) != 60 || len(cloned) != 60 {
+		t.Fatalf("authoritative rows original=%d snapshot=%d", len(original), len(cloned))
+	}
+	original[55].Title = "mutated"
+	if cloned[55].Title == "mutated" {
+		t.Fatal("snapshot authoritative tier aliases original")
 	}
 }
 

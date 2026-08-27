@@ -19,6 +19,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hostlock"
@@ -82,6 +83,29 @@ func (s *listenerHTTPServer) ListenAndServe() error {
 
 type hubShutdowner interface {
 	Shutdown(context.Context) error
+}
+
+type navigationPublisher interface {
+	BroadcastAll(string, any)
+}
+
+func runNavigationPublisher(ctx context.Context, navigation *NavigationService, publisher navigationPublisher) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-navigation.PublicationReady():
+			for {
+				payloads := navigation.DrainPublications()
+				if len(payloads) == 0 {
+					break
+				}
+				for _, payload := range payloads {
+					publisher.BroadcastAll(appwire.NotifyEvenerNavigationInvalidated, payload)
+				}
+			}
+		}
+	}
 }
 
 type hubOptions struct {
@@ -382,23 +406,21 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		RemoteThreadCache:   remoteCache,
 	})
 
-	// evener/tree/changed push (spec §7.3 item 3): Roster/PastIndex's onChange
-	// hook already gates on an actual content-fingerprint delta (never a
-	// no-op probe/rebuild cycle — see bump above), so composing the broadcast
-	// into the same hook pushes the sidebar exactly on a daemon appearing/
-	// disappearing/changing liveness, or a session appearing/ending/changing
-	// in the past index. Rename and project-delete both route their session
-	// edits through PastIndex.UpdateMeta/Rebuild, so this hook covers the
-	// common case for them too — those handlers do NOT also call
-	// notifyTreeChanged unconditionally (it would double-broadcast); they
-	// call it conditionally, only when UpdateMeta/Rebuild report the hook
-	// didn't fire (see notifyTreeChanged's doc comment). Archive and favorite
-	// decisions live in ArchiveStore/FavoriteStore, which never route through
-	// PastIndex at all, so those two mutations broadcast unconditionally
-	// instead via WebServer.notifyMutation (web_api_archive.go,
-	// web_api_favorite.go).
-	past.SetOnChange(func() { bump(); notifyTreeChanged(web.appRPC) })
-	roster.SetOnChange(func() { bump(); notifyTreeChanged(web.appRPC) })
+	// Navigation invalidation hooks: Roster/PastIndex's onChange hook already
+	// gates on an actual content-fingerprint delta (never a no-op probe/rebuild
+	// cycle — see bump above), so composing the navigation invalidation into the
+	// same hook pushes the sidebar exactly on a daemon appearing/disappearing/
+	// changing liveness, or a session appearing/ending/changing in the past
+	// index. Archive and favorite decisions live in ArchiveStore/FavoriteStore,
+	// which never route through PastIndex at all, so they invalidate directly.
+	past.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
+	roster.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
+	archive.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
+	favorite.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{AllLoadedProjects: true}) })
+	remoteCache.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{Sources: true}) })
+	if pinSections != nil {
+		pinSections.SetOnChange(func() { bump(); web.navigation.Invalidate(navigationChangeHint{}) })
+	}
 
 	if deps.afterWeb != nil {
 		deps.afterWeb(web)
@@ -416,12 +438,18 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	startBackground := func(fn func()) {
 		background.Go(fn)
 	}
-
 	// Populate the roster before serving so the first sidebar request can't hit
 	// an empty roster (the "flash of no sessions" right after a restart). Probes
 	// run concurrently, so this is bounded by ~one probe timeout regardless of
 	// how many daemons are live.
 	roster.Refresh()
+	// Start the resettable navigation scheduler only after the initial roster
+	// seed, so its first capture cannot publish a transient empty generation.
+	startBackground(func() { web.navigation.Start(ctx) })
+	// NavigationService is the sole typed-event authority. Drain its FIFO from
+	// one lifecycle-owned publisher so readiness coalescing cannot duplicate or
+	// reorder invalidations.
+	startBackground(func() { runNavigationPublisher(ctx, web.navigation, web.appRPC) })
 	startBackground(func() { watchHubRoster(ctx, roster) })
 
 	startBackground(func() {

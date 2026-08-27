@@ -117,6 +117,21 @@ for target_tag in evenerfuzz eval; do
 	assert_has "$out" "undefined: $symbol" "lint-${target_tag} reports the Linux-only ${target_tag} diagnostic"
 done
 
+# Linux is the CI host, so the family must preserve a failed host vet even
+# though the cross-GOOS branch below it is skipped. This specifically catches
+# a wrapper that disables `set -e` and lets the final false `if` condition
+# replace the earlier failure with status zero.
+for target_tag in evenerfuzz eval; do
+	out="$work/${target_tag}-linux-target.out"
+	symbol="$(symbol_for_tag "$target_tag")"
+	env GOENV=off GOFLAGS= GOWORK=off GOOS=linux \
+		make -C "$repo" --no-print-directory FUZZ_GO_MODULES="$fixture" "lint-${target_tag}" \
+		>"$out" 2>&1
+	status=$?
+	assert_nonzero "$status" "lint-${target_tag} preserves a failed Linux host vet"
+	assert_has "$out" "undefined: $symbol" "lint-${target_tag} reports the Linux host diagnostic"
+done
+
 # These sources are valid Go and vet cleanly on Linux, but the Linux-only
 # tagliatelle controls reject their deliberately bad JSON casing. The host
 # pass must miss them on Darwin; the production targets must not.

@@ -33,14 +33,17 @@ func New(data EventData) SessionEvent {
 // Per-payload eventKind markers. Each binds a payload struct to its EventKind
 // and, via the compile-time assertions below, to the EventData interface.
 
-func (SessionStartData) eventKind() EventKind       { return EventSessionStart }
-func (SessionEndData) eventKind() EventKind         { return EventSessionEnd }
-func (UserInputData) eventKind() EventKind          { return EventUserInput }
-func (AssistantTextStartData) eventKind() EventKind { return EventAssistantTextStart }
-func (AssistantTextDeltaData) eventKind() EventKind { return EventAssistantTextDelta }
-func (AssistantTextEndData) eventKind() EventKind   { return EventAssistantTextEnd }
-func (AssistantTextResetData) eventKind() EventKind { return EventAssistantTextReset }
-func (ModelRetryData) eventKind() EventKind         { return EventModelRetry }
+func (SessionStartData) eventKind() EventKind            { return EventSessionStart }
+func (SessionEndData) eventKind() EventKind              { return EventSessionEnd }
+func (UserInputData) eventKind() EventKind               { return EventUserInput }
+func (AssistantTextStartData) eventKind() EventKind      { return EventAssistantTextStart }
+func (AssistantTextDeltaData) eventKind() EventKind      { return EventAssistantTextDelta }
+func (AssistantTextEndData) eventKind() EventKind        { return EventAssistantTextEnd }
+func (AssistantTextResetData) eventKind() EventKind      { return EventAssistantTextReset }
+func (CommunicatePreviewStartData) eventKind() EventKind { return EventCommunicatePreviewStart }
+func (CommunicatePreviewDeltaData) eventKind() EventKind { return EventCommunicatePreviewDelta }
+func (CommunicatePreviewResetData) eventKind() EventKind { return EventCommunicatePreviewReset }
+func (ModelRetryData) eventKind() EventKind              { return EventModelRetry }
 func (ReasoningSummaryDeltaData) eventKind() EventKind {
 	return EventReasoningSummaryDelta
 }
@@ -95,6 +98,9 @@ var (
 	_ EventData = UserInputData{}
 	_ EventData = AssistantTextStartData{}
 	_ EventData = AssistantTextDeltaData{}
+	_ EventData = CommunicatePreviewStartData{}
+	_ EventData = CommunicatePreviewDeltaData{}
+	_ EventData = CommunicatePreviewResetData{}
 	_ EventData = ReasoningSummaryDeltaData{}
 	_ EventData = AssistantTextEndData{}
 	_ EventData = ModelRetryData{}

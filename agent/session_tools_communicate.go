@@ -15,6 +15,11 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
+func callIDFromContext(ctx context.Context) string {
+	callID, _ := ctx.Value(ctxToolCallID).(string)
+	return callID
+}
+
 func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 	// communicate is the only user-facing message channel.
 	// Use the profile's definition if available (it may have been modified by
@@ -66,6 +71,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 			}
 
 			deps.emit(events.EventCommunicate, events.CommunicateData{
+				CallID:  callIDFromContext(ctx),
 				EndTurn: endTurn,
 				Message: message,
 			})

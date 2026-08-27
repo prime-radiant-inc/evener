@@ -4,17 +4,18 @@ on:
   push:
     branches: [main]
     tags: ["v*"]
-  pull_request:
-    branches: [main]
   workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.run_id }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 permissions:
   contents: read
 
 jobs:
-  # PRs, main pushes, and manual runs prove the release build produces the
-  # exact artifacts install.sh consumes; tags publish through the release
-  # job instead.
+  # Main pushes and manual runs prove the release build produces the exact
+  # artifacts install.sh consumes; tags publish through the release job instead.
   build:
     name: Build snapshot artifacts
     if: github.ref_type != 'tag'

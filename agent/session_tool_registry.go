@@ -378,6 +378,13 @@ func registerCoreTools(reg *tool.Registry, s *Session) error {
 	if err := registerStableDelegateTool(reg, s); err != nil {
 		return err
 	}
+	if s.modelSnapshot != nil {
+		if _, inline := inlineModelSnapshot(*s.modelSnapshot); !inline {
+			if err := registerModelListTool(reg, s); err != nil {
+				return err
+			}
+		}
+	}
 	registerTaskTools(reg, deps)
 	registerGoalTools(reg, deps)
 	registerWorktreeTool(reg, deps)

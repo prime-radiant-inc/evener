@@ -15,7 +15,7 @@ it", and "Driving the web UI with superpowers-chrome:browsing" for the selector 
 Four facts that invert what this card used to say:
 
 - **The notification engine is `cmd/evener-hub/frontend/src/notifications/*.ts`**, not
-  `assets/notifications.js` (deleted at `660376f78`). It reads `treeStore` +
+  `assets/notifications.js` (deleted at `660376f78`). It reads `navigationStore` +
   `prefsStore` and is started once by `AppShell` (`shell/AppShell.tsx:43,48`).
 - **All four notification prefs default OFF** (`stores/prefs.ts:268-273`) and are flat
   `localStorage` keys `evener.prefs.notifications{Title,Favicon,Os,Sound}` holding `"1"`/`"0"`
@@ -28,7 +28,7 @@ Four facts that invert what this card used to say:
   notification engine snapshots (`notifications/attention.ts:53-67`) — so the tier
   assertion moves to the REST response, and the DOM assertion moves to the row's gloss.
 - **The client's edge detection is snapshot-diffing, not `prevLevel`.** A `evener/attention/changed`
-  broadcast triggers a debounced `/api/tree` refetch (`stores/tree.ts:443-453`, 250 ms);
+  broadcast triggers a debounced `/api/navigation` refetch (`stores/navigation/store.ts:443-453`, 250 ms);
   `notifications/index.ts` diffs successive tree snapshots and fires on refs that newly
   appear in `needs_you` (`notifications/attention.ts:70-84`).
 
@@ -107,7 +107,7 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
      };
    })()
    ```
-   Then wait ~3s for the first `/api/tree` snapshot to land. **That first snapshot IS the
+   Then wait ~3s for the first `/api/navigation` snapshot to land. **That first snapshot IS the
    baseline** (`notifications/index.ts:62-68`), and no baseline means no edge firing — so
    Session B's tab must have its baseline landed *before* Session A asks, not merely be
    open.
@@ -151,10 +151,10 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
    })()
    ```
 5. **(browser-free)** Read the tier itself from the hub, independent of any client-side
-   refresh timing. `/api/tree` accepts the same Bearer token as every other API route
+   refresh timing. `/api/navigation` accepts the same Bearer token as every other API route
    (`cmd/evener-hub/internal/hubedge/auth_token.go:113-120`):
    ```bash
-   curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/tree" | jq --arg sid "$SIDA" '{
+   curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/navigation" | jq --arg sid "$SIDA" '{
      summary: .attentionSummary,
      count: (.needs_you | length),
      rowA: (.needs_you[] | select(.session_id == $sid) | {ref, state, ask_pending, title})
@@ -257,7 +257,7 @@ gone and 404s silently, leaving the daemon running to poison the next run's stat
 - **Two cadences, not one.** The hub's attention watcher ticks every 5 s
   (`cmd/evener-hub/main_background.go:50`) and its first tick seeds silently so a hub restart
   never re-notifies (`cmd/evener-hub/internal/hubcore/attention.go:113-133`); the client then
-  debounces its refetch by 250 ms (`stores/tree.ts:453`). `sleep 8` covers both with
+  debounces its refetch by 250 ms (`stores/navigation/store.ts:453`). `sleep 8` covers both with
   margin. There is no client poll loop any more.
 - **The title count is not a fixed digit.** *Every* `awaiting` session counts toward
   `attentionSummary.needsYou`, including Session B's own plain your-move rest, so the

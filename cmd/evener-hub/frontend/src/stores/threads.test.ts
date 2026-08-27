@@ -2465,7 +2465,7 @@ describe("useThreadsStore.ensureThread", () => {
   // all - so the spies must be attached BEFORE connect() to observe that.
   //
   // The count right after connect() is NOT this store's own contribution
-  // alone: stores/tree.ts, stores/extensions.ts, and stores/credentials.ts
+  // alone: stores/navigation/store.ts, stores/extensions.ts, and stores/credentials.ts
   // each independently run this exact same reactive-wiring pattern against
   // connectionStore, so `fake.onNotification`/`fake.onReady` also get called
   // once per OTHER such store whose module happens to already be loaded in

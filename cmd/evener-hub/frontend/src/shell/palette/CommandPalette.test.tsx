@@ -11,11 +11,12 @@ import { WireError } from "../../protocol/errors";
 import "../../panes/sessionPanels";
 import type { ItemModel, ThreadModel, TurnModel } from "../../protocol/model";
 import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { ThreadCapabilities } from "../../protocol/types.gen";
+import type { NavigationSessionSummary, ThreadCapabilities } from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { keyID } from "../../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
-import { resetTreeStoreForTests, type TreeResponse, treeStore } from "../../stores/tree";
 import { Toast } from "../../widgets";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { CommandPalette, commandErrorMessage } from "./CommandPalette";
@@ -111,7 +112,7 @@ beforeEach(() => {
   useCommandCatalog.setState({ commands: [], loaded: false });
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
   resetQuoteInsertStoreForTests();
   resetComposerFocusStoreForTests();
   localStorage.clear();
@@ -152,47 +153,62 @@ test("Escape closes the overlay when no command is selected", async () => {
 
 // --- empty-query view: needs-you sessions (UX fix) ------------------------
 
-function needsYouTree(): TreeResponse {
-  return {
-    generated_at: "2026-01-01T00:00:00Z",
-    sources: [],
-    live: [],
-    needs_you: [
-      {
-        row_id: "r1",
-        ref: "local:ny1",
-        host_id: "local",
-        session_id: "ny1",
-        title: "Session A",
-        project: "P",
-        state: "awaiting",
-        kind: "session",
-        live: true,
-        children: [],
-      },
-      {
-        row_id: "r2",
-        ref: "local:ny2",
-        host_id: "local",
-        session_id: "ny2",
-        title: "Session B",
-        project: "P",
-        state: "awaiting",
-        kind: "session",
-        live: true,
-        children: [],
-      },
-    ],
-    pin_sections: [],
-    projects: [],
-    archived_projects: [],
-    test_runs: [],
-    attentionSummary: { needsYou: 2, error: 0, working: 0 },
-  };
+function needsYouRows(): NavigationSessionSummary[] {
+  return [
+    {
+      ref: "local:ny1",
+      host_id: "local",
+      session_id: "ny1",
+      title: "Session A",
+      project: "P",
+      state: "awaiting",
+      kind: "session",
+      live: true,
+      children: [],
+    },
+    {
+      ref: "local:ny2",
+      host_id: "local",
+      session_id: "ny2",
+      title: "Session B",
+      project: "P",
+      state: "awaiting",
+      kind: "session",
+      live: true,
+      children: [],
+    },
+  ];
+}
+function setNeedsYouRows(rows: NavigationSessionSummary[] | null): void {
+  const key = { kind: "section", section: "needs_you", offset: 0, limit: 50 } as const;
+  navigationStore.setState({
+    mode: "v1",
+    clientGenerationID: "generation_test",
+    resources:
+      rows === null
+        ? new Map()
+        : new Map([
+            [
+              keyID(key),
+              {
+                key,
+                data: { generation_id: "generation_test", revision: 1, sessions: rows, remaining: 0, truncated: false },
+                loadedRevision: 1,
+                targetRevision: null,
+                forceToken: 0,
+                etag: "etag",
+                loading: false,
+                stale: false,
+                error: null,
+                generationID: "generation_test",
+              },
+            ],
+          ]),
+  });
 }
 
 test("the empty-query view lists needs-you sessions (title + 'needs you' hint) when any exist", () => {
-  treeStore.setState({ tree: needsYouTree() });
+  setNeedsYouRows(needsYouRows());
   render(<CommandPalette />);
   act(() => openPalette());
 
@@ -203,7 +219,7 @@ test("the empty-query view lists needs-you sessions (title + 'needs you' hint) w
 
 test("Enter on a needs-you row opens that session and closes the palette", async () => {
   const user = userEvent.setup();
-  treeStore.setState({ tree: needsYouTree() });
+  setNeedsYouRows(needsYouRows());
   render(<CommandPalette />);
   act(() => openPalette());
 
@@ -214,7 +230,7 @@ test("Enter on a needs-you row opens that session and closes the palette", async
 });
 
 test("the empty-query view keeps its old (empty) behavior when there are no needs-you sessions", () => {
-  treeStore.setState({ tree: null });
+  setNeedsYouRows(null);
   render(<CommandPalette />);
   act(() => openPalette());
 

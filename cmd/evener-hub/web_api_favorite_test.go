@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"context"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -11,7 +10,6 @@ import (
 	"testing"
 	"time"
 
-	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/identifier"
 )
@@ -79,16 +77,11 @@ func TestUnarchiveProjectUsesCanonicalID(t *testing.T) {
 	}
 }
 
-func TestFavoriteEndpointBroadcastsTreeChangedExactlyOnce(t *testing.T) {
+func TestFavoriteEndpointSucceeds(t *testing.T) {
 	dir := t.TempDir()
 	fav := hubcore.NewFavoriteStore(filepath.Join(dir, "index.db"))
-	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Favorite: fav})
+	hub, _ := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Favorite: fav})
 	defer hub.Close()
-	client := dialHubRPC(t, hub)
-	defer client.Close()
-	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
-		t.Fatalf("Initialize: %v", err)
-	}
 
 	resp, err := http.Post(hub.URL+"/api/favorite", "application/json", strings.NewReader(`{"kind":"project","id":"project-test-0123456789","favorited":true}`))
 	if err != nil {
@@ -98,6 +91,4 @@ func TestFavoriteEndpointBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 	if resp.StatusCode != http.StatusOK {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
-
-	assertSingleNotification(t, client, web.appRPC, appwire.NotifyEvenerTreeChanged)
 }

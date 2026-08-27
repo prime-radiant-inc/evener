@@ -5,8 +5,9 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vi
 import type { ThreadModel } from "../protocol/model";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { ThreadCapabilities } from "../protocol/types.gen";
+import { navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
+import { keyID } from "../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../stores/threads";
-import { resetTreeStoreForTests, type TreeNode, type TreeResponse, treeStore } from "../stores/tree";
 import { PaneScaffold } from "../widgets/panescaffold";
 import { ClientProvider } from "./clientContext";
 import { DockHost } from "./DockHost";
@@ -159,14 +160,14 @@ async function warmPane(open: () => void, findLandmark: () => Promise<unknown>):
   cleanup();
   resetWorkspaceStoreForTests();
   resetThreadsStoreForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
   localStorage.clear();
 }
 
 beforeEach(() => {
   resetWorkspaceStoreForTests();
   resetThreadsStoreForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
   localStorage.clear();
 });
 
@@ -783,47 +784,57 @@ test("a session pane's tab falls back to the raw ref when no thread name is know
   expect(document.querySelector(".dv-tab")?.textContent).toBe("ref_untracked");
 });
 
-// Minimal, well-formed TreeNode - only the fields findSessionNode/title
-// resolution actually touch, matching fixtureThread's own "just enough"
-// shape above.
-function fixtureTreeNode(ref: string, title: string): TreeNode {
-  return {
-    row_id: `row_${ref}`,
+function setNavigationTitle(ref: string, title: string): void {
+  const key = { kind: "location", ref } as const;
+  const data = {
+    generation_id: "generation_test",
+    revision: 1,
     ref,
-    host_id: "local",
-    session_id: ref,
-    title,
-    project: "test-project",
-    state: "idle",
-    kind: "session",
-    live: true,
-    children: [],
+    top_level_ref: ref,
+    top_level: true,
+    session: {
+      ref,
+      host_id: "local",
+      session_id: ref,
+      title,
+      project: "test-project",
+      state: "idle",
+      kind: "session",
+      live: true,
+      children: [],
+    },
   };
-}
-
-function fixtureTree(nodes: TreeNode[]): TreeResponse {
-  return {
-    generated_at: "2026-01-01T00:00:00Z",
-    sources: [],
-    live: nodes,
-    needs_you: [],
-    pin_sections: [],
-    projects: [],
-    archived_projects: [],
-    test_runs: [],
-    attentionSummary: { needsYou: 0, error: 0, working: 0 },
-  };
+  navigationStore.setState({
+    mode: "v1",
+    clientGenerationID: "generation_test",
+    resources: new Map([
+      [
+        keyID(key),
+        {
+          key,
+          data,
+          loadedRevision: 1,
+          targetRevision: null,
+          forceToken: 0,
+          etag: "etag",
+          loading: false,
+          stale: false,
+          error: null,
+          generationID: "generation_test",
+        },
+      ],
+    ]),
+  });
 }
 
 // Fix 2: a session pane opened before its transcript hydrates (threadsStore
 // has no ThreadModel for the ref yet) used to show the raw ref as its tab
 // title even when the rail's already-loaded tree data has the friendly
-// title. The tree/session-index store (stores/tree.ts) is exactly that data
-// - already loaded well before a freshly-opened session pane's own
-// hydration completes - so it is the seed source, and the raw ref stays the
-// last resort only.
-test("a session pane's tab title falls back to the tree store's title when no thread name is known yet", async () => {
-  treeStore.setState({ tree: fixtureTree([fixtureTreeNode("ref_tree", "Fix the flaky CI job")]) });
+// title. The cached navigation location is exactly that bounded data source -
+// already loaded before a freshly-opened session pane's own hydration completes
+// - so the raw ref stays the last resort only.
+test("a session pane's tab title falls back to the navigation location title when no thread name is known yet", async () => {
+  setNavigationTitle("ref_tree", "Fix the flaky CI job");
   workspaceStore.getState().openPane("session", { ref: "ref_tree" });
   render(
     <ClientProvider client={new FakeClient("ready")}>

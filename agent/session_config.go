@@ -31,7 +31,10 @@ import (
 // settings, and session persistence. Zero-valued fields are filled in by
 // applyDefaults where defaults apply.
 type SessionConfig struct {
-	artifactStore artifactStore
+	// LifetimeContext owns this session tree when supplied by a one-shot run.
+	// Nil preserves daemon/background ownership and is not persisted.
+	LifetimeContext context.Context `json:"-"`
+	artifactStore   artifactStore
 
 	// Project is the resolved canonical project identity for this launch. It is
 	// separate from the execution environment's active working directory, which
@@ -269,6 +272,12 @@ type testConfig struct {
 	// cut is captured. Tests use it only to place deterministic finalize/cut
 	// ordering barriers. Nil in production.
 	beforeTerminalCommunicateAccept func()
+	// afterCommunicateBoundary observes the state transition at a completed
+	// communicate boundary. Nil in production.
+	afterCommunicateBoundary func(*Session)
+	// delegateDeliveryClassified observes whether an incoming waiterless delivery
+	// was deferred to the enclosing ProcessInput drain. Nil in production.
+	delegateDeliveryClassified func(*Session, bool)
 	// terminalCutAfterManagerLock observes captureTerminalNotificationCut after
 	// it owns jm.mu and before it reads durable/running/queue state. It permits a
 	// concurrent finalizer to prove which side of the cut owns the notification.
@@ -428,6 +437,9 @@ type testConfig struct {
 	// leaves it nil and probes the live host (sandbox.RealProber); tests inject a
 	// sandbox.FakeProber so the resume path never shells out to bwrap.
 	sandboxProber sandbox.Prober
+	// fileToolEnforceable replaces the runtime secure-open capability probe for
+	// deterministic delegate sandbox tests. Nil probes the live process.
+	fileToolEnforceable func() bool
 
 	// envProbes, when non-nil, replaces envctx.DefaultProbes() wholesale for the
 	// session's environment-context collector — including the production

@@ -13,15 +13,24 @@ import (
 )
 
 type pinSectionMutationResponse struct {
-	OK      bool              `json:"ok"`
-	Changed bool              `json:"changed"`
-	Section hubapi.PinSection `json:"section"`
+	OK         bool                      `json:"ok"`
+	Changed    bool                      `json:"changed"`
+	Section    hubapi.PinSection         `json:"section"`
+	Navigation hubapi.NavigationMutation `json:"navigation"`
 }
 
 type pinSectionDeleteResponse struct {
-	OK          bool `json:"ok"`
-	Changed     bool `json:"changed"`
-	MemberCount int  `json:"member_count"`
+	OK          bool                      `json:"ok"`
+	Changed     bool                      `json:"changed"`
+	MemberCount int                       `json:"member_count"`
+	Navigation  hubapi.NavigationMutation `json:"navigation"`
+}
+
+type sessionPinNavigationResponse struct {
+	OK         bool                        `json:"ok"`
+	Changed    bool                        `json:"changed"`
+	Assignment hubapi.SessionPinAssignment `json:"assignment"`
+	Navigation hubapi.NavigationMutation   `json:"navigation"`
 }
 
 func (s *WebServer) handleAPIPinSections(w http.ResponseWriter, r *http.Request) {
@@ -60,7 +69,7 @@ func (s *WebServer) handleAPIPinSection(w http.ResponseWriter, r *http.Request) 
 		return
 	}
 	if r.Method == http.MethodDelete {
-		s.handleAPIPinSectionDelete(w, sectionID)
+		s.handleAPIPinSectionDelete(w, r, sectionID)
 		return
 	}
 
@@ -76,22 +85,36 @@ func (s *WebServer) handleAPIPinSection(w http.ResponseWriter, r *http.Request) 
 		writePinSectionError(w, err)
 		return
 	}
+	navigation := s.emptyNavigationMutation()
 	if changed {
+		var refreshErr error
+		navigation, refreshErr = s.navigation.Refresh(r.Context(), navigationChangeHint{})
+		if refreshErr != nil {
+			writeAPIError(w, http.StatusServiceUnavailable, refreshErr.Error())
+			return
+		}
 		s.notifyMutation()
 	}
-	writeAPIJSON(w, http.StatusOK, pinSectionMutationResponse{OK: true, Changed: changed, Section: apiPinSection(section)})
+	writeAPIJSON(w, http.StatusOK, pinSectionMutationResponse{OK: true, Changed: changed, Section: apiPinSection(section), Navigation: navigation})
 }
 
-func (s *WebServer) handleAPIPinSectionDelete(w http.ResponseWriter, sectionID string) {
+func (s *WebServer) handleAPIPinSectionDelete(w http.ResponseWriter, r *http.Request, sectionID string) {
 	memberCount, changed, err := s.cfg.PinSections.DeleteSection(sectionID)
 	if err != nil {
 		writePinSectionError(w, err)
 		return
 	}
+	navigation := s.emptyNavigationMutation()
 	if changed {
+		var refreshErr error
+		navigation, refreshErr = s.navigation.Refresh(r.Context(), navigationChangeHint{})
+		if refreshErr != nil {
+			writeAPIError(w, http.StatusServiceUnavailable, refreshErr.Error())
+			return
+		}
 		s.notifyMutation()
 	}
-	writeAPIJSON(w, http.StatusOK, pinSectionDeleteResponse{OK: true, Changed: changed, MemberCount: memberCount})
+	writeAPIJSON(w, http.StatusOK, pinSectionDeleteResponse{OK: true, Changed: changed, MemberCount: memberCount, Navigation: navigation})
 }
 
 func (s *WebServer) handleAPISessionPin(w http.ResponseWriter, r *http.Request) {
@@ -139,17 +162,20 @@ func (s *WebServer) handleAPISessionPin(w http.ResponseWriter, r *http.Request) 
 		writePinSectionError(w, err)
 		return
 	}
+	navigation := s.emptyNavigationMutation()
 	if changed {
+		var refreshErr error
+		navigation, refreshErr = s.navigation.Refresh(r.Context(), navigationChangeHint{})
+		if refreshErr != nil {
+			writeAPIError(w, http.StatusServiceUnavailable, refreshErr.Error())
+			return
+		}
 		s.notifyMutation()
 	}
-	writeAPIJSON(w, http.StatusOK, hubapi.SessionPinMutationResponse{
-		OK:      true,
-		Changed: changed,
-		Assignment: hubapi.SessionPinAssignment{
-			SessionRef: hubRefFromTreeNodeID(sessionID).String(),
-			Section:    apiPinSection(section),
-		},
-	})
+	writeAPIJSON(w, http.StatusOK, sessionPinNavigationResponse{OK: true, Changed: changed, Navigation: navigation, Assignment: hubapi.SessionPinAssignment{
+		SessionRef: hubRefFromTreeNodeID(sessionID).String(),
+		Section:    apiPinSection(section),
+	}})
 }
 
 func (s *WebServer) handleAPISessionUnpin(w http.ResponseWriter, r *http.Request) {
@@ -164,12 +190,20 @@ func (s *WebServer) handleAPISessionUnpin(w http.ResponseWriter, r *http.Request
 		writePinSectionError(w, err)
 		return
 	}
+	navigation := s.emptyNavigationMutation()
 	if changed {
+		var refreshErr error
+		navigation, refreshErr = s.navigation.Refresh(r.Context(), navigationChangeHint{})
+		if refreshErr != nil {
+			writeAPIError(w, http.StatusServiceUnavailable, refreshErr.Error())
+			return
+		}
 		s.notifyMutation()
 	}
-	writeAPIJSON(w, http.StatusOK, hubapi.SessionPinMutationResponse{
-		OK:      true,
-		Changed: changed,
+	writeAPIJSON(w, http.StatusOK, sessionPinNavigationResponse{
+		OK:         true,
+		Changed:    changed,
+		Navigation: navigation,
 		Assignment: hubapi.SessionPinAssignment{
 			SessionRef: hubRefFromTreeNodeID(sessionID).String(),
 		},

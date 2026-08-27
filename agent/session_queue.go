@@ -96,6 +96,49 @@ type steeringMessage struct {
 	// TaskCompletion carries typed dependency state for tasks-done steering so
 	// consumers do not need to parse the system-reminder prose.
 	TaskCompletion *events.TaskCompletionSteeringData `json:"task_completion,omitempty"`
+	turnOwner      *struct{ _ byte }                  `json:"-"`
+}
+
+func (s *Session) removeAllTurnOwnedSteering() {
+	s.mu.Lock()
+	if len(s.visionTurnOwners) == 0 {
+		s.mu.Unlock()
+		return
+	}
+	owners := make(map[*struct{ _ byte }]struct{}, len(s.visionTurnOwners))
+	for _, owner := range s.visionTurnOwners {
+		owners[owner] = struct{}{}
+	}
+	filtered := s.steeringQueue[:0]
+	for _, entry := range s.steeringQueue {
+		if _, ok := owners[entry.turnOwner]; !ok {
+			filtered = append(filtered, entry)
+		}
+	}
+	s.steeringQueue = filtered
+	s.visionTurnOwners = nil
+	s.mu.Unlock()
+	s.persistQueuesSnapshot()
+}
+
+func (s *Session) finishTurnOwnedSteering() {
+	s.mu.Lock()
+	s.visionTurnOwners = nil
+	s.mu.Unlock()
+}
+
+func (s *Session) trySteerTurnOwnedMessage(entry steeringMessage, owner *struct{ _ byte }) bool {
+	entry.turnOwner = owner
+	s.mu.Lock()
+	if s.closingOrClosedLocked() || (strings.TrimSpace(entry.Text) == "" && len(entry.Images) == 0) {
+		s.mu.Unlock()
+		return false
+	}
+	s.steeringQueue = append(s.steeringQueue, entry)
+	s.visionTurnOwners = append(s.visionTurnOwners, owner)
+	s.mu.Unlock()
+	s.persistQueuesSnapshot()
+	return true
 }
 
 func steeringInjectedDataFromMessage(msg steeringMessage) events.SteeringInjectedData {

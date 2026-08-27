@@ -51,7 +51,7 @@ export interface InSessionMatch {
 
 // The daemon auth-guards the whole mux (see auth.ts) and reads a same-origin
 // cookie/bearer, so this rides same-origin credentials like every other REST
-// call in this app (stores/tree.ts FETCH_INIT, shell/rail/actions.ts).
+// call in this app (shell/rail/actions.ts).
 export async function fetchSearch(query: string): Promise<SearchResponse> {
   const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`, { credentials: "same-origin" });
   if (!res.ok) throw new Error(`search failed: HTTP ${res.status}`);

@@ -10,11 +10,11 @@ import (
 
 // LocalExecutionEnvironment implements the FileMutator capability so apply_patch
 // routes its file mutations through the same enforcement seam as the other file
-// tools. When the environment carries an enforced sandbox policy, each method uses
-// the fd-anchored, symlink-refusing layer (e.sandbox()); otherwise it confines to
-// the working root via resolveWrite — the same containment the off-mode
-// write_file/edit_file tools use, which replaces apply_patch's old lexical
-// safeJoin check.
+// tools. When the environment carries a file-tool-confined sandbox policy, each
+// method uses the fd-anchored, symlink-refusing layer (e.sandbox()); otherwise it
+// confines to the working root via resolveWrite — the same containment the plain
+// off-mode write_file/edit_file tools use, which replaces apply_patch's old
+// lexical safeJoin check.
 
 // ReadFileRaw returns the raw bytes of path, confined to the working root.
 func (e *LocalExecutionEnvironment) ReadFileRaw(path string) ([]byte, error) {

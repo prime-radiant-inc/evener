@@ -1,6 +1,7 @@
 import type { PaneProps } from "../../shell/paneRegistry";
 import { navigate, paneToURL } from "../../shell/routing";
-import { type TreeNode, useTreeStore } from "../../stores/tree";
+import { selectLiveRows, selectNeedsYouRows } from "../../stores/navigation/selectors";
+import { type NavigationStoreState, useNavigationStore } from "../../stores/navigation/store";
 import { Button, EmptyState, KeyHint, PaneScaffold } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./welcome.module.css";
@@ -60,13 +61,13 @@ function goToSession(ref: string): void {
  * blocked on you is a stronger "come back" signal than one merely still
  * running. Only the first candidate in whichever tier is non-empty - this
  * is a single "jump back in" link, not a list; a list is the rail's job. */
-function resumeCandidate(tree: { needs_you: TreeNode[]; live: TreeNode[] } | null): TreeNode | undefined {
-  return tree?.needs_you[0] ?? tree?.live[0];
+function resumeCandidate(navigation: NavigationStoreState) {
+  return selectNeedsYouRows(navigation)[0] ?? selectLiveRows(navigation)[0];
 }
 
 export default function Welcome({ params }: PaneProps<WelcomePaneParams>) {
-  const tree = useTreeStore((s) => s.tree);
-  const candidate = resumeCandidate(tree);
+  const navigation = useNavigationStore();
+  const candidate = resumeCandidate(navigation);
 
   return (
     <PaneScaffold title="Welcome">
@@ -78,7 +79,6 @@ export default function Welcome({ params }: PaneProps<WelcomePaneParams>) {
             {candidate !== undefined && (
               <Button variant="primary" onClick={() => goToSession(candidate.ref)}>
                 Jump back in: {candidate.title}
-                {candidate.age !== undefined && candidate.age !== "" ? ` · ${candidate.age}` : ""}
               </Button>
             )}
             <Button variant="secondary" onClick={goToNewSession}>

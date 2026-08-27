@@ -205,7 +205,8 @@ post-merge surface.
 
 Run it locally pre-merge and post-merge; `make merge-approval-gate` runs it as
 its third phase. The required CI equivalent is `ROOT_FULL=1 WEB=0 make test`,
-because the web job owns `make test-web` and the Go job must not duplicate it.
+because the web job owns `make test-web` and the deterministic Go job must not
+duplicate it.
 
 Requirements are the same as `make test`. `ROOT_FULL=1` enables no provider and
 no fuzz search. Any root or module failure is nonzero, and live tests stay
@@ -294,8 +295,8 @@ coverage, including those tests and the excluded root fuzz-tool packages, is
 explicitly owned and run by make fuzz. Ordinary make test remains the default
 local command and keeps the root wave in short mode unless ROOT_FULL=1 is
 explicitly set. The CI web job runs make test-web, make build-web, and
-make test-web-browser; the Go job runs ROOT_FULL=1 WEB=0 make test so frontend
-tests are not duplicated.
+make test-web-browser; the deterministic Go job runs ROOT_FULL=1 WEB=0 make
+test so frontend tests are not duplicated.
 
 The `make test` runner gives every Go module and frontend stream a distinct
 private `HOME` plus temporary and XDG roots beneath its per-run log directory.
@@ -1002,7 +1003,7 @@ If sandboxed DNS/network blocks the live run, rerun with command escalation for 
 | `make test-dev-tooling` | Run the scripts/*-selftest.sh suites that pin evener's own dev tooling. | Each suite is the only thing pinning its script's contract. | Final step of make merge-approval-gate, and on demand; not part of make test. | Each suite is offline and deterministic; the wave runner gives every suite its own process group and private TMPDIR. It is quiet on success and replays a failing suite's whole log. | Any suite exit nonzero, or a passing suite leaving files behind, is nonzero. |
 | `make test` | The default local test gate: Go modules (short mode) plus the frontend, run concurrently. | Root short-mode tests, other module tests, and frontend typecheck/Vitest/Biome all pass. | Local quick check; included by the merge gate. | Scripted/fake external boundaries for default tests; runs ZERO fuzz-family tests, even at reduced depth. WEB=0 skips the frontend stream. | Any module, frontend stream, or setup failure is nonzero. |
 | `make merge-approval-gate` | The canonical serial post-merge gate: lint, build, the full test suite, then the dev-tooling selftest wave. | make lint, make build, ROOT_FULL=1 make test, then make test-dev-tooling all pass, in that order. | Local pre-merge/post-merge; CI keeps equivalent checks in separate named jobs. | Does not run fuzz search, race testing, provider calls, or browser guards; those have separate owners. | The first failing phase stops the gate and returns nonzero; do not infer a verdict from partial logs. |
-| `make test-race` | The permanent -race gate across every non-fuzz module. | Data races in the non-fuzz modules surface; frontend is intentionally not duplicated. | Required CI; local diagnostic. | A race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0, AGENT_PARALLEL= to avoid oversubscribing few-core CI under -race's ~10x slowdown. | Any race report, test failure, or setup failure is nonzero. |
+| `make test-race` | The permanent -race gate across every non-fuzz module. | Data races in the non-fuzz modules surface; frontend is intentionally not duplicated. | Required CI; local diagnostic. | A race-capable Go toolchain and more CPU/memory; WEB=0, AGENT_SHARDS=0, AGENT_PARALLEL= to avoid oversubscribing few-core CI under -race's ~10x slowdown. RACE_SCOPE defaults to all; CI uses root and nonroot on separate runners, both derived from GO_MODULES. | Any race report, test failure, or setup failure is nonzero. |
 | `make vet` | go vet across every non-fuzz workspace module. | go vet diagnostics for every module, independent of the tagged lint floors. | Required CI; local diagnostic. | Deterministic Go analysis; no provider calls. | Any module's vet failure is nonzero. |
 | `make test-timing-budget` | Ratchet per-package test wall time against testing-budget.json. | A timing regression does not silently erode the suite's runtime wins — fail at 1.5x the checked-in budget, warn at 1.1x, plus a flat per-test ceiling. | Local/on-demand; not required CI — deliberately not part of make merge-approval-gate, since measuring durations means a second full test run. CHECK=1 enforces; bare invocation only measures and prints. | Deterministic; no provider calls. Reuses gate-surface-lib.sh, so it measures the same surface ROOT_FULL=1 make test proves. | Under CHECK=1 in a CI-shaped environment, a package over 1.5x its budget or any per-test ceiling breach is nonzero; a missing or empty budget file always exits zero. |
 | `make test-timing-budget-selftest` | Exercise the timing-budget comparison contract against fixture duration rows — no go test or vitest run. | The ratio bands, the per-test ceiling, a missing budget entry, an absent/empty budget file, strict-vs-warn-only policy, and --bless all compare correctly. | make test-dev-tooling wave; on demand. | Offline and deterministic; fixture rows only, no real suite run. | Any comparison diverges from its fixture's expected verdict. Leftover files fail only under the test-dev-tooling wave, which owns that check. |

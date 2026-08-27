@@ -18,8 +18,8 @@ import type { ItemModel, ThreadModel, TurnModel } from "../../protocol/model";
 import type { ThreadCapabilities } from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
+import { resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
-import { resetTreeStoreForTests } from "../../stores/tree";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { CommandPalette, commandErrorMessage } from "./CommandPalette";
 import { openPalette, paletteStore } from "./paletteController";
@@ -112,7 +112,7 @@ beforeEach(() => {
   useCommandCatalog.setState({ commands: [], loaded: false });
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
-  resetTreeStoreForTests();
+  resetNavigationStoreForTests();
   resetQuoteInsertStoreForTests();
   resetComposerFocusStoreForTests();
   localStorage.clear();

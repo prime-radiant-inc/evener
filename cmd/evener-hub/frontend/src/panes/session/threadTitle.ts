@@ -1,22 +1,23 @@
-// Shared by every place in the app that needs a session's human-readable
-// title before its transcript has necessarily hydrated: DockHost's own
-// dockview tab title (shell/DockHost.tsx) and this pane's own in-pane header
-// (Session.tsx's PaneScaffold title). Both draw on the SAME two data
-// sources, checked in the SAME order, so the two titles never disagree -
-// the live ThreadModel's name wins the moment it's hydrated, falling back
-// to the rail's already-loaded tree/session-index snapshot (findSessionNode)
-// for a pane opened before hydration completes. Neither source having a
-// name yet resolves to undefined, leaving the raw ref as each caller's own
-// last resort.
 import type { ThreadModel } from "../../protocol/model";
-import { findSessionNode, type TreeResponse } from "../../stores/tree";
+import { selectSessionSummary } from "../../stores/navigation/selectors";
+import { type NavigationStoreState, navigationStore } from "../../stores/navigation/store";
 
+/** Resolve a title without expanding a project. Live thread data always wins. */
 export function resolveThreadName(
   threads: Map<string, ThreadModel>,
-  tree: TreeResponse | null,
+  navigation: unknown,
   ref: string,
 ): string | undefined {
   const live = threads.get(ref)?.name;
   if (live !== undefined) return live;
-  return tree ? findSessionNode(tree, ref)?.title : undefined;
+  if (navigation && typeof navigation === "object" && "title" in navigation) {
+    const title = (navigation as { title?: unknown }).title;
+    if (typeof title === "string") return title;
+  }
+  return undefined;
+}
+
+/** Return a summary only from already-loaded bounded navigation resources. */
+export function navigationSummaryFor(ref: string, state: NavigationStoreState = navigationStore.getState()) {
+  return selectSessionSummary(ref, state) ?? undefined;
 }

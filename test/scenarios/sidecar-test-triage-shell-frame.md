@@ -19,14 +19,12 @@ this rewrite exists to remove. Why it cannot:
   needs an ANCESTOR's job. Jesse ruled on 2026-07-30 that ancestor-job
   `output_match` access is NOT to be added. That ruling stands, and this
   card is repaired against the existing mechanism rather than around it.
-- The ruling's suggested repair — wake on `job.notification`, then read
-  the referenced job through the frame's read grant — does not carry a
-  MID-RUN signature. That frame is built from a job's terminal payload,
-  so it names `status` and `output_bytes` (never the failing text) and
-  arrives only once the job is over; the grant it mints is terminal-only
-  for the same reason (`watchGrantableJob` accepts `JobFinishedData`
-  alone, `agent/job_watch.go:3350`). That shape is what
-  `sidecar-handoff-packager-job-notification.md` covers.
+- A terminal `job.notification` frame is not a delegate completion
+  subscription and is not a read grant. Direct delegate completion arrives
+  as a `delegate-notification` carrying the delegate's session transcript;
+  `job:` transcript refs are for shell output only. This card therefore
+  uses the existing `assistant.tool` frame, whose bounded output carries the
+  failure signature.
 - What DOES carry the failing text across the session boundary is an
   `assistant.tool` frame: it includes the tool's own `output` (or
   `error`) up to 1000 characters
@@ -84,15 +82,10 @@ this rewrite exists to remove. Why it cannot:
   `delivery_id`, through its terminal `communicate(end_turn=true)`; the
   parent receives it as an `<delegate-notification>` block.
 - The observer does not attempt to edit files or rerun tests.
-- Falsification (boundary): the observer resolves the parent's job at
-  all. From the observer, both `job_status(job_id=<a parent job>)` and
-  `read_transcript(transcript_ref="job:<that job_id>")` must fail
-  `job "job_..." not found — use job_list to see this session's jobs`:
-  an `assistant.tool` delivery mints no read grant, so the observer is
-  a stranger to that job and gets the stranger error verbatim. Success
-  on either — or a `job_status` failure that instead names a sanctioned
-  `read_transcript` call — means this delivery minted a grant and the
-  card's premise needs re-deriving.
+- Falsification (boundary): the observer does not attempt to read or control
+  a parent-owned job. The frame's bounded `output` is the triage evidence;
+  shell `job:` refs and job-control operations are not a delegate completion
+  handoff mechanism.
 - Falsification (dead trigger): a `job_watch` create with
   `output_match` against a parent-owned job_id fails
   `target_not_found` — the observer's own store has no such job. If it

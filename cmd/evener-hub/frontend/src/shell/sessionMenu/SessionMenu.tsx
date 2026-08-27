@@ -12,20 +12,29 @@
 // deliberately NOT here - the command palette owns those.
 import { type ChangeEvent, useState } from "react";
 import type { SessionPanelKind } from "../../panes/sessionPanels";
-import type { TreeNode as ApiTreeNode, PinSectionSummary } from "../../stores/tree";
 import { Button, Dialog, Input, Menu, type MenuEntry } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { PinSectionPicker } from "../rail/PinSectionPicker";
-import { isTopLevelSession } from "../rail/sessionKind";
 import styles from "./sessionmenu.module.css";
 
 export type PinTarget = { section_id: string } | { section_name: string };
+export interface NavigationSessionModel {
+  ref: string;
+  title: string;
+  host_id: string;
+  session_id: string;
+  kind: string;
+  top_level?: boolean;
+  tier?: string;
+  pin_section_id?: string;
+}
+type PinSectionInfo = { id: string; name: string; member_count: number };
 
 export interface SessionMenuActions {
   onOpenPane(pane: SessionPanelKind): void;
   onRename(name: string): Promise<void>;
   onShutdown(): Promise<void>;
-  onPin(target: PinTarget, section?: PinSectionSummary): Promise<void>;
+  onPin(target: PinTarget, section?: PinSectionInfo): Promise<void>;
   onUnpin(): Promise<void>;
   onToggleArchive(): Promise<void>;
   onDelete(): Promise<void>;
@@ -37,7 +46,9 @@ export interface SessionMenuProps {
   triggerLabel: string; // sr-only trigger name: "Session actions" / `Actions for ${title}`
   canRename: boolean;
   canShutdown: boolean;
-  treeNode?: ApiTreeNode; // Task 4: presence enables Pin/Archive/Delete per rules
+  session?: NavigationSessionModel;
+  /** Compatibility input for rail rows; the pane chrome uses `session`. */
+  treeNode?: NavigationSessionModel;
   panesOpen: { details: boolean; tasks: boolean; activity: boolean };
   taskLabel?: string; // e.g. "Tasks 3/7"; defaults to "Tasks"
   activityLabel?: string; // e.g. "Activity · 2"; defaults to "Activity"
@@ -61,6 +72,7 @@ export function SessionMenu({
   triggerLabel,
   canRename,
   canShutdown,
+  session,
   treeNode,
   panesOpen,
   taskLabel,
@@ -90,11 +102,13 @@ export function SessionMenu({
     }
   }
 
-  // Pin/Archive/Delete are decisions about a TOP-LEVEL rail row, so they are
-  // gated on a treeNode that isTopLevelSession accepts; delete additionally
-  // requires a local host because hubcore only deletes local transcripts.
-  const organizationEligible = treeNode !== undefined && isTopLevelSession(treeNode);
-  const deleteEligible = organizationEligible && treeNode.host_id === "local";
+  // Organization actions are decisions about a top-level navigation row;
+  // nested and remote rows retain the exact legacy restrictions.
+  const sessionModel = session ?? treeNode;
+  const nestedKinds = new Set(["subagent", "fork", "cluster"]);
+  const organizationEligible =
+    sessionModel !== undefined && sessionModel.top_level !== false && !nestedKinds.has(sessionModel.kind);
+  const deleteEligible = organizationEligible && sessionModel.host_id === "local";
 
   // Groups joined by separators: panes / organize / destructive. Both
   // separators always render because Rename and Shut down are always present;
@@ -121,12 +135,12 @@ export function SessionMenu({
   ];
   if (organizationEligible) {
     organizeItems.push(
-      treeNode.pin_section_id
+      sessionModel?.pin_section_id
         ? { id: "unpin", label: "Unpin", onSelect: () => void confirm(actions.onUnpin, () => undefined) }
         : { id: "pin", label: "Pin this session…", onSelect: () => setPickerOpen(true) },
       {
         id: "archive",
-        label: treeNode.tier === "archived" ? "Unarchive" : "Archive",
+        label: sessionModel?.tier === "archived" ? "Unarchive" : "Archive",
         onSelect: () => void confirm(actions.onToggleArchive, () => undefined),
       },
     );
@@ -249,9 +263,9 @@ export function SessionMenu({
       {/* The picker reports its own assign errors inline; SessionMenu closes
           it only once onPin resolves - the same close-on-success contract as
           the `confirm` helper above. */}
-      {pickerOpen && treeNode && (
+      {pickerOpen && sessionModel && (
         <PinSectionPicker
-          session={treeNode}
+          session={sessionModel as never}
           onAssign={async (target, section) => {
             await actions.onPin(target, section);
             setPickerOpen(false);

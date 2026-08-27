@@ -107,9 +107,18 @@ func (s *sandboxFS) openRead(tool, abs string, flags int) (int, error) {
 
 	// ReadAnywhere: anchor an in-root read at its granted root exactly like a write,
 	// so a symlinked ancestor of the root does not make an in-root file unreadable.
-	// The granted roots are the writable roots (the worktree and any extra writable
-	// roots); read-only mode has none, so all its reads take the out-of-root path.
+	// The writable roots come first (the worktree and any extra writable roots).
+	// The write-blocked shapes — read-only, and the degraded read-only delegate —
+	// have none, so their worktree arrives as a READ root instead; without an anchor
+	// every read would take the "/"-anchored no-symlinks path below and a workspace
+	// reached through a symlinked ancestor would be entirely unreadable. Anchoring
+	// widens nothing: reads are already allowed anywhere minus the denylist, and
+	// openInRoot still refuses a symlink component INSIDE the root and re-checks
+	// masking against the opened fd.
 	if root, rel, ok := containingRoot(s.policy.FileTool.WriteRoots, abs); ok {
+		return s.openInRoot(tool, abs, root, rel, flags)
+	}
+	if root, rel, ok := containingRoot(s.policy.FileTool.ReadRoots, abs); ok {
 		return s.openInRoot(tool, abs, root, rel, flags)
 	}
 

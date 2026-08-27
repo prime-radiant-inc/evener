@@ -95,9 +95,10 @@ type LocalExecutionEnvironment struct {
 	Wrapper *sandbox.Wrapper
 
 	// sbMu guards the lazily-built fd-anchored file-tool layers. sbfs is the policy
-	// enforcement layer, built on first file-tool use from an ENFORCED Sandbox policy
-	// and cached for the environment's lifetime (its root fds are captured once so a
-	// later root swap cannot redirect resolution). It stays nil for off / a nil policy.
+	// enforcement layer, built on first file-tool use from a file-tool-confined
+	// Sandbox policy and cached for the environment's lifetime (its root fds are
+	// captured once so a later root swap cannot redirect resolution). It stays nil
+	// for plain off / a nil policy.
 	sbMu sync.Mutex
 	sbfs *sandboxFS
 	// scratchFS is the cached fd-anchored layer for an unsandboxed session's
@@ -166,16 +167,18 @@ type LocalExecutionEnvironment struct {
 }
 
 // sandbox returns the environment's fd-anchored enforcement layer, or nil when
-// the environment is unsandboxed (a nil policy or off mode) — in which case every
-// file tool keeps its byte-identical afero/os path. The sandboxFS is built once
-// and cached; it is only ever constructed for an enforced policy. It folds in the
-// concrete per-session scratch directory (sessionScratchPath) so the file tools
-// reach the SAME scratch dir a spawned shell command gets via $TMPDIR —
-// regardless of which policy-replacement path built it (EnableSandbox,
-// WithWorkingDirectory's re-root, UseControlPolicy), since they all funnel
-// through this single lazy builder.
+// the environment's file tools are unconfined (a nil policy or plain off mode) —
+// in which case every file tool keeps its byte-identical afero/os path. The gate
+// is FileToolConfined, not Enforced: a write-blocked off policy (a read-only
+// delegate on a host with no sandbox backend) has no OS sandbox but still confines
+// the file tools, which are then the only thing holding its write boundary. The
+// sandboxFS is built once and cached. It folds in the concrete per-session scratch
+// directory (sessionScratchPath) so the file tools reach the SAME scratch dir a
+// spawned shell command gets via $TMPDIR — regardless of which policy-replacement
+// path built it (EnableSandbox, WithWorkingDirectory's re-root, UseControlPolicy),
+// since they all funnel through this single lazy builder.
 func (e *LocalExecutionEnvironment) sandbox() *sandboxFS {
-	if e.Sandbox == nil || !e.Sandbox.Enforced() {
+	if e.Sandbox == nil || !e.Sandbox.FileToolConfined() {
 		return nil
 	}
 	e.sbMu.Lock()
@@ -189,26 +192,34 @@ func (e *LocalExecutionEnvironment) sandbox() *sandboxFS {
 
 // sessionScratchPath returns the concrete per-session scratch directory this
 // env's kernel wrapper already grants spawned processes via $TMPDIR /
-// $EVENER_SCRATCH_DIR (agent/sandbox.ApplyEnvFloor), or "" when unsandboxed. It
-// reads through Wrapper rather than ownedSessionTmp because a re-rooted clone
-// (WithWorkingDirectory) shares the parent's scratch dir via the Wrapper without
-// owning it (ownedSessionTmp is nil there — see its doc comment).
+// $EVENER_SCRATCH_DIR (agent/sandbox.ApplyEnvFloor), or "" when neither layer has
+// one. It reads through Wrapper rather than ownedSessionTmp because a re-rooted
+// clone (WithWorkingDirectory) shares the parent's scratch dir via the Wrapper
+// without owning it (ownedSessionTmp is nil there — see its doc comment).
+//
+// A write-blocked policy with no OS sandbox (a read-only delegate on a host with
+// no sandbox backend) never builds a wrapper to read through, so it falls back to
+// the scratch EnableSandbox provisioned for it, which this env OWNS — the same dir
+// overlaySessionEnv exports to its spawned commands, so the model's file tools and
+// its shell agree on one writable place. Without it the file tools of a
+// write-blocked env would have no writable root at all, breaking WriteBlocked's
+// contract that the session scratch stays writable.
 func (e *LocalExecutionEnvironment) sessionScratchPath() string {
-	if e.Wrapper == nil {
-		return ""
-	}
-	return e.Wrapper.SessionTmp()
-}
-
-// allocatedSessionScratchPath returns an already-provisioned scratch root owned
-// by this environment. It deliberately does not call unsandboxedScratchDir:
-// checking an arbitrary write path must never allocate a new grant as a side
-// effect. Enforced environments are handled by sandbox(), whose policy already
-// folds Wrapper.SessionTmp() into the fd-anchored roots; this accessor is for the
-// otherwise-unconfined environment's late-bound scratch grant.
-func (e *LocalExecutionEnvironment) allocatedSessionScratchPath() string {
 	if e.Wrapper != nil {
 		return e.Wrapper.SessionTmp()
+	}
+	return e.wrapperlessScratchDir()
+}
+
+// wrapperlessScratchDir returns the already-provisioned per-session scratch of an
+// env with no kernel wrapper, or "" when it has none. It never provisions one:
+// both shapes that have one allocate it eagerly (EnableSandbox for a write-blocked
+// policy, the first spawn for an ordinary unsandboxed session), and allocating
+// from a read path would make a report or a containment check a filesystem side
+// effect.
+func (e *LocalExecutionEnvironment) wrapperlessScratchDir() string {
+	if tmp := e.ownedSessionTmp; tmp != nil {
+		return tmp.Dir
 	}
 	e.unsandboxedScratchMu.Lock()
 	defer e.unsandboxedScratchMu.Unlock()
@@ -216,6 +227,16 @@ func (e *LocalExecutionEnvironment) allocatedSessionScratchPath() string {
 		return ""
 	}
 	return e.unsandboxedScratch.Dir
+}
+
+// allocatedSessionScratchPath returns an already-provisioned scratch root owned
+// by this environment. It deliberately does not provision one: checking an
+// arbitrary write path must never allocate a new grant as a side effect. Enforced
+// environments are handled by sandbox(), whose policy already folds
+// Wrapper.SessionTmp() into the fd-anchored roots; this accessor is for the
+// otherwise-unconfined environment's late-bound scratch grant.
+func (e *LocalExecutionEnvironment) allocatedSessionScratchPath() string {
+	return e.sessionScratchPath()
 }
 
 // scratchSandboxFor returns the cached fd-anchored layer for an already allocated
@@ -257,20 +278,13 @@ func (e *LocalExecutionEnvironment) scratchSandboxFor(abs string) *sandboxFS {
 
 // SessionScratchDir reports the per-session scratch directory spawned commands
 // already receive as $EVENER_SCRATCH_DIR/$TMPDIR — the sandboxed env's wrapper tmp,
-// or an unsandboxed env's own lazily provisioned dir — and "" when neither has
-// been provisioned. It deliberately never provisions one: it is a REPORTING
-// accessor (the session prompt's capability preamble), and reporting a path must
-// not create it, nor turn a prompt render into a filesystem side effect.
+// the write-blocked env's own owned dir, or an unsandboxed env's lazily
+// provisioned one — and "" when none has been provisioned. It deliberately never
+// provisions one: it is a REPORTING accessor (the session prompt's capability
+// preamble), and reporting a path must not create it, nor turn a prompt render
+// into a filesystem side effect.
 func (e *LocalExecutionEnvironment) SessionScratchDir() string {
-	if e.Wrapper != nil {
-		return e.Wrapper.SessionTmp()
-	}
-	e.unsandboxedScratchMu.Lock()
-	defer e.unsandboxedScratchMu.Unlock()
-	if e.unsandboxedScratch != nil {
-		return e.unsandboxedScratch.Dir
-	}
-	return ""
+	return e.sessionScratchPath()
 }
 
 // WithSandboxInvocationGrant returns a short-lived clone of this env whose file-tool
@@ -282,6 +296,14 @@ func (e *LocalExecutionEnvironment) SessionScratchDir() string {
 // to any later call. On an off / non-enforced env the grant is meaningless and the
 // env is returned unchanged. The clone never owns the session tmp, so it never
 // disposes it.
+//
+// The gate stays Enforced() rather than FileToolConfined() on purpose: the only
+// policy that separates the two is the write-blocked off box, which only a DELEGATE
+// receives, and escalation refuses a subagent session outright (escalationAllowed),
+// so no such env can reach this. Widening the gate would add a branch nothing can
+// execute — and one whose clone, sharing no owned scratch, would need its own
+// handling. If escalation ever reaches delegates, widen it THEN, with the test that
+// can finally exercise it.
 func (e *LocalExecutionEnvironment) WithSandboxInvocationGrant(path string) ExecutionEnvironment {
 	if e.Sandbox == nil || !e.Sandbox.Enforced() || strings.TrimSpace(path) == "" {
 		return e
@@ -407,12 +429,19 @@ func (e *LocalExecutionEnvironment) overlaySessionEnv(extra map[string]string) m
 	return overlay
 }
 
-// unsandboxedScratchDir lazily provisions (once) and returns this
-// unsandboxed env's per-session scratch directory, or "" if provisioning
-// failed. A scratch dir is a convenience, never a launch or spawn blocker: a
-// failure silently disables the EVENER_SCRATCH_DIR/TMPDIR export instead of
-// erroring the command.
+// unsandboxedScratchDir lazily provisions (once) and returns this env's
+// per-session scratch directory, or "" if provisioning failed. A scratch dir is a
+// convenience, never a launch or spawn blocker: a failure silently disables the
+// EVENER_SCRATCH_DIR/TMPDIR export instead of erroring the command.
+//
+// A write-blocked env already OWNS one (EnableSandbox provisioned it, and its file
+// tools treat it as their single writable root), so this returns that rather than
+// minting a second: the model's file tools and its shell must name the same
+// directory, and only the owned one is disposed with the env.
 func (e *LocalExecutionEnvironment) unsandboxedScratchDir() string {
+	if tmp := e.ownedSessionTmp; tmp != nil {
+		return tmp.Dir
+	}
 	e.unsandboxedScratchMu.Lock()
 	defer e.unsandboxedScratchMu.Unlock()
 	if e.unsandboxedScratch != nil {
@@ -421,17 +450,23 @@ func (e *LocalExecutionEnvironment) unsandboxedScratchDir() string {
 	if e.unsandboxedScratchFailed {
 		return ""
 	}
-	workspaceRoot := GitRootOrEmpty(e, e.RootDir)
-	if workspaceRoot == "" {
-		workspaceRoot = e.RootDir
-	}
-	tmp, err := sandbox.NewSessionScratch(e.sandboxTmpBase, workspaceRoot)
+	tmp, err := e.newSessionScratch()
 	if err != nil {
 		e.unsandboxedScratchFailed = true
 		return ""
 	}
 	e.unsandboxedScratch = tmp
 	return tmp.Dir
+}
+
+// newSessionScratch creates a fresh per-session scratch directory for this env,
+// anchored at its workspace root so the scratch names the project it belongs to.
+func (e *LocalExecutionEnvironment) newSessionScratch() (*sandbox.SessionScratch, error) {
+	workspaceRoot := GitRootOrEmpty(e, e.RootDir)
+	if workspaceRoot == "" {
+		workspaceRoot = e.RootDir
+	}
+	return sandbox.NewSessionScratch(e.sandboxTmpBase, workspaceRoot)
 }
 
 // retainUnsandboxedScratch releases this env's unsandboxed per-session
@@ -487,13 +522,25 @@ func (e *LocalExecutionEnvironment) EnableSandbox(policy *sandbox.ResolvedPolicy
 	if policy == nil || !policy.Enforced() {
 		e.Sandbox = policy
 		e.Wrapper = nil
+		// A write-blocked off policy has no OS sandbox to provision but still confines
+		// the file tools, whose only writable root is the session scratch. Provision it
+		// here rather than on first use so the scratch path is available to the session
+		// prompt that tells the delegate where it may write — a prompt render must not
+		// create directories, so it can only report one that already exists. The env
+		// OWNS it, exactly as the enforced path below does, so a spawn that fails after
+		// this point disposes it (DisposeSandboxScratch) instead of leaking a directory
+		// AND the flock lease that keeps the crashed-scratch sweeper away from it.
+		//
+		// Best-effort: losing the scratch costs the delegate its one writable place,
+		// which denies writes — the fail-closed direction — and must not block a spawn.
+		if policy != nil && policy.FileToolConfined() {
+			if tmp, err := e.newSessionScratch(); err == nil {
+				e.ownedSessionTmp = tmp
+			}
+		}
 		return nil
 	}
-	workspaceRoot := GitRootOrEmpty(e, e.RootDir)
-	if workspaceRoot == "" {
-		workspaceRoot = e.RootDir
-	}
-	tmp, err := sandbox.NewSessionScratch(e.sandboxTmpBase, workspaceRoot)
+	tmp, err := e.newSessionScratch()
 	if err != nil {
 		// Leave the env unsandboxed: a half-wired sandbox must never run, and the
 		// prior policy/wrapper (torn down above) must not silently persist.

@@ -20,6 +20,7 @@ import (
 	"primeradiant.com/evener/agent/internal/hooks"
 	"primeradiant.com/evener/agent/internal/installid"
 	"primeradiant.com/evener/agent/internal/mcp"
+	"primeradiant.com/evener/agent/internal/modelavailability"
 	"primeradiant.com/evener/agent/internal/tool"
 	"primeradiant.com/evener/agent/mcpconfig"
 	"primeradiant.com/evener/agent/plugin"
@@ -64,18 +65,20 @@ func (s *Session) nextJobTreeRevision(kind events.EventKind) (string, uint64, bo
 // history, registered tools, context-management state, subagents, plugins, MCP
 // connections, and persistence settings.
 type Session struct {
-	id                     string
-	cfg                    SessionConfig
-	delegateController     *delegateTreeController
-	delegateRootSessionID  string
-	owningDelegateID       string
-	ownsDelegateController bool
-	artifactStore          artifactStore
-	ownsArtifactStore      bool
-	client                 *llm.Client
-	cheap                  *cheapmodel.Caller
-	profile                *provider.Profile
-	resolveProfile         func(ref string) (*provider.Profile, error) // cross-provider resolver; may be nil
+	id                       string
+	cfg                      SessionConfig
+	delegateController       *delegateTreeController
+	delegateRootSessionID    string
+	owningDelegateID         string
+	ownsDelegateController   bool
+	artifactStore            artifactStore
+	ownsArtifactStore        bool
+	client                   *llm.Client
+	cheap                    *cheapmodel.Caller
+	profile                  *provider.Profile
+	resolveProfile           func(ref string) (*provider.Profile, error) // cross-provider resolver; may be nil
+	delegateModelDescription string
+	modelSnapshot            *modelavailability.Snapshot
 	// lastDroppedModelFallbacks records the cfg.ModelFallbacks entries dropped
 	// by the most recent SetModel's post-switch revalidation (entries that no
 	// longer validate against the new profile). Nil until a switch drops any.
@@ -289,8 +292,9 @@ type Session struct {
 
 	reg *tool.Registry
 
-	steeringQueue []steeringMessage
-	followups     []string
+	steeringQueue    []steeringMessage
+	visionTurnOwners []*struct{ _ byte }
+	followups        []string
 
 	// activeProvenance is the causal provenance carried by the input currently
 	// being processed. It is stamped onto every event the turn emits, reset to

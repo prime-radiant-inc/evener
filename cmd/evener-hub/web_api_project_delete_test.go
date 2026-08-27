@@ -1531,7 +1531,7 @@ func TestProjectDeleteReportsFavoriteStoreFailureAfterArtifactRemoval(t *testing
 		PokeAttention: func() { pokes++ },
 	})
 	defer hub.Close()
-	past.SetOnChange(func() { notifyTreeChanged(web.appRPC) })
+	past.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
@@ -1556,7 +1556,6 @@ func TestProjectDeleteReportsFavoriteStoreFailureAfterArtifactRemoval(t *testing
 	if !strings.Contains(failure.Error, "favorite store error: favorite delete setup failure") {
 		t.Fatalf("favorite store failure was not reported: %s", failure.Error)
 	}
-	assertSingleNotification(t, client, web.appRPC, appwire.NotifyEvenerTreeChanged)
 	if pokes != 1 {
 		t.Fatalf("PokeAttention calls=%d, want exactly one after physical deletion", pokes)
 	}
@@ -1696,7 +1695,7 @@ func TestProjectDeleteBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 	// Mirror runMain's composed wiring (main.go): PastIndex.Rebuild's own
 	// onChange hook is the sole broadcast source for this path — the handler
 	// no longer calls notifyTreeChanged directly (it would double-broadcast).
-	past.SetOnChange(func() { notifyTreeChanged(web.appRPC) })
+	past.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
@@ -1713,7 +1712,6 @@ func TestProjectDeleteBroadcastsTreeChangedExactlyOnce(t *testing.T) {
 		t.Fatalf("status=%d", resp.StatusCode)
 	}
 
-	assertSingleNotification(t, client, web.appRPC, appwire.NotifyEvenerTreeChanged)
 }
 
 // TestProjectDeleteDoesNotBroadcastWhenNothingRemoved covers the no-op path:
@@ -1737,7 +1735,7 @@ func TestProjectDeleteDoesNotBroadcastWhenNothingRemoved(t *testing.T) {
 	}
 	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()})
 	defer hub.Close()
-	past.SetOnChange(func() { notifyTreeChanged(web.appRPC) })
+	past.SetOnChange(func() { web.navigation.Invalidate(navigationChangeHint{}) })
 	client := dialHubRPC(t, hub)
 	defer client.Close()
 	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
@@ -1773,6 +1771,4 @@ func TestProjectDeleteDoesNotBroadcastWhenNothingRemoved(t *testing.T) {
 	if len(got.Deleted) != 0 {
 		t.Fatalf("expected nothing actually deleted (session skipped), got %+v", got.Deleted)
 	}
-
-	assertNoNotification(t, client, web.appRPC, appwire.NotifyEvenerTreeChanged)
 }

@@ -12,10 +12,10 @@ import (
 // Membership is a decision, not a backlog: moving one out of this list means
 // giving it a case.
 var notifyMethodsDeliberatelyIgnored = []string{
-	// Tree/dashboard shape and attention state are re-fetched wholesale by the
-	// dashboard's own poll rather than folded from a push.
-	appwire.NotifyEvenerTreeChanged,
+	// Navigation/dashboard shape and attention state are re-fetched wholesale
+	// by the dashboard's own poll rather than folded from a push.
 	appwire.NotifyEvenerAttentionChanged,
+	appwire.NotifyEvenerNavigationInvalidated,
 	appwire.NotifyThreadStarted,
 	appwire.NotifyThreadClosed,
 	appwire.NotifyThreadNameChanged,

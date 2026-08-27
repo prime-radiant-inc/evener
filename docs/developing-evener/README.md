@@ -47,6 +47,8 @@ gates themselves — building, testing, linting, coverage, and fuzzing.
 | Command | Summary |
 | --- | --- |
 | `make tools` | Install the CI-pinned golangci-lint and gitleaks versions from .tool-versions, so a local make lint runs exactly what CI runs. |
+| `make tools-golangci` | Install the CI-pinned golangci-lint version from .tool-versions. |
+| `make tools-gitleaks` | Install the CI-pinned gitleaks version from .tool-versions. |
 | `make refresh-model-catalog` | Replace the vendored LiteLLM model-catalog snapshot with the current upstream and run the catalog sanity tests. |
 | `make generate` | Run the appwire and maketargetsdoc `go generate` directives: the AppWire protocol reference and frontend TypeScript declarations from appwire/protocol.go, and the per-family make-target tables in docs/developing-evener/. |
 | `make clean` | Remove the built binaries from the repo root. |

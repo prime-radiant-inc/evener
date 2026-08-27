@@ -23,10 +23,12 @@ import (
 
 // WebServer wires routes and middleware.
 type WebServer struct {
-	cfg       hubcore.WebConfig
-	appRPC    *appserver.Server
-	sources   *appsource.Registry
-	startedAt time.Time
+	cfg               hubcore.WebConfig
+	appRPC            *appserver.Server
+	navigation        *NavigationService
+	navigationMetrics navigationMetricSink
+	sources           *appsource.Registry
+	startedAt         time.Time
 
 	// lastGoodThreads retains each remote source's most recent successful
 	// ListThreads result so a transient list failure doesn't blank that
@@ -79,7 +81,8 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 		frontendHash:     fHash,
 		deletionStoreErr: deletionStoreErr,
 	}
-	web.appRPC = newHubAppServer(cfg, sources)
+	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}})
+	web.appRPC = newHubAppServerWithNavigation(cfg, sources, web.navigation)
 	if deletionStoreErr == nil {
 		_ = web.resumeProjectDeletions()
 	}
@@ -167,8 +170,6 @@ func (s *WebServer) Handler() http.Handler {
 	mux.HandleFunc("/api/health", s.handleAPIHealth)
 	mux.HandleFunc("/api/mobile/pairing", s.handleAPIMobilePairing)
 	mux.HandleFunc("/api/upgrade", s.handleAPIUpgrade)
-	mux.HandleFunc("/api/tree/project", s.handleAPITreeProject)
-	mux.HandleFunc("/api/tree", s.handleAPITree)
 	mux.HandleFunc("/api/archive", s.handleAPIArchive)
 	mux.HandleFunc("/api/favorite", s.handleAPIFavorite)
 	mux.HandleFunc("/api/pin-sections", s.handleAPIPinSections)
@@ -184,7 +185,7 @@ func (s *WebServer) Handler() http.Handler {
 	// Optional opt-in (EVENER_RECORD_HTTP) inbound-request recorder for fuzz-corpus
 	// harvesting; identity middleware when unset, so the stack is unchanged.
 	record := newHTTPRequestRecorder(s.cfg.HubStateRoot)
-	return record(auth(httpsec.CSPMiddleware(mux)))
+	return record(auth(httpsec.CSPMiddleware(s.navigationRawPathGuard(mux))))
 }
 
 // handleIndex serves the SPA shell for "/", "/new", and every other page route

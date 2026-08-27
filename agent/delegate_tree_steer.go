@@ -186,6 +186,9 @@ func (c *delegateTreeController) CompleteSteerPersistence(claim *delegateSteerin
 				if entry.timestamp.After(live.activityAt) {
 					live.activityAt = entry.timestamp
 				}
+				if entry.timestamp.After(live.productiveActivityAt) {
+					live.productiveActivityAt = entry.timestamp
+				}
 			}
 			c.evidenceVersion++
 			return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(claim.delegateID)}}, nil
@@ -203,6 +206,9 @@ func (c *delegateTreeController) CompleteSteerPersistence(claim *delegateSteerin
 	})
 	if entry.timestamp.After(live.activityAt) {
 		live.activityAt = entry.timestamp
+	}
+	if entry.timestamp.After(live.productiveActivityAt) {
+		live.productiveActivityAt = entry.timestamp
 	}
 	c.evidenceVersion++
 	return delegateMutationPlans{updates: []delegateUpdatePlan{c.capturedPlanLocked(claim.delegateID)}}, nil

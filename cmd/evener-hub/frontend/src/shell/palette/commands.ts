@@ -14,9 +14,10 @@ import type { ThreadModel } from "../../protocol/model";
 import type { CommandDescriptor, ThreadCapabilities } from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
+import { selectNeedsYouRows } from "../../stores/navigation/selectors";
+import { navigationStore } from "../../stores/navigation/store";
 import { prefsStore } from "../../stores/prefs";
 import { threadsStore } from "../../stores/threads";
-import { treeStore } from "../../stores/tree";
 import type { ToastKind } from "../../widgets";
 import { fetchModelCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { mergeScopedCatalog } from "../../widgets/modelCatalog/scopedCatalog";
@@ -324,7 +325,7 @@ export function buildCommands(): Command[] {
       keywords: ["needs you", "attention", "next"],
       scope: "global",
       run: (ctx) => {
-        const next = nextNeedsYouRef(needsYouRefs(treeStore.getState().tree), ctx.sessionRef);
+        const next = nextNeedsYouRef(needsYouRefs(selectNeedsYouRows(navigationStore.getState())), ctx.sessionRef);
         if (next !== null) openNeedsYouSession(next);
       },
     },
