@@ -304,7 +304,6 @@ type visionSideChannelResult struct {
 	elapsed     time.Duration
 	usage       llm.Usage
 	outcome     visionSideChannelOutcome
-	err         error
 }
 
 // describeImage makes a side-channel API call with no tools to describe an image
@@ -483,7 +482,7 @@ func (s *Session) describeImageCall(ctx context.Context, r tool.ExecResult) visi
 			// warning sanitized too rather than reintroducing the raw adapter error.
 			s.emit(events.EventWarning, events.WarningData{Message: "vision side-channel unavailable"})
 		}
-		return visionSideChannelResult{elapsed: elapsed, outcome: outcome, err: err}
+		return visionSideChannelResult{elapsed: elapsed, outcome: outcome}
 	}
 
 	return visionSideChannelResult{
