@@ -19,8 +19,8 @@ import type { LiveWorkItem } from "./model";
 import {
   ActivityProjectorError,
   createLiveActivityProjector,
+  type EntropySource,
   type OpaqueKeyAllocator,
-   type EntropySource,
 } from "./project-activity";
 
 // --- fixture helpers ---------------------------------------------------------
@@ -57,51 +57,51 @@ function deterministicAllocator(prefix: string): OpaqueKeyAllocator {
   };
 }
 
- // Deterministic entropy source for crypto seam tests.
- function makeDeterministicEntropy(seed: number): EntropySource {
-   let state = seed;
-   return () => {
-     const bytes = new Uint8Array(8);
-     for (let i = 0; i < 8; i++) {
-       state = (state * 1103515245 + 12345) & 0x7fffffff;
-       bytes[i] = state & 0xff;
-     }
-     return bytes;
-   };
- }
+// Deterministic entropy source for crypto seam tests.
+function makeDeterministicEntropy(seed: number): EntropySource {
+  let state = seed;
+  return () => {
+    const bytes = new Uint8Array(8);
+    for (let i = 0; i < 8; i++) {
+      state = (state * 1103515245 + 12345) & 0x7fffffff;
+      bytes[i] = state & 0xff;
+    }
+    return bytes;
+  };
+}
 
 // Constant entropy source: always returns the same bytes. Useful for
 // verifying that the salt comes from the entropy, independent of the
 // instance counter.
- function makeConstantEntropy(): EntropySource {
-   const bytes = new Uint8Array(8);
-   for (let i = 0; i < 8; i++) bytes[i] = 0xab;
-   return () => bytes;
- }
+function makeConstantEntropy(): EntropySource {
+  const bytes = new Uint8Array(8);
+  for (let i = 0; i < 8; i++) bytes[i] = 0xab;
+  return () => bytes;
+}
 
 // Helper to safely override and restore globalThis.crypto (read-only getter
 // in some runtimes requires defineProperty).
 function withMockedCrypto(mock: unknown, fn: () => void): void {
-   const original = Object.getOwnPropertyDescriptor(globalThis, "crypto");
-   Object.defineProperty(globalThis, "crypto", {
-     value: mock,
-     writable: true,
-     configurable: true,
-   });
-   try {
-     fn();
-   } finally {
-     if (original !== undefined) {
-       Object.defineProperty(globalThis, "crypto", original);
-     } else {
-       Object.defineProperty(globalThis, "crypto", {
-         value: undefined,
-         writable: true,
-         configurable: true,
-       });
-     }
-   }
- }
+  const original = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+  Object.defineProperty(globalThis, "crypto", {
+    value: mock,
+    writable: true,
+    configurable: true,
+  });
+  try {
+    fn();
+  } finally {
+    if (original !== undefined) {
+      Object.defineProperty(globalThis, "crypto", original);
+    } else {
+      Object.defineProperty(globalThis, "crypto", {
+        value: undefined,
+        writable: true,
+        configurable: true,
+      });
+    }
+  }
+}
 
 function diag(
   rawId: string,
@@ -2283,7 +2283,12 @@ describe("createLiveActivityProjector", () => {
     const p = createLiveActivityProjector();
     const view = makeActivityView({
       work: [
-        { kind: "job", label: "shell", tone: "running", diagnostics: diag("raw-1") },
+        {
+          kind: "job",
+          label: "shell",
+          tone: "running",
+          diagnostics: diag("raw-1"),
+        },
       ],
     });
     const { operational } = p.project(view, { scope: SCOPE });
@@ -2300,7 +2305,12 @@ describe("createLiveActivityProjector", () => {
     const p = createLiveActivityProjector();
     const view = makeActivityView({
       work: [
-        { kind: "job", label: "shell", tone: "running", diagnostics: diag("raw-1") },
+        {
+          kind: "job",
+          label: "shell",
+          tone: "running",
+          diagnostics: diag("raw-1"),
+        },
       ],
     });
     const { operational } = p.project(view, { scope: SCOPE });
@@ -2340,7 +2350,12 @@ describe("createLiveActivityProjector", () => {
     const p = createLiveActivityProjector();
     const view = makeActivityView({
       work: [
-        { kind: "job", label: "shell", tone: "running", diagnostics: diag("raw-1") },
+        {
+          kind: "job",
+          label: "shell",
+          tone: "running",
+          diagnostics: diag("raw-1"),
+        },
       ],
     });
     const { operational } = p.project(view, { scope: SCOPE });
@@ -2366,8 +2381,18 @@ describe("createLiveActivityProjector", () => {
     const p = createLiveActivityProjector();
     const view = makeActivityView({
       work: [
-        { kind: "job", label: "shell", tone: "running", diagnostics: diag("raw-1") },
-        { kind: "job", label: "shell2", tone: "running", diagnostics: diag("raw-2") },
+        {
+          kind: "job",
+          label: "shell",
+          tone: "running",
+          diagnostics: diag("raw-1"),
+        },
+        {
+          kind: "job",
+          label: "shell2",
+          tone: "running",
+          diagnostics: diag("raw-2"),
+        },
       ],
     });
     const { operational } = p.project(view, { scope: SCOPE });
@@ -2376,9 +2401,15 @@ describe("createLiveActivityProjector", () => {
 
     // Casting to Map does NOT give set/delete/clear
     const casted = keys as unknown as Map<string, string>;
-    expect(typeof (casted as unknown as { set?: unknown }).set).toBe("undefined");
-    expect(typeof (casted as unknown as { delete?: unknown }).delete).toBe("undefined");
-    expect(typeof (casted as unknown as { clear?: unknown }).clear).toBe("undefined");
+    expect(typeof (casted as unknown as { set?: unknown }).set).toBe(
+      "undefined",
+    );
+    expect(typeof (casted as unknown as { delete?: unknown }).delete).toBe(
+      "undefined",
+    );
+    expect(typeof (casted as unknown as { clear?: unknown }).clear).toBe(
+      "undefined",
+    );
 
     // Shadow properties: assigning get/has to the cast does nothing (frozen)
     expect(() => {
@@ -2403,7 +2434,12 @@ describe("createLiveActivityProjector", () => {
     const p = createLiveActivityProjector();
     const view = makeActivityView({
       work: [
-        { kind: "job", label: "shell", tone: "running", diagnostics: diag("raw-1") },
+        {
+          kind: "job",
+          label: "shell",
+          tone: "running",
+          diagnostics: diag("raw-1"),
+        },
       ],
     });
     const { operational } = p.project(view, { scope: SCOPE });
@@ -2519,7 +2555,12 @@ describe("createLiveActivityProjector", () => {
       const p = createLiveActivityProjector();
       const view = makeActivityView({
         work: [
-          { kind: "job", label: "shell", tone: "running", diagnostics: diag("r1") },
+          {
+            kind: "job",
+            label: "shell",
+            tone: "running",
+            diagnostics: diag("r1"),
+          },
         ],
       });
       p.project(view, { scope: SCOPE });
@@ -2536,7 +2577,12 @@ describe("createLiveActivityProjector", () => {
     const p2 = createLiveActivityProjector({ entropy: entropy2 });
     const view = makeActivityView({
       work: [
-        { kind: "job", label: "shell", tone: "running", diagnostics: diag("r1") },
+        {
+          kind: "job",
+          label: "shell",
+          tone: "running",
+          diagnostics: diag("r1"),
+        },
       ],
     });
     const a = p1.project(view, { scope: SCOPE });
@@ -2554,7 +2600,12 @@ describe("createLiveActivityProjector", () => {
     const p2 = createLiveActivityProjector({ entropy: entropy });
     const view = makeActivityView({
       work: [
-        { kind: "job", label: "shell", tone: "running", diagnostics: diag("r1") },
+        {
+          kind: "job",
+          label: "shell",
+          tone: "running",
+          diagnostics: diag("r1"),
+        },
       ],
     });
     const a = p1.project(view, { scope: SCOPE });
@@ -2576,7 +2627,12 @@ describe("createLiveActivityProjector", () => {
     const p = createLiveActivityProjector();
     const view = makeActivityView({
       work: [
-        { kind: "job", label: "secret-label", tone: "running", diagnostics: diag("secret-raw-id") },
+        {
+          kind: "job",
+          label: "secret-label",
+          tone: "running",
+          diagnostics: diag("secret-raw-id"),
+        },
       ],
     });
     const { live } = p.project(view, { scope: SCOPE });
