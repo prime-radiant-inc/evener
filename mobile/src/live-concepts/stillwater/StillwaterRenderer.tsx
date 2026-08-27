@@ -1,5 +1,6 @@
 import type { ReactNode } from "react";
 import type { LiveConceptRendererProps } from "../contract";
+import type { LiveConceptSurface } from "../model";
 import { Icon } from "../shared/Icon";
 import { ConversationView } from "./ConversationView";
 import { SessionsView } from "./SessionsView";
@@ -9,12 +10,14 @@ function assertNever(value: never): never {
   throw new Error(`Unhandled surface: ${JSON.stringify(value)}`);
 }
 
-const surfaceMeta: Readonly<
-  Record<
-    LiveConceptRendererProps["state"]["surface"],
-    { route: string; title: string; subtitle: string; pushed: boolean }
-  >
-> = {
+interface SurfaceMeta {
+  route: string;
+  title: string;
+  subtitle?: string;
+  pushed: boolean;
+}
+
+const surfaceMeta: Readonly<Record<LiveConceptSurface, SurfaceMeta>> = {
   sessions: {
     route: "sessions",
     title: "Sessions",
@@ -24,13 +27,11 @@ const surfaceMeta: Readonly<
   conversation: {
     route: "conversation",
     title: "Conversation",
-    subtitle: undefined as unknown as string,
     pushed: true,
   },
   work: {
     route: "work",
     title: "Work",
-    subtitle: undefined as unknown as string,
     pushed: true,
   },
 };

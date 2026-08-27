@@ -95,24 +95,30 @@ function buildState(
       title: "Fix auth flow",
       project: "evener/mobile",
       status: "running",
+      tone: "running",
+      updatedLabel: "2 minutes ago",
       items: [
         {
           key: "msg-1",
           kind: "user",
-          label: "User",
+          label: "1",
           body: "Check the refresh loop",
           tone: "idle",
           streaming: false,
           truncated: false,
+          questionKey: null,
+          sequenceLabel: "1",
         },
         {
           key: "msg-2",
           kind: "assistant",
-          label: "Assistant",
+          label: "2",
           body: "Looking into it...",
           tone: "running",
           streaming: true,
           truncated: false,
+          questionKey: null,
+          sequenceLabel: "2",
         },
         {
           key: "msg-3",
@@ -122,33 +128,41 @@ function buildState(
           tone: "success",
           streaming: false,
           truncated: false,
+          questionKey: null,
+          sequenceLabel: "3",
         },
         {
           key: "msg-4",
           kind: "assistant",
-          label: "Assistant",
+          label: "4",
           body: "The token refresh logic has a race condition...",
           tone: "idle",
           streaming: false,
           truncated: true,
+          questionKey: null,
+          sequenceLabel: "4",
         },
         {
-          key: "q-1",
+          key: "msg-5",
           kind: "question",
-          label: "Question",
+          label: "5",
           body: "Which approach do you prefer?",
           tone: "attention",
           streaming: false,
           truncated: false,
+          questionKey: "q-1",
+          sequenceLabel: "5",
         },
         {
           key: "msg-6",
           kind: "failure",
-          label: "Error",
+          label: "6",
           body: "Connection lost during generation",
           tone: "failed",
           streaming: false,
           truncated: false,
+          questionKey: null,
+          sequenceLabel: "6",
         },
         {
           key: "msg-7",
@@ -158,6 +172,8 @@ function buildState(
           tone: "idle",
           streaming: false,
           truncated: false,
+          questionKey: null,
+          sequenceLabel: "7",
         },
       ],
       questions: [
@@ -340,9 +356,7 @@ describe("StillwaterRenderer sessions surface", () => {
     const { dispatch } = renderSurface(state);
     fireEvent.change(
       screen.getByRole("searchbox", { name: "Filter sessions" }),
-      {
-        target: { value: "auth" },
-      },
+      { target: { value: "auth" } },
     );
     expect(dispatch).toHaveBeenCalledWith({
       type: "setRosterQuery",
@@ -357,7 +371,7 @@ describe("StillwaterRenderer sessions surface", () => {
     expect(dispatch).toHaveBeenCalledWith({ type: "refreshRoster" });
   });
 
-  it("shows roster error and hasMore truncated marker", () => {
+  it("shows roster error with actual error text", () => {
     const base = buildState();
     const state = buildState({
       surface: "sessions",
@@ -372,8 +386,45 @@ describe("StillwaterRenderer sessions surface", () => {
     expect(
       container.querySelector('[data-roster-status="error"]'),
     ).toBeVisible();
+    expect(screen.getByText("Failed to load sessions")).toBeVisible();
     expect(
       container.querySelector('[data-roster-has-more="true"]'),
+    ).toBeVisible();
+  });
+
+  it("shows roster loading state", () => {
+    const state = buildState({
+      surface: "sessions",
+      roster: { ...buildState().roster, status: "loading" },
+    });
+    const { container } = renderSurface(state);
+    expect(
+      container.querySelector('[data-roster-status="loading"]'),
+    ).toBeVisible();
+    expect(screen.getByText(/loading sessions/i)).toBeVisible();
+  });
+
+  it("shows roster idle state with empty groups", () => {
+    const state = buildState({
+      surface: "sessions",
+      roster: { ...buildState().roster, status: "idle", groups: [] },
+    });
+    const { container } = renderSurface(state);
+    expect(
+      container.querySelector('[data-roster-status="idle"]'),
+    ).toBeVisible();
+    expect(screen.getByText(/no matching sessions/i)).toBeVisible();
+  });
+
+  it("shows roster offline state", () => {
+    const state = buildState({
+      surface: "sessions",
+      connection: { status: "offline" },
+      roster: { ...buildState().roster, status: "offline" },
+    });
+    const { container } = renderSurface(state);
+    expect(
+      container.querySelector('[data-roster-status="offline"]'),
     ).toBeVisible();
   });
 
@@ -396,6 +447,49 @@ describe("StillwaterRenderer conversation surface", () => {
     expect(
       container.querySelector('[data-older-available="true"]'),
     ).toBeVisible();
+  });
+
+  it("uses conversation.tone in the summary, never hardcoded running", () => {
+    const state = buildState({
+      surface: "conversation",
+      conversation: {
+        ...buildState().conversation!,
+        tone: "attention",
+      },
+    });
+    const { container } = renderSurface(state);
+    const summary = container.querySelector(".sw-session-summary");
+    expect(summary).not.toBeNull();
+    expect(
+      (summary as HTMLElement).querySelector('[data-status-state="attention"]'),
+    ).not.toBeNull();
+    expect(
+      (summary as HTMLElement).querySelector('[data-status-state="running"]'),
+    ).toBeNull();
+  });
+
+  it("displays updatedLabel in the summary when non-null", () => {
+    const state = buildState({
+      surface: "conversation",
+      conversation: {
+        ...buildState().conversation!,
+        updatedLabel: "3 minutes ago",
+      },
+    });
+    renderSurface(state);
+    expect(screen.getByText("3 minutes ago")).toBeVisible();
+  });
+
+  it("omits updatedLabel from the summary when null", () => {
+    const state = buildState({
+      surface: "conversation",
+      conversation: {
+        ...buildState().conversation!,
+        updatedLabel: null,
+      },
+    });
+    renderSurface(state);
+    expect(screen.queryByText("2 minutes ago")).toBeNull();
   });
 
   it("discloses a tool and dispatches toggleTool", () => {
@@ -435,17 +529,30 @@ describe("StillwaterRenderer conversation surface", () => {
     expect(disclosure).toHaveAttribute("aria-expanded", "true");
   });
 
-  it("renders a question card, selects an option, and submits", () => {
-    const state = buildState({ surface: "conversation" });
-    const question = state.conversation?.questions[0];
+  it("renders a question card via item.questionKey, selects an option, and submits", () => {
+    const base = buildState();
+    const question = base.conversation?.questions[0];
     if (!question) throw new Error("Test state needs a question");
+    const state = buildState({
+      surface: "conversation",
+      ui: {
+        ...base.ui,
+        questionDrafts: {
+          [question.key]: {
+            selectedOptionKeys: ["opt-a"],
+            note: "",
+            resolution: null,
+          },
+        },
+      },
+    });
     const { dispatch, container } = renderSurface(state);
     const form = container.querySelector(
       `[data-question-id="${question.key}"]`,
     );
     expect(form).not.toBeNull();
-    const option = question.options[0];
-    if (!option) throw new Error("Question needs an option");
+    const option = question.options[1];
+    if (!option) throw new Error("Question needs a second option");
     fireEvent.click(within(form as HTMLElement).getByLabelText(option.label));
     expect(dispatch).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -462,6 +569,68 @@ describe("StillwaterRenderer conversation surface", () => {
       type: "submitQuestion",
       key: question.key,
     });
+  });
+
+  it("disables question submit until a draft with a selection is provided", () => {
+    const base = buildState();
+    const question = base.conversation?.questions[0];
+    if (!question) throw new Error("Test state needs a question");
+
+    // No draft — submit disabled
+    const noDraft = buildState({ surface: "conversation" });
+    renderSurface(noDraft);
+    expect(
+      screen.getByRole("button", { name: "Submit answer" }),
+    ).toBeDisabled();
+    cleanup();
+
+    // Draft with selection — submit enabled
+    const withDraft = buildState({
+      surface: "conversation",
+      ui: {
+        ...base.ui,
+        questionDrafts: {
+          [question.key]: {
+            selectedOptionKeys: ["opt-a"],
+            note: "",
+            resolution: null,
+          },
+        },
+      },
+    });
+    renderSurface(withDraft);
+    expect(screen.getByRole("button", { name: "Submit answer" })).toBeEnabled();
+  });
+
+  it("handles missing question linkage visibly", () => {
+    const state = buildState({
+      surface: "conversation",
+      conversation: {
+        ...buildState().conversation!,
+        items: [
+          {
+            key: "msg-orphan",
+            kind: "question",
+            label: "5",
+            body: "Orphan question",
+            tone: "attention",
+            streaming: false,
+            truncated: false,
+            questionKey: "q-missing",
+            sequenceLabel: "5",
+          },
+        ],
+        questions: [],
+      },
+    });
+    const { container } = renderSurface(state);
+    const article = container.querySelector(
+      '[data-transcript-item-id="msg-orphan"]',
+    );
+    expect(article).not.toBeNull();
+    expect(
+      within(article as HTMLElement).getByText(/question unavailable/i),
+    ).toBeVisible();
   });
 
   it("shows resolved question state when resolution is set", () => {
@@ -499,7 +668,7 @@ describe("StillwaterRenderer conversation surface", () => {
     expect(dispatch).toHaveBeenCalledWith({ type: "goBack" });
   });
 
-  it("dispatches setDraft and submit from the composer", () => {
+  it("dispatches setDraft from the textarea", () => {
     const state = buildState({ surface: "conversation" });
     const { dispatch } = renderSurface(state);
     fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
@@ -509,8 +678,133 @@ describe("StillwaterRenderer conversation surface", () => {
       type: "setDraft",
       value: "Continue the check",
     });
-    fireEvent.click(screen.getByRole("button", { name: "Send" }));
-    expect(dispatch).toHaveBeenCalledWith({ type: "submit", mode: "send" });
+  });
+
+  it("dispatches setComposerMode from mode buttons with accurate aria-pressed", () => {
+    const state = buildState({ surface: "conversation" });
+    const { dispatch } = renderSurface(state);
+    fireEvent.click(screen.getByRole("button", { name: "Steer" }));
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "setComposerMode",
+      mode: "steer",
+    });
+  });
+
+  it("shows accurate aria-pressed on the active mode button", () => {
+    const state = buildState({
+      surface: "conversation",
+      ui: { ...buildState().ui, composerMode: "queue" },
+    });
+    renderSurface(state);
+    expect(screen.getByRole("button", { name: "Queue" })).toHaveAttribute(
+      "aria-pressed",
+      "true",
+    );
+    expect(screen.getByRole("button", { name: "Send" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+    expect(screen.getByRole("button", { name: "Steer" })).toHaveAttribute(
+      "aria-pressed",
+      "false",
+    );
+  });
+
+  it("dispatches submit with the selected ui.composerMode from the primary submit", () => {
+    const state = buildState({
+      surface: "conversation",
+      composer: { ...buildState().composer, draft: "hello" },
+      ui: { ...buildState().ui, composerMode: "steer" },
+    });
+    const { dispatch } = renderSurface(state);
+    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    expect(dispatch).toHaveBeenCalledWith({ type: "submit", mode: "steer" });
+  });
+
+  it("disables the primary submit when draft is empty", () => {
+    const state = buildState({ surface: "conversation" });
+    renderSurface(state);
+    expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
+  });
+
+  it("disables the primary submit when a mutation is pending", () => {
+    const state = buildState({
+      surface: "conversation",
+      composer: {
+        ...buildState().composer,
+        draft: "hi",
+        pending: {
+          kind: "send",
+          status: "pending",
+          draftSnapshot: "hi",
+          generation: 1,
+        },
+      },
+    });
+    renderSurface(state);
+    expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
+  });
+
+  it("disables mode buttons per capability flags", () => {
+    const state = buildState({
+      surface: "conversation",
+      composer: {
+        ...buildState().composer,
+        canSend: true,
+        canSteer: false,
+        canQueue: false,
+      },
+    });
+    renderSurface(state);
+    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Steer" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Queue" })).toBeDisabled();
+  });
+
+  it("enables textarea when any text mode is available and no pending", () => {
+    const state = buildState({
+      surface: "conversation",
+      composer: {
+        ...buildState().composer,
+        canSend: true,
+        canSteer: false,
+        canQueue: false,
+      },
+    });
+    renderSurface(state);
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeEnabled();
+  });
+
+  it("disables textarea when all modes are unavailable", () => {
+    const state = buildState({
+      surface: "conversation",
+      composer: {
+        ...buildState().composer,
+        canSend: false,
+        canSteer: false,
+        canQueue: false,
+      },
+    });
+    renderSurface(state);
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
+  });
+
+  it("disables textarea when a mutation is pending", () => {
+    const state = buildState({
+      surface: "conversation",
+      composer: {
+        ...buildState().composer,
+        draft: "hi",
+        pending: {
+          kind: "send",
+          status: "pending",
+          draftSnapshot: "hi",
+          generation: 1,
+        },
+      },
+    });
+    renderSurface(state);
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
   });
 
   it("shows composer pending state and dispatches interrupt", () => {
@@ -537,6 +831,23 @@ describe("StillwaterRenderer conversation surface", () => {
     expect(dispatch).toHaveBeenCalledWith({ type: "interrupt" });
   });
 
+  it("shows composer failed mutation state", () => {
+    const state = buildState({
+      surface: "conversation",
+      composer: {
+        ...buildState().composer,
+        pending: {
+          kind: "steer",
+          status: "failed",
+          draftSnapshot: "hi",
+          generation: 1,
+        },
+      },
+    });
+    renderSurface(state);
+    expect(screen.getByText(/steer failed/i)).toBeVisible();
+  });
+
   it("shows composer error state", () => {
     const state = buildState({
       surface: "conversation",
@@ -547,22 +858,6 @@ describe("StillwaterRenderer conversation surface", () => {
     });
     renderSurface(state);
     expect(screen.getByText("Send failed — retry")).toBeVisible();
-  });
-
-  it("disables submit buttons per capability flags", () => {
-    const state = buildState({
-      surface: "conversation",
-      composer: {
-        ...buildState().composer,
-        canSend: true,
-        canSteer: false,
-        canQueue: false,
-      },
-    });
-    renderSurface(state);
-    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Steer" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Queue" })).toBeDisabled();
   });
 });
 
