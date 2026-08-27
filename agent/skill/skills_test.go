@@ -93,10 +93,10 @@ func TestResolveSkillContentRejectsAmbiguousSuffix(t *testing.T) {
 		"one:review": {Name: "review", SkillFile: write("one", "one")},
 		"two:review": {Name: "review", SkillFile: write("two", "two")},
 	}
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		body, err := ResolveSkillContent(skills, "review")
 		if err != nil || body != "" {
-			t.Fatalf("ambiguous resolution iteration %d = %q, %v", i, body, err)
+			t.Fatalf("ambiguous resolution = %q, %v", body, err)
 		}
 	}
 }
