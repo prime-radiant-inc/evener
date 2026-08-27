@@ -53,6 +53,7 @@ import {
   archivedCount,
   archivedProjectNodes,
   archivedSessionGroups,
+  catalogOverflowNode,
   type OverflowRailNode,
   overrideLookup,
   pinSectionDisclosureID,
@@ -278,11 +279,11 @@ function loadedSection(
   const last = pages.at(-1);
   const data = last?.data as { remaining?: number } | null;
   const pageKey = last?.key.kind === "section" ? last.key : { offset: 0, limit: 50 };
-  const pageRows = (last?.data as { sessions?: unknown[] } | null)?.sessions?.length ?? rows.length;
   return {
     sessions: rows,
     remaining: data?.remaining ?? 0,
-    offset: pageKey.offset + pageRows,
+    // Canonical page limit is the stride; the backend may truncate rows.
+    offset: pageKey.offset + pageKey.limit,
     limit: pageKey.limit,
   };
 }
@@ -318,8 +319,10 @@ function projectFromSummary(
       remaining = Math.min(remaining, page.remaining);
     }
     const lastPage = pageStates.at(-1);
-    const lastPageRows = (lastPage?.data as { sessions?: unknown[] } | null)?.sessions?.length;
-    nextOffsets[tier] = lastPage?.key.kind === "project_page" ? lastPage.key.offset + (lastPageRows ?? 0) : rows.length;
+    // Use the canonical page limit as the stride, not the actual returned row
+    // count: the backend may truncate rows, and offset + rows.length would
+    // overlap or repeat rows on the next page.
+    nextOffsets[tier] = lastPage?.key.kind === "project_page" ? lastPage.key.offset + lastPage.key.limit : rows.length;
     all.push(...sessions(rows, `project:${summary.key}:${tier}`, tier, undefined, summary.key));
     more[tier] = remaining;
   }
@@ -356,6 +359,24 @@ function projectsFor(state: ReturnType<typeof navigationStore.getState>, catalog
   }
   return output;
 }
+function catalogOverflowFor(
+  state: ReturnType<typeof navigationStore.getState>,
+  catalog: CatalogKind,
+): { remaining: number; offset: number; limit: number } | undefined {
+  const pages = [...state.resources.values()]
+    .filter((resource) => resource.key.kind === "catalog" && resource.key.catalog === catalog && resource.data !== null)
+    .sort((a, b) =>
+      a.key.kind === "catalog" && b.key.kind === "catalog"
+        ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
+        : 0,
+    );
+  const last = pages.at(-1);
+  if (!last) return undefined;
+  const remaining = (last.data as { remaining?: number } | null)?.remaining ?? 0;
+  if (remaining <= 0) return undefined;
+  const pageKey = last.key.kind === "catalog" ? last.key : { offset: 0, limit: 100 };
+  return { remaining, offset: pageKey.offset + pageKey.limit, limit: pageKey.limit };
+}
 function railResources(state: ReturnType<typeof navigationStore.getState>): RailResources {
   const live = loadedSection(state, "live");
   const needsYou = loadedSection(state, "needs_you");
@@ -384,13 +405,13 @@ function railResources(state: ReturnType<typeof navigationStore.getState>): Rail
       const last = pages.at(-1);
       const pageKey = last?.key.kind === "pin_section" ? last.key : { offset: 0, limit: 50 };
       const remaining = (last?.data as { remaining?: number } | null)?.remaining ?? 0;
-      const pageRows = (last?.data as { sessions?: unknown[] } | null)?.sessions?.length ?? section.sessions.length;
       return {
         id: section.id,
         name: section.name,
         member_count: pinCounts.get(section.id) ?? section.sessions.length,
         remaining,
-        offset: pageKey.offset + pageRows,
+        // Canonical page limit is the stride; the backend may truncate rows.
+        offset: pageKey.offset + pageKey.limit,
         limit: pageKey.limit,
         sessions: dedupeSessions(sessions(section.sessions, `pin:${section.id}`, undefined, section.id)),
       };
@@ -405,6 +426,11 @@ function railResources(state: ReturnType<typeof navigationStore.getState>): Rail
     projects: projectsFor(state, "projects"),
     archivedProjects: projectsFor(state, "archived_projects").map((project) => ({ ...project, is_archived: true })),
     testRuns: projectsFor(state, "test_runs"),
+    catalogOverflow: {
+      projects: catalogOverflowFor(state, "projects"),
+      archived_projects: catalogOverflowFor(state, "archived_projects"),
+      test_runs: catalogOverflowFor(state, "test_runs"),
+    },
   };
 }
 export const adaptNavigationResources = railResources;
@@ -688,7 +714,9 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
               ? navigationStore.getState().loadSection(page.section, page.offset, page.limit)
               : page.sectionId
                 ? navigationStore.getState().loadPinSection(page.sectionId, page.offset, page.limit)
-                : Promise.resolve(),
+                : page.catalog
+                  ? navigationStore.getState().loadCatalog(page.catalog, page.offset, page.limit)
+                  : Promise.resolve(),
         ),
       );
     } catch (error) {
@@ -955,7 +983,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
     rootLoadsInFlight.current.delete(key);
     loadProjectRoot(key);
   };
-  const archivedNodes = [
+  const archivedNodes: RailNode[] = [
     ...archivedProjectNodes(
       resources.archivedProjects,
       new Map(
@@ -966,11 +994,31 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
       isExpanded,
     ),
     ...archivedSessionGroups(unarchived, isExpanded),
-  ].map((node) => (node.resourceError ? { ...node, retry: () => retryProject(node.project.key) } : node));
-  const projectRailNodes = (projects: readonly RailProject[]) =>
-    projectNodes(projects, isExpanded).map((node) =>
+  ].map((node) =>
+    node.kind === "project" && node.resourceError ? { ...node, retry: () => retryProject(node.project.key) } : node,
+  );
+  if (resources.catalogOverflow?.archived_projects) {
+    const ov = resources.catalogOverflow.archived_projects;
+    archivedNodes.push(
+      ...catalogOverflowNode("catalog:archived_projects", "archived_projects", ov.remaining, ov.offset, ov.limit),
+    );
+  }
+  const projectRailNodes = (
+    projects: readonly RailProject[],
+    overflow?: { remaining: number; offset: number; limit: number },
+    overflowId?: string,
+    overflowCatalog?: "projects" | "archived_projects" | "test_runs",
+  ): RailNode[] => {
+    const nodes: RailNode[] = projectNodes(projects, isExpanded).map((node) =>
       node.resourceError ? { ...node, retry: () => retryProject(node.project.key) } : node,
     );
+    if (overflow && overflowId && overflowCatalog && overflow.remaining > 0) {
+      nodes.push(
+        ...catalogOverflowNode(overflowId, overflowCatalog, overflow.remaining, overflow.offset, overflow.limit),
+      );
+    }
+    return nodes;
+  };
   const liveNodes = [
     ...sessionNodes(resources.live, isExpanded),
     ...sectionOverflowNode(
@@ -1074,14 +1122,24 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
             ))}
             <RailSection
               title="Projects"
-              nodes={projectRailNodes(resources.projects)}
+              nodes={projectRailNodes(
+                resources.projects,
+                resources.catalogOverflow?.projects,
+                "catalog:projects",
+                "projects",
+              )}
               onToggle={handleToggle}
               onActivate={handleActivate}
               actions={rowActions}
             />
             <RailSection
               title="Test runs"
-              nodes={projectRailNodes(resources.testRuns)}
+              nodes={projectRailNodes(
+                resources.testRuns,
+                resources.catalogOverflow?.test_runs,
+                "catalog:test_runs",
+                "test_runs",
+              )}
               onToggle={handleToggle}
               onActivate={handleActivate}
               actions={rowActions}

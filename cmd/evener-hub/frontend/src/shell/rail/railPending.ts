@@ -28,6 +28,9 @@ export interface RailResources {
   testRuns: readonly RailProject[];
   liveOverflow?: { remaining: number; offset: number; limit: number };
   needsYouOverflow?: { remaining: number; offset: number; limit: number };
+  catalogOverflow?: Partial<
+    Record<"projects" | "archived_projects" | "test_runs", { remaining: number; offset: number; limit: number }>
+  >;
 }
 
 export interface RenderedProjectRows {

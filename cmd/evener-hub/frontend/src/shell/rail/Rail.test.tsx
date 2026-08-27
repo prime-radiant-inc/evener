@@ -192,7 +192,7 @@ describe("resource-backed Rail", () => {
     fireEvent.click(older);
     await act(async () => undefined);
     expect(loadSection).toHaveBeenCalledTimes(1);
-    expect(loadSection).toHaveBeenCalledWith("live", 1, 50);
+    expect(loadSection).toHaveBeenCalledWith("live", 50, 50);
   });
   test("toasts a global overflow failure and permits a deterministic retry", async () => {
     const loadSection = vi.fn().mockRejectedValueOnce(new Error("offline")).mockResolvedValueOnce(undefined);

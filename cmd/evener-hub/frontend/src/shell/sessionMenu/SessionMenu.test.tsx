@@ -1,26 +1,50 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterAll, afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import type { NavigationPinSectionCatalog } from "../../protocol/types.gen";
+import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
+import { keyID, type ResourceState } from "../../stores/navigation/types";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
-import * as railActions from "../rail/actions";
 import type { NavigationSessionModel } from "./SessionMenu";
 import { SessionMenu, type SessionMenuActions, type SessionMenuProps } from "./SessionMenu";
 
-// Task 4's "Pin this session…" mounts the real PinSectionPicker, which
-// fetches its section list on mount - stub that fetch. vi.spyOn, not
-// vi.mock: under a shared module registry (isolate:false) some other file
-// (e.g. shell/rail/PinSectionPicker.test.tsx or Rail.test.tsx) may already
-// have loaded "../rail/actions" for real before this file's vi.mock()
-// factory registers, in which case PinSectionPicker.tsx's own
-// `import { listPinSections }` binding is fixed forever and a vi.mock()
-// here can't retroactively change what it calls internally - see
-// PinSectionPicker.test.tsx's own comment on the identical hazard.
-// vi.spyOn patches the one property every importer actually shares.
-let mockedListPinSections = vi.spyOn(railActions, "listPinSections");
+// "Pin this session…" mounts the real PinSectionPicker, which now reads
+// pin sections from the navigation store's bounded pin-catalog resource
+// (loadPinCatalog + selectPinSections) instead of the legacy unbounded
+// GET /api/pin-sections. Seed the store with a pin_catalog resource and
+// stub loadPinCatalog so the picker's mount effect resolves without a
+// real network fetch.
+const generation = "generation_test";
+const pinKey = { kind: "pin_catalog" as const, offset: 0, limit: 100 };
 
-afterAll(() => {
-  mockedListPinSections.mockRestore();
-});
+type LoadPinCatalog = (offset?: number, limit?: number) => Promise<ResourceState<NavigationPinSectionCatalog>>;
+
+function seedPinCatalog(): void {
+  const resource: ResourceState = {
+    key: pinKey,
+    data: {
+      generation_id: generation,
+      revision: 1,
+      pin_sections: [{ id: "sec_1", name: "Client", count: 0 }],
+      remaining: 0,
+    },
+    loadedRevision: 1,
+    targetRevision: 1,
+    forceToken: 0,
+    etag: "a",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: generation,
+  };
+  navigationStore.setState({
+    mode: "v1",
+    resources: new Map([[keyID(resource.key), resource]]),
+  });
+  const impl = async () =>
+    navigationStore.getState().resources.get(keyID(pinKey)) as ResourceState<NavigationPinSectionCatalog>;
+  navigationStore.setState({ loadPinCatalog: vi.fn(impl) as LoadPinCatalog });
+}
 
 function renderMenu(overrides: Partial<SessionMenuProps> = {}) {
   const actions: SessionMenuActions = {
@@ -53,16 +77,13 @@ async function openMenu(user: ReturnType<typeof userEvent.setup>) {
 
 beforeEach(() => {
   resetToastStoreForTests();
-  // Re-spied here, not just once above: shell/rail/Rail.test.tsx's own
-  // afterEach calls vi.restoreAllMocks(), which is a GLOBAL operation - it
-  // un-does this spy the moment ANY test anywhere in the worker restores
-  // mocks, not just that file's own.
-  mockedListPinSections = vi.spyOn(railActions, "listPinSections");
-  mockedListPinSections.mockResolvedValue([{ id: "sec_1", name: "Client", member_count: 0 }]);
+  resetNavigationStoreForTests();
+  seedPinCatalog();
 });
 
 afterEach(() => {
   cleanup();
+  resetNavigationStoreForTests();
 });
 
 test("panes group leads with open-state checkmarks and dispatches onOpenPane", async () => {

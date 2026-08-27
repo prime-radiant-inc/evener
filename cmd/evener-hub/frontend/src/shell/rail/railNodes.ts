@@ -102,6 +102,7 @@ export interface OverflowPage {
   tier?: TreeTier;
   section?: "live" | "needs_you";
   sectionId?: string;
+  catalog?: "projects" | "archived_projects" | "test_runs";
   offset: number;
   limit: number;
 }
@@ -134,6 +135,16 @@ export function pinSectionOverflowNode(
   limit: number,
 ): OverflowRailNode[] {
   return overflowNode(id, remaining, [{ sectionId, offset, limit }]);
+}
+
+export function catalogOverflowNode(
+  id: string,
+  catalog: "projects" | "archived_projects" | "test_runs",
+  remaining: number,
+  offset: number,
+  limit: number,
+): OverflowRailNode[] {
+  return overflowNode(id, remaining, [{ catalog, offset, limit }]);
 }
 
 export type RailNode = SessionRailNode | ProjectRailNode | LoadingRailNode | InactiveFoldRailNode | OverflowRailNode;

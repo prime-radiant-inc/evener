@@ -220,7 +220,10 @@ test("needs-you selectors keep manifest count, first-occurrence order, short-pag
   expect(selectNeedsYouCount(state)).toBe(75);
   expect(selectNeedsYouRows(state).map((item) => item.ref)).toEqual(["a", "b", "c"]);
   expect(selectSectionRemaining("needs_you", state)).toBe(0);
-  expect(selectNextSectionOffset("needs_you", state)).toBe(4);
+  // The next offset uses the canonical page limit as the stride (offset +
+  // limit), not the actual returned row count: the backend may truncate rows,
+  // and using row count would overlap or repeat pages.
+  expect(selectNextSectionOffset("needs_you", state)).toBe(52);
 });
 
 test("needs-you cursor uses limit as the same-offset canonical tie-break", () => {
@@ -274,7 +277,10 @@ test("needs-you cursor uses limit as the same-offset canonical tie-break", () =>
   });
   const state = navigationStore.getState();
   expect(selectSectionRemaining("needs_you", state)).toBe(2);
-  expect(selectNextSectionOffset("needs_you", state)).toBe(12);
+  // The next offset uses the canonical page limit as the stride (offset +
+  // limit). The last page (by offset then limit tie-break) is the wide
+  // page (offset=10, limit=20), so the next offset is 10 + 20 = 30.
+  expect(selectNextSectionOffset("needs_you", state)).toBe(30);
 });
 
 test("routes encode identifiers, enforce limits, credentials and conditional ETag", async () => {

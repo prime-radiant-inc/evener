@@ -49,7 +49,44 @@ export function selectNextSectionOffset(section: "live" | "needs_you", state = n
     )
     .at(-1);
   if (last?.key.kind !== "section") return 0;
-  return last.key.offset + ((last.data as { sessions?: unknown[] } | null)?.sessions?.length ?? 0);
+  // Use the canonical page limit as the stride, not the actual returned row
+  // count: the backend may truncate rows for byte/node limits, and starting
+  // the next page at offset + rows.length would overlap or repeat rows.
+  return last.key.offset + last.key.limit;
+}
+export function selectCatalogRemaining(
+  catalog: "projects" | "archived_projects" | "test_runs",
+  state = navigationStore.getState(),
+): number {
+  const pages = [...state.resources.values()].filter(
+    (resource) => resource.key.kind === "catalog" && resource.key.catalog === catalog && resource.data !== null,
+  );
+  const last = pages
+    .sort((a, b) =>
+      a.key.kind === "catalog" && b.key.kind === "catalog"
+        ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
+        : 0,
+    )
+    .at(-1);
+  return (last?.data as { remaining?: number } | null)?.remaining ?? 0;
+}
+export function selectNextCatalogOffset(
+  catalog: "projects" | "archived_projects" | "test_runs",
+  state = navigationStore.getState(),
+): number {
+  const pages = [...state.resources.values()].filter(
+    (resource) => resource.key.kind === "catalog" && resource.key.catalog === catalog,
+  );
+  const last = pages
+    .sort((a, b) =>
+      a.key.kind === "catalog" && b.key.kind === "catalog"
+        ? a.key.offset - b.key.offset || a.key.limit - b.key.limit
+        : 0,
+    )
+    .at(-1);
+  if (last?.key.kind !== "catalog") return 0;
+  // Canonical page limit is the stride; the backend may truncate rows.
+  return last.key.offset + last.key.limit;
 }
 export function selectLiveRows(state = navigationStore.getState()): NavigationSessionSummary[] {
   return selectSectionRows("live", state);
@@ -83,6 +120,7 @@ export function selectGlobalRows(state = navigationStore.getState()): Navigation
 export interface LoadedPinSection {
   id: string;
   name: string;
+  member_count: number;
   sessions: NavigationSessionSummary[];
 }
 export function selectPinSections(state = navigationStore.getState()): LoadedPinSection[] {
@@ -94,7 +132,7 @@ export function selectPinSections(state = navigationStore.getState()): LoadedPin
       return left - right;
     })
     .flatMap((resource) => {
-      const data = resource.data as { pin_sections?: Array<{ id: string; name: string }> } | null;
+      const data = resource.data as { pin_sections?: Array<{ id: string; name: string; count: number }> } | null;
       return data?.pin_sections ?? [];
     });
   const seen = new Set<string>();
@@ -105,6 +143,7 @@ export function selectPinSections(state = navigationStore.getState()): LoadedPin
       {
         id: descriptor.id,
         name: descriptor.name,
+        member_count: descriptor.count,
         sessions: loadedSectionRows(state, (key) => key.kind === "pin_section" && key.sectionId === descriptor.id),
       },
     ];
