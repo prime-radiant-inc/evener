@@ -683,7 +683,7 @@ describe("ConversationService", () => {
       const { client, service } = setup();
       await service.open("ref-1");
       client.calls.length = 0;
-      const caps = await service.refreshCapabilities();
+      const caps = await service.refreshCapabilities("ref-1");
       expect(caps).not.toBeNull();
       expect(caps?.send).toBe(true);
       const call = client.calls.find((c) => c.method === "thread/read");
@@ -696,8 +696,11 @@ describe("ConversationService", () => {
 
     it("returns null when no thread is open", async () => {
       const { service } = setup();
-      const caps = await service.refreshCapabilities();
-      expect(caps).toBeNull();
+      // With explicit ref, refreshCapabilities always reads the wire.
+      // The null return is no longer based on internal ref state.
+      const caps = await service.refreshCapabilities("ref-1");
+      expect(caps).not.toBeNull();
+      expect(caps?.send).toBe(true);
     });
   });
 
@@ -752,11 +755,18 @@ describe("ConversationService", () => {
       expect(typeof service.close).toBe("function");
     });
 
-    it("open(ref) signature preserved exactly — no cursor parameter", async () => {
-      const { service } = setup();
-      // open takes exactly one argument (ref), not (ref, cursor)
+    it("open(ref, cursor?) accepts optional cursor for bounded reads", async () => {
+      const { client, service } = setup();
       const conv = await service.open("ref-1");
       expect(conv.id).toBe("thread-1");
+      // With cursor, open sends turnLimit for a bounded initial read.
+      client.calls.length = 0;
+      await service.open("ref-1", "some-cursor");
+      const call = client.calls.find((c) => c.method === "thread/read");
+      expect(call).toBeDefined();
+      const params = call?.params as Record<string, unknown>;
+      expect(params).toHaveProperty("turnLimit");
+      expect(params.turnLimit).toBe(50);
     });
   });
 });

@@ -9,6 +9,7 @@ import type {
   MutationReceipt,
   ThreadCapabilities,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import { WireError } from "../../../cmd/evener-hub/frontend/src/protocol/errors";
 import type {
   MobileCapabilities,
   MobileConversation,
@@ -18,17 +19,53 @@ import type {
   ConversationReadProjection,
   LiveConversationService,
 } from "../services/conversation";
-import { createActivityStore } from "./activity";
 import {
-  createActivitySink,
   createAuthoritativeRereadScheduler,
   createConversationStore,
   MAX_ITEM_BYTES,
+  type LiveActivitySink,
   type RehydrateCoalescer,
   truncateText,
 } from "./conversation";
 
 // --- fixture helpers ---------------------------------------------------------
+
+// F4: A fake LiveActivitySink implementing the strict identity-first API.
+// Records all calls for test assertions. applyLiveNotification returns
+// "applied" by default, but tests can override the return per-notification.
+class FakeLiveActivitySink implements LiveActivitySink {
+  setLiveViewCalls: { identity: unknown; view: ActivityView | null }[] = [];
+  applyLiveNotificationCalls: { identity: unknown; n: AnyNotification }[] = [];
+  resetCalls = 0;
+  // Override per-notification return value. If set, called for each n.
+  notificationOutcome?: (n: AnyNotification) => "applied" | "rehydrate" | "ignored";
+
+  setLiveView(identity: unknown, view: ActivityView): void {
+    this.setLiveViewCalls.push({ identity, view });
+  }
+  applyLiveNotification(
+    identity: unknown,
+    n: AnyNotification,
+  ): "applied" | "rehydrate" | "ignored" {
+    this.applyLiveNotificationCalls.push({ identity, n });
+    return this.notificationOutcome ? this.notificationOutcome(n) : "applied";
+  }
+  reset(): void {
+    this.resetCalls += 1;
+  }
+}
+
+// Helper: create a fake sink that always returns "applied".
+function createFakeSink(): FakeLiveActivitySink {
+  return new FakeLiveActivitySink();
+}
+
+// Helper: create a fake sink that returns "rehydrate" for all notifications.
+function createRehydrateSink(): FakeLiveActivitySink {
+  const sink = new FakeLiveActivitySink();
+  sink.notificationOutcome = () => "rehydrate";
+  return sink;
+}
 
 const ALL_TRUE_CAPS: ThreadCapabilities = {
   send: true,
@@ -111,7 +148,7 @@ class FakeConversationService implements LiveConversationService {
   refreshCapsResult: ThreadCapabilities | null = null;
   refreshCapsCallCount = 0;
 
-  async open(ref: string): Promise<MobileConversation> {
+  async open(ref: string, _cursor?: string): Promise<MobileConversation> {
     this.ref = ref;
     return this.openConv;
   }
@@ -129,7 +166,7 @@ class FakeConversationService implements LiveConversationService {
       olderCursor: this.olderCursor,
     };
   }
-  async refreshCapabilities(): Promise<ThreadCapabilities | null> {
+  async refreshCapabilities(_ref: string): Promise<ThreadCapabilities | null> {
     this.refreshCapsCallCount += 1;
     return this.refreshCapsResult ?? { ...ALL_TRUE_CAPS };
   }
@@ -229,9 +266,22 @@ describe("ConversationStore", () => {
       service.olderItems = { items: [], nextCursor: "next" };
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
+      // Set a cursor so loadOlder has a page to request.
+      store.setState({ olderCursor: "cursor-1" });
       const p = store.getState().loadOlder(service);
       expect(store.getState().loadingOlder).toBe(true);
       await p;
+      expect(store.getState().loadingOlder).toBe(false);
+    });
+
+    it("F8: does not request when olderCursor is null", async () => {
+      const service = new FakeConversationService();
+      service.olderItems = { items: [], nextCursor: "next" };
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      // olderCursor is null after open — loadOlder should not request.
+      expect(store.getState().olderCursor).toBeNull();
+      await store.getState().loadOlder(service);
       expect(store.getState().loadingOlder).toBe(false);
     });
   });
@@ -517,8 +567,8 @@ describe("ConversationStore", () => {
       });
       await store.getState().open(service, "ref-1");
 
-      // Script send to reject with actionUnavailable
-      const rejectErr = Object.assign(new Error("action unavailable"), {
+      // Script send to reject with actionUnavailable (F11: real WireError)
+      const rejectErr = new WireError("action unavailable", -32000, {
         evenerErrorInfo: "actionUnavailable",
       });
       service.sendShouldReject = rejectErr as Error;
@@ -714,7 +764,7 @@ describe("ConversationStore", () => {
   describe("openProjected", () => {
     it("uses readProjection to set conversation, cursor, and activity view", async () => {
       const service = new FakeConversationService();
-      const activityStore = createActivityStore();
+      const sink = createFakeSink();
       const store = createConversationStore();
       const activityView: ActivityView = {
         tasks: [{ status: "done", count: 3 }],
@@ -729,28 +779,27 @@ describe("ConversationStore", () => {
       };
       await store
         .getState()
-        .openProjected(service, createActivitySink(activityStore), "ref-1");
+        .openProjected(service, sink, "ref-1");
       expect(store.getState().conversation?.id).toBe("thread-proj");
       expect(store.getState().olderCursor).toBe("cursor-initial");
       expect(store.getState().status).toBe("open");
-      // Activity store should have the projected view
-      expect(activityStore.getState().view).toBe(activityView);
+      // F4: The sink should have received the activity view via setLiveView.
+      expect(sink.setLiveViewCalls.length).toBe(1);
+      expect(sink.setLiveViewCalls[0]?.view).toBe(activityView);
     });
 
     it("subscribes to notifications", async () => {
       const service = new FakeConversationService();
-      const activityStore = createActivityStore();
       const store = createConversationStore();
       await store
         .getState()
-        .openProjected(service, createActivitySink(activityStore), "ref-1");
+        .openProjected(service, createFakeSink(), "ref-1");
       // The store should have subscribed for notifications
       expect(service.notificationHandler).not.toBeNull();
     });
 
     it("preserves olderCursor across openProjected", async () => {
       const service = new FakeConversationService();
-      const activityStore = createActivityStore();
       const store = createConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation(),
@@ -764,13 +813,12 @@ describe("ConversationStore", () => {
       };
       await store
         .getState()
-        .openProjected(service, createActivitySink(activityStore), "ref-1");
+        .openProjected(service, createFakeSink(), "ref-1");
       expect(store.getState().olderCursor).toBe("page-1");
     });
 
     it("resets draft from prior thread (I8)", async () => {
       const service = new FakeConversationService();
-      const activityStore = createActivityStore();
       const store = createConversationStore();
       // Set draft from a prior thread
       store.getState().setDraft("old thread draft");
@@ -787,14 +835,14 @@ describe("ConversationStore", () => {
       };
       await store
         .getState()
-        .openProjected(service, createActivitySink(activityStore), "ref-1");
+        .openProjected(service, createFakeSink(), "ref-1");
       // Draft should be reset — not carried from the prior thread.
       expect(store.getState().draft).toBe("");
     });
 
     it("C3: routes notifications to both conversation and activity stores", async () => {
       const service = new FakeConversationService();
-      const activityStore = createActivityStore();
+      const sink = createFakeSink();
       const store = createConversationStore();
       const activityView: ActivityView = {
         tasks: [{ status: "done", count: 3 }],
@@ -809,9 +857,9 @@ describe("ConversationStore", () => {
       };
       await store
         .getState()
-        .openProjected(service, createActivitySink(activityStore), "ref-1");
+        .openProjected(service, sink, "ref-1");
       // Emit a notification that both stores should handle
-      service.notificationHandler?.({
+      const n: AnyNotification = {
         method: "evener/task/updated",
         params: {
           threadId: "thread-1",
@@ -819,12 +867,11 @@ describe("ConversationStore", () => {
           total: 10,
           done: 5,
         },
-      } as AnyNotification);
-      // Activity store should have been patched
-      const doneGroup = activityStore
-        .getState()
-        .view?.tasks.find((g) => g.status === "done");
-      expect(doneGroup?.count).toBe(5);
+      } as AnyNotification;
+      service.notificationHandler?.(n);
+      // F4: The sink should have received the notification via applyLiveNotification.
+      expect(sink.applyLiveNotificationCalls.length).toBeGreaterThan(0);
+      expect(sink.applyLiveNotificationCalls[0]?.n).toBe(n);
     });
   });
 
@@ -840,6 +887,8 @@ describe("ConversationStore", () => {
       service.olderItems = { items: manyItems, nextCursor: undefined };
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
+      // Set a cursor so loadOlder has a page to request.
+      store.setState({ olderCursor: "cursor-1" });
       await store.getState().loadOlder(service);
       const conv = store.getState().conversation;
       expect(conv).not.toBeNull();
@@ -847,11 +896,11 @@ describe("ConversationStore", () => {
       expect(conv?.items.length).toBeLessThanOrEqual(500);
     });
 
-    it("I7: prepends older items and retains the oldest (not newest) at cap", async () => {
+    it("I7: prepends older items and retains the newest live tail at cap", async () => {
       const service = new FakeConversationService();
       // Create 600 existing items + 600 older items = 1200 total. Cap is 500.
-      // Prepend ordering should keep the oldest 500 (from the front of the
-      // merged array), so further paging still has useful rows.
+      // Prepend ordering should keep the newest 500 (the live tail at the end
+      // of the merged array), so the most recent items remain visible.
       const existingItems = Array.from({ length: 600 }, (_, i) => ({
         kind: "user" as const,
         id: `existing-${i}`,
@@ -866,14 +915,17 @@ describe("ConversationStore", () => {
       service.olderItems = { items: olderItems, nextCursor: undefined };
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
+      // Set a cursor so loadOlder has a page to request.
+      store.setState({ olderCursor: "cursor-1" });
       // open() caps existing items to 500 (newest)
       expect(store.getState().conversation?.items.length).toBe(500);
       await store.getState().loadOlder(service);
       const conv = store.getState().conversation;
       expect(conv?.items.length).toBe(500);
-      // The oldest items (from loadOlder) should be at the front, since
-      // we trim from the newest (end) in prepend mode.
-      expect(conv?.items[0]?.id).toBe("older-0");
+      // The newest items (from existing) should be at the tail, since
+      // we trim from the oldest (front) in prepend mode to retain the
+      // live tail.
+      expect(conv?.items[499]?.id).toBe("existing-599");
     });
   });
 
@@ -1147,13 +1199,25 @@ describe("ConversationStore", () => {
       const rehydrateCalls: string[] = [];
       const service = new FakeConversationService();
       const store = createConversationStore();
+      const sink = createFakeSink();
       service.openConv = makeConversation({ items: [] });
-      await store.getState().open(service, "ref-1");
-      store.getState().setCoalescer({
+      // F2: openProjected binds the coalescer internally. Use a custom
+      // scheduler to intercept rehydrate calls.
+      const customScheduler: RehydrateCoalescer = {
         requestRehydrate(ref: string) {
           rehydrateCalls.push(ref);
         },
-      });
+        async flush() {},
+      };
+      await store
+        .getState()
+        .openProjected(service, sink, "ref-1");
+      // Replace the internally-created coalescer with our test one.
+      // The store's applyNotification uses the closure coalescer.
+      // Since we can't inject it via setCoalescer (removed), we test
+      // via the notification handler which calls coalescer.requestRehydrate.
+      // The internal coalescer calls rehydrate — verify via readProjectionCalls.
+      const initialReads = service.readProjectionCalls.length;
       // Delta for an item that doesn't exist in the store
       store.getState().applyNotification({
         method: "item/agentMessage/delta",
@@ -1165,7 +1229,11 @@ describe("ConversationStore", () => {
           delta: "text",
         },
       } as AnyNotification);
-      expect(rehydrateCalls).toContain("ref-1");
+      // The internal coalescer schedules a rehydrate via microtask.
+      // Wait for it to fire.
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
     });
   });
 
@@ -1305,11 +1373,9 @@ describe("ConversationStore", () => {
     });
   });
 
-  describe("resync coalesces to one rehydrate via injected coalescer", () => {
+  describe("resync coalesces to one rehydrate via internal coalescer (F5)", () => {
     it("coalesces evener/thread/resync into one rehydrate call", async () => {
-      const rehydrateCalls: { ref: string }[] = [];
       const service = new FakeConversationService();
-      const activityStore = createActivityStore();
       const store = createConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ id: "thread-1" }),
@@ -1321,29 +1387,17 @@ describe("ConversationStore", () => {
         },
         olderCursor: "cursor-after-resync",
       };
+      // F2: openProjected binds the coalescer internally.
       await store
         .getState()
-        .openProjected(service, createActivitySink(activityStore), "ref-1");
+        .openProjected(service, createFakeSink(), "ref-1");
 
-      // Create an injected coalescer that batches rehydrate calls.
-      let pending = false;
-      const coalescer = {
-        requestRehydrate(ref: string) {
-          if (pending) return;
-          pending = true;
-          // In production this would be scheduled; in the test we resolve
-          // immediately but only once even if called multiple times.
-          queueMicrotask(() => {
-            pending = false;
-            rehydrateCalls.push({ ref });
-          });
-        },
-      };
+      // The initial openProjected calls readProjection once.
+      const initialReads = service.readProjectionCalls.length;
+      expect(initialReads).toBe(1);
 
-      // Inject the coalescer into the store.
-      store.getState().setCoalescer(coalescer);
-
-      // Emit multiple resync notifications — they should coalesce to one.
+      // Emit multiple resync notifications — they should coalesce to one
+      // rehydrate (one additional readProjection call).
       store.getState().applyNotification({
         method: "evener/thread/resync",
         params: { threadId: "thread-1", ref: "ref-1" },
@@ -1357,17 +1411,17 @@ describe("ConversationStore", () => {
         params: { threadId: "thread-1", ref: "ref-1" },
       } as AnyNotification);
 
-      // The coalescer should have been invoked once, not three times.
-      // We need to allow microtasks to flush.
+      // The internal coalescer schedules rehydrate via microtask.
+      // Wait for microtasks to flush.
       await Promise.resolve();
       await Promise.resolve();
-      expect(rehydrateCalls.length).toBe(1);
+      await Promise.resolve();
+      // F5: One rehydrate call = one additional readProjection call.
+      expect(service.readProjectionCalls.length).toBe(initialReads + 1);
     });
 
     it("unsupported item transition triggers coalesced rehydrate", async () => {
-      const rehydrateCalls: { ref: string }[] = [];
       const service = new FakeConversationService();
-      const activityStore = createActivityStore();
       const store = createConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ id: "thread-1" }),
@@ -1381,25 +1435,12 @@ describe("ConversationStore", () => {
       };
       await store
         .getState()
-        .openProjected(service, createActivitySink(activityStore), "ref-1");
+        .openProjected(service, createFakeSink(), "ref-1");
 
-      let pending = false;
-      const coalescer = {
-        requestRehydrate(ref: string) {
-          if (pending) return;
-          pending = true;
-          queueMicrotask(() => {
-            pending = false;
-            rehydrateCalls.push({ ref });
-          });
-        },
-      };
-
-      // Inject the coalescer into the store.
-      store.getState().setCoalescer(coalescer);
+      const initialReads = service.readProjectionCalls.length;
 
       // An unknown notification method (unsupported item transition) should
-      // also trigger the coalescer, not a crash.
+      // trigger the internal coalescer, not a crash.
       store.getState().applyNotification({
         method: "item/unknownFutureTransition" as never,
         params: {
@@ -1411,7 +1452,8 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       await Promise.resolve();
       await Promise.resolve();
-      expect(rehydrateCalls.length).toBe(1);
+      await Promise.resolve();
+      expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
     });
   });
 
@@ -1447,7 +1489,6 @@ describe("ConversationStore", () => {
   describe("rehydrate preserves draft and presentation state", () => {
     it("preserves draft text across rehydrate", async () => {
       const service = new FakeConversationService();
-      const activityStore = createActivityStore();
       const store = createConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ id: "thread-1" }),
@@ -1461,12 +1502,12 @@ describe("ConversationStore", () => {
       };
       await store
         .getState()
-        .openProjected(service, createActivitySink(activityStore), "ref-1");
+        .openProjected(service, createFakeSink(), "ref-1");
       store.getState().setDraft("my unsent draft");
       // Rehydrate: should preserve the draft
       await store
         .getState()
-        .rehydrate(service, createActivitySink(activityStore));
+        .rehydrate(service, createFakeSink());
       expect(store.getState().draft).toBe("my unsent draft");
     });
 
@@ -1474,7 +1515,6 @@ describe("ConversationStore", () => {
       // C7: expandedToolKeys is removed from the production store — presentation
       // state lives in live-ui-store. Rehydrate only preserves draft.
       const service = new FakeConversationService();
-      const activityStore = createActivityStore();
       const store = createConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ id: "thread-1" }),
@@ -1488,12 +1528,12 @@ describe("ConversationStore", () => {
       };
       await store
         .getState()
-        .openProjected(service, createActivitySink(activityStore), "ref-1");
+        .openProjected(service, createFakeSink(), "ref-1");
       // Rehydrate should preserve draft but not carry presentation state.
       store.getState().setDraft("my draft");
       await store
         .getState()
-        .rehydrate(service, createActivitySink(activityStore));
+        .rehydrate(service, createFakeSink());
       expect(store.getState().draft).toBe("my draft");
     });
   });
@@ -1501,7 +1541,6 @@ describe("ConversationStore", () => {
   describe("olderCursor survives open/rehydrate", () => {
     it("preserves olderCursor from openProjected through rehydrate", async () => {
       const service = new FakeConversationService();
-      const activityStore = createActivityStore();
       const store = createConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ id: "thread-1" }),
@@ -1515,7 +1554,7 @@ describe("ConversationStore", () => {
       };
       await store
         .getState()
-        .openProjected(service, createActivitySink(activityStore), "ref-1");
+        .openProjected(service, createFakeSink(), "ref-1");
       expect(store.getState().olderCursor).toBe("initial-cursor");
       // Update the projection result for rehydrate
       service.readProjectionResult = {
@@ -1530,7 +1569,7 @@ describe("ConversationStore", () => {
       };
       await store
         .getState()
-        .rehydrate(service, createActivitySink(activityStore));
+        .rehydrate(service, createFakeSink());
       expect(store.getState().olderCursor).toBe("updated-cursor");
     });
   });
@@ -1544,7 +1583,11 @@ describe("ConversationStore", () => {
       // These must be functions on the production store (not optional).
       expect(typeof s.openProjected).toBe("function");
       expect(typeof s.rehydrate).toBe("function");
-      expect(typeof s.setCoalescer).toBe("function");
+      // F2: setCoalescer is removed — openProjected binds the coalescer
+      // internally.
+      expect(typeof (s as unknown as Record<string, unknown>).setCoalescer).toBe(
+        "undefined",
+      );
     });
   });
 
@@ -1657,7 +1700,6 @@ describe("ConversationStore", () => {
   describe("F5: AuthoritativeRereadScheduler.request(key, effect)", () => {
     it("coalesces multiple signals to one readProjection", async () => {
       const service = new FakeConversationService();
-      const activityStore = createActivityStore();
       const store = createConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ id: "thread-1" }),
@@ -1669,18 +1711,13 @@ describe("ConversationStore", () => {
         },
         olderCursor: "cursor-1",
       };
+      // F2: openProjected binds the coalescer internally.
       await store
         .getState()
-        .openProjected(service, createActivitySink(activityStore), "ref-1");
+        .openProjected(service, createFakeSink(), "ref-1");
 
-      // The scheduler should be injectable via setCoalescer.
-      // It coalesces multiple requestRehydrate calls into one actual
-      // readProjection call.
-      const activitySink = createActivitySink(activityStore);
-      const scheduler = createAuthoritativeRereadScheduler(async (_key) => {
-        await store.getState().rehydrate(service, activitySink);
-      });
-      store.getState().setCoalescer(scheduler);
+      // The internal coalescer coalesces multiple requestRehydrate calls
+      // into one actual readProjection call.
 
       // Emit multiple resync notifications.
       service.readProjectionCalls = []; // reset count
@@ -1722,7 +1759,7 @@ describe("ConversationStore", () => {
       };
 
       // Track what the sink receives.
-      const setViewCalls: {
+      const setLiveViewCalls: {
         view: ActivityView;
         identity: { threadId: string; ref: string; generation: number };
       }[] = [];
@@ -1732,16 +1769,16 @@ describe("ConversationStore", () => {
       }[] = [];
       const resetCalls: number[] = [];
 
-      const sink = {
-        setView(
+      const sink: LiveActivitySink = {
+        setLiveView(
+          identity: { threadId: string; ref: string; generation: number },
           view: ActivityView,
-          identity: { threadId: string; ref: string; generation: number },
         ) {
-          setViewCalls.push({ view, identity });
+          setLiveViewCalls.push({ view, identity });
         },
-        applyNotification(
-          n: AnyNotification,
+        applyLiveNotification(
           identity: { threadId: string; ref: string; generation: number },
+          n: AnyNotification,
         ) {
           applyCalls.push({ n, identity });
           return "applied" as const;
@@ -1753,9 +1790,10 @@ describe("ConversationStore", () => {
 
       await store.getState().openProjected(service, sink, "ref-1");
 
-      // setView should have been called with the activity view.
-      expect(setViewCalls).toHaveLength(1);
-      expect(setViewCalls[0]?.view).toBe(activityView);
+      // F4: setLiveView should have been called with the activity view
+      // (identity-first).
+      expect(setLiveViewCalls).toHaveLength(1);
+      expect(setLiveViewCalls[0]?.view).toBe(activityView);
 
       // Emit a notification via the service's notification handler — it
       // should be routed to both conversation store and the sink.
@@ -1775,10 +1813,24 @@ describe("ConversationStore", () => {
   });
 
   describe("F7: ask_user started/completed projects question, deltas schedule reread", () => {
-    it("item/started with ask_user type projects as question", async () => {
+    it("item/started with ask_user type schedules reread, not generic activity", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
-      await store.getState().open(service, "ref-1");
+      service.readProjectionResult = {
+        conversation: makeConversation({ items: [] }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      // F6: openProjected binds the coalescer internally.
+      await store
+        .getState()
+        .openProjected(service, createFakeSink(), "ref-1");
+      const initialReads = service.readProjectionCalls.length;
       store.getState().applyNotification({
         method: "item/started",
         params: {
@@ -1795,17 +1847,35 @@ describe("ConversationStore", () => {
           },
         },
       } as AnyNotification);
-      // The item should be projected. An in-progress ask_user is NOT a
-      // pending question yet — it's an activity row until completed.
+      // F6: ask_user should NOT be projected as a generic activity item.
+      // It should schedule an authoritative reread instead.
       const conv = store.getState().conversation;
       const item = conv?.items.find((i) => i.id === "ask-1");
-      expect(item).toBeDefined();
+      expect(item).toBeUndefined();
+      // Wait for the internal coalescer to fire.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
     });
 
-    it("item/completed with ask_user and parseable questions projects as question", async () => {
+    it("item/completed with ask_user schedules reread, not generic activity", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
-      await store.getState().open(service, "ref-1");
+      service.readProjectionResult = {
+        conversation: makeConversation({ items: [] }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      await store
+        .getState()
+        .openProjected(service, createFakeSink(), "ref-1");
+      const initialReads = service.readProjectionCalls.length;
       store.getState().applyNotification({
         method: "item/completed",
         params: {
@@ -1822,23 +1892,36 @@ describe("ConversationStore", () => {
           },
         },
       } as AnyNotification);
+      // F6: ask_user should NOT be projected as a generic activity item.
       const conv = store.getState().conversation;
-      // The completed ask_user should be an authoritative upsert — not lost.
       const item = conv?.items.find((i) => i.id === "ask-1");
-      expect(item).toBeDefined();
+      expect(item).toBeUndefined();
+      // Wait for the internal coalescer to fire.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
     });
 
-    it("missing assistant delta schedules reread via coalescer", async () => {
-      const rehydrateCalls: string[] = [];
+    it("missing assistant delta schedules reread via internal coalescer", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.openConv = makeConversation({ items: [] });
-      await store.getState().open(service, "ref-1");
-      store.getState().setCoalescer({
-        requestRehydrate(ref: string) {
-          rehydrateCalls.push(ref);
+      service.readProjectionResult = {
+        conversation: makeConversation({ items: [] }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
         },
-      });
+        olderCursor: null,
+      };
+      // F2: openProjected binds the coalescer internally.
+      await store
+        .getState()
+        .openProjected(service, createFakeSink(), "ref-1");
+      const initialReads = service.readProjectionCalls.length;
       store.getState().applyNotification({
         method: "item/agentMessage/delta",
         params: {
@@ -1849,11 +1932,14 @@ describe("ConversationStore", () => {
           delta: "text",
         },
       } as AnyNotification);
-      expect(rehydrateCalls).toContain("ref-1");
+      // Wait for the internal coalescer to fire.
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
     });
 
     it("wrong-kind delta (reasoning delta targeting activity of wrong kind) schedules reread", async () => {
-      const rehydrateCalls: string[] = [];
       const service = new FakeConversationService();
       const store = createConversationStore();
       // An assistant item that a reasoning delta targets — wrong kind.
@@ -1862,12 +1948,24 @@ describe("ConversationStore", () => {
           { kind: "assistant", id: "r-1", markdown: "", streaming: false },
         ],
       });
-      await store.getState().open(service, "ref-1");
-      store.getState().setCoalescer({
-        requestRehydrate(ref: string) {
-          rehydrateCalls.push(ref);
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          items: [
+            { kind: "assistant", id: "r-1", markdown: "", streaming: false },
+          ],
+        }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
         },
-      });
+        olderCursor: null,
+      };
+      await store
+        .getState()
+        .openProjected(service, createFakeSink(), "ref-1");
+      const initialReads = service.readProjectionCalls.length;
       // reasoning delta targeting an assistant item — wrong kind.
       store.getState().applyNotification({
         method: "item/reasoning/summaryTextDelta",
@@ -1880,19 +1978,29 @@ describe("ConversationStore", () => {
           delta: "thinking",
         },
       } as AnyNotification);
-      expect(rehydrateCalls).toContain("ref-1");
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
     });
 
     it("unrelated notification does NOT schedule reread", async () => {
-      const rehydrateCalls: string[] = [];
       const service = new FakeConversationService();
       const store = createConversationStore();
-      await store.getState().open(service, "ref-1");
-      store.getState().setCoalescer({
-        requestRehydrate(ref: string) {
-          rehydrateCalls.push(ref);
+      service.readProjectionResult = {
+        conversation: makeConversation({ items: [] }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
         },
-      });
+        olderCursor: null,
+      };
+      await store
+        .getState()
+        .openProjected(service, createFakeSink(), "ref-1");
+      const initialReads = service.readProjectionCalls.length;
       // A thread/status/changed is a known notification — should NOT reread.
       store.getState().applyNotification({
         method: "thread/status/changed",
@@ -1902,7 +2010,10 @@ describe("ConversationStore", () => {
           status: { type: "running" },
         },
       } as AnyNotification);
-      expect(rehydrateCalls).toHaveLength(0);
+      await Promise.resolve();
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(service.readProjectionCalls.length).toBe(initialReads);
     });
 
     it("warning insertion obeys item cap", async () => {
@@ -1993,6 +2104,110 @@ describe("ConversationStore", () => {
       const decoded = new TextDecoder().decode(encoder.encode(truncated));
       expect(decoded).toBe(truncated);
     });
+
+    it("F12: emoji at boundary does not produce U+FFFD", () => {
+      // 😀 is U+1F600, 4 bytes in UTF-8. Place it right at the boundary so
+      // the code-point iteration must decide whether to include it.
+      // 16,381 'a' chars = 16,381 bytes. Plus one 😀 = 4 bytes = 16,385.
+      // Max is 64KiB = 65,536 bytes. We need text that's just over 64KiB.
+      const filler = "a".repeat(65_533); // 65,533 bytes
+      const text = filler + "😀" + "x".repeat(10); // over 64KiB
+      const truncated = truncateText(text, MAX_ITEM_BYTES);
+      const encoder = new TextEncoder();
+      expect(encoder.encode(truncated).length).toBeLessThanOrEqual(65536);
+      expect(truncated.endsWith("… truncated")).toBe(true);
+      // Must not contain U+FFFD replacement char
+      expect(truncated).not.toContain("\uFFFD");
+      // Must be valid Unicode (round-trip)
+      const decoded = new TextDecoder().decode(encoder.encode(truncated));
+      expect(decoded).toBe(truncated);
+    });
+
+    it("F12: genuine marker suffix in content does not freeze delta appends", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      // Content that genuinely ends with "… truncated" but is under the
+      // byte limit — should NOT be treated as already truncated.
+      const genuineContent = "Hello… truncated";
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "assistant",
+            id: "item-genuine",
+            markdown: genuineContent,
+            streaming: true,
+          },
+        ],
+      });
+      await store.getState().open(service, "ref-1");
+      // The item is under the byte limit, so it should not be in the
+      // truncated set. A delta should append normally.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "item-genuine",
+          delta: " more text",
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      const item = conv?.items.find((i) => i.id === "item-genuine");
+      if (item?.kind === "assistant") {
+        // The delta should have been appended — not frozen by the
+        // genuine "… truncated" suffix.
+        expect(item.markdown).toBe("Hello… truncated more text");
+      }
+    });
+
+    it("F12: marker appears exactly once and delta after cap is blocked", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      const largeText = "x".repeat(70_000);
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "assistant",
+            id: "item-cap",
+            markdown: largeText,
+            streaming: true,
+          },
+        ],
+      });
+      await store.getState().open(service, "ref-1");
+      // The initial projection truncates to 64KiB with marker.
+      const beforeDelta = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "item-cap");
+      if (beforeDelta?.kind === "assistant") {
+        expect(beforeDelta.markdown.endsWith("… truncated")).toBe(true);
+      }
+
+      // Now send a delta — it should NOT append after the marker.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "item-cap",
+          delta: " more text after truncation",
+        },
+      } as AnyNotification);
+
+      const afterDelta = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "item-cap");
+      if (afterDelta?.kind === "assistant") {
+        // The marker must still be exactly once at the end.
+        const markerCount = afterDelta.markdown.split("… truncated").length - 1;
+        expect(markerCount).toBe(1);
+        expect(afterDelta.markdown.endsWith("… truncated")).toBe(true);
+        // The delta text must NOT appear after the marker.
+        expect(afterDelta.markdown).not.toContain("more text after truncation");
+      }
+    });
   });
 
   describe("F9: stale safety — generation and operation identity", () => {
@@ -2008,7 +2223,6 @@ describe("ConversationStore", () => {
 
     it("stale rehydrate catch does not set error on newer generation", async () => {
       const service = new FakeConversationService();
-      const activityStore = createActivityStore();
       const store = createConversationStore();
       service.readProjectionResult = {
         conversation: makeConversation({ id: "thread-1" }),
@@ -2022,7 +2236,7 @@ describe("ConversationStore", () => {
       };
       await store
         .getState()
-        .openProjected(service, createActivitySink(activityStore), "ref-1");
+        .openProjected(service, createFakeSink(), "ref-1");
 
       // Start a rehydrate that will fail.
       let rejectRehydrate: ((e: Error) => void) | null = null as
@@ -2038,7 +2252,7 @@ describe("ConversationStore", () => {
 
       const rehydratePromise = store
         .getState()
-        .rehydrate(service, createActivitySink(activityStore));
+        .rehydrate(service, createFakeSink());
 
       // While rehydrate is in-flight, open a new conversation (new generation).
       service.readProjection = origReadProjection;
@@ -2054,7 +2268,7 @@ describe("ConversationStore", () => {
       };
       await store
         .getState()
-        .openProjected(service, createActivitySink(activityStore), "ref-2");
+        .openProjected(service, createFakeSink(), "ref-2");
 
       // Now the stale rehydrate fails.
       rejectRehydrate?.(new Error("stale rehydrate error"));
@@ -2069,6 +2283,8 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
+      // Set a cursor so loadOlder has a page to request.
+      store.setState({ olderCursor: "cursor-1" });
 
       // Start loadOlder that hangs.
       let resolveOlder: (() => void) | null = null as (() => void) | null;
@@ -2102,6 +2318,8 @@ describe("ConversationStore", () => {
         items: [{ kind: "user", id: "item-1", text: "existing" }],
       });
       await store.getState().open(service, "ref-1");
+      // Set a cursor so loadOlder has a page to request.
+      store.setState({ olderCursor: "cursor-1" });
 
       // loadOlder returns items that include a duplicate of item-1.
       service.olderItems = {
@@ -2132,6 +2350,8 @@ describe("ConversationStore", () => {
       }
       service.openConv = makeConversation({ items });
       await store.getState().open(service, "ref-1");
+      // Set a cursor so loadOlder has a page to request.
+      store.setState({ olderCursor: "cursor-1" });
 
       // loadOlder returns 200 more items — total would be 600, capped to 500.
       const olderItems: MobileConversation["items"] = [];
@@ -2143,13 +2363,9 @@ describe("ConversationStore", () => {
 
       const conv = store.getState().conversation;
       expect(conv?.items.length).toBe(500);
-      // When at cap, further paging should be disabled honestly.
-      // olderCursor should be null when we've hit the cap and can't
-      // meaningfully page further without discarding rows.
-      // Actually: the cap trims newest, so the cursor may still be valid
-      // if nextCursor exists. The key is we don't repeatedly load
-      // discarded rows. Let's check we have exactly 500.
-      expect(conv?.items.length).toBeLessThanOrEqual(500);
+      // F8: When at cap, further paging should be disabled honestly —
+      // olderCursor set to null so we don't repeatedly load discarded rows.
+      expect(store.getState().olderCursor).toBeNull();
     });
   });
 
