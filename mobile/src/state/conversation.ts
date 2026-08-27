@@ -877,21 +877,34 @@ export function createConversationStore() {
   //   - An item whose original content is short → unfrozen, even if it was
   //     frozen before (authoritative short version unfreezes).
   //   - An ID omitted/capped from the final set → removed (no stale freeze).
+  //   - An already-frozen item that remains in the final set (a current item
+  //     whose text was already truncated by a prior path — its text is ≤
+  //     MAX_ITEM_BYTES so exceedsByteLimit is false) stays frozen via
+  //     priorFrozenIds. This is critical for loadOlder: current items are
+  //     already truncated; without priorFrozenIds the reconciliation would
+  //     unfreeze them. Intersected with the final IDs so capped/removed
+  //     ownership drops.
   //   - A superseded item (a live version that replaced the reread's version
   //     during the rehydrate await — already truncated by a prior live delta,
   //     so its text is ≤ MAX_ITEM_BYTES and exceedsByteLimit is false) stays
-  //     frozen: it was frozen by the live delta and the live version is newer.
+  //     frozen via supersededFrozenIds. Only superseded IDs that are STILL in
+  //     truncatedItemIds at call time are passed — a short lifecycle/delta/reset
+  //     that removed the freeze stays unfrozen.
   //   - Activity families are rebuilt from labels so family discrimination
   //     continues to work for retained items.
   // `items` are the FINAL retained items BEFORE truncateItem runs (so
-  // exceedsByteLimit sees the original oversized content). `supersededIds`
-  // identifies items whose freeze must be preserved (live-owned versions that
-  // replaced the reread during the await); for open/openProjected/loadOlder
-  // this is empty (no superseded items).
+  // exceedsByteLimit sees the original oversized content). `priorFrozenIds`
+  // is the set of IDs frozen before this call (captured by the caller before
+  // any live update); only IDs still in the final set are preserved.
+  // `supersededFrozenIds` is the set of superseded IDs that are still frozen
+  // (intersected with truncatedItemIds by the caller); only IDs in the final
+  // set are preserved.
   function reconcileTruncationFrom(
     items: MobileTimelineItem[],
-    supersededIds: Set<string> = new Set(),
+    priorFrozenIds: Set<string> = new Set(),
+    supersededFrozenIds: Set<string> = new Set(),
   ): void {
+    const retainedIds = new Set(items.map((i) => i.id));
     truncatedItemIds.clear();
     itemFamilies.clear();
     for (const item of items) {
@@ -911,7 +924,14 @@ export function createConversationStore() {
           item.label === "Reasoning" ? "reasoning" : "tool",
         );
       }
-      if (needsTruncation || supersededIds.has(item.id)) {
+      // Freeze if: original content is oversized, OR the item was already
+      // frozen and remains in the final set (priorFrozenIds), OR the item
+      // is a superseded live version still frozen (supersededFrozenIds).
+      if (
+        needsTruncation ||
+        (priorFrozenIds.has(item.id) && retainedIds.has(item.id)) ||
+        (supersededFrozenIds.has(item.id) && retainedIds.has(item.id))
+      ) {
         truncatedItemIds.add(item.id);
       }
     }
@@ -1326,12 +1346,28 @@ export function createConversationStore() {
           // ownership exactly from the FINAL retained (capped) pre-truncation
           // items. mergedItems already contains superseded live/page
           // replacements (newer versions preserved based on final actual
-          // content). Superseded items (frozen by a prior live delta — their
-          // text is already ≤ MAX_ITEM_BYTES so exceedsByteLimit is false) stay
-          // frozen via supersededIds. Non-superseded short versions unfreeze.
-          // Then truncate the text.
+          // content). I2: do NOT pass all superseded live IDs as frozen —
+          // only superseded IDs that are STILL in truncatedItemIds after the
+          // accepted live update. A short lifecycle/delta/reset that removed
+          // the freeze stays unfrozen; a superseded item still frozen (live
+          // delta made it oversized) stays frozen. I1: priorFrozenIds preserves
+          // freeze for already-frozen current-only items (live tail / page
+          // items not in the reread — already truncated, text ≤ limit). Reread
+          // IDs are authoritative: short content unfreezes, oversized freezes.
+          const rehydratePriorFrozen = new Set<string>();
+          for (const id of truncatedItemIds) {
+            if (!rereadIds.has(id)) rehydratePriorFrozen.add(id);
+          }
+          const supersededFrozen = new Set<string>();
+          for (const id of supersededIds) {
+            if (truncatedItemIds.has(id)) supersededFrozen.add(id);
+          }
           const rehydrateCapped = capItems(mergedItems);
-          reconcileTruncationFrom(rehydrateCapped, supersededIds);
+          reconcileTruncationFrom(
+            rehydrateCapped,
+            rehydratePriorFrozen,
+            supersededFrozen,
+          );
           const committedItems = truncateAndRecord(rehydrateCapped);
           const committedConversation = {
             ...conversation,
@@ -1432,11 +1468,14 @@ export function createConversationStore() {
             // so the newest live tail is retained (finding 8).
             // Task 2A-Truncation: cap the pre-truncation merged items, reconcile
             // truncation ownership exactly from the FINAL retained (capped)
-            // items (paged oversized items freeze and marker appears once;
-            // already-frozen current items stay frozen; items trimmed by the
-            // cap are removed), then truncate the text.
+            // items. I1: capture prior frozen IDs BEFORE reconciliation so
+            // already-frozen current items (already truncated, text ≤ limit,
+            // exceedsByteLimit false) stay frozen — intersect with final IDs
+            // so capped/removed ownership drops. Incoming raw page items freeze
+            // independently via exceedsByteLimit. Then truncate the text.
+            const priorFrozen = new Set(truncatedItemIds);
             const pageMerged = capItems([...deduped, ...currentConv.items]);
-            reconcileTruncationFrom(pageMerged);
+            reconcileTruncationFrom(pageMerged, priorFrozen);
             const merged = truncateAndRecord(pageMerged);
             // F8: If we're at the cap and the merge trimmed older items,
             // disable further paging honestly — set cursor to null so
