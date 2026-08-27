@@ -13,6 +13,8 @@ import { describe, expect, it } from "vitest";
 import type { MobileConversation } from "../conversation/model";
 import type { OpaqueKeyAllocator } from "./project-conversation";
 import {
+  _resetStripOpCount,
+  _stripOpCount,
   createLiveConversationProjector,
   ProjectionCapacityError,
 } from "./project-conversation";
@@ -2417,6 +2419,54 @@ describe("createLiveConversationProjector", () => {
     expect(utf8Bytes(body)).toBeLessThanOrEqual(65536);
   });
 
+  it("adversarial deep chain A.repeat(n)+B.repeat(n) eliminates all markers in linear work", () => {
+    const p = createLiveConversationProjector();
+    const marker = "… truncated";
+    // A = first Unicode scalar of marker, B = rest of marker.
+    // A.repeat(n) + B.repeat(n) produces n overlapping marker candidates:
+    // each A followed by B forms a marker. After removing one, the adjacent
+    // A and B join to form a new marker. A naive repeated whole-string scan
+    // would need O(n) passes each O(n) → O(n²). A linear single-pass
+    // algorithm processes each scalar once.
+    const A = marker.slice(0, 1); // "…"
+    const B = marker.slice(1); // " truncated"
+    const n = 5_000;
+    // Build oversized input: A*n + B*n + padding to exceed the cap.
+    const padding = "x".repeat(70_000);
+    const largeText = A.repeat(n) + B.repeat(n) + padding;
+
+    const conv = makeConversation({
+      items: [
+        {
+          kind: "assistant",
+          id: "deep-chain",
+          markdown: largeText,
+          streaming: false,
+        },
+      ],
+    });
+
+    _resetStripOpCount();
+    const { view } = p.project(conv, { ...OPTS });
+    const ops = _stripOpCount();
+
+    const item = view.items.find((i) => i.kind === "assistant");
+    expect(item?.truncated).toBe(true);
+    const body = item?.body ?? "";
+    const count = body.split(marker).length - 1;
+    expect(count).toBe(1);
+    expect(body.endsWith(marker)).toBe(true);
+    expect(utf8Bytes(body)).toBeLessThanOrEqual(65536);
+
+    // Operation-count oracle: work must be bounded linearly by input length.
+    // Input length = n * (A.length + B.length) + padding.length.
+    // Linear means ops <= C * inputLength for a small constant C.
+    const inputLength = largeText.length;
+    expect(ops).toBeLessThanOrEqual(inputLength * 4);
+    // And strictly sub-quadratic: ops must be much less than inputLength².
+    expect(ops).toBeLessThan((inputLength * inputLength) / 1000);
+  });
+
   // --- R4: same-failed-projector transactional zero-retention -----------------
 
   it("collision-once allocator on same projector: tight cap proves zero retained identities", () => {
@@ -2450,10 +2500,20 @@ describe("createLiveConversationProjector", () => {
     // Switch to recovery phase and retry on SAME projector.
     phase = "recover";
     // 3 new identities must fit cap=3 — proves zero leaked from failure.
+    // Assert exact retry identity keys to prove the rollback: if any identity
+    // or counter leaked from the failed projection, the allocator counter n
+    // would be offset and these keys would differ, or the projection would
+    // throw ProjectionCapacityError because totalIdentities > 0.
+    // Allocation order: u1 key(r1), u1 seq(r2), u2 key(r3), u2 seq(r4),
+    // thread(r5). 3 identities, 5 allocations.
     const result = p.project(conv, { ...OPTS });
     expect(result.view.items).toHaveLength(2);
-    expect(result.view.items[0]?.key).not.toBe(result.view.items[1]?.key);
-    expect(result.view.threadKey).toBeDefined();
+    expect(result.view.items[0]?.key).toBe("r1");
+    expect(result.view.items[1]?.key).toBe("r3");
+    expect(result.view.threadKey).toBe("r5");
+    // Operational map proves the scope (ref-1) was not retained from failure.
+    expect(result.operational.itemKeys.get("r1")).toBe("u1");
+    expect(result.operational.itemKeys.get("r3")).toBe("u2");
   });
 
   it("same-projector: collision failure then success proves zero leaked counters/scopes", () => {
