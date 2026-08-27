@@ -69,7 +69,6 @@ func Capture(parent context.Context, providers []string, requiredProvider string
 	ctx, cancel := context.WithTimeout(parent, budget)
 	defer cancel()
 	providers, providerLimited := boundedProviders(providers, requiredProvider)
-	sort.Strings(providers)
 	type result struct {
 		name    string
 		ids     []string
