@@ -99,6 +99,22 @@ interface RequestBinding {
 // are preserved so heterogeneous outcomes both run. One effect at a time;
 // recursively drains all pending. Catches effect errors without unhandled
 // rejections and remains usable.
+//
+// SCHEDULER CONTRACT — effects must NOT await a scheduler request:
+// Effects passed to scheduler.request(key, effect) are executed by the drain
+// loop. An effect MUST NOT call scheduler.request() and await its result,
+// because that would create a circular dependency: the drain loop awaits the
+// effect, which awaits a new scheduler request, which cannot start until the
+// current drain loop reaches idle — a deadlock. The reread effect
+// (requestRehydrate) calls storeGet().rehydrate() directly (not through the
+// scheduler). The cap-refresh effect (requestCapabilityRefresh) calls
+// liveService.refreshCapabilities() directly (not through the scheduler).
+// handleMutationError awaits scheduler.request() OUTSIDE any effect — it is
+// called from the send/steer/queue/interrupt action body, not from within a
+// scheduler effect. This invariant is confirmed by the production call graph:
+//   requestRehydrate effect -> rehydrate() -> readProjection() [no scheduler]
+//   requestCapabilityRefresh effect -> refreshCapabilities() [no scheduler]
+//   handleMutationError -> scheduler.request() [awaited in action body, not effect]
 function createDrainScheduler(): DrainScheduler {
   let scheduled = false;
   let busy = false;
