@@ -83,4 +83,15 @@ describe("live concept contract", () => {
     >();
     expectTypeOf<LiveTranscriptItem["sequenceLabel"]>().toEqualTypeOf<string>();
   });
+
+  it("defines a loadOlder intent distinct from openConversation", () => {
+    const loadOlder: LiveConceptIntent = { type: "loadOlder" };
+    const open: LiveConceptIntent = { type: "openConversation", key: "t1" };
+    expect(loadOlder.type).toBe("loadOlder");
+    expect(open.type).toBe("openConversation");
+    expect(loadOlder.type).not.toBe(open.type);
+    expectTypeOf<
+      Extract<LiveConceptIntent, { type: "loadOlder" }>
+    >().toEqualTypeOf<{ type: "loadOlder" }>();
+  });
 });

@@ -241,6 +241,7 @@ type LiveConceptIntent =
   | { type: "refreshRoster" }
   | { type: "setRosterQuery"; value: string }
   | { type: "openConversation"; key: string }
+  | { type: "loadOlder" }
   | { type: "openWork" }
   | { type: "closeWork" }
   | { type: "setDraft"; value: string }
@@ -260,6 +261,8 @@ type LiveConceptIntent =
 There are no scenario, fixture, synthetic completion, Lab Controls, global Search, or prototype reset intents.
 
 `setComposerMode` selects the active composer mode as **local UI state** only; it changes no Hub state and performs no command. `submit` remains a distinct intent that carries the selected mode and invokes the matching capability-gated conversation-store command. Separating selection from submission keeps mode choice presentation-only and makes the actual command explicit and testable.
+
+`loadOlder` is the explicit intent for loading older transcript history. A renderer's older-history affordance dispatches `loadOlder`; the dispatcher calls the active conversation store's bounded `loadOlder` with the current service. It must not reopen, resubscribe, or use `openConversation` — `openConversation` opens a thread and initiates a bounded subscribed read, whereas `loadOlder` pages older turns into the already-open conversation using the retained `olderCursor`. Reusing `openConversation` for history would discard the active subscription and projection state, so the two intents are deliberately distinct.
 
 ### Props
 
@@ -406,6 +409,7 @@ On concept switch:
 | refresh roster | `rosterStore.refresh(rosterService)` |
 | filter roster | roster-store/local query |
 | open conversation | push production route and open bounded subscribed read |
+| load older | `conversationStore.loadOlder(conversationService)` — bounded page into the open conversation; must not reopen, resubscribe, or use `openConversation` |
 | set draft | `conversationStore.setDraft()` |
 | set composer mode | local UI state only; no Hub command |
 | submit send/steer/queue | matching conversation-store command, capability-gated, using the selected mode |
@@ -443,6 +447,7 @@ The existing byte-exact ask-answer composition is private inside `AskComposer.ts
 3. AppWire notifications patch projections or schedule one coalesced authoritative reread.
 4. The three pure projectors produce concept conversation and work view models.
 5. The active renderer updates without changing concept selection.
+6. Loading older history dispatches `loadOlder`; the dispatcher pages older turns into the already-open conversation using the retained `olderCursor` via the active conversation store's bounded `loadOlder` with the current service. It must not reopen, resubscribe, or use `openConversation`.
 
 ### Mutations
 
