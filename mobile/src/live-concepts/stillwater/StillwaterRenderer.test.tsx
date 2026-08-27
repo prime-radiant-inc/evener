@@ -445,7 +445,7 @@ describe("StillwaterRenderer conversation surface", () => {
     expect(container.querySelector('[data-streaming="true"]')).toBeVisible();
     expect(container.querySelector('[data-truncated="true"]')).toBeVisible();
     expect(
-      container.querySelector('[data-older-available="true"]'),
+      screen.getByRole("button", { name: /load older messages/i }),
     ).toBeVisible();
   });
 
@@ -858,6 +858,63 @@ describe("StillwaterRenderer conversation surface", () => {
     });
     renderSurface(state);
     expect(screen.getByText("Send failed — retry")).toBeVisible();
+  });
+
+  it("renders the load-older button when olderAvailable is true", () => {
+    const state = buildState({ surface: "conversation" });
+    const { container } = renderSurface(state);
+    expect(
+      container.querySelector('[data-older-available="true"]'),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", { name: /load older messages/i }),
+    ).toBeVisible();
+  });
+
+  it("omits the load-older button when olderAvailable is false", () => {
+    const state = buildState({
+      surface: "conversation",
+      conversation: {
+        ...buildState().conversation!,
+        olderAvailable: false,
+      },
+    });
+    const { container } = renderSurface(state);
+    expect(container.querySelector('[data-older-available="true"]')).toBeNull();
+    expect(
+      screen.queryByRole("button", { name: /load older messages/i }),
+    ).toBeNull();
+  });
+
+  it("dispatches loadOlder from the load-older button", () => {
+    const state = buildState({ surface: "conversation" });
+    const { dispatch } = renderSurface(state);
+    fireEvent.click(
+      screen.getByRole("button", { name: /load older messages/i }),
+    );
+    expect(dispatch).toHaveBeenCalledWith({ type: "loadOlder" });
+    expect(dispatch).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "openConversation" }),
+    );
+  });
+
+  it("disables the load-older button while a mutation is pending", () => {
+    const state = buildState({
+      surface: "conversation",
+      composer: {
+        ...buildState().composer,
+        pending: {
+          kind: "send",
+          status: "pending",
+          draftSnapshot: "hi",
+          generation: 1,
+        },
+      },
+    });
+    renderSurface(state);
+    expect(
+      screen.getByRole("button", { name: /load older messages/i }),
+    ).toBeDisabled();
   });
 });
 
