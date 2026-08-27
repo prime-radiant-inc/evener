@@ -4,28 +4,39 @@
   gap: var(--space-2);
 }
 
-.track {
+.control {
   position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
   flex: none;
   width: 32px;
   height: 18px;
-  padding: 2px;
-  border: none;
-  border-radius: var(--radius-pill);
-  background: var(--field);
+  padding: 0;
+  border: 0;
+  background: transparent;
   cursor: pointer;
 }
 
-.track:disabled {
+.track {
+  display: block;
+  width: 32px;
+  height: 18px;
+  padding: 2px;
+  border-radius: var(--radius-pill);
+  background: var(--field);
+}
+
+.control:disabled {
   cursor: not-allowed;
   opacity: 0.5;
 }
 
-.track[aria-checked="true"] {
+.control[aria-checked="true"] .track {
   background: var(--accent);
 }
 
-.track:focus-visible {
+.control:focus-visible {
   outline: var(--focus-ring);
   outline-offset: 2px;
 }
@@ -39,8 +50,17 @@
   transform: translateX(0);
 }
 
-.track[aria-checked="true"] .thumb {
+.control[aria-checked="true"] .thumb {
   transform: translateX(14px);
+}
+
+@media (max-width: 899px) {
+  .control {
+    width: var(--tap-min);
+    min-width: var(--tap-min);
+    height: var(--tap-min);
+    min-height: var(--tap-min);
+  }
 }
 
 @media (prefers-reduced-motion: no-preference) {
@@ -74,7 +94,7 @@
 /* the label is a <span>, not a form control, so it has no native :disabled
  * of its own - matched off the track's disabled state instead (they're
  * siblings, track first). */
-.track:disabled ~ .label {
+.control:disabled ~ .label {
   cursor: not-allowed;
   opacity: 0.5;
 }

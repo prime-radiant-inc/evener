@@ -146,3 +146,15 @@ test("the clickable label gets the coarse-pointer touch floor", () => {
   expect(coarsePointer).toContain(".label");
   expect(coarsePointer).toContain("min-height: var(--tap-min)");
 });
+
+test("keeps the native mobile button at the touch floor without enlarging the painted track", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const css = readFileSync(join(here, "switch.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  expect(css).toMatch(/@media \(max-width: 899px\)[\s\S]*?\.control\s*\{[^}]*min-height:\s*var\(--tap-min\)/);
+  expect(css).toMatch(/\.control\s*\{[^}]*width:\s*32px[^}]*height:\s*18px/);
+  expect(css).toMatch(
+    /@media \(max-width: 899px\)[\s\S]*?\.control\s*\{[^}]*width:\s*var\(--tap-min\)[^}]*min-width:\s*var\(--tap-min\)[^}]*height:\s*var\(--tap-min\)[^}]*min-height:\s*var\(--tap-min\)/,
+  );
+  expect(css).toMatch(/\.control:focus-visible\s*\{/);
+  expect(css).toMatch(/\.track\s*\{[^}]*width:\s*32px[^}]*height:\s*18px/);
+});
