@@ -97,24 +97,31 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
     };
   }, [sessionRef]);
 
+  const fetchFreshRoot = useCallback(
+    (forceRoot = false) => {
+      const bodyGeneration = bodyGenerationRef.current;
+      refreshRoot(
+        sessionRef,
+        model.jobsUpdatedAt,
+        (sentence) => {
+          if (
+            mountedRef.current &&
+            currentSessionRef.current === sessionRef &&
+            bodyGenerationRef.current === bodyGeneration
+          ) {
+            toasts.push("error", sentence);
+          }
+        },
+        forceRoot,
+      );
+    },
+    [model.jobsUpdatedAt, sessionRef, toasts],
+  );
+
   const fetchRoot = useCallback(
     (continuation?: { nodeID: string; token: string }, forceRoot = false) => {
       if (!continuation) {
-        const bodyGeneration = bodyGenerationRef.current;
-        refreshRoot(
-          sessionRef,
-          model.jobsUpdatedAt,
-          (sentence) => {
-            if (
-              mountedRef.current &&
-              currentSessionRef.current === sessionRef &&
-              bodyGenerationRef.current === bodyGeneration
-            ) {
-              toasts.push("error", sentence);
-            }
-          },
-          forceRoot,
-        );
+        fetchFreshRoot(forceRoot);
         return;
       }
       const requestID = activityPanelStore.getState().beginFetch(sessionRef, { nodeID: continuation.nodeID });
@@ -131,7 +138,10 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
             });
             return;
           }
-          activityPanelStore.getState().publishFetch(sessionRef, requestID, { kind: "ready", tree: parsed });
+          const restartRoot = activityPanelStore
+            .getState()
+            .publishFetch(sessionRef, requestID, { kind: "ready", tree: parsed });
+          if (restartRoot) fetchFreshRoot(true);
         })
         .catch((err) => {
           activityPanelStore.getState().publishFetch(sessionRef, requestID, {
@@ -141,7 +151,7 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
           });
         });
     },
-    [model.jobsUpdatedAt, sessionRef, toasts],
+    [fetchFreshRoot, sessionRef],
   );
 
   // The mount fetch preserves the old visible-fetch contract exactly: a

@@ -125,6 +125,7 @@ describe("activityPanelStore continuation paths", () => {
   test("continuation fetch with ready result grafts the tree", () => {
     resetActivityPanelStoreForTests();
     const current = makeTreeWithDelegate();
+    current.revision = 2;
     current.root.entries.push({
       kind: "shell",
       job: {

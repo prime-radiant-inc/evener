@@ -102,13 +102,42 @@ describe("activityPanelStore", () => {
     const first = activityPanelStore.getState().beginFetch("ref_a");
     activityPanelStore.getState().publishFetch("ref_a", first, { kind: "ready", tree: tree() });
     const continuation = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
-    const patch = tree(2);
+    const patch = tree();
     patch.root.counts = { active: 99, failed: 99, completed: 99, complete: false };
     activityPanelStore.getState().publishFetch("ref_a", continuation, { kind: "ready", tree: patch });
     expect(activityPanelStore.getState().entries.get("ref_a")?.load).toMatchObject({
       kind: "ready",
       tree: { root: { counts: { active: 1, failed: 0, completed: 0, complete: true } } },
     });
+  });
+
+  test("rejects a continuation from another revision and requests a root restart", () => {
+    resetActivityPanelStoreForTests();
+    const retained = tree(1);
+    retained.root.diagnostics = ["retained diagnostic"];
+    retained.root.branch = { truncated: true, continuation: "page-2", error: "retained branch error" };
+    const first = activityPanelStore.getState().beginFetch("ref_a");
+    activityPanelStore.getState().publishFetch("ref_a", first, { kind: "ready", tree: retained });
+    const continuation = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
+
+    const restartRoot = activityPanelStore
+      .getState()
+      .publishFetch("ref_a", continuation, { kind: "ready", tree: tree(2) });
+
+    expect(restartRoot).toBe(true);
+    const entry = activityPanelStore.getState().entries.get("ref_a");
+    expect(entry?.load).toMatchObject({
+      kind: "ready",
+      tree: {
+        revision: 1,
+        root: {
+          diagnostics: ["retained diagnostic"],
+          branch: { truncated: true, continuation: "page-2", error: "retained branch error" },
+        },
+      },
+    });
+    expect(entry?.continuationLoadingID).toBeUndefined();
+    expect(entry?.pending).toBeUndefined();
   });
 
   test("retains a continuation failure and clears it after retry", () => {
@@ -125,7 +154,7 @@ describe("activityPanelStore", () => {
       "session:sess_a": "branch failed",
     });
     const retry = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
-    activityPanelStore.getState().publishFetch("ref_a", retry, { kind: "ready", tree: tree(2) });
+    activityPanelStore.getState().publishFetch("ref_a", retry, { kind: "ready", tree: tree() });
     expect(activityPanelStore.getState().entries.get("ref_a")?.continuationFailures).toEqual({});
   });
 
@@ -136,7 +165,7 @@ describe("activityPanelStore", () => {
     activityPanelStore.getState().setSelected("ref_a", "session:sess_a");
     activityPanelStore.getState().setExpanded("ref_a", ["session:sess_a"]);
     const continuation = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
-    activityPanelStore.getState().publishFetch("ref_a", continuation, { kind: "ready", tree: tree(2) });
+    activityPanelStore.getState().publishFetch("ref_a", continuation, { kind: "ready", tree: tree() });
     const remounted = activityPanelStore.getState().entries.get("ref_a");
     expect(remounted?.disclosure.selectedID).toBe("session:sess_a");
     expect(remounted?.disclosure.expandedIDs).toEqual(["session:sess_a"]);

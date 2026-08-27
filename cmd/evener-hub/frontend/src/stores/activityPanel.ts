@@ -42,7 +42,7 @@ export type ActivityFetchResult =
 export interface ActivityPanelStoreState {
   entries: Map<string, ActivityPanelEntry>;
   beginFetch(ref: string, continuation?: { nodeID: string }): number;
-  publishFetch(ref: string, requestID: number, result: ActivityFetchResult): void;
+  publishFetch(ref: string, requestID: number, result: ActivityFetchResult): boolean;
   setExpanded(ref: string, expandedIDs: string[]): void;
   setSelected(ref: string, selectedID?: string): void;
   toggleFold(ref: string, foldID: string): void;
@@ -226,7 +226,7 @@ export function graftContinuationTree(current: ActivityTree, targetID: string, p
   // for that partial window. The root counts are the badge's authoritative
   // summary, so a continuation must never replace them.
   return {
-    revision: Math.max(current.revision, patch.revision),
+    revision: current.revision,
     root: {
       ...root,
       aggregate: current.root.aggregate,
@@ -280,6 +280,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
   },
 
   publishFetch(ref, requestID, result) {
+    let restartRoot = false;
     set((state) => {
       const current = state.entries.get(ref);
       if (!current || current.requestID !== requestID) return state;
@@ -298,18 +299,23 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
         } else if (result.kind === "ready") {
           const previousTree = retainedTree(current.load);
           if (previousTree) {
-            const tree = graftContinuationTree(previousTree, pending.nodeID, result.tree);
-            const disclosure = reconcileActivityState({ ...current.disclosure, tree: previousTree }, tree);
-            const continuationFailures = { ...current.continuationFailures };
-            delete continuationFailures[pending.nodeID];
-            next = {
-              ...current,
-              load: { kind: "ready", tree },
-              disclosure: { ...disclosure, tree },
-              continuationLoadingID: undefined,
-              continuationFailures,
-              pending: undefined,
-            };
+            if (previousTree.revision !== result.tree.revision) {
+              restartRoot = true;
+              next = { ...current, continuationLoadingID: undefined, pending: undefined };
+            } else {
+              const tree = graftContinuationTree(previousTree, pending.nodeID, result.tree);
+              const disclosure = reconcileActivityState({ ...current.disclosure, tree: previousTree }, tree);
+              const continuationFailures = { ...current.continuationFailures };
+              delete continuationFailures[pending.nodeID];
+              next = {
+                ...current,
+                load: { kind: "ready", tree },
+                disclosure: { ...disclosure, tree },
+                continuationLoadingID: undefined,
+                continuationFailures,
+                pending: undefined,
+              };
+            }
           } else {
             next = readyRoot(current, result.tree);
           }
@@ -385,6 +391,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
       entries.set(ref, next);
       return { entries };
     });
+    return restartRoot;
   },
 
   setExpanded(ref, expandedIDs) {

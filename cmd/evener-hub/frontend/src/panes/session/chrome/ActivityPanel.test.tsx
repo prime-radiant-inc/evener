@@ -210,9 +210,9 @@ function activityTree(revision = 1) {
   };
 }
 
-function continuedPartialTree() {
+function continuedPartialTree(revision = 1) {
   return {
-    revision: 2,
+    revision,
     root: {
       sessionId: "sess_root",
       ref: "ref_root",
@@ -682,6 +682,35 @@ describe("ActivityPanel", () => {
       ref: "ref_root",
       continuation: "partial-page-2",
     });
+  });
+
+  test("a continuation from another revision is discarded and restarts from the root", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    let rootCalls = 0;
+    fake.on("evener/jobs/list", ({ continuation }) => {
+      if (continuation) return { data: continuedPartialTree(2) };
+      rootCalls++;
+      return { data: activityTree(rootCalls) };
+    });
+
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    await screen.findByRole("tree");
+    await user.click(screen.getByRole("treeitem", { name: "2 inactive" }));
+    await user.click(screen.getByRole("button", { name: /load more/i }));
+
+    await waitFor(() => expect(fake.calls.filter((call) => call.method === "evener/jobs/list")).toHaveLength(3));
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list").map((call) => call.params)).toEqual([
+      { ref: "ref_root" },
+      { ref: "ref_root", continuation: "partial-page-2" },
+      { ref: "ref_root" },
+    ]);
+    expect(activityPanelStore.getState().entries.get("ref_root")?.load).toMatchObject({
+      kind: "ready",
+      tree: { revision: 2 },
+    });
+    expect(screen.queryByRole("treeitem", { name: /continued shell/i })).toBeNull();
   });
 
   test("a malformed continuation response stays local to the targeted branch and preserves retry affordance", async () => {
