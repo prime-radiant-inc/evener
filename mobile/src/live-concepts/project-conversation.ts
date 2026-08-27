@@ -68,18 +68,6 @@ function truncateToValidUtf8(encoded: Uint8Array, targetBytes: number): string {
 // the store already truncated it). If content exceeds cap, strip ALL existing
 // markers so the output has exactly one, then truncate and add a single marker.
 
-// Operation counter for the linear-work oracle (test-only). Each increment
-// represents one Unicode scalar processed by the strip algorithm.
-let _stripOps = 0;
-
-export function _resetStripOpCount(): void {
-  _stripOps = 0;
-}
-
-export function _stripOpCount(): number {
-  return _stripOps;
-}
-
 // Build the KMP failure (partial match) table for the marker. failure[i] is
 // the length of the longest proper prefix of marker[0..i) that is also a
 // suffix of marker[0..i).
@@ -109,7 +97,6 @@ function stripMarkersLinear(text: string, marker: string): string {
   const stack: Array<[string, number]> = [];
 
   for (const ch of text) {
-    _stripOps++;
     // Compute the KMP state for this character based on the current stack top.
     const top = stack.length > 0 ? stack[stack.length - 1] : undefined;
     let state = top ? top[1] : 0;
@@ -130,9 +117,7 @@ function stripMarkersLinear(text: string, marker: string): string {
     }
   }
 
-  let result = "";
-  for (const [ch] of stack) result += ch;
-  return result;
+  return stack.map((entry) => entry[0]).join("");
 }
 
 function truncate(text: string): { body: string; truncated: boolean } {
