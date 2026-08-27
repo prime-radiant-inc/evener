@@ -746,25 +746,43 @@ describe("ActivityService — projectActivity", () => {
     function expectProjectionError(
       diag: EvenerDiagnostics,
       code: ActivityProjectionError["code"],
-      rawIdFragment?: string,
-    ): void {
+    ): ActivityProjectionError {
       const t = thread({ evener: evenerThread({ diagnostics: diag }) });
       expect(() => service.projectActivity(t)).toThrow(ActivityProjectionError);
       try {
         service.projectActivity(t);
+        throw new Error("expected ActivityProjectionError");
       } catch (err) {
         const e = err as ActivityProjectionError;
         expect(e).toBeInstanceOf(ActivityProjectionError);
         expect(e.code).toBe(code);
-        if (rawIdFragment !== undefined) {
-          expect(e.rawId).toContain(rawIdFragment);
-        }
+        return e;
       }
     }
 
-    // --- valid nesting (must NOT throw) ---------------------------------------
+    // C1: The error must expose NO raw operational ID. Assert that a hostile
+    // ID string is absent from the message and from every enumerable string
+    // field on the error object.
+    function assertNoRawIdLeak(
+      e: ActivityProjectionError,
+      hostileId: string,
+    ): void {
+      expect(e.message).not.toContain(hostileId);
+      // Check every enumerable string property on the error instance.
+      const props = e as unknown as Record<string, unknown>;
+      for (const key of Object.keys(props)) {
+        const val = props[key];
+        if (typeof val === "string") {
+          expect(val).not.toContain(hostileId);
+        }
+      }
+      // The error must NOT have a public rawId field.
+      expect(e).not.toHaveProperty("rawId");
+    }
 
-    it("accepts 2-level nesting without error", () => {
+    // --- valid nesting (must NOT throw) — load-bearing structure ---------------
+
+    it("accepts 2-level nesting with exact root→child structure", () => {
       const diag: EvenerDiagnostics = {
         delegates: [
           delegate({ delegateId: "dlg-root", parentDelegateId: undefined }),
@@ -774,10 +792,17 @@ describe("ActivityService — projectActivity", () => {
       const t = thread({ evener: evenerThread({ diagnostics: diag }) });
       expect(() => service.projectActivity(t)).not.toThrow();
       const view = service.projectActivity(t);
+      // Exactly one top-level entry: the root.
       expect(view.work).toHaveLength(1);
+      expect(view.work[0]?.kind).toBe("delegate");
+      expect(view.work[0]?.diagnostics?.rawId).toBe("dlg-root");
+      // The root has exactly one child: the child delegate.
+      expect(view.work[0]?.children).toHaveLength(1);
+      expect(view.work[0]?.children?.[0]?.kind).toBe("delegate");
+      expect(view.work[0]?.children?.[0]?.diagnostics?.rawId).toBe("dlg-child");
     });
 
-    it("accepts 3-level nesting without error", () => {
+    it("accepts 3-level nesting with exact root→child→grandchild structure", () => {
       const diag: EvenerDiagnostics = {
         delegates: [
           delegate({ delegateId: "dlg-a", parentDelegateId: undefined }),
@@ -788,10 +813,61 @@ describe("ActivityService — projectActivity", () => {
       const t = thread({ evener: evenerThread({ diagnostics: diag }) });
       expect(() => service.projectActivity(t)).not.toThrow();
       const view = service.projectActivity(t);
+      // Exactly one top-level entry: dlg-a.
+      expect(view.work).toHaveLength(1);
+      expect(view.work[0]?.diagnostics?.rawId).toBe("dlg-a");
+      // dlg-a → dlg-b
+      const child = view.work[0]?.children?.[0];
+      expect(child?.kind).toBe("delegate");
+      expect(child?.diagnostics?.rawId).toBe("dlg-b");
+      // dlg-b → dlg-c
+      const grandchild = child?.children?.[0];
+      expect(grandchild?.kind).toBe("delegate");
+      expect(grandchild?.diagnostics?.rawId).toBe("dlg-c");
+    });
+
+    it("nests a job under a level-3 delegate (arbitrary depth)", () => {
+      const diag: EvenerDiagnostics = {
+        delegates: [
+          delegate({ delegateId: "dlg-a", parentDelegateId: undefined }),
+          delegate({ delegateId: "dlg-b", parentDelegateId: "dlg-a" }),
+          delegate({ delegateId: "dlg-c", parentDelegateId: "dlg-b" }),
+        ],
+        jobs: [job({ jobId: "job-deep", parentDelegateId: "dlg-c" })],
+      };
+      const t = thread({ evener: evenerThread({ diagnostics: diag }) });
+      expect(() => service.projectActivity(t)).not.toThrow();
+      const view = service.projectActivity(t);
+      // Traverse root → child → grandchild → job
+      const root = view.work[0];
+      expect(root?.diagnostics?.rawId).toBe("dlg-a");
+      const child = root?.children?.[0];
+      expect(child?.diagnostics?.rawId).toBe("dlg-b");
+      const grandchild = child?.children?.[0];
+      expect(grandchild?.diagnostics?.rawId).toBe("dlg-c");
+      // The job is nested under the grandchild (level 3), not top-level.
+      const deepJob = grandchild?.children?.[0];
+      expect(deepJob?.kind).toBe("job");
+      expect(deepJob?.diagnostics?.rawId).toBe("job-deep");
       expect(view.work).toHaveLength(1);
     });
 
-    it("accepts parent reorder (child listed before parent)", () => {
+    it("produces identical output across repeated projections (determinism)", () => {
+      const diag: EvenerDiagnostics = {
+        delegates: [
+          delegate({ delegateId: "dlg-a", parentDelegateId: undefined }),
+          delegate({ delegateId: "dlg-b", parentDelegateId: "dlg-a" }),
+          delegate({ delegateId: "dlg-c", parentDelegateId: "dlg-b" }),
+        ],
+        jobs: [job({ jobId: "job-deep", parentDelegateId: "dlg-c" })],
+      };
+      const t = thread({ evener: evenerThread({ diagnostics: diag }) });
+      const a = service.projectActivity(t);
+      const b = service.projectActivity(t);
+      expect(a).toEqual(b);
+    });
+
+    it("accepts parent reorder and verifies nested child (not merely root top-level)", () => {
       const diag: EvenerDiagnostics = {
         delegates: [
           delegate({ delegateId: "dlg-child", parentDelegateId: "dlg-root" }),
@@ -804,6 +880,10 @@ describe("ActivityService — projectActivity", () => {
       // Only the root is top-level.
       expect(view.work).toHaveLength(1);
       expect(view.work[0]?.diagnostics?.rawId).toBe("dlg-root");
+      // The child is actually nested under the root, not at top level.
+      expect(view.work[0]?.children).toHaveLength(1);
+      expect(view.work[0]?.children?.[0]?.kind).toBe("delegate");
+      expect(view.work[0]?.children?.[0]?.diagnostics?.rawId).toBe("dlg-child");
     });
 
     it("accepts deep nesting with jobs at multiple levels", () => {
@@ -819,6 +899,16 @@ describe("ActivityService — projectActivity", () => {
       };
       const t = thread({ evener: evenerThread({ diagnostics: diag }) });
       expect(() => service.projectActivity(t)).not.toThrow();
+      const view = service.projectActivity(t);
+      // job-1 is under dlg-a (root), job-2 is under dlg-b (child).
+      const root = view.work[0];
+      const child = root?.children?.find((c) => c.kind === "delegate");
+      const rootJobs = root?.children?.filter((c) => c.kind === "job");
+      const childJobs = child?.children?.filter((c) => c.kind === "job");
+      expect(rootJobs).toHaveLength(1);
+      expect(rootJobs?.[0]?.diagnostics?.rawId).toBe("job-1");
+      expect(childJobs).toHaveLength(1);
+      expect(childJobs?.[0]?.diagnostics?.rawId).toBe("job-2");
     });
 
     // --- duplicate IDs --------------------------------------------------------
@@ -830,14 +920,17 @@ describe("ActivityService — projectActivity", () => {
           delegate({ delegateId: "dlg-dup" }),
         ],
       };
-      expectProjectionError(diag, "duplicate-delegate", "dlg-dup");
+      const e = expectProjectionError(diag, "duplicate-delegate");
+      // C1: hostile ID must not leak in message or enumerable fields.
+      assertNoRawIdLeak(e, "dlg-dup");
     });
 
     it("rejects duplicate job ID with duplicate-job error", () => {
       const diag: EvenerDiagnostics = {
         jobs: [job({ jobId: "job-dup" }), job({ jobId: "job-dup" })],
       };
-      expectProjectionError(diag, "duplicate-job", "job-dup");
+      const e = expectProjectionError(diag, "duplicate-job");
+      assertNoRawIdLeak(e, "job-dup");
     });
 
     // --- cross-kind collision -------------------------------------------------
@@ -847,7 +940,8 @@ describe("ActivityService — projectActivity", () => {
         delegates: [delegate({ delegateId: "same-id" })],
         jobs: [job({ jobId: "same-id" })],
       };
-      expectProjectionError(diag, "cross-kind-collision", "same-id");
+      const e = expectProjectionError(diag, "cross-kind-collision");
+      assertNoRawIdLeak(e, "same-id");
     });
 
     // --- self-parent ----------------------------------------------------------
@@ -858,7 +952,8 @@ describe("ActivityService — projectActivity", () => {
           delegate({ delegateId: "dlg-self", parentDelegateId: "dlg-self" }),
         ],
       };
-      expectProjectionError(diag, "self-parent", "dlg-self");
+      const e = expectProjectionError(diag, "self-parent");
+      assertNoRawIdLeak(e, "dlg-self");
     });
 
     // --- delegate cycles ------------------------------------------------------
@@ -870,7 +965,9 @@ describe("ActivityService — projectActivity", () => {
           delegate({ delegateId: "dlg-b", parentDelegateId: "dlg-a" }),
         ],
       };
-      expectProjectionError(diag, "delegate-cycle", "dlg-a");
+      const e = expectProjectionError(diag, "delegate-cycle");
+      assertNoRawIdLeak(e, "dlg-a");
+      assertNoRawIdLeak(e, "dlg-b");
     });
 
     it("rejects 3-node cycle with delegate-cycle error", () => {
@@ -881,7 +978,10 @@ describe("ActivityService — projectActivity", () => {
           delegate({ delegateId: "dlg-c", parentDelegateId: "dlg-b" }),
         ],
       };
-      expectProjectionError(diag, "delegate-cycle", "dlg-a");
+      const e = expectProjectionError(diag, "delegate-cycle");
+      assertNoRawIdLeak(e, "dlg-a");
+      assertNoRawIdLeak(e, "dlg-b");
+      assertNoRawIdLeak(e, "dlg-c");
     });
 
     it("rejects cycle where one node has a legitimate-looking parent", () => {
@@ -894,7 +994,9 @@ describe("ActivityService — projectActivity", () => {
           delegate({ delegateId: "dlg-c", parentDelegateId: "dlg-a" }),
         ],
       };
-      expectProjectionError(diag, "delegate-cycle", "dlg-a");
+      const e = expectProjectionError(diag, "delegate-cycle");
+      assertNoRawIdLeak(e, "dlg-a");
+      assertNoRawIdLeak(e, "dlg-b");
     });
 
     // --- missing parent -------------------------------------------------------
@@ -908,7 +1010,8 @@ describe("ActivityService — projectActivity", () => {
           }),
         ],
       };
-      expectProjectionError(diag, "missing-parent", "dlg-missing");
+      const e = expectProjectionError(diag, "missing-parent");
+      assertNoRawIdLeak(e, "dlg-missing");
     });
 
     it("rejects missing job parent delegate with missing-parent error", () => {
@@ -920,7 +1023,8 @@ describe("ActivityService — projectActivity", () => {
           }),
         ],
       };
-      expectProjectionError(diag, "missing-parent", "dlg-missing");
+      const e = expectProjectionError(diag, "missing-parent");
+      assertNoRawIdLeak(e, "dlg-missing");
     });
 
     // --- hostile descriptions must not leak in the error -----------------------
@@ -950,6 +1054,8 @@ describe("ActivityService — projectActivity", () => {
         expect(e.message).not.toContain("passwd");
         expect(e.message).not.toContain("evil");
         expect(e.message).not.toContain(hostileDesc);
+        // C1: The hostile delegate ID must not leak either.
+        assertNoRawIdLeak(e, "dlg-x");
       }
     });
 
@@ -975,6 +1081,62 @@ describe("ActivityService — projectActivity", () => {
         expect(e.message).not.toContain("exfiltrate");
         expect(e.message).not.toContain("attacker");
         expect(e.message).not.toContain(hostileTask);
+        // C1: The hostile delegate ID must not leak either.
+        assertNoRawIdLeak(e, "dlg-self");
+      }
+    });
+
+    // --- C1: error must not expose rawId field or raw ID in any string field ---
+
+    it("error has no rawId property and no raw ID in any enumerable string field", () => {
+      const hostileId = "hostile-dlg-id-12345";
+      const diag: EvenerDiagnostics = {
+        delegates: [
+          delegate({ delegateId: hostileId, parentDelegateId: hostileId }),
+        ],
+      };
+      const t = thread({ evener: evenerThread({ diagnostics: diag }) });
+      try {
+        service.projectActivity(t);
+        throw new Error("expected ActivityProjectionError");
+      } catch (err) {
+        const e = err as ActivityProjectionError;
+        expect(e).toBeInstanceOf(ActivityProjectionError);
+        expect(e.code).toBe("self-parent");
+        // No public rawId field.
+        expect(e).not.toHaveProperty("rawId");
+        // The hostile ID must not appear in the message or any enumerable
+        // string property.
+        expect(e.message).not.toContain(hostileId);
+        const props = e as unknown as Record<string, unknown>;
+        for (const key of Object.keys(props)) {
+          const val = props[key];
+          if (typeof val === "string") {
+            expect(val).not.toContain(hostileId);
+          }
+        }
+      }
+    });
+
+    it("error message is generic and code-derived (no raw ID)", () => {
+      const diag: EvenerDiagnostics = {
+        delegates: [
+          delegate({
+            delegateId: "secret-id-abc",
+            parentDelegateId: "secret-id-abc",
+          }),
+        ],
+      };
+      const t = thread({ evener: evenerThread({ diagnostics: diag }) });
+      try {
+        service.projectActivity(t);
+        throw new Error("expected ActivityProjectionError");
+      } catch (err) {
+        const e = err as ActivityProjectionError;
+        expect(e.code).toBe("self-parent");
+        // Message must contain the code (generic) but not the raw ID.
+        expect(e.message).toContain("self-parent");
+        expect(e.message).not.toContain("secret-id-abc");
       }
     });
 
