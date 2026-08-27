@@ -19,6 +19,7 @@ cd "$script_dir/../../cmd/evener-hub/frontend" || exit 1
 dir=""
 active_pids=(); started=(); fail=0; complete=0; interrupt_status=0
 defer_signals=0; stopping=0; finishing=0
+owner_subshell=$BASH_SUBSHELL
 
 forget_pid() {
 	local pid="$1" candidate
@@ -54,6 +55,9 @@ stop_checks() {
 		[ -n "$pid" ] || continue
 		while :; do
 			if wait "$pid" 2>/dev/null; then wait_status=0; else wait_status=$?; fi
+			# Negative and 127 statuses mean Bash no longer owns a child it can
+			# reap, even if its copied job table still reports that PID as running.
+			if [ "$wait_status" -lt 0 ] || [ "$wait_status" -eq 127 ]; then break; fi
 			owned_job_is_running "$pid" || break
 		done
 	done
@@ -63,6 +67,9 @@ stop_checks() {
 
 finish() {
 	finish_status=$?
+	# Async check shells inherit EXIT, but only this script's owner can reap
+	# active_pids or decide whether its evidence directory is complete.
+	[ "$BASH_SUBSHELL" -eq "$owner_subshell" ] || return "$finish_status"
 	finishing=1
 	[ "$complete" -eq 1 ] || stop_checks
 	if [ "$interrupt_status" -ne 0 ]; then
@@ -130,9 +137,12 @@ for i in "${!started[@]}"; do
 	# A completed wait removes the job from Bash's job table, which is the
 	# completion/ownership handoff and not a PID liveness guess vulnerable to
 	# reuse. Signals are not deferred here: Bash must wake this exact wait.
+	# Defer cleanup only while that result is committed to the owned PID list.
+	defer_signals=1
 	if ! owned_job_is_running "$pid"; then
 		forget_pid "$pid"
 	fi
+	defer_signals=0
 	printf '%s\n' "$check_status" >"$dir/$c.status"
 	consume_interrupt
 done

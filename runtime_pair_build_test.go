@@ -98,6 +98,7 @@ func TestRuntimeBuildFixtureEnvironmentDropsAmbientHarnessControls(t *testing.T)
 		"EVENER_TEST_WEB_WAIT_READY",
 		"EVENER_TEST_WEB_WAIT_RELEASE",
 		"EVENER_TEST_WEB_WAIT_REAPED",
+		"EVENER_TEST_WEB_STALE_JOB",
 		"EVENER_TEST_WEB_WAIT_USED",
 		"EVENER_TEST_NODE_HOLD_COMMAND",
 		"EVENER_TEST_NODE_FAIL_COMMAND",
@@ -731,8 +732,10 @@ func TestMakeTestWebInterruptRetainsEvidenceAndReapsChecks(t *testing.T) {
 	if err := exec.Command("kill", "-TERM", strconv.Itoa(command.Process.Pid)).Run(); err != nil {
 		t.Fatalf("signal make test-web: %v", err)
 	}
-	if err := run.wait(); err == nil {
+	if err := waitForChildExit(run, 5*time.Second); err == nil {
 		t.Fatalf("interrupted make test-web exited zero; output = %s", output.String())
+	} else if errors.Is(err, errChildExitTimeout) {
+		t.Fatalf("interrupted make test-web did not reap checks: %v; output = %s", err, output.String())
 	}
 
 	retained := fullLogsPath(output.Bytes())
@@ -852,7 +855,7 @@ kill() {
 func TestMakeTestWebInterruptAtWaitHandoff(t *testing.T) {
 	for _, signal := range []string{"TERM", "INT"} {
 		t.Run(signal, func(t *testing.T) {
-			runWebWaitHandoff(t, signal, false)
+			runWebWaitHandoff(t, signal, false, false)
 		})
 	}
 }
@@ -860,9 +863,13 @@ func TestMakeTestWebInterruptAtWaitHandoff(t *testing.T) {
 func TestMakeTestWebInterruptAtWaitHandoffRejectsLostSignalMutation(t *testing.T) {
 	for _, signal := range []string{"TERM", "INT"} {
 		t.Run(signal, func(t *testing.T) {
-			runWebWaitHandoff(t, signal, true)
+			runWebWaitHandoff(t, signal, true, false)
 		})
 	}
+}
+
+func TestMakeTestWebInterruptHandlesStaleRunningJobAfterWaitLosesOwnership(t *testing.T) {
+	runWebWaitHandoff(t, "TERM", false, true)
 }
 
 // runWebWaitHandoff drives the actual test-web shell at the boundary immediately
@@ -870,7 +877,7 @@ func TestMakeTestWebInterruptAtWaitHandoffRejectsLostSignalMutation(t *testing.T
 // defer-signals-before-wait ordering; it must remain blocked after the parent
 // signal until the held child is independently released, proving this test is
 // mechanism RED rather than a missing production hook.
-func runWebWaitHandoff(t *testing.T, signal string, mutate bool) {
+func runWebWaitHandoff(t *testing.T, signal string, mutate, simulateStaleJob bool) {
 	t.Helper()
 	fixture := newBuildWebFixture(t)
 	frontendDir := filepath.Join(fixture.root, "cmd", "evener-hub", "frontend")
@@ -886,6 +893,12 @@ func runWebWaitHandoff(t *testing.T, signal string, mutate bool) {
 	waitReadyPath := filepath.Join(fixture.root, "wait.ready")
 	waitReleasePath := filepath.Join(fixture.root, "wait.release")
 	waitReapedPath := filepath.Join(fixture.root, "wait.reaped")
+	staleJobPath := filepath.Join(fixture.root, "stale-job")
+	staleJobControl := ""
+	if simulateStaleJob {
+		writeTestFile(t, staleJobPath, nil, 0o600)
+		staleJobControl = staleJobPath
+	}
 	for _, path := range []string{npmReadyPath, npmReleasePath, waitReadyPath, waitReleasePath} {
 		if err := syscall.Mkfifo(path, 0o600); err != nil {
 			t.Fatalf("make FIFO %s: %v", path, err)
@@ -903,7 +916,17 @@ func runWebWaitHandoff(t *testing.T, signal string, mutate bool) {
   command wait "$@"
   wait_status=$?
   : > "$EVENER_TEST_WEB_WAIT_REAPED"
+  if [ "${1:-}" = "$tracked_pid" ] && [ -n "${EVENER_TEST_WEB_STALE_JOB:-}" ] && [ -e "$EVENER_TEST_WEB_STALE_JOB" ]; then
+    return 127
+  fi
   return "$wait_status"
+}
+jobs() {
+  if [ -n "${EVENER_TEST_WEB_STALE_JOB:-}" ] && [ -e "$EVENER_TEST_WEB_STALE_JOB" ]; then
+    cat "$EVENER_TEST_NPM_PID"
+    return
+  fi
+  command jobs "$@"
 }
 `), 0o644)
 
@@ -942,6 +965,7 @@ func runWebWaitHandoff(t *testing.T, signal string, mutate bool) {
 		"EVENER_TEST_WEB_WAIT_READY="+waitReadyPath,
 		"EVENER_TEST_WEB_WAIT_RELEASE="+waitReleasePath,
 		"EVENER_TEST_WEB_WAIT_REAPED="+waitReapedPath,
+		"EVENER_TEST_WEB_STALE_JOB="+staleJobControl,
 	)
 	var output bytes.Buffer
 	command.Stdout = &output
@@ -955,6 +979,7 @@ func runWebWaitHandoff(t *testing.T, signal string, mutate bool) {
 	}
 	run := startChild(command)
 	t.Cleanup(func() {
+		_ = os.Remove(staleJobPath)
 		_, _ = childRelease.WriteString("cleanup\n")
 		_ = childRelease.Close()
 		_ = npmReady.Close()
@@ -1031,9 +1056,12 @@ func mutateWebWaitDeferral(t *testing.T, fixture runtimeBuildFixture) {
 	# A completed wait removes the job from Bash's job table, which is the
 	# completion/ownership handoff and not a PID liveness guess vulnerable to
 	# reuse. Signals are not deferred here: Bash must wake this exact wait.
+	# Defer cleanup only while that result is committed to the owned PID list.
+	defer_signals=1
 	if ! owned_job_is_running "$pid"; then
 		forget_pid "$pid"
 	fi
+	defer_signals=0
 	printf '%s\n' "$check_status" >"$dir/$c.status"
 	consume_interrupt`
 	deferredWaitBlock := `	defer_signals=1
@@ -1588,7 +1616,7 @@ func (fixture runtimeBuildFixture) environment(failPackage string) []string {
 			"EVENER_TEST_NPM_TRACK_COMMAND", "EVENER_TEST_NPM_TRACK_PID", "EVENER_TEST_SHELL_KILLED_REAPED", "EVENER_TEST_SHELL_WAITED_REAPED",
 			"EVENER_TEST_SHELL_WAIT_RELEASE",
 			"EVENER_TEST_WEB_CLEANUP_READY", "EVENER_TEST_WEB_CLEANUP_RELEASE", "EVENER_TEST_WEB_CLEANUP_PID",
-			"EVENER_TEST_WEB_WAIT_READY", "EVENER_TEST_WEB_WAIT_RELEASE", "EVENER_TEST_WEB_WAIT_REAPED", "EVENER_TEST_WEB_WAIT_USED",
+			"EVENER_TEST_WEB_WAIT_READY", "EVENER_TEST_WEB_WAIT_RELEASE", "EVENER_TEST_WEB_WAIT_REAPED", "EVENER_TEST_WEB_STALE_JOB", "EVENER_TEST_WEB_WAIT_USED",
 			"EVENER_TEST_NODE_HOLD_COMMAND", "EVENER_TEST_NODE_FAIL_COMMAND", "EVENER_TEST_NODE_PID", "EVENER_TEST_NODE_READY", "EVENER_TEST_NODE_TERM", "EVENER_TEST_NODE_RELEASE", "EVENER_TEST_NODE_READY_FD":
 			continue
 		}
