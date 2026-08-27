@@ -7137,4 +7137,598 @@ describe("ConversationStore", () => {
       expect(xIdx).toBeGreaterThan(ids.indexOf("C"));
     });
   });
+
+  // --- Task 2A-Items reslice: exact delta families, unified truncation
+  // ownership, and within-page paging dedupe.
+  //
+  // These tests are written RED first, then the store is fixed to satisfy them.
+  // They cover the three brief requirements:
+  // 1. Exact delta families — reasoning deltas only match reasoning items;
+  //    tool-output deltas only match tool items with matching callId.
+  // 2. Unified truncation ownership — every content-install path uses one
+  //    UTF-8 byte-bounded mechanism; frozen items stay frozen until an
+  //    authoritative reset/replacement removes the freeze.
+  // 3. Paging dedupe — dedupe against retained IDs AND within the incoming page.
+  describe("Task 2A-Items: exact delta families", () => {
+    // Helper: open a conversation with the given mobile items via openProjected.
+    async function openWithItems(items: MobileConversation["items"]): Promise<{
+      store: ReturnType<typeof createConversationStore>;
+      service: FakeConversationService;
+    }> {
+      const service = new FakeConversationService();
+      const conv = makeConversation({ items });
+      service.readProjectionResult = {
+        conversation: conv,
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      return { store, service };
+    }
+
+    it("reasoning delta targeting a tool activity triggers reread, does not append", async () => {
+      // A tool activity has a callId — a reasoning delta to it is a wrong family.
+      const { store, service } = await openWithItems([
+        {
+          kind: "activity",
+          id: "tool-1",
+          label: "shell",
+          state: "running",
+          detail: { output: "line1", callId: "call-tool-1" },
+        },
+      ]);
+      const initialReads = service.readProjectionCalls.length;
+      store.getState().applyNotification({
+        method: "item/reasoning/summaryTextDelta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "tool-1",
+          summaryIndex: 0,
+          delta: " reasoning-overflow",
+        },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      // Wrong family → reread requested.
+      expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
+      // Text was NOT mutated.
+      const item = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-1");
+      if (item?.kind === "activity") {
+        expect(item.detail.output).toBe("line1");
+      }
+    });
+
+    it("tool-output delta targeting a reasoning activity triggers reread, does not append", async () => {
+      // A reasoning activity has no callId — a tool-output delta to it is a
+      // wrong family.
+      const { store, service } = await openWithItems([
+        {
+          kind: "activity",
+          id: "reason-1",
+          label: "Reasoning",
+          state: "running",
+          detail: { output: "Thinking" },
+        },
+      ]);
+      const initialReads = service.readProjectionCalls.length;
+      store.getState().applyNotification({
+        method: "item/toolOutput/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "reason-1",
+          callId: "call-tool-1",
+          delta: " tool-overflow",
+        },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      // Wrong family → reread requested.
+      expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
+      // Text was NOT mutated.
+      const item = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "reason-1");
+      if (item?.kind === "activity") {
+        expect(item.detail.output).toBe("Thinking");
+      }
+    });
+
+    it("tool-output delta with wrong callId triggers reread, does not append", async () => {
+      // The activity has callId "call-A" but the delta supplies "call-B".
+      const { store, service } = await openWithItems([
+        {
+          kind: "activity",
+          id: "tool-1",
+          label: "shell",
+          state: "running",
+          detail: { output: "line1", callId: "call-A" },
+        },
+      ]);
+      const initialReads = service.readProjectionCalls.length;
+      store.getState().applyNotification({
+        method: "item/toolOutput/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "tool-1",
+          callId: "call-B",
+          delta: " wrong-call-delta",
+        },
+      } as AnyNotification);
+      await Promise.resolve();
+      await Promise.resolve();
+      // Wrong callId → reread requested.
+      expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
+      // Text was NOT mutated.
+      const item = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-1");
+      if (item?.kind === "activity") {
+        expect(item.detail.output).toBe("line1");
+      }
+    });
+
+    it("tool-output delta with matching callId appends correctly", async () => {
+      const { store, service } = await openWithItems([
+        {
+          kind: "activity",
+          id: "tool-1",
+          label: "shell",
+          state: "running",
+          detail: { output: "line1", callId: "call-A" },
+        },
+      ]);
+      const initialReads = service.readProjectionCalls.length;
+      store.getState().applyNotification({
+        method: "item/toolOutput/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "tool-1",
+          callId: "call-A",
+          delta: "\nline2",
+        },
+      } as AnyNotification);
+      await Promise.resolve();
+      // No reread — matching call accepted.
+      expect(service.readProjectionCalls.length).toBe(initialReads);
+      const item = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-1");
+      if (item?.kind === "activity") {
+        expect(item.detail.output).toBe("line1\nline2");
+      }
+    });
+
+    it("reasoning delta targeting a reasoning activity (no callId) appends correctly", async () => {
+      const { store, service } = await openWithItems([
+        {
+          kind: "activity",
+          id: "reason-1",
+          label: "Reasoning",
+          state: "running",
+          detail: { output: "Thinking" },
+        },
+      ]);
+      const initialReads = service.readProjectionCalls.length;
+      store.getState().applyNotification({
+        method: "item/reasoning/summaryTextDelta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "reason-1",
+          summaryIndex: 0,
+          delta: " more",
+        },
+      } as AnyNotification);
+      await Promise.resolve();
+      // No reread — reasoning family accepted.
+      expect(service.readProjectionCalls.length).toBe(initialReads);
+      const item = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "reason-1");
+      if (item?.kind === "activity") {
+        expect(item.detail.output).toBe("Thinking more");
+      }
+    });
+  });
+
+  describe("Task 2A-Items: unified truncation ownership", () => {
+    it("frozen activity stays frozen across later deltas until authoritative replacement", async () => {
+      // Open with a tool activity whose output is already at the byte limit.
+      const service = new FakeConversationService();
+      const largeOutput = "x".repeat(70_000);
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          items: [
+            {
+              kind: "activity",
+              id: "tool-1",
+              label: "shell",
+              state: "running",
+              detail: { output: largeOutput, callId: "call-A" },
+            },
+          ],
+        }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+
+      // The item should be truncated and frozen.
+      const item0 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-1");
+      if (item0?.kind === "activity") {
+        expect(item0.detail.output?.endsWith("… truncated")).toBe(true);
+        const encoder = new TextEncoder();
+        expect(
+          encoder.encode(item0.detail.output ?? "").length,
+        ).toBeLessThanOrEqual(65536);
+      }
+
+      // A later delta must NOT append — the item is frozen.
+      store.getState().applyNotification({
+        method: "item/toolOutput/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "tool-1",
+          callId: "call-A",
+          delta: " MORE",
+        },
+      } as AnyNotification);
+      const item1 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-1");
+      if (item1?.kind === "activity") {
+        // Still frozen — marker appears exactly once, no new content.
+        expect(item1.detail.output?.endsWith("… truncated")).toBe(true);
+        const markerCount =
+          item1.detail.output?.split("… truncated").length ?? 0;
+        expect(markerCount - 1).toBe(1);
+      }
+    });
+
+    it("authoritative item/completed replacement unfreezes a frozen item", async () => {
+      const service = new FakeConversationService();
+      const largeOutput = "x".repeat(70_000);
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          items: [
+            {
+              kind: "activity",
+              id: "tool-1",
+              label: "shell",
+              state: "running",
+              detail: { output: largeOutput, callId: "call-A" },
+            },
+          ],
+        }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+
+      // Verify it's frozen.
+      const item0 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-1");
+      expect(item0?.kind).toBe("activity");
+      if (item0?.kind === "activity") {
+        expect(item0.detail.output?.endsWith("… truncated")).toBe(true);
+      }
+
+      // Authoritative replacement via item/completed with short output.
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "commandExecution",
+            id: "tool-1",
+            toolName: "shell",
+            status: "completed",
+            callId: "call-A",
+            output: "short-result",
+          } as ThreadItem,
+        },
+      } as AnyNotification);
+
+      const item1 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-1");
+      if (item1?.kind === "activity") {
+        // Unfrozen — short output, no marker.
+        expect(item1.detail.output).toBe("short-result");
+        expect(item1.detail.output?.endsWith("… truncated")).toBe(false);
+      }
+
+      // A subsequent delta should now append (freeze removed).
+      store.getState().applyNotification({
+        method: "item/toolOutput/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "tool-1",
+          callId: "call-A",
+          delta: " appended",
+        },
+      } as AnyNotification);
+      const item2 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-1");
+      if (item2?.kind === "activity") {
+        expect(item2.detail.output).toBe("short-result appended");
+      }
+    });
+
+    it("reset removes stale freeze entries", async () => {
+      const service = new FakeConversationService();
+      const largeText = "x".repeat(70_000);
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          items: [
+            {
+              kind: "assistant",
+              id: "item-1",
+              markdown: largeText,
+              streaming: true,
+            },
+          ],
+        }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+
+      // Frozen.
+      const item0 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "item-1");
+      if (item0?.kind === "assistant") {
+        expect(item0.markdown.endsWith("… truncated")).toBe(true);
+      }
+
+      // Reset clears all thread-scoped state.
+      store.getState().reset();
+      expect(store.getState().conversation).toBeNull();
+
+      // Reopen with short content — should NOT be frozen.
+      const service2 = new FakeConversationService();
+      service2.readProjectionResult = {
+        conversation: makeConversation({
+          items: [
+            {
+              kind: "assistant",
+              id: "item-1",
+              markdown: "short",
+              streaming: false,
+            },
+          ],
+        }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      await store.getState().openProjected(service2, createFakeSink(), "ref-1");
+
+      // Delta should append — no stale freeze from the prior thread.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "item-1",
+          delta: " appended",
+        },
+      } as AnyNotification);
+      const item1 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "item-1");
+      if (item1?.kind === "assistant") {
+        expect(item1.markdown).toBe("short appended");
+      }
+    });
+
+    it("thread switch (openProjected) clears prior-thread freeze entries", async () => {
+      const service = new FakeConversationService();
+      const largeText = "x".repeat(70_000);
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          id: "thread-1",
+          items: [
+            {
+              kind: "assistant",
+              id: "item-1",
+              markdown: largeText,
+              streaming: true,
+            },
+          ],
+        }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+
+      // Frozen.
+      const item0 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "item-1");
+      if (item0?.kind === "assistant") {
+        expect(item0.markdown.endsWith("… truncated")).toBe(true);
+      }
+
+      // Switch threads — openProjected with a different thread.
+      const service2 = new FakeConversationService();
+      service2.readProjectionResult = {
+        conversation: makeConversation({
+          id: "thread-2",
+          items: [
+            {
+              kind: "assistant",
+              id: "item-1",
+              markdown: "short",
+              streaming: false,
+            },
+          ],
+        }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      await store.getState().openProjected(service2, createFakeSink(), "ref-2");
+
+      // Delta should append — prior-thread freeze cleared.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-2",
+          ref: "ref-2",
+          turnId: "t1",
+          itemId: "item-1",
+          delta: " appended",
+        },
+      } as AnyNotification);
+      const item1 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "item-1");
+      if (item1?.kind === "assistant") {
+        expect(item1.markdown).toBe("short appended");
+      }
+    });
+  });
+
+  describe("Task 2A-Items: within-page paging dedupe", () => {
+    it("dedupes duplicate IDs within the incoming page, preserving order", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [userMessageItem("base", "base")],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+
+      // Page with a duplicate ID within itself: page-A, page-B, page-A (repeat).
+      service.olderItems = {
+        items: [
+          { kind: "user", id: "page-A", text: "A" },
+          { kind: "user", id: "page-B", text: "B" },
+          { kind: "user", id: "page-A", text: "A-repeat" },
+        ],
+        nextCursor: "cursor-2",
+      };
+      await store.getState().loadOlder(service);
+
+      const items = store.getState().conversation?.items ?? [];
+      const ids = items.map((i) => i.id);
+      // page-A appears exactly once.
+      expect(ids.filter((id) => id === "page-A").length).toBe(1);
+      // The first occurrence's content is kept (order preserved).
+      const pageA = items.find((i) => i.id === "page-A");
+      if (pageA?.kind === "user") {
+        expect(pageA.text).toBe("A");
+      }
+      // page-B appears exactly once.
+      expect(ids.filter((id) => id === "page-B").length).toBe(1);
+    });
+
+    it("dedupes duplicate IDs within page AND against retained items", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [userMessageItem("existing", "existing")],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+
+      // Page: "existing" (dup of retained), "page-A", "page-A" (dup within page).
+      service.olderItems = {
+        items: [
+          { kind: "user", id: "existing", text: "dup" },
+          { kind: "user", id: "page-A", text: "A" },
+          { kind: "user", id: "page-A", text: "A-repeat" },
+        ],
+        nextCursor: "cursor-2",
+      };
+      await store.getState().loadOlder(service);
+
+      const items = store.getState().conversation?.items ?? [];
+      const ids = items.map((i) => i.id);
+      // "existing" appears exactly once (retained version kept).
+      expect(ids.filter((id) => id === "existing").length).toBe(1);
+      const existing = items.find((i) => i.id === "existing");
+      if (existing?.kind === "user") {
+        expect(existing.text).toBe("existing");
+      }
+      // "page-A" appears exactly once.
+      expect(ids.filter((id) => id === "page-A").length).toBe(1);
+    });
+  });
 });
