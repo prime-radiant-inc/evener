@@ -212,6 +212,26 @@ test("hydrateThread defaults missing skills and copies wire descriptors", () => 
   expect(model.skills?.[0]).not.toBe(skills[0]);
 });
 
+test("applyNotification preserves skills while applying a status update", () => {
+  const model = testHydrate({
+    evener: { diagnostics: { skills: [{ name: "plugin:simplify", description: "rewrite" }] } },
+  });
+  const notification: AnyNotification = {
+    method: "thread/status/changed",
+    params: {
+      threadId: model.threadId,
+      ref: model.ref,
+      status: { type: "active" },
+      capabilities: CAPABILITIES,
+    },
+  };
+
+  const next = applyNotification(model, notification, 2000);
+
+  expect(next).not.toBe(model);
+  expect(next.skills).toEqual([{ name: "plugin:simplify", description: "rewrite" }]);
+});
+
 function testEscalation(overrides: Partial<SandboxEscalationRequested> = {}): SandboxEscalationRequested {
   return {
     threadId: "thr_t",
