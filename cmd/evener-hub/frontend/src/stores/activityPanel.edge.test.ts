@@ -126,6 +126,20 @@ describe("activityPanelStore continuation paths", () => {
     resetActivityPanelStoreForTests();
     const current = makeTreeWithDelegate();
     current.revision = 2;
+    current.root.branch = {
+      truncated: true,
+      continuation: "root-page-2",
+      error: "root branch remains incomplete",
+    };
+    const currentDelegate = current.root.entries[0];
+    if (currentDelegate?.kind !== "delegate" || !currentDelegate.delegate.child) {
+      throw new Error("current fixture is missing its delegate child");
+    }
+    currentDelegate.delegate.child.branch = {
+      truncated: true,
+      continuation: "child-page-2",
+      error: "child page omitted",
+    };
     current.root.entries.push({
       kind: "shell",
       job: {
@@ -157,6 +171,7 @@ describe("activityPanelStore continuation paths", () => {
       throw new Error("continuation fixture is missing its delegate child");
     }
     patchDelegate.delegate.projectionRevision = 2;
+    patchDelegate.delegate.child.branch = { truncated: true, continuation: "child-page-3" };
     patchDelegate.delegate.child.entries = [
       {
         kind: "shell",
@@ -182,9 +197,15 @@ describe("activityPanelStore continuation paths", () => {
     if (entry?.load.kind === "ready") {
       const delegate = entry.load.tree.root.entries[0];
       expect(entry.load.tree.revision).toBe(2);
+      expect(entry.load.tree.root.branch).toEqual({
+        truncated: true,
+        continuation: "root-page-2",
+        error: "root branch remains incomplete",
+      });
       expect(delegate?.kind).toBe("delegate");
       if (delegate?.kind === "delegate") {
         expect(delegate.delegate.projectionRevision).toBe(2);
+        expect(delegate.delegate.child?.branch).toEqual({ truncated: true, continuation: "child-page-3" });
         expect(delegate.delegate.child?.entries).toEqual([
           {
             kind: "shell",

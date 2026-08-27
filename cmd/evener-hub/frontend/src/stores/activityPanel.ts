@@ -150,14 +150,20 @@ function revisionFencedDelegate(current: ActivityDelegate, patch: ActivityDelega
   return state;
 }
 
-function mergeDelegate(current: ActivityDelegate, patch: ActivityDelegate): ActivityDelegate {
+function mergeDelegate(
+  current: ActivityDelegate,
+  patch: ActivityDelegate,
+  targetID: string,
+  insideTarget: boolean,
+): ActivityDelegate {
   const state = revisionFencedDelegate(current, patch);
+  const patchBranch = insideTarget || activityNodeID({ kind: "delegate", delegateId: current.delegateId }) === targetID;
   return {
     ...state,
-    branch: { ...patch.branch },
+    branch: { ...(patchBranch ? patch.branch : current.branch) },
     child:
       current.child && patch.child && current.child.sessionId === patch.child.sessionId
-        ? mergeSession(current.child, patch.child)
+        ? mergeSession(current.child, patch.child, targetID, patchBranch)
         : patch.child
           ? cloneSession(patch.child)
           : current.child
@@ -190,7 +196,13 @@ function fenceRootSession(current: ActivitySessionNode, incoming: ActivitySessio
   };
 }
 
-function mergeSession(current: ActivitySessionNode, patch: ActivitySessionNode): ActivitySessionNode {
+function mergeSession(
+  current: ActivitySessionNode,
+  patch: ActivitySessionNode,
+  targetID: string,
+  insideTarget = false,
+): ActivitySessionNode {
+  const patchBranch = insideTarget || activityNodeID(current) === targetID;
   const patchByID = new Map<string, ActivityEntry>();
   for (const entry of patch.entries) patchByID.set(activityNodeID(entry), entry);
   const mergedEntries = current.entries.map((entry) => {
@@ -198,7 +210,10 @@ function mergeSession(current: ActivitySessionNode, patch: ActivitySessionNode):
     const patchEntry = patchByID.get(id);
     if (!patchEntry) return cloneEntry(entry);
     if (entry.kind === "delegate" && patchEntry.kind === "delegate") {
-      return { kind: "delegate", delegate: mergeDelegate(entry.delegate, patchEntry.delegate) };
+      return {
+        kind: "delegate",
+        delegate: mergeDelegate(entry.delegate, patchEntry.delegate, targetID, patchBranch),
+      };
     }
     return cloneEntry(patchEntry);
   }) as ActivityEntry[];
@@ -212,13 +227,13 @@ function mergeSession(current: ActivitySessionNode, patch: ActivitySessionNode):
     label: patch.label,
     aggregate: patch.aggregate,
     counts: { ...patch.counts },
-    branch: { ...patch.branch },
+    branch: { ...(patchBranch ? patch.branch : current.branch) },
     entries: mergedEntries,
   };
 }
 
-export function graftContinuationTree(current: ActivityTree, patch: ActivityTree): ActivityTree {
-  const root = mergeSession(current.root, patch.root);
+export function graftContinuationTree(current: ActivityTree, targetID: string, patch: ActivityTree): ActivityTree {
+  const root = mergeSession(current.root, patch.root, targetID);
   // A continuation response describes one retained branch and can carry counts
   // for that partial window. The root counts are the badge's authoritative
   // summary, so a continuation must never replace them.
@@ -300,7 +315,7 @@ export const activityPanelStore = createStore<ActivityPanelStoreState>((set) => 
               restartRoot = true;
               next = { ...current, continuationLoadingID: undefined, pending: undefined };
             } else {
-              const tree = graftContinuationTree(previousTree, result.tree);
+              const tree = graftContinuationTree(previousTree, pending.nodeID, result.tree);
               const disclosure = reconcileActivityState({ ...current.disclosure, tree: previousTree }, tree);
               const continuationFailures = { ...current.continuationFailures };
               delete continuationFailures[pending.nodeID];
