@@ -826,6 +826,10 @@ func (s *scriptedAppSource) SetThreadModel(context.Context, appwire.ThreadModelS
 	return appwire.Unavailable("scripted source does not set models")
 }
 
+func (s *scriptedAppSource) SetThreadVisionModel(context.Context, appwire.ThreadVisionModelSetParams) error {
+	return appwire.Unavailable("scripted source does not set vision models")
+}
+
 func (s *scriptedAppSource) SetThreadName(context.Context, appwire.ThreadNameSetParams) error {
 	return appwire.Unavailable("scripted source does not set names")
 }

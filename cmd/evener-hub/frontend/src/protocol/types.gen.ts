@@ -1596,6 +1596,12 @@ export interface ThreadTurnsListResponse {
   nextCursor?: string;
 }
 
+export interface ThreadVisionModelChangedParams {
+  threadId: string;
+  ref: string;
+  visionModel: string;
+}
+
 export interface ThreadVisionModelSetParams {
   ref: string;
   visionModel: string;
@@ -1839,6 +1845,7 @@ export const NOTIFICATION_NAMES = [
   "evener/thread/name/changed",
   "thread/model/changed",
   "thread/reasoning-effort/changed",
+  "thread/vision-model/changed",
   "turn/started",
   "turn/completed",
   "item/started",
@@ -1998,6 +2005,7 @@ export interface NotificationTypes {
   "evener/thread/name/changed": ThreadNameChangedParams;
   "thread/model/changed": ThreadModelChangedParams;
   "thread/reasoning-effort/changed": ThreadReasoningEffortChangedParams;
+  "thread/vision-model/changed": ThreadVisionModelChangedParams;
   "turn/started": TurnStartedParams;
   "turn/completed": TurnCompletedParams;
   "item/started": ItemLifecycleParams;
