@@ -268,7 +268,9 @@ function projectItem(
     };
   }
 
-  // Reasoning — collapsed, labeled activity.
+  // Reasoning — collapsed, labeled activity. family is "reasoning" regardless
+  // of any label text; a commandExecution whose toolName is "Reasoning" is NOT
+  // routed here (it stays family "tool" below).
   if (isReasoning(item)) {
     return {
       kind: "activity",
@@ -278,6 +280,7 @@ function projectItem(
           kind: "activity",
           id: item.id,
           label: "Reasoning",
+          family: "reasoning",
           state: activityState(item),
           detail: { output: item.text },
         },
@@ -311,6 +314,9 @@ function projectItem(
   }
 
   // Tool call (commandExecution, including answered/errored ask_user) — activity.
+  // family is always "tool" for a commandExecution, even when toolName is
+  // "Reasoning"; the discriminator is derived from the wire type, never the
+  // label. callId is preserved exactly for diagnostics disclosure.
   if (isCommandExecution(item)) {
     const attachments = itemOutputAttachments(item);
     const failed = toolCallFailed(item);
@@ -323,6 +329,7 @@ function projectItem(
           kind: "activity",
           id: item.id,
           label: toolLabel(item),
+          family: "tool",
           state: activityState(item),
           detail: activityDetail(item),
         },
@@ -357,7 +364,8 @@ function projectItem(
 
   // Unknown / forward-compatible item type — neutral collapsed activity, never
   // disappearing, never exposing raw HTML. The dangerous text lives in detail
-  // as plain text the renderer escapes; the label stays neutral.
+  // as plain text the renderer escapes; the label stays neutral. family is
+  // "unknown" for any item type the projection does not recognize.
   return {
     kind: "activity",
     pre: {
@@ -366,6 +374,7 @@ function projectItem(
         kind: "activity",
         id: item.id,
         label: "Activity",
+        family: "unknown",
         state: activityState(item),
         detail: { output: item.text },
       },
