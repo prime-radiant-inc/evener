@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
@@ -116,6 +117,38 @@ func TestNavigationBoundsLimitRowsCatalogAndStrings(t *testing.T) {
 	}
 	if got, want := len(catalog.Projects), maxNavigationCatalogRows; got != want || catalog.Remaining != 1 {
 		t.Fatalf("catalog rows=%d remaining=%d, want %d and 1", got, catalog.Remaining, want)
+	}
+}
+
+func TestNavigationProjectionSanitizesOversizedUnicodeStrings(t *testing.T) {
+	title := strings.Repeat("界", maxNavigationTitleRunes+10) + string([]byte{0xff})
+	label := strings.Repeat("界", maxNavigationLabelRunes+10) + string([]byte{0xfe})
+	workingDir := strings.Repeat("界", maxNavigationWorkingDirBytes)
+	projection, err := buildNavigationProjection(navigationBuildInputs{
+		GenerationID: "generation",
+		Sources:      []hubapi.Source{{ID: "source", Label: label, Kind: "appwire"}},
+		Tree: hubcore.Tree{
+			Live:     []hubcore.TreeNode{{ID: "session", Title: title, Project: label, Branch: label, Kind: "session", State: "idle"}},
+			Projects: []hubcore.TreeProject{{Key: "project", Name: label, WorkingDir: workingDir}},
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	row := projection.LivePage(0, 1).Sessions[0]
+	if got := len([]rune(row.Title)); got != maxNavigationTitleRunes {
+		t.Fatalf("title runes=%d, want %d", got, maxNavigationTitleRunes)
+	}
+	if !utf8.ValidString(row.Title) || len([]rune(row.Project)) != maxNavigationLabelRunes || len([]rune(row.Branch)) != maxNavigationLabelRunes {
+		t.Fatalf("row display strings were not sanitized: %#v", row)
+	}
+	source := projection.Manifest().Sources[0]
+	if !utf8.ValidString(source.Label) || len([]rune(source.Label)) != maxNavigationLabelRunes {
+		t.Fatalf("source label was not sanitized: %q", source.Label)
+	}
+	catalog, err := projection.CatalogPage(navigationResourceProjects, 0, 1)
+	if err != nil || len(catalog.Projects) != 1 || !utf8.ValidString(catalog.Projects[0].WorkingDir) || len(catalog.Projects[0].WorkingDir) > maxNavigationWorkingDirBytes {
+		t.Fatalf("working directory was not sanitized: %#v, %v", catalog, err)
 	}
 }
 
@@ -239,18 +272,23 @@ func TestNavigationProjectionValidatesIdentitiesAndTruncatesWorkingDir(t *testin
 	if _, err := buildNavigationProjection(navigationBuildInputs{GenerationID: strings.Repeat("g", maxNavigationIdentityBytes+1)}); err == nil {
 		t.Fatal("overlength generation accepted")
 	}
-	// An over-limit working dir is now rejected by validateNavigationString.
+	// An over-limit working dir is sanitized at the wire boundary.
 	oversizedDir := strings.Repeat("界", maxNavigationWorkingDirBytes)
-	if _, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{{Key: "project", Name: "project", WorkingDir: oversizedDir}}}}); err == nil {
-		t.Fatal("over-limit working directory accepted")
-	}
-	// A within-limit working dir passes validation and is safely bounded in the catalog.
-	workingDir := strings.Repeat("/", maxNavigationWorkingDirBytes)
-	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{{Key: "project", Name: "project", WorkingDir: workingDir}}}})
+	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{{Key: "project", Name: "project", WorkingDir: oversizedDir}}}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	catalog, err := projection.CatalogPage(navigationResourceProjects, 0, 1)
+	if err != nil || len(catalog.Projects) != 1 || len(catalog.Projects[0].WorkingDir) > maxNavigationWorkingDirBytes {
+		t.Fatalf("over-limit working directory was not sanitized: %#v, %v", catalog, err)
+	}
+	// A within-limit working dir passes validation and is safely bounded in the catalog.
+	workingDir := strings.Repeat("/", maxNavigationWorkingDirBytes)
+	projection, err = buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{{Key: "project", Name: "project", WorkingDir: workingDir}}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	catalog, err = projection.CatalogPage(navigationResourceProjects, 0, 1)
 	if err != nil || len(catalog.Projects) != 1 || len(catalog.Projects[0].WorkingDir) > maxNavigationWorkingDirBytes {
 		t.Fatalf("working dir was not safely truncated: %#v, %v", catalog, err)
 	}

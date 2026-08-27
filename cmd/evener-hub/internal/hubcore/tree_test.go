@@ -294,8 +294,8 @@ func fuzzScenarioBuildTree_TruncatesLongOriginalPromptTitles(t *testing.T) {
 		t.Fatalf("unexpected tree shape: %#v", tree)
 	}
 	got := allSessions(tree.Projects[0])[0].Title
-	if want := strings.Repeat("é", 200) + "…"; got != want {
-		t.Fatalf("title = %d runes (%.30q...), want 200 runes + ellipsis", len([]rune(got)), got)
+	if want := strings.Repeat("é", 199) + "…"; got != want {
+		t.Fatalf("title = %d runes (%.30q...), want 200 runes including ellipsis", len([]rune(got)), got)
 	}
 }
 
