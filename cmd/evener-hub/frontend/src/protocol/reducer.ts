@@ -325,6 +325,7 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     // (below) is what later splits provider and model id apart properly.
     model: thread.modelProvider,
     reasoningEffort: thread.evener.reasoningEffort,
+    visionModel: thread.evener.visionModel ?? "",
     askPending: thread.evener.askPending ?? false,
     // Go wire-nullable-array rule: omitempty absent means empty, not missing.
     pendingEscalations: thread.evener.pendingEscalations ?? [],
@@ -874,6 +875,11 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
     case "thread/reasoning-effort/changed": {
       if (!notificationTargetsThread(n, model)) return model;
       return { ...model, reasoningEffort: n.params.reasoningEffort, lastFrameAt: now };
+    }
+
+    case "thread/vision-model/changed": {
+      if (!notificationTargetsThread(n, model)) return model;
+      return { ...model, visionModel: n.params.visionModel, lastFrameAt: now };
     }
 
     case "evener/task/updated": {

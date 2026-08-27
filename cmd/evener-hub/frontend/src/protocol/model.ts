@@ -210,6 +210,7 @@ export interface ThreadModel {
   modelProvider: string;
   model: string;
   reasoningEffort?: string;
+  visionModel: string;
   askPending: boolean;
   // Surface-on-entry snapshot of blocked sandbox-exemption approval cards
   // (M7) — appwire/types.go's ThreadEvener.PendingEscalations doc comment: "a

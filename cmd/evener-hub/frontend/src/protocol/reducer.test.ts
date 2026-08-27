@@ -123,6 +123,7 @@ const CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
@@ -2160,6 +2161,34 @@ test("thread/reasoning-effort/changed updates reasoningEffort", () => {
     2000,
   );
   expect(model.reasoningEffort).toBe("high");
+});
+
+test("hydrateThread carries visionModel and defaults an absent wire value", () => {
+  expect(testHydrate().visionModel).toBe("");
+  expect(
+    testHydrate({
+      evener: {
+        ref: "ref_t",
+        capabilities: CAPABILITIES,
+        queue: { revision: 0 },
+        visionModel: "anthropic/claude-haiku-4-5",
+      },
+    }).visionModel,
+  ).toBe("anthropic/claude-haiku-4-5");
+});
+
+test("thread/vision-model/changed updates visionModel", () => {
+  let model = testHydrate();
+  expect(model.visionModel).toBe("");
+  model = applyNotification(
+    model,
+    {
+      method: "thread/vision-model/changed",
+      params: { threadId: "thr_t", ref: "ref_t", visionModel: "anthropic/claude-haiku-4-5" },
+    },
+    2000,
+  );
+  expect(model.visionModel).toBe("anthropic/claude-haiku-4-5");
 });
 
 // Wave 5 T1: thread/model/changed's real payload (appwire/types.go's
