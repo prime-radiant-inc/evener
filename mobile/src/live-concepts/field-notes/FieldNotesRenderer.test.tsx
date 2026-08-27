@@ -623,24 +623,49 @@ describe("Field Notes conversation surface", () => {
     expect(item).toHaveAttribute("data-truncated", "true");
   });
 
-  it("renders an older-available affordance when olderAvailable is true", () => {
+  it("renders an accessible Load older button dispatching loadOlder when olderAvailable is true", () => {
+    const dispatch = vi.fn();
     renderState(
       baseState({
         surface: "conversation",
         conversation: conversationWithItems({ olderAvailable: true }),
       }),
+      dispatch,
     );
-    expect(mainFor("conversation")).toHaveTextContent(/older records/i);
+    const button = screen.getByRole("button", { name: /load older/i });
+    expect(button).toBeVisible();
+    expect(button).toBeEnabled();
+    fireEvent.click(button);
+    expect(dispatch).toHaveBeenCalledWith({ type: "loadOlder" });
   });
 
-  it("does not render an older-available affordance when olderAvailable is false", () => {
+  it("does not render a Load older button when olderAvailable is false", () => {
     renderState(
       baseState({
         surface: "conversation",
         conversation: conversationWithItems({ olderAvailable: false }),
       }),
     );
-    expect(mainFor("conversation")).not.toHaveTextContent(/older records/i);
+    expect(screen.queryByRole("button", { name: /load older/i })).toBeNull();
+  });
+
+  it("disables the Load older button while a mutation is pending", () => {
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithItems({ olderAvailable: true }),
+        composer: {
+          ...baseComposer(),
+          pending: {
+            kind: "send",
+            status: "pending",
+            draftSnapshot: null,
+            generation: 1,
+          },
+        },
+      }),
+    );
+    expect(screen.getByRole("button", { name: /load older/i })).toBeDisabled();
   });
 
   it("uses conversation.tone for the summary status label, never hardcoded", () => {
