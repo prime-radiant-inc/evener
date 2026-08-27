@@ -2,16 +2,21 @@
 // LiveActivityView for live-concept renderers. No DOM, no network, no clock.
 // Same input on the same projector instance → same output.
 //
-// The projector INSTANCE owns a private scoped registry. Stable keys survive
-// hierarchy insertion/reorder/patch. Labels are display-safe inputs only;
-// raw diagnostic IDs live only in the private operational map returned
-// alongside the view. Duplicate/colliding source IDs are detected and produce
-// a documented safe error, never shared/swapped keys.
+// The projector INSTANCE owns a private scoped registry keyed by exact scope,
+// parent identity, kind, and source identity via nested Maps — no delimiter
+// prefix encoding. `reset(scope)` deletes the exact scope. Stable keys
+// survive hierarchy insertion/reorder/patch. Labels are display-safe inputs
+// only; raw diagnostic IDs live only in the private operational map returned
+// alongside the view. Duplicate/cross-kind source IDs are detected and produce
+// a generic safe error, never shared/swapped keys.
 //
-// Activity identity includes stable parent path + kind + rawId. This prevents
-// key swaps when entries are reordered across parents. For entries without
-// diagnostics, the label is used with a collision-safe occurrence counter.
-// Duplicate raw IDs within the same scope produce a safe error.
+// The production default allocator prefixes keys process-unique via a
+// module-level factory counter, so distinct instances never collide. An
+// injected allocator that returns duplicate keys is detected and produces a
+// generic safe error. Cycle detection traverses with an ancestry set and
+// throws a generic cycle error before stack overflow. The registry is bounded
+// with safe capacity rejection before mutation (no FIFO eviction):
+// identical over-cap rejection leaves existing key stability.
 
 import type { ActivityView, WorkEntry, WorkTone } from "../services/activity";
 import type { DisplayTone, LiveActivityView, LiveWorkItem } from "./model";
@@ -22,10 +27,19 @@ export interface ActivityOperationalMap {
   readonly keys: ReadonlyMap<string, string>;
 }
 
+// --- projector options --------------------------------------------------------
+
+export interface ActivityProjectOptions {
+  scope: string;
+}
+
 // --- projector instance ------------------------------------------------------
 
 export interface LiveActivityProjector {
-  project(view: ActivityView): {
+  project(
+    view: ActivityView,
+    options: ActivityProjectOptions,
+  ): {
     live: LiveActivityView;
     operational: ActivityOperationalMap;
   };
@@ -37,11 +51,17 @@ export interface LiveActivityProjector {
 
 export type OpaqueKeyAllocator = () => string;
 
+// Module-level factory counter: each default instance gets a process-unique
+// prefix so distinct instances never produce colliding keys.
+let factoryCounter = 0;
+
 function defaultAllocator(): OpaqueKeyAllocator {
+  const prefix = `w${factoryCounter}_`;
+  factoryCounter += 1;
   let n = 0;
   return () => {
     n += 1;
-    return `w${n}`;
+    return `${prefix}${n}`;
   };
 }
 
@@ -66,6 +86,12 @@ function mapTone(tone: WorkTone): DisplayTone {
 
 const DEFAULT_MAX_REGISTRY = 10_000;
 
+// Nested Maps: scope → parentPath → kind → sourceId → opaque key.
+type SourceMap = Map<string, string>;
+type KindMap = Map<string, SourceMap>;
+type ParentMap = Map<string, KindMap>;
+type ScopeRegistry = Map<string, ParentMap>;
+
 export function createLiveActivityProjector(options?: {
   allocator?: OpaqueKeyAllocator;
   maxRegistrySize?: number;
@@ -73,66 +99,122 @@ export function createLiveActivityProjector(options?: {
   const alloc = options?.allocator ?? defaultAllocator();
   const maxReg = options?.maxRegistrySize ?? DEFAULT_MAX_REGISTRY;
 
-  // Private scoped registry: maps "scope:parentPath:kind:sourceId" → opaque key.
-  const keyRegistry = new Map<string, string>();
+  const registry: ScopeRegistry = new Map();
+  const allocatedKeys = new Set<string>();
+  let registrySize = 0;
 
-  function evictIfNeeded(): void {
-    while (keyRegistry.size >= maxReg) {
-      const first = keyRegistry.keys().next();
-      if (first.done) break;
-      keyRegistry.delete(first.value);
+  function stableKey(
+    scope: string,
+    parentPath: string,
+    kind: string,
+    sourceId: string,
+  ): string {
+    let scopeMap = registry.get(scope);
+    if (scopeMap === undefined) {
+      scopeMap = new Map();
+      registry.set(scope, scopeMap);
     }
+    let parentMap = scopeMap.get(parentPath);
+    if (parentMap === undefined) {
+      parentMap = new Map();
+      scopeMap.set(parentPath, parentMap);
+    }
+    let kindMap = parentMap.get(kind);
+    if (kindMap === undefined) {
+      kindMap = new Map();
+      parentMap.set(kind, kindMap);
+    }
+    let key = kindMap.get(sourceId);
+    if (key === undefined) {
+      // Safe capacity rejection before mutation — no FIFO eviction.
+      if (registrySize >= maxReg) {
+        throw new Error("Activity projector registry capacity exceeded");
+      }
+      key = alloc();
+      // Validate injected allocator collisions with a generic safe error.
+      if (allocatedKeys.has(key)) {
+        throw new Error("Activity projector key allocator collision detected");
+      }
+      allocatedKeys.add(key);
+      kindMap.set(sourceId, key);
+      registrySize += 1;
+    }
+    return key;
   }
 
-  function stableKey(regKey: string): string {
-    let k = keyRegistry.get(regKey);
-    if (k === undefined) {
-      evictIfNeeded();
-      k = alloc();
-      keyRegistry.set(regKey, k);
-    }
-    return k;
-  }
-
-  // C2: Activity identity includes stable parent path + kind + rawId.
-  // Duplicate raw identity in the same scope → documented safe error.
   function projectWorkEntry(
     entry: WorkEntry,
+    scope: string,
     parentPath: string,
-    occurrenceMap: Map<string, number>,
-    seenIds: Set<string>,
+    seenRawIds: Map<string, Set<string>>,
+    seenNoId: Map<string, Set<string>>,
+    ancestry: WeakSet<WorkEntry>,
+    opKeys: Map<string, string>,
   ): LiveWorkItem {
+    // Cycle detection: if this entry is already in the ancestry path, throw
+    // a generic typed cycle error before stack overflow.
+    if (ancestry.has(entry)) {
+      throw new Error("Activity work entry cycle detected");
+    }
+    ancestry.add(entry);
+
     const rawId = entry.diagnostics?.rawId;
     let sourceId: string;
 
     if (rawId !== undefined && rawId !== "") {
-      // C2: Duplicate raw identity within the same parent path → safe error,
-      // never share/swap keys. The same rawId under a different parent is a
-      // legitimate distinct identity (different parentPath).
-      const dupKey = `${parentPath}:${rawId}`;
-      if (seenIds.has(dupKey)) {
+      // Every raw diagnostic ID unique within the same parent across kinds.
+      // Duplicate/cross-kind → generic safe error (no raw ID in message).
+      let seen = seenRawIds.get(parentPath);
+      if (seen === undefined) {
+        seen = new Set();
+        seenRawIds.set(parentPath, seen);
+      }
+      if (seen.has(rawId)) {
         throw new Error(
-          `Duplicate activity raw ID "${rawId}" under the same parent — cannot assign distinct stable keys`,
+          "Duplicate activity source identity under the same parent — cannot assign distinct stable keys",
         );
       }
-      seenIds.add(dupKey);
+      seen.add(rawId);
       sourceId = rawId;
     } else {
-      // For entries without diagnostics, use label + occurrence count.
-      const occ = occurrenceMap.get(entry.label) ?? 0;
-      occurrenceMap.set(entry.label, occ + 1);
-      sourceId = `${entry.label}#${occ}`;
+      // For no-ID siblings, use kind+label only when unique under exact parent.
+      // Indistinguishable duplicates → generic error (no occurrence positions).
+      const noIdKey = `${entry.kind}\u0000${entry.label}`;
+      let seen = seenNoId.get(parentPath);
+      if (seen === undefined) {
+        seen = new Set();
+        seenNoId.set(parentPath, seen);
+      }
+      if (seen.has(noIdKey)) {
+        throw new Error(
+          "Indistinguishable duplicate activity entries under the same parent — cannot assign distinct stable keys",
+        );
+      }
+      seen.add(noIdKey);
+      sourceId = entry.label;
     }
 
-    // Identity includes parent path so the same child under different parents
-    // gets a different key (no cross-parent aliasing).
     const childPath = `${parentPath}/${entry.kind}:${sourceId}`;
-    const regKey = childPath;
-    const key = stableKey(regKey);
+    const key = stableKey(scope, parentPath, entry.kind, sourceId);
 
     const children = (entry.children ?? []).map((c) =>
-      projectWorkEntry(c, childPath, occurrenceMap, seenIds),
+      projectWorkEntry(
+        c,
+        scope,
+        childPath,
+        seenRawIds,
+        seenNoId,
+        ancestry,
+        opKeys,
+      ),
     );
+
+    // Recursively populate operational snapshot for every child, not only
+    // top level. Caller mutation cannot change backing registry/past result
+    // because opKeys is a fresh Map per projection call.
+    opKeys.set(key, rawId ?? entry.label);
+
+    ancestry.delete(entry);
 
     return {
       key,
@@ -145,20 +227,30 @@ export function createLiveActivityProjector(options?: {
   }
 
   return {
-    project(view: ActivityView): {
+    project(
+      view: ActivityView,
+      opts: ActivityProjectOptions,
+    ): {
       live: LiveActivityView;
       operational: ActivityOperationalMap;
     } {
-      const occurrenceMap = new Map<string, number>();
-      const seenIds = new Set<string>();
+      const scope = opts.scope;
+      const seenRawIds = new Map<string, Set<string>>();
+      const seenNoId = new Map<string, Set<string>>();
+      const ancestry = new WeakSet<WorkEntry>();
       const opKeys = new Map<string, string>();
 
-      const work = view.work.map((w) => {
-        const item = projectWorkEntry(w, "root", occurrenceMap, seenIds);
-        const rawId = w.diagnostics?.rawId;
-        opKeys.set(item.key, rawId ?? w.label);
-        return item;
-      });
+      const work = view.work.map((w) =>
+        projectWorkEntry(
+          w,
+          scope,
+          "root",
+          seenRawIds,
+          seenNoId,
+          ancestry,
+          opKeys,
+        ),
+      );
 
       return {
         live: {
@@ -179,17 +271,29 @@ export function createLiveActivityProjector(options?: {
 
     reset(scope?: string): void {
       if (scope === undefined) {
-        keyRegistry.clear();
+        registry.clear();
+        allocatedKeys.clear();
+        registrySize = 0;
       } else {
-        const prefix = `${scope}:`;
-        for (const k of keyRegistry.keys()) {
-          if (k.startsWith(prefix)) keyRegistry.delete(k);
+        const scopeMap = registry.get(scope);
+        if (scopeMap !== undefined) {
+          for (const [, parentMap] of scopeMap) {
+            for (const [, kindMap] of parentMap) {
+              for (const [, key] of kindMap) {
+                allocatedKeys.delete(key);
+              }
+              registrySize -= kindMap.size;
+            }
+          }
+          registry.delete(scope);
         }
       }
     },
 
     dispose(): void {
-      keyRegistry.clear();
+      registry.clear();
+      allocatedKeys.clear();
+      registrySize = 0;
     },
   };
 }
