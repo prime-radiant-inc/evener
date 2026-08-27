@@ -149,6 +149,56 @@ func TestCaptureEnforcesProviderModelAndByteBounds(t *testing.T) {
 	})
 }
 
+func TestCaptureStopsFilteringAtTheFirstHardBound(t *testing.T) {
+	models := make([]llm.ModelInfo, captureMaxModels+100)
+	for i := range models {
+		models[i].ID = fmt.Sprintf("model-%04d", i)
+	}
+	var visibilityCalls atomic.Int32
+	snapshot := Capture(context.Background(), []string{"provider"}, "", func(context.Context, string) ([]llm.ModelInfo, error) {
+		return models, nil
+	}, func(string, llm.ModelInfo) bool {
+		visibilityCalls.Add(1)
+		return true
+	}, time.Hour)
+
+	if got := visibilityCalls.Load(); got != captureMaxModels {
+		t.Fatalf("visibility checks = %d, want hard stop at %d", got, captureMaxModels)
+	}
+	if snapshot.Complete || len(snapshot.Choices) != captureMaxModels || snapshot.Status["provider"].Kind != StatusLimited {
+		t.Fatalf("hard-bounded snapshot: choices=%d complete=%v status=%#v", len(snapshot.Choices), snapshot.Complete, snapshot.Status)
+	}
+}
+
+func TestBoundedModelIDsRejectsCanceledResults(t *testing.T) {
+	models := []llm.ModelInfo{{ID: "first"}, {ID: "second"}}
+	t.Run("before filtering", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		var visibilityCalls int
+		ids, limited, err := boundedModelIDs(ctx, "provider", models, func(string, llm.ModelInfo) bool {
+			visibilityCalls++
+			return true
+		})
+		if !errors.Is(err, context.Canceled) || ids != nil || limited || visibilityCalls != 0 {
+			t.Fatalf("canceled result = ids:%q limited:%v calls:%d err:%v", ids, limited, visibilityCalls, err)
+		}
+	})
+
+	t.Run("during filtering", func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		var visibilityCalls int
+		ids, limited, err := boundedModelIDs(ctx, "provider", models, func(string, llm.ModelInfo) bool {
+			visibilityCalls++
+			cancel()
+			return true
+		})
+		if !errors.Is(err, context.Canceled) || ids != nil || limited || visibilityCalls != 1 {
+			t.Fatalf("mid-filter cancellation = ids:%q limited:%v calls:%d err:%v", ids, limited, visibilityCalls, err)
+		}
+	})
+}
+
 func TestCaptureProviderBoundKeepsPublicPageEnvelopeUsable(t *testing.T) {
 	providers := make([]string, 65)
 	for i := range providers {

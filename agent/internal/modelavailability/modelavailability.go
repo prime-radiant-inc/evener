@@ -82,31 +82,7 @@ func Capture(parent context.Context, providers []string, requiredProvider string
 			models, err := fetch(ctx, name)
 			r := result{name: name, err: err}
 			if err == nil {
-				seen := make(map[string]bool)
-				var bytes int
-				for _, model := range models {
-					id, ok := safeModelID(model.ID)
-					if !ok {
-						r.limited = true
-						continue
-					}
-					model.ID = id
-					if visible != nil && !visible(name, model) {
-						continue
-					}
-					if seen[id] {
-						continue
-					}
-					choiceBytes := len(name) + 1 + len(id)
-					if len(r.ids) >= captureMaxModels || bytes+choiceBytes > captureMaxBytes {
-						r.limited = true
-						continue
-					}
-					seen[id] = true
-					r.ids = append(r.ids, id)
-					bytes += choiceBytes
-				}
-				sort.Strings(r.ids)
+				r.ids, r.limited, r.err = boundedModelIDs(ctx, name, models, visible)
 			}
 			select {
 			case out <- r:
@@ -191,6 +167,50 @@ func Capture(parent context.Context, providers []string, requiredProvider string
 	}
 	version := hex.EncodeToString(h.Sum(nil)[:12])
 	return Snapshot{Version: version, Complete: complete, Choices: choices, Status: status, key: key}
+}
+
+func boundedModelIDs(ctx context.Context, provider string, models []llm.ModelInfo, visible func(string, llm.ModelInfo) bool) ([]string, bool, error) {
+	seen := make(map[string]bool)
+	ids := make([]string, 0, min(len(models), captureMaxModels))
+	limited := false
+	var bytes int
+	for i, model := range models {
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
+		if i >= captureMaxModels {
+			limited = true
+			break
+		}
+		id, ok := safeModelID(model.ID)
+		if !ok {
+			limited = true
+			continue
+		}
+		model.ID = id
+		if visible != nil && !visible(provider, model) {
+			continue
+		}
+		if err := ctx.Err(); err != nil {
+			return nil, false, err
+		}
+		if seen[id] {
+			continue
+		}
+		choiceBytes := len(provider) + 1 + len(id)
+		if bytes+choiceBytes > captureMaxBytes {
+			limited = true
+			break
+		}
+		seen[id] = true
+		ids = append(ids, id)
+		bytes += choiceBytes
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, false, err
+	}
+	sort.Strings(ids)
+	return ids, limited, nil
 }
 
 func boundedProviders(providers []string, requiredProvider string) ([]string, bool) {
