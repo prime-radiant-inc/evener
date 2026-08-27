@@ -1,6 +1,6 @@
 # Task31 / #155 / PR480 residual documentation search disposition
 
-Base: `f3017ce762abe2cbc352c0992718706906b5ff46`  
+Base: `f3017ce762abe2cbc352c0992718706906b5ff46`
 Date: 2026-08-26
 
 ## Current contract applied
