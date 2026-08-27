@@ -7,7 +7,10 @@ export interface SessionsViewProps {
 }
 
 export function SessionsView({ state, dispatch }: SessionsViewProps) {
-  const { roster } = state;
+  const { roster, connection } = state;
+  const isLoading = roster.status === "loading";
+  const isOffline =
+    roster.status === "offline" || connection.status === "offline";
 
   return (
     <div
@@ -33,27 +36,43 @@ export function SessionsView({ state, dispatch }: SessionsViewProps) {
         </label>
         <button
           type="button"
-          disabled={roster.status === "loading"}
+          disabled={isLoading}
           onClick={() => dispatch({ type: "refreshRoster" })}
         >
           Refresh
         </button>
       </div>
 
-      {roster.status === "loading" ? (
-        <div className="sw-refresh-status" role="status" aria-live="polite">
+      {isLoading ? (
+        <div
+          className="sw-refresh-status"
+          data-roster-loading="true"
+          role="status"
+          aria-live="polite"
+        >
           <span>Loading sessions…</span>
         </div>
       ) : null}
 
+      {isOffline ? (
+        <div
+          className="sw-banner"
+          data-roster-offline="true"
+          role="status"
+          aria-live="polite"
+        >
+          <span>Offline — showing saved sessions. Refresh is unavailable.</span>
+        </div>
+      ) : null}
+
       {roster.status === "error" && roster.error ? (
-        <div className="sw-banner" role="alert">
+        <div className="sw-banner" role="alert" data-roster-error-text>
           <span>{roster.error}</span>
         </div>
       ) : null}
 
       {roster.groups.length === 0 ? (
-        <section className="sw-inline-state">
+        <section className="sw-inline-state" data-roster-empty="true">
           <h2>No matching sessions</h2>
           <p>Try a title or project name.</p>
         </section>
@@ -89,7 +108,9 @@ export function SessionsView({ state, dispatch }: SessionsViewProps) {
                         <small>{row.summary}</small>
                       </span>
                       <span className="sw-session-row__meta">
-                        <time>{row.updatedLabel}</time>
+                        {row.updatedLabel ? (
+                          <time>{row.updatedLabel}</time>
+                        ) : null}
                         <StatusLabel state={row.tone} />
                         {row.connectedWorkCount > 0 ? (
                           <span>{row.connectedWorkCount} work</span>
