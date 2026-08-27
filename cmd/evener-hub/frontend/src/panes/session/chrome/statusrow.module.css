@@ -25,7 +25,12 @@
  * the effort control sits right beside it instead of being pushed to the far
  * end of the identity run. It still shrinks below its content width when the
  * row runs out of room - min-width: 0 lets the label ellipsize. */
-.identity > span:first-child {
+/* The model and vision-model switches hug their labels but may both shrink when
+ * the status row runs narrow. The effort control is the other direct span in
+ * this run and stays fixed-width; excluding it keeps its existing sizing. Both
+ * popover wrappers need min-width: 0, otherwise the newly added vision trigger
+ * keeps its min-content width and squeezes the active-model trigger to zero. */
+.identity > span:not(.effortTrigger) {
   flex: 0 1 auto;
   min-width: 0;
   overflow: hidden;
@@ -102,6 +107,26 @@
 
   .contextPercent {
     display: inline;
+  }
+
+  /* The two model triggers share this narrow identity run. Let the effort
+   * readout yield width too, while retaining its native select and chevron;
+   * otherwise the fixed effort width squeezes both model buttons below their
+   * icon/gap footprint and their content becomes horizontally scrollable. */
+  .effortTrigger {
+    flex: 0 1 auto;
+    min-width: 0;
+  }
+
+  .effortValue {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
+  .effortTrigger .effortChevron {
+    display: none;
   }
 }
 
