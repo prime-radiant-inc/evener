@@ -227,14 +227,16 @@ export function createConversationService(
         subscribe: true,
         replaceSubscription: true,
       });
-      // Install the pair together only if this read is still the current
-      // epoch; a stale completion (older open resolving after a newer open)
-      // must not alter the current pair.
+      // Compute ALL response-derived projection work BEFORE committing the
+      // pair — a throw here leaves ref+capabilities null/fail-closed. Only
+      // commit the pair after projection succeeds and the epoch is still
+      // current; a stale successful result returns without committing.
+      const conversation = projectThread(response.thread);
       if (openEpoch === epoch) {
         ref = threadRef;
         capabilities = response.thread.evener.capabilities;
       }
-      return projectThread(response.thread);
+      return conversation;
     },
 
     async readProjection(threadRef) {
@@ -246,16 +248,22 @@ export function createConversationService(
         replaceSubscription: true,
         turnLimit: READ_TURN_LIMIT,
       });
+      // Compute ALL response-derived projection work BEFORE committing the
+      // pair — a throw in projectThread or activity projection (or a malformed
+      // response) leaves ref+capabilities null/fail-closed. Only commit the
+      // pair after all projection succeeds and the epoch is still current;
+      // a stale successful result returns without committing.
+      const conversation = projectThread(response.thread);
+      const activity = activityService.projectActivity(response.thread);
+      const olderCursor = response.olderCursor ?? null;
       if (openEpoch === epoch) {
         ref = threadRef;
         capabilities = response.thread.evener.capabilities;
       }
-      const conversation = projectThread(response.thread);
-      const activity = activityService.projectActivity(response.thread);
       return {
         conversation,
         activity,
-        olderCursor: response.olderCursor ?? null,
+        olderCursor,
       };
     },
 
