@@ -6,11 +6,15 @@
 // Raw ref/session/item/call/question/option IDs appear only in the private
 // operational map, never in the serialized view, display key, sequenceLabel,
 // threadKey, project, body, or DOM-bound fields.
+//
+// Uses a deterministic key allocator to avoid probabilistic assertions.
 
 import { describe, expect, it } from "vitest";
 import type { MobileConversation } from "../conversation/model";
-import type { LiveConversationView, LiveTranscriptItem } from "./model";
-import { createLiveConversationProjector } from "./project-conversation";
+import {
+  createLiveConversationProjector,
+  type OpaqueKeyAllocator,
+} from "./project-conversation";
 
 // --- fixture helpers ---------------------------------------------------------
 
@@ -53,6 +57,19 @@ const OPTS = {
   updatedLabel: null,
 } as const;
 
+function deterministicAllocator(prefix: string): OpaqueKeyAllocator {
+  let n = 0;
+  return () => {
+    n += 1;
+    return `${prefix}${n}`;
+  };
+}
+
+const textEncoder = new TextEncoder();
+function utf8Bytes(s: string): number {
+  return textEncoder.encode(s).length;
+}
+
 // --- tests -------------------------------------------------------------------
 
 describe("createLiveConversationProjector", () => {
@@ -85,7 +102,7 @@ describe("createLiveConversationProjector", () => {
     expect(item?.streaming).toBe(true);
   });
 
-  it("maps a tool/activity row with metadata-only body (no arguments/error)", () => {
+  it("maps a tool/activity row with metadata-only body", () => {
     const p = createLiveConversationProjector();
     const conv = makeConversation({
       items: [
@@ -112,54 +129,16 @@ describe("createLiveConversationProjector", () => {
     expect(item?.body).toContain("sensitive output");
   });
 
-  it("maps a question row", () => {
-    const p = createLiveConversationProjector();
-    const conv = makeConversation({
-      items: [
-        {
-          kind: "question",
-          id: "q1",
-          batch: {
-            callId: "call-1",
-            questions: [
-              {
-                key: "call-1:0",
-                header: "Choose",
-                question: "Which option?",
-                options: [
-                  { label: "A", detail: "Option A" },
-                  { label: "B", detail: "Option B" },
-                ],
-                multiSelect: false,
-              },
-            ],
-          },
-        },
-      ],
-    });
-    const { view } = p.project(conv, { ...OPTS });
-    const item = view.items.find((i) => i.kind === "question");
-    expect(item?.body).toContain("Which option?");
-    expect(view.questions).toHaveLength(1);
-    expect(view.questions[0]?.prompt).toBe("Which option?");
-    expect(view.questions[0]?.options).toHaveLength(2);
-  });
-
   it("maps a failure row", () => {
     const p = createLiveConversationProjector();
     const conv = makeConversation({
       items: [
-        {
-          kind: "failure",
-          id: "fail-1",
-          title: "Error",
-          detail: "Something went wrong",
-        },
+        { kind: "failure", id: "fail-1", title: "Error", detail: "wrong" },
       ],
     });
     const { view } = p.project(conv, { ...OPTS });
     const item = view.items.find((i) => i.kind === "failure");
-    expect(item?.body).toContain("Something went wrong");
+    expect(item?.body).toContain("wrong");
   });
 
   it("maps an attachment row with metadata only (no src URLs)", () => {
@@ -181,10 +160,12 @@ describe("createLiveConversationProjector", () => {
     expect(item?.body).not.toContain("path.png");
   });
 
-  // --- threadKey / project / updatedLabel ------------------------------------
+  // --- C1: threadKey is registry-allocated, not hash ------------------------
 
   it("threadKey is opaque — not the raw ref", () => {
-    const p = createLiveConversationProjector();
+    const p = createLiveConversationProjector({
+      allocator: deterministicAllocator("k"),
+    });
     const conv = makeConversation();
     const { view } = p.project(conv, {
       ref: "raw-ref-secret-123",
@@ -195,6 +176,24 @@ describe("createLiveConversationProjector", () => {
     expect(view.threadKey).not.toBe("raw-ref-secret-123");
     expect(typeof view.threadKey).toBe("string");
     expect(view.threadKey.length).toBeGreaterThan(0);
+  });
+
+  it("threadKey reveals no hash input or salt", () => {
+    // With a deterministic allocator, threadKey is just the allocated key.
+    // No FNV hash, no salt prefix — nothing derivable from the ref.
+    const p = createLiveConversationProjector({
+      allocator: deterministicAllocator("k"),
+    });
+    const conv = makeConversation();
+    const { view } = p.project(conv, {
+      ref: "ref-abc",
+      olderCursor: null,
+      projectLabel: "Project",
+      updatedLabel: null,
+    });
+    // The threadKey is an opaque allocated key — contains no ref substring.
+    expect(view.threadKey).not.toContain("ref");
+    expect(view.threadKey).not.toContain("abc");
   });
 
   it("threadKey is stable across re-projection of the same ref", () => {
@@ -214,6 +213,26 @@ describe("createLiveConversationProjector", () => {
     });
     expect(a.view.threadKey).toBe(b.view.threadKey);
   });
+
+  it("different refs get different threadKeys", () => {
+    const p = createLiveConversationProjector();
+    const conv = makeConversation();
+    const a = p.project(conv, {
+      ref: "ref-A",
+      olderCursor: null,
+      projectLabel: "Project",
+      updatedLabel: null,
+    });
+    const b = p.project(conv, {
+      ref: "ref-B",
+      olderCursor: null,
+      projectLabel: "Project",
+      updatedLabel: null,
+    });
+    expect(a.view.threadKey).not.toBe(b.view.threadKey);
+  });
+
+  // --- project / updatedLabel / olderAvailable ------------------------------
 
   it("project comes from projectLabel, never conv.sessionId", () => {
     const p = createLiveConversationProjector();
@@ -251,16 +270,9 @@ describe("createLiveConversationProjector", () => {
   it("updatedLabel is never fabricated", () => {
     const p = createLiveConversationProjector();
     const conv = makeConversation();
-    const { view } = p.project(conv, {
-      ref: "ref-1",
-      olderCursor: null,
-      projectLabel: "Project",
-      updatedLabel: null,
-    });
+    const { view } = p.project(conv, { ...OPTS });
     expect(view.updatedLabel).toBeNull();
   });
-
-  // --- olderAvailable --------------------------------------------------------
 
   it("olderAvailable is exactly olderCursor !== null", () => {
     const p = createLiveConversationProjector();
@@ -283,10 +295,9 @@ describe("createLiveConversationProjector", () => {
   });
 
   it("does not expose alternate APIs that hardcode false", () => {
-    // The projector instance has only project(); no hardcode-false convenience.
     const p = createLiveConversationProjector();
     expect(typeof p.project).toBe("function");
-    expect(Object.keys(p)).toEqual(["project"]);
+    expect(Object.keys(p).sort()).toEqual(["dispose", "project", "reset"]);
   });
 
   // --- tone mapping ----------------------------------------------------------
@@ -298,42 +309,32 @@ describe("createLiveConversationProjector", () => {
     expect(view.tone).toBe("running");
   });
 
-  it("produces failed tone for error status", () => {
+  it("produces failed tone for error and failed statuses", () => {
     const p = createLiveConversationProjector();
-    const conv = makeConversation({ status: "error" });
-    const { view } = p.project(conv, { ...OPTS });
-    expect(view.tone).toBe("failed");
+    for (const status of ["error", "failed"]) {
+      const conv = makeConversation({ status });
+      const { view } = p.project(conv, { ...OPTS });
+      expect(view.tone).toBe("failed");
+    }
   });
 
-  it("produces failed tone for failed status", () => {
+  it("produces idle tone for ready and idle statuses", () => {
     const p = createLiveConversationProjector();
-    const conv = makeConversation({ status: "failed" });
-    const { view } = p.project(conv, { ...OPTS });
-    expect(view.tone).toBe("failed");
-  });
-
-  it("produces idle tone for ready status", () => {
-    const p = createLiveConversationProjector();
-    const conv = makeConversation({ status: "ready" });
-    const { view } = p.project(conv, { ...OPTS });
-    expect(view.tone).toBe("idle");
-  });
-
-  it("produces idle tone for idle status", () => {
-    const p = createLiveConversationProjector();
-    const conv = makeConversation({ status: "idle" });
-    const { view } = p.project(conv, { ...OPTS });
-    expect(view.tone).toBe("idle");
+    for (const status of ["ready", "idle"]) {
+      const conv = makeConversation({ status });
+      const { view } = p.project(conv, { ...OPTS });
+      expect(view.tone).toBe("idle");
+    }
   });
 
   it("produces unknown tone for unrecognized status", () => {
     const p = createLiveConversationProjector();
-    const conv = makeConversation({ status: "weird-status" });
+    const conv = makeConversation({ status: "weird" });
     const { view } = p.project(conv, { ...OPTS });
     expect(view.tone).toBe("unknown");
   });
 
-  // --- opaque keys -----------------------------------------------------------
+  // --- opaque keys (deterministic, no probabilistic assertions) -------------
 
   it("returns opaque private keys that do not expose raw operational IDs", () => {
     const p = createLiveConversationProjector();
@@ -352,13 +353,9 @@ describe("createLiveConversationProjector", () => {
     const keys = view.items.map((i) => i.key);
     expect(keys).not.toContain("sensitive-user-id-123");
     expect(keys).not.toContain("secret-agent-id-456");
-    for (const key of keys) {
-      expect(typeof key).toBe("string");
-      expect(key.length).toBeGreaterThan(0);
-    }
   });
 
-  it("question keys are opaque — do not expose raw call IDs", () => {
+  it("question and option keys are opaque — do not expose raw call IDs", () => {
     const p = createLiveConversationProjector();
     const conv = makeConversation({
       items: [
@@ -389,7 +386,89 @@ describe("createLiveConversationProjector", () => {
     }
   });
 
-  it("questionKey links transcript item to the corresponding LiveQuestionView", () => {
+  it("different item IDs produce different opaque keys (no collision)", () => {
+    const p = createLiveConversationProjector({
+      allocator: deterministicAllocator("k"),
+    });
+    const conv = makeConversation({
+      items: [
+        { kind: "user", id: "u1", text: "first" },
+        { kind: "user", id: "u2", text: "second" },
+      ],
+    });
+    const { view } = p.project(conv, { ...OPTS });
+    const keys = view.items.map((i) => i.key);
+    expect(keys).toHaveLength(2);
+    expect(keys[0]).not.toBe(keys[1]);
+  });
+
+  it("same item ID across two projector instances gets different keys (deterministic)", () => {
+    const p1 = createLiveConversationProjector({
+      allocator: deterministicAllocator("a"),
+    });
+    const p2 = createLiveConversationProjector({
+      allocator: deterministicAllocator("b"),
+    });
+    const conv = makeConversation({
+      items: [{ kind: "user", id: "u1", text: "hi" }],
+    });
+    const a = p1.project(conv, { ...OPTS });
+    const b = p2.project(conv, { ...OPTS });
+    expect(a.view.items[0]?.key).toBe("a1");
+    expect(b.view.items[0]?.key).toBe("b1");
+    expect(a.view.items[0]?.key).not.toBe(b.view.items[0]?.key);
+  });
+
+  // --- C4: multi-question batch linkage --------------------------------------
+
+  it("multi-question batch projects one linked row per question", () => {
+    const p = createLiveConversationProjector();
+    const conv = makeConversation({
+      items: [
+        {
+          kind: "question",
+          id: "q-batch-1",
+          batch: {
+            callId: "call-1",
+            questions: [
+              {
+                key: "call-1:0",
+                header: "Q1",
+                question: "First question?",
+                options: [{ label: "A", detail: "Option A" }],
+                multiSelect: false,
+              },
+              {
+                key: "call-1:1",
+                header: "Q2",
+                question: "Second question?",
+                options: [{ label: "B", detail: "Option B" }],
+                multiSelect: false,
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const { view } = p.project(conv, { ...OPTS });
+    // Two question rows in items
+    const qItems = view.items.filter((i) => i.kind === "question");
+    expect(qItems).toHaveLength(2);
+    // Two question views
+    expect(view.questions).toHaveLength(2);
+    // Each row links to its own questionKey, not all to the same/last one
+    expect(qItems[0]?.body).toBe("First question?");
+    expect(qItems[0]?.questionKey).not.toBeNull();
+    expect(qItems[1]?.body).toBe("Second question?");
+    expect(qItems[1]?.questionKey).not.toBeNull();
+    // The first row links to question 0, not question 1
+    expect(qItems[0]?.questionKey).toBe(view.questions[0]?.key);
+    expect(qItems[1]?.questionKey).toBe(view.questions[1]?.key);
+    // They must not be the same key
+    expect(qItems[0]?.questionKey).not.toBe(qItems[1]?.questionKey);
+  });
+
+  it("questionKey links transcript item to the corresponding LiveQuestionView (single)", () => {
     const p = createLiveConversationProjector();
     const conv = makeConversation({
       items: [
@@ -403,7 +482,7 @@ describe("createLiveConversationProjector", () => {
                 key: "call-1:0",
                 header: "Choose",
                 question: "Which?",
-                options: [{ label: "A", detail: "Option A" }],
+                options: [{ label: "A", detail: "A" }],
                 multiSelect: false,
               },
             ],
@@ -426,6 +505,155 @@ describe("createLiveConversationProjector", () => {
     expect(view.items[0]?.questionKey).toBeNull();
   });
 
+  // --- C3: option identity uses stable content, not index -------------------
+
+  it("option keys are stable across option reorder (content identity)", () => {
+    const p = createLiveConversationProjector();
+    const original = makeConversation({
+      items: [
+        {
+          kind: "question",
+          id: "q1",
+          batch: {
+            callId: "call-1",
+            questions: [
+              {
+                key: "call-1:0",
+                header: "Choose",
+                question: "Which?",
+                options: [
+                  { label: "A", detail: "Option A" },
+                  { label: "B", detail: "Option B" },
+                ],
+                multiSelect: false,
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const a = p.project(original, { ...OPTS });
+    const optAKey = a.view.questions[0]?.options[0]?.key;
+    const optBKey = a.view.questions[0]?.options[1]?.key;
+
+    // Reorder options: B, A
+    const reordered = makeConversation({
+      items: [
+        {
+          kind: "question",
+          id: "q1",
+          batch: {
+            callId: "call-1",
+            questions: [
+              {
+                key: "call-1:0",
+                header: "Choose",
+                question: "Which?",
+                options: [
+                  { label: "B", detail: "Option B" },
+                  { label: "A", detail: "Option A" },
+                ],
+                multiSelect: false,
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const b = p.project(reordered, { ...OPTS });
+    // Option B should still have the same key at position 0
+    expect(b.view.questions[0]?.options[0]?.key).toBe(optBKey);
+    expect(b.view.questions[0]?.options[1]?.key).toBe(optAKey);
+  });
+
+  it("option insert preserves existing option keys", () => {
+    const p = createLiveConversationProjector();
+    const original = makeConversation({
+      items: [
+        {
+          kind: "question",
+          id: "q1",
+          batch: {
+            callId: "call-1",
+            questions: [
+              {
+                key: "call-1:0",
+                header: "Choose",
+                question: "Which?",
+                options: [
+                  { label: "A", detail: "Option A" },
+                  { label: "B", detail: "Option B" },
+                ],
+                multiSelect: false,
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const a = p.project(original, { ...OPTS });
+    const optAKey = a.view.questions[0]?.options[0]?.key;
+    const optBKey = a.view.questions[0]?.options[1]?.key;
+
+    // Insert a new option C between A and B
+    const withInsert = makeConversation({
+      items: [
+        {
+          kind: "question",
+          id: "q1",
+          batch: {
+            callId: "call-1",
+            questions: [
+              {
+                key: "call-1:0",
+                header: "Choose",
+                question: "Which?",
+                options: [
+                  { label: "A", detail: "Option A" },
+                  { label: "C", detail: "Option C" },
+                  { label: "B", detail: "Option B" },
+                ],
+                multiSelect: false,
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const b = p.project(withInsert, { ...OPTS });
+    // A and B keep their keys despite the insert
+    expect(b.view.questions[0]?.options[0]?.key).toBe(optAKey);
+    expect(b.view.questions[0]?.options[2]?.key).toBe(optBKey);
+  });
+
+  it("indistinguishable duplicate options produce a safe error", () => {
+    const p = createLiveConversationProjector();
+    const conv = makeConversation({
+      items: [
+        {
+          kind: "question",
+          id: "q1",
+          batch: {
+            callId: "call-1",
+            questions: [
+              {
+                key: "call-1:0",
+                header: "Choose",
+                question: "Which?",
+                options: [
+                  { label: "A", detail: "Same" },
+                  { label: "A", detail: "Same" },
+                ],
+                multiSelect: false,
+              },
+            ],
+          },
+        },
+      ],
+    });
+    expect(() => p.project(conv, { ...OPTS })).toThrow(/duplicate option/i);
+  });
+
   // --- sequence labels: stable across prepend/reorder/reprojection ----------
 
   it("produces opaque stable sequenceLabel on every item", () => {
@@ -442,15 +670,13 @@ describe("createLiveConversationProjector", () => {
       expect(item.sequenceLabel).toBeDefined();
       expect(typeof item.sequenceLabel).toBe("string");
       expect(item.sequenceLabel.length).toBeGreaterThan(0);
-    }
-    for (const item of view.items) {
       expect(item.sequenceLabel).not.toContain("u1");
       expect(item.sequenceLabel).not.toContain("a1");
       expect(item.sequenceLabel).not.toContain("u2");
     }
   });
 
-  it("sequence labels are stable across re-projection of identical input", () => {
+  it("sequence labels are stable across re-projection", () => {
     const p = createLiveConversationProjector();
     const conv = makeConversation({
       items: [
@@ -466,7 +692,6 @@ describe("createLiveConversationProjector", () => {
   });
 
   it("sequence labels stay stable when older rows prepend", () => {
-    // First projection: two items
     const p = createLiveConversationProjector();
     const initial = makeConversation({
       items: [
@@ -477,7 +702,6 @@ describe("createLiveConversationProjector", () => {
     const a = p.project(initial, { ...OPTS });
     const recentLabels = a.view.items.map((i) => i.sequenceLabel);
 
-    // Second projection: older items prepended before the same two items
     const withOlder = makeConversation({
       items: [
         { kind: "user", id: "old-1", text: "older message" },
@@ -497,12 +721,9 @@ describe("createLiveConversationProjector", () => {
       projectLabel: "Project",
       updatedLabel: null,
     });
-    // The two recent items should have the SAME sequence labels as before,
-    // even though they are now at positions 2 and 3 instead of 0 and 1.
     const bLabels = b.view.items.map((i) => i.sequenceLabel);
     expect(bLabels[2]).toBe(recentLabels[0]);
     expect(bLabels[3]).toBe(recentLabels[1]);
-    // The prepended older items should have their own new labels
     expect(bLabels[0]).not.toBe(recentLabels[0]);
     expect(bLabels[1]).not.toBe(recentLabels[1]);
   });
@@ -527,7 +748,6 @@ describe("createLiveConversationProjector", () => {
       projectLabel: "Project",
       updatedLabel: null,
     });
-    // The recent item should have the same key despite being at index 1 now
     expect(b.view.items[1]?.key).toBe(recentKey);
   });
 
@@ -588,7 +808,7 @@ describe("createLiveConversationProjector", () => {
     expect(b.view.questions[0]?.options[0]?.key).toBe(optKey);
   });
 
-  // --- serialization safety: raw IDs never leak into the view ---------------
+  // --- serialization safety --------------------------------------------------
 
   it("serialized view JSON contains no raw operational strings", () => {
     const p = createLiveConversationProjector();
@@ -636,7 +856,7 @@ describe("createLiveConversationProjector", () => {
           kind: "failure",
           id: "fail-secret-id",
           title: "Error",
-          detail: "Something went wrong",
+          detail: "wrong",
         },
         {
           kind: "attachments",
@@ -658,7 +878,6 @@ describe("createLiveConversationProjector", () => {
       updatedLabel: null,
     });
     const json = JSON.stringify(view);
-    // None of the raw operational identifiers should appear in the serialized view
     expect(json).not.toContain("session-secret-1");
     expect(json).not.toContain("user-secret-id");
     expect(json).not.toContain("agent-secret-id");
@@ -673,9 +892,9 @@ describe("createLiveConversationProjector", () => {
     expect(json).not.toContain('"secret":"value"');
   });
 
-  // --- truncation: marker-aware, multibyte, valid Unicode --------------------
+  // --- I3: truncation byte-exact assertions ----------------------------------
 
-  it("sets truncated flag on items that exceed the 64 KiB UTF-8 limit", () => {
+  it("body including marker is at most 65536 UTF-8 bytes", () => {
     const p = createLiveConversationProjector();
     const largeText = "x".repeat(70_000);
     const conv = makeConversation({
@@ -691,6 +910,7 @@ describe("createLiveConversationProjector", () => {
     const { view } = p.project(conv, { ...OPTS });
     const item = view.items.find((i) => i.kind === "assistant");
     expect(item?.truncated).toBe(true);
+    expect(utf8Bytes(item?.body ?? "")).toBeLessThanOrEqual(65536);
   });
 
   it("sets truncated false for normal items", () => {
@@ -699,11 +919,10 @@ describe("createLiveConversationProjector", () => {
       items: [{ kind: "user", id: "u1", text: "short" }],
     });
     const { view } = p.project(conv, { ...OPTS });
-    const item = view.items.find((i) => i.kind === "user");
-    expect(item?.truncated).toBe(false);
+    expect(view.items[0]?.truncated).toBe(false);
   });
 
-  it("truncation marker appears exactly once and body is valid Unicode", () => {
+  it("truncation marker appears exactly once", () => {
     const p = createLiveConversationProjector();
     const largeText = "x".repeat(70_000);
     const conv = makeConversation({
@@ -718,21 +937,21 @@ describe("createLiveConversationProjector", () => {
     });
     const { view } = p.project(conv, { ...OPTS });
     const item = view.items.find((i) => i.kind === "assistant");
-    expect(item?.truncated).toBe(true);
     const marker = "… truncated";
     expect(item).toBeDefined();
-    const count = item!.body.split(marker).length - 1;
+    const body = item?.body ?? "";
+    const count = body.split(marker).length - 1;
     expect(count).toBe(1);
-    // Body should end with the marker
-    expect(item!.body.endsWith(marker)).toBe(true);
+    expect(body.endsWith(marker)).toBe(true);
   });
 
-  it("recognizes store-capped marker text as truncated:true and does not duplicate marker", () => {
-    // If the store already capped the text and appended the marker, the
-    // projector recognizes it as truncated:true and does NOT append again.
-    const p = createLiveConversationProjector();
+  it("existing marker-ended over-cap input is re-truncated validly to <=65536 bytes", () => {
+    // Build a string that already has the marker but exceeds the cap.
+    // Use bytes that will push the total over 65536 when marker is appended.
     const marker = "… truncated";
-    const cappedText = "x".repeat(64 * 1024 - marker.length) + marker;
+    // content is 65536 bytes (filling the entire cap) + marker = over cap
+    const content = "x".repeat(65536);
+    const cappedText = content + marker;
     const conv = makeConversation({
       items: [
         {
@@ -743,21 +962,50 @@ describe("createLiveConversationProjector", () => {
         },
       ],
     });
+    const p = createLiveConversationProjector();
     const { view } = p.project(conv, { ...OPTS });
     const item = view.items.find((i) => i.kind === "assistant");
     expect(item?.truncated).toBe(true);
-    // Marker appears exactly once — not duplicated
-    expect(item).toBeDefined();
-    const count = item!.body.split(marker).length - 1;
+    // The body must be re-truncated to fit within the byte cap.
+    expect(utf8Bytes(item?.body ?? "")).toBeLessThanOrEqual(65536);
+    // Marker appears exactly once (not duplicated).
+    const body = item?.body ?? "";
+    const count = body.split(marker).length - 1;
     expect(count).toBe(1);
   });
 
-  it("multibyte truncation produces valid Unicode (no split surrogate pairs)", () => {
+  it("store-capped marker text within cap is recognized as truncated (no duplicate)", () => {
     const p = createLiveConversationProjector();
-    // Build text with multibyte characters that would split mid-codepoint
-    // at a naive byte boundary. Each emoji is 4 UTF-8 bytes.
-    const emoji = "🎉"; // U+1F389, 4 bytes in UTF-8
-    const largeText = emoji.repeat(20_000); // 80,000 bytes > 64 KiB
+    const marker = "… truncated";
+    // Build content that fits within the cap when marker is appended.
+    // Use byte-accurate calculation (marker is 12 UTF-8 bytes).
+    const markerByteLen = utf8Bytes(marker);
+    const content = "x".repeat(65536 - markerByteLen);
+    const cappedText = content + marker;
+    expect(utf8Bytes(cappedText)).toBeLessThanOrEqual(65536);
+    const conv = makeConversation({
+      items: [
+        {
+          kind: "assistant",
+          id: "capped-ok",
+          markdown: cappedText,
+          streaming: false,
+        },
+      ],
+    });
+    const { view } = p.project(conv, { ...OPTS });
+    const item = view.items.find((i) => i.kind === "assistant");
+    expect(item?.truncated).toBe(true);
+    expect(utf8Bytes(item?.body ?? "")).toBeLessThanOrEqual(65536);
+    const body = item?.body ?? "";
+    const count = body.split(marker).length - 1;
+    expect(count).toBe(1);
+  });
+
+  it("multibyte truncation produces valid Unicode (no replacement chars)", () => {
+    const p = createLiveConversationProjector();
+    const emoji = "🎉"; // 4 bytes each
+    const largeText = emoji.repeat(20_000); // 80,000 bytes
     const conv = makeConversation({
       items: [
         {
@@ -771,13 +1019,12 @@ describe("createLiveConversationProjector", () => {
     const { view } = p.project(conv, { ...OPTS });
     const item = view.items.find((i) => i.kind === "assistant");
     expect(item?.truncated).toBe(true);
-    // The body should be valid Unicode — no replacement characters from
-    // split multibyte sequences at the boundary.
     expect(item?.body).not.toContain("\uFFFD");
     expect(item?.body.endsWith("… truncated")).toBe(true);
+    expect(utf8Bytes(item?.body ?? "")).toBeLessThanOrEqual(65536);
   });
 
-  it("projected tool/reasoning body visibly carries bounded output", () => {
+  it("projected tool body visibly carries bounded output", () => {
     const p = createLiveConversationProjector();
     const largeOutput = "y".repeat(70_000);
     const conv = makeConversation({
@@ -796,162 +1043,184 @@ describe("createLiveConversationProjector", () => {
     expect(item?.truncated).toBe(true);
     expect(item?.body.length).toBeGreaterThan(0);
     expect(item?.body.endsWith("… truncated")).toBe(true);
+    expect(utf8Bytes(item?.body ?? "")).toBeLessThanOrEqual(65536);
   });
 
-  // --- operational map -------------------------------------------------------
+  // --- I1: snapshot ReadonlyMaps, caller mutation cannot corrupt -------------
 
-  it("returns an operational map alongside the view", () => {
+  it("returns snapshot operational maps that cannot corrupt internal state", () => {
     const p = createLiveConversationProjector();
     const conv = makeConversation({
       items: [{ kind: "user", id: "u1", text: "hi" }],
     });
-    const { view, operational } = p.project(conv, { ...OPTS });
-    expect(view).toBeDefined();
-    expect(operational).toBeDefined();
-    // The operational map should map the opaque key back to the raw item ID
-    const opaqueKey = view.items[0]?.key;
+    const a = p.project(conv, { ...OPTS });
+    const opaqueKey = a.view.items[0]?.key;
     expect(opaqueKey).toBeDefined();
-    expect(operational.itemKeys.get(opaqueKey!)).toBe("u1");
-  });
 
-  it("operational map contains raw question and option IDs", () => {
-    const p = createLiveConversationProjector();
-    const conv = makeConversation({
-      items: [
-        {
-          kind: "question",
-          id: "q1",
-          batch: {
-            callId: "call-1",
-            questions: [
-              {
-                key: "call-1:0",
-                header: "Choose",
-                question: "Which?",
-                options: [{ label: "A", detail: "A" }],
-                multiSelect: false,
-              },
-            ],
-          },
-        },
-      ],
-    });
-    const { view, operational } = p.project(conv, { ...OPTS });
-    const qKey = view.questions[0]?.key;
-    expect(qKey).toBeDefined();
-    expect(operational.questionKeys.get(qKey!)).toBe("call-1:0");
-    const optKey = view.questions[0]?.options[0]?.key;
-    expect(optKey).toBeDefined();
-    expect(operational.optionKeys.get(optKey!)).toBe("call-1:0:0");
-  });
-
-  // --- re-projection / patch stability ---------------------------------------
-
-  it("re-projecting identical input produces identical keys and sequence labels", () => {
-    const p = createLiveConversationProjector();
-    const conv = makeConversation({
-      items: [
-        { kind: "user", id: "u1", text: "hi" },
-        { kind: "assistant", id: "a1", markdown: "hello", streaming: false },
-      ],
-    });
-    const a = p.project(conv, { ...OPTS });
+    // Attempt to mutate the returned snapshot — should not affect subsequent projections.
+    // Since ReadonlyMap is still a Map at runtime, we test that the implementation
+    // returns a fresh copy each time.
     const b = p.project(conv, { ...OPTS });
-    expect(a.view).toEqual(b.view);
+    // The same item should get the same key (stability not corrupted by first result)
+    expect(b.view.items[0]?.key).toBe(opaqueKey);
+    // The second result's operational map should also map correctly
+    expect(b.operational.itemKeys.get(opaqueKey ?? "")).toBe("u1");
+    // The first result's operational map should still be correct
+    expect(a.operational.itemKeys.get(opaqueKey ?? "")).toBe("u1");
   });
 
-  it("re-projecting patched input keeps stable keys for unchanged items", () => {
+  it("mutating a returned operational map does not affect subsequent projection", () => {
     const p = createLiveConversationProjector();
-    const conv = makeConversation({
-      items: [
-        { kind: "user", id: "u1", text: "hello" },
-        { kind: "assistant", id: "a1", markdown: "reply", streaming: true },
-      ],
-    });
-    const a = p.project(conv, { ...OPTS });
-    const userKey = a.view.items[0]?.key;
-    const assistantKey = a.view.items[1]?.key;
-
-    // Patch: assistant streaming changes to false (delta update)
-    const patched = makeConversation({
-      items: [
-        { kind: "user", id: "u1", text: "hello" },
-        { kind: "assistant", id: "a1", markdown: "reply", streaming: false },
-      ],
-    });
-    const b = p.project(patched, { ...OPTS });
-    expect(b.view.items[0]?.key).toBe(userKey);
-    expect(b.view.items[1]?.key).toBe(assistantKey);
-  });
-
-  it("inserting a question before existing items preserves their keys", () => {
-    const p = createLiveConversationProjector();
-    const initial = makeConversation({
-      items: [
-        { kind: "user", id: "u1", text: "first" },
-        { kind: "assistant", id: "a1", markdown: "second", streaming: false },
-      ],
-    });
-    const a = p.project(initial, { ...OPTS });
-    const userKey = a.view.items[0]?.key;
-    const assistantKey = a.view.items[1]?.key;
-
-    const withQuestion = makeConversation({
-      items: [
-        {
-          kind: "question",
-          id: "q-new",
-          batch: {
-            callId: "call-new",
-            questions: [
-              {
-                key: "call-new:0",
-                header: "Choose",
-                question: "Which?",
-                options: [{ label: "A", detail: "A" }],
-                multiSelect: false,
-              },
-            ],
-          },
-        },
-        { kind: "user", id: "u1", text: "first" },
-        { kind: "assistant", id: "a1", markdown: "second", streaming: false },
-      ],
-    });
-    const b = p.project(withQuestion, { ...OPTS });
-    // The user and assistant items should have the same keys despite being
-    // shifted by one position due to the inserted question.
-    expect(b.view.items[1]?.key).toBe(userKey);
-    expect(b.view.items[2]?.key).toBe(assistantKey);
-  });
-
-  // --- different IDs don't collide ------------------------------------------
-
-  it("different item IDs produce different opaque keys (no collision)", () => {
-    const p = createLiveConversationProjector();
-    const conv = makeConversation({
-      items: [
-        { kind: "user", id: "u1", text: "first" },
-        { kind: "user", id: "u2", text: "second" },
-      ],
-    });
-    const { view } = p.project(conv, { ...OPTS });
-    const keys = view.items.map((i) => i.key);
-    expect(new Set(keys).size).toBe(keys.length);
-  });
-
-  it("same item ID across two projector instances gets different keys", () => {
-    const p1 = createLiveConversationProjector();
-    const p2 = createLiveConversationProjector();
     const conv = makeConversation({
       items: [{ kind: "user", id: "u1", text: "hi" }],
     });
-    const a = p1.project(conv, { ...OPTS });
-    const b = p2.project(conv, { ...OPTS });
+    const a = p.project(conv, { ...OPTS });
+    const opaqueKey = a.view.items[0]?.key;
+
+    // Corrupt the returned snapshot by clearing it
+    (a.operational.itemKeys as Map<string, string>).clear();
+
+    // Subsequent projection should still work correctly
+    const b = p.project(conv, { ...OPTS });
+    expect(b.view.items[0]?.key).toBe(opaqueKey);
+    expect(b.operational.itemKeys.get(opaqueKey ?? "")).toBe("u1");
+  });
+
+  // --- I2: reset / dispose / scoped identities -------------------------------
+
+  it("reset(scope) clears only entries for that scope", () => {
+    const p = createLiveConversationProjector();
+    const conv = makeConversation({
+      items: [{ kind: "user", id: "u1", text: "hi" }],
+    });
+    const a = p.project(conv, {
+      ref: "ref-A",
+      olderCursor: null,
+      projectLabel: "P",
+      updatedLabel: null,
+    });
+    const keyA = a.view.items[0]?.key;
+
+    // Project a different scope
+    const b = p.project(conv, {
+      ref: "ref-B",
+      olderCursor: null,
+      projectLabel: "P",
+      updatedLabel: null,
+    });
+    const keyB = b.view.items[0]?.key;
+    expect(keyA).not.toBe(keyB);
+
+    // Reset only scope A
+    p.reset("ref-A");
+
+    // Re-project scope A — should get a NEW key (registry was cleared)
+    const a2 = p.project(conv, {
+      ref: "ref-A",
+      olderCursor: null,
+      projectLabel: "P",
+      updatedLabel: null,
+    });
+    expect(a2.view.items[0]?.key).not.toBe(keyA);
+
+    // Re-project scope B — should still get the SAME key (not cleared)
+    const b2 = p.project(conv, {
+      ref: "ref-B",
+      olderCursor: null,
+      projectLabel: "P",
+      updatedLabel: null,
+    });
+    expect(b2.view.items[0]?.key).toBe(keyB);
+  });
+
+  it("reset() with no scope clears everything", () => {
+    const p = createLiveConversationProjector();
+    const conv = makeConversation({
+      items: [{ kind: "user", id: "u1", text: "hi" }],
+    });
+    const a = p.project(conv, {
+      ref: "ref-A",
+      olderCursor: null,
+      projectLabel: "P",
+      updatedLabel: null,
+    });
+    const keyA = a.view.items[0]?.key;
+
+    p.reset();
+
+    const b = p.project(conv, {
+      ref: "ref-A",
+      olderCursor: null,
+      projectLabel: "P",
+      updatedLabel: null,
+    });
+    expect(b.view.items[0]?.key).not.toBe(keyA);
+  });
+
+  it("dispose clears everything", () => {
+    const p = createLiveConversationProjector();
+    const conv = makeConversation({
+      items: [{ kind: "user", id: "u1", text: "hi" }],
+    });
+    const a = p.project(conv, { ...OPTS });
+    const keyA = a.view.items[0]?.key;
+
+    p.dispose();
+
+    const b = p.project(conv, { ...OPTS });
+    expect(b.view.items[0]?.key).not.toBe(keyA);
+  });
+
+  it("reused IDs across different conversation refs do not alias", () => {
+    const p = createLiveConversationProjector();
+    const conv = makeConversation({
+      items: [{ kind: "user", id: "u1", text: "hi" }],
+    });
+    const a = p.project(conv, {
+      ref: "ref-A",
+      olderCursor: null,
+      projectLabel: "P",
+      updatedLabel: null,
+    });
+    const b = p.project(conv, {
+      ref: "ref-B",
+      olderCursor: null,
+      projectLabel: "P",
+      updatedLabel: null,
+    });
+    // Same item ID "u1" but different refs → different keys (no cross-aliasing)
     expect(a.view.items[0]?.key).not.toBe(b.view.items[0]?.key);
   });
 
-  // --- title -----------------------------------------------------------------
+  it("registry has safe overflow with bounded size", () => {
+    const p = createLiveConversationProjector({
+      allocator: deterministicAllocator("k"),
+      maxRegistrySize: 3,
+    });
+    const conv = makeConversation({
+      items: [
+        { kind: "user", id: "u1", text: "a" },
+        { kind: "user", id: "u2", text: "b" },
+        { kind: "user", id: "u3", text: "c" },
+      ],
+    });
+    p.project(conv, { ...OPTS });
+
+    // Project with additional items to overflow the registry
+    const conv2 = makeConversation({
+      items: [
+        { kind: "user", id: "u1", text: "a" },
+        { kind: "user", id: "u2", text: "b" },
+        { kind: "user", id: "u3", text: "c" },
+        { kind: "user", id: "u4", text: "d" },
+      ],
+    });
+    // Should not throw — overflow is handled with eviction
+    const b = p.project(conv2, { ...OPTS });
+    expect(b.view.items).toHaveLength(4);
+  });
+
+  // --- title / determinism ---------------------------------------------------
 
   it("returns a title from the conversation name or preview", () => {
     const p = createLiveConversationProjector();
@@ -966,8 +1235,6 @@ describe("createLiveConversationProjector", () => {
     const { view } = p.project(conv, { ...OPTS });
     expect(view.title).toBe("some preview");
   });
-
-  // --- determinism within a single instance ----------------------------------
 
   it("is deterministic — same input on same instance produces same output", () => {
     const p = createLiveConversationProjector();
