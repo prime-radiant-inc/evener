@@ -8,12 +8,16 @@ import type {
   AnyNotification,
   InputItem,
   MutationReceipt,
+  Thread,
   ThreadCapabilities,
+  ThreadItem,
+  Turn,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type {
   MobileCapabilities,
   MobileConversation,
 } from "../conversation/model";
+import { projectThread } from "../conversation/project";
 import type { ActivityView } from "../services/activity";
 import type {
   ConversationReadProjection,
@@ -4279,60 +4283,143 @@ describe("ConversationStore", () => {
     });
   });
 
-  // --- Task 2A-Operations: rehydrate ownership, loadOlder token, draft
-  // revision, capability/mutation race, question lifecycle ---
+  // --- Fix round 1: I1/I2/I3/I4 — rehydrate/loadOlder ownership, mutation
+  // error clear, raw Thread question lifecycle ---
 
-  describe("Task 2A-Ops-1: rehydrate ownership preserves newer draft, mutation, error", () => {
-    it("rehydrate preserves user draft typed during await (not pre-await snapshot)", async () => {
+  // Raw Thread fixture helpers for I4 (projectThread-based question tests).
+  function makeThread(over: Partial<Thread> = {}): Thread {
+    return {
+      id: "thread-1",
+      sessionId: "session-1",
+      preview: "hello",
+      ephemeral: false,
+      modelProvider: "anthropic",
+      createdAt: 0,
+      updatedAt: 0,
+      status: { type: "ready" },
+      cwd: "",
+      cliVersion: "",
+      source: "",
+      evener: {
+        ref: "ref-1",
+        capabilities: { ...ALL_TRUE_CAPS },
+        queue: { revision: 0 },
+      },
+      ...over,
+    };
+  }
+
+  function makeTurn(over: Partial<Turn> = {}): Turn {
+    return {
+      id: "t1",
+      items: [],
+      itemsView: "default",
+      status: "completed",
+      ...over,
+    };
+  }
+
+  function askUserItem(
+    id: string,
+    argsJson: string,
+    status = "completed",
+  ): ThreadItem {
+    return {
+      type: "commandExecution",
+      id,
+      toolName: "ask_user",
+      status,
+      argumentsJson: argsJson,
+    };
+  }
+
+  function userMessageItem(id: string, text: string): ThreadItem {
+    return { type: "userMessage", id, text };
+  }
+
+  const VALID_ASK_ARGS =
+    '{"questions":[{"header":"Choose","question":"Pick one","options":[{"label":"A","detail":"da"},{"label":"B","detail":"db"}],"multi_select":false}]}';
+
+  function makeReadProjectionResult(thread: Thread): {
+    conversation: MobileConversation;
+    activity: ActivityView;
+    olderCursor: string | null;
+  } {
+    return {
+      conversation: projectThread(thread),
+      activity: {
+        tasks: [],
+        work: [],
+        usage: {},
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+      },
+      olderCursor: null,
+    };
+  }
+
+  describe("I1: rehydrate commit-time ownership — page/mutation/error owner capture", () => {
+    it("R pending→L success: R cannot delete page items or regress cursor after L owns page", async () => {
+      // Rehydrate (R) is pending. A loadOlder (L) succeeds during the await,
+      // prepending older items and advancing the cursor. When R completes, it
+      // must NOT replace the conversation (deleting L's items) or regress the
+      // cursor — L's page ownership is newer.
       const service = new FakeConversationService();
       const store = createConversationStore();
-      service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
-        },
-        olderCursor: "cursor-1",
-      };
-      await store.getState().openProjected(service, createFakeSink(), "ref-1");
-      // User has a draft before rehydrate starts.
-      store.getState().setDraft("old draft");
-      // Start a rehydrate that hangs so the user can type during the await.
-      const ctrl = makeControlledRead(service);
-      store.getState().applyNotification({
-        method: "evener/thread/resync",
-        params: { threadId: "thread-1", ref: "ref-1" },
-      } as AnyNotification);
-      await ctrl.started(1);
-      await yieldMicrotask(); // let wrapper reach release gate
-      // User types new text while rehydrate is in-flight.
-      store.getState().setDraft("new text typed during rehydrate");
-      // Release the rehydrate — it must preserve the NEW draft, not the old one.
-      ctrl.release();
-      await ctrl.completed(1);
-      expect(store.getState().draft).toBe("new text typed during rehydrate");
-    });
-
-    it("rehydrate does not clear a mutation error set by a newer mutation", async () => {
-      const service = new FakeConversationService();
-      const store = createConversationStore();
-      service.readProjectionResult = {
-        conversation: makeConversation({
-          id: "thread-1",
-          capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              items: [{ kind: "user", id: "u1", text: "hi" } as never] as never,
+            }),
+          ],
         }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
-        },
-        olderCursor: null,
-      };
+      );
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
-      // Start a rehydrate that hangs.
+      // Set up an older cursor so loadOlder can run.
+      store.setState({ olderCursor: "cursor-1" });
+      // Start a rehydrate (R) that hangs.
+      const ctrl = makeControlledRead(service);
+      // Change the projection result so R would regress the cursor and
+      // replace items.
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      service.readProjectionResult.olderCursor = null;
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      // While R is in-flight, a loadOlder (L) succeeds — prepends items,
+      // advances cursor.
+      service.olderItems = {
+        items: [{ kind: "user", id: "old-page-item", text: "older" }],
+        nextCursor: "cursor-2",
+      };
+      await store.getState().loadOlder(service);
+      const itemsAfterL = store.getState().conversation?.items ?? [];
+      const cursorAfterL = store.getState().olderCursor;
+      expect(itemsAfterL.some((i) => i.id === "old-page-item")).toBe(true);
+      expect(cursorAfterL).toBe("cursor-2");
+      // Now release R — it must NOT replace the conversation or regress cursor.
+      ctrl.release();
+      await ctrl.completed(1);
+      // R's stale domain write (replacing conversation) is discarded — L's
+      // page items survive, cursor is NOT regressed.
+      const itemsAfterR = store.getState().conversation?.items ?? [];
+      expect(itemsAfterR.some((i) => i.id === "old-page-item")).toBe(true);
+      expect(store.getState().olderCursor).toBe(cursorAfterL);
+    });
+
+    it("R→L failure: R success preserves page error set by L failure", async () => {
+      // Rehydrate (R) is pending. A loadOlder (L) fails during the await,
+      // setting a page error. When R succeeds, it must NOT clear that error.
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      // Start R (hanging).
       const ctrl = makeControlledRead(service);
       store.getState().applyNotification({
         method: "evener/thread/resync",
@@ -4340,216 +4427,235 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       await ctrl.started(1);
       await yieldMicrotask();
-      // While rehydrate is in-flight, a send fails (sets error + failed mutation).
-      service.sendShouldReject = new Error("mutation failed");
-      await store.getState().send(service, textInput("x"));
+      // While R is in-flight, L fails — sets a page error.
+      service.olderItems = Promise.reject(
+        new Error("page load failed"),
+      ) as never;
+      await store
+        .getState()
+        .loadOlder(service)
+        .catch(() => {});
       expect(store.getState().error).not.toBeNull();
-      expect(store.getState().pendingMutation?.status).toBe("failed");
-      // Release the rehydrate — it must NOT clear the mutation error.
+      const errorAfterL = store.getState().error;
+      // Release R — it must preserve the page error.
       ctrl.release();
       await ctrl.completed(1);
-      expect(store.getState().error).not.toBeNull();
-      expect(store.getState().pendingMutation?.status).toBe("failed");
+      expect(store.getState().error).toBe(errorAfterL);
     });
 
-    it("two overlapping rehydrates — stale one does not overwrite newer draft", async () => {
+    it("R→new mutation failure: R failure cannot overwrite mutation error", async () => {
+      // Rehydrate (R) is pending. A mutation fails during the await, setting
+      // a mutation error. When R also fails, R's failure must NOT overwrite
+      // the mutation's error.
       const service = new FakeConversationService();
       const store = createConversationStore();
-      service.readProjectionResult = {
-        conversation: makeConversation({ id: "thread-1" }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
-        },
-        olderCursor: null,
-      };
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS },
+            queue: { revision: 0 },
+          },
+        }),
+      );
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
-      // Start two rehydrates — the first is older (stale), the second is newer.
+      // Start R (hanging).
       const ctrl = makeControlledRead(service);
-      // First rehydrate (older)
-      const rehydrate1P = store.getState().rehydrate(service, createFakeSink());
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
       await ctrl.started(1);
       await yieldMicrotask();
-      // Second rehydrate (newer) — increments rehydrateToken
-      const rehydrate2P = store.getState().rehydrate(service, createFakeSink());
-      await ctrl.started(2);
-      await yieldMicrotask();
-      // User types during both in-flight
-      store.getState().setDraft("user draft");
-      // Release first (stale) — must not overwrite.
+      // While R is in-flight, a send fails — sets mutation error.
+      service.sendShouldReject = new Error("mutation boom");
+      await store.getState().send(service, textInput("x"));
+      expect(store.getState().error).toBe("mutation boom");
+      expect(store.getState().pendingMutation?.status).toBe("failed");
+      // Now make R fail — patch readProjection to reject.
+      service.readProjection = async () => {
+        throw new Error("rehydrate boom");
+      };
       ctrl.release();
-      await rehydrate1P.catch(() => {});
-      // Release second (newer) — should commit with current draft.
-      ctrl.release();
-      await rehydrate2P;
-      expect(store.getState().draft).toBe("user draft");
+      await ctrl.completed(1).catch(() => {});
+      // R's failure must NOT overwrite the mutation error.
+      expect(store.getState().error).toBe("mutation boom");
+      expect(store.getState().pendingMutation?.status).toBe("failed");
     });
   });
 
-  describe("Task 2A-Ops-2: loadOlder operation token — stale makes no state change", () => {
-    it("stale loadOlder success does not set loadingOlder or items after newer loadOlder owns fields", async () => {
+  describe("I2: generation/identity-stale loadOlder performs ZERO set calls", () => {
+    it("barrier: A pending, open/reset B, start B page, resolve A → subscriber sees zero stale writes", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
-      service.openConv = makeConversation({
-        items: [{ kind: "user", id: "item-1", text: "initial" }],
-      });
-      await store.getState().open(service, "ref-1");
-      store.setState({ olderCursor: "cursor-1" });
-      // Start first loadOlder (older) that hangs.
-      let resolveFirst: (() => void) | null = null as (() => void) | null;
-      const hangFirst = new Promise<{
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ id: "thread-A" }),
+      );
+      await store.getState().openProjected(service, createFakeSink(), "ref-A");
+      store.setState({ olderCursor: "cursor-A" });
+      // Start loadOlder A (hangs).
+      let resolveA: (() => void) | null = null as (() => void) | null;
+      const hangA = new Promise<{
         items: MobileConversation["items"];
         nextCursor?: string;
       }>((r) => {
-        resolveFirst = () =>
+        resolveA = () =>
           r({
-            items: [{ kind: "user", id: "old-1", text: "stale" }],
-            nextCursor: "stale-cursor",
+            items: [{ kind: "user", id: "stale-A-item", text: "stale" }],
+            nextCursor: "stale-cursor-A",
           });
       });
-      service.olderItems = hangFirst as never;
-      const firstP = store.getState().loadOlder(service);
-      // While first is in-flight, start a second loadOlder.
-      // The second should own loadingOlder and error.
+      service.olderItems = hangA as never;
+      // Track all set() calls via subscriber.
+      const setCalls: string[] = [];
+      let snapshotConversation = store.getState().conversation;
+      let snapshotLoadingOlder = store.getState().loadingOlder;
+      let snapshotError = store.getState().error;
+      let snapshotOlderCursor = store.getState().olderCursor;
+      store.subscribe((s) => {
+        if (s.conversation !== snapshotConversation)
+          setCalls.push("conversation");
+        if (s.loadingOlder !== snapshotLoadingOlder)
+          setCalls.push("loadingOlder");
+        if (s.error !== snapshotError) setCalls.push("error");
+        if (s.olderCursor !== snapshotOlderCursor) setCalls.push("olderCursor");
+        snapshotConversation = s.conversation;
+        snapshotLoadingOlder = s.loadingOlder;
+        snapshotError = s.error;
+        snapshotOlderCursor = s.olderCursor;
+      });
+      const aP = store.getState().loadOlder(service);
+      // While A is in-flight, open B (new conversation generation).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ id: "thread-B" }),
+      );
+      await store.getState().openProjected(service, createFakeSink(), "ref-B");
+      store.setState({ olderCursor: "cursor-B" });
+      // Start and complete a B page operation.
       service.olderItems = {
-        items: [{ kind: "user", id: "new-1", text: "newer" }],
-        nextCursor: "new-cursor",
+        items: [{ kind: "user", id: "B-item", text: "B page" }],
+        nextCursor: "cursor-B2",
       };
-      // loadOlder checks loadingOlder guard — second should NOT start while first is loading.
-      // So we need to resolve the first first to clear loadingOlder, then start second.
-      // Actually, the brief says "after a newer conversation or newer page operation owns those fields".
-      // The newer page operation is a second loadOlder that has already completed.
-      // Let's resolve the first loadOlder as stale, then start and complete a second,
-      // then resolve a hypothetical stale success — but the first already resolved.
-      // Better: use generation change to test stale.
-      (resolveFirst as () => void)();
-      await firstP;
-      // Now start a second loadOlder that completes normally.
-      store.setState({ olderCursor: "cursor-2" });
-      const itemsBefore = store.getState().conversation?.items ?? [];
       await store.getState().loadOlder(service);
-      // The second loadOlder should have prepended "new-1".
-      const itemsAfter = store.getState().conversation?.items ?? [];
-      expect(itemsAfter[0]?.id).toBe("new-1");
-      expect(itemsAfter.length).toBe(itemsBefore.length + 1);
+      expect(store.getState().conversation?.id).toBe("thread-B");
+      // Clear tracked calls — from this point, only A's stale resolution
+      // should produce writes. A must produce ZERO.
+      setCalls.length = 0;
+      snapshotConversation = store.getState().conversation;
+      snapshotLoadingOlder = store.getState().loadingOlder;
+      snapshotError = store.getState().error;
+      snapshotOlderCursor = store.getState().olderCursor;
+      // Now resolve the stale A — it must perform ZERO set calls.
+      (resolveA as () => void)();
+      await aP;
+      // The subscriber must NOT have seen any stale writes from A.
+      expect(setCalls.length).toBe(0);
+      // B's state is intact.
+      expect(store.getState().conversation?.id).toBe("thread-B");
       expect(store.getState().loadingOlder).toBe(false);
     });
 
-    it("stale loadOlder failure does not set error after reset owns error field", async () => {
+    it("stale loadOlder failure after reset performs ZERO set calls", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
-      service.openConv = makeConversation({
-        items: [{ kind: "user", id: "item-1", text: "initial" }],
-      });
-      await store.getState().open(service, "ref-1");
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.setState({ olderCursor: "cursor-1" });
-      // Start loadOlder that hangs, then reset (new generation).
-      let rejectFirst: ((e: Error) => void) | null = null as
+      // Start loadOlder that hangs, then reset.
+      let rejectA: ((e: Error) => void) | null = null as
         | ((e: Error) => void)
         | null;
-      const hangFirst = new Promise<{
+      const hangA = new Promise<{
         items: MobileConversation["items"];
         nextCursor?: string;
       }>((_r, reject) => {
-        rejectFirst = reject;
+        rejectA = reject;
       });
-      service.olderItems = hangFirst as never;
-      const firstP = store.getState().loadOlder(service);
-      // Reset — newer conversation owns error/loadingOlder.
+      service.olderItems = hangA as never;
+      const aP = store.getState().loadOlder(service);
       store.getState().reset();
-      expect(store.getState().error).toBeNull();
-      // Resolve the stale loadOlder with failure — must NOT set error.
-      (rejectFirst as (e: Error) => void)(new Error("stale loadOlder failure"));
-      await firstP.catch(() => {});
-      // The stale failure must not have set error or loadingOlder.
+      // Track set calls AFTER reset — only A's stale resolution should be tracked.
+      const setCalls: string[] = [];
+      let snapLoading = store.getState().loadingOlder;
+      let snapError = store.getState().error;
+      let snapConv = store.getState().conversation;
+      store.subscribe((s) => {
+        if (s.loadingOlder !== snapLoading) setCalls.push("loadingOlder");
+        if (s.error !== snapError) setCalls.push("error");
+        if (s.conversation !== snapConv) setCalls.push("conversation");
+        snapLoading = s.loadingOlder;
+        snapError = s.error;
+        snapConv = s.conversation;
+      });
+      // Resolve stale A with failure — must perform ZERO set calls.
+      (rejectA as (e: Error) => void)(new Error("stale A failure"));
+      await aP.catch(() => {});
+      expect(setCalls.length).toBe(0);
+      expect(store.getState().conversation).toBeNull();
       expect(store.getState().error).toBeNull();
       expect(store.getState().loadingOlder).toBe(false);
-      expect(store.getState().conversation).toBeNull();
     });
   });
 
-  describe("Task 2A-Ops-3: capability/mutation race — newer same-gen mutation not stale", () => {
-    it("newer same-generation mutation does not receive stale capability publication", async () => {
+  describe("I3: mutation starts atomically clear prior error", () => {
+    it("send clears prior error atomically with new pending mutation", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       service.openConv = makeConversation({
         capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
       });
       await store.getState().open(service, "ref-1");
-      // First send fails with actionUnavailable — triggers cap refresh.
-      const rejectErr = new WireError("action unavailable", -32000, {
-        evenerErrorInfo: "actionUnavailable",
-      });
-      service.sendShouldReject = rejectErr as Error;
-      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
-      // Hang refreshCapabilities so we can start a newer mutation during the await.
-      const refreshCtrl = makeControlledRefresh(service);
-      const send1P = store.getState().send(service, textInput("first"));
-      await refreshCtrl.started();
-      await yieldMicrotask();
-      // While the first cap refresh is hanging, start a second send (newer mutationId).
-      // The second send will also fail (sendShouldReject is still set).
-      service.sendShouldReject = rejectErr as Error;
-      const send2P = store.getState().send(service, textInput("second"));
-      // Release the first cap refresh — it must NOT publish because mutationId 2 is now active.
-      refreshCtrl.release();
-      await send1P;
-      // The first send's cap refresh was suppressed — caps should NOT have been published by mutation 1.
-      // Actually, mutation 2 also fails, so it also triggers its own cap refresh.
-      // Let the second cap refresh complete.
-      await refreshCtrl.started();
-      await yieldMicrotask();
-      refreshCtrl.release();
-      await send2P;
-      // The first mutation's cap publication was suppressed (mutationId guard).
-      // The second mutation's cap refresh DID publish.
-      expect(store.getState().conversation?.capabilities.send).toBe(false);
-    });
-
-    it("newer same-generation mutation does not receive stale error from older mutation", async () => {
-      const service = new FakeConversationService();
-      const store = createConversationStore();
-      service.openConv = makeConversation({
-        capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
-      });
-      await store.getState().open(service, "ref-1");
-      // First send fails with actionUnavailable — triggers cap refresh (hanging).
-      const rejectErr = new WireError("action unavailable", -32000, {
-        evenerErrorInfo: "actionUnavailable",
-      });
-      service.sendShouldReject = rejectErr as Error;
-      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
-      const refreshCtrl = makeControlledRefresh(service);
-      const send1P = store.getState().send(service, textInput("first"));
-      await refreshCtrl.started();
-      await yieldMicrotask();
-      // While first send's cap refresh is hanging, start a second send that succeeds.
+      // Set an error via a failed send.
+      service.sendShouldReject = new Error("first failure");
+      await store.getState().send(service, textInput("first"));
+      expect(store.getState().error).not.toBeNull();
+      // Start a second send — it must atomically clear the error.
       service.sendShouldReject = null;
-      const send2P = store.getState().send(service, textInput("second"));
-      // Release the first cap refresh — mutationId 1 is stale (mutation 2 owns pendingMutation).
-      // The stale error from mutation 1 must NOT overwrite mutation 2's clean state.
-      refreshCtrl.release();
+      let resolveSend: (() => void) | null = null as (() => void) | null;
+      const hangSend = new Promise<MutationReceipt>((r) => {
+        resolveSend = () => r(makeReceipt());
+      });
+      service.send = async () => hangSend;
+      store.getState().send(service, textInput("second"));
+      // Error must be cleared immediately (atomically with pending mutation).
+      expect(store.getState().error).toBeNull();
+      expect(store.getState().pendingMutation?.status).toBe("pending");
+      (resolveSend as () => void)();
+    });
+
+    it("old failed mutation cannot republish error after newer mutation starts", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({
+        capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+      });
+      await store.getState().open(service, "ref-1");
+      // First send hangs then fails.
+      let rejectFirst: ((e: Error) => void) | null = null as
+        | ((e: Error) => void)
+        | null;
+      const hangFirst = new Promise<MutationReceipt>((_r, reject) => {
+        rejectFirst = reject;
+      });
+      service.sendShouldReject = null;
+      service.send = async () => hangFirst;
+      const send1P = store.getState().send(service, textInput("first"));
+      // While first is in-flight, start a second send that succeeds.
+      store.getState().setDraft("second");
+      service.sendShouldReject = null;
+      service.send = async () => makeReceipt();
+      await store.getState().send(service, textInput("second"));
+      expect(store.getState().error).toBeNull();
+      expect(store.getState().pendingMutation).toBeNull();
+      // Now the first send fails — it must NOT republish error.
+      (rejectFirst as (e: Error) => void)(new Error("first failed"));
       await send1P;
-      await send2P;
-      // Mutation 2 succeeded — no error should be set from the stale mutation 1.
-      // Actually, the cap refresh published send=false, so mutation 2 would fail
-      // at requireCap. Let's check: mutation 2 started before the cap refresh
-      // published. After the cap refresh publishes send=false, mutation 2 is
-      // already in-flight (awaiting service.send). So it completes. But
-      // handleMutationError for mutation 1 checks mutationId and bails.
-      // The key assertion: mutation 2's error state is NOT overwritten by mutation 1.
-      // If mutation 2 succeeded, error should be null.
-      // But wait — the cap refresh published send=false. That's the stale
-      // publication from mutation 1. With the mutationId guard, mutation 1's
-      // cap refresh should NOT publish because mutation 2 now owns pendingMutation.
-      // So caps should still be send=true.
-      expect(store.getState().conversation?.capabilities.send).toBe(true);
+      expect(store.getState().error).toBeNull();
+      expect(store.getState().pendingMutation).toBeNull();
     });
   });
 
-  describe("Task 2A-Ops-4: explicit draft revision — type-then-delete is an edit", () => {
+  describe("Task 2A-Ops-4 (preserved): explicit draft revision — type-then-delete is an edit", () => {
     it("failure restores draft snapshot only if user has not edited since clear", async () => {
       const service = new FakeConversationService();
       service.sendShouldReject = new Error("send failed");
@@ -4557,7 +4663,6 @@ describe("ConversationStore", () => {
       await store.getState().open(service, "ref-1");
       store.getState().setDraft("original draft");
       await store.getState().send(service, textInput("original draft"));
-      // No edit since clear — draft should be restored.
       expect(store.getState().draft).toBe("original draft");
     });
 
@@ -4566,7 +4671,6 @@ describe("ConversationStore", () => {
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
       store.getState().setDraft("my draft text");
-      // Start a send that hangs so we can type during the mutation.
       let rejectSend: ((e: Error) => void) | null = null as
         | ((e: Error) => void)
         | null;
@@ -4576,15 +4680,11 @@ describe("ConversationStore", () => {
       service.sendShouldReject = null;
       service.send = async () => hangSend;
       const sendP = store.getState().send(service, textInput("my draft text"));
-      // Draft is cleared on submit.
       expect(store.getState().draft).toBe("");
-      // User types then deletes — draft is empty but they EDITED.
       store.getState().setDraft("typed then deleted");
       store.getState().setDraft("");
-      // Now the send fails.
       (rejectSend as (e: Error) => void)(new Error("send failed"));
       await sendP;
-      // The draft should NOT be restored because the user edited (typed-then-deleted).
       expect(store.getState().draft).toBe("");
       expect(store.getState().error).not.toBeNull();
     });
@@ -4593,7 +4693,6 @@ describe("ConversationStore", () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       await store.getState().open(service, "ref-1");
-      // First send fails (hanging) with a draft snapshot "first".
       store.getState().setDraft("first");
       let rejectFirst: ((e: Error) => void) | null = null as
         | ((e: Error) => void)
@@ -4604,209 +4703,137 @@ describe("ConversationStore", () => {
       service.sendShouldReject = null;
       service.send = async () => hangFirst;
       const send1P = store.getState().send(service, textInput("first"));
-      // Draft cleared. Now start a second send with different draft.
       store.getState().setDraft("second");
       service.sendShouldReject = null;
       service.send = async () => makeReceipt();
       await store.getState().send(service, textInput("second"));
-      // Second send succeeded — draft cleared, pendingMutation is null.
       expect(store.getState().draft).toBe("");
       expect(store.getState().pendingMutation).toBeNull();
-      // Now the first send fails — it must NOT restore "first" draft or
-      // set error, because mutation 2 has already cleared pendingMutation.
       (rejectFirst as (e: Error) => void)(new Error("first failed"));
       await send1P;
-      // The stale failure must not have altered the newer mutation's state.
       expect(store.getState().draft).toBe("");
       expect(store.getState().pendingMutation).toBeNull();
     });
   });
 
-  describe("Task 2A-Ops-5: question lifecycle — ask_user projection and user-message settlement", () => {
-    it("completed ask_user drives reread to produce actual question rows and askPending", async () => {
+  describe("I4: raw Thread fixtures through projectThread — question lifecycle", () => {
+    it("completed parseable ask_user drives reread → question rows + askPending via projectThread", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
-      // Initial projection: no questions.
-      service.readProjectionResult = {
-        conversation: makeConversation({ items: [], askPending: false }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
-        },
-        olderCursor: null,
-      };
+      // Initial: no turns, no pending ask.
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       expect(store.getState().conversation?.askPending).toBe(false);
-      // Update the projection result to include actual question rows.
-      const askItem = {
-        kind: "question" as const,
-        id: "ask-1",
-        batch: {
-          callId: "call-1",
-          questions: [
-            {
-              key: "call-1:0",
-              header: "Choose",
-              question: "Pick one",
-              options: [
-                { label: "A", detail: "da" },
-                { label: "B", detail: "db" },
-              ],
-              multiSelect: false,
-            },
-          ],
-        },
-      };
-      service.readProjectionResult = {
-        conversation: makeConversation({
-          items: [askItem],
-          askPending: true,
-        }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
-        },
-        olderCursor: null,
-      };
-      // Trigger an ask_user completed notification — schedules a reread.
+      // After the ask_user notification, the reread returns a Thread with a
+      // completed ask_user turn — projectThread produces question rows.
+      const askThread = makeThread({
+        turns: [
+          makeTurn({
+            id: "t1",
+            items: [askUserItem("ask-1", VALID_ASK_ARGS)],
+            status: "completed",
+          }),
+        ],
+      });
+      service.readProjectionResult = makeReadProjectionResult(askThread);
+      const initialReads = service.readProjectionCalls.length;
+      // Trigger the ask_user completed notification — schedules a reread.
       store.getState().applyNotification({
         method: "item/completed",
         params: {
           threadId: "thread-1",
           ref: "ref-1",
           turnId: "t1",
-          item: {
-            type: "commandExecution",
-            id: "ask-1",
-            toolName: "ask_user",
-            status: "completed",
-            argumentsJson:
-              '{"questions":[{"header":"Choose","question":"Pick one","options":[{"label":"A","detail":"da"},{"label":"B","detail":"db"}],"multi_select":false}]}',
-          },
+          item: askUserItem("ask-1", VALID_ASK_ARGS),
         },
       } as AnyNotification);
-      // Wait for the reread to complete.
+      // Deterministic barrier: await reread started + completed.
+      const ctrl = makeControlledRead(service);
+      await ctrl.started(1);
       await yieldMicrotask();
+      ctrl.release();
+      await ctrl.completed(1);
+      // Wait for the rehydrate effect to finish committing.
       await yieldMicrotask();
-      await yieldMicrotask();
-      // The reread must have produced actual question rows, not just a count.
+      // The reread must have produced actual question rows via projectThread.
       const conv = store.getState().conversation;
       expect(conv?.askPending).toBe(true);
       const questionItem = conv?.items.find((i) => i.kind === "question");
       expect(questionItem).toBeDefined();
       if (questionItem?.kind === "question") {
-        expect(questionItem.batch.callId).toBe("call-1");
         expect(questionItem.batch.questions).toHaveLength(1);
         expect(questionItem.batch.questions[0]?.question).toBe("Pick one");
         expect(questionItem.batch.questions[0]?.options).toHaveLength(2);
       }
+      // Bounded reread count: exactly one reread.
+      expect(service.readProjectionCalls.length).toBe(initialReads + 1);
     });
 
-    it("later user-message lifecycle triggers reread and settles pending question state", async () => {
+    it("later user-message answer triggers reread → settled/removal via projectThread", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
-      // Initial projection: has a pending ask_user.
-      const askItem = {
-        kind: "question" as const,
-        id: "ask-1",
-        batch: {
-          callId: "call-1",
-          questions: [
-            {
-              key: "call-1:0",
-              header: "Choose",
-              question: "Pick one",
-              options: [
-                { label: "A", detail: "da" },
-                { label: "B", detail: "db" },
-              ],
-              multiSelect: false,
-            },
-          ],
-        },
-      };
-      service.readProjectionResult = {
-        conversation: makeConversation({
-          items: [askItem],
-          askPending: true,
-        }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
-        },
-        olderCursor: null,
-      };
+      // Initial: has a pending ask_user.
+      const askThread = makeThread({
+        turns: [
+          makeTurn({
+            id: "t1",
+            items: [askUserItem("ask-1", VALID_ASK_ARGS)],
+            status: "completed",
+          }),
+        ],
+      });
+      service.readProjectionResult = makeReadProjectionResult(askThread);
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       expect(store.getState().conversation?.askPending).toBe(true);
       const initialReads = service.readProjectionCalls.length;
-      // Update the projection result to show the ask is answered (no question rows).
-      service.readProjectionResult = {
-        conversation: makeConversation({
-          items: [
-            { kind: "user", id: "answer-1", text: "I choose A" },
-            {
-              kind: "activity",
-              id: "ask-1",
-              label: "ask_user",
-              state: "completed" as const,
-              detail: {},
-            },
-          ],
-          askPending: false,
-        }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
-        },
-        olderCursor: null,
-      };
-      // A user-message notification triggers a reread (answer from this or another client).
+      // After the user-message, the reread returns a Thread where the ask is
+      // followed by a userMessage — projectThread settles (no question rows,
+      // askPending false).
+      const settledThread = makeThread({
+        turns: [
+          makeTurn({
+            id: "t1",
+            items: [askUserItem("ask-1", VALID_ASK_ARGS)],
+            status: "completed",
+          }),
+          makeTurn({
+            id: "t2",
+            items: [userMessageItem("answer-1", "I choose A")],
+            status: "completed",
+          }),
+        ],
+      });
+      service.readProjectionResult = makeReadProjectionResult(settledThread);
+      // A user-message notification triggers a reread (answer lifecycle).
       store.getState().applyNotification({
         method: "item/started",
         params: {
           threadId: "thread-1",
           ref: "ref-1",
           turnId: "t2",
-          item: {
-            type: "userMessage",
-            id: "answer-1",
-            text: "I choose A",
-          },
+          item: userMessageItem("answer-1", "I choose A"),
         },
       } as AnyNotification);
-      // Wait for the reread.
+      const ctrl = makeControlledRead(service);
+      await ctrl.started(1);
       await yieldMicrotask();
-      await yieldMicrotask();
+      ctrl.release();
+      await ctrl.completed(1);
+      // Wait for the rehydrate effect to finish committing.
       await yieldMicrotask();
       // The reread must have settled the pending question state.
       const conv = store.getState().conversation;
       expect(conv?.askPending).toBe(false);
       const questionItem = conv?.items.find((i) => i.kind === "question");
       expect(questionItem).toBeUndefined();
-      expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
+      // Bounded reread count: exactly one reread.
+      expect(service.readProjectionCalls.length).toBe(initialReads + 1);
     });
 
-    it("malformed ask_user remains conservative and bounded — schedules reread only", async () => {
+    it("malformed ask_user remains conservative — schedules reread, no question rows", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
-      service.readProjectionResult = {
-        conversation: makeConversation({ items: [], askPending: false }),
-        activity: {
-          tasks: [],
-          work: [],
-          usage: {},
-          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
-        },
-        olderCursor: null,
-      };
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
       const initialReads = service.readProjectionCalls.length;
       // A malformed ask_user (invalid argumentsJson) schedules a reread.
@@ -4816,23 +4843,83 @@ describe("ConversationStore", () => {
           threadId: "thread-1",
           ref: "ref-1",
           turnId: "t1",
-          item: {
-            type: "commandExecution",
-            id: "ask-malformed",
-            toolName: "ask_user",
-            status: "completed",
-            argumentsJson: "not valid json {{{",
-          },
+          item: askUserItem("ask-bad", "not valid json {{{"),
         },
       } as AnyNotification);
+      const ctrl = makeControlledRead(service);
+      await ctrl.started(1);
       await yieldMicrotask();
-      await yieldMicrotask();
-      await yieldMicrotask();
-      // A reread was scheduled (conservative), but no question item was projected.
-      expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
+      ctrl.release();
+      await ctrl.completed(1);
+      // A reread was scheduled (conservative), but no question item projected.
+      expect(service.readProjectionCalls.length).toBe(initialReads + 1);
       const conv = store.getState().conversation;
       const questionItem = conv?.items.find((i) => i.kind === "question");
       expect(questionItem).toBeUndefined();
+    });
+
+    it("incomplete ask_user (inProgress) remains conservative — schedules reread only", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      const initialReads = service.readProjectionCalls.length;
+      // An inProgress ask_user schedules a reread.
+      store.getState().applyNotification({
+        method: "item/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: askUserItem("ask-incomplete", VALID_ASK_ARGS, "inProgress"),
+        },
+      } as AnyNotification);
+      const ctrl = makeControlledRead(service);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      ctrl.release();
+      await ctrl.completed(1);
+      expect(service.readProjectionCalls.length).toBe(initialReads + 1);
+      const conv = store.getState().conversation;
+      const questionItem = conv?.items.find((i) => i.kind === "question");
+      expect(questionItem).toBeUndefined();
+    });
+
+    it("mutation race: asserts error, pending owner, capabilities after stale cap refresh", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS },
+            queue: { revision: 0 },
+          },
+        }),
+      );
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // First send fails with actionUnavailable — triggers cap refresh (hanging).
+      const rejectErr = new WireError("action unavailable", -32000, {
+        evenerErrorInfo: "actionUnavailable",
+      });
+      service.sendShouldReject = rejectErr as Error;
+      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
+      const refreshCtrl = makeControlledRefresh(service);
+      const send1P = store.getState().send(service, textInput("first"));
+      await refreshCtrl.started();
+      await yieldMicrotask();
+      // While first cap refresh is hanging, start a second send that succeeds.
+      service.sendShouldReject = null;
+      const send2P = store.getState().send(service, textInput("second"));
+      // Release the first cap refresh — mutationId 1 is stale.
+      refreshCtrl.release();
+      await send1P;
+      await send2P;
+      // Mutation 2 succeeded — no error, no pending mutation.
+      expect(store.getState().error).toBeNull();
+      expect(store.getState().pendingMutation).toBeNull();
+      // Caps should NOT have been published by the stale mutation 1.
+      expect(store.getState().conversation?.capabilities.send).toBe(true);
     });
   });
 });

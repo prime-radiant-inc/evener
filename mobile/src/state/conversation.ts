@@ -743,6 +743,8 @@ export function createConversationStore() {
         bindingEpoch += 1;
         boundService = null;
         boundSink = null;
+        // Fix round 1 I2: invalidate page ownership on conversation transition.
+        loadOlderToken += 1;
         set({
           status: "opening",
           ref,
@@ -789,6 +791,8 @@ export function createConversationStore() {
         activitySink = sink;
         boundService = service;
         boundSink = sink;
+        // Fix round 1 I2: invalidate page ownership on conversation transition.
+        loadOlderToken += 1;
         // Reset thread-scoped state (draft, pending mutation) — presentation state
         // now lives outside the store (in live-ui-store).
         // F4: reset the activity sink on thread change.
@@ -866,6 +870,10 @@ export function createConversationStore() {
         // I1: Any rehydrate(service, sink) with different objects than the
         // current binding increments bindingEpoch BEFORE assignment, so queued
         // effects captured with the old service/sink are suppressed.
+        // Fix round 1 I1: capture page owner (loadOlderToken), mutation owner
+        // (pendingMutation), and error revision at entry. After the await, if
+        // any of these changed, the rehydrate is stale with respect to that
+        // owner and must not replace conversation/cursor or clear error.
         const state = get();
         if (state.ref === null) return;
         const ref = state.ref;
@@ -881,6 +889,10 @@ export function createConversationStore() {
         // rehydrate is stale.
         const entryEpoch = bindingEpoch;
         const token = ++rehydrateToken;
+        // Fix round 1 I1: Capture ownership at entry.
+        const entryLoadOlderToken = loadOlderToken;
+        const entryMutationOwner = state.pendingMutation?.mutationId ?? null;
+        const entryError = state.error;
         activitySink = sink;
         boundService = service;
         boundSink = sink;
@@ -898,6 +910,20 @@ export function createConversationStore() {
           if (token !== rehydrateToken) {
             return;
           }
+          // Fix round 1 I1: Check before activity sink AND store commit.
+          // If a newer page operation committed/failed during the await, the
+          // page owner (loadOlderToken) changed — discard the stale domain
+          // write (do not replace conversation/cursor). This is acceptable
+          // because the page operation's items/cursor are newer.
+          const currentSnapshot = get();
+          const pageOwnerChanged = entryLoadOlderToken !== loadOlderToken;
+          // If page owner changed, do not replace conversation/cursor — the
+          // page operation's items/cursor are newer. Still update draft.
+          if (pageOwnerChanged) {
+            // Discard stale domain write — only preserve the current draft.
+            set({ draft: currentSnapshot.draft });
+            return;
+          }
           const identity: ActivityIdentity = {
             threadId: conversation.id,
             ref,
@@ -907,26 +933,25 @@ export function createConversationStore() {
           // conversation projection. If it returns false, do not commit.
           const accepted = sink.setLiveView(activity, identity);
           if (!accepted) return;
-          // Task 2A-Ops-1: At commit time, preserve the latest user draft
-          // (not the pre-await snapshot) and any newer mutation/error owner.
-          // A newer mutation that set pendingMutation/error during the await
-          // must NOT have its error cleared by this rehydrate.
+          // Fix round 1 I1: Success preserves any newer error owner. Only
+          // clear error if the mutation owner AND error haven't changed.
           const currentState = get();
-          // Only clear error if no mutation owns it. A failed mutation
-          // PERSISTS — rehydrate must not clear a mutation's error.
-          if (currentState.pendingMutation === null) {
+          const errorUnchanged = currentState.error === entryError;
+          const mutationUnchanged =
+            entryMutationOwner ===
+            (currentState.pendingMutation?.mutationId ?? null);
+          if (mutationUnchanged && errorUnchanged) {
             set({
               conversation: {
                 ...conversation,
                 items: capItems(truncateAndRecord(conversation.items)),
               },
               olderCursor,
-              // Preserve the CURRENT draft (may have been typed during await).
               draft: currentState.draft,
               error: null,
             });
           } else {
-            // A mutation owns the error — preserve it and the draft.
+            // A mutation or page operation owns the error — preserve it.
             set({
               conversation: {
                 ...conversation,
@@ -937,12 +962,18 @@ export function createConversationStore() {
             });
           }
         } catch (err) {
-          // Stale safety: only set error if the binding epoch, generation, and
-          // operation token are all still current.
+          // Fix round 1 I1: failure may set error only if error/page/mutation
+          // owners all remain unchanged. Check binding epoch, generation, token,
+          // page owner, mutation owner, and error revision.
+          const currentSnapshot = get();
           if (
             entryEpoch === bindingEpoch &&
-            get().conversationGeneration === gen &&
-            token === rehydrateToken
+            currentSnapshot.conversationGeneration === gen &&
+            token === rehydrateToken &&
+            entryLoadOlderToken === loadOlderToken &&
+            entryMutationOwner ===
+              (currentSnapshot.pendingMutation?.mutationId ?? null) &&
+            currentSnapshot.error === entryError
           ) {
             set({
               error: err instanceof Error ? err.message : String(err),
@@ -965,15 +996,9 @@ export function createConversationStore() {
         set({ loadingOlder: true });
         try {
           const result = await service.loadOlder(cursor);
-          // Guard: the conversation generation may have changed during the await.
-          if (get().conversationGeneration !== gen) {
-            // Stale — newer conversation owns these fields. Only clear
-            // loadingOlder if this operation still owns it.
-            if (olderToken === loadOlderToken) {
-              set({ loadingOlder: false });
-            }
-            return;
-          }
+          // Fix round 1 I2: generation/identity-stale — perform ZERO set calls
+          // (including loadingOlder). The newer conversation owns all fields.
+          if (get().conversationGeneration !== gen) return;
           // Task 2A-Ops-2: Stale loadOlder — a newer page operation owns the
           // loadingOlder/error fields. Make no state change at all.
           if (olderToken !== loadOlderToken) return;
@@ -1007,8 +1032,9 @@ export function createConversationStore() {
             });
           }
         } catch (err) {
-          // Task 2A-Ops-2: Stale safety — only set error/loadingOlder if the
-          // generation hasn't changed AND this operation still owns the fields.
+          // Fix round 1 I2: generation/identity-stale — perform ZERO set calls
+          // (including loadingOlder and error). Only set error/loadingOlder if
+          // the generation hasn't changed AND this operation still owns the fields.
           if (
             get().conversationGeneration === gen &&
             olderToken === loadOlderToken
@@ -1045,7 +1071,13 @@ export function createConversationStore() {
         // Clearing the draft via set() (not setDraft) does NOT increment
         // draftRevision — so any subsequent setDraft call (including
         // type-then-delete) increments the revision and is detected as an edit.
-        set({ draft: "", pendingSend: "pending", pendingMutation: mutation });
+        // Fix round 1 I3: atomically clear prior error with new pending mutation.
+        set({
+          draft: "",
+          pendingSend: "pending",
+          pendingMutation: mutation,
+          error: null,
+        });
         try {
           await service.send(input);
           // F4: Check mutationId — out-of-order completion cannot clear a
@@ -1089,7 +1121,13 @@ export function createConversationStore() {
         };
         // Steer/queue clear the draft on submit like send.
         // F10: any new mutation clears legacy pendingSend.
-        set({ draft: "", pendingSend: null, pendingMutation: mutation });
+        // Fix round 1 I3: atomically clear prior error with new pending mutation.
+        set({
+          draft: "",
+          pendingSend: null,
+          pendingMutation: mutation,
+          error: null,
+        });
         try {
           await service.steer(input);
           if (get().pendingMutation?.mutationId === mutationId) {
@@ -1130,7 +1168,13 @@ export function createConversationStore() {
           mutationId,
         };
         // F10: any new mutation clears legacy pendingSend.
-        set({ draft: "", pendingSend: null, pendingMutation: mutation });
+        // Fix round 1 I3: atomically clear prior error with new pending mutation.
+        set({
+          draft: "",
+          pendingSend: null,
+          pendingMutation: mutation,
+          error: null,
+        });
         try {
           await service.queue(input);
           if (get().pendingMutation?.mutationId === mutationId) {
@@ -1172,7 +1216,8 @@ export function createConversationStore() {
         };
         // Interrupt does NOT clear the draft.
         // F10: any new mutation clears legacy pendingSend.
-        set({ pendingSend: null, pendingMutation: mutation });
+        // Fix round 1 I3: atomically clear prior error with new pending mutation.
+        set({ pendingSend: null, pendingMutation: mutation, error: null });
         try {
           await service.interrupt();
           if (get().pendingMutation?.mutationId === mutationId) {
@@ -1203,6 +1248,8 @@ export function createConversationStore() {
         // I1: increment the binding epoch and clear bindings so queued
         // requests from the closed conversation are suppressed.
         bindingEpoch += 1;
+        // Fix round 1 I2: invalidate page ownership on conversation transition.
+        loadOlderToken += 1;
         truncatedItemIds.clear();
         // F4: reset the activity sink on close.
         if (activitySink !== null) {
@@ -1598,6 +1645,8 @@ export function createConversationStore() {
         // I1: increment the binding epoch and clear bindings so queued
         // requests from the prior conversation are suppressed.
         bindingEpoch += 1;
+        // Fix round 1 I2: invalidate page ownership on conversation transition.
+        loadOlderToken += 1;
         truncatedItemIds.clear();
         // F4: reset the activity sink on thread change.
         if (activitySink !== null) {
