@@ -583,7 +583,9 @@ describe("Constellation conversation surface", () => {
         conversation: conversationView({ olderAvailable: true }),
       }),
     );
-    expect(screen.getByText(/older messages/i)).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: /load older messages/i }),
+    ).toBeInTheDocument();
   });
 
   it("omits the olderAvailable affordance when no older messages", () => {
@@ -593,7 +595,51 @@ describe("Constellation conversation surface", () => {
         conversation: conversationView({ olderAvailable: false }),
       }),
     );
-    expect(screen.queryByText(/older messages/i)).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: /load older messages/i }),
+    ).not.toBeInTheDocument();
+  });
+
+  it("dispatches loadOlder — never openConversation — when the older button is activated", () => {
+    const { dispatch } = renderConstellation(
+      buildState({
+        surface: "conversation",
+        conversation: conversationView({ olderAvailable: true }),
+      }),
+    );
+    fireEvent.click(
+      screen.getByRole("button", { name: /load older messages/i }),
+    );
+    expect(dispatch).toHaveBeenCalledWith({ type: "loadOlder" });
+    expect(dispatch).not.toHaveBeenCalledWith(
+      expect.objectContaining({ type: "openConversation" }),
+    );
+  });
+
+  it("disables the older button when a mutation is pending", () => {
+    renderConstellation(
+      buildState({
+        surface: "conversation",
+        conversation: conversationView({ olderAvailable: true }),
+        composer: {
+          draft: "",
+          canSend: false,
+          canSteer: false,
+          canQueue: false,
+          canInterrupt: true,
+          pending: {
+            kind: "send",
+            status: "pending",
+            draftSnapshot: "hi",
+            generation: 1,
+          },
+          error: null,
+        },
+      }),
+    );
+    expect(
+      screen.getByRole("button", { name: /load older messages/i }),
+    ).toBeDisabled();
   });
 });
 
