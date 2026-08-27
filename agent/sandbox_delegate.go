@@ -237,10 +237,20 @@ func (s *Session) readOnlyDelegateSandbox() (*sandbox.SandboxPolicy, error) {
 	// host with neither an OS backend nor file-tool enforcement keeps the refusal
 	// rather than handing back a delegate whose file tools all fail closed.
 	host := s.sandboxHostFacts()
-	if !delegateSandboxBackendAvailable(host) && sandbox.FileToolEnforceable(host) {
+	if !delegateSandboxBackendAvailable(host) && s.delegateFileToolEnforceable(host) {
 		return &sandbox.SandboxPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}, nil
 	}
 	return resolveDelegateSandboxRequest(sandbox.ModeReadOnly.String(), nil, parentMode, parentNetwork)
+}
+
+func (s *Session) delegateFileToolEnforceable(host sandbox.HostFacts) bool {
+	if !sandbox.FileToolEnforceable(host) {
+		return false
+	}
+	if s != nil && s.cfg.testOnly.fileToolEnforceable != nil {
+		return s.cfg.testOnly.fileToolEnforceable()
+	}
+	return execenv.FileToolEnforceable()
 }
 
 // degradedReadOnlyDelegateAdvisory is the spawn-result disclosure the PARENT

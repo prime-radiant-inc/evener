@@ -88,6 +88,28 @@ func TestReadOnlyDelegateSandbox_NoDegradeWhereFileToolsCannotEnforce(t *testing
 	}
 }
 
+// TestReadOnlyDelegateSandbox_NoDegradeWhenSecureOpenIsUnavailable catches a
+// Linux host being classified from GOOS alone even though its kernel or seccomp
+// policy refuses openat2. Such a delegate would launch and then fail every file
+// operation, so it must keep the enforced request and refuse before launch.
+func TestReadOnlyDelegateSandbox_NoDegradeWhenSecureOpenIsUnavailable(t *testing.T) {
+	lane, home := sbxLane(t)
+	parent := sbxDelegateSession(t, sbxNoBackendFacts(home))
+	parent.cfg.testOnly.fileToolEnforceable = func() bool { return false }
+	sbxSetParentEnv(t, parent, lane)
+
+	policy, err := parent.readOnlyDelegateSandbox()
+	if err != nil {
+		t.Fatalf("readOnlyDelegateSandbox: %v", err)
+	}
+	if policy == nil || policy.Mode != sandbox.ModeReadOnly {
+		t.Fatalf("derived scope without secure-open support = %+v, want an unmodified read-only box", policy)
+	}
+	if _, _, err := parent.prepareSubagentEnvironment("", policy); err == nil {
+		t.Fatal("a host without a kernel sandbox or working secure-open primitive must refuse the spawn")
+	}
+}
+
 // TestExplicitReadOnlyDelegateSandboxStillFailsClosed: only the DERIVED scope
 // degrades. A caller that states the contract — sandbox="read-only" — must not
 // silently receive a weaker one, so its request keeps ModeReadOnly and the spawn
