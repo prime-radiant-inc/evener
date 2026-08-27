@@ -14,6 +14,7 @@ import (
 
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/modelavailability"
+	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
@@ -318,6 +319,38 @@ func TestNewSessionSnapshotUsesSharedModelVisibility(t *testing.T) {
 	want := []string{"openai/gpt-5.5", "router/tool-model"}
 	if sess.modelSnapshot == nil || !slices.Equal(sess.modelSnapshot.Choices, want) {
 		t.Fatalf("visible startup choices = %#v, want %q", sess.modelSnapshot, want)
+	}
+}
+
+func TestNewSessionBoundedSnapshotRetainsSelectedProvider(t *testing.T) {
+	const selectedName = "zz-selected-provider"
+	selected := &modelAvailabilityAdapter{models: []llm.ModelInfo{{ID: "gpt-5.5"}}}
+	selected.name = selectedName
+	client := llm.NewClient()
+	client.Register(selected)
+	nameToTag := map[string]string{selectedName: "openai"}
+	for i := 0; i < 16; i++ {
+		name := fmt.Sprintf("provider-%02d", i)
+		adapter := &modelAvailabilityAdapter{models: []llm.ModelInfo{{ID: "model"}}}
+		adapter.name = name
+		client.Register(adapter)
+		nameToTag[name] = "openai"
+	}
+	client.SetNameToTag(nameToTag)
+	profile := provider.WithProviderID(NewOpenAIProfile("gpt-5.5"), selectedName)
+
+	sess, err := NewSession(client, profile, execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	defer sess.Close()
+
+	want := selectedName + "/gpt-5.5"
+	if sess.modelSnapshot == nil || !slices.Contains(sess.modelSnapshot.Choices, want) {
+		t.Fatalf("bounded snapshot omitted selected provider choice %q: %#v", want, sess.modelSnapshot)
+	}
+	if sess.modelSnapshot.Complete {
+		t.Fatal("provider-bounded snapshot claimed to be complete")
 	}
 }
 

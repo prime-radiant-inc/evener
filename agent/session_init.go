@@ -481,7 +481,7 @@ func (s *Session) captureModelAvailability(selectedModels liveModelEnumeration) 
 		return
 	}
 	catalog := llm.EmbeddedModelCatalog()
-	snapshot := modelavailability.Capture(s.sessionCtx, names, func(ctx context.Context, name string) ([]llm.ModelInfo, error) {
+	snapshot := modelavailability.Capture(s.sessionCtx, names, s.profile.ID(), func(ctx context.Context, name string) ([]llm.ModelInfo, error) {
 		if name == s.profile.ID() {
 			return append([]llm.ModelInfo(nil), selectedModels.models...), selectedModels.err
 		}

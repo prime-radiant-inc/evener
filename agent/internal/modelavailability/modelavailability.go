@@ -65,10 +65,10 @@ const (
 	captureMaxModelIDLen  = 256
 )
 
-func Capture(parent context.Context, providers []string, fetch func(context.Context, string) ([]llm.ModelInfo, error), visible func(string, llm.ModelInfo) bool, budget time.Duration) Snapshot {
+func Capture(parent context.Context, providers []string, requiredProvider string, fetch func(context.Context, string) ([]llm.ModelInfo, error), visible func(string, llm.ModelInfo) bool, budget time.Duration) Snapshot {
 	ctx, cancel := context.WithTimeout(parent, budget)
 	defer cancel()
-	providers, providerLimited := boundedProviders(providers)
+	providers, providerLimited := boundedProviders(providers, requiredProvider)
 	sort.Strings(providers)
 	type result struct {
 		name    string
@@ -193,13 +193,17 @@ func Capture(parent context.Context, providers []string, fetch func(context.Cont
 	return Snapshot{Version: version, Complete: complete, Choices: choices, Status: status, key: key}
 }
 
-func boundedProviders(providers []string) ([]string, bool) {
+func boundedProviders(providers []string, requiredProvider string) ([]string, bool) {
 	bounded := make([]string, 0, min(len(providers), captureMaxProviders))
 	limited := false
+	requiredPresent := false
 	for _, provider := range providers {
 		if !safeProviderName(provider) {
 			limited = true
 			continue
+		}
+		if provider == requiredProvider {
+			requiredPresent = true
 		}
 		at, found := slices.BinarySearch(bounded, provider)
 		if found {
@@ -215,6 +219,10 @@ func boundedProviders(providers []string) ([]string, bool) {
 		bounded = append(bounded, provider)
 		copy(bounded[at+1:], bounded[at:len(bounded)-1])
 		bounded[at] = provider
+	}
+	if requiredPresent && !slices.Contains(bounded, requiredProvider) {
+		bounded[len(bounded)-1] = requiredProvider
+		sort.Strings(bounded)
 	}
 	return bounded, limited
 }

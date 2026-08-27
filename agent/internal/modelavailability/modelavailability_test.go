@@ -24,7 +24,7 @@ func TestCaptureKeepsSuccessfulChoicesWhenAnotherProviderFails(t *testing.T) {
 		}
 		return []llm.ModelInfo{{ID: "z"}, {ID: "a"}, {ID: "a"}}, nil
 	}
-	s := Capture(context.Background(), []string{"failed", "good"}, fetch, nil, time.Hour)
+	s := Capture(context.Background(), []string{"failed", "good"}, "", fetch, nil, time.Hour)
 	if s.Complete || len(s.Choices) != 2 || s.Choices[0] != "good/a" || s.Choices[1] != "good/z" {
 		t.Fatalf("snapshot = %#v", s)
 	}
@@ -38,7 +38,7 @@ func TestCaptureStopsAtOneDeterministicDeadline(t *testing.T) {
 	started := make(chan struct{}, 2)
 	done := make(chan Snapshot, 1)
 	go func() {
-		done <- Capture(parent, []string{"first", "second"}, func(ctx context.Context, _ string) ([]llm.ModelInfo, error) {
+		done <- Capture(parent, []string{"first", "second"}, "", func(ctx context.Context, _ string) ([]llm.ModelInfo, error) {
 			started <- struct{}{}
 			<-ctx.Done()
 			return nil, ctx.Err()
@@ -64,7 +64,7 @@ func TestCaptureRejectsUnsafeModelIdentifiers(t *testing.T) {
 		{ID: strings.Repeat("x", 257)},
 		{ID: string([]byte{0xff})},
 	}
-	snapshot := Capture(context.Background(), []string{"provider"}, func(context.Context, string) ([]llm.ModelInfo, error) {
+	snapshot := Capture(context.Background(), []string{"provider"}, "", func(context.Context, string) ([]llm.ModelInfo, error) {
 		return models, nil
 	}, nil, time.Second)
 
@@ -80,7 +80,7 @@ func TestCaptureRejectsUnsafeModelIdentifiers(t *testing.T) {
 func TestCaptureRejectsProviderNamesThatCouldExpandThePageEnvelope(t *testing.T) {
 	providers := []string{"safe", "bad&name", `bad"name`, strings.Repeat("x", 65)}
 	var calls atomic.Int32
-	snapshot := Capture(context.Background(), providers, func(context.Context, string) ([]llm.ModelInfo, error) {
+	snapshot := Capture(context.Background(), providers, "", func(context.Context, string) ([]llm.ModelInfo, error) {
 		calls.Add(1)
 		return []llm.ModelInfo{{ID: "model"}}, nil
 	}, nil, time.Second)
@@ -100,7 +100,7 @@ func TestCaptureEnforcesProviderModelAndByteBounds(t *testing.T) {
 			providers[i] = fmt.Sprintf("provider-%02d", len(providers)-1-i)
 		}
 		var calls atomic.Int32
-		snapshot := Capture(context.Background(), providers, func(_ context.Context, name string) ([]llm.ModelInfo, error) {
+		snapshot := Capture(context.Background(), providers, "", func(_ context.Context, name string) ([]llm.ModelInfo, error) {
 			calls.Add(1)
 			return []llm.ModelInfo{{ID: "model"}}, nil
 		}, nil, time.Second)
@@ -120,7 +120,7 @@ func TestCaptureEnforcesProviderModelAndByteBounds(t *testing.T) {
 		for i := range models {
 			models[i].ID = fmt.Sprintf("model-%04d", i)
 		}
-		snapshot := Capture(context.Background(), []string{"provider"}, func(context.Context, string) ([]llm.ModelInfo, error) {
+		snapshot := Capture(context.Background(), []string{"provider"}, "", func(context.Context, string) ([]llm.ModelInfo, error) {
 			return models, nil
 		}, nil, time.Second)
 		if len(snapshot.Choices) != 4096 || snapshot.Complete || snapshot.Status["provider"].Kind != StatusLimited {
@@ -133,7 +133,7 @@ func TestCaptureEnforcesProviderModelAndByteBounds(t *testing.T) {
 		for i := range models {
 			models[i].ID = fmt.Sprintf("%04d-%s", i, strings.Repeat("x", 195))
 		}
-		snapshot := Capture(context.Background(), []string{"provider"}, func(context.Context, string) ([]llm.ModelInfo, error) {
+		snapshot := Capture(context.Background(), []string{"provider"}, "", func(context.Context, string) ([]llm.ModelInfo, error) {
 			return models, nil
 		}, nil, time.Second)
 		var capturedBytes int
@@ -154,7 +154,7 @@ func TestCaptureProviderBoundKeepsPublicPageEnvelopeUsable(t *testing.T) {
 	for i := range providers {
 		providers[i] = fmt.Sprintf("provider-%02d-%s", i, strings.Repeat("x", 52))
 	}
-	snapshot := Capture(context.Background(), providers, func(context.Context, string) ([]llm.ModelInfo, error) {
+	snapshot := Capture(context.Background(), providers, "", func(context.Context, string) ([]llm.ModelInfo, error) {
 		return []llm.ModelInfo{{ID: "model"}}, nil
 	}, nil, time.Second)
 
