@@ -749,6 +749,101 @@ func TestCommunicate_ClientSteeringBeforeResultProjectsValidNextRequest(t *testi
 	}
 }
 
+func TestCommunicate_TerminalClientSteeringRunsAfterTheTerminalResult(t *testing.T) {
+	t.Parallel()
+	const steerText = "commit them"
+	const firstCallID = "communicate_terminal_race"
+	const secondCallID = "communicate_steering_carrier"
+
+	reachedTool := make(chan struct{})
+	wake := make(chan struct{}, 1)
+	var sess *Session
+	var steerErr error
+	var requestErr error
+	var once sync.Once
+
+	adapter := &fakeAdapter{
+		name: "anthropic",
+		steps: []func(req llm.Request) llm.Response{
+			func(llm.Request) llm.Response {
+				return toolCallResponse(communicateCall(firstCallID, "Initial work complete."))
+			},
+			func(req llm.Request) llm.Response {
+				requestErr = validateSteeredCommunicateHistory(req.Messages, firstCallID, steerText)
+				return toolCallResponse(communicateCall(secondCallID, "Committed."))
+			},
+		},
+	}
+	client := llm.NewClient()
+	client.Register(adapter)
+
+	sess, err := NewSession(client, newAnthropicProfile("k3"), execenv.NewLocalExecutionEnvironment(t.TempDir()), SessionConfig{
+		StateDir: t.TempDir(),
+		testOnly: testConfig{
+			execToolCheckpoint: func(name string) {
+				if name != "before_side_effects" {
+					return
+				}
+				once.Do(func() {
+					close(reachedTool)
+					_, steerErr = sess.AcceptClientMutationSteer(appwire.TurnSteerParams{
+						ClientMutationID: "steer_terminal_race",
+						Input:            []appwire.InputItem{{Type: "text", Text: steerText}},
+					})
+				})
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+	t.Cleanup(sess.Close)
+	sess.SetPendingUserInputWakeFunc(func() {
+		select {
+		case wake <- struct{}{}:
+		default:
+		}
+	})
+
+	if _, err := sess.ProcessInput(context.Background(), "finish the current work", nil); err != nil {
+		t.Fatalf("first ProcessInput: %v", err)
+	}
+	if steerErr != nil {
+		t.Fatalf("AcceptClientMutationSteer: %v", steerErr)
+	}
+	select {
+	case <-reachedTool:
+	default:
+		t.Fatal("terminal communicate race checkpoint was not reached")
+	}
+
+	select {
+	case <-wake:
+	case <-time.After(5 * time.Second):
+		t.Fatal("pending steering wake did not arrive")
+	}
+	if _, ran, err := sess.ProcessPendingUserInput(context.Background(), nil); err != nil {
+		t.Fatalf("ProcessPendingUserInput: %v", err)
+	} else if !ran {
+		t.Fatal("terminal communicate consumed accepted steering; no carrier turn ran")
+	}
+	if requestErr != nil {
+		t.Fatal(requestErr)
+	}
+	if got := len(adapter.Requests()); got != 2 {
+		t.Fatalf("provider requests = %d, want initial terminal turn plus carrier turn", got)
+	}
+
+	snapshot := sess.clientMutations.snapshot()
+	if len(snapshot.PendingExecutions) != 0 || len(snapshot.SteeringOrder) != 0 {
+		t.Fatalf("client steering remains pending after carrier: pending=%v order=%v", snapshot.PendingExecutions, snapshot.SteeringOrder)
+	}
+	record := snapshot.Journal["steer_terminal_race"]
+	if record.ExecutionState != "incorporated" || record.OperationState != clientMutationOperationTerminal {
+		t.Fatalf("steering mutation state = operation=%q execution=%q, want terminal/incorporated", record.OperationState, record.ExecutionState)
+	}
+}
+
 func validateSteeredCommunicateHistory(messages []llm.Message, callID, steering string) error {
 	callIndex := -1
 	resultIndex := -1
