@@ -106,7 +106,12 @@ function navigationResponse(url: string): Response | null {
   if (projectMatch?.[1]) {
     return new Response(JSON.stringify(projectResource(decodeURIComponent(projectMatch[1]))), {
       status: 200,
-      headers: { "content-type": "application/json", etag: '"shellguard-etag"' },
+      headers: {
+        "content-type": "application/json",
+        etag: '"shellguard-etag"',
+        "X-Evener-Navigation-Generation": "shellguard-generation",
+        "X-Evener-Navigation-Revision": "1",
+      },
     });
   }
   if (url.startsWith("/api/navigation/catalogs/projects")) {
