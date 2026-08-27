@@ -1,30 +1,32 @@
-// ActivityStore — Zustand state wrapping an ActivityService. Owns the current
-// ActivityView projection (never the raw wire Thread).
-//
-// Two API tiers:
-// - Legacy (compiles-only, for the existing conversation store that cannot be
-//   edited in this reslice): setView(view) / applyNotification(n) / project() /
-//   reset(). These are fail-open compatibility shims that DO NOT enforce
-//   identity. They exist solely so state/conversation.ts (outside this
-//   reslice's allowlist) keeps compiling. The conversation store's own
-//   applyNotification already validates threadId/ref.
-// - Live (strict, required): setLiveView(view, identity) and
-//   applyLiveNotification(n, identity). These enforce identity + generation
-//   on every call. A's sink uses these. No unbound mode.
+// ActivityStore — Zustand state. Owns the current ActivityView projection
+// (never the raw wire Thread). Exposes ONLY the strict LiveActivityState
+// surface: setLiveView / applyLiveNotification / reset / generationForTest.
+// No identity-free fail-open API — no setView, applyNotification, or project.
 //
 // Identity safety (CRITICAL — live methods):
 // - The store tracks an ActivityIdentity { threadId, ref, generation }.
-// - setLiveView installs the view and identity atomically and rejects a stale
-//   identity whose generation is not strictly newer than the current
-//   generation (monotonic). reset() records an invalidated generation so a
-//   late setLiveView carrying the old identity cannot revive the view.
+// - setLiveView installs the view and identity atomically. The same exact
+//   current identity {threadId, ref, generation} may replace the view during an
+//   authoritative reread. It rejects older generations, the invalidated
+//   generation after reset, a wrong thread/ref at the same generation, and a
+//   late old view. A new greater generation is accepted.
 // - applyLiveNotification validates BOTH the supplied identity against the
 //   current identity AND the notification payload's threadId/ref (when present)
 //   against the supplied identity. A mismatched payload is ignored even when
 //   the supplied identity matches the store.
-// - The store owns NO signal-only coalescer. evener/jobs/treeUpdated returns
-//   "rehydrate" so the caller (conversation reslice A) owns the one
-//   authoritative reread scheduler.
+// - Job/delegate relocation: the store compares the reported parent to the
+//   actual tree parent and returns "rehydrate" on a mismatch. Duplicate
+//   same-kind IDs anywhere, cross-kind collisions, ambiguous multiple matches,
+//   and a unique target beneath a duplicated/ambiguous parent ID all return
+//   "rehydrate" — the store never patches the first match silently.
+// - turn/completed carries per-turn usage, NOT the cumulative Thread.evener
+//   usage aggregate. The current protocol provides no authoritative
+//   cumulative projection in that notification, so the store returns
+//   "rehydrate" and lets the caller perform the one authoritative reread. It
+//   never overwrites the activity usage aggregate with per-turn values.
+// - The store owns NO signal-only coalescer. evener/jobs/treeUpdated and
+//   turn/completed return "rehydrate" so the caller (conversation reslice A)
+//   owns the one authoritative reread scheduler.
 //
 // Notification payload labels use safe operation type/kind only — never
 // description, task prompt, command, path, profile ID, ref, or transcript ID.
@@ -36,15 +38,13 @@ import type {
   AnyNotification,
   EvenerDelegateInfo,
   EvenerJobInfo,
-  Thread,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
-import {
-  type ActivityView,
-  createActivityService as defaultService,
-  type RedactedDiagnostic,
-  type WorkEntry,
-  type WorkKind,
-  type WorkTone,
+import type {
+  ActivityView,
+  RedactedDiagnostic,
+  WorkEntry,
+  WorkKind,
+  WorkTone,
 } from "../services/activity";
 
 export type ActivityStatus = "idle" | "open" | "error";
@@ -60,26 +60,17 @@ export interface ActivityIdentity {
   readonly generation: number;
 }
 
-// The minimal service surface the store depends on. Structurally compatible
-// with ActivityService so tests can inject a scripted stub.
-export interface ActivityServiceLike {
-  projectActivity(thread: Thread): ActivityView;
-}
-
 // Outcome of a live notification patch.
 export type NotificationOutcome = "applied" | "rehydrate" | "ignored";
 
-export interface ActivityState {
+// Strict live state: the ONLY surface createActivityStore exposes. No
+// unbound mode — setLiveView and applyLiveNotification always carry an
+// ActivityIdentity. No identity-free fail-open methods exist.
+export interface LiveActivityState {
   readonly view: ActivityView | null;
   readonly status: ActivityStatus;
   readonly error: string | null;
 
-  // Legacy compile-only path (conversation store). Not identity-enforcing.
-  project(service: ActivityServiceLike, thread: Thread): void;
-  setView(view: ActivityView): void;
-  applyNotification(n: AnyNotification): void;
-
-  // Strict live path (A's sink). Identity-enforcing, no unbound mode.
   setLiveView(view: ActivityView, identity: ActivityIdentity): boolean;
   applyLiveNotification(
     n: AnyNotification,
@@ -211,7 +202,25 @@ function projectDelegateEntry(dlg: EvenerDelegateInfo): WorkEntry {
   };
 }
 
-// Find a work entry by rawId in the work tree, searching recursively.
+// Count how many work entries share a rawId anywhere in the tree. Used to
+// detect duplicate same-kind IDs: when more than one entry carries the same
+// rawId, the target is ambiguous and the store must rehydrate rather than
+// patch the first match silently. Also used to detect a unique target
+// beneath a duplicated/ambiguous parent ID.
+function countEntriesById(work: WorkEntry[], rawId: string): number {
+  let count = 0;
+  for (const entry of work) {
+    if (entry === undefined) continue;
+    if (entry.diagnostics?.rawId === rawId) count += 1;
+    if (entry.children) count += countEntriesById(entry.children, rawId);
+  }
+  return count;
+}
+
+// Find a work entry by rawId in the work tree, searching recursively. Returns
+// null when no entry matches. Callers must separately check countEntriesById
+// before patching: a count > 1 means the ID is ambiguous (duplicate same-kind)
+// and the store must rehydrate rather than patch the first match silently.
 function findEntryById(
   work: WorkEntry[],
   rawId: string,
@@ -285,22 +294,9 @@ function delegateParentOf(work: WorkEntry[], targetId: string): string {
   return "";
 }
 
-// Check whether a usage object is authoritatively complete. Conservative:
-// requires totalTokens present and positive. The generated EvenerUsage fields
-// are all optional, so {} or a single-field partial is insufficient.
-function usageIsComplete(
-  usage: { totalTokens?: number } | undefined,
-): usage is { totalTokens: number } {
-  return (
-    usage !== undefined &&
-    typeof usage.totalTokens === "number" &&
-    usage.totalTokens > 0
-  );
-}
-
 // Core live notification patch. Returns the outcome. Caller has already
 // validated identity and payload. Uses `set` to install the mutated view.
-type Setter = (partial: Partial<ActivityState>) => void;
+type Setter = (partial: Partial<LiveActivityState>) => void;
 
 function patchLive(
   n: AnyNotification,
@@ -313,11 +309,26 @@ function patchLive(
       const params = n.params as ParamsOf<"evener/job/started">;
       const j = params.job;
       const entry = projectJobEntry(j);
+      // Detect duplicate same-kind IDs anywhere in the tree: when more than
+      // one entry carries this rawId, the target is ambiguous — rehydrate
+      // rather than patch the first match silently.
+      if (countEntriesById(view.work, j.jobId) > 1) return "rehydrate";
       const found = findEntryById(view.work, j.jobId);
       if (found) {
-        // Collision: if the existing entry is a different kind, rehydrate
-        // rather than patching the wrong kind.
+        // Cross-kind collision: if the existing entry is a different kind,
+        // rehydrate rather than patching the wrong kind.
         if (found.entry.kind !== entry.kind) return "rehydrate";
+        // Job relocation: compare the reported parent to the actual tree
+        // parent. If the job moved (top-level↔nested, or between delegates),
+        // rehydrate rather than patching in the old branch.
+        const oldParent = delegateParentOf(view.work, j.jobId);
+        const newParent = j.parentDelegateId ?? "";
+        if (oldParent !== newParent) return "rehydrate";
+        // I3: a unique target beneath a duplicated/ambiguous parent ID must
+        // rehydrate — the store cannot know which parent instance owns it.
+        if (oldParent !== "" && countEntriesById(view.work, oldParent) > 1) {
+          return "rehydrate";
+        }
         const newWork = replaceInTree(view.work, found, entry);
         set({ view: { ...view, work: newWork } });
         return "applied";
@@ -325,6 +336,9 @@ function patchLive(
       // New job — check for a parent delegate to nest under.
       const parentDelegateId = j.parentDelegateId;
       if (parentDelegateId) {
+        // The parent must be unambiguous; a duplicate parent ID is ambiguous.
+        if (countEntriesById(view.work, parentDelegateId) > 1)
+          return "rehydrate";
         const delegateFound = findEntryById(view.work, parentDelegateId);
         if (delegateFound) {
           // Parent must be a delegate; otherwise rehydrate.
@@ -350,15 +364,23 @@ function patchLive(
       const params = n.params as ParamsOf<"evener/delegate/updated">;
       const dlg = params.delegate;
       const entry = projectDelegateEntry(dlg);
+      // Detect duplicate same-kind IDs: ambiguous delegate ID → rehydrate.
+      if (countEntriesById(view.work, dlg.delegateId) > 1) return "rehydrate";
       const found = findEntryById(view.work, dlg.delegateId);
       if (found) {
-        // Collision: existing entry must be a delegate; else rehydrate.
+        // Cross-kind collision: existing entry must be a delegate; else
+        // rehydrate rather than patching the wrong kind.
         if (found.entry.kind !== "delegate") return "rehydrate";
-        // If the delegate's parent changed (relocation), rehydrate rather
-        // than patching in the old branch.
+        // Delegate relocation: if the parent changed, rehydrate rather than
+        // patching in the old branch.
         const oldParent = delegateParentOf(view.work, dlg.delegateId);
         const newParent = dlg.parentDelegateId ?? "";
         if (oldParent !== newParent) return "rehydrate";
+        // I3: a unique target beneath a duplicated/ambiguous parent ID must
+        // rehydrate.
+        if (oldParent !== "" && countEntriesById(view.work, oldParent) > 1) {
+          return "rehydrate";
+        }
         // Preserve existing children when replacing.
         const newEntry: WorkEntry = {
           ...entry,
@@ -372,6 +394,7 @@ function patchLive(
       // (which must already be present); else rehydrate.
       const parent = dlg.parentDelegateId;
       if (parent && parent !== "") {
+        if (countEntriesById(view.work, parent) > 1) return "rehydrate";
         const delegateFound = findEntryById(view.work, parent);
         if (delegateFound) {
           if (delegateFound.entry.kind !== "delegate") return "rehydrate";
@@ -408,17 +431,12 @@ function patchLive(
     }
 
     case "turn/completed": {
-      const params = n.params as ParamsOf<"turn/completed">;
-      if (usageIsComplete(params.turn.usage)) {
-        set({
-          view: {
-            ...view,
-            usage: { ...view.usage, ...params.turn.usage },
-          },
-        });
-        return "applied";
-      }
-      // Insufficient usage — request rehydrate.
+      // turn/completed carries per-turn usage (Turn.usage), NOT the cumulative
+      // Thread.evener.usage aggregate. The current protocol provides no
+      // authoritative cumulative projection in this notification, so the
+      // store must NOT overwrite the activity usage aggregate with per-turn
+      // values. Return "rehydrate" so the caller performs the one
+      // authoritative reread.
       return "rehydrate";
     }
 
@@ -463,56 +481,27 @@ export function createActivityStore() {
     return true;
   }
 
-  return create<ActivityState>((set, get) => ({
+  return create<LiveActivityState>((set, get) => ({
     view: null,
     status: "idle",
     error: null,
 
-    // --- legacy compile-only path (conversation store) ----------------------
-    project(service, thread) {
-      // Legacy path: bump generation and establish identity from the thread.
-      generation += 1;
-      identity = {
-        threadId: thread.id,
-        ref: thread.evener.ref,
-        generation,
-      };
-      try {
-        const view = service.projectActivity(thread);
-        set({ view, status: "open", error: null });
-      } catch (err) {
-        set({
-          view: null,
-          status: "error",
-          error: err instanceof Error ? err.message : String(err),
-        });
-      }
-    },
-
-    setView(view) {
-      // Legacy: no identity enforcement. The conversation store validates
-      // threadId/ref itself.
-      set({ view, status: "open", error: null });
-    },
-
-    applyNotification(n) {
-      // Legacy: no identity enforcement, no return value. Delegate to the
-      // core patcher with the current view (fail-closed: if no view, no-op).
-      const state = get();
-      if (state.view === null) return;
-      patchLive(n, state.view, set);
-    },
-
-    // --- strict live path (A's sink) ----------------------------------------
     setLiveView(view, id) {
-      // Monotonic: reject a stale identity whose generation is not strictly
-      // newer than the current generation, and reject any identity whose
-      // generation was invalidated by reset().
+      // Reject any identity whose generation was invalidated by reset().
       if (id.generation <= invalidatedAt) return false;
-      if (identity !== null && id.generation <= identity.generation) {
-        // Same generation is allowed only on the very first install (identity
-        // is null). Otherwise reject stale/equal.
-        return false;
+      if (identity !== null) {
+        if (id.generation < identity.generation) return false;
+        if (id.generation === identity.generation) {
+          // Same generation: accept only the exact same identity (an
+          // authoritative reread replacement). A different thread/ref at the
+          // same generation is a stale identity from a different
+          // conversation — reject.
+          if (id.threadId !== identity.threadId || id.ref !== identity.ref) {
+            return false;
+          }
+        }
+        // id.generation > identity.generation is a new conversation (or a
+        // newer generation of the same one) — accepted.
       }
       generation = id.generation;
       identity = id;
@@ -542,6 +531,3 @@ export function createActivityStore() {
     },
   }));
 }
-
-// Re-export for callers that want the default service.
-export { defaultService as createDefaultActivityService };
