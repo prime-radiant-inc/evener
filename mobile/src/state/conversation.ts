@@ -444,6 +444,7 @@ function projectSingleItem(
       kind: "activity",
       id: item.id,
       label: item.toolName ?? item.description?.trim() ?? "Tool",
+      family: "tool",
       state:
         item.error !== undefined && item.error !== ""
           ? "failed"
@@ -465,6 +466,7 @@ function projectSingleItem(
       kind: "activity",
       id: item.id,
       label: "Reasoning",
+      family: "reasoning",
       state: item.status === "inProgress" ? "running" : "completed",
       detail: { output: item.text },
     };
