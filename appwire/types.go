@@ -11,10 +11,6 @@ import (
 // fail once, loudly, at initialize -- rather than agreeing there and then
 // disagreeing on every request.
 //
-// v4 requires child binaries launched by the hub to understand the
-// --plugin-root argument used for fresh sessions. A v3 child can pass the
-// launch check but then reject that argument before serving AppWire.
-//
 // v3 dropped expectedTurnId from turn/steer, turn/queue, turn/interrupt,
 // turn/drainAsSteer and turn/promoteQueuedAsSteer: control is session-scoped and
 // names no turn. A v2 daemon still requires that field, so a v3 client talking
@@ -22,7 +18,7 @@ import (
 // "Steer and Stop are broken again" instead of as a version skew. The pair is
 // reachable in ordinary operation because daemons outlive the hub that spawned
 // them, so an operator who rebuilds and restarts the hub has one.
-const ProtocolVersion = "evener-appwire-v4"
+const ProtocolVersion = "evener-appwire-v3"
 
 const (
 	MethodInitialize                  = "initialize"

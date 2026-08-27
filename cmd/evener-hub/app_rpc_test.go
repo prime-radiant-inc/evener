@@ -18,6 +18,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -86,6 +87,133 @@ func TestHubRPCThreadListUsesAppWireRendezvous(t *testing.T) {
 	}
 	if len(resp.Data) != 1 || resp.Data[0].ID != "th_1" || resp.Data[0].Evener.Ref != "local:th_1" {
 		t.Fatalf("threads=%+v", resp.Data)
+	}
+}
+
+func TestHubRPCSteersSurvivingDaemonAfterHubRestart(t *testing.T) {
+	const (
+		daemonProtocol = "evener-appwire-v3"
+		threadID       = "th_compatible"
+		mutationID     = "mutation-compatible-steer"
+	)
+
+	steered := make(chan appwire.TurnSteerParams, 1)
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		transport := appwire.NewWSTransport(conn)
+		defer transport.Close() //nolint:errcheck // test server connection cleanup
+		for {
+			message, err := transport.Recv(r.Context())
+			if err != nil {
+				return
+			}
+			if message.Request == nil {
+				continue
+			}
+			switch message.Request.Method {
+			case appwire.MethodInitialize:
+				var params appwire.InitializeParams
+				if err := json.Unmarshal(message.Request.Params, &params); err != nil {
+					_ = transport.Send(r.Context(), appwire.ErrorMessage(message.Request.ID, appwire.InvalidParams(err.Error())))
+					continue
+				}
+				if params.ProtocolVersion != daemonProtocol {
+					_ = transport.Send(r.Context(), appwire.ErrorMessage(message.Request.ID, appwire.InvalidRequest(
+						fmt.Sprintf("protocol version %q is incompatible; want %q", params.ProtocolVersion, daemonProtocol),
+					)))
+					continue
+				}
+				_ = transport.Send(r.Context(), appwire.ResponseMessage(message.Request.ID, appwire.InitializeResponse{
+					ProtocolVersion: daemonProtocol,
+					SourceID:        "local",
+				}))
+			case appwire.MethodTurnSteer:
+				var params appwire.TurnSteerParams
+				if err := json.Unmarshal(message.Request.Params, &params); err != nil {
+					_ = transport.Send(r.Context(), appwire.ErrorMessage(message.Request.ID, appwire.InvalidParams(err.Error())))
+					continue
+				}
+				steered <- params
+				_ = transport.Send(r.Context(), appwire.ResponseMessage(message.Request.ID, appwire.TurnSteerResponse{
+					Receipt: appwire.MutationReceipt{
+						ClientMutationID: params.ClientMutationID,
+						Disposition:      appwire.MutationDispositionApplied,
+						ThreadID:         threadID,
+						ProjectionState:  appwire.MutationProjectionReflected,
+					},
+				}))
+			case appwire.MethodThreadRead:
+				_ = transport.Send(r.Context(), appwire.ResponseMessage(message.Request.ID, appwire.ThreadReadResponse{
+					Thread: appwire.Thread{
+						ID:        threadID,
+						SessionID: threadID,
+						Source:    "local",
+						Evener:    appwire.EvenerThread{Ref: "local:" + threadID},
+					},
+				}))
+			default:
+				_ = transport.Send(r.Context(), appwire.ErrorMessage(message.Request.ID, appwire.MethodNotFound(message.Request.Method)))
+			}
+		}
+	}))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       101,
+		Protocol:  daemonProtocol,
+		Endpoint:  "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"),
+		SourceID:  "local",
+		ThreadID:  threadID,
+		SessionID: threadID,
+	})
+	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: threadID, status: appwire.ThreadStatusActive})
+	roster.Refresh()
+
+	resumeCalls := 0
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir:      runDir,
+		Roster:      roster,
+		Past:        hubcore.NewPastIndex(""),
+		ResumeLocks: hubcore.NewResumeLocks(),
+		Spawner: &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			resumeCalls++
+			return rendezvous.Entry{}, errors.New("surviving daemon must be reused")
+		}},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(t.Context(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resumed, err := client.ThreadResume(t.Context(), appwire.ThreadResumeParams{Session: threadID})
+	if err != nil {
+		t.Fatalf("ThreadResume: %v", err)
+	}
+	if resumed.Thread.ID != threadID || resumeCalls != 0 {
+		t.Fatalf("resume = %+v, replacement calls = %d", resumed.Thread, resumeCalls)
+	}
+
+	var response appwire.TurnSteerResponse
+	err = client.Request(t.Context(), appwire.MethodTurnSteer, appwire.TurnSteerParams{
+		Ref:              "local:" + threadID,
+		ThreadID:         threadID,
+		ClientMutationID: mutationID,
+		Input:            []appwire.InputItem{{Type: "text", Text: "survived the hub restart"}},
+	}, &response)
+	if err != nil {
+		t.Fatalf("TurnSteer: %v", err)
+	}
+	if response.Receipt.ClientMutationID != mutationID || response.Receipt.ThreadID != threadID {
+		t.Fatalf("receipt = %+v", response.Receipt)
+	}
+	params := <-steered
+	if params.ClientMutationID != mutationID || inputTextForTest(params.Input) != "survived the hub restart" {
+		t.Fatalf("daemon steer params = %+v", params)
 	}
 }
 
@@ -6397,7 +6525,7 @@ func TestHubRPCModelListReportsEvenerLaunchDiagnostics(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"evener-appwire-v4","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
+  printf '{"protocol":"evener-appwire-v3","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
   exit 0
 fi
 exit 2
