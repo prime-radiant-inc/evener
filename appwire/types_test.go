@@ -752,3 +752,14 @@ func TestAuthDevicePollResponse_StatusOmittedUnlessAuthorized(t *testing.T) {
 		t.Fatalf("marshal=%s missing populated status", got)
 	}
 }
+
+func TestThreadVisionModelSetParamsDecode(t *testing.T) {
+	raw := []byte(`{"ref":"local:01X","visionModel":"anthropic/claude-haiku-4-5"}`)
+	var p ThreadVisionModelSetParams
+	if err := json.Unmarshal(raw, &p); err != nil {
+		t.Fatal(err)
+	}
+	if p.Ref != "local:01X" || p.VisionModel != "anthropic/claude-haiku-4-5" {
+		t.Fatalf("params = %+v", p)
+	}
+}

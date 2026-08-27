@@ -34,6 +34,7 @@ const (
 	MethodThreadClear                 = "thread/clear"
 	MethodThreadModelSet              = "thread/model/set"
 	MethodThreadReasoningEffortSet    = "thread/reasoning-effort/set"
+	MethodThreadVisionModelSet        = "thread/vision-model/set"
 	MethodThreadCompactStart          = "thread/compact/start"
 	MethodThreadShutdown              = "thread/shutdown"
 	MethodTurnStart                   = "turn/start"
@@ -118,30 +119,33 @@ const (
 	// NotifyThreadReasoningEffortChanged pushes a mid-session reasoning-effort
 	// change. See ThreadReasoningEffortChangedParams.
 	NotifyThreadReasoningEffortChanged = "thread/reasoning-effort/changed"
-	NotifyTurnStarted                  = "turn/started"
-	NotifyTurnCompleted                = "turn/completed"
-	NotifyItemStarted                  = "item/started"
-	NotifyItemCompleted                = "item/completed"
-	NotifyAgentMessageDelta            = "item/agentMessage/delta"
-	NotifyAgentMessageReset            = "item/agentMessage/reset"
-	NotifyReasoningSummaryDelta        = "item/reasoning/summaryTextDelta"
-	NotifyToolOutputDelta              = "item/toolOutput/delta"
-	NotifyWarning                      = "warning"
-	NotifyEvenerContextPressure        = "evener/thread/contextPressure/updated"
-	NotifyEvenerThreadModelRetry       = "evener/thread/modelRetry"
-	NotifyEvenerThreadResync           = "evener/thread/resync"
-	NotifyEvenerTaskUpdated            = "evener/task/updated"
-	NotifyEvenerSteeringInjected       = "evener/steering/injected"
-	NotifyEvenerJobStarted             = "evener/job/started"
-	NotifyEvenerJobFinished            = "evener/job/finished"
-	NotifyEvenerDelegateUpdated        = "evener/delegate/updated"
-	NotifyEvenerJobsTreeUpdated        = "evener/jobs/treeUpdated"
-	NotifyEvenerAuthUpdated            = "evener/auth/updated"
-	NotifyEvenerLaunchUpdated          = "evener/launch/updated"
-	NotifyEvenerAttentionChanged       = "evener/attention/changed"
-	NotifyEvenerNavigationInvalidated  = "evener/navigation/invalidated"
-	NotifyEvenerMarketplaceUpdated     = "evener/marketplace/updated"
-	NotifyEvenerPluginUpdated          = "evener/plugin/updated"
+	// NotifyThreadVisionModelChanged pushes a mid-session vision-model change.
+	// See ThreadVisionModelChangedParams.
+	NotifyThreadVisionModelChanged    = "thread/vision-model/changed"
+	NotifyTurnStarted                 = "turn/started"
+	NotifyTurnCompleted               = "turn/completed"
+	NotifyItemStarted                 = "item/started"
+	NotifyItemCompleted               = "item/completed"
+	NotifyAgentMessageDelta           = "item/agentMessage/delta"
+	NotifyAgentMessageReset           = "item/agentMessage/reset"
+	NotifyReasoningSummaryDelta       = "item/reasoning/summaryTextDelta"
+	NotifyToolOutputDelta             = "item/toolOutput/delta"
+	NotifyWarning                     = "warning"
+	NotifyEvenerContextPressure       = "evener/thread/contextPressure/updated"
+	NotifyEvenerThreadModelRetry      = "evener/thread/modelRetry"
+	NotifyEvenerThreadResync          = "evener/thread/resync"
+	NotifyEvenerTaskUpdated           = "evener/task/updated"
+	NotifyEvenerSteeringInjected      = "evener/steering/injected"
+	NotifyEvenerJobStarted            = "evener/job/started"
+	NotifyEvenerJobFinished           = "evener/job/finished"
+	NotifyEvenerDelegateUpdated       = "evener/delegate/updated"
+	NotifyEvenerJobsTreeUpdated       = "evener/jobs/treeUpdated"
+	NotifyEvenerAuthUpdated           = "evener/auth/updated"
+	NotifyEvenerLaunchUpdated         = "evener/launch/updated"
+	NotifyEvenerAttentionChanged      = "evener/attention/changed"
+	NotifyEvenerNavigationInvalidated = "evener/navigation/invalidated"
+	NotifyEvenerMarketplaceUpdated    = "evener/marketplace/updated"
+	NotifyEvenerPluginUpdated         = "evener/plugin/updated"
 	// NotifyEvenerSandboxEscalationRequested pushes a harness-raised, human-gated
 	// sandbox-exemption approval card to the client (M7). The tool-exec goroutine
 	// blocks until the client answers with MethodEvenerSandboxEscalationResolve.
@@ -468,6 +472,11 @@ type EvenerThread struct {
 	ReasoningEffort       string   `json:"reasoningEffort,omitempty"`
 	ReasoningEffortLevels []string `json:"reasoningEffortLevels,omitempty"`
 	SupportsReasoning     bool     `json:"supportsReasoning,omitempty"`
+	// VisionModel is the session's vision side-channel setting: "" describes
+	// with the session model, "off" disables the side-channel, anything else is
+	// a model ref. Snapshot-only like the effort fields beside it; live updates
+	// arrive as thread/vision-model/changed.
+	VisionModel string `json:"visionModel,omitempty"`
 }
 
 // GoalState is the wire representation of a session's /goal. Status is the
@@ -603,6 +612,9 @@ type ThreadCapabilities struct {
 	ForkFromTurn bool `json:"forkFromTurn"`
 	Shutdown     bool `json:"shutdown"`
 	ChangeModel  bool `json:"changeModel"`
+	// ChangeVisionModel advertises support for thread/vision-model/set. True for
+	// a live evener session whose daemon wires a vision-model hook.
+	ChangeVisionModel bool `json:"changeVisionModel"`
 	// Queue advertises support for turn/queue (kata 111a). True when a turn
 	// is currently in flight and the session can accept enqueued user
 	// messages for processing after the active turn completes.
@@ -1389,6 +1401,23 @@ type ThreadReasoningEffortChangedParams struct {
 type ThreadReasoningEffortSetParams struct {
 	Ref             string `json:"ref"`
 	ReasoningEffort string `json:"reasoningEffort"`
+}
+
+// ThreadVisionModelSetParams sets the vision side-channel routing on a running
+// session. VisionModel carries the whole setting: "" describes with the
+// session's active model, "off" disables the side-channel, and any other value
+// is a "model" or "provider/model" ref — a single string because a
+// provider/model split cannot express the first two states.
+type ThreadVisionModelSetParams struct {
+	Ref         string `json:"ref"`
+	VisionModel string `json:"visionModel"`
+}
+
+// ThreadVisionModelChangedParams reports a mid-session vision-model change.
+type ThreadVisionModelChangedParams struct {
+	ThreadID    string `json:"threadId"`
+	Ref         string `json:"ref"`
+	VisionModel string `json:"visionModel"`
 }
 
 type TaskListParams struct {
