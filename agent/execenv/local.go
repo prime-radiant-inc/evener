@@ -236,10 +236,7 @@ func (e *LocalExecutionEnvironment) wrapperlessScratchDir() string {
 // Wrapper.SessionTmp() into the fd-anchored roots; this accessor is for the
 // otherwise-unconfined environment's late-bound scratch grant.
 func (e *LocalExecutionEnvironment) allocatedSessionScratchPath() string {
-	if e.Wrapper != nil {
-		return e.Wrapper.SessionTmp()
-	}
-	return e.wrapperlessScratchDir()
+	return e.sessionScratchPath()
 }
 
 // scratchSandboxFor returns the cached fd-anchored layer for an already allocated
@@ -287,10 +284,7 @@ func (e *LocalExecutionEnvironment) scratchSandboxFor(abs string) *sandboxFS {
 // preamble), and reporting a path must not create it, nor turn a prompt render
 // into a filesystem side effect.
 func (e *LocalExecutionEnvironment) SessionScratchDir() string {
-	if e.Wrapper != nil {
-		return e.Wrapper.SessionTmp()
-	}
-	return e.wrapperlessScratchDir()
+	return e.sessionScratchPath()
 }
 
 // WithSandboxInvocationGrant returns a short-lived clone of this env whose file-tool

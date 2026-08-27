@@ -1255,6 +1255,7 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	}
 	bindStableDelegateActivity(prepared.sub.sess, s.delegateController, started.lease)
 	s.startDelegateQuietWatchdog(started.ctx, started.lease)
+	degradedSandboxAdvisory := degradedReadOnlyDelegateAdvisory(prepared.sub.sess.currentEnv())
 	s.launchSubagentRun(prepared.runCtx, prepared.sub, prepared.runCancel, prepared.input, started.descriptor.Provenance)
 	result := createResult(stableDelegateResult(started.descriptor, started.lease.delegateID, started.plan, plans, nil))
 	// The advisories ride the launched delegate's own result only: they are
@@ -1263,7 +1264,7 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	// The sandbox one fires when a derived read-only scope had to degrade on this
 	// host, so the parent learns the boundary is advisory for the child's shell
 	// rather than discovering it from a clobbered file.
-	result.Warnings = appendUniqueStrings(result.Warnings, sharedWorkspaceAdvisory, degradedReadOnlyDelegateAdvisory(prepared.sub.sess.currentEnv()))
+	result.Warnings = appendUniqueStrings(result.Warnings, sharedWorkspaceAdvisory, degradedSandboxAdvisory)
 	return result
 }
 

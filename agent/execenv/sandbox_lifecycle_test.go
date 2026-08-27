@@ -286,16 +286,7 @@ func TestEnableSandboxWriteBlockedOffConfinesFileTools(t *testing.T) {
 	if err := os.MkdirAll(worktree, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	noBackend := sandbox.HostFacts{OS: "linux", Home: home}
-	rp, err := sandbox.Resolve(sandbox.SandboxPolicy{Mode: sandbox.ModeOff, WriteBlocked: true}, noBackend, worktree)
-	if err != nil {
-		t.Fatalf("resolving a write-blocked off policy must not refuse: %v", err)
-	}
-	env := NewLocalExecutionEnvironment(worktree)
-	t.Cleanup(func() { env.Cleanup(); env.DisposeSandboxScratch() })
-	if err := env.EnableSandbox(&rp); err != nil {
-		t.Fatalf("EnableSandbox(write-blocked off): %v", err)
-	}
+	env := writeBlockedOffEnv(t, home, worktree)
 	if env.Wrapper != nil {
 		t.Fatalf("a host with no backend must build no kernel wrapper, got %+v", env.Wrapper)
 	}
