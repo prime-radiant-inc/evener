@@ -3,13 +3,13 @@
 // conflict restore, and no auto-retry.
 
 import { describe, expect, it } from "vitest";
+import { WireError } from "../../../cmd/evener-hub/frontend/src/protocol/errors";
 import type {
   AnyNotification,
   InputItem,
   MutationReceipt,
   ThreadCapabilities,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
-import { WireError } from "../../../cmd/evener-hub/frontend/src/protocol/errors";
 import type {
   MobileCapabilities,
   MobileConversation,
@@ -20,11 +20,9 @@ import type {
   LiveConversationService,
 } from "../services/conversation";
 import {
-  createAuthoritativeRereadScheduler,
   createConversationStore,
-  MAX_ITEM_BYTES,
   type LiveActivitySink,
-  type RehydrateCoalescer,
+  MAX_ITEM_BYTES,
   truncateText,
 } from "./conversation";
 
@@ -38,7 +36,9 @@ class FakeLiveActivitySink implements LiveActivitySink {
   applyLiveNotificationCalls: { identity: unknown; n: AnyNotification }[] = [];
   resetCalls = 0;
   // Override per-notification return value. If set, called for each n.
-  notificationOutcome?: (n: AnyNotification) => "applied" | "rehydrate" | "ignored";
+  notificationOutcome?: (
+    n: AnyNotification,
+  ) => "applied" | "rehydrate" | "ignored";
 
   setLiveView(identity: unknown, view: ActivityView): void {
     this.setLiveViewCalls.push({ identity, view });
@@ -58,13 +58,6 @@ class FakeLiveActivitySink implements LiveActivitySink {
 // Helper: create a fake sink that always returns "applied".
 function createFakeSink(): FakeLiveActivitySink {
   return new FakeLiveActivitySink();
-}
-
-// Helper: create a fake sink that returns "rehydrate" for all notifications.
-function createRehydrateSink(): FakeLiveActivitySink {
-  const sink = new FakeLiveActivitySink();
-  sink.notificationOutcome = () => "rehydrate";
-  return sink;
 }
 
 const ALL_TRUE_CAPS: ThreadCapabilities = {
@@ -777,9 +770,7 @@ describe("ConversationStore", () => {
         activity: activityView,
         olderCursor: "cursor-initial",
       };
-      await store
-        .getState()
-        .openProjected(service, sink, "ref-1");
+      await store.getState().openProjected(service, sink, "ref-1");
       expect(store.getState().conversation?.id).toBe("thread-proj");
       expect(store.getState().olderCursor).toBe("cursor-initial");
       expect(store.getState().status).toBe("open");
@@ -791,9 +782,7 @@ describe("ConversationStore", () => {
     it("subscribes to notifications", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
-      await store
-        .getState()
-        .openProjected(service, createFakeSink(), "ref-1");
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
       // The store should have subscribed for notifications
       expect(service.notificationHandler).not.toBeNull();
     });
@@ -811,9 +800,7 @@ describe("ConversationStore", () => {
         },
         olderCursor: "page-1",
       };
-      await store
-        .getState()
-        .openProjected(service, createFakeSink(), "ref-1");
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
       expect(store.getState().olderCursor).toBe("page-1");
     });
 
@@ -833,9 +820,7 @@ describe("ConversationStore", () => {
         },
         olderCursor: null,
       };
-      await store
-        .getState()
-        .openProjected(service, createFakeSink(), "ref-1");
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
       // Draft should be reset — not carried from the prior thread.
       expect(store.getState().draft).toBe("");
     });
@@ -855,9 +840,7 @@ describe("ConversationStore", () => {
         activity: activityView,
         olderCursor: null,
       };
-      await store
-        .getState()
-        .openProjected(service, sink, "ref-1");
+      await store.getState().openProjected(service, sink, "ref-1");
       // Emit a notification that both stores should handle
       const n: AnyNotification = {
         method: "evener/task/updated",
@@ -1196,26 +1179,12 @@ describe("ConversationStore", () => {
     });
 
     it("I4: delta targeting missing item triggers coalesced resync", async () => {
-      const rehydrateCalls: string[] = [];
       const service = new FakeConversationService();
       const store = createConversationStore();
       const sink = createFakeSink();
       service.openConv = makeConversation({ items: [] });
-      // F2: openProjected binds the coalescer internally. Use a custom
-      // scheduler to intercept rehydrate calls.
-      const customScheduler: RehydrateCoalescer = {
-        requestRehydrate(ref: string) {
-          rehydrateCalls.push(ref);
-        },
-        async flush() {},
-      };
-      await store
-        .getState()
-        .openProjected(service, sink, "ref-1");
-      // Replace the internally-created coalescer with our test one.
-      // The store's applyNotification uses the closure coalescer.
-      // Since we can't inject it via setCoalescer (removed), we test
-      // via the notification handler which calls coalescer.requestRehydrate.
+      // F2: openProjected binds the coalescer internally.
+      await store.getState().openProjected(service, sink, "ref-1");
       // The internal coalescer calls rehydrate — verify via readProjectionCalls.
       const initialReads = service.readProjectionCalls.length;
       // Delta for an item that doesn't exist in the store
@@ -1388,9 +1357,7 @@ describe("ConversationStore", () => {
         olderCursor: "cursor-after-resync",
       };
       // F2: openProjected binds the coalescer internally.
-      await store
-        .getState()
-        .openProjected(service, createFakeSink(), "ref-1");
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
 
       // The initial openProjected calls readProjection once.
       const initialReads = service.readProjectionCalls.length;
@@ -1433,9 +1400,7 @@ describe("ConversationStore", () => {
         },
         olderCursor: null,
       };
-      await store
-        .getState()
-        .openProjected(service, createFakeSink(), "ref-1");
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
 
       const initialReads = service.readProjectionCalls.length;
 
@@ -1500,14 +1465,10 @@ describe("ConversationStore", () => {
         },
         olderCursor: "cursor-1",
       };
-      await store
-        .getState()
-        .openProjected(service, createFakeSink(), "ref-1");
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
       store.getState().setDraft("my unsent draft");
       // Rehydrate: should preserve the draft
-      await store
-        .getState()
-        .rehydrate(service, createFakeSink());
+      await store.getState().rehydrate(service, createFakeSink());
       expect(store.getState().draft).toBe("my unsent draft");
     });
 
@@ -1526,14 +1487,10 @@ describe("ConversationStore", () => {
         },
         olderCursor: "cursor-1",
       };
-      await store
-        .getState()
-        .openProjected(service, createFakeSink(), "ref-1");
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
       // Rehydrate should preserve draft but not carry presentation state.
       store.getState().setDraft("my draft");
-      await store
-        .getState()
-        .rehydrate(service, createFakeSink());
+      await store.getState().rehydrate(service, createFakeSink());
       expect(store.getState().draft).toBe("my draft");
     });
   });
@@ -1552,9 +1509,7 @@ describe("ConversationStore", () => {
         },
         olderCursor: "initial-cursor",
       };
-      await store
-        .getState()
-        .openProjected(service, createFakeSink(), "ref-1");
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
       expect(store.getState().olderCursor).toBe("initial-cursor");
       // Update the projection result for rehydrate
       service.readProjectionResult = {
@@ -1567,9 +1522,7 @@ describe("ConversationStore", () => {
         },
         olderCursor: "updated-cursor",
       };
-      await store
-        .getState()
-        .rehydrate(service, createFakeSink());
+      await store.getState().rehydrate(service, createFakeSink());
       expect(store.getState().olderCursor).toBe("updated-cursor");
     });
   });
@@ -1585,9 +1538,9 @@ describe("ConversationStore", () => {
       expect(typeof s.rehydrate).toBe("function");
       // F2: setCoalescer is removed — openProjected binds the coalescer
       // internally.
-      expect(typeof (s as unknown as Record<string, unknown>).setCoalescer).toBe(
-        "undefined",
-      );
+      expect(
+        typeof (s as unknown as Record<string, unknown>).setCoalescer,
+      ).toBe("undefined");
     });
   });
 
@@ -1712,9 +1665,7 @@ describe("ConversationStore", () => {
         olderCursor: "cursor-1",
       };
       // F2: openProjected binds the coalescer internally.
-      await store
-        .getState()
-        .openProjected(service, createFakeSink(), "ref-1");
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
 
       // The internal coalescer coalesces multiple requestRehydrate calls
       // into one actual readProjection call.
@@ -1827,9 +1778,7 @@ describe("ConversationStore", () => {
         olderCursor: null,
       };
       // F6: openProjected binds the coalescer internally.
-      await store
-        .getState()
-        .openProjected(service, createFakeSink(), "ref-1");
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
       const initialReads = service.readProjectionCalls.length;
       store.getState().applyNotification({
         method: "item/started",
@@ -1872,9 +1821,7 @@ describe("ConversationStore", () => {
         },
         olderCursor: null,
       };
-      await store
-        .getState()
-        .openProjected(service, createFakeSink(), "ref-1");
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
       const initialReads = service.readProjectionCalls.length;
       store.getState().applyNotification({
         method: "item/completed",
@@ -1918,9 +1865,7 @@ describe("ConversationStore", () => {
         olderCursor: null,
       };
       // F2: openProjected binds the coalescer internally.
-      await store
-        .getState()
-        .openProjected(service, createFakeSink(), "ref-1");
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
       const initialReads = service.readProjectionCalls.length;
       store.getState().applyNotification({
         method: "item/agentMessage/delta",
@@ -1962,9 +1907,7 @@ describe("ConversationStore", () => {
         },
         olderCursor: null,
       };
-      await store
-        .getState()
-        .openProjected(service, createFakeSink(), "ref-1");
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
       const initialReads = service.readProjectionCalls.length;
       // reasoning delta targeting an assistant item — wrong kind.
       store.getState().applyNotification({
@@ -1997,9 +1940,7 @@ describe("ConversationStore", () => {
         },
         olderCursor: null,
       };
-      await store
-        .getState()
-        .openProjected(service, createFakeSink(), "ref-1");
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
       const initialReads = service.readProjectionCalls.length;
       // A thread/status/changed is a known notification — should NOT reread.
       store.getState().applyNotification({
@@ -2111,7 +2052,7 @@ describe("ConversationStore", () => {
       // 16,381 'a' chars = 16,381 bytes. Plus one 😀 = 4 bytes = 16,385.
       // Max is 64KiB = 65,536 bytes. We need text that's just over 64KiB.
       const filler = "a".repeat(65_533); // 65,533 bytes
-      const text = filler + "😀" + "x".repeat(10); // over 64KiB
+      const text = `${filler}😀${"x".repeat(10)}`; // over 64KiB
       const truncated = truncateText(text, MAX_ITEM_BYTES);
       const encoder = new TextEncoder();
       expect(encoder.encode(truncated).length).toBeLessThanOrEqual(65536);
@@ -2234,9 +2175,7 @@ describe("ConversationStore", () => {
         },
         olderCursor: "cursor-1",
       };
-      await store
-        .getState()
-        .openProjected(service, createFakeSink(), "ref-1");
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
 
       // Start a rehydrate that will fail.
       let rejectRehydrate: ((e: Error) => void) | null = null as
@@ -2266,9 +2205,7 @@ describe("ConversationStore", () => {
         },
         olderCursor: "cursor-2",
       };
-      await store
-        .getState()
-        .openProjected(service, createFakeSink(), "ref-2");
+      await store.getState().openProjected(service, createFakeSink(), "ref-2");
 
       // Now the stale rehydrate fails.
       rejectRehydrate?.(new Error("stale rehydrate error"));

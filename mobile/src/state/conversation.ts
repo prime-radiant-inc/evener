@@ -18,13 +18,13 @@
 // (triggered by the injected coalescer, not timers).
 
 import { create } from "zustand";
+import { WireError } from "../../../cmd/evener-hub/frontend/src/protocol/errors";
 import type {
   AnyNotification,
   InputItem,
   ThreadCapabilities,
   ThreadItem,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
-import { WireError } from "../../../cmd/evener-hub/frontend/src/protocol/errors";
 import type {
   MobileCapabilities,
   MobileConversation,
@@ -240,18 +240,10 @@ function truncateItem(item: MobileTimelineItem): MobileTimelineItem {
   }
 }
 
-// Enforce the 500-item retained cap. When prepending older items, retains
-// the NEWEST items (end of array) so the live tail is preserved for
-// interactive scrolling. When appending, trims the oldest (front of array).
-function capItems(
-  items: MobileTimelineItem[],
-  mode: "append" | "prepend" = "append",
-): MobileTimelineItem[] {
+// Enforce the 500-item retained cap. Always retains the NEWEST items (end
+// of array) so the live tail is preserved for interactive scrolling.
+function capItems(items: MobileTimelineItem[]): MobileTimelineItem[] {
   if (items.length <= RETAINED_ITEM_CAP) return items;
-  // In both modes, retain the newest RETAINED_ITEM_CAP items (the tail).
-  // Prepend adds older items at the front; trimming from the front (oldest)
-  // keeps the newest live tail intact. Append adds newer items at the end;
-  // trimming from the front keeps the newest items too.
   return items.slice(items.length - RETAINED_ITEM_CAP);
 }
 
@@ -320,7 +312,9 @@ function notificationRef(
 // structural property check, to match the canonical error discrimination
 // pattern used by isHubLaunchError.
 function isActionUnavailableError(err: unknown): boolean {
-  return err instanceof WireError && err.evenerErrorInfo === "actionUnavailable";
+  return (
+    err instanceof WireError && err.evenerErrorInfo === "actionUnavailable"
+  );
 }
 
 // Check a capability on the current conversation and throw if false. This
@@ -659,10 +653,10 @@ export function createConversationStore() {
           const deduped = result.items.filter((i) => !existingIds.has(i.id));
           // Prepend older (deduped) items, then trim from the oldest (front)
           // so the newest live tail is retained (finding 8).
-          const merged = capItems(
-            [...deduped.map(truncateItem), ...currentConv.items],
-            "prepend",
-          );
+          const merged = capItems([
+            ...deduped.map(truncateItem),
+            ...currentConv.items,
+          ]);
           // F8: If we're at the cap and the merge trimmed older items,
           // disable further paging honestly — set cursor to null so
           // we don't repeatedly load rows that will be discarded.
@@ -672,7 +666,7 @@ export function createConversationStore() {
               ? null // Some items were deduped — cap prevents useful paging
               : atCap
                 ? null // At cap — further paging would just discard rows
-                : result.nextCursor ?? null;
+                : (result.nextCursor ?? null);
           set({
             conversation: { ...currentConv, items: merged },
             olderCursor: nextCursor,
