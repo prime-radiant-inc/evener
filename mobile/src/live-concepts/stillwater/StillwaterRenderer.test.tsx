@@ -450,10 +450,12 @@ describe("StillwaterRenderer conversation surface", () => {
   });
 
   it("uses conversation.tone in the summary, never hardcoded running", () => {
+    const baseConversation = buildState().conversation;
+    expect(baseConversation).not.toBeNull();
     const state = buildState({
       surface: "conversation",
       conversation: {
-        ...buildState().conversation!,
+        ...baseConversation,
         tone: "attention",
       },
     });
@@ -469,10 +471,12 @@ describe("StillwaterRenderer conversation surface", () => {
   });
 
   it("displays updatedLabel in the summary when non-null", () => {
+    const baseConversation = buildState().conversation;
+    expect(baseConversation).not.toBeNull();
     const state = buildState({
       surface: "conversation",
       conversation: {
-        ...buildState().conversation!,
+        ...baseConversation,
         updatedLabel: "3 minutes ago",
       },
     });
@@ -481,10 +485,12 @@ describe("StillwaterRenderer conversation surface", () => {
   });
 
   it("omits updatedLabel from the summary when null", () => {
+    const baseConversation = buildState().conversation;
+    expect(baseConversation).not.toBeNull();
     const state = buildState({
       surface: "conversation",
       conversation: {
-        ...buildState().conversation!,
+        ...baseConversation,
         updatedLabel: null,
       },
     });
@@ -603,10 +609,12 @@ describe("StillwaterRenderer conversation surface", () => {
   });
 
   it("handles missing question linkage visibly", () => {
+    const baseConversation = buildState().conversation;
+    expect(baseConversation).not.toBeNull();
     const state = buildState({
       surface: "conversation",
       conversation: {
-        ...buildState().conversation!,
+        ...baseConversation,
         items: [
           {
             key: "msg-orphan",
@@ -872,10 +880,12 @@ describe("StillwaterRenderer conversation surface", () => {
   });
 
   it("omits the load-older button when olderAvailable is false", () => {
+    const baseConversation = buildState().conversation;
+    expect(baseConversation).not.toBeNull();
     const state = buildState({
       surface: "conversation",
       conversation: {
-        ...buildState().conversation!,
+        ...baseConversation,
         olderAvailable: false,
       },
     });
