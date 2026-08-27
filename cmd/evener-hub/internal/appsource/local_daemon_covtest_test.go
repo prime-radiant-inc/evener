@@ -31,9 +31,27 @@ func requireCovMutationError(t *testing.T, err error, want string, unavailable b
 	}
 	if unavailable {
 		wantWire := appwire.SessionUnavailable(want)
-		if wire.Code != wantWire.Code || wire.Message != wantWire.Message || wire.Data != wantWire.Data {
+		data, ok := wire.Data.(appwire.ErrorData)
+		wantData := wantWire.Data.(appwire.ErrorData)
+		if wire.Code != wantWire.Code || wire.Message != wantWire.Message || !ok || data.EvenerErrorInfo != wantData.EvenerErrorInfo {
 			t.Fatalf("wire error = %#v, want %#v", wire, wantWire)
 		}
+	}
+}
+
+func requireCovMutationRejection(t *testing.T, err error, want, mutationID string) {
+	t.Helper()
+	requireCovMutationError(t, err, want, true)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error %T = %v, want WireError", err, err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok ||
+		data.ClientMutationID != mutationID ||
+		data.MutationOutcome != appwire.MutationOutcomeNotAccepted ||
+		data.RetryDisposition != appwire.RetryDispositionNone {
+		t.Fatalf("wire error = %#v, want terminal rejection for %q", wire, mutationID)
 	}
 }
 
@@ -41,10 +59,12 @@ func requireCovMutationError(t *testing.T, err error, want string, unavailable b
 // ref doesn't resolve to any thread (local_daemon.go:352-353).
 func TestCovPromoteQueuedAsSteerRefNotFound(t *testing.T) {
 	s := covMutationSource()
+	const mutationID = "mutation-promote-missing"
 	_, err := s.PromoteQueuedAsSteer(t.Context(), appwire.TurnPromoteQueuedAsSteerParams{
-		Ref: "local:missing",
+		Ref:              "local:missing",
+		ClientMutationID: mutationID,
 	})
-	requireCovMutationError(t, err, "thread not found: missing", true)
+	requireCovMutationRejection(t, err, "thread not found: missing", mutationID)
 }
 
 // TestCovPromoteQueuedAsSteerBadRef covers the error path where the ref is
@@ -71,10 +91,12 @@ func TestCovPromoteQueuedAsSteerSourceMismatch(t *testing.T) {
 // resolve to any thread (local_daemon.go:364-365).
 func TestCovCancelQueuedRefNotFound(t *testing.T) {
 	s := covMutationSource()
+	const mutationID = "mutation-cancel-missing"
 	_, err := s.CancelQueued(t.Context(), appwire.TurnCancelQueuedParams{
-		Ref: "local:missing",
+		Ref:              "local:missing",
+		ClientMutationID: mutationID,
 	})
-	requireCovMutationError(t, err, "thread not found: missing", true)
+	requireCovMutationRejection(t, err, "thread not found: missing", mutationID)
 }
 
 // TestCovCancelQueuedBadRef covers the error path where the ref is

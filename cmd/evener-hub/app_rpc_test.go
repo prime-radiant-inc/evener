@@ -5952,6 +5952,44 @@ func TestHubRPCTurnMutationsForwardWithoutDynamicCapabilityGates(t *testing.T) {
 	}
 }
 
+func TestHubRPCTurnSteerMissingLocalSessionReturnsTerminalRejection(t *testing.T) {
+	runDir := t.TempDir()
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir: runDir,
+		Roster: roster,
+		Past:   hubcore.NewPastIndex(""),
+	})
+	defer hub.Close()
+
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	params := appwire.TurnSteerParams{
+		Ref:              "local:missing",
+		ClientMutationID: "mutation-missing-session",
+		Input:            []appwire.InputItem{{Type: "text", Text: "steer"}},
+	}
+	var response appwire.TurnSteerResponse
+	err := client.Request(context.Background(), appwire.MethodTurnSteer, params, &response)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("TurnSteer error %T=%v, want WireError", err, err)
+	}
+	data, ok := wire.Data.(map[string]any)
+	if !ok ||
+		data["evenerErrorInfo"] != string(appwire.ErrorSessionUnavailable) ||
+		data["clientMutationId"] != params.ClientMutationID ||
+		data["mutationOutcome"] != string(appwire.MutationOutcomeNotAccepted) ||
+		data["retryDisposition"] != string(appwire.RetryDispositionNone) {
+		t.Fatalf("wire=%+v data=%T %#v", wire, wire.Data, wire.Data)
+	}
+}
+
 func TestHubRPCThreadCompactStartResumesPastThread(t *testing.T) {
 	root := t.TempDir()
 	workingDir := t.TempDir()
