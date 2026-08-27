@@ -225,6 +225,13 @@ type SessionConfig struct {
 	// (on when sandboxed). Only meaningful for a non-off Sandbox. Carried inert in M1.
 	SandboxNet *bool `json:"sandbox_net,omitempty"`
 
+	// VisionModel routes the image-description vision side-channel: "" uses the
+	// session's active model (the default), "off" disables the side-channel, a
+	// bare model resolves on the active provider at call time, and
+	// "provider/model" pins a provider instance. Runtime changes go through
+	// Session.SetVisionModel, which writes this same field under s.mu.
+	VisionModel string `json:"vision_model,omitempty"`
+
 	// ResolveProfile, when non-nil, maps a "provider/model" ref to the
 	// corresponding *provider.Profile. Injected by cmd/evener so that
 	// Session.SetModel can perform cross-provider switches without
@@ -701,6 +708,7 @@ func (c SessionConfig) toSnapshot() schema.ConfigSnapshot {
 		OpenAIResponsesContinuation: c.OpenAIResponsesContinuation,
 		Sandbox:                     c.Sandbox,
 		SandboxNet:                  c.SandboxNet,
+		VisionModel:                 c.VisionModel,
 	}
 }
 
@@ -741,5 +749,6 @@ func configFromSnapshot(s schema.ConfigSnapshot) SessionConfig {
 		OpenAIResponsesContinuation: s.OpenAIResponsesContinuation,
 		Sandbox:                     s.Sandbox,
 		SandboxNet:                  s.SandboxNet,
+		VisionModel:                 s.VisionModel,
 	}
 }

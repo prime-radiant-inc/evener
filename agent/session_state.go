@@ -143,6 +143,7 @@ func (s *Session) Meta() schema.SessionMeta {
 		ProfileID:                s.profile.ID(),
 		Model:                    s.profile.Model(),
 		CheapModel:               s.profile.CheapModelRefString(),
+		VisionModel:              s.cfg.VisionModel,
 		Config:                   s.cfg.toSnapshot(),
 		ReasoningEffortEscalated: s.loopEffortEscalated,
 		EnvInfo:                  s.envInfo,
