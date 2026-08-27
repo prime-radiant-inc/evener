@@ -46,7 +46,7 @@ func newNavigationBenchmarkFixture(tb testing.TB) *WebServer {
 	if err != nil {
 		tb.Fatalf("parse fixture time: %v", err)
 	}
-	nameSuffix := strings.Repeat("representative-title-data-", 7)
+	nameSuffix := strings.Repeat("representative-title-data-", 6)
 	metas := make([]schema.SessionMeta, 0, legacyNavigationProjects*legacyNavigationSessionsPerProject)
 	for projectIndex := range legacyNavigationProjects {
 		projectDir := filepath.Join(projectsRoot, fmt.Sprintf("project-%02d-0000000000", projectIndex))

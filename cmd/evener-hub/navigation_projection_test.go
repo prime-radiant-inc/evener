@@ -94,10 +94,10 @@ func TestNavigationBoundsLimitRowsCatalogAndStrings(t *testing.T) {
 	live := make([]hubcore.TreeNode, 51)
 	projects := make([]hubcore.TreeProject, 101)
 	for i := range live {
-		live[i] = hubcore.TreeNode{ID: fmt.Sprintf("session-%03d", i), Title: strings.Repeat("界", maxNavigationTitleRunes+1), Kind: "session", State: "idle"}
+		live[i] = hubcore.TreeNode{ID: fmt.Sprintf("session-%03d", i), Title: strings.Repeat("a", maxNavigationTitleRunes), Kind: "session", State: "idle"}
 	}
 	for i := range projects {
-		projects[i] = hubcore.TreeProject{Key: fmt.Sprintf("project-%03d", i), Name: strings.Repeat("界", maxNavigationLabelRunes+1)}
+		projects[i] = hubcore.TreeProject{Key: fmt.Sprintf("project-%03d", i), Name: strings.Repeat("b", maxNavigationLabelRunes)}
 	}
 	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Live: live, Projects: projects}})
 	if err != nil {
@@ -107,8 +107,8 @@ func TestNavigationBoundsLimitRowsCatalogAndStrings(t *testing.T) {
 	if got, want := len(section.Sessions), maxNavigationSectionRows; got != want || section.Remaining != 1 {
 		t.Fatalf("section rows=%d remaining=%d, want %d and 1", got, section.Remaining, want)
 	}
-	if got := len([]rune(section.Sessions[0].Title)); got != maxNavigationTitleRunes {
-		t.Fatalf("title runes=%d, want %d", got, maxNavigationTitleRunes)
+	if got := len(section.Sessions[0].Title); got != maxNavigationTitleRunes {
+		t.Fatalf("title bytes=%d, want %d", got, maxNavigationTitleRunes)
 	}
 	catalog, err := projection.CatalogPage(navigationResourceProjects, 0, 100)
 	if err != nil {
@@ -239,7 +239,13 @@ func TestNavigationProjectionValidatesIdentitiesAndTruncatesWorkingDir(t *testin
 	if _, err := buildNavigationProjection(navigationBuildInputs{GenerationID: strings.Repeat("g", maxNavigationIdentityBytes+1)}); err == nil {
 		t.Fatal("overlength generation accepted")
 	}
-	workingDir := strings.Repeat("界", maxNavigationWorkingDirBytes)
+	// An over-limit working dir is now rejected by validateNavigationString.
+	oversizedDir := strings.Repeat("界", maxNavigationWorkingDirBytes)
+	if _, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{{Key: "project", Name: "project", WorkingDir: oversizedDir}}}}); err == nil {
+		t.Fatal("over-limit working directory accepted")
+	}
+	// A within-limit working dir passes validation and is safely bounded in the catalog.
+	workingDir := strings.Repeat("/", maxNavigationWorkingDirBytes)
 	projection, err := buildNavigationProjection(navigationBuildInputs{GenerationID: "generation", Tree: hubcore.Tree{Projects: []hubcore.TreeProject{{Key: "project", Name: "project", WorkingDir: workingDir}}}})
 	if err != nil {
 		t.Fatal(err)

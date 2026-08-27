@@ -507,6 +507,9 @@ func validateNavigationString(kind, value string, limit int) error {
 	if !utf8.ValidString(value) {
 		return fmt.Errorf("navigation %s is not valid UTF-8", kind)
 	}
+	if len(value) > limit {
+		return fmt.Errorf("navigation %s exceeds %d-byte limit", kind, limit)
+	}
 	return nil
 }
 

@@ -137,7 +137,7 @@ func inferRemoteSources(threads []appwire.Thread, complete bool) map[string]Remo
 
 func cloneRemoteThreadSnapshot(snapshot RemoteThreadSnapshot) RemoteThreadSnapshot {
 	out := RemoteThreadSnapshot{
-		Threads:    append([]appwire.Thread(nil), snapshot.Threads...),
+		Threads:    cloneThreads(snapshot.Threads),
 		Complete:   snapshot.Complete,
 		Generation: snapshot.Generation,
 	}
@@ -145,11 +145,22 @@ func cloneRemoteThreadSnapshot(snapshot RemoteThreadSnapshot) RemoteThreadSnapsh
 		out.Sources = make(map[string]RemoteSourceSnapshot, len(snapshot.Sources))
 		for id, source := range snapshot.Sources {
 			out.Sources[id] = RemoteSourceSnapshot{
-				Threads:       append([]appwire.Thread(nil), source.Threads...),
+				Threads:       cloneThreads(source.Threads),
 				Complete:      source.Complete,
 				IncompleteIDs: append([]string(nil), source.IncompleteIDs...),
 			}
 		}
+	}
+	return out
+}
+
+func cloneThreads(threads []appwire.Thread) []appwire.Thread {
+	if threads == nil {
+		return nil
+	}
+	out := make([]appwire.Thread, len(threads))
+	for i := range threads {
+		out[i] = appwire.CloneThread(threads[i])
 	}
 	return out
 }
