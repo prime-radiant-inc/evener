@@ -18,6 +18,7 @@ import type { LaunchConfigLayer, LaunchConfigResolved, LaunchOption, MCPServerSp
 import type { ModelCatalog as ModelCatalogEnvelope, PathFieldKind } from "../../widgets";
 import { Button, CollectionEditor, FormRow, Input, ModelCatalog, PathField, RadioGroup, Select } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { asEnvEntries, asMcpList, asStringList, inheritedItems } from "../settings/sections/launchShared/inherited";
 import { type PathValidation, validatePathListAdd } from "../settings/sections/launchShared/pathListAdd";
 import { schemaPathKind } from "../settings/sections/launchShared/schema";
 import styles from "./advancedOptions.module.css";
@@ -220,37 +221,6 @@ function inputDefaultPlaceholder(option: LaunchOption, resolvedDefaults: LaunchC
     return `${shown} (default)`;
   }
   return "";
-}
-
-/** The entries a collection control shows as grayed "(default)" ghost rows:
- * the effective layer's value minus the user's own local entries. The
- * resolved layer already contains the local overrides (Spawn resolves with
- * them), so subtracting the local keys yields exactly the inherited entries
- * under each kind's merge semantics - append lists (pathList, mcpServerList)
- * keep inherited entries alongside local ones, env keeps inherited keys the
- * user has not overridden, and replace-merge modelFallbacks yields nothing
- * once a local entry exists. [] when no layer sets the field (or the resolve
- * hasn't landed): the control then looks exactly as it did before. */
-function inheritedItems<T>(
-  effective: unknown,
-  local: readonly T[],
-  key: (item: T) => string,
-  fromEffective: (value: unknown) => T[],
-): T[] {
-  const localKeys = new Set(local.map(key));
-  return fromEffective(effective).filter((item) => !localKeys.has(key(item)));
-}
-
-function asStringList(value: unknown): string[] {
-  return Array.isArray(value) ? (value as string[]) : [];
-}
-
-function asEnvEntries(value: unknown): [string, string][] {
-  return isRecord(value) ? Object.entries(value) : [];
-}
-
-function asMcpList(value: unknown): MCPServerSpec[] {
-  return isMcpList(value) ? value : [];
 }
 
 /** The schema's browsable path kinds, mapped onto the widget's. A "command"

@@ -24,6 +24,7 @@ import { Button, useToasts } from "../../../../widgets";
 import { requireClass } from "../../../../widgets/internal/requireClass";
 import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
 import { PromptCompositeField, ScalarField } from "./fields";
+import { asEnvObjects, asMcpList, asStringList, inheritedItems } from "./inherited";
 import styles from "./LaunchConfigForm.module.css";
 import {
   buildFormState,
@@ -74,48 +75,11 @@ function formatSavedAt(): string {
   return `Saved at ${new Date().toLocaleTimeString()}`;
 }
 
-/** Inherited entries for a string-list (pathList/modelList) field: the
- * resolved effective value minus this layer's own items. The effective layer
- * already contains this layer's entries (resolve includes the layer being
- * edited), so subtracting the local keys yields exactly the inherited ones
- * under each kind's merge semantics. */
-function inheritedStrings(
-  option: LaunchOption,
-  resolvedDefaults: LaunchConfigLayer | undefined,
-  local: string[],
-): string[] {
-  if (!resolvedDefaults) return [];
-  const effective = (resolvedDefaults as Record<string, unknown>)[option.wireField];
-  if (!Array.isArray(effective)) return [];
-  const localSet = new Set(local);
-  return effective.filter((e) => !localSet.has(e));
-}
-
-/** Inherited entries for an envMap field: effective keys not overridden locally. */
-function inheritedEnvEntries(
-  option: LaunchOption,
-  resolvedDefaults: LaunchConfigLayer | undefined,
-  local: Record<string, string>,
-): { name: string; value: string }[] {
-  if (!resolvedDefaults) return [];
-  const effective = (resolvedDefaults as Record<string, unknown>)[option.wireField];
-  if (typeof effective !== "object" || effective === null || Array.isArray(effective)) return [];
-  return Object.entries(effective)
-    .filter(([name]) => !(name in local))
-    .map(([name, value]) => ({ name, value: String(value) }));
-}
-
-/** Inherited entries for an mcpServerList field: effective specs not present locally. */
-function inheritedMcpSpecs(
-  option: LaunchOption,
-  resolvedDefaults: LaunchConfigLayer | undefined,
-  local: MCPServerSpec[],
-): MCPServerSpec[] {
-  if (!resolvedDefaults) return [];
-  const effective = (resolvedDefaults as Record<string, unknown>)[option.wireField];
-  if (!Array.isArray(effective)) return [];
-  const localNames = new Set(local.map((s) => s.name));
-  return effective.filter((s) => !localNames.has(s.name));
+/** Reads the effective layer's value for a field, or undefined when no layer
+ * sets it (or the resolve hasn't landed). */
+function resolvedValue(option: LaunchOption, resolvedDefaults: LaunchConfigLayer | undefined): unknown {
+  if (!resolvedDefaults) return undefined;
+  return (resolvedDefaults as Record<string, unknown>)[option.wireField];
 }
 
 export function LaunchConfigForm({
@@ -233,6 +197,7 @@ export function LaunchConfigForm({
     }
 
     if (isCollectionKind(opt.kind)) {
+      const effective = resolvedValue(opt, resolvedDefaults);
       switch (opt.kind) {
         case "pathList":
           return (
@@ -241,7 +206,7 @@ export function LaunchConfigForm({
               items={state.lists[opt.wireField] ?? []}
               onChange={(v) => updateList(opt.wireField, v)}
               validatePath={validatePath}
-              inheritedItems={inheritedStrings(opt, resolvedDefaults, state.lists[opt.wireField] ?? [])}
+              inheritedItems={inheritedItems(effective, state.lists[opt.wireField] ?? [], (s) => s, asStringList)}
             />
           );
         case "modelList":
@@ -252,18 +217,21 @@ export function LaunchConfigForm({
               onChange={(v) => updateList(opt.wireField, v)}
               explicitEmpty={state.explicitEmpty[opt.wireField] ?? false}
               onExplicitEmptyChange={(checked) => updateExplicitEmpty(opt.wireField, checked)}
-              inheritedItems={inheritedStrings(opt, resolvedDefaults, state.lists[opt.wireField] ?? [])}
+              inheritedItems={inheritedItems(effective, state.lists[opt.wireField] ?? [], (s) => s, asStringList)}
             />
           );
-        case "envMap":
+        case "envMap": {
+          const localEnv = state.envMaps[opt.wireField] ?? {};
+          const localEntries = Object.entries(localEnv).map(([name, value]) => ({ name, value }));
           return (
             <EnvMapField
               option={opt}
-              value={state.envMaps[opt.wireField] ?? {}}
+              value={localEnv}
               onChange={(v) => updateEnvMap(opt.wireField, v)}
-              inheritedItems={inheritedEnvEntries(opt, resolvedDefaults, state.envMaps[opt.wireField] ?? {})}
+              inheritedItems={inheritedItems(effective, localEntries, (e) => e.name, asEnvObjects)}
             />
           );
+        }
         default: // mcpServerList
           return (
             <McpServerListField
@@ -271,7 +239,7 @@ export function LaunchConfigForm({
               items={state.mcpLists[opt.wireField] ?? []}
               onChange={(v) => updateMcpList(opt.wireField, v)}
               validateCommand={(command) => validatePath(command, "command")}
-              inheritedItems={inheritedMcpSpecs(opt, resolvedDefaults, state.mcpLists[opt.wireField] ?? [])}
+              inheritedItems={inheritedItems(effective, state.mcpLists[opt.wireField] ?? [], (s) => s.name, asMcpList)}
             />
           );
       }

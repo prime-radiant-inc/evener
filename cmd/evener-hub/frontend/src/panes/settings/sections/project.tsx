@@ -91,18 +91,18 @@ export function ProjectSection(_props: ProjectSectionProps) {
       setLoad({ phase: "loading" });
       setResolvedDefaults(undefined);
       try {
-        const schema = await launchConfigStore.getState().schema();
-        const current = await launchConfigStore.getState().getLayer(cwd, "project");
-        const globalDefaults = await launchConfigStore.getState().getLayer(cwd, "global");
+        const [schema, current, globalDefaults, resolved] = await Promise.all([
+          launchConfigStore.getState().schema(),
+          launchConfigStore.getState().getLayer(cwd, "project"),
+          launchConfigStore.getState().getLayer(cwd, "global"),
+          launchConfigStore
+            .getState()
+            .resolve(cwd)
+            .catch(() => null),
+        ]);
         if (isCancelled()) return;
         setLoad({ phase: "ready", options: schema.options, current, globalDefaults });
-        try {
-          const resolved = await launchConfigStore.getState().resolve(cwd);
-          if (!isCancelled()) setResolvedDefaults(resolved.effective);
-        } catch {
-          // non-fatal: the form is fully usable with the plain
-          // "(use global default)" markers
-        }
+        if (resolved && !isCancelled()) setResolvedDefaults(resolved.effective);
       } catch (err) {
         if (!isCancelled()) setLoad({ phase: "error", message: friendlyErrorMessage(err) });
       }

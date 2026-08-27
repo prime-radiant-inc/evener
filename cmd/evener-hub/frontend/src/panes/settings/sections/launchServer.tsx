@@ -72,19 +72,19 @@ export function LaunchServerSection(_props: LaunchServerSectionProps) {
   // legacy local `cancelled` flag did.
   useConnectedEffect(async (isCancelled) => {
     try {
-      const schema = await launchConfigStore.getState().schema();
-      const current = await launchConfigStore.getState().getLayer("/", "global");
+      const [schema, current, resolved] = await Promise.all([
+        launchConfigStore.getState().schema(),
+        launchConfigStore.getState().getLayer("/", "global"),
+        launchConfigStore
+          .getState()
+          .resolve("/")
+          .catch(() => null),
+      ]);
       if (isCancelled()) return;
       setLoad({ phase: "ready", options: schema.options, current });
-      try {
-        const resolved = await launchConfigStore.getState().resolve("/");
-        if (!isCancelled()) {
-          setDiagnostics(resolved.diagnostics ?? []);
-          setResolvedDefaults(resolved.effective);
-        }
-      } catch {
-        // non-fatal: the form is fully usable without the diagnostics hint
-        // and the resolved-default labels
+      if (resolved && !isCancelled()) {
+        setDiagnostics(resolved.diagnostics ?? []);
+        setResolvedDefaults(resolved.effective);
       }
     } catch (err) {
       if (!isCancelled()) setLoad({ phase: "error", message: friendlyErrorMessage(err) });

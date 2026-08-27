@@ -196,7 +196,9 @@ export function resolvedDefaultLabel(
   const raw = (effective as Record<string, unknown>)[opt.wireField];
   let value: string | undefined;
   if (opt.kind === "boolean") {
-    value = raw === true ? "true" : raw === false ? "false" : undefined;
+    if (raw === true) value = "true";
+    else if (raw === false) value = "false";
+    else value = undefined;
   } else {
     value = typeof raw === "string" && raw !== "" ? raw : undefined;
   }
