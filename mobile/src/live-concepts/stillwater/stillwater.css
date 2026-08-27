@@ -298,12 +298,6 @@
   text-transform: uppercase;
 }
 
-.concept-stillwater .sw-session-group > header > span,
-.concept-stillwater .sw-work-list > header > span {
-  color: var(--sw-muted);
-  font-size: 0.75rem;
-}
-
 .concept-stillwater .sw-inset-list,
 .concept-stillwater .sw-question-card,
 .concept-stillwater .sw-usage,
@@ -749,6 +743,12 @@
   height: 1px;
   clip-path: inset(50%);
   overflow: hidden;
+}
+
+.concept-stillwater .sw-session-group > header > span,
+.concept-stillwater .sw-work-list > header > span {
+  color: var(--sw-muted);
+  font-size: 0.75rem;
 }
 
 .concept-stillwater .sw-updated-label {
