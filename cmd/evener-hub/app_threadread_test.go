@@ -171,6 +171,32 @@ func TestPastThreadSkillCatalogUsesFirstDuplicatePlugin(t *testing.T) {
 	}
 }
 
+func TestPastThreadSkillCatalogUsesFirstManifestDuplicatePlugin(t *testing.T) {
+	root := t.TempDir()
+	first := writeThreadSkillPlugin(t, root, "successful-duplicate", "same-skill", "broken first")
+	writeSkillFile(t, filepath.Join(first, "commands", "broken.md"), "---\ndescription: [\n---\nbody")
+	writeSkillFile(t, filepath.Join(first, "agents", "broken.md"), "---\ndescription: [\n---\nbody")
+	writeSkillFile(t, filepath.Join(first, "hooks", "hooks.json"), "{not json")
+	second := writeThreadSkillPlugin(t, root, "successful-duplicate", "same-skill", "valid later")
+	if _, err := plugin.Load(first); err == nil {
+		t.Fatal("broken first duplicate unexpectedly loaded")
+	}
+	if _, err := plugin.Load(second); err != nil {
+		t.Fatalf("valid later duplicate failed to load: %v", err)
+	}
+	loaded, skipped := plugin.LoadAllFailSoft([]string{first, second})
+	if len(loaded) != 0 || len(skipped) != 2 || skipped[1].Name != "successful-duplicate" {
+		t.Fatalf("startup duplicate selection = loaded=%+v skipped=%+v, want first manifest selected then skipped", loaded, skipped)
+	}
+
+	got := discoverPastThreadSkills(hubcore.PastEntry{Meta: schema.SessionMeta{Config: schema.ConfigSnapshot{
+		PluginDirs: []string{first, second},
+	}}})
+	if description := skillDescription(got, "successful-duplicate:same-skill"); description != "broken first" {
+		t.Fatalf("first-manifest duplicate description = %q, want broken first", description)
+	}
+}
+
 func TestPastThreadSkillLoaderIgnoresMalformedPluginComponents(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
