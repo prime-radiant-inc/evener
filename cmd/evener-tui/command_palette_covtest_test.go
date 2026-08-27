@@ -162,7 +162,7 @@ func TestCovCommandPaletteEntriesForRows_SessionMode(t *testing.T) {
 	want := []string{
 		"upgrade", "help", "dashboard", "project", "auth", "login", "logout",
 		"tasks", "agents", "goal", "status", "details", "interrupt", "compact",
-		"clear", "fork", "aside", "shutdown", "model", "effort", "theme", "quit",
+		"clear", "fork", "aside", "shutdown", "model", "vision-model", "effort", "theme", "quit",
 	}
 	if !slices.Equal(got, want) {
 		t.Fatalf("session command order = %q, want %q", got, want)

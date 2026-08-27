@@ -40,15 +40,16 @@ type hubTreeNode struct {
 }
 
 type hubSessionCapabilities struct {
-	Send        bool
-	Steer       bool
-	Interrupt   bool
-	Compact     bool
-	Clear       bool
-	Fork        bool
-	Resume      bool
-	Shutdown    bool
-	ChangeModel bool
+	Send              bool
+	Steer             bool
+	Interrupt         bool
+	Compact           bool
+	Clear             bool
+	Fork              bool
+	Resume            bool
+	Shutdown          bool
+	ChangeModel       bool
+	ChangeVisionModel bool
 	// Queue advertises support for turn/queue (kata 111a). True when a turn
 	// is in flight and the source can accept an enqueued user message for
 	// processing after the active turn completes.
@@ -68,6 +69,7 @@ type hubSessionDetail struct {
 	// id) on entry so a fresh/other/reconnecting client surfaces the card.
 	PendingEscalations []appwire.SandboxEscalationRequested
 	Model              string
+	VisionModel        string
 	Profile            string
 	WorkingDir         string
 	Project            string
@@ -234,15 +236,16 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 	node := hubNodeFromThread(thread)
 	caps := thread.Evener.Capabilities
 	capabilities := hubSessionCapabilities{
-		Send:        caps.Send,
-		Steer:       caps.Steer,
-		Interrupt:   caps.Interrupt,
-		Compact:     caps.Compact,
-		Clear:       caps.Clear,
-		Fork:        caps.ForkFromTurn,
-		Shutdown:    caps.Shutdown,
-		ChangeModel: caps.ChangeModel,
-		Queue:       caps.Queue,
+		Send:              caps.Send,
+		Steer:             caps.Steer,
+		Interrupt:         caps.Interrupt,
+		Compact:           caps.Compact,
+		Clear:             caps.Clear,
+		Fork:              caps.ForkFromTurn,
+		Shutdown:          caps.Shutdown,
+		ChangeModel:       caps.ChangeModel,
+		ChangeVisionModel: caps.ChangeVisionModel,
+		Queue:             caps.Queue,
 	}
 	if !node.Live {
 		capabilities.Send = false
@@ -252,6 +255,7 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		capabilities.Clear = false
 		capabilities.Shutdown = false
 		capabilities.ChangeModel = false
+		capabilities.ChangeVisionModel = false
 		capabilities.Queue = false
 		capabilities.Resume = true
 	}
@@ -264,6 +268,7 @@ func hubDetailFromThread(thread appwire.Thread) hubSessionDetail {
 		AskPending:            thread.Evener.AskPending,
 		PendingEscalations:    thread.Evener.PendingEscalations,
 		Model:                 thread.ModelProvider,
+		VisionModel:           thread.Evener.VisionModel,
 		Profile:               thread.Evener.Profile,
 		WorkingDir:            thread.CWD,
 		Project:               node.Project,

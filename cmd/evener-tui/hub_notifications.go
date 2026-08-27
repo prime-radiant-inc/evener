@@ -218,6 +218,11 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 		if json.Unmarshal(notification.Params, &params) == nil {
 			m.detail.ReasoningEffort = params.ReasoningEffort
 		}
+	case appwire.NotifyThreadVisionModelChanged:
+		var params appwire.ThreadVisionModelChangedParams
+		if json.Unmarshal(notification.Params, &params) == nil {
+			m.detail.VisionModel = params.VisionModel
+		}
 	case appwire.NotifyThreadQueueChanged:
 		var params appwire.ThreadQueueChangedParams
 		if json.Unmarshal(notification.Params, &params) == nil {

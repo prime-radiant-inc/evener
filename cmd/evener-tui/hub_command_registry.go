@@ -348,6 +348,37 @@ var hubCommandRegistry = []hubCommandDefinition{
 		},
 	},
 	{
+		Name:               "vision-model",
+		Summary:            "Set vision model (picker) or /vision-model <name|off>",
+		PaletteLabel:       "/vision-model",
+		PaletteDetail:      "set vision model",
+		Scopes:             hubCommandSession,
+		UnavailableAction:  "change vision model",
+		UnavailableSummary: "Vision model change is not available for this session.",
+		Available:          capabilityAvailable(func(c hubSessionCapabilities) bool { return c.ChangeVisionModel }, "source does not advertise change vision model"),
+		Run: func(m *hubModel, args string) tea.Cmd {
+			setting := strings.TrimSpace(args)
+			if setting == "" {
+				if m.client == nil {
+					m.addSessionSystem("Vision model picker is not available without a hub client.")
+					return nil
+				}
+				m.addSessionSystem("Fetching available models...")
+				return fetchHubVisionSessionModels(m.client, m.detail.WorkingDir)
+			}
+			if !visionModelRefKnown(setting) {
+				m.addSessionSystem(fmt.Sprintf("Invalid vision model %q. Use a model name, provider/model, or off.", setting))
+				return nil
+			}
+			ref, ok := m.currentRef()
+			if !ok {
+				m.addSessionSystem("Session ref is invalid.")
+				return nil
+			}
+			return sendHubVisionModelAction(m.client, ref, setting)
+		},
+	},
+	{
 		// There is NO effort thread capability on the wire (cmd/evener-hub/app_rpc.go
 		// MethodThreadReasoningEffortSet has no capability gate — the daemon rejects
 		// unsupported calls itself). /effort documents-and-reuses ChangeModel,

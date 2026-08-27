@@ -120,6 +120,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.forkDraft = nil
 		m.sessionThemePicker = nil
 		m.sessionModelPicker = nil
+		m.sessionVisionModelPicker = nil
 		m.sessionTranscriptPicker = nil
 		m.sessionPanel = nil
 		m.sessionDetailsRequested = false
@@ -337,6 +338,8 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addSessionSystem("Stop requested.")
 		case "model":
 			m.addSessionSystem("Model updated.")
+		case "vision-model":
+			m.addSessionSystem("Vision model updated.")
 		case "effort":
 			m.addSessionSystem("Reasoning effort updated.")
 		case "steer":
@@ -482,6 +485,17 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		picker := tuipick.NewModelPicker(msg.models, m.detail.Model, m.width)
 		m.sessionModelPicker = &picker
+		m.removeTrailingSessionSystem("Fetching available models...")
+		return m, nil
+	case hubVisionModelsMsg:
+		if msg.err != nil {
+			m.removeTrailingSessionSystem("Fetching available models...")
+			m.addHubErrorNotice("Provider unavailable", "provider", msg.err, "Check provider auth and model availability.")
+			return m, nil
+		}
+		picker := tuipick.NewModelPicker(msg.models, m.detail.VisionModel, m.width)
+		picker.SetTitle("Select vision model")
+		m.sessionVisionModelPicker = &picker
 		m.removeTrailingSessionSystem("Fetching available models...")
 		return m, nil
 	case hubTranscriptTargetsMsg:
