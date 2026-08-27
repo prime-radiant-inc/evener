@@ -118,6 +118,16 @@ export function FieldNotesShell({
               {subtitle ? <p>{subtitle}</p> : null}
             </div>
           </div>
+          <div className="fn-topbar__actions">
+            <button
+              type="button"
+              data-concept-switch-trigger="true"
+              onClick={() => dispatch({ type: "openConceptSwitcher" })}
+            >
+              <Icon name="switch" decorative />
+              <span>Switch concept</span>
+            </button>
+          </div>
         </header>
         <div
           className="fn-route-content"
