@@ -12,7 +12,7 @@
 // - Conflict restores draft
 // - No automatic retry
 
-import { beforeEach, describe, expect, it } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WireError } from "../../../cmd/evener-hub/frontend/src/protocol/errors";
 import type {
   AnyNotification,
@@ -31,6 +31,9 @@ import type {
   TurnStartResponse,
   TurnSteerResponse,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import * as projectModule from "../conversation/project";
+import type { createActivityService } from "./activity";
+import * as activityModule from "./activity";
 import { createConversationService } from "./conversation";
 
 // --- minimal fake client (cannot import Hub testing modules) ----------------
@@ -1600,6 +1603,389 @@ describe("ConversationService", () => {
       expect(
         client.calls.find((c) => c.method === "turn/start"),
       ).toBeUndefined();
+    });
+  });
+
+  // R4-Important: open/readProjection must not commit ref/capabilities until ALL
+  // response-derived projection work succeeds. After await, compute/validate
+  // projectThread, activity projection, olderCursor/result locals first; only
+  // then, if epoch current, atomically commit ref+caps. Any malformed
+  // response/projectThread/activity projection throw leaves pair null/fail-closed.
+  // Stale successful result may return without committing.
+  describe("projection throw leaves pair fail-closed (R4-Important)", () => {
+    it("open: projectThread throw leaves pair null — all operations fail before wire", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1"); // initial valid open
+      const spy = vi
+        .spyOn(projectModule, "projectThread")
+        .mockImplementation(() => {
+          throw new Error("malformed projection");
+        });
+      try {
+        await expect(service.open("ref-2")).rejects.toThrow(
+          "malformed projection",
+        );
+        // Pair must be null/fail-closed: send throws before wire.
+        client.on(
+          "turn/start",
+          () =>
+            ({
+              turn: { id: "t1", itemsView: "default", status: "running" },
+              receipt: makeReceipt(),
+            }) as TurnStartResponse,
+        );
+        await expect(service.send(textInput("hello"))).rejects.toThrow();
+        expect(
+          client.calls.find((c) => c.method === "turn/start"),
+        ).toBeUndefined();
+        // requireRef-only operations also fail before wire.
+        client.on("thread/reasoning-effort/set", () => EMPTY_RESPONSE);
+        await expect(service.setReasoningEffort("high")).rejects.toThrow();
+        expect(
+          client.calls.find((c) => c.method === "thread/reasoning-effort/set"),
+        ).toBeUndefined();
+        client.on(
+          "thread/turns/list",
+          () =>
+            ({
+              data: [],
+              nextCursor: undefined,
+            }) as ThreadTurnsListResponse,
+        );
+        await expect(service.loadOlder("cursor-x")).rejects.toThrow();
+        expect(
+          client.calls.find((c) => c.method === "thread/turns/list"),
+        ).toBeUndefined();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("readProjection: projectThread throw leaves pair null — all operations fail before wire", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      const spy = vi
+        .spyOn(projectModule, "projectThread")
+        .mockImplementation(() => {
+          throw new Error("malformed projection");
+        });
+      try {
+        await expect(service.readProjection("ref-2")).rejects.toThrow(
+          "malformed projection",
+        );
+        // Pair null: send throws before wire.
+        client.on(
+          "turn/start",
+          () =>
+            ({
+              turn: { id: "t1", itemsView: "default", status: "running" },
+              receipt: makeReceipt(),
+            }) as TurnStartResponse,
+        );
+        await expect(service.send(textInput("hello"))).rejects.toThrow();
+        expect(
+          client.calls.find((c) => c.method === "turn/start"),
+        ).toBeUndefined();
+        // requireRef-only operations also fail.
+        client.on("thread/reasoning-effort/set", () => EMPTY_RESPONSE);
+        await expect(service.setReasoningEffort("high")).rejects.toThrow();
+        expect(
+          client.calls.find((c) => c.method === "thread/reasoning-effort/set"),
+        ).toBeUndefined();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("readProjection: activity projection throw leaves pair null — all operations fail before wire", async () => {
+      // Spy on createActivityService BEFORE creating the service so the
+      // service captures the mock at construction time.
+      const spy = vi
+        .spyOn(activityModule, "createActivityService")
+        .mockImplementation(
+          () =>
+            ({
+              projectActivity: () => {
+                throw new Error("activity projection boom");
+              },
+            }) as unknown as ReturnType<typeof createActivityService>,
+        );
+      const { client, service } = setup();
+      try {
+        await service.open("ref-1");
+        await expect(service.readProjection("ref-2")).rejects.toThrow(
+          "activity projection boom",
+        );
+        // Pair null: send throws before wire.
+        client.on(
+          "turn/start",
+          () =>
+            ({
+              turn: { id: "t1", itemsView: "default", status: "running" },
+              receipt: makeReceipt(),
+            }) as TurnStartResponse,
+        );
+        await expect(service.send(textInput("hello"))).rejects.toThrow();
+        expect(
+          client.calls.find((c) => c.method === "turn/start"),
+        ).toBeUndefined();
+        // requireRef-only also fails.
+        client.on("thread/reasoning-effort/set", () => EMPTY_RESPONSE);
+        await expect(service.setReasoningEffort("high")).rejects.toThrow();
+        expect(
+          client.calls.find((c) => c.method === "thread/reasoning-effort/set"),
+        ).toBeUndefined();
+      } finally {
+        spy.mockRestore();
+      }
+    });
+
+    it("readProjection: malformed response (null thread) throw leaves pair null", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      // Return a response with a null/undefined thread field — accessing
+      // thread.evener.capabilities will throw.
+      client.on("thread/read", () => {
+        return { thread: null } as unknown as ThreadReadResponse;
+      });
+      await expect(service.readProjection("ref-2")).rejects.toThrow();
+      // Pair null: send throws before wire.
+      client.on(
+        "turn/start",
+        () =>
+          ({
+            turn: { id: "t1", itemsView: "default", status: "running" },
+            receipt: makeReceipt(),
+          }) as TurnStartResponse,
+      );
+      await expect(service.send(textInput("hello"))).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "turn/start"),
+      ).toBeUndefined();
+    });
+
+    it("stale successful open result returns without committing pair", async () => {
+      // An older open whose projectThread succeeds but resolves after a newer
+      // open must return its result but NOT commit ref+caps.
+      const { client, service } = setup();
+      const threadA = makeThread({
+        id: "thread-A",
+        evener: {
+          ref: "ref-A",
+          capabilities: { ...ALL_TRUE_CAPS, send: false },
+          queue: { revision: 0 },
+        },
+      });
+      const threadB = makeThread({
+        id: "thread-B",
+        evener: {
+          ref: "ref-B",
+          capabilities: ALL_TRUE_CAPS,
+          queue: { revision: 0 },
+        },
+      });
+
+      let resolveARead = (_resp: ThreadReadResponse) => {};
+      const aReadPromise = new Promise<ThreadReadResponse>((r) => {
+        resolveARead = r;
+      });
+      client.on("thread/read", (params) => {
+        const p = params as { ref: string };
+        if (p.ref === "ref-A") return aReadPromise;
+        return makeReadResponse(threadB);
+      });
+
+      // Start open A (deferred), then open B (immediate, commits pair).
+      const openAPromise = service.open("ref-A");
+      await service.open("ref-B");
+      // Resolve A's stale open — it returns projectThread(threadA) but must
+      // NOT commit A's pair over B's.
+      resolveARead(makeReadResponse(threadA));
+      const convA = await openAPromise;
+      // A's result is returned (stale successful result returns).
+      expect(convA.id).toBe("thread-A");
+      // B's pair is committed: send reaches wire with ref-B (capsB.send=true).
+      client.on(
+        "turn/start",
+        () =>
+          ({
+            turn: { id: "t1", itemsView: "default", status: "running" },
+            receipt: makeReceipt(),
+          }) as TurnStartResponse,
+      );
+      const receipt = await service.send(textInput("hello"));
+      expect(receipt).toBeDefined();
+      const startCall = client.calls.find((c) => c.method === "turn/start");
+      expect(startCall).toBeDefined();
+      expect(startCall?.params).toMatchObject({ ref: "ref-B" });
+    });
+
+    it("stale successful readProjection result returns without committing pair", async () => {
+      // An older readProjection whose projection succeeds but resolves after a
+      // newer open must return its result but NOT commit ref+caps.
+      const { client, service } = setup();
+      const threadA = makeThread({
+        id: "thread-A",
+        evener: {
+          ref: "ref-A",
+          capabilities: { ...ALL_TRUE_CAPS, send: false },
+          queue: { revision: 0 },
+        },
+      });
+      const threadB = makeThread({
+        id: "thread-B",
+        evener: {
+          ref: "ref-B",
+          capabilities: ALL_TRUE_CAPS,
+          queue: { revision: 0 },
+        },
+      });
+
+      let resolveARead = (_resp: ThreadReadResponse) => {};
+      const aReadPromise = new Promise<ThreadReadResponse>((r) => {
+        resolveARead = r;
+      });
+      client.on("thread/read", (params) => {
+        const p = params as { ref: string };
+        if (p.ref === "ref-A") return aReadPromise;
+        return makeReadResponse(threadB);
+      });
+
+      // Start readProjection A (deferred), then open B (immediate, commits pair).
+      const rpAPromise = service.readProjection("ref-A");
+      await service.open("ref-B");
+      // Resolve A's stale readProjection.
+      resolveARead(makeReadResponse(threadA));
+      const resultA = await rpAPromise;
+      // A's result is returned (stale successful result returns).
+      expect(resultA.conversation.id).toBe("thread-A");
+      // B's pair is committed: send reaches wire with ref-B.
+      client.on(
+        "turn/start",
+        () =>
+          ({
+            turn: { id: "t1", itemsView: "default", status: "running" },
+            receipt: makeReceipt(),
+          }) as TurnStartResponse,
+      );
+      const receipt = await service.send(textInput("hello"));
+      expect(receipt).toBeDefined();
+      const startCall = client.calls.find((c) => c.method === "turn/start");
+      expect(startCall).toBeDefined();
+      expect(startCall?.params).toMatchObject({ ref: "ref-B" });
+    });
+
+    it("after projection-throw failure, a later successful open commits and operations reach wire", async () => {
+      // After a projection throw leaves the pair null, a subsequent successful
+      // open must install the pair and allow operations to reach the wire.
+      const { client, service } = setup();
+      await service.open("ref-1");
+      const spy = vi
+        .spyOn(projectModule, "projectThread")
+        .mockImplementationOnce(() => {
+          throw new Error("malformed projection");
+        });
+      try {
+        await expect(service.open("ref-2")).rejects.toThrow(
+          "malformed projection",
+        );
+        // Now a successful open — restores the pair.
+        client.on("thread/read", () => makeReadResponse(makeThread()));
+        const conv = await service.open("ref-3");
+        expect(conv.id).toBe("thread-1");
+        // Operations reach the wire now.
+        client.on(
+          "turn/start",
+          () =>
+            ({
+              turn: { id: "t1", itemsView: "default", status: "running" },
+              receipt: makeReceipt(),
+            }) as TurnStartResponse,
+        );
+        const receipt = await service.send(textInput("hello"));
+        expect(receipt).toBeDefined();
+        const startCall = client.calls.find((c) => c.method === "turn/start");
+        expect(startCall).toBeDefined();
+        expect(startCall?.params).toMatchObject({ ref: "ref-3" });
+      } finally {
+        spy.mockRestore();
+      }
+    });
+  });
+
+  // R4-Minor: pending-refresh test must distinguish the startRef guard. Start
+  // refresh(B) while open(B) is pending (startRef=null), allow open(B) to
+  // succeed/commit B, only then resolve refresh(B); fetched stale caps must
+  // return but not overwrite newly committed B caps.
+  describe("pending refresh startRef guard (R4-Minor)", () => {
+    it("refresh(B) started while open(B) pending — stale caps return but do not overwrite committed B caps", async () => {
+      const { client, service } = setup();
+      // Refresh caps have send=false; open caps have send=true. If the stale
+      // refresh overwrites the committed B caps, send would throw.
+      const capsRefresh: ThreadCapabilities = {
+        ...ALL_TRUE_CAPS,
+        send: false,
+      };
+      const threadRefresh = makeThread({
+        id: "thread-B",
+        evener: {
+          ref: "ref-B",
+          capabilities: capsRefresh,
+          queue: { revision: 0 },
+        },
+      });
+      const threadOpen = makeThread({
+        id: "thread-B",
+        evener: {
+          ref: "ref-B",
+          capabilities: ALL_TRUE_CAPS,
+          queue: { revision: 0 },
+        },
+      });
+
+      let resolveOpenB = (_resp: ThreadReadResponse) => {};
+      const openBPromise = new Promise<ThreadReadResponse>((r) => {
+        resolveOpenB = r;
+      });
+      let resolveRefreshB = (_resp: ThreadReadResponse) => {};
+      const refreshBPromise0 = new Promise<ThreadReadResponse>((r) => {
+        resolveRefreshB = r;
+      });
+      client.on("thread/read", (params) => {
+        const p = params as { ref: string; subscribe?: boolean };
+        if (p.ref === "ref-B" && p.subscribe === false) return refreshBPromise0;
+        if (p.ref === "ref-B") return openBPromise;
+        return makeReadResponse(makeThread());
+      });
+
+      // Start open("ref-B") — ref=null during pending.
+      const openPromise = service.open("ref-B");
+      // Start refresh(B) while open(B) is pending — startRef=null.
+      const refreshPromise = service.refreshCapabilities("ref-B");
+      // Allow open(B) to succeed and commit B (ref=ref-B, caps=ALL_TRUE).
+      resolveOpenB(makeReadResponse(threadOpen));
+      await openPromise;
+      // NOW resolve the stale refresh — startRef was null, so it must NOT
+      // overwrite the committed B caps.
+      resolveRefreshB(makeReadResponse(threadRefresh));
+      const refreshCaps = await refreshPromise;
+      // Fetched stale caps are returned to the caller.
+      expect(refreshCaps).toEqual(capsRefresh);
+
+      // Committed B caps (send=true) must be intact — send reaches wire.
+      client.on(
+        "turn/start",
+        () =>
+          ({
+            turn: { id: "t1", itemsView: "default", status: "running" },
+            receipt: makeReceipt(),
+          }) as TurnStartResponse,
+      );
+      const receipt = await service.send(textInput("hello"));
+      expect(receipt).toBeDefined();
+      const startCall = client.calls.find((c) => c.method === "turn/start");
+      expect(startCall).toBeDefined();
+      expect(startCall?.params).toMatchObject({ ref: "ref-B" });
     });
   });
 });
