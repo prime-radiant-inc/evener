@@ -821,3 +821,26 @@ func TestCallerEmitsOneAttemptGroupForCheapAndFallback(t *testing.T) {
 		t.Fatalf("settlement final attempt count = %d, want 2", settlements[0].FinalAttemptCount)
 	}
 }
+
+func TestCompleteRoutedUsesTheExplicitRoute(t *testing.T) {
+	adapter := servesOnly("openai", "main", refusal(400, "The provided model identifier is invalid."))
+	caller := cheapmodel.New(clientWith(adapter))
+	profile := provider.NewOpenAIProfile("main")
+
+	resp, err := caller.CompleteRouted(context.Background(), profile, "openai", "gpt-4.1-nano", llm.Request{
+		Messages: []llm.Message{llm.User("hi")},
+	})
+	if err != nil || strings.TrimSpace(resp.Text()) != "answered" {
+		t.Fatalf("CompleteRouted = (%q, %v), want answered via fallback", resp.Text(), err)
+	}
+	// Refusal of the routed model is learned: the second call goes straight to
+	// the session model instead of re-probing.
+	if _, err := caller.CompleteRouted(context.Background(), profile, "openai", "gpt-4.1-nano", llm.Request{
+		Messages: []llm.Message{llm.User("hi")},
+	}); err != nil {
+		t.Fatalf("second CompleteRouted: %v", err)
+	}
+	if got, want := adapter.Models(), []string{"gpt-4.1-nano", "main", "main"}; !slices.Equal(got, want) {
+		t.Fatalf("models = %v, want %v", got, want)
+	}
+}

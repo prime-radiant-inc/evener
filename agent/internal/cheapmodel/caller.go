@@ -55,7 +55,16 @@ func New(client *llm.Client) *Caller {
 // default cheap model when the session configured none.
 func (c *Caller) Complete(ctx context.Context, profile *provider.Profile, req llm.Request) (llm.Response, error) {
 	cheapProvider, cheapModel := profile.CheapModelRef()
-	resp, _, err := c.run(ctx, profile, route{provider: cheapProvider, model: cheapModel}, req)
+	return c.CompleteRouted(ctx, profile, cheapProvider, cheapModel, req)
+}
+
+// CompleteRouted is Complete for an explicit route chosen by the caller rather
+// than the profile's cheap-model ref — e.g. the vision side-channel's
+// configured vision model. It shares Complete's refusal learning and
+// session-model fallback; an empty model or a route equal to the session
+// route runs on the session model.
+func (c *Caller) CompleteRouted(ctx context.Context, profile *provider.Profile, providerName, modelID string, req llm.Request) (llm.Response, error) {
+	resp, _, err := c.run(ctx, profile, route{provider: providerName, model: modelID}, req)
 	return resp, err
 }
 
