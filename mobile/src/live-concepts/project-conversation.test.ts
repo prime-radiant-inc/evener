@@ -111,6 +111,7 @@ describe("createLiveConversationProjector", () => {
           kind: "activity",
           id: "tool-1",
           label: "shell",
+          family: "tool",
           state: "running",
           detail: {
             arguments: '{"secret":"value"}',
@@ -851,6 +852,7 @@ describe("createLiveConversationProjector", () => {
           kind: "activity",
           id: "tool-secret-id",
           label: "shell",
+          family: "tool",
           state: "running",
           detail: {
             arguments: '{"secret":"value"}',
@@ -1050,6 +1052,7 @@ describe("createLiveConversationProjector", () => {
           kind: "activity",
           id: "tool-1",
           label: "shell",
+          family: "tool",
           state: "completed",
           detail: { output: largeOutput },
         },
