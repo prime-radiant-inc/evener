@@ -199,7 +199,10 @@ function projectDelegateEntry(
   childJobs: EvenerJobInfo[],
 ): WorkEntry {
   const tone = classifyTone(dlg.status, dlg.terminal, undefined, dlg.outcome);
-  const label = dlg.description ?? dlg.type ?? "Delegate";
+  // Use the type (operation name) only, never description/task prompt — those
+  // may carry delegated task text. Fall back to a safe constant when type is
+  // absent or empty.
+  const label = dlg.type && dlg.type.length > 0 ? dlg.type : "Delegate";
   const children = childJobs.map((cj) => projectJobEntry(cj));
   return {
     kind: "delegate",
