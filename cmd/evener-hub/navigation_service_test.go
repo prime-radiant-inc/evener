@@ -793,6 +793,16 @@ func TestNavigationServiceConcurrentRefreshCoalescesCoreBuild(t *testing.T) {
 
 	start := make(chan struct{})
 	var failures atomic.Int32
+	joined := make(chan struct{})
+	var joinOnce sync.Once
+	var attached atomic.Int32
+	previousAttached := navigationRefreshTicketAttached
+	navigationRefreshTicketAttached = func(_ *NavigationService, _ *navigationBuildFlight) {
+		if attached.Add(1) == 20 {
+			joinOnce.Do(func() { close(joined) })
+		}
+	}
+	t.Cleanup(func() { navigationRefreshTicketAttached = previousAttached })
 	var wg sync.WaitGroup
 	for range 20 {
 		wg.Go(func() {
@@ -804,22 +814,8 @@ func TestNavigationServiceConcurrentRefreshCoalescesCoreBuild(t *testing.T) {
 	}
 	close(start)
 	<-source.entered
-	// The capture is held until every concurrent caller has registered its hint.
-	deadline := time.After(time.Second)
-	for {
-		service.mu.Lock()
-		joined := service.flight != nil && len(service.flight.hint.Projects) == 20
-		service.mu.Unlock()
-		if joined {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("concurrent callers did not join active flight")
-		default:
-			time.Sleep(time.Millisecond)
-		}
-	}
+	// The capture is held until every concurrent caller has registered its ticket.
+	<-joined
 	close(source.release)
 	wg.Wait()
 	if failures.Load() != 0 {
@@ -842,6 +838,16 @@ func TestNavigationServiceMergesJoinedWildcardHintBeforeCommit(t *testing.T) {
 	source.changeTitle("mixed")
 	source.entered, source.release = make(chan struct{}), make(chan struct{})
 	precise := make(chan hubapi.NavigationMutation, 1)
+	joined := make(chan struct{})
+	var joinOnce sync.Once
+	var attached atomic.Int32
+	previousAttached := navigationRefreshTicketAttached
+	navigationRefreshTicketAttached = func(_ *NavigationService, _ *navigationBuildFlight) {
+		if attached.Add(1) == 2 {
+			joinOnce.Do(func() { close(joined) })
+		}
+	}
+	t.Cleanup(func() { navigationRefreshTicketAttached = previousAttached })
 	go func() {
 		m, _ := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
 		precise <- m
@@ -852,21 +858,7 @@ func TestNavigationServiceMergesJoinedWildcardHintBeforeCommit(t *testing.T) {
 		m, _ := service.Refresh(t.Context(), navigationChangeHint{AllLoadedProjects: true})
 		wildcard <- m
 	}()
-	deadline := time.After(time.Second)
-	for {
-		service.mu.Lock()
-		joined := service.flight != nil && service.flight.hint.AllLoadedProjects
-		service.mu.Unlock()
-		if joined {
-			break
-		}
-		select {
-		case <-deadline:
-			t.Fatal("wildcard did not join active flight")
-		default:
-			time.Sleep(time.Millisecond)
-		}
-	}
+	<-joined
 	close(source.release)
 	for _, mutation := range []hubapi.NavigationMutation{<-precise, <-wildcard} {
 		if !hasNavigationTarget(mutation.Targets, appwire.NavigationTargetProject, "p1") || mutation.Targets[len(mutation.Targets)-1].Kind != appwire.NavigationTargetAllLoadedProjects {
@@ -1372,6 +1364,13 @@ func TestNavigationServiceSchedulerRetriesEmptyAndFailedCaptures(t *testing.T) {
 	})
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan struct{})
+	retried := make(chan struct{})
+	var retryOnce sync.Once
+	previousCommit := navigationBeforeSnapshotCommit
+	navigationBeforeSnapshotCommit = func(context.Context) {
+		retryOnce.Do(func() { close(retried) })
+	}
+	t.Cleanup(func() { navigationBeforeSnapshotCommit = previousCommit })
 	go func() { service.Start(ctx); close(done) }()
 	select {
 	case <-source.captured:
@@ -1382,13 +1381,7 @@ func TestNavigationServiceSchedulerRetriesEmptyAndFailedCaptures(t *testing.T) {
 	source.err = nil
 	source.revision++
 	source.mu.Unlock()
-	deadline := time.Now().Add(time.Second)
-	for service.Stats().CoreBuilds == 0 && time.Now().Before(deadline) {
-		time.Sleep(time.Millisecond)
-	}
-	if service.Stats().CoreBuilds == 0 {
-		t.Fatal("scheduler did not retry after failed capture")
-	}
+	<-retried
 	cancel()
 	select {
 	case <-done:
