@@ -92,8 +92,8 @@
 }
 
 /* the label is a <span>, not a form control, so it has no native :disabled
- * of its own - matched off the track's disabled state instead (they're
- * siblings, track first). */
+ * of its own - matched from the preceding native .control disabled state;
+ * .track is nested and no longer the sibling selector owner. */
 .control:disabled ~ .label {
   cursor: not-allowed;
   opacity: 0.5;

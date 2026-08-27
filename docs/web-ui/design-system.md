@@ -313,8 +313,8 @@ budgeted. Three budgets, all on `--motion-easing-standard` (`ease-out`):
 Forbidden, unchanged: idle pulses, shimmer loops on live data, anything that animates during
 silence (the honest-liveness rule — a "working" indicator that looks identical whether the agent
 is streaming or hung is worse than no indicator). Every widget with motion of its own respects
-`prefers-reduced-motion: reduce` (currently: Cadence, Dialog, Disclosure, Menu, SelectionQuote,
-Sheet, StatusDot, Switch) — collapses to instant, no exceptions.
+`prefers-reduced-motion: reduce` (currently: Cadence, Dialog, Disclosure, Menu, SegmentedControl,
+SelectionQuote, Sheet, StatusDot, Switch) — collapses to instant, no exceptions.
 
 ---
 
