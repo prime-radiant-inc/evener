@@ -266,6 +266,13 @@ func TestPastThreadTurnsListDoesNotDiscoverSkills(t *testing.T) {
 
 func TestMergePastThreadForReadKeepsLiveDiagnostics(t *testing.T) {
 	cfg, entry := seedPastSessionWithSkillFixtures(t)
+	var calls int
+	previous := discoverPastThreadSkillCatalog
+	discoverPastThreadSkillCatalog = func(hubcore.PastEntry) []appwire.EvenerSkillInfo {
+		calls++
+		return []appwire.EvenerSkillInfo{{Name: "unexpected"}}
+	}
+	t.Cleanup(func() { discoverPastThreadSkillCatalog = previous })
 	liveDiagnostics := &appwire.EvenerDiagnostics{Tools: []appwire.EvenerToolInfo{{Name: "live-tool"}}}
 	got, err := mergePastThreadForRead(cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID}, appwire.Thread{
 		ID: entry.Meta.ID, SessionID: entry.Meta.ID, Evener: appwire.EvenerThread{Diagnostics: liveDiagnostics},
@@ -275,5 +282,21 @@ func TestMergePastThreadForReadKeepsLiveDiagnostics(t *testing.T) {
 	}
 	if got.Evener.Diagnostics != liveDiagnostics || len(got.Evener.Diagnostics.Skills) != 0 || len(got.Evener.Diagnostics.Tools) != 1 {
 		t.Fatalf("live diagnostics were replaced or changed: %+v", got.Evener.Diagnostics)
+	}
+	if calls != 0 {
+		t.Fatalf("live diagnostics caused %d discarded discovery calls, want 0", calls)
+	}
+}
+
+func TestMergePastThreadForReadUsesPastDiagnosticsWhenLiveAbsent(t *testing.T) {
+	cfg, entry := seedPastSessionWithSkillFixtures(t)
+	got, err := mergePastThreadForRead(cfg, appwire.ThreadReadParams{Ref: "local:" + entry.Meta.ID}, appwire.Thread{
+		ID: entry.Meta.ID, SessionID: entry.Meta.ID,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Evener.Diagnostics == nil || !hasSkill(got.Evener.Diagnostics.Skills, "project-skill") {
+		t.Fatalf("past diagnostics were not copied: %+v", got.Evener.Diagnostics)
 	}
 }
