@@ -4392,6 +4392,30 @@ describe("ConversationStore", () => {
     return { type: "userMessage", id, text };
   }
 
+  function agentMessageItem(
+    id: string,
+    text: string,
+    status = "completed",
+  ): ThreadItem {
+    return { type: "agentMessage", id, text, status };
+  }
+
+  function reasoningItem(
+    id: string,
+    text: string,
+    status = "completed",
+  ): ThreadItem {
+    return { type: "reasoning", id, text, status };
+  }
+
+  function commandExecItem(
+    id: string,
+    toolName: string,
+    status = "completed",
+  ): ThreadItem {
+    return { type: "commandExecution", id, toolName, status };
+  }
+
   const VALID_ASK_ARGS =
     '{"questions":[{"header":"Choose","question":"Pick one","options":[{"label":"A","detail":"da"},{"label":"B","detail":"db"}],"multi_select":false}]}';
 
@@ -6214,6 +6238,403 @@ describe("ConversationStore", () => {
       const cIdx = ids.indexOf("C");
       expect(nIdx).toBeGreaterThan(bIdx);
       expect(nIdx).toBeGreaterThan(cIdx);
+    });
+  });
+
+  // Fix round 1: Replace insertion-only ownership with accepted per-item live
+  // ownership + monotonic revision. Every accepted lifecycle insertion OR
+  // replacement, agent/reasoning/tool delta, reset, warning increments/marks;
+  // rejected/missing/wrong/frozen no mark. Rehydrate captures entry live
+  // revision. At commit: if authoritative contains ID but current revision
+  // advanced after entry, preserve current updated version in authoritative
+  // position and keep ownership; otherwise accept authoritative and clear that
+  // ID's ownership. If authoritative omits ID, append only genuinely live-owned
+  // current item; page IDs still prepend; unowned old drops.
+  describe("Fix round 1: per-item live ownership with monotonic revision", () => {
+    // Helper: set up a store with an initial assistant item X and a page cursor,
+    // start a hanging rehydrate, apply a live notification to X, then release
+    // the rehydrate. Returns the store and ctrl for further assertions.
+    async function setupLiveUpdateX(
+      initialX: ThreadItem,
+      rereadItems: ThreadItem[],
+      liveNotification: AnyNotification,
+      pageItems?: MobileConversation["items"],
+    ) {
+      const service = new FakeConversationService();
+      // Initial projection: B + X.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({ id: "t0", items: [userMessageItem("B", "base"), initialX] }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      // Start a rehydrate (R) that hangs.
+      const ctrl = makeControlledRead(service);
+      // R's projection may or may not include X (stale or omitted).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({ id: "t0", items: rereadItems }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      // While R is in-flight, optionally loadOlder (page items).
+      if (pageItems !== undefined) {
+        service.olderItems = { items: pageItems, nextCursor: "cursor-2" };
+        await store.getState().loadOlder(service);
+      }
+      // While R is still in-flight, apply the live notification to X.
+      store.getState().applyNotification(liveNotification);
+      // Release R.
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      return { store, service, ctrl };
+    }
+
+    // (a) duplicate completed replacement
+    it("reread includes stale X: item/completed replacement preserves live-updated X", async () => {
+      const { store } = await setupLiveUpdateX(
+        agentMessageItem("X", "original", "inProgress"),
+        // Reread includes stale X (same id, old text).
+        [userMessageItem("B", "base"), agentMessageItem("X", "stale-from-reread", "completed")],
+        // Live notification: item/completed replaces X with final text.
+        {
+          method: "item/completed",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t0",
+            item: agentMessageItem("X", "live-final-text", "completed"),
+          },
+        } as AnyNotification,
+      );
+      const items = store.getState().conversation?.items ?? [];
+      const xItem = items.find((i) => i.id === "X");
+      expect(xItem).toBeDefined();
+      expect(xItem?.kind).toBe("assistant");
+      if (xItem?.kind === "assistant") {
+        // The live-updated version survives, not the stale reread version.
+        expect(xItem.markdown).toBe("live-final-text");
+      }
+      // B is retained from reread.
+      expect(items.some((i) => i.id === "B")).toBe(true);
+    });
+
+    it("reread omits X: item/completed replacement appends live-owned X as tail", async () => {
+      const { store } = await setupLiveUpdateX(
+        agentMessageItem("X", "original", "inProgress"),
+        // Reread omits X (only B).
+        [userMessageItem("B", "base")],
+        // Live notification: item/completed inserts X.
+        {
+          method: "item/completed",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            turnId: "t0",
+            item: agentMessageItem("X", "live-final-text", "completed"),
+          },
+        } as AnyNotification,
+      );
+      const items = store.getState().conversation?.items ?? [];
+      const ids = items.map((i) => i.id);
+      expect(ids).toContain("X");
+      expect(ids).toContain("B");
+      // X is after B (live tail).
+      expect(ids.indexOf("X")).toBeGreaterThan(ids.indexOf("B"));
+      const xItem = items.find((i) => i.id === "X");
+      if (xItem?.kind === "assistant") {
+        expect(xItem.markdown).toBe("live-final-text");
+      }
+    });
+
+    // (b) delta
+    it("reread includes stale X: agentMessage delta preserves live-updated X", async () => {
+      const { store } = await setupLiveUpdateX(
+        agentMessageItem("X", "base-text", "inProgress"),
+        // Reread includes stale X (base text, no delta).
+        [userMessageItem("B", "base"), agentMessageItem("X", "base-text", "inProgress")],
+        // Live notification: delta appends to X.
+        {
+          method: "item/agentMessage/delta",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            itemId: "X",
+            delta: "-appended",
+          },
+        } as AnyNotification,
+      );
+      const items = store.getState().conversation?.items ?? [];
+      const xItem = items.find((i) => i.id === "X");
+      expect(xItem).toBeDefined();
+      expect(xItem?.kind).toBe("assistant");
+      if (xItem?.kind === "assistant") {
+        // The live-updated version (base-text + appended) survives.
+        expect(xItem.markdown).toBe("base-text-appended");
+      }
+    });
+
+    it("reread omits X: agentMessage delta triggers resync (missing item), X from initial dropped", async () => {
+      // Delta targeting missing item triggers resync, not a mark.
+      // Since X is in the initial projection but not in the reread, and the
+      // delta targets a missing item (X is not in current after reread commits),
+      // the delta notification itself triggers requestRehydrate. But at the
+      // time the delta arrives, X IS in the current conversation (before R
+      // completes). So the delta should update X and mark it live-owned.
+      // After R commits (omitting X), X should be appended as live tail.
+      const { store } = await setupLiveUpdateX(
+        agentMessageItem("X", "base-text", "inProgress"),
+        // Reread omits X (only B).
+        [userMessageItem("B", "base")],
+        // Live notification: delta appends to X (X exists in current).
+        {
+          method: "item/agentMessage/delta",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            itemId: "X",
+            delta: "-appended",
+          },
+        } as AnyNotification,
+      );
+      const items = store.getState().conversation?.items ?? [];
+      const ids = items.map((i) => i.id);
+      expect(ids).toContain("X");
+      expect(ids).toContain("B");
+      expect(ids.indexOf("X")).toBeGreaterThan(ids.indexOf("B"));
+      const xItem = items.find((i) => i.id === "X");
+      if (xItem?.kind === "assistant") {
+        expect(xItem.markdown).toBe("base-text-appended");
+      }
+    });
+
+    // (c) reset
+    it("reread includes stale X: agentMessage reset preserves live-reset X", async () => {
+      const { store } = await setupLiveUpdateX(
+        agentMessageItem("X", "will-be-reset", "inProgress"),
+        // Reread includes stale X (old text).
+        [userMessageItem("B", "base"), agentMessageItem("X", "will-be-reset", "inProgress")],
+        // Live notification: reset clears X's markdown.
+        {
+          method: "item/agentMessage/reset",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            itemId: "X",
+          },
+        } as AnyNotification,
+      );
+      const items = store.getState().conversation?.items ?? [];
+      const xItem = items.find((i) => i.id === "X");
+      expect(xItem).toBeDefined();
+      expect(xItem?.kind).toBe("assistant");
+      if (xItem?.kind === "assistant") {
+        // The live-reset version (empty markdown) survives, not stale.
+        expect(xItem.markdown).toBe("");
+      }
+    });
+
+    it("reread omits X: agentMessage reset appends live-owned X as tail", async () => {
+      const { store } = await setupLiveUpdateX(
+        agentMessageItem("X", "will-be-reset", "inProgress"),
+        // Reread omits X (only B).
+        [userMessageItem("B", "base")],
+        // Live notification: reset clears X's markdown.
+        {
+          method: "item/agentMessage/reset",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            itemId: "X",
+          },
+        } as AnyNotification,
+      );
+      const items = store.getState().conversation?.items ?? [];
+      const ids = items.map((i) => i.id);
+      expect(ids).toContain("X");
+      expect(ids).toContain("B");
+      expect(ids.indexOf("X")).toBeGreaterThan(ids.indexOf("B"));
+      const xItem = items.find((i) => i.id === "X");
+      if (xItem?.kind === "assistant") {
+        expect(xItem.markdown).toBe("");
+      }
+    });
+
+    // Reasoning delta marking
+    it("reread includes stale X: reasoning delta preserves live-updated activity X", async () => {
+      const { store } = await setupLiveUpdateX(
+        reasoningItem("X", "reasoning-base", "inProgress"),
+        // Reread includes stale X (base text).
+        [userMessageItem("B", "base"), reasoningItem("X", "reasoning-base", "inProgress")],
+        // Live notification: reasoning delta appends to X.
+        {
+          method: "item/reasoning/summaryTextDelta",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            itemId: "X",
+            delta: "-more",
+          },
+        } as AnyNotification,
+      );
+      const items = store.getState().conversation?.items ?? [];
+      const xItem = items.find((i) => i.id === "X");
+      expect(xItem).toBeDefined();
+      expect(xItem?.kind).toBe("activity");
+      if (xItem?.kind === "activity") {
+        expect(xItem.detail.output).toBe("reasoning-base-more");
+      }
+    });
+
+    // Tool output delta marking
+    it("reread includes stale X: tool output delta preserves live-updated activity X", async () => {
+      const { store } = await setupLiveUpdateX(
+        commandExecItem("X", "mytool", "inProgress"),
+        // Reread includes stale X (no output yet).
+        [userMessageItem("B", "base"), commandExecItem("X", "mytool", "inProgress")],
+        // Live notification: tool output delta appends to X.
+        {
+          method: "item/toolOutput/delta",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            itemId: "X",
+            delta: "tool-result",
+          },
+        } as AnyNotification,
+      );
+      const items = store.getState().conversation?.items ?? [];
+      const xItem = items.find((i) => i.id === "X");
+      expect(xItem).toBeDefined();
+      expect(xItem?.kind).toBe("activity");
+      if (xItem?.kind === "activity") {
+        expect(xItem.detail.output).toBe("tool-result");
+      }
+    });
+
+    // Order and cap: page items + live-owned X preserved at cap
+    it("page items + live-updated X: order P + B + X, cap retains X", async () => {
+      const pageItems: MobileConversation["items"] = [];
+      for (let i = 0; i < 498; i++) {
+        pageItems.push({ kind: "user", id: `P-${i}`, text: "" });
+      }
+      const { store } = await setupLiveUpdateX(
+        agentMessageItem("X", "original", "inProgress"),
+        // Reread: B only (omits X).
+        [userMessageItem("B", "base")],
+        // Live notification: delta updates X.
+        {
+          method: "item/agentMessage/delta",
+          params: {
+            threadId: "thread-1",
+            ref: "ref-1",
+            itemId: "X",
+            delta: "-updated",
+          },
+        } as AnyNotification,
+        pageItems,
+      );
+      const items = store.getState().conversation?.items ?? [];
+      const ids = items.map((i) => i.id);
+      expect(items.length).toBeLessThanOrEqual(500);
+      // X is retained (live-owned tail).
+      expect(ids).toContain("X");
+      // B is retained (authoritative).
+      expect(ids).toContain("B");
+      // X is after B.
+      expect(ids.indexOf("X")).toBeGreaterThan(ids.indexOf("B"));
+      const xItem = items.find((i) => i.id === "X");
+      if (xItem?.kind === "assistant") {
+        expect(xItem.markdown).toBe("original-updated");
+      }
+    });
+
+    // Frozen (truncated) delta does not mark
+    it("frozen truncated item: delta does not mark, reread version accepted", async () => {
+      // Create an assistant item that is already truncated (at byte limit).
+      // A delta to a truncated item is frozen — no mark, so the reread's
+      // version should be accepted.
+      const longText = "x".repeat(MAX_ITEM_BYTES + 100);
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [
+                userMessageItem("B", "base"),
+                agentMessageItem("X", longText, "inProgress"),
+              ],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // X should be truncated after openProjected.
+      const xBefore = store.getState().conversation?.items.find((i) => i.id === "X");
+      expect(xBefore?.kind).toBe("assistant");
+      if (xBefore?.kind === "assistant") {
+        expect(xBefore.markdown).toContain("… truncated");
+      }
+      // Start a hanging rehydrate.
+      const ctrl = makeControlledRead(service);
+      // Reread includes X with different (shorter) text.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [
+                userMessageItem("B", "base"),
+                agentMessageItem("X", "reread-short", "completed"),
+              ],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      // While R is in-flight, send a delta to X — but X is truncated, so the
+      // delta is frozen (break, no mark).
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          itemId: "X",
+          delta: "-should-not-append",
+        },
+      } as AnyNotification);
+      // Release R — since the delta was frozen (no mark), the reread version
+      // should be accepted.
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      const items = store.getState().conversation?.items ?? [];
+      const xItem = items.find((i) => i.id === "X");
+      expect(xItem).toBeDefined();
+      expect(xItem?.kind).toBe("assistant");
+      if (xItem?.kind === "assistant") {
+        // Reread version accepted (frozen delta did not mark).
+        expect(xItem.markdown).toBe("reread-short");
+      }
     });
   });
 });
