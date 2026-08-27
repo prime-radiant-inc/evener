@@ -628,8 +628,8 @@ test("back navigation updates the URL to match the pane it returns to", async ()
   expect(window.location.pathname).toBe("/s/local%3Aref_x");
 });
 
-// kata bbsv. AppShell needs /api/navigation before it can place a /s/{ref} deep
-// link, and no fetch resolves inside the first commit - so the shell spends a
+// kata bbsv. AppShell needs the AppWire navigation read before it can place a
+// /s/{ref} deep link, and no response resolves inside the first commit - so the shell spends a
 // beat with the route parsed and unplaced, which the fallback below fills with
 // welcome. Publishing welcome's "/" then would throw away the deep link the
 // shell is still working on, so routeDeferred suspends the sync for the wait.

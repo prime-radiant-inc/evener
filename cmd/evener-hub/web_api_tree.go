@@ -36,7 +36,6 @@ var (
 	hubIsSessionLive             = (*WebServer).isLive
 	hubTreeWorkspaceData         = (*WebServer).workspaceData
 	hubTreeAttentionRank         = hubapi.AttentionRank
-	hubNavigationNow             = func() time.Time { return time.Now().UTC() }
 )
 
 var _ = hubTreeAttentionRank

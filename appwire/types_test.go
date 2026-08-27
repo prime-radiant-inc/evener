@@ -214,6 +214,105 @@ func TestEvenerDiagnosticsJobsJSONRoundTrip(t *testing.T) {
 	}
 }
 
+func TestNavigationReadWireTypesPreservePagingAndRawData(t *testing.T) {
+	zero := uint32(0)
+	params := NavigationReadParams{
+		Resource:   "project_page",
+		Section:    "live",
+		SectionID:  "pin-a",
+		Catalog:    "projects",
+		ProjectKey: "project-a",
+		Tier:       "recent",
+		Ref:        "local:session-a",
+		Offset:     &zero,
+		Limit:      &zero,
+		ETag:       "etag-a",
+	}
+	raw, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal params: %v", err)
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		t.Fatalf("unmarshal params fields: %v", err)
+	}
+	for name, want := range map[string]string{
+		"resource":   `"project_page"`,
+		"section":    `"live"`,
+		"sectionId":  `"pin-a"`,
+		"catalog":    `"projects"`,
+		"projectKey": `"project-a"`,
+		"tier":       `"recent"`,
+		"ref":        `"local:session-a"`,
+		"offset":     "0",
+		"limit":      "0",
+		"etag":       `"etag-a"`,
+	} {
+		if got := string(fields[name]); got != want {
+			t.Fatalf("field %q = %s, want %s in %s", name, got, want, raw)
+		}
+	}
+	var decoded NavigationReadParams
+	if err := json.Unmarshal(raw, &decoded); err != nil {
+		t.Fatalf("unmarshal params: %v", err)
+	}
+	if decoded.Offset == nil {
+		t.Fatal("decoded offset is nil; explicit zero must remain distinguishable from omitted")
+	}
+	if *decoded.Offset != 0 {
+		t.Fatalf("decoded offset = %d, want 0", *decoded.Offset)
+	}
+	if decoded.Limit == nil {
+		t.Fatal("decoded limit is nil; explicit zero must remain distinguishable from omitted")
+	}
+	if *decoded.Limit != 0 {
+		t.Fatalf("decoded limit = %d, want 0", *decoded.Limit)
+	}
+
+	withoutPage, err := json.Marshal(NavigationReadParams{Resource: "manifest"})
+	if err != nil {
+		t.Fatalf("marshal unpaged params: %v", err)
+	}
+	if got, want := string(withoutPage), `{"resource":"manifest"}`; got != want {
+		t.Fatalf("omitted paging = %s, want %s", got, want)
+	}
+
+	response := NavigationReadResponse{
+		Status:       "ok",
+		GenerationID: "generation-a",
+		Revision:     7,
+		ETag:         "etag-a",
+		Data:         json.RawMessage(`{"generation_id":"generation-a","revision":7,"sessions":[]}`),
+	}
+	raw, err = json.Marshal(response)
+	if err != nil {
+		t.Fatalf("marshal response: %v", err)
+	}
+	var decodedResponse NavigationReadResponse
+	if err := json.Unmarshal(raw, &decodedResponse); err != nil {
+		t.Fatalf("unmarshal response: %v", err)
+	}
+	if decodedResponse.Status != "ok" || decodedResponse.GenerationID != "generation-a" || decodedResponse.Revision != 7 || decodedResponse.ETag != "etag-a" {
+		t.Fatalf("decoded response envelope = %+v", decodedResponse)
+	}
+	if string(decodedResponse.Data) != string(response.Data) {
+		t.Fatalf("decoded response data = %s, want %s", decodedResponse.Data, response.Data)
+	}
+
+	notModified, err := json.Marshal(NavigationReadResponse{
+		Status:       "not_modified",
+		GenerationID: "generation-a",
+		Revision:     7,
+		ETag:         "etag-a",
+	})
+	if err != nil {
+		t.Fatalf("marshal not-modified response: %v", err)
+	}
+	if got, want := string(notModified), `{"status":"not_modified","generationId":"generation-a","revision":7,"etag":"etag-a"}`; got != want {
+		t.Fatalf("not-modified response = %s, want %s", got, want)
+	}
+}
+
 func TestEvenerDiagnosticsDelegatesJSONRoundTrip(t *testing.T) {
 	valid := true
 	exhaustionResumable := false

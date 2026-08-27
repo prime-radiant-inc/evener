@@ -537,6 +537,12 @@ func (c *Client) ProjectsRecent(ctx context.Context, params ProjectsRecentParams
 	return out, err
 }
 
+func (c *Client) NavigationRead(ctx context.Context, params NavigationReadParams) (NavigationReadResponse, error) {
+	var out NavigationReadResponse
+	err := c.request(ctx, MethodEvenerNavigationRead, params, &out)
+	return out, err
+}
+
 func (c *Client) HarnessList(ctx context.Context, params HarnessListParams) (HarnessListResponse, error) {
 	var out HarnessListResponse
 	err := c.request(ctx, MethodEvenerHarnessesList, params, &out)

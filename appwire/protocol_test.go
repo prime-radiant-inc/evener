@@ -256,6 +256,28 @@ func TestConnectionAndReservedMethodsCataloged(t *testing.T) {
 	}
 }
 
+func TestNavigationReadMethodIsHubScoped(t *testing.T) {
+	for _, method := range Methods {
+		if method.Name != MethodEvenerNavigationRead {
+			continue
+		}
+		if method.Scope != ScopeHub {
+			t.Fatalf("navigation read scope = %q, want %q", method.Scope, ScopeHub)
+		}
+		if _, ok := method.Params.(NavigationReadParams); !ok {
+			t.Fatalf("navigation read params type = %T, want NavigationReadParams", method.Params)
+		}
+		if _, ok := method.Result.(NavigationReadResponse); !ok {
+			t.Fatalf("navigation read result type = %T, want NavigationReadResponse", method.Result)
+		}
+		if method.Summary == "" {
+			t.Fatal("navigation read catalog summary is empty")
+		}
+		return
+	}
+	t.Fatalf("method catalog missing %q", MethodEvenerNavigationRead)
+}
+
 func TestMutationShapesRequireIdentityAndPreconditions(t *testing.T) {
 	tests := []struct {
 		method string

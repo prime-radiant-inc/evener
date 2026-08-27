@@ -920,6 +920,27 @@ export interface NavigationProjectSummary {
   session_count: number;
 }
 
+export interface NavigationReadParams {
+  resource: string;
+  section?: string;
+  sectionId?: string;
+  catalog?: string;
+  projectKey?: string;
+  tier?: string;
+  ref?: string;
+  offset?: number;
+  limit?: number;
+  etag?: string;
+}
+
+export interface NavigationReadResponse {
+  status: string;
+  generationId: string;
+  revision: number;
+  etag: string;
+  data?: unknown;
+}
+
 export interface NavigationResourceDescriptor {
   count: number;
 }
@@ -1707,6 +1728,7 @@ export const METHOD_NAMES = [
   "evener/paths/complete",
   "evener/projects/recent",
   "evener/path/validate",
+  "evener/navigation/read",
   "evener/harnesses/list",
   "evener/upgrade",
   "evener/auth/status",
@@ -1863,6 +1885,7 @@ export interface MethodTypes {
   "evener/paths/complete": { params: PathsCompleteParams; result: PathsCompleteResponse };
   "evener/projects/recent": { params: ProjectsRecentParams; result: ProjectsRecentResponse };
   "evener/path/validate": { params: PathValidateParams; result: PathValidateResponse };
+  "evener/navigation/read": { params: NavigationReadParams; result: NavigationReadResponse };
   "evener/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };
   "evener/upgrade": { params: UpgradeParams; result: UpgradeResponse };
   "evener/auth/status": { params: AuthStatusParams; result: AuthStatusResponse };

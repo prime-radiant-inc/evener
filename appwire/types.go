@@ -57,6 +57,7 @@ const (
 	MethodEvenerPathsComplete         = "evener/paths/complete"
 	MethodEvenerProjectsRecent        = "evener/projects/recent"
 	MethodEvenerPathValidate          = "evener/path/validate"
+	MethodEvenerNavigationRead        = "evener/navigation/read"
 	MethodEvenerHarnessesList         = "evener/harnesses/list"
 	MethodEvenerUpgrade               = "evener/upgrade"
 	MethodEvenerAuthStatus            = "evener/auth/status"
@@ -197,11 +198,38 @@ type InitializeResponse struct {
 }
 
 // NavigationCapability advertises the version and current ordered AppWire
-// invalidation stream for navigation HTTP resources.
+// invalidation stream for the hub's navigation resources.
 type NavigationCapability struct {
 	Version      int    `json:"version"`
 	GenerationID string `json:"generationId"`
 	Sequence     uint64 `json:"sequence"`
+}
+
+// NavigationReadParams selects one bounded hub navigation resource. Offset
+// and Limit are pointers so an explicit zero remains distinguishable from an
+// omitted page parameter on the wire.
+type NavigationReadParams struct {
+	Resource   string  `json:"resource"`
+	Section    string  `json:"section,omitempty"`
+	SectionID  string  `json:"sectionId,omitempty"`
+	Catalog    string  `json:"catalog,omitempty"`
+	ProjectKey string  `json:"projectKey,omitempty"`
+	Tier       string  `json:"tier,omitempty"`
+	Ref        string  `json:"ref,omitempty"`
+	Offset     *uint32 `json:"offset,omitempty"`
+	Limit      *uint32 `json:"limit,omitempty"`
+	ETag       string  `json:"etag,omitempty"`
+}
+
+// NavigationReadResponse carries one revisioned navigation resource. Data is
+// raw JSON because the resource discriminator selects among several existing
+// projection shapes.
+type NavigationReadResponse struct {
+	Status       string          `json:"status"`
+	GenerationID string          `json:"generationId"`
+	Revision     uint64          `json:"revision"`
+	ETag         string          `json:"etag"`
+	Data         json.RawMessage `json:"data,omitempty"`
 }
 
 type ServerInfo struct {

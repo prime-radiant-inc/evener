@@ -1,6 +1,6 @@
 import type { NavigationProjectSummary, NavigationSessionSummary } from "../../protocol/types.gen";
 import { navigationStore } from "./store";
-import { keyID, type ResourceKey, type ResourceState } from "./types";
+import { isNavigationUnavailable, keyID, type ResourceKey, type ResourceState } from "./types";
 export const selectAttentionSummary = (s: ReturnType<typeof navigationStore.getState>) => s.attention.summary;
 export const selectResource = (key: ResourceKey) => (s: ReturnType<typeof navigationStore.getState>) =>
   s.resources.get(keyID(key));
@@ -189,8 +189,7 @@ export function selectSessionSummary(ref: string, state = navigationStore.getSta
     }
     if (resource.key.kind === "location") {
       const data = resource.data as { session?: NavigationSessionSummary } | null;
-      const status = (resource.error as { status?: unknown } | null)?.status;
-      if (status !== 404 && data?.session) rows.push(data.session);
+      if (!isNavigationUnavailable(resource.error) && data?.session) rows.push(data.session);
     }
   }
   return walk(rows);

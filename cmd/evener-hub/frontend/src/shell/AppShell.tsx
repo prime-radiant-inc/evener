@@ -17,7 +17,7 @@ import {
   selectSectionRemaining,
 } from "../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../stores/navigation/store";
-import { keyID } from "../stores/navigation/types";
+import { isNavigationUnavailable, keyID } from "../stores/navigation/types";
 import { ConnectionBanner } from "./ConnectionBanner";
 import { ToastRegion } from "./chrome/ToastRegion";
 import { ClientProvider } from "./clientContext";
@@ -466,9 +466,8 @@ export function AppShell({ client: injectedClient }: AppShellProps) {
     route?.type === "welcome" ? sessionRefFromRouteParams(workspaceStore.getState().mainPane()?.params) : null;
   const locationRef = sessionRouteRef ?? restoredSessionRef;
   const locationResource = useNavigationStore(selectLocation(locationRef ?? ""));
-  const locationErrorStatus = (locationResource?.error as { status?: unknown } | null)?.status;
   const locationFailed = locationResource?.error != null;
-  const locationNotFound = locationErrorStatus === 404;
+  const locationNotFound = isNavigationUnavailable(locationResource?.error);
   const locationTerminal = locationFailed && (locationResource?.data === null || locationNotFound);
   const location = locationNotFound
     ? null

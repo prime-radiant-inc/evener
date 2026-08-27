@@ -24,7 +24,7 @@ trigger (`button[aria-haspopup="menu"]`, accessible text
 `widgets/dialog/OverlayPanel.tsx:92-94`). The `Rename` button is disabled while
 the trimmed value is empty (`Rail.tsx:639`).
 
-**Navigation resource request counts are bounded** (`docs/superpowers/specs/2026-08-25-tree-transport-optimization-design.md`): a rename mutation triggers at most one request per affected loaded navigation representation (manifest, section page, project root); the idle rail issues zero navigation HTTP requests after hydration, and the rename mutation plus its matching `navigation invalidation` notification do not duplicate a resource fetch.
+**Navigation resource request counts are bounded** (`docs/superpowers/specs/2026-08-25-tree-transport-optimization-design.md`): a rename mutation triggers at most one AppWire read per affected loaded navigation representation (manifest, section page, project root); the idle rail issues zero navigation reads after hydration, and the rename mutation plus its matching `navigation invalidation` notification do not duplicate a resource read.
 
 ## Pre-state
 
@@ -52,7 +52,7 @@ optimistic overlay.
    applied by `railPending.ts:80-81`).
 3. **Snapshot again after the refetch settles** (~2s is ample; the mutation
    awaits `navigationStore.getState().loadManifest()` and only then drops the overlay). Then
-   cross-check the server: `GET /api/navigation` for the row's title, and the
+   cross-check the server: read the AppWire navigation resource for the row's title, and the
    session's persisted `<SID>.meta.json` for `name` / `name_source`.
 4. **Trigger a real compaction turn**:
    `POST /api/sessions/local:<SID>/compact`. Poll
@@ -77,7 +77,7 @@ optimistic overlay.
   old one — the optimistic overlay never rendered, and step 3 then cannot
   distinguish "the round trip worked" from "the overlay was never dropped".
 - **Step 3**: the title is *still* the new value after the refetch settles, and
-  `/api/navigation` plus the meta file agree, with `"name_source":"user"`. That
+  the AppWire navigation resource plus the meta file agree, with `"name_source":"user"`. That
   agreement is what proves a real server round trip rather than an un-reverted
   optimistic echo. Falsify: the title snaps back — the POST was rejected and
   the overlay was dropped (a failure also toasts, `Couldn't rename session: …`,
@@ -133,7 +133,7 @@ optimistic overlay.
   (`web_workspace.go:91-105`); a local session — live or ended — gets
   `liveTitle` / `pastTitle`, which re-read the on-disk `meta.json` fresh
   (`web_workspace.go:112,175`, `web_format.go:132-157`). So the detail object's
-  `title` *should* now agree with `/api/navigation` and the meta file. It is worth a
+  `title` *should* now agree with the AppWire navigation resource and the meta file. It is worth a
   spare glance during step 3: if it still reports a short id after a confirmed
   rename, that is a live regression worth its own kata. The remaining honest
   fallback is `hubcore.ShortID` when the past index has never seen the id at

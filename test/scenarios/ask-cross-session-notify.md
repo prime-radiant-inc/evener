@@ -28,7 +28,8 @@ Four facts that invert what this card used to say:
   notification engine snapshots (`notifications/attention.ts:53-67`) — so the tier
   assertion moves to the REST response, and the DOM assertion moves to the row's gloss.
 - **The client's edge detection is snapshot-diffing, not `prevLevel`.** A `evener/attention/changed`
-  broadcast triggers a debounced `/api/navigation` refetch (`stores/navigation/store.ts:443-453`, 250 ms);
+  broadcast triggers a debounced AppWire navigation-manifest read
+  (`stores/navigation/store.ts:443-453`, 250 ms);
   `notifications/index.ts` diffs successive tree snapshots and fires on refs that newly
   appear in `needs_you` (`notifications/attention.ts:70-84`).
 
@@ -107,7 +108,7 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
      };
    })()
    ```
-   Then wait ~3s for the first `/api/navigation` snapshot to land. **That first snapshot IS the
+   Then wait ~3s for the first AppWire navigation-manifest snapshot to land. **That first snapshot IS the
    baseline** (`notifications/index.ts:62-68`), and no baseline means no edge firing — so
    Session B's tab must have its baseline landed *before* Session A asks, not merely be
    open.
@@ -151,15 +152,11 @@ Steps 1, 3 and 5 are **browser-free** (REST). Steps 2, 4 and 6 need Chrome.
    })()
    ```
 5. **(browser-free)** Read the tier itself from the hub, independent of any client-side
-   refresh timing. `/api/navigation` accepts the same Bearer token as every other API route
-   (`cmd/evener-hub/internal/hubedge/auth_token.go:113-120`):
-   ```bash
-   curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/navigation" | jq --arg sid "$SIDA" '{
-     summary: .attentionSummary,
-     count: (.needs_you | length),
-     rowA: (.needs_you[] | select(.session_id == $sid) | {ref, state, ask_pending, title})
-   }'
-   ```
+   refresh timing. On the authenticated `/rpc` AppWire connection, call
+   `evener/navigation/read` with
+   `{"resource":"section","section":"needs_you","offset":0,"limit":50}`.
+   Inspect `data.sessions[]` for `$SIDA` and read the summary from the most recent
+   `manifest` response.
 6. **(browser + browser-free) `loudScope` default: a generic your-move settle stays quiet.**
    Re-arm the capture in Session B's tab (`window.__asked = []` — the stubs from step 2
    survive, the array does not need to), then spawn a **third** throwaway session with a

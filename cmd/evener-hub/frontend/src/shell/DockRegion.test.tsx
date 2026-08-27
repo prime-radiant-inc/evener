@@ -3,6 +3,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import { FakeClient } from "../protocol/testing/fakeClient";
+import type { NavigationReadParams, NavigationReadResponse } from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
 import { resetNavigationStoreForTests } from "../stores/navigation/store";
 import { AppShell } from "./AppShell";
@@ -44,7 +45,7 @@ function StubDockHost() {
   return <p>dock host mounted</p>;
 }
 
-const EMPTY_NAV_RESPONSE = {
+const EMPTY_NAVIGATION_MANIFEST = {
   generation_id: "test-generation",
   revision: 1,
   sources: [],
@@ -53,13 +54,17 @@ const EMPTY_NAV_RESPONSE = {
   catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
 };
 
-function jsonResponse(body: unknown): Response {
-  return {
-    ok: true,
-    status: 200,
-    statusText: "OK",
-    json: () => Promise.resolve(body),
-  } as Response;
+function scriptNavigationManifest(client: FakeClient): void {
+  client.on("evener/navigation/read", (params: NavigationReadParams): NavigationReadResponse => {
+    expect(params).toEqual({ resource: "manifest" });
+    return {
+      status: "ok",
+      generationId: "test-generation",
+      revision: 1,
+      etag: '"test"',
+      data: EMPTY_NAVIGATION_MANIFEST,
+    };
+  });
 }
 
 // Suppress console.error noise from React's error-boundary logging during
@@ -93,21 +98,6 @@ beforeEach(() => {
   // never call this test's loader at all.
   resetDockChunkForTests();
   resetDockHostLoaderForTests();
-  vi.stubGlobal("fetch", (url: string) => {
-    if (url === "/api/navigation") {
-      return Promise.resolve(
-        new Response(JSON.stringify(EMPTY_NAV_RESPONSE), {
-          headers: {
-            "Content-Type": "application/json",
-            etag: '"test"',
-            "X-Evener-Navigation-Generation": "test-generation",
-            "X-Evener-Navigation-Revision": "1",
-          },
-        }),
-      );
-    }
-    return Promise.resolve(jsonResponse({}));
-  });
 });
 
 afterEach(() => {
@@ -141,10 +131,8 @@ afterEach(() => {
   // seeding from a still-"ready" connectionStore (as this test's own render
   // left it moments ago) would wrongly arm the "reconnect" detector this
   // reset exists to neutralize, exactly the failure mode App.test.tsx's own
-  // comment above describes. Run before vi.unstubAllGlobals() below so
-  // initNotifications()'s baseline ensureLoaded() fetch (navigationStore's manifest is
-  // null again below) still hits this file's own beforeEach fetch stub
-  // instead of a real network call.
+  // comment above describes. The navigation baseline is scripted on each
+  // client, so this reset does not need a global transport stub.
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetNavigationStoreForTests();
   resetNotificationsForTests();
@@ -156,6 +144,7 @@ test("a rejected DockHost chunk degrades the dock region, never the whole shell"
   vi.mocked(loadDockHost).mockRejectedValue(new Error(CHUNK_ERROR));
 
   const client = new FakeClient("ready");
+  scriptNavigationManifest(client);
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
     protocolVersion: "evener-appwire-v3",

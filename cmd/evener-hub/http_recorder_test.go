@@ -11,9 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
-	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/envvars"
 )
 
@@ -104,136 +102,6 @@ func TestHTTPRecorderRecordsAndPreservesBody(t *testing.T) {
 	}
 	if got.Headers["Hx-Request"][0] != "true" {
 		t.Fatalf("headers not recorded: %+v", got.Headers)
-	}
-}
-
-func TestHTTPRequestRecorderRedactsNavigationAtCreation(t *testing.T) {
-	t.Setenv(envvars.EVENERRecordHTTP.Name, "1")
-	root := t.TempDir()
-	secret := "private-key%252Fname"
-	handler := newHTTPRequestRecorder(root)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusUnauthorized)
-	}))
-	req := httptest.NewRequest(http.MethodPost, "/api/navigation/projects/"+secret+"?token=query-secret", strings.NewReader("body-secret"))
-	req.Header.Set("Authorization", "Bearer header-secret")
-	req.Header.Set("Cookie", "session=cookie-secret")
-	handler.ServeHTTP(httptest.NewRecorder(), req)
-
-	records := readHTTPRecordings(t, filepath.Join(root, "hub-http.jsonl"))
-	if len(records) != 1 {
-		t.Fatalf("records=%d", len(records))
-	}
-	got := records[0]
-	if got.Path != "navigation/project" || got.Query != "" || got.Body != "" || len(got.Headers) != 0 {
-		t.Fatalf("navigation record was not redacted: %+v", got)
-	}
-	encoded, err := json.Marshal(got)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, forbidden := range []string{"private-key", "query-secret", "body-secret", "header-secret", "cookie-secret", "%252F"} {
-		if strings.Contains(string(encoded), forbidden) {
-			t.Fatalf("redacted recording contains %q: %s", forbidden, encoded)
-		}
-	}
-}
-
-func TestHTTPRequestRecorderRedactsDirtyNavigationCandidates(t *testing.T) {
-	t.Setenv(envvars.EVENERRecordHTTP.Name, "1")
-	root := t.TempDir()
-	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
-	web := &WebServer{
-		cfg:        hubcore.WebConfig{HubStateRoot: root, AuthToken: "guard-token"},
-		navigation: newTestNavigationService(t, source),
-	}
-	for _, target := range []string{"/api//navigation?raw=secret", "/api/./navigation?raw=secret", "/x/../api/navigation?raw=secret"} {
-		request := httptest.NewRequest(http.MethodGet, target, nil)
-		response := httptest.NewRecorder()
-		web.Handler().ServeHTTP(response, request)
-		if response.Code != http.StatusUnauthorized || response.Header().Get("Location") != "" {
-			t.Fatalf("unauthorized %s status=%d location=%q", target, response.Code, response.Header().Get("Location"))
-		}
-		request.Header.Set("Authorization", "Bearer guard-token")
-		response = httptest.NewRecorder()
-		web.Handler().ServeHTTP(response, request)
-		if response.Code != http.StatusNotFound || response.Header().Get("Location") != "" {
-			t.Fatalf("authenticated %s status=%d location=%q", target, response.Code, response.Header().Get("Location"))
-		}
-	}
-	records := readHTTPRecordings(t, filepath.Join(root, "hub-http.jsonl"))
-	if len(records) != 6 {
-		t.Fatalf("records=%d", len(records))
-	}
-	for _, record := range records {
-		if record.Path != "navigation/unknown" || record.Query != "" || record.Body != "" || len(record.Headers) != 0 {
-			t.Fatalf("dirty navigation record leaked: %+v", record)
-		}
-		encoded, err := json.Marshal(record)
-		if err != nil {
-			t.Fatal(err)
-		}
-		if strings.Contains(string(encoded), "secret") || strings.Contains(string(encoded), "../") {
-			t.Fatalf("dirty navigation record contains raw input: %s", encoded)
-		}
-	}
-}
-
-func TestHTTPRequestRecorderRedactsPrefixAdjacentNavigation(t *testing.T) {
-	t.Setenv(envvars.EVENERRecordHTTP.Name, "1")
-	root := t.TempDir()
-	web := &WebServer{
-		cfg:        hubcore.WebConfig{HubStateRoot: root, AuthToken: "guard-token"},
-		navigation: newTestNavigationService(t, newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())),
-	}
-	for _, target := range []string{"/api/navigation-secret/private-path?query-secret=1", "/api/navigationevil/private-path?query-secret=1"} {
-		for _, authorization := range []string{"", "Bearer guard-token"} {
-			request := httptest.NewRequest(http.MethodPost, target, strings.NewReader("body-secret"))
-			request.Header.Set("Authorization", authorization)
-			request.Header.Set("Cookie", "session=cookie-secret")
-			response := httptest.NewRecorder()
-			web.Handler().ServeHTTP(response, request)
-			want := http.StatusUnauthorized
-			if authorization != "" {
-				want = http.StatusMethodNotAllowed
-			}
-			if response.Code != want || response.Header().Get("Location") != "" {
-				t.Fatalf("target=%q authorization=%q status=%d location=%q", target, authorization, response.Code, response.Header().Get("Location"))
-			}
-		}
-	}
-	records := readHTTPRecordings(t, filepath.Join(root, "hub-http.jsonl"))
-	if len(records) != 4 {
-		t.Fatalf("records=%d", len(records))
-	}
-	for _, record := range records {
-		if record.Path != "navigation/unknown" || record.Query != "" || record.Body != "" || len(record.Headers) != 0 {
-			t.Fatalf("prefix-adjacent record leaked: %+v", record)
-		}
-		encoded, err := json.Marshal(record)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, secret := range []string{"private-path", "query-secret", "body-secret", "cookie-secret", "guard-token"} {
-			if strings.Contains(string(encoded), secret) {
-				t.Fatalf("record contains %q: %s", secret, encoded)
-			}
-		}
-	}
-}
-
-func TestHTTPRequestRecorderKeepsNavigationNearMissBehavior(t *testing.T) {
-	t.Setenv(envvars.EVENERRecordHTTP.Name, "1")
-	root := t.TempDir()
-	request := httptest.NewRequest(http.MethodPost, "/api/navigatio/ordinary?x=1", strings.NewReader("ordinary-body"))
-	newHTTPRequestRecorder(root)(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		if string(body) != "ordinary-body" {
-			t.Fatalf("downstream body=%q", body)
-		}
-	})).ServeHTTP(httptest.NewRecorder(), request)
-	records := readHTTPRecordings(t, filepath.Join(root, "hub-http.jsonl"))
-	if len(records) != 1 || records[0].Path != "/api/navigatio/ordinary" || records[0].Query != "x=1" || records[0].Body != "ordinary-body" {
-		t.Fatalf("near-miss behavior changed: %+v", records)
 	}
 }
 

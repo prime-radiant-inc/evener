@@ -471,11 +471,10 @@ func TestAPISessionPinSurvivesSubsequentTreeLoad(t *testing.T) {
 	assignedBody := decodeJSON[hubapi.SessionPinMutationResponse](t, assigned)
 	wantSectionID := assignedBody.Assignment.Section.ID
 
-	// Trigger a navigation manifest request to verify the pin assignment
+	// Trigger the navigation projection directly to verify the pin assignment
 	// survives a navigation read (the replacement for the legacy /api/tree load).
-	manifest := getJSON(t, web.Handler(), "/api/navigation")
-	if manifest.Code != http.StatusOK {
-		t.Fatalf("navigation = %d: %s", manifest.Code, manifest.Body.String())
+	if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		t.Fatalf("navigation representation: %v", err)
 	}
 
 	assignments, err := store.Assignments()
