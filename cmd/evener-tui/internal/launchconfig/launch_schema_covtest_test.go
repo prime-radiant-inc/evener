@@ -9,7 +9,7 @@ import (
 // --- launchSchemaRows: empty schema ---
 
 func TestCovLaunchSchemaRowsEmpty(t *testing.T) {
-	rows := launchSchemaRows(nil, appwire.LaunchConfigLayer{}, "global", launchSchemaRowsSettings)
+	rows := launchSchemaRows(nil, appwire.LaunchConfigLayer{}, "global", launchSchemaRowsSettings, appwire.LaunchConfigLayer{})
 	if rows != nil {
 		t.Fatalf("empty schema should return nil, got %v", rows)
 	}
@@ -19,7 +19,7 @@ func TestCovLaunchSchemaRowsEmpty(t *testing.T) {
 
 func TestCovLayerRowForOptionLabelFallback(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "my_field", Label: "", Kind: "text"}
-	row := layerRowForOption(opt, appwire.LaunchConfigLayer{})
+	row := layerRowForOption(opt, appwire.LaunchConfigLayer{}, appwire.LaunchConfigLayer{})
 	if row.label != "my_field" {
 		t.Fatalf("label fallback = %q, want my_field", row.label)
 	}
@@ -27,7 +27,7 @@ func TestCovLayerRowForOptionLabelFallback(t *testing.T) {
 
 func TestCovLayerRowForOptionLabelUsed(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "my_field", Label: "My Field", Kind: "text"}
-	row := layerRowForOption(opt, appwire.LaunchConfigLayer{})
+	row := layerRowForOption(opt, appwire.LaunchConfigLayer{}, appwire.LaunchConfigLayer{})
 	if row.label != "My Field" {
 		t.Fatalf("label = %q, want My Field", row.label)
 	}
@@ -37,7 +37,7 @@ func TestCovLayerRowForOptionLabelUsed(t *testing.T) {
 
 func TestCovLaunchOptionValueUnsupported(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "totally_unknown", Kind: "text"}
-	val, editVal := launchOptionValue(opt, appwire.LaunchConfigLayer{})
+	val, editVal := launchOptionValue(opt, appwire.LaunchConfigLayer{}, appwire.LaunchConfigLayer{})
 	if val != "(unsupported)" {
 		t.Fatalf("unsupported value = %q, want (unsupported)", val)
 	}
@@ -50,7 +50,7 @@ func TestCovLaunchOptionValueUnsupported(t *testing.T) {
 
 func TestCovLaunchOptionValueAgent(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "agent", Kind: "text"}
-	val, editVal := launchOptionValue(opt, appwire.LaunchConfigLayer{Agent: "evener"})
+	val, editVal := launchOptionValue(opt, appwire.LaunchConfigLayer{Agent: "evener"}, appwire.LaunchConfigLayer{})
 	if val != "evener" || editVal != "evener" {
 		t.Fatalf("agent = %q/%q", val, editVal)
 	}
@@ -58,7 +58,7 @@ func TestCovLaunchOptionValueAgent(t *testing.T) {
 
 func TestCovLaunchOptionValueModel(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "model", Kind: "modelPicker"}
-	val, editVal := launchOptionValue(opt, appwire.LaunchConfigLayer{Model: "gpt-5"})
+	val, editVal := launchOptionValue(opt, appwire.LaunchConfigLayer{Model: "gpt-5"}, appwire.LaunchConfigLayer{})
 	if val != "gpt-5" || editVal != "gpt-5" {
 		t.Fatalf("model = %q/%q", val, editVal)
 	}
@@ -66,7 +66,7 @@ func TestCovLaunchOptionValueModel(t *testing.T) {
 
 func TestCovLaunchOptionValueSandbox(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "sandbox", Kind: "select"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{Sandbox: "read-only"})
+	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{Sandbox: "read-only"}, appwire.LaunchConfigLayer{})
 	if val != "read-only" {
 		t.Fatalf("sandbox = %q, want read-only", val)
 	}
@@ -74,7 +74,7 @@ func TestCovLaunchOptionValueSandbox(t *testing.T) {
 
 func TestCovLaunchOptionValueReasoningEffort(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "reasoning_effort", Kind: "select"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{ReasoningEffort: "high"})
+	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{ReasoningEffort: "high"}, appwire.LaunchConfigLayer{})
 	if val != "high" {
 		t.Fatalf("reasoning_effort = %q, want high", val)
 	}
@@ -82,7 +82,7 @@ func TestCovLaunchOptionValueReasoningEffort(t *testing.T) {
 
 func TestCovLaunchOptionValueFastCheapModel(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "fast_cheap_model", Kind: "modelPicker"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{FastCheapModel: "mini"})
+	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{FastCheapModel: "mini"}, appwire.LaunchConfigLayer{})
 	if val != "mini" {
 		t.Fatalf("fast_cheap_model = %q, want mini", val)
 	}
@@ -90,7 +90,7 @@ func TestCovLaunchOptionValueFastCheapModel(t *testing.T) {
 
 func TestCovLaunchOptionValueContextStrategy(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "context_strategy", Kind: "select"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{ContextStrategy: "compact"})
+	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{ContextStrategy: "compact"}, appwire.LaunchConfigLayer{})
 	if val != "compact" {
 		t.Fatalf("context_strategy = %q, want compact", val)
 	}
@@ -98,7 +98,7 @@ func TestCovLaunchOptionValueContextStrategy(t *testing.T) {
 
 func TestCovLaunchOptionValueOpenAIResponsesContinuation(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "openai_responses_continuation", Kind: "select"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{OpenAIResponsesContinuation: "auto"})
+	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{OpenAIResponsesContinuation: "auto"}, appwire.LaunchConfigLayer{})
 	if val != "auto" {
 		t.Fatalf("openai_responses_continuation = %q, want auto", val)
 	}
@@ -106,7 +106,7 @@ func TestCovLaunchOptionValueOpenAIResponsesContinuation(t *testing.T) {
 
 func TestCovLaunchOptionValueSystemPromptMode(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "system_prompt_mode", Kind: "select"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{SystemPromptMode: "custom"})
+	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{SystemPromptMode: "custom"}, appwire.LaunchConfigLayer{})
 	if val != "custom" {
 		t.Fatalf("system_prompt_mode = %q, want custom", val)
 	}
@@ -114,7 +114,7 @@ func TestCovLaunchOptionValueSystemPromptMode(t *testing.T) {
 
 func TestCovLaunchOptionValueSystemPromptFile(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "system_prompt_file", Kind: "path"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{SystemPromptFile: "/path/to/file"})
+	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{SystemPromptFile: "/path/to/file"}, appwire.LaunchConfigLayer{})
 	if val != "/path/to/file" {
 		t.Fatalf("system_prompt_file = %q, want /path/to/file", val)
 	}
@@ -122,7 +122,7 @@ func TestCovLaunchOptionValueSystemPromptFile(t *testing.T) {
 
 func TestCovLaunchOptionValueSystemPromptText(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "system_prompt_text", Kind: "text"}
-	val, editVal := launchOptionValue(opt, appwire.LaunchConfigLayer{SystemPromptText: "hello\nworld"})
+	val, editVal := launchOptionValue(opt, appwire.LaunchConfigLayer{SystemPromptText: "hello\nworld"}, appwire.LaunchConfigLayer{})
 	if val != "11 chars, 2 lines" || editVal != "hello\nworld" {
 		t.Fatalf("system_prompt_text = %q/%q, want exact summary and edit text", val, editVal)
 	}
@@ -130,7 +130,7 @@ func TestCovLaunchOptionValueSystemPromptText(t *testing.T) {
 
 func TestCovLaunchOptionValueSystemPromptAppendMode(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "system_prompt_append_mode", Kind: "select"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{SystemPromptAppendMode: "append"})
+	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{SystemPromptAppendMode: "append"}, appwire.LaunchConfigLayer{})
 	if val != "append" {
 		t.Fatalf("system_prompt_append_mode = %q, want append", val)
 	}
@@ -138,7 +138,7 @@ func TestCovLaunchOptionValueSystemPromptAppendMode(t *testing.T) {
 
 func TestCovLaunchOptionValueSystemPromptAppendFile(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "system_prompt_append_file", Kind: "path"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{SystemPromptAppendFile: "/append"})
+	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{SystemPromptAppendFile: "/append"}, appwire.LaunchConfigLayer{})
 	if val != "/append" {
 		t.Fatalf("system_prompt_append_file = %q, want /append", val)
 	}
@@ -146,7 +146,7 @@ func TestCovLaunchOptionValueSystemPromptAppendFile(t *testing.T) {
 
 func TestCovLaunchOptionValueSystemPromptAppendText(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "system_prompt_append_text", Kind: "text"}
-	val, editVal := launchOptionValue(opt, appwire.LaunchConfigLayer{SystemPromptAppendText: "append"})
+	val, editVal := launchOptionValue(opt, appwire.LaunchConfigLayer{SystemPromptAppendText: "append"}, appwire.LaunchConfigLayer{})
 	if val != "6 chars, 1 lines" || editVal != "append" {
 		t.Fatalf("system_prompt_append_text = %q/%q, want exact summary and edit text", val, editVal)
 	}
@@ -154,7 +154,7 @@ func TestCovLaunchOptionValueSystemPromptAppendText(t *testing.T) {
 
 func TestCovLaunchOptionValueSkillsDirs(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "skills_dirs", Kind: "pathList"}
-	val, editVal := launchOptionValue(opt, appwire.LaunchConfigLayer{SkillsDirs: []string{"/a", "/b"}})
+	val, editVal := launchOptionValue(opt, appwire.LaunchConfigLayer{SkillsDirs: []string{"/a", "/b"}}, appwire.LaunchConfigLayer{})
 	if val != "2 entries" || editVal != "/a, /b" {
 		t.Fatalf("skills_dirs = %q/%q", val, editVal)
 	}
@@ -162,7 +162,7 @@ func TestCovLaunchOptionValueSkillsDirs(t *testing.T) {
 
 func TestCovLaunchOptionValuePluginDirs(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "plugin_dirs", Kind: "pathList"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{PluginDirs: []string{"/p"}})
+	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{PluginDirs: []string{"/p"}}, appwire.LaunchConfigLayer{})
 	if val != "1 entries" {
 		t.Fatalf("plugin_dirs = %q, want 1 entries", val)
 	}
@@ -170,7 +170,7 @@ func TestCovLaunchOptionValuePluginDirs(t *testing.T) {
 
 func TestCovLaunchOptionValueMCPConfigs(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "mcp_configs", Kind: "pathList"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{MCPConfigs: []string{"/c"}})
+	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{MCPConfigs: []string{"/c"}}, appwire.LaunchConfigLayer{})
 	if val != "1 entries" {
 		t.Fatalf("mcp_configs = %q, want 1 entries", val)
 	}
@@ -178,7 +178,7 @@ func TestCovLaunchOptionValueMCPConfigs(t *testing.T) {
 
 func TestCovLaunchOptionValueMCPServers(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "mcps", Kind: "mcpServerList"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{MCPs: []appwire.MCPServerSpec{{Name: "x", Command: "c"}}})
+	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{MCPs: []appwire.MCPServerSpec{{Name: "x", Command: "c"}}}, appwire.LaunchConfigLayer{})
 	if val != "1 entries" {
 		t.Fatalf("mcps = %q, want 1 entries", val)
 	}
@@ -186,7 +186,7 @@ func TestCovLaunchOptionValueMCPServers(t *testing.T) {
 
 func TestCovLaunchOptionValueEnv(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "env", Kind: "envMap"}
-	val, editVal := launchOptionValue(opt, appwire.LaunchConfigLayer{Env: map[string]string{"KEY": "val"}})
+	val, editVal := launchOptionValue(opt, appwire.LaunchConfigLayer{Env: map[string]string{"KEY": "val"}}, appwire.LaunchConfigLayer{})
 	if val != "1 entries" || editVal != "KEY=val" {
 		t.Fatalf("env = %q/%q", val, editVal)
 	}
@@ -194,7 +194,7 @@ func TestCovLaunchOptionValueEnv(t *testing.T) {
 
 func TestCovLaunchOptionValueVerbose(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "verbose", Kind: "boolean"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{})
+	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{}, appwire.LaunchConfigLayer{})
 	if val != "(default)" {
 		t.Fatalf("nil verbose = %q, want (default)", val)
 	}
@@ -202,7 +202,7 @@ func TestCovLaunchOptionValueVerbose(t *testing.T) {
 
 func TestCovLaunchOptionValueTraceFile(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "trace_file", Kind: "path"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{TraceFile: "/trace"})
+	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{TraceFile: "/trace"}, appwire.LaunchConfigLayer{})
 	if val != "/trace" {
 		t.Fatalf("trace_file = %q, want /trace", val)
 	}
@@ -210,7 +210,7 @@ func TestCovLaunchOptionValueTraceFile(t *testing.T) {
 
 func TestCovLaunchOptionValueCPUProfile(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "cpu_profile", Kind: "path"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{CPUProfile: "/cpu"})
+	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{CPUProfile: "/cpu"}, appwire.LaunchConfigLayer{})
 	if val != "/cpu" {
 		t.Fatalf("cpu_profile = %q, want /cpu", val)
 	}
@@ -218,7 +218,7 @@ func TestCovLaunchOptionValueCPUProfile(t *testing.T) {
 
 func TestCovLaunchOptionValueExportATIFPath(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "export_atif_path", Kind: "path"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{ExportATIFPath: "/atif"})
+	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{ExportATIFPath: "/atif"}, appwire.LaunchConfigLayer{})
 	if val != "/atif" {
 		t.Fatalf("export_atif_path = %q, want /atif", val)
 	}
@@ -226,7 +226,7 @@ func TestCovLaunchOptionValueExportATIFPath(t *testing.T) {
 
 func TestCovLaunchOptionValueExportATIFProviderHandles(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "export_atif_provider_handles", Kind: "select"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{ExportATIFProviderHandles: "raw"})
+	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{ExportATIFProviderHandles: "raw"}, appwire.LaunchConfigLayer{})
 	if val != "raw" {
 		t.Fatalf("export_atif_provider_handles = %q, want raw", val)
 	}
@@ -234,7 +234,7 @@ func TestCovLaunchOptionValueExportATIFProviderHandles(t *testing.T) {
 
 func TestCovLaunchOptionValueSandboxNet(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "sandbox_net", Kind: "boolean"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{})
+	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{}, appwire.LaunchConfigLayer{})
 	if val != "(default)" {
 		t.Fatalf("nil sandbox_net = %q, want (default)", val)
 	}
@@ -242,7 +242,7 @@ func TestCovLaunchOptionValueSandboxNet(t *testing.T) {
 
 func TestCovLaunchOptionValueMaxRounds(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "max_rounds", Kind: "integer"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{})
+	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{}, appwire.LaunchConfigLayer{})
 	if val != "(default)" {
 		t.Fatalf("nil max_rounds = %q, want (default)", val)
 	}
@@ -250,7 +250,7 @@ func TestCovLaunchOptionValueMaxRounds(t *testing.T) {
 
 func TestCovLaunchOptionValueAppReplaySize(t *testing.T) {
 	opt := appwire.LaunchOption{Field: "app_replay_size", Kind: "integer"}
-	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{})
+	val, _ := launchOptionValue(opt, appwire.LaunchConfigLayer{}, appwire.LaunchConfigLayer{})
 	if val != "(default)" {
 		t.Fatalf("nil app_replay_size = %q, want (default)", val)
 	}

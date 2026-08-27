@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -377,23 +378,42 @@ func TestCovHandleLaunchOverridesOpen(t *testing.T) {
 		t.Fatal("cmd should be nil without client")
 	}
 
-	// With client: should produce a schema cmd.
-	called := false
+	// With client: opening the modal issues a schema fetch AND a launch
+	// resolve, so the modal can render resolved "(default)" labels for the
+	// directory a session started now would inherit.
+	schemaCalled := false
+	var resolveParams appwire.LaunchConfigResolveParams
 	client, cleanup := newTestHubClient(t, func(app *appserver.Server) {
 		appserver.HandleTyped(app.Router(), appwire.MethodEvenerLaunchSchema, func(context.Context, appwire.EmptyParams) (appwire.LaunchOptionSchemaResponse, error) {
-			called = true
+			schemaCalled = true
 			return appwire.LaunchOptionSchemaResponse{}, nil
+		})
+		appserver.HandleTyped(app.Router(), appwire.MethodEvenerLaunchResolve, func(_ context.Context, p appwire.LaunchConfigResolveParams) (appwire.LaunchConfigResolved, error) {
+			resolveParams = p
+			return appwire.LaunchConfigResolved{}, nil
 		})
 	})
 	defer cleanup()
 	m = newHubModel(client, "http://hub.test")
+	m.spawnDir = " /tmp/proj "
 	_, cmd = m.handleLaunchOverridesOpen(launchconfig.LaunchOverridesOpenMsg{})
 	if cmd == nil {
 		t.Fatal("cmd should not be nil with client")
 	}
-	result, ok := cmd().(launchconfig.LaunchSchemaResultMsg)
-	if !ok || result.Err != nil || !called {
-		t.Fatalf("launch schema result = %#v, called=%v", result, called)
+	batch, ok := cmd().(tea.BatchMsg)
+	if !ok {
+		t.Fatalf("open cmd = %T, want tea.BatchMsg (schema + resolve)", cmd())
+	}
+	for _, sub := range batch {
+		if sub != nil {
+			_ = sub()
+		}
+	}
+	if !schemaCalled {
+		t.Fatal("open should issue a launch schema fetch")
+	}
+	if resolveParams.CWD != "/tmp/proj" {
+		t.Fatalf("resolve CWD = %q, want /tmp/proj (the spawn working dir)", resolveParams.CWD)
 	}
 }
 
@@ -1044,6 +1064,49 @@ func TestCovHandleLaunchResult(t *testing.T) {
 	after = got.(hubModel)
 	if after.launchOverridesModal != nil || after.launchSettingsPanel != nil || after.err != nil {
 		t.Fatalf("unrouted launch result mutated model: %#v", after)
+	}
+}
+
+// TestCovHandleLaunchResultRoutesResolveToModal: a resolve result updates an
+// open overrides modal's effective layer (so it renders resolved "(default)"
+// labels) while still reaching the settings panel when both are open.
+func TestCovHandleLaunchResultRoutesResolveToModal(t *testing.T) {
+	// Modal only: the modal consumes the resolve.
+	m := hubModel{session: newModel(nil)}
+	modal := launchconfig.NewLaunchOverridesModalWithSchema(appwire.LaunchConfigLayer{}, []appwire.LaunchOption{
+		{Field: "reasoning_effort", Label: "Reasoning effort", Kind: "select", PerLaunch: true},
+	})
+	m.launchOverridesModal = &modal
+	got, _ := m.handleLaunchResult(launchconfig.LaunchResolveResultMsg{Resolved: appwire.LaunchConfigResolved{
+		Effective: appwire.LaunchConfigLayer{ReasoningEffort: "high"},
+	}})
+	after := got.(hubModel)
+	if after.launchOverridesModal == nil {
+		t.Fatal("launchOverridesModal should still be set after resolve forwarded")
+	}
+	if v := after.launchOverridesModal.View(); !strings.Contains(v, "high (default)") {
+		t.Fatalf("modal view should render the resolved default label:\n%s", v)
+	}
+
+	// Modal and settings panel both open: both receive the resolve.
+	twoHundred := 200
+	m = hubModel{session: newModel(nil)}
+	fallbackModal := launchconfig.NewLaunchOverridesModal()
+	m.launchOverridesModal = &fallbackModal
+	panel := launchconfig.NewLaunchSettingsPanel(nil, "/cwd")
+	m.launchSettingsPanel = &panel
+	got, _ = m.handleLaunchResult(launchconfig.LaunchResolveResultMsg{Resolved: appwire.LaunchConfigResolved{
+		Effective: appwire.LaunchConfigLayer{MaxRounds: &twoHundred},
+	}})
+	after = got.(hubModel)
+	if after.launchOverridesModal == nil || after.launchSettingsPanel == nil {
+		t.Fatal("modal and panel should both remain set")
+	}
+	if v := after.launchOverridesModal.View(); !strings.Contains(v, "200 (default)") {
+		t.Fatalf("modal view should render the resolved default label:\n%s", v)
+	}
+	if v := after.launchSettingsPanel.View(); !strings.Contains(v, "200 (default)") {
+		t.Fatalf("settings panel view should still render the resolved default label:\n%s", v)
 	}
 }
 
