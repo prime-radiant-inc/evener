@@ -7,6 +7,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/internal/tool"
+	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
 
@@ -131,6 +132,13 @@ func TestSetVisionModelStoresAndEmitsEvent(t *testing.T) {
 	}
 	if got := sess.cfg.toSnapshot().VisionModel; got != "off" {
 		t.Fatalf("snapshot VisionModel = %q, want off (persistence rides the snapshot)", got)
+	}
+	persisted, err := schema.LoadSessionMeta(dir, sess.ID())
+	if err != nil {
+		t.Fatalf("LoadSessionMeta: %v", err)
+	}
+	if persisted.VisionModel != "off" {
+		t.Fatalf("persisted VisionModel = %q, want off before Close", persisted.VisionModel)
 	}
 	sess.Close()
 	<-done

@@ -493,7 +493,7 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.addHubErrorNotice("Provider unavailable", "provider", msg.err, "Check provider auth and model availability.")
 			return m, nil
 		}
-		picker := tuipick.NewModelPicker(msg.models, m.detail.VisionModel, m.width)
+		picker := tuipick.NewModelPicker(msg.models, visionModelPickerActiveID(m.detail.VisionModel), m.width)
 		picker.SetTitle("Select vision model")
 		m.sessionVisionModelPicker = &picker
 		m.removeTrailingSessionSystem("Fetching available models...")
@@ -653,6 +653,17 @@ func (m hubModel) updateImpl(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.handlePluginSetAutoUpgrade(msg)
 	}
 	return m, nil
+}
+
+// visionModelPickerActiveID canonicalizes only the bare off sentinel for the
+// picker display. Other refs stay unchanged so active-model matching does not
+// reinterpret provider-qualified refs such as "off/model".
+func visionModelPickerActiveID(ref string) string {
+	trimmed := strings.TrimSpace(ref)
+	if strings.EqualFold(trimmed, "off") {
+		return "off"
+	}
+	return ref
 }
 
 func statusRefreshStatesMatchExpected(currentState, payloadState, expectedState string) bool {
