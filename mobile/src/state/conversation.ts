@@ -510,10 +510,79 @@ export function createConversationStore() {
   // entry; if it changed during the await, the rehydrate is stale with
   // respect to the error owner and must not clear or overwrite error.
   let errorOwnerRev = 0;
-  // R1: Bounded trailing-reread flag — set when a rehydrate detects the
-  // mutation owner changed during its await. Drained exactly once after
-  // the mutation settles via the scheduler (no loop, no reentrant await).
-  let trailingRereadPending = false;
+  // I2: Monotonic capability-owner revision — increments on every capability
+  // publication/transition (thread/status/changed, cap refresh, rehydrate
+  // commit). Rehydrate captures this at entry; if it changed during the
+  // await, a newer capability owner published caps and the rehydrate must
+  // preserve the current caps instead of overwriting with its stale
+  // projection. If unchanged, the rehydrate commits authoritative projected
+  // capabilities.
+  let capabilityOwnerRev = 0;
+  // I3: Page-owned item IDs — tracks which item IDs were loaded by loadOlder
+  // (page-owned history). On rehydrate page-race merge, only these items are
+  // prepended as older history; current-only non-page items (live notifications
+  // that arrived during the await) are appended as the live tail, never moved
+  // to the oldest position where they'd be discarded by the 500-cap. Cleared
+  // on every conversation transition (open/close/reset/openProjected).
+  const pageOwnedIds = new Set<string>();
+  // C1+I1: Deferred trailing-reread request. When a rehydrate detects the
+  // mutation owner changed during its await, it stores a deferred trailing
+  // request with the EXACT binding snapshot captured at schedule time (not
+  // recaptured inside the effect). The request is drained exactly once after
+  // the mutation settles (pendingMutation cleared or set to "failed"). If the
+  // binding changed (switch to B), the stored binding is stale and the request
+  // is dropped. Additional mutation revisions create at most one later need.
+  interface TrailingReread {
+    binding: RequestBinding;
+    mutationRev: number;
+  }
+  let trailingReread: TrailingReread | null = null;
+
+  // C1+I1: Store a deferred trailing reread with the exact binding captured
+  // at schedule time. Does NOT schedule through the scheduler yet — the
+  // request is drained when the mutation settles. If a request is already
+  // pending, it is overwritten (at most one later need per mutation revision).
+  function scheduleTrailingReread(): void {
+    const binding = captureBinding();
+    if (binding === null) return;
+    trailingReread = { binding, mutationRev: mutationOwnerRev };
+    // The mutation may have already settled (e.g., the send completed before
+    // the rehydrate was released). Try to drain immediately — if the mutation
+    // is still pending, drainTrailingReread will defer.
+    drainTrailingReread();
+  }
+
+  // C1+I1: Drain the deferred trailing reread after a mutation settles. The
+  // mutation must be terminal (pendingMutation is null or "failed"). The
+  // stored binding is validated — if stale (switch to B), the request is
+  // dropped. Exactly one reread is scheduled through the store-owned scheduler.
+  // The effect validates the exact captured binding (NOT recapturing current).
+  function drainTrailingReread(): void {
+    if (trailingReread === null) return;
+    // Only drain if the mutation has settled (no pending mutation, or a
+    // failed terminal mutation). A still-pending mutation keeps the request
+    // deferred.
+    const currentMutation = storeGet?.().pendingMutation;
+    if (currentMutation !== null && currentMutation !== undefined &&
+        currentMutation.status === "pending") {
+      return;
+    }
+    const { binding } = trailingReread;
+    trailingReread = null;
+    // C1: Validate the EXACT captured binding — if stale (switch to B),
+    // drop the request. Never recapture the current binding here.
+    if (!isBindingCurrent(binding)) return;
+    // Schedule one trailing reread through the store-owned scheduler. The
+    // effect validates the exact captured binding again (double-check after
+    // the scheduler microtask) and calls rehydrate with the captured service
+    // and sink — never the closure's.
+    scheduler.request(binding.ref, async () => {
+      // C1: Re-validate the exact captured binding after the microtask.
+      if (!isBindingCurrent(binding)) return;
+      await storeGet?.().rehydrate(binding.service, binding.sink);
+    });
+  }
+
   // The store owns ONE drain scheduler for its entire lifetime. Lifecycle,
   // activity rehydrate, structural notification gaps, and mutation capability
   // recovery all request through it rather than owning timers/coalescers.
@@ -672,6 +741,8 @@ export function createConversationStore() {
       if (g().conversationGeneration === gen && refreshed !== null) {
         const currentConv = g().conversation;
         if (currentConv !== null) {
+          // I2: increment capability-owner revision for this publication.
+          capabilityOwnerRev += 1;
           storeSet?.({
             conversation: {
               ...currentConv,
@@ -769,8 +840,9 @@ export function createConversationStore() {
         boundSink = null;
         // Fix round 1 I2: invalidate page ownership on conversation transition.
         loadOlderToken += 1;
-        // R1: clear any stale trailing-reread flag from a prior conversation.
-        trailingRereadPending = false;
+        // C1+I1: clear any stale deferred trailing-reread request.
+        trailingReread = null;
+        pageOwnedIds.clear();
         set({
           status: "opening",
           ref,
@@ -819,8 +891,9 @@ export function createConversationStore() {
         boundSink = sink;
         // Fix round 1 I2: invalidate page ownership on conversation transition.
         loadOlderToken += 1;
-        // R1: clear any stale trailing-reread flag from a prior conversation.
-        trailingRereadPending = false;
+        // C1+I1: clear any stale deferred trailing-reread request.
+        trailingReread = null;
+        pageOwnedIds.clear();
         // Reset thread-scoped state (draft, pending mutation) — presentation state
         // now lives outside the store (in live-ui-store).
         // F4: reset the activity sink on thread change.
@@ -925,6 +998,10 @@ export function createConversationStore() {
         const entryLoadOlderToken = loadOlderToken;
         const entryMutationRev = mutationOwnerRev;
         const entryErrorRev = errorOwnerRev;
+        // I2: Capture capability-owner revision at entry. If it changed during
+        // the await, a newer capability owner published caps and the rehydrate
+        // must preserve the current caps.
+        const entryCapRev = capabilityOwnerRev;
         activitySink = sink;
         boundService = service;
         boundSink = sink;
@@ -950,17 +1027,13 @@ export function createConversationStore() {
           // (no loop, no reentrant await). The trailing reread publishes the
           // fresh projection once the mutation has settled.
           if (mutationOwnerChanged) {
-            if (!trailingRereadPending) {
-              trailingRereadPending = true;
-              // Schedule one trailing reread through the store-owned scheduler.
-              // The effect runs after the current mutation settles — it does
-              // not await reentrantly.
-              scheduler.request(ref, async () => {
-                trailingRereadPending = false;
-                const binding = captureBinding();
-                if (binding === null || !isBindingCurrent(binding)) return;
-                await storeGet?.().rehydrate(service, sink);
-              });
+            // C1+I1: Store a deferred trailing reread with the exact binding
+            // captured at schedule time. Do NOT schedule through the scheduler
+            // yet — the request is drained when the mutation settles. If a
+            // request is already pending, it is overwritten (at most one per
+            // mutation revision).
+            if (trailingReread === null) {
+              scheduleTrailingReread();
             }
             // Preserve current draft only — do not publish projection.
             set({ draft: currentSnapshot.draft });
@@ -976,13 +1049,27 @@ export function createConversationStore() {
           if (pageOwnerChanged) {
             const currentConv = currentSnapshot.conversation;
             if (currentConv !== null) {
-              // Preserve page items that are not already in the reread
-              // projection (dedupe by source item identity).
+              // I3: Track page-owned item IDs. On rehydrate page-race merge:
+              // 1. Prepend only missing page-owned history items (items in
+              //    pageOwnedIds that are not in the reread projection).
+              // 2. Append current-only non-page items as the live tail
+              //    (items NOT in pageOwnedIds and NOT in the reread). These
+              //    are live notifications that arrived during the await and
+              //    must NOT be moved to the oldest position where the 500-cap
+              //    would discard them.
               const rereadIds = new Set(conversation.items.map((i) => i.id));
               const pageOnlyItems = currentConv.items.filter(
-                (i) => !rereadIds.has(i.id),
+                (i) => !rereadIds.has(i.id) && pageOwnedIds.has(i.id),
               );
-              mergedItems = [...pageOnlyItems, ...conversation.items];
+              const liveTailItems = currentConv.items.filter(
+                (i) => !rereadIds.has(i.id) && !pageOwnedIds.has(i.id),
+              );
+              // Page history first (oldest), then reread items, then live tail.
+              mergedItems = [
+                ...pageOnlyItems,
+                ...conversation.items,
+                ...liveTailItems,
+              ];
             }
             // Keep the page's newer cursor (the reread's cursor reflects the
             // full readProjection, which may not include page-loaded items).
@@ -1005,16 +1092,25 @@ export function createConversationStore() {
           const errorUnchanged = entryErrorRev === errorOwnerRev;
           const mutationOwnsError =
             currentState.pendingMutation?.status === "failed";
-          // R1: Preserve the current conversation's capabilities — a cap
-          // refresh may have updated them during the await. The rehydrate's
-          // projection may carry stale capabilities.
+          // I2: If the capability-owner revision hasn't changed during the
+          // await, commit the authoritative projected capabilities from the
+          // rehydrate. If it advanced (a newer cap refresh or notification
+          // published caps), preserve the current caps.
+          const capOwnerChanged = entryCapRev !== capabilityOwnerRev;
           const currentConv = currentState.conversation;
-          const preservedCaps = currentConv?.capabilities;
+          const preservedCaps = capOwnerChanged
+            ? currentConv?.capabilities
+            : undefined;
           const committedConversation = {
             ...conversation,
             items: capItems(truncateAndRecord(mergedItems)),
             ...(preservedCaps ? { capabilities: preservedCaps } : {}),
           };
+          // I2: If we're committing the projected capabilities (cap owner
+          // unchanged), increment the capability-owner revision.
+          if (!capOwnerChanged) {
+            capabilityOwnerRev += 1;
+          }
           const commitBase = {
             conversation: committedConversation,
             olderCursor: mergedCursor,
@@ -1073,6 +1169,12 @@ export function createConversationStore() {
             // dropped, keeping the newer (live tail) version.
             const existingIds = new Set(currentConv.items.map((i) => i.id));
             const deduped = result.items.filter((i) => !existingIds.has(i.id));
+            // I3: Record page-owned item IDs — these are items loaded from
+            // older pages. They are tracked so the rehydrate page-race merge
+            // can distinguish page-owned history from live notifications.
+            for (const item of deduped) {
+              pageOwnedIds.add(item.id);
+            }
             // Prepend older (deduped) items, then trim from the oldest (front)
             // so the newest live tail is retained (finding 8).
             const merged = capItems([
@@ -1148,6 +1250,8 @@ export function createConversationStore() {
           // newer mutation's state.
           if (get().pendingMutation?.mutationId === mutationId) {
             set({ pendingSend: null, pendingMutation: null, error: null });
+            // I1: mutation settled (success) — drain deferred trailing reread.
+            drainTrailingReread();
           }
         } catch (err) {
           await handleMutationError(
@@ -1164,6 +1268,9 @@ export function createConversationStore() {
             get,
             requestCapabilityRefresh,
           );
+          // I1: mutation settled (failed terminal) — drain deferred trailing
+          // reread after handleMutationError sets the failed state.
+          drainTrailingReread();
         }
       },
 
@@ -1196,6 +1303,8 @@ export function createConversationStore() {
           await service.steer(input);
           if (get().pendingMutation?.mutationId === mutationId) {
             set({ pendingMutation: null, error: null });
+            // I1: mutation settled (success) — drain deferred trailing reread.
+            drainTrailingReread();
           }
         } catch (err) {
           await handleMutationError(
@@ -1212,6 +1321,9 @@ export function createConversationStore() {
             get,
             requestCapabilityRefresh,
           );
+          // I1: mutation settled (failed terminal) — drain deferred trailing
+          // reread after handleMutationError sets the failed state.
+          drainTrailingReread();
         }
       },
 
@@ -1243,6 +1355,8 @@ export function createConversationStore() {
           await service.queue(input);
           if (get().pendingMutation?.mutationId === mutationId) {
             set({ pendingMutation: null, error: null });
+            // I1: mutation settled (success) — drain deferred trailing reread.
+            drainTrailingReread();
           }
         } catch (err) {
           await handleMutationError(
@@ -1259,6 +1373,9 @@ export function createConversationStore() {
             get,
             requestCapabilityRefresh,
           );
+          // I1: mutation settled (failed terminal) — drain deferred trailing
+          // reread after handleMutationError sets the failed state.
+          drainTrailingReread();
         }
       },
 
@@ -1286,6 +1403,8 @@ export function createConversationStore() {
           await service.interrupt();
           if (get().pendingMutation?.mutationId === mutationId) {
             set({ pendingMutation: null, error: null });
+            // I1: mutation settled (success) — drain deferred trailing reread.
+            drainTrailingReread();
           }
         } catch (err) {
           await handleMutationError(
@@ -1302,6 +1421,9 @@ export function createConversationStore() {
             get,
             requestCapabilityRefresh,
           );
+          // I1: mutation settled (failed terminal) — drain deferred trailing
+          // reread after handleMutationError sets the failed state.
+          drainTrailingReread();
         }
       },
 
@@ -1314,8 +1436,9 @@ export function createConversationStore() {
         bindingEpoch += 1;
         // Fix round 1 I2: invalidate page ownership on conversation transition.
         loadOlderToken += 1;
-        // R1: clear any stale trailing-reread flag.
-        trailingRereadPending = false;
+        // C1+I1: clear any stale deferred trailing-reread request.
+        trailingReread = null;
+        pageOwnedIds.clear();
         truncatedItemIds.clear();
         // F4: reset the activity sink on close.
         if (activitySink !== null) {
@@ -1360,6 +1483,11 @@ export function createConversationStore() {
               status: { type: string };
               capabilities?: ThreadCapabilities;
             };
+            // I2: increment capability-owner revision if capabilities are
+            // being published.
+            if (params.capabilities !== undefined) {
+              capabilityOwnerRev += 1;
+            }
             set({
               conversation: {
                 ...conv,
@@ -1713,8 +1841,9 @@ export function createConversationStore() {
         bindingEpoch += 1;
         // Fix round 1 I2: invalidate page ownership on conversation transition.
         loadOlderToken += 1;
-        // R1: clear any stale trailing-reread flag.
-        trailingRereadPending = false;
+        // C1+I1: clear any stale deferred trailing-reread request.
+        trailingReread = null;
+        pageOwnedIds.clear();
         truncatedItemIds.clear();
         // F4: reset the activity sink on thread change.
         if (activitySink !== null) {
