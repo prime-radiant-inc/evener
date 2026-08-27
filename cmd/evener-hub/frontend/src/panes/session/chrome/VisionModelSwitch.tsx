@@ -30,7 +30,7 @@ export function VisionModelSwitch({ sessionRef, model }: VisionModelSwitchProps)
   const currentLabel =
     model.visionModel === CURRENT_MODEL_ID
       ? modelLabel(model.modelProvider, model.model)
-      : model.visionModel === OFF_MODEL_ID
+      : model.visionModel.toLowerCase() === OFF_MODEL_ID
         ? "Off"
         : model.visionModel;
 
