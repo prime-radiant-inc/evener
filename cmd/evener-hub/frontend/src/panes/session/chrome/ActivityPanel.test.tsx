@@ -454,6 +454,32 @@ describe("ActivityPanel", () => {
     expect(await screen.findByText("This session has ended")).toBeTruthy();
   });
 
+  test("an empty omission page exposes its error and continuation", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    const omitted = emptyTree();
+    omitted.root.branch = {
+      truncated: true,
+      continuation: "after-oversized-job",
+      error: "One retained activity entry was omitted because it exceeds the page limit.",
+    };
+    const next = activityTree();
+    next.root.entries = next.root.entries.slice(0, 1);
+    next.root.branch = {};
+    fake.on("evener/jobs/list", ({ continuation }) => ({ data: continuation ? next : omitted }));
+
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+
+    expect(await screen.findByText(/entry was omitted because it exceeds the page limit/i)).toBeTruthy();
+    await user.click(screen.getByRole("button", { name: /load more/i }));
+    expect(await screen.findByRole("treeitem", { name: /compile root shell/i })).toBeTruthy();
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list").map((call) => call.params)).toEqual([
+      { ref: "ref_root" },
+      { ref: "ref_root", continuation: "after-oversized-job" },
+    ]);
+  });
+
   test("renders live rows plus a fold row for inactive entries, and an expanded fold survives refresh", async () => {
     const user = userEvent.setup();
     const fake = connectFakeClient();

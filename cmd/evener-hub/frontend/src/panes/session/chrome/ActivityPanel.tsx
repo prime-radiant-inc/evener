@@ -11,7 +11,12 @@ import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Button, EmptyState, Sheet, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { ActivityTree, type ActivityTreeHandle } from "./ActivityTree";
-import { type ActivityCounts, type ActivityTree as ActivityTreeData, parseActivityTree } from "./activityData";
+import {
+  type ActivityCounts,
+  type ActivityTree as ActivityTreeData,
+  activityNodeID,
+  parseActivityTree,
+} from "./activityData";
 import styles from "./activitypanel.module.css";
 
 export interface ActivityPanelProps {
@@ -208,6 +213,8 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
     const currentTree = retainedTree(entry.load);
     const staleError = entry.load.kind === "ready" ? entry.load.staleError : undefined;
     const ended = entry.load.kind === "ended";
+    const emptyRootID = currentTree?.root.entries.length === 0 ? activityNodeID(currentTree.root) : undefined;
+    const emptyBranch = emptyRootID ? currentTree?.root.branch : undefined;
     return (
       <div className={CLASS.panel}>
         {ended && !currentTree && (
@@ -235,7 +242,27 @@ export function ActivityPanelBody({ sessionRef, model }: ActivityPanelBodyProps)
             </Button>
           </div>
         )}
-        {currentTree && currentTree.root.entries.length === 0 ? (
+        {currentTree && emptyRootID && (emptyBranch?.error || emptyBranch?.continuation) ? (
+          <EmptyState
+            title="Retained activity is incomplete"
+            hint={
+              entry.continuationFailures[emptyRootID] ??
+              emptyBranch.error ??
+              "More retained activity is available on the next page."
+            }
+            action={
+              emptyBranch.continuation ? (
+                <Button
+                  variant="quiet"
+                  size="sm"
+                  onClick={() => handleContinue(emptyRootID, emptyBranch.continuation ?? "")}
+                >
+                  Load more
+                </Button>
+              ) : undefined
+            }
+          />
+        ) : currentTree && currentTree.root.entries.length === 0 ? (
           <EmptyState
             title="No retained activity yet"
             hint="No shell or delegate activity has been retained for this session."
