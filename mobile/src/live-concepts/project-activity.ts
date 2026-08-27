@@ -141,10 +141,7 @@ function generateSalt(entropy?: EntropySource): string {
 
 function defaultEntropy(): Uint8Array {
   const crypto = globalThis.crypto;
-  if (
-    crypto === undefined ||
-    typeof crypto.getRandomValues !== "function"
-  ) {
+  if (crypto === undefined || typeof crypto.getRandomValues !== "function") {
     throw new Error(
       "Secure entropy source unavailable for activity projector key generation",
     );
@@ -546,7 +543,7 @@ export function createLiveActivityProjector(options?: {
           const commitParent: HierarchyNode =
             parentIdx < 0
               ? commitRoot
-              : commitChildNodes[parentIdx] ?? commitRoot;
+              : (commitChildNodes[parentIdx] ?? commitRoot);
           // Get or create the child node for this entry under its parent.
           const childNode = getOrCreateChild(
             commitParent,
