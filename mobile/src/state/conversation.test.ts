@@ -5876,4 +5876,344 @@ describe("ConversationStore", () => {
       expect(lastItem?.id).toBe("live-549");
     });
   });
+
+  // Residual 1: deferred trailing reread rechecks exact binding, captured/current
+  // monotonic mutation revision, and true terminal status INSIDE the scheduler
+  // effect immediately before any read. If a newer mutation is pending after
+  // enqueue, do zero read; atomically restore/update one binding-owned deferred
+  // request for that mutation revision and let its settle hook drain exactly
+  // once. Keep separate queued/deferred identity so no duplicate effects/third
+  // reread.
+  describe("Residual 1: deferred trailing reread rechecks mutation revision inside effect", () => {
+    it("M1 settles and queues; M2 starts before effect; release => zero reread; settle M2 => exactly one", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // Start a rehydrate (R) that hangs.
+      const ctrl = makeControlledRead(service);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      // While R is in-flight, start M1 that hangs (mutation pending).
+      let resolveM1: (() => void) | null = null as (() => void) | null;
+      const hangM1 = new Promise<MutationReceipt>((r) => {
+        resolveM1 = () => r(makeReceipt());
+      });
+      service.send = async () => hangM1;
+      store.getState().send(service, textInput("m1"));
+      expect(store.getState().pendingMutation?.status).toBe("pending");
+      // Release R — detects mutation owner changed, schedules deferred
+      // trailing reread. But M1 is still pending, so it stays deferred.
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      // Zero trailing reads while M1 is pending.
+      expect(ctrl.getStartedCount()).toBe(1);
+      // Settle M1 (success) — drainTrailingReread enqueues the trailing reread
+      // via scheduler.request(). The effect is deferred to a microtask.
+      (resolveM1 as () => void)();
+      await yieldMicrotask(); // M1's settle resolves, drainTrailingReread fires
+      // Now, BEFORE the trailing reread's scheduler effect fires, start M2
+      // (new mutation pending). This must be synchronous — no await between
+      // M1 settle and M2 start.
+      let resolveM2: (() => void) | null = null as (() => void) | null;
+      const hangM2 = new Promise<MutationReceipt>((r) => {
+        resolveM2 = () => r(makeReceipt());
+      });
+      service.send = async () => hangM2;
+      store.getState().send(service, textInput("m2"));
+      expect(store.getState().pendingMutation?.status).toBe("pending");
+      // Now let the trailing reread's scheduler effect fire. It must detect
+      // M2 is pending (mutationOwnerRev advanced, mutation pending) and do
+      // ZERO read — re-defer for M2's revision.
+      await yieldMicrotask();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      // Still only 1 started read (the original R). No trailing reread fired.
+      expect(ctrl.getStartedCount()).toBe(1);
+      // Settle M2 (success) — drainTrailingReread should now fire exactly one
+      // trailing reread.
+      (resolveM2 as () => void)();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      // The trailing reread should start (2nd controlled read).
+      await ctrl.started(2);
+      await yieldMicrotask();
+      ctrl.release();
+      await ctrl.completed(2);
+      await yieldMicrotask();
+      // Exactly one trailing reread after M2 settles — no third reread.
+      expect(ctrl.getStartedCount()).toBe(2);
+    });
+
+    it("B transition drops A: re-deferred trailing reread suppressed after switch to serviceB", async () => {
+      const serviceA = new FakeConversationService();
+      serviceA.readProjectionResult = makeReadProjectionResult(
+        makeThread({ id: "thread-A" }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(serviceA, createFakeSink(), "ref-A");
+      // Start a rehydrate (R) on serviceA that hangs.
+      const ctrlA = makeControlledRead(serviceA);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-A", ref: "ref-A" },
+      } as AnyNotification);
+      await ctrlA.started(1);
+      await yieldMicrotask();
+      // While R is in-flight, start M1 that hangs (mutation pending).
+      let resolveM1: (() => void) | null = null as (() => void) | null;
+      const hangM1 = new Promise<MutationReceipt>((r) => {
+        resolveM1 = () => r(makeReceipt());
+      });
+      serviceA.send = async () => hangM1;
+      store.getState().send(serviceA, textInput("m1"));
+      expect(store.getState().pendingMutation?.status).toBe("pending");
+      // Release R — schedules deferred trailing reread, M1 pending.
+      ctrlA.release();
+      await ctrlA.completed(1);
+      await yieldMicrotask();
+      await yieldMicrotask();
+      // Settle M1 — drainTrailingReread enqueues trailing reread via scheduler.
+      (resolveM1 as () => void)();
+      await yieldMicrotask();
+      // Before the effect fires, start M2 (new mutation pending).
+      let resolveM2: (() => void) | null = null as (() => void) | null;
+      const hangM2 = new Promise<MutationReceipt>((r) => {
+        resolveM2 = () => r(makeReceipt());
+      });
+      serviceA.send = async () => hangM2;
+      store.getState().send(serviceA, textInput("m2"));
+      expect(store.getState().pendingMutation?.status).toBe("pending");
+      // Let the effect fire — it should re-defer (M2 pending, zero read).
+      await yieldMicrotask();
+      await yieldMicrotask();
+      // Switch to serviceB — new binding epoch.
+      const serviceB = new FakeConversationService();
+      serviceB.readProjectionResult = makeReadProjectionResult(
+        makeThread({ id: "thread-B" }),
+      );
+      await store.getState().openProjected(serviceB, createFakeSink(), "ref-B");
+      // Settle M2 on serviceA — drainTrailingReread should check binding,
+      // find it stale (switched to B), and drop. Zero trailing reread on A.
+      (resolveM2 as () => void)();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      // serviceA: 1 (openProjected) + 1 (R) = 2. No trailing reread.
+      expect(serviceA.readProjectionCalls.length).toBe(2);
+      // serviceB: 1 (openProjected) only.
+      expect(serviceB.readProjectionCalls.length).toBe(1);
+    });
+  });
+
+  // Residual 2: exact live-notification-owned item IDs per binding, separate
+  // from pageOwned IDs. Mark IDs only from actual accepted item lifecycle/live
+  // notifications (and relevant deltas); clear/reconcile on open/transition/
+  // authoritative inclusion. Page merge: prepend only current-only pageOwned
+  // history, commit authoritative projection, append only current-only liveOwned
+  // tail; drop current-only items owned by neither as omitted old history.
+  // Dedupe/order/cap newest tail.
+  describe("Residual 2: live-owned item IDs — page merge drops unowned, keeps live tail", () => {
+    it("current old A omitted, page P, live N absent reread: result P + B/C + N, A dropped", async () => {
+      const service = new FakeConversationService();
+      // Initial projection: items A and B (A is old, will be omitted from
+      // reread; B is authoritative and will appear in reread).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [
+                userMessageItem("A", "old initial"),
+                userMessageItem("B", "kept initial"),
+              ],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // Set cursor so loadOlder can run.
+      store.setState({ olderCursor: "cursor-1" });
+      // Start a rehydrate (R) that hangs.
+      const ctrl = makeControlledRead(service);
+      // R's projection: B and C (authoritative — no A, no N, no P).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [
+                userMessageItem("B", "kept initial"),
+                userMessageItem("C", "fresh authoritative"),
+              ],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      // While R is in-flight, loadOlder succeeds — prepends page items P.
+      service.olderItems = {
+        items: [{ kind: "user", id: "P", text: "page old" }],
+        nextCursor: "cursor-2",
+      };
+      await store.getState().loadOlder(service);
+      // Current items: P + A + B.
+      const itemsAfterL = store.getState().conversation?.items ?? [];
+      expect(itemsAfterL.some((i) => i.id === "P")).toBe(true);
+      expect(itemsAfterL.some((i) => i.id === "A")).toBe(true);
+      expect(itemsAfterL.some((i) => i.id === "B")).toBe(true);
+      // While R is still in-flight, a live notification inserts N (live-owned).
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          item: userMessageItem("N", "live notification"),
+        },
+      } as AnyNotification);
+      // Current items: P + A + B + N.
+      const itemsAfterN = store.getState().conversation?.items ?? [];
+      expect(itemsAfterN.some((i) => i.id === "N")).toBe(true);
+      // Release R — its projection has B + C (no A, no N, no P).
+      // Merge must: prepend P (pageOwned), commit B/C (authoritative), append
+      // N (liveOwned tail), drop A (owned by neither, omitted from reread).
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      const items = store.getState().conversation?.items ?? [];
+      const ids = items.map((i) => i.id);
+      // P is retained (page-owned history).
+      expect(ids).toContain("P");
+      // B and C are retained (authoritative reread projection).
+      expect(ids).toContain("B");
+      expect(ids).toContain("C");
+      // N is retained (live-owned tail from actual notification).
+      expect(ids).toContain("N");
+      // A is dropped (owned by neither page nor live, omitted from reread).
+      expect(ids).not.toContain("A");
+      // Order: P (page history) before B/C (authoritative) before N (live tail).
+      const pIdx = ids.indexOf("P");
+      const bIdx = ids.indexOf("B");
+      const cIdx = ids.indexOf("C");
+      const nIdx = ids.indexOf("N");
+      expect(pIdx).toBeLessThan(bIdx);
+      expect(bIdx).toBeLessThan(nIdx);
+      expect(cIdx).toBeLessThan(nIdx);
+    });
+
+    it("500 cap retains live-owned N, drops unowned old history", async () => {
+      const service = new FakeConversationService();
+      // Initial: 499 items — A-0..A-498 (old initial, not page/live owned) + B.
+      // Actually we need exactly: initial has many old items + a few live-owned.
+      // Let's make: 450 old items (old-0..old-449) + 49 items live-owned (live-0..live-48) + B.
+      // That's 500 total. Then loadOlder adds 50 page items, pushing old items
+      // out via cap. Then a live notification adds N. Reread has B + C only.
+      // After merge: P(50) + B + C + N. But we need 500 cap to retain N.
+      // Simpler: fill to near cap, then check N survives the cap.
+      const initialThreadItems: ThreadItem[] = [];
+      // 499 old initial items (will be omitted from reread, owned by neither).
+      for (let i = 0; i < 499; i++) {
+        initialThreadItems.push(userMessageItem(`old-${i}`, ""));
+      }
+      // B is in both initial and reread (authoritative).
+      initialThreadItems.push(userMessageItem("B", ""));
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({ id: "t0", items: initialThreadItems }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      // Start a rehydrate (R) that hangs.
+      const ctrl = makeControlledRead(service);
+      // R's projection: B + C (authoritative — no old items, no N, no P).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [userMessageItem("B", ""), userMessageItem("C", "")],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      // While R is in-flight, loadOlder loads 500 page items.
+      const pageItems: MobileConversation["items"] = [];
+      for (let i = 0; i < 500; i++) {
+        pageItems.push({ kind: "user", id: `P-${i}`, text: "" });
+      }
+      service.olderItems = { items: pageItems, nextCursor: "cursor-2" };
+      await store.getState().loadOlder(service);
+      // loadOlder merge: [P-0..P-499(500), old-0..old-498(499), B(1)] = 1000.
+      // capItems keeps newest 500: [old-249..old-498(250), B(1), P-0..P-249(250)].
+      // Wait — loadOlder prepends deduped page items. P items are new (not in
+      // current), so deduped = all 500 P items. merged = [P-0..P-499, old-0..old-498, B]
+      // = 1000. capItems keeps newest 500: old-250..old-498, B, P-0..P-249.
+      // Actually capItems slices from the end: items.slice(len - 500).
+      // So newest 500 = [old-250..old-498(249), B(1), P-0..P-249(250)] = 500.
+      // While R is still in-flight, a live notification inserts N (live-owned).
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          item: userMessageItem("N", "live"),
+        },
+      } as AnyNotification);
+      // Current items after loadOlder + N: 500 + N = 501, capped to 500.
+      // N is at the tail (newest), so it's retained.
+      const itemsBeforeR = store.getState().conversation?.items ?? [];
+      expect(itemsBeforeR.some((i) => i.id === "N")).toBe(true);
+      // Release R — projection has B + C only.
+      // Merge: prepend pageOwned items not in reread, commit B/C, append
+      // liveOwned items not in reread (N), drop items owned by neither
+      // (old-* items that are neither pageOwned nor liveOwned).
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      const items = store.getState().conversation?.items ?? [];
+      const ids = items.map((i) => i.id);
+      // N must be retained (live-owned tail preserved by 500 cap).
+      expect(ids).toContain("N");
+      // B and C are retained (authoritative reread).
+      expect(ids).toContain("B");
+      expect(ids).toContain("C");
+      // Old items (owned by neither) are dropped.
+      expect(ids.some((id) => id.startsWith("old-"))).toBe(false);
+      // Total within cap.
+      expect(items.length).toBeLessThanOrEqual(500);
+      // N is at or near the tail.
+      const nIdx = ids.indexOf("N");
+      expect(nIdx).toBeGreaterThan(-1);
+      // N should be after B and C (live tail after authoritative).
+      const bIdx = ids.indexOf("B");
+      const cIdx = ids.indexOf("C");
+      expect(nIdx).toBeGreaterThan(bIdx);
+      expect(nIdx).toBeGreaterThan(cIdx);
+    });
+  });
 });
