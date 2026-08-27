@@ -309,9 +309,15 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
       </section>
 
       {conversation.olderAvailable ? (
-        <p className="sw-older-available" data-older-available="true">
-          Older messages available
-        </p>
+        <button
+          type="button"
+          className="sw-older-available"
+          data-older-available="true"
+          disabled={hasPending}
+          onClick={() => dispatch({ type: "loadOlder" })}
+        >
+          Load older messages
+        </button>
       ) : null}
 
       {composer.pending ? (

@@ -839,7 +839,15 @@
 }
 
 .concept-stillwater .sw-older-available {
+  display: block;
+  width: min(100%, 46rem);
+  margin-inline: auto;
+  padding: 0.65rem 1rem;
+  border: 1px solid var(--sw-control-line);
+  border-radius: 999px;
+  background: transparent;
   color: var(--sw-muted);
+  cursor: pointer;
   font-size: 0.78rem;
   text-align: center;
 }
