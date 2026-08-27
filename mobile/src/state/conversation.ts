@@ -525,15 +525,31 @@ export function createConversationStore() {
   // to the oldest position where they'd be discarded by the 500-cap. Cleared
   // on every conversation transition (open/close/reset/openProjected).
   const pageOwnedIds = new Set<string>();
-  // Residual 2: Live-notification-owned item IDs — tracks which item IDs were
-  // inserted by actual accepted item lifecycle/live notifications (item/started,
-  // item/completed, and relevant deltas that create/update items). Separate
-  // from pageOwnedIds so the page merge can distinguish live-notification items
-  // (appended as the live tail) from old initial-projection items that were
-  // omitted from the reread (dropped as stale history). Marked only from actual
-  // accepted notifications; cleared/reconciled on open/transition and when the
-  // item is included in an authoritative rehydrate projection.
-  const liveOwnedIds = new Set<string>();
+  // Residual 2 / Fix round 1: Per-item live ownership with monotonic revision.
+  // liveOwnedRevs maps item ID → the liveOwnerRev value at the time of the
+  // last accepted live notification for that item. liveOwnerRev is a global
+  // monotonically increasing counter incremented on every accepted lifecycle
+  // insertion, replacement, delta, reset, and warning. Rejected/missing/wrong/
+  // frozen notifications do NOT increment or mark.
+  // Rehydrate captures entryLiveRev at entry. At commit:
+  // - If the reread contains an ID whose liveOwnedRevs revision > entryLiveRev,
+  //   the current (live-updated) version is newer than the reread's snapshot;
+  //   preserve the current version in the authoritative position and keep
+  //   ownership (do NOT delete from liveOwnedRevs).
+  // - If the reread contains an ID whose revision ≤ entryLiveRev (or not
+  //   live-owned), accept the reread's authoritative version and clear that
+  //   ID's ownership.
+  // - If the reread omits an ID that is genuinely live-owned, append the
+  //   current item as live tail.
+  // - Page IDs still prepend; unowned old history drops.
+  const liveOwnedRevs = new Map<string, number>();
+  let liveOwnerRev = 0;
+  // Mark an item as live-owned with the current global revision. Called from
+  // every accepted lifecycle insertion/replacement, delta, reset, warning.
+  function markLiveOwned(id: string): void {
+    liveOwnerRev += 1;
+    liveOwnedRevs.set(id, liveOwnerRev);
+  }
   // C1+I1: Deferred trailing-reread request. When a rehydrate detects the
   // mutation owner changed during its await, it stores a deferred trailing
   // request with the EXACT binding snapshot captured at schedule time (not
@@ -880,7 +896,7 @@ export function createConversationStore() {
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
         pageOwnedIds.clear();
-        liveOwnedIds.clear();
+        liveOwnedRevs.clear();
         set({
           status: "opening",
           ref,
@@ -932,7 +948,7 @@ export function createConversationStore() {
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
         pageOwnedIds.clear();
-        liveOwnedIds.clear();
+        liveOwnedRevs.clear();
         // Reset thread-scoped state (draft, pending mutation) — presentation state
         // now lives outside the store (in live-ui-store).
         // F4: reset the activity sink on thread change.
@@ -1041,6 +1057,11 @@ export function createConversationStore() {
         // the await, a newer capability owner published caps and the rehydrate
         // must preserve the current caps.
         const entryCapRev = capabilityOwnerRev;
+        // Fix round 1: Capture live-owner revision at entry. If an item's
+        // liveOwnedRevs revision advanced past this after entry, the live
+        // notification updated the item after the rehydrate's readProjection
+        // snapshot — the current version is newer and must be preserved.
+        const entryLiveRev = liveOwnerRev;
         activitySink = sink;
         boundService = service;
         boundSink = sink;
@@ -1083,41 +1104,83 @@ export function createConversationStore() {
           // Merge page items (from current conversation) into the reread's
           // conversation items, deduping by source item identity, and keep
           // the page's newer cursor.
-          let mergedItems = conversation.items;
+          // Fix round 1: Per-item live ownership with monotonic revision. For
+          // each item in the reread, if its liveOwnedRevs revision advanced
+          // past entryLiveRev, the live notification updated it after the
+          // reread's snapshot — preserve the current version in the
+          // authoritative position. Otherwise accept the reread's version.
+          // Items omitted from the reread that are genuinely live-owned are
+          // appended as the live tail. Page-owned items prepend. Unowned old
+          // history drops.
+          const rereadIds = new Set(conversation.items.map((i) => i.id));
+          const currentConvForMerge = currentSnapshot.conversation;
+          // Superseded: reread contains ID but current live revision > entry.
+          // Preserve the current (live-updated) version in the reread position.
+          const supersededIds = new Set<string>();
+          const supersededVersions = new Map<string, MobileTimelineItem>();
+          if (currentConvForMerge !== null) {
+            for (const item of conversation.items) {
+              const rev = liveOwnedRevs.get(item.id);
+              if (rev !== undefined && rev > entryLiveRev) {
+                const current = currentConvForMerge.items.find(
+                  (i) => i.id === item.id,
+                );
+                if (current !== undefined) {
+                  supersededIds.add(item.id);
+                  supersededVersions.set(item.id, current);
+                }
+              }
+            }
+          }
+          // Replace superseded items in the reread with the current version.
+          let mergedItems = conversation.items.map((item) =>
+            supersededIds.has(item.id)
+              ? (supersededVersions.get(item.id) as MobileTimelineItem)
+              : item,
+          );
           let mergedCursor = olderCursor;
           if (pageOwnerChanged) {
-            const currentConv = currentSnapshot.conversation;
-            if (currentConv !== null) {
-              // Residual 2: Exact live-notification-owned item IDs separate
-              // from pageOwned IDs. On rehydrate page-race merge:
+            if (currentConvForMerge !== null) {
               // 1. Prepend only current-only pageOwned history (items in
               //    pageOwnedIds that are not in the reread projection).
-              // 2. Commit the authoritative reread projection.
+              // 2. Commit the authoritative reread projection (with superseded
+              //    replacements applied).
               // 3. Append only current-only liveOwned tail (items in
-              //    liveOwnedIds that are not in the reread projection).
+              //    liveOwnedRevs that are not in the reread projection).
               // 4. Drop current-only items owned by NEITHER (not pageOwned,
               //    not liveOwned, not in reread) as omitted old history.
-              const rereadIds = new Set(conversation.items.map((i) => i.id));
-              const pageOnlyItems = currentConv.items.filter(
+              const pageOnlyItems = currentConvForMerge.items.filter(
                 (i) => !rereadIds.has(i.id) && pageOwnedIds.has(i.id),
               );
-              const liveTailItems = currentConv.items.filter(
+              const liveTailItems = currentConvForMerge.items.filter(
                 (i) =>
                   !rereadIds.has(i.id) &&
                   !pageOwnedIds.has(i.id) &&
-                  liveOwnedIds.has(i.id),
+                  liveOwnedRevs.has(i.id),
               );
               // Page history first (oldest), then reread items, then live tail.
               // Items owned by neither are dropped (omitted old history).
               mergedItems = [
                 ...pageOnlyItems,
-                ...conversation.items,
+                ...mergedItems,
                 ...liveTailItems,
               ];
             }
             // Keep the page's newer cursor (the reread's cursor reflects the
             // full readProjection, which may not include page-loaded items).
             mergedCursor = currentSnapshot.olderCursor;
+          } else if (currentConvForMerge !== null) {
+            // No page race, but still append live-owned items omitted from the
+            // reread (live notifications that arrived during the await).
+            const liveTailItems = currentConvForMerge.items.filter(
+              (i) =>
+                !rereadIds.has(i.id) &&
+                !pageOwnedIds.has(i.id) &&
+                liveOwnedRevs.has(i.id),
+            );
+            if (liveTailItems.length > 0) {
+              mergedItems = [...mergedItems, ...liveTailItems];
+            }
           }
           const identity: ActivityIdentity = {
             threadId: conversation.id,
@@ -1150,12 +1213,18 @@ export function createConversationStore() {
             items: capItems(truncateAndRecord(mergedItems)),
             ...(preservedCaps ? { capabilities: preservedCaps } : {}),
           };
-          // Residual 2: Reconcile liveOwnedIds — items in the authoritative
-          // reread projection are no longer "live-only"; remove them from
-          // liveOwnedIds so a future page merge won't treat them as live tail.
-          // Live-owned items NOT in the reread stay in the set (still live-only).
+          // Fix round 1: Reconcile liveOwnedRevs — for items in the
+          // authoritative reread projection that are NOT superseded (revision
+          // ≤ entryLiveRev or not live-owned), accept the reread and clear
+          // that ID's ownership. Superseded items (revision > entryLiveRev)
+          // keep their ownership — the live version is newer and may need
+          // to survive a future page merge. Live-owned items NOT in the reread
+          // stay in the map (still live-only / live tail).
           for (const item of conversation.items) {
-            liveOwnedIds.delete(item.id);
+            const rev = liveOwnedRevs.get(item.id);
+            if (rev === undefined || rev <= entryLiveRev) {
+              liveOwnedRevs.delete(item.id);
+            }
           }
           // I2: If we're committing the projected capabilities (cap owner
           // unchanged), increment the capability-owner revision.
@@ -1490,7 +1559,7 @@ export function createConversationStore() {
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
         pageOwnedIds.clear();
-        liveOwnedIds.clear();
+        liveOwnedRevs.clear();
         truncatedItemIds.clear();
         // F4: reset the activity sink on close.
         if (activitySink !== null) {
@@ -1636,6 +1705,8 @@ export function createConversationStore() {
                 (i) => i.id === params.item.id,
               );
               if (existingIdx >= 0) {
+                // Fix round 1: Mark as live-owned — accepted replacement.
+                markLiveOwned(params.item.id);
                 set({
                   conversation: {
                     ...conv,
@@ -1647,7 +1718,7 @@ export function createConversationStore() {
               } else {
                 // Residual 2: Mark as live-owned — inserted by an actual
                 // accepted item lifecycle notification.
-                liveOwnedIds.add(params.item.id);
+                markLiveOwned(params.item.id);
                 set({
                   conversation: {
                     ...conv,
@@ -1674,6 +1745,8 @@ export function createConversationStore() {
               );
               if (existingIdx >= 0) {
                 // Replace existing item.
+                // Fix round 1: Mark as live-owned — accepted replacement.
+                markLiveOwned(params.item.id);
                 set({
                   conversation: {
                     ...conv,
@@ -1687,7 +1760,7 @@ export function createConversationStore() {
                 // start notification was missed.
                 // Residual 2: Mark as live-owned — inserted by an actual
                 // accepted item lifecycle notification.
-                liveOwnedIds.add(params.item.id);
+                markLiveOwned(params.item.id);
                 set({
                   conversation: {
                     ...conv,
@@ -1723,6 +1796,8 @@ export function createConversationStore() {
               if (truncated !== combined) {
                 truncatedItemIds.add(params.itemId);
               }
+              // Fix round 1: Mark as live-owned — accepted delta update.
+              markLiveOwned(params.itemId);
               set({
                 conversation: {
                   ...conv,
@@ -1748,6 +1823,8 @@ export function createConversationStore() {
               (i) => i.id === params.itemId && i.kind === "assistant",
             );
             if (existing) {
+              // Fix round 1: Mark as live-owned — accepted reset update.
+              markLiveOwned(params.itemId);
               set({
                 conversation: {
                   ...conv,
@@ -1784,6 +1861,8 @@ export function createConversationStore() {
               if (truncated !== combined) {
                 truncatedItemIds.add(params.itemId);
               }
+              // Fix round 1: Mark as live-owned — accepted reasoning delta.
+              markLiveOwned(params.itemId);
               set({
                 conversation: {
                   ...conv,
@@ -1824,6 +1903,8 @@ export function createConversationStore() {
               if (truncated !== combined) {
                 truncatedItemIds.add(params.itemId);
               }
+              // Fix round 1: Mark as live-owned — accepted tool output delta.
+              markLiveOwned(params.itemId);
               set({
                 conversation: {
                   ...conv,
@@ -1856,7 +1937,7 @@ export function createConversationStore() {
             };
             // Residual 2: Mark as live-owned — created by an actual live
             // notification.
-            liveOwnedIds.add(id);
+            markLiveOwned(id);
             set({
               conversation: {
                 ...conv,
@@ -1905,7 +1986,7 @@ export function createConversationStore() {
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
         pageOwnedIds.clear();
-        liveOwnedIds.clear();
+        liveOwnedRevs.clear();
         truncatedItemIds.clear();
         // F4: reset the activity sink on thread change.
         if (activitySink !== null) {
