@@ -294,14 +294,15 @@ func attachPastThreadSkillCatalog(entry hubcore.PastEntry, thread appwire.Thread
 // set and the read that follows it cannot drift.
 func pastThreadCapabilities() appwire.ThreadCapabilities {
 	return appwire.ThreadCapabilities{
-		Send:         true,
-		ForkFromTurn: true,
-		Compact:      true,
-		Clear:        false,
-		ChangeModel:  true,
-		Shutdown:     true,
-		Goal:         true,
-		Rename:       true,
+		Send:              true,
+		ForkFromTurn:      true,
+		Compact:           true,
+		Clear:             false,
+		ChangeModel:       true,
+		ChangeVisionModel: true,
+		Shutdown:          true,
+		Goal:              true,
+		Rename:            true,
 	}
 }
 
@@ -383,6 +384,8 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 			// expose the in-process child's turn start time.
 		},
 	}
+	thread.Evener.VisionModel = entry.Meta.VisionModel
+	thread.Evener.Capabilities.ChangeVisionModel = thread.Evener.Capabilities.ChangeModel
 	delegates, delegateDiagnostics, err := pastEntryDelegateStatus(entry)
 	if err != nil {
 		return appwire.Thread{}, err

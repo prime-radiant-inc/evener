@@ -407,6 +407,16 @@ func (s *LocalDaemonSource) SetThreadModel(ctx context.Context, params appwire.T
 	})
 }
 
+func (s *LocalDaemonSource) SetThreadVisionModel(ctx context.Context, params appwire.ThreadVisionModelSetParams) error {
+	entry, err := s.entryForRef(params.Ref, "")
+	if err != nil {
+		return err
+	}
+	return s.withClient(ctx, entry, func(client *appwire.Client) error {
+		return client.ThreadVisionModelSet(ctx, params)
+	})
+}
+
 func (s *LocalDaemonSource) SetThreadReasoningEffort(ctx context.Context, params appwire.ThreadReasoningEffortSetParams) error {
 	entry, err := s.entryForRef(params.Ref, "")
 	if err != nil {

@@ -1032,13 +1032,14 @@ func TestPastEntryThreadAdvertisesResumableCapabilities(t *testing.T) {
 	caps := thread.Evener.Capabilities
 
 	want := appwire.ThreadCapabilities{
-		Send:         true,
-		ForkFromTurn: true,
-		Compact:      true,
-		ChangeModel:  true,
-		Shutdown:     true,
-		Goal:         true,
-		Rename:       true,
+		Send:              true,
+		ForkFromTurn:      true,
+		Compact:           true,
+		ChangeModel:       true,
+		ChangeVisionModel: true,
+		Shutdown:          true,
+		Goal:              true,
+		Rename:            true,
 		// Steer, Interrupt, Queue stay false: turn-in-flight controls with no
 		// active turn on a cold exited session.
 	}

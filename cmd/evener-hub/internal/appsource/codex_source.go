@@ -330,6 +330,10 @@ func (s *CodexSource) SetThreadModel(context.Context, appwire.ThreadModelSetPara
 	return appwire.Unavailable("codex source does not support thread/model/set")
 }
 
+func (s *CodexSource) SetThreadVisionModel(context.Context, appwire.ThreadVisionModelSetParams) error {
+	return appwire.Unavailable("codex source does not support thread/vision-model/set")
+}
+
 func (s *CodexSource) SetThreadName(context.Context, appwire.ThreadNameSetParams) error {
 	return appwire.Unavailable("rename is not supported for codex threads")
 }

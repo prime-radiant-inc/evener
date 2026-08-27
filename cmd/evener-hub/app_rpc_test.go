@@ -5361,6 +5361,10 @@ func (s *relayLifecycleSource) SetThreadModel(context.Context, appwire.ThreadMod
 	return appwire.Unavailable("relay lifecycle source does not set models")
 }
 
+func (s *relayLifecycleSource) SetThreadVisionModel(context.Context, appwire.ThreadVisionModelSetParams) error {
+	return appwire.Unavailable("relay lifecycle source does not set vision models")
+}
+
 func (s *relayLifecycleSource) SetThreadName(context.Context, appwire.ThreadNameSetParams) error {
 	return appwire.Unavailable("relay lifecycle source does not set names")
 }
@@ -6082,6 +6086,83 @@ func TestHubRPCThreadModelSetResumesPastThread(t *testing.T) {
 	}
 	if modelCalled != "openai/gpt-5.6-sol" {
 		t.Fatalf("modelCalled=%q", modelCalled)
+	}
+}
+
+func TestHubRPCThreadVisionModelSetResumesPastThread(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Source:    "local",
+			Evener: appwire.EvenerThread{
+				Ref:          params.Ref,
+				Capabilities: appwire.ThreadCapabilities{ChangeVisionModel: true},
+			},
+		}}, nil
+	})
+	visionModelCalled := ""
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadVisionModelSet, func(_ context.Context, params appwire.ThreadVisionModelSetParams) (appwire.EmptyResponse, error) {
+		if params.Ref != "local:"+sessionID {
+			t.Fatalf("vision model ref=%q", params.Ref)
+		}
+		visionModelCalled = params.VisionModel
+		return appwire.EmptyResponse{}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	resumeCalls := 0
+	spawner := &fakeRPCSpawner{
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			if req.SessionID != sessionID || req.StateDir != stateDir || req.WorkingDir != workingDir {
+				t.Fatalf("resume request=%+v", req)
+			}
+			resumeCalls++
+			entry := rendezvous.Entry{
+				PID:        106,
+				Protocol:   appwire.ProtocolVersion,
+				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:   "local",
+				ThreadID:   sessionID,
+				SessionID:  sessionID,
+				WorkingDir: workingDir,
+			}
+			writeRendezvous(t, runDir, entry)
+			return entry, nil
+		},
+	}
+	roster := hubcore.NewRoster(runDir, nil)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if err := client.ThreadVisionModelSet(context.Background(), appwire.ThreadVisionModelSetParams{
+		Ref:         "local:" + sessionID,
+		VisionModel: "off",
+	}); err != nil {
+		t.Fatalf("ThreadVisionModelSet: %v", err)
+	}
+	if resumeCalls != 1 {
+		t.Fatalf("resume calls=%d, want 1", resumeCalls)
+	}
+	if visionModelCalled != "off" {
+		t.Fatalf("visionModelCalled=%q", visionModelCalled)
 	}
 }
 
@@ -9750,6 +9831,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodThreadCompactStart,
 		appwire.MethodThreadShutdown,
 		appwire.MethodThreadModelSet,
+		appwire.MethodThreadVisionModelSet,
 		appwire.MethodEvenerThreadNameSet,
 		appwire.MethodThreadReasoningEffortSet,
 		appwire.MethodGoalSet,
