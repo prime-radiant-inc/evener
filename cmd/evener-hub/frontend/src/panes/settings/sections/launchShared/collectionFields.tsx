@@ -72,6 +72,8 @@ interface StringListFieldProps {
   /** Replaces CollectionEditor's plain-text add field (modelList uses the
    * searchable model picker, so a model id is never hand-typed). */
   renderAddField?: (props: { value: string; onChange: (value: string) => void; disabled: boolean }) => ReactNode;
+  /** Inherited entries shown as grayed "(default)" ghost rows; [] when none. */
+  inheritedItems?: readonly string[];
 }
 
 function StringListField({
@@ -83,6 +85,7 @@ function StringListField({
   validateAdd,
   explicitEmpty,
   renderAddField,
+  inheritedItems = [],
 }: StringListFieldProps) {
   async function handleAdd(trimmed: string): Promise<CollectionAddResult> {
     const outcome = await validateAdd(trimmed);
@@ -98,6 +101,7 @@ function StringListField({
       <CollectionEditor<string>
         label={option.label}
         items={items}
+        inheritedItems={inheritedItems}
         getKey={(item) => item}
         renderItem={(item) => item}
         removeLabel={(item) => `Remove ${item}`}
@@ -119,6 +123,7 @@ export interface PathListFieldProps {
   items: string[];
   onChange: (items: string[]) => void;
   validatePath: (path: string, kind: string) => Promise<PathValidateResponse>;
+  inheritedItems?: readonly string[];
 }
 
 /** The pathList add field's empty-state text - the picker's closed trigger
@@ -146,7 +151,7 @@ function pathFieldKind(pathKind: string | undefined): PathFieldKind {
  * field-level error" / "uses valid.path if present else the raw trimmed input"
  * behaviors. The spawn pane's own Advanced-options pathList control shares that
  * same decision. */
-export function PathListField({ option, items, onChange, validatePath }: PathListFieldProps) {
+export function PathListField({ option, items, onChange, validatePath, inheritedItems }: PathListFieldProps) {
   const kind = pathFieldKind(option.pathKind);
   const placeholder = pathAddPlaceholder(kind);
   return (
@@ -157,6 +162,7 @@ export function PathListField({ option, items, onChange, validatePath }: PathLis
       addPlaceholder={placeholder}
       emptyMessage={`No ${option.label.toLowerCase()} configured.`}
       validateAdd={(trimmed) => validatePathListAdd(option, items, trimmed, validatePath)}
+      inheritedItems={inheritedItems}
       renderAddField={({ value, onChange: setDraft, disabled }) => (
         <div className={CLASS.pathAddRow}>
           <PathAddField
@@ -234,6 +240,7 @@ export interface ModelListFieldProps {
   onChange: (items: string[]) => void;
   explicitEmpty: boolean;
   onExplicitEmptyChange: (checked: boolean) => void;
+  inheritedItems?: readonly string[];
 }
 
 /**
@@ -245,7 +252,14 @@ export interface ModelListFieldProps {
  * RPC validates one in isolation), but now it can only be a real catalog
  * entry rather than an unverifiable typo.
  */
-export function ModelListField({ option, items, onChange, explicitEmpty, onExplicitEmptyChange }: ModelListFieldProps) {
+export function ModelListField({
+  option,
+  items,
+  onChange,
+  explicitEmpty,
+  onExplicitEmptyChange,
+  inheritedItems,
+}: ModelListFieldProps) {
   return (
     <StringListField
       option={option}
@@ -258,6 +272,7 @@ export function ModelListField({ option, items, onChange, explicitEmpty, onExpli
         return { ok: true, value: trimmed };
       }}
       explicitEmpty={{ checked: explicitEmpty, onChange: onExplicitEmptyChange, label: "No model fallbacks" }}
+      inheritedItems={inheritedItems}
       renderAddField={({ value, onChange: setDraft, disabled }) => (
         <div className={CLASS.modelAddRow}>
           <ModelAddField value={value} onChange={setDraft} disabled={disabled} />
@@ -304,6 +319,7 @@ export interface EnvMapFieldProps {
   option: LaunchOption; // kind: envMap
   value: Record<string, string>;
   onChange: (value: Record<string, string>) => void;
+  inheritedItems?: readonly EnvEntry[];
 }
 
 interface EnvEntry {
@@ -379,7 +395,7 @@ function EnvAddFields({
  * requiring a non-empty NAME, matching the legacy's own envMap behavior
  * exactly. EnvAddFields above is what composes that string now, from two
  * real boxes instead of asking the user to type the '=' themselves. */
-export function EnvMapField({ option, value, onChange }: EnvMapFieldProps) {
+export function EnvMapField({ option, value, onChange, inheritedItems = [] }: EnvMapFieldProps) {
   const entries: EnvEntry[] = Object.entries(value).map(([name, v]) => ({ name, value: v }));
 
   async function handleAdd(trimmed: string): Promise<CollectionAddResult> {
@@ -398,6 +414,7 @@ export function EnvMapField({ option, value, onChange }: EnvMapFieldProps) {
       <CollectionEditor<EnvEntry>
         label={option.label}
         items={entries}
+        inheritedItems={inheritedItems}
         getKey={(entry) => entry.name}
         renderItem={(entry) => `${entry.name}=${entry.value}`}
         removeLabel={(entry) => `Remove ${entry.name}=${entry.value}`}
@@ -425,6 +442,7 @@ export interface McpServerListFieldProps {
   items: MCPServerSpec[];
   onChange: (items: MCPServerSpec[]) => void;
   validateCommand: (command: string) => Promise<PathValidateResponse>;
+  inheritedItems?: readonly MCPServerSpec[];
 }
 
 function specKey(spec: MCPServerSpec): string {
@@ -440,7 +458,13 @@ function renderSpec(spec: MCPServerSpec): string {
  * (whitespace-split); the command token is validated via evener/path/validate
  * kind="command" before the row is accepted, matching the legacy's own
  * validateMCPCommandInput. */
-export function McpServerListField({ option, items, onChange, validateCommand }: McpServerListFieldProps) {
+export function McpServerListField({
+  option,
+  items,
+  onChange,
+  validateCommand,
+  inheritedItems = [],
+}: McpServerListFieldProps) {
   async function handleAdd(trimmed: string): Promise<CollectionAddResult> {
     const tokens = trimmed.split(/\s+/).filter(Boolean);
     const [name, command, ...args] = tokens;
@@ -457,6 +481,7 @@ export function McpServerListField({ option, items, onChange, validateCommand }:
       <CollectionEditor<MCPServerSpec>
         label={option.label}
         items={items}
+        inheritedItems={inheritedItems}
         getKey={specKey}
         renderItem={renderSpec}
         removeLabel={(spec) => `Remove ${renderSpec(spec)}`}
