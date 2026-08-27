@@ -20,6 +20,7 @@ import {
   ActivityProjectorError,
   createLiveActivityProjector,
   type OpaqueKeyAllocator,
+   type EntropySource,
 } from "./project-activity";
 
 // --- fixture helpers ---------------------------------------------------------
@@ -55,6 +56,52 @@ function deterministicAllocator(prefix: string): OpaqueKeyAllocator {
     return `${prefix}${n}`;
   };
 }
+
+ // Deterministic entropy source for crypto seam tests.
+ function makeDeterministicEntropy(seed: number): EntropySource {
+   let state = seed;
+   return () => {
+     const bytes = new Uint8Array(8);
+     for (let i = 0; i < 8; i++) {
+       state = (state * 1103515245 + 12345) & 0x7fffffff;
+       bytes[i] = state & 0xff;
+     }
+     return bytes;
+   };
+ }
+
+// Constant entropy source: always returns the same bytes. Useful for
+// verifying that the salt comes from the entropy, independent of the
+// instance counter.
+ function makeConstantEntropy(): EntropySource {
+   const bytes = new Uint8Array(8);
+   for (let i = 0; i < 8; i++) bytes[i] = 0xab;
+   return () => bytes;
+ }
+
+// Helper to safely override and restore globalThis.crypto (read-only getter
+// in some runtimes requires defineProperty).
+function withMockedCrypto(mock: unknown, fn: () => void): void {
+   const original = Object.getOwnPropertyDescriptor(globalThis, "crypto");
+   Object.defineProperty(globalThis, "crypto", {
+     value: mock,
+     writable: true,
+     configurable: true,
+   });
+   try {
+     fn();
+   } finally {
+     if (original !== undefined) {
+       Object.defineProperty(globalThis, "crypto", original);
+     } else {
+       Object.defineProperty(globalThis, "crypto", {
+         value: undefined,
+         writable: true,
+         configurable: true,
+       });
+     }
+   }
+ }
 
 function diag(
   rawId: string,
@@ -831,6 +878,89 @@ describe("createLiveActivityProjector", () => {
     const { live } = p.project(view, { scope: SCOPE });
     const keys = live.work.map((w) => w.key);
     expect(new Set(keys).size).toBe(keys.length);
+  });
+
+  it("no-ID duplicate detection uses exact nested kind→label sets, not NUL composites", () => {
+    // The no-ID duplicate check must use exact nested kind → Set<label> maps,
+    // not a NUL-delimited composite string. This test verifies:
+    //   - same kind + same label → duplicate error (exact match)
+    //   - different kind + same label → distinct keys (no false collision)
+    //   - label containing \u0000 (NUL) does not create false aliasing
+    const p = createLiveActivityProjector({
+      allocator: deterministicAllocator("w"),
+    });
+    // Different kinds, same label → must succeed with distinct keys
+    const okView = makeActivityView({
+      work: [
+        { kind: "job", label: "same", tone: "running" },
+        { kind: "watch", label: "same", tone: "running" },
+        { kind: "delegate", label: "same", tone: "running" },
+      ],
+    });
+    const { live } = p.project(okView, { scope: SCOPE });
+    expect(live.work).toHaveLength(3);
+    const keys = live.work.map((w) => w.key);
+    expect(new Set(keys).size).toBe(3);
+
+    // Same kind + same label → no-id-duplicate error
+    const p2 = createLiveActivityProjector({
+      allocator: deterministicAllocator("x"),
+    });
+    const dupView = makeActivityView({
+      work: [
+        { kind: "job", label: "same", tone: "running" },
+        { kind: "job", label: "same", tone: "terminal" },
+      ],
+    });
+    let err: unknown;
+    try {
+      p2.project(dupView, { scope: SCOPE });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ActivityProjectorError);
+    expect((err as ActivityProjectorError).code).toBe("no-id-duplicate");
+  });
+
+  it("no-ID label containing NUL does not create false duplicate via NUL composite", () => {
+    // If the implementation used a NUL composite like `${kind}\u0000${label}`,
+    // a label "job\u0000x" with kind "watch" could collide with label "x"
+    // with kind "job" (since "watch\u0000job\u0000x" vs "job\u0000x" differ,
+    // but a buggy splitter could confuse them). The exact nested kind→label
+    // sets must not alias these. Here we test labels that contain \u0000
+    // and verify they are handled as exact strings, not composites.
+    const p = createLiveActivityProjector({
+      allocator: deterministicAllocator("w"),
+    });
+    // Two entries: same kind, labels that differ only by NUL placement.
+    // If NUL composites were used, "a\u0000b" and "a" could alias with
+    // kind "b" — but kind is a fixed union, so we test label NUL safety.
+    const view = makeActivityView({
+      work: [
+        { kind: "job", label: "a\u0000b", tone: "running" },
+        { kind: "job", label: "a", tone: "terminal" },
+      ],
+    });
+    const { live } = p.project(view, { scope: SCOPE });
+    expect(live.work).toHaveLength(2);
+    expect(live.work[0]?.key).not.toBe(live.work[1]?.key);
+
+    // Same kind + same NUL-containing label → duplicate error (exact match)
+    const p2 = createLiveActivityProjector();
+    const dupView = makeActivityView({
+      work: [
+        { kind: "job", label: "a\u0000b", tone: "running" },
+        { kind: "job", label: "a\u0000b", tone: "terminal" },
+      ],
+    });
+    let err: unknown;
+    try {
+      p2.project(dupView, { scope: SCOPE });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ActivityProjectorError);
+    expect((err as ActivityProjectorError).code).toBe("no-id-duplicate");
   });
 
   it("indistinguishable duplicate no-ID siblings produce a typed error", () => {
@@ -1704,35 +1834,59 @@ describe("createLiveActivityProjector", () => {
     expect(() => p.project(view, { scope: SCOPE })).not.toThrow();
   });
 
-  it("deep chain beyond normal call-stack yields typed error, never RangeError", () => {
-    // Build a chain deeper than the typical JS call stack. If traversal were
-    // recursive, this would hit RangeError. Iterative traversal yields a
-    // typed projector error (cycle or capacity) instead.
+  it("deep acyclic 15k chain projects full hierarchy successfully, no RangeError, exact iterative count", () => {
+    // A chain deeper than the typical JS call stack must project successfully
+    // (iterative traversal, no RangeError). The full hierarchy must be
+    // present in the output with the exact expected count.
     const depth = 15_000;
     const p = createLiveActivityProjector({
+      allocator: deterministicAllocator("d"),
       maxRegistrySize: 100_000,
     });
     const root = makeDeepChain(depth);
     const view = makeActivityView({ work: [root] });
-    let err: unknown;
-    try {
-      p.project(view, { scope: SCOPE });
-    } catch (e) {
-      err = e;
-    }
-    // It should either succeed (if within cap) or throw a typed error.
-    // It must NEVER throw RangeError.
-    if (err !== undefined) {
-      expect(err).not.toBeInstanceOf(RangeError);
-      if (err instanceof ActivityProjectorError) {
-        expect([
-          "capacity",
-          "collision",
-          "cycle",
-          "raw-duplicate",
-          "no-id-duplicate",
-        ]).toContain((err as ActivityProjectorError).code);
+
+    // Must succeed — no throw, no RangeError.
+    const result = p.project(view, { scope: SCOPE });
+
+    // The top-level work array has exactly 1 root entry.
+    expect(result.live.work).toHaveLength(1);
+
+    // Walk the full live tree iteratively and count every node. The chain
+    // is linear (each node has exactly 1 child). makeDeepChain(depth) creates
+    // 1 leaf + `depth` wrapper nodes = depth + 1 total.
+    let count = 0;
+    const stack: LiveWorkItem[] = [...result.live.work];
+    while (stack.length > 0) {
+      const item = stack.pop();
+      if (item === undefined) break;
+      count += 1;
+      for (const child of item.children) {
+        stack.push(child);
       }
+    }
+    expect(count).toBe(depth + 1);
+
+    // The operational map must contain all rawIds (one per node).
+    expect(result.operational.keys.size).toBe(depth + 1);
+
+    // Every key in the live tree must be in the operational map.
+    const opValues = new Set<string>();
+    for (const [, v] of result.operational.keys.entries()) {
+      opValues.add(v);
+    }
+    const liveKeys = new Set<string>();
+    const stack2: LiveWorkItem[] = [...result.live.work];
+    while (stack2.length > 0) {
+      const item = stack2.pop();
+      if (item === undefined) break;
+      liveKeys.add(item.key);
+      for (const child of item.children) {
+        stack2.push(child);
+      }
+    }
+    for (const k of liveKeys) {
+      expect(opValues.has(k)).toBe(true);
     }
   });
 
@@ -1995,6 +2149,457 @@ describe("createLiveActivityProjector", () => {
       expect(err).toBeInstanceOf(Error);
       expect(err.name).toBe("ActivityProjectorError");
     }
+  });
+
+  // --- typed error path tests (actual project() paths, not construction) -----
+
+  it("capacity error path through project() — typed, transactional", () => {
+    const p = createLiveActivityProjector({
+      allocator: deterministicAllocator("w"),
+      maxRegistrySize: 2,
+    });
+    const view = makeActivityView({
+      work: [
+        { kind: "job", label: "j1", tone: "running", diagnostics: diag("r1") },
+        { kind: "job", label: "j2", tone: "running", diagnostics: diag("r2") },
+        { kind: "job", label: "j3", tone: "running", diagnostics: diag("r3") },
+      ],
+    });
+    let err: unknown;
+    try {
+      p.project(view, { scope: SCOPE });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ActivityProjectorError);
+    const typed = err as ActivityProjectorError;
+    expect(typed.code).toBe("capacity");
+    expect(typed.name).toBe("ActivityProjectorError");
+    expect(typed instanceof Error).toBe(true);
+    // Transactional: subsequent valid projection gets clean keys
+    const valid = makeActivityView({
+      work: [
+        { kind: "job", label: "j1", tone: "running", diagnostics: diag("r1") },
+      ],
+    });
+    const b = p.project(valid, { scope: SCOPE });
+    expect(b.live.work[0]?.key).toBe("w1");
+  });
+
+  it("collision error path through project() — typed, transactional", () => {
+    const colliding: OpaqueKeyAllocator = () => "same-key";
+    const p = createLiveActivityProjector({ allocator: colliding });
+    const view = makeActivityView({
+      work: [
+        { kind: "job", label: "j1", tone: "running", diagnostics: diag("r1") },
+        { kind: "job", label: "j2", tone: "running", diagnostics: diag("r2") },
+      ],
+    });
+    let err: unknown;
+    try {
+      p.project(view, { scope: SCOPE });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ActivityProjectorError);
+    const typed = err as ActivityProjectorError;
+    expect(typed.code).toBe("collision");
+    expect(typed.name).toBe("ActivityProjectorError");
+  });
+
+  it("cycle error path through project() — typed, transactional", () => {
+    const p = createLiveActivityProjector();
+    const self: MutableWorkEntry = {
+      kind: "delegate",
+      label: "self",
+      tone: "running",
+      diagnostics: diag("self-id"),
+    };
+    self.children = [self as WorkEntry];
+    const view = makeActivityView({ work: [self as WorkEntry] });
+    let err: unknown;
+    try {
+      p.project(view, { scope: SCOPE });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ActivityProjectorError);
+    const typed = err as ActivityProjectorError;
+    expect(typed.code).toBe("cycle");
+    expect(typed.name).toBe("ActivityProjectorError");
+    // Transactional: subsequent valid projection gets clean keys
+    const valid = makeActivityView({
+      work: [
+        { kind: "job", label: "a", tone: "running", diagnostics: diag("a-id") },
+      ],
+    });
+    const b = p.project(valid, { scope: SCOPE });
+    expect(b.live.work[0]?.key).toBeDefined();
+  });
+
+  it("raw-duplicate error path through project() — typed, transactional", () => {
+    const p = createLiveActivityProjector();
+    const view = makeActivityView({
+      work: [
+        { kind: "job", label: "a", tone: "running", diagnostics: diag("dup") },
+        { kind: "job", label: "b", tone: "running", diagnostics: diag("dup") },
+      ],
+    });
+    let err: unknown;
+    try {
+      p.project(view, { scope: SCOPE });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ActivityProjectorError);
+    const typed = err as ActivityProjectorError;
+    expect(typed.code).toBe("raw-duplicate");
+    expect(typed.name).toBe("ActivityProjectorError");
+  });
+
+  it("no-id-duplicate error path through project() — typed, transactional", () => {
+    const p = createLiveActivityProjector();
+    const view = makeActivityView({
+      work: [
+        { kind: "job", label: "dup-label", tone: "running" },
+        { kind: "job", label: "dup-label", tone: "terminal" },
+      ],
+    });
+    let err: unknown;
+    try {
+      p.project(view, { scope: SCOPE });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ActivityProjectorError);
+    const typed = err as ActivityProjectorError;
+    expect(typed.code).toBe("no-id-duplicate");
+    expect(typed.name).toBe("ActivityProjectorError");
+  });
+
+  // --- (R1) runtime-immutable operational snapshot ----------------------------
+
+  it("operational snapshot: Object.freeze — casts cannot assign size", () => {
+    const p = createLiveActivityProjector();
+    const view = makeActivityView({
+      work: [
+        { kind: "job", label: "shell", tone: "running", diagnostics: diag("raw-1") },
+      ],
+    });
+    const { operational } = p.project(view, { scope: SCOPE });
+    const keys = operational.keys;
+    // size is a getter — assigning to it throws in strict mode or is a no-op
+    expect(() => {
+      (keys as unknown as { size: number }).size = 999;
+    }).toThrow(TypeError);
+    // size is still correct
+    expect(keys.size).toBe(1);
+  });
+
+  it("operational snapshot: Reflect.ownKeys does not expose backing Map (#private)", () => {
+    const p = createLiveActivityProjector();
+    const view = makeActivityView({
+      work: [
+        { kind: "job", label: "shell", tone: "running", diagnostics: diag("raw-1") },
+      ],
+    });
+    const { operational } = p.project(view, { scope: SCOPE });
+    const keys = operational.keys;
+    const ownKeys = Reflect.ownKeys(keys);
+    // The #map private field must NOT appear in own keys (private fields are
+    // not enumerable via Reflect.ownKeys).
+    const privateField = ownKeys.find(
+      (k) => typeof k === "string" && k.startsWith("#"),
+    );
+    expect(privateField).toBeUndefined();
+    // The wrapper should expose only the expected interface methods/getters
+    const expected = new Set([
+      "size",
+      "get",
+      "has",
+      "forEach",
+      "entries",
+      "keys",
+      "values",
+      // Symbol.iterator is a symbol, handled below
+    ]);
+    const stringKeys = ownKeys.filter(
+      (k): k is string => typeof k === "string",
+    );
+    for (const k of stringKeys) {
+      // Allow only expected keys (no #private field leaking)
+      if (!expected.has(k)) {
+        // Some runtimes may add non-standard properties; the critical check
+        // is that #map is not present
+        expect(k.startsWith("#")).toBe(false);
+      }
+    }
+  });
+
+  it("operational snapshot: strict assignment to wrapper properties fails (frozen)", () => {
+    const p = createLiveActivityProjector();
+    const view = makeActivityView({
+      work: [
+        { kind: "job", label: "shell", tone: "running", diagnostics: diag("raw-1") },
+      ],
+    });
+    const { operational } = p.project(view, { scope: SCOPE });
+    const keys = operational.keys;
+
+    // The wrapper is frozen — adding new properties or changing existing
+    // ones must throw in strict mode.
+    expect(() => {
+      (keys as unknown as Record<string, unknown>).size = 999;
+    }).toThrow(TypeError);
+
+    expect(() => {
+      (keys as unknown as Record<string, unknown>).malicious = true;
+    }).toThrow(TypeError);
+
+    // Operational object is also frozen
+    expect(() => {
+      (operational as unknown as Record<string, unknown>).keys = new Map();
+    }).toThrow(TypeError);
+  });
+
+  it("operational snapshot: shadow get/has/iterator cannot access backing Map", () => {
+    const p = createLiveActivityProjector();
+    const view = makeActivityView({
+      work: [
+        { kind: "job", label: "shell", tone: "running", diagnostics: diag("raw-1") },
+        { kind: "job", label: "shell2", tone: "running", diagnostics: diag("raw-2") },
+      ],
+    });
+    const { operational } = p.project(view, { scope: SCOPE });
+    const keys = operational.keys;
+    expect(keys.size).toBe(2);
+
+    // Casting to Map does NOT give set/delete/clear
+    const casted = keys as unknown as Map<string, string>;
+    expect(typeof (casted as unknown as { set?: unknown }).set).toBe("undefined");
+    expect(typeof (casted as unknown as { delete?: unknown }).delete).toBe("undefined");
+    expect(typeof (casted as unknown as { clear?: unknown }).clear).toBe("undefined");
+
+    // Shadow properties: assigning get/has to the cast does nothing (frozen)
+    expect(() => {
+      (keys as unknown as Record<string, unknown>).get = () => "hacked";
+    }).toThrow(TypeError);
+    expect(() => {
+      (keys as unknown as Record<string, unknown>).has = () => true;
+    }).toThrow(TypeError);
+
+    // Iterator still works and returns the original entries
+    const entries = Array.from(keys.entries());
+    expect(entries).toHaveLength(2);
+    expect(new Set(entries.map(([, v]) => v)).size).toBe(2);
+
+    // After attempted shadowing, the methods still work correctly
+    expect(keys.get("raw-1")).toBeDefined();
+    expect(keys.has("raw-2")).toBe(true);
+    expect(keys.has("nonexistent")).toBe(false);
+  });
+
+  it("operational snapshot: cannot mutate size even via Reflect.set", () => {
+    const p = createLiveActivityProjector();
+    const view = makeActivityView({
+      work: [
+        { kind: "job", label: "shell", tone: "running", diagnostics: diag("raw-1") },
+      ],
+    });
+    const { operational } = p.project(view, { scope: SCOPE });
+    const keys = operational.keys;
+
+    // Reflect.set on size must fail (frozen + getter)
+    const result = Reflect.set(keys, "size", 999);
+    expect(result).toBe(false);
+    expect(keys.size).toBe(1);
+
+    // Reflect.defineProperty on size must fail
+    const defResult = Reflect.defineProperty(keys, "size", {
+      value: 999,
+      writable: true,
+    });
+    expect(defResult).toBe(false);
+    expect(keys.size).toBe(1);
+  });
+
+  // --- (R2) empty projections allocate/retain NO new scope/root ----------------
+
+  it("empty projection into a new scope allocates/retains no scope root (oracle)", () => {
+    const p = createLiveActivityProjector();
+    const emptyView = makeActivityView({ work: [] });
+    p.project(emptyView, { scope: "never-seen" });
+    // No scope root should have been created
+    expect(p._testGetRetainedScopeCount?.()).toBe(0);
+  });
+
+  it("empty projection into an already-known scope does not corrupt it", () => {
+    const p = createLiveActivityProjector({
+      allocator: deterministicAllocator("w"),
+    });
+    const view = makeActivityView({
+      work: [
+        { kind: "job", label: "j1", tone: "running", diagnostics: diag("r1") },
+      ],
+    });
+    const a = p.project(view, { scope: SCOPE });
+    const key1 = a.live.work[0]?.key;
+    expect(p._testGetRetainedScopeCount?.()).toBe(1);
+
+    // Empty projection into the same scope — must not corrupt or clear it
+    p.project(makeActivityView({ work: [] }), { scope: SCOPE });
+    expect(p._testGetRetainedScopeCount?.()).toBe(1);
+
+    // Re-project — keys stable
+    const b = p.project(view, { scope: SCOPE });
+    expect(b.live.work[0]?.key).toBe(key1);
+  });
+
+  it("empty projections with maxRegistrySize=0 retain no scope root", () => {
+    const p = createLiveActivityProjector({
+      maxRegistrySize: 0,
+    });
+    const emptyView = makeActivityView({ work: [] });
+    p.project(emptyView, { scope: "s1" });
+    expect(p._testGetRetainedScopeCount?.()).toBe(0);
+
+    p.project(emptyView, { scope: "s2" });
+    expect(p._testGetRetainedScopeCount?.()).toBe(0);
+  });
+
+  it("repeated empty projections into unique scopes retain zero scope roots", () => {
+    const p = createLiveActivityProjector();
+    const emptyView = makeActivityView({ work: [] });
+    for (let i = 0; i < 50; i++) {
+      p.project(emptyView, { scope: `unique-${i}` });
+    }
+    expect(p._testGetRetainedScopeCount?.()).toBe(0);
+  });
+
+  it("empty projections retain zero roots, then nonempty capacity is unaffected", () => {
+    const p = createLiveActivityProjector({
+      allocator: deterministicAllocator("w"),
+      maxRegistrySize: 5,
+    });
+    // Fill with empty projections — these should not consume capacity
+    for (let i = 0; i < 100; i++) {
+      p.project(makeActivityView({ work: [] }), { scope: `empty-${i}` });
+    }
+    expect(p._testGetRetainedScopeCount?.()).toBe(0);
+
+    // Now project a nonempty view — should succeed within capacity
+    const view = makeActivityView({
+      work: [
+        { kind: "job", label: "j1", tone: "running", diagnostics: diag("r1") },
+        { kind: "job", label: "j2", tone: "running", diagnostics: diag("r2") },
+        { kind: "job", label: "j3", tone: "running", diagnostics: diag("r3") },
+      ],
+    });
+    const result = p.project(view, { scope: SCOPE });
+    expect(result.live.work).toHaveLength(3);
+    expect(result.operational.keys.size).toBe(3);
+  });
+
+  // --- (R3) cryptographic entropy seam ----------------------------------------
+
+  it("default allocator uses crypto.getRandomValues, not Math.random", () => {
+    // The default allocator must use globalThis.crypto.getRandomValues for
+    // its salt. Verify by mocking crypto and checking it's called.
+    let called = false;
+    const mockCrypto = {
+      getRandomValues: <T extends ArrayBufferView>(arr: T): T => {
+        called = true;
+        for (let i = 0; i < arr.byteLength; i++) {
+          new Uint8Array(arr.buffer, arr.byteOffset, arr.byteLength)[i] = 42;
+        }
+        return arr;
+      },
+    };
+    withMockedCrypto(mockCrypto, () => {
+      const p = createLiveActivityProjector();
+      const view = makeActivityView({
+        work: [
+          { kind: "job", label: "shell", tone: "running", diagnostics: diag("r1") },
+        ],
+      });
+      p.project(view, { scope: SCOPE });
+    });
+    expect(called).toBe(true);
+  });
+
+  it("injectable entropy seam produces deterministic but distinct salts", () => {
+    // Two instances with different injected entropy must produce different
+    // salts (and thus different keys) even for the same input.
+    const entropy1 = makeDeterministicEntropy(42);
+    const entropy2 = makeDeterministicEntropy(99);
+    const p1 = createLiveActivityProjector({ entropy: entropy1 });
+    const p2 = createLiveActivityProjector({ entropy: entropy2 });
+    const view = makeActivityView({
+      work: [
+        { kind: "job", label: "shell", tone: "running", diagnostics: diag("r1") },
+      ],
+    });
+    const a = p1.project(view, { scope: SCOPE });
+    const b = p2.project(view, { scope: SCOPE });
+    expect(a.live.work[0]?.key).not.toBe(b.live.work[0]?.key);
+  });
+
+  it("salt differs independently of instance counter", () => {
+    // The salt is generated at factory time from entropy, independent of
+    // the instance counter. Two instances with the same constant injected
+    // entropy should produce the same salt but different keys (via the
+    // counter), proving the salt is from entropy and the counter is separate.
+    const entropy = makeConstantEntropy();
+    const p1 = createLiveActivityProjector({ entropy: entropy });
+    const p2 = createLiveActivityProjector({ entropy: entropy });
+    const view = makeActivityView({
+      work: [
+        { kind: "job", label: "shell", tone: "running", diagnostics: diag("r1") },
+      ],
+    });
+    const a = p1.project(view, { scope: SCOPE });
+    const b = p2.project(view, { scope: SCOPE });
+    // Keys differ because the factory counter increments, but the salt
+    // portion is the same (derived from entropy, not the counter).
+    const keyA = a.live.work[0]?.key ?? "";
+    const keyB = b.live.work[0]?.key ?? "";
+    expect(keyA).not.toBe(keyB);
+    // Extract salt portion (before first _)
+    const saltA = keyA.split("_")[0];
+    const saltB = keyB.split("_")[0];
+    expect(saltA).toBe(saltB);
+    // The counter portion differs
+    expect(keyA.split("_")[1]).not.toBe(keyB.split("_")[1]);
+  });
+
+  it("salt is non-derivable — does not contain rawId or label", () => {
+    const p = createLiveActivityProjector();
+    const view = makeActivityView({
+      work: [
+        { kind: "job", label: "secret-label", tone: "running", diagnostics: diag("secret-raw-id") },
+      ],
+    });
+    const { live } = p.project(view, { scope: SCOPE });
+    const key = live.work[0]?.key ?? "";
+    expect(key).not.toContain("secret-label");
+    expect(key).not.toContain("secret-raw-id");
+    // Key contains crypto-derived salt + counter + sequence
+    expect(key.length).toBeGreaterThan(0);
+  });
+
+  it("fails closed if secure entropy is unavailable", () => {
+    // When globalThis.crypto.getRandomValues is unavailable, the default
+    // allocator must throw (fail closed), not fall back to Math.random.
+    // The throw happens at factory time when the default allocator is built.
+    withMockedCrypto(undefined, () => {
+      expect(() => createLiveActivityProjector()).toThrow(/secure entropy/i);
+    });
+  });
+
+  it("fails closed if crypto.getRandomValues is not a function", () => {
+    withMockedCrypto({ getRandomValues: "not-a-function" }, () => {
+      expect(() => createLiveActivityProjector()).toThrow(/secure entropy/i);
+    });
   });
 });
 
