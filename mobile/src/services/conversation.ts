@@ -124,9 +124,13 @@ export function createConversationService(
   // Current thread identity and capabilities, set by open() / readProjection().
   // Mutations check these before reaching the wire; a re-read on
   // actionUnavailable refreshes them. ref+capabilities form one fail-closed
-  // lifecycle pair: a new open/readProjection clears both BEFORE awaiting so
-  // mutations cannot send against a prior thread's gates during the in-flight
-  // read, and installs the pair together only on the current epoch's success.
+  // lifecycle pair: a new open/readProjection clears BOTH ref=null and
+  // capabilities=null BEFORE awaiting so the service is fail-closed while the
+  // read is in flight (a mutation cannot send against a prior thread's gates
+  // or the pending thread's not-yet-validated ref). The pair is installed
+  // together only on the current epoch's success; a failed read leaves both
+  // null, so requireRef-only operations (setReasoningEffort, cancelQueued,
+  // loadOlder) also fail before any wire call.
   let ref: string | null = null;
   let capabilities: ThreadCapabilities | null = null;
   let notificationUnsub: (() => void) | null = null;
@@ -138,13 +142,16 @@ export function createConversationService(
   // resolving after close/reopen) no-ops against the live pair.
   let openEpoch = 0;
 
-  function beginOpen(threadRef: string): number {
-    // Starting a new open invalidates the prior epoch and clears the pair
-    // before the await, so the service is fail-closed while the read is in
-    // flight (a mutation cannot send B with A's gates).
+  function beginOpen(_threadRef: string): number {
+    // Starting a new open invalidates the prior epoch and clears BOTH ref
+    // and capabilities before the await, so the service is truly fail-closed
+    // while the read is in flight: no mutation or requireRef-only operation
+    // (setReasoningEffort, cancelQueued, loadOlder) can reach the wire until
+    // the pair is installed together on success. The requested threadRef is
+    // captured only in the epoch; it is NOT written to ref until success.
     openEpoch += 1;
     const epoch = openEpoch;
-    ref = threadRef;
+    ref = null;
     capabilities = null;
     return epoch;
   }
@@ -164,23 +171,30 @@ export function createConversationService(
   // subscribing or replacing the subscription, and WITHOUT loading all turns.
   // Returns the refreshed capabilities. This is the only path the store should
   // use for actionUnavailable recovery — it never disturbs the active
-  // subscription. The cache is only published when both the lifecycle epoch
-  // and the requested ref are unchanged after the await, so a late refresh
-  // for A after close→reopen A (epoch bump) or a same-ref replacement cannot
-  // overwrite the current pair. The requested capabilities are always
-  // returned to the caller (generation-safe store) even when stale.
+  // subscription. The cache is published only when, at request START, the
+  // committed ref equaled threadRef AND, after the await, both the lifecycle
+  // epoch and the committed ref remain unchanged (epoch === epochStart and
+  // ref === threadRef). A refresh started while pending or closed (ref=null)
+  // may never activate the pending/failed ref: startRef !== threadRef, so the
+  // cache is left untouched. The requested capabilities are always returned to
+  // the caller (generation-safe store) even when stale.
   async function refreshCapabilities(
     threadRef: string,
   ): Promise<ThreadCapabilities | null> {
     const epoch = openEpoch;
     const requestedRef = threadRef;
+    const startRef = ref;
     const response: ThreadReadResponse = await client.request("thread/read", {
       ref: threadRef,
       includeTurns: false,
       subscribe: false,
     });
     const refreshed = response.thread.evener.capabilities;
-    if (openEpoch === epoch && ref === requestedRef) {
+    if (
+      startRef === requestedRef &&
+      openEpoch === epoch &&
+      ref === requestedRef
+    ) {
       capabilities = refreshed;
     }
     return refreshed;
@@ -203,8 +217,9 @@ export function createConversationService(
       // The compatibility cursor is intentionally ignored: open() must send
       // exactly the canonical unbounded subscribed open request. Bounded
       // live projection lives exclusively in readProjection; cursor paging
-      // lives exclusively in thread/turns/list. beginOpen clears the pair
-      // before the await so the service is fail-closed during the read.
+      // lives exclusively in thread/turns/list. beginOpen clears BOTH ref
+      // and capabilities before the await so the service is fail-closed
+      // during the read; the pair is installed together only on success.
       const epoch = beginOpen(threadRef);
       const response: ThreadReadResponse = await client.request("thread/read", {
         ref: threadRef,

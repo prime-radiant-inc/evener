@@ -1210,4 +1210,396 @@ describe("ConversationService", () => {
       });
     });
   });
+
+  // R3: beginOpen must make the committed ref/capability pair truly fail-closed
+  // by setting BOTH ref=null and capabilities=null for the entire pending state
+  // and after current failure. Pending/failed open/readProjection must make send,
+  // setReasoningEffort, cancelQueued, loadOlder, and every requireRef-only/gated
+  // operation fail before any wire call. A refresh started while pending/closed
+  // may never activate the pending/failed ref.
+  describe("pending/failed fail-closed for requireRef-only operations (R3)", () => {
+    it("pending open B denies setReasoningEffort before any wire call", async () => {
+      const { client, service } = setup();
+      const threadA = makeThread({
+        id: "thread-A",
+        evener: {
+          ref: "ref-A",
+          capabilities: ALL_TRUE_CAPS,
+          queue: { revision: 0 },
+        },
+      });
+      const threadB = makeThread({
+        id: "thread-B",
+        evener: {
+          ref: "ref-B",
+          capabilities: ALL_TRUE_CAPS,
+          queue: { revision: 0 },
+        },
+      });
+
+      let resolveBRead = (_resp: ThreadReadResponse) => {};
+      const bReadPromise = new Promise<ThreadReadResponse>((r) => {
+        resolveBRead = r;
+      });
+      client.on("thread/read", (params) => {
+        const p = params as { ref: string };
+        if (p.ref === "ref-A") return makeReadResponse(threadA);
+        return bReadPromise;
+      });
+
+      await service.open("ref-A");
+      // Start open("ref-B") — must clear ref+caps before awaiting B's read.
+      const openPromise = service.open("ref-B");
+      client.on("thread/reasoning-effort/set", () => EMPTY_RESPONSE);
+      await expect(service.setReasoningEffort("high")).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "thread/reasoning-effort/set"),
+      ).toBeUndefined();
+      resolveBRead(makeReadResponse(threadB));
+      await openPromise;
+    });
+
+    it("pending open B denies cancelQueued before any wire call", async () => {
+      const { client, service } = setup();
+      const threadA = makeThread({
+        id: "thread-A",
+        evener: {
+          ref: "ref-A",
+          capabilities: ALL_TRUE_CAPS,
+          queue: { revision: 0 },
+        },
+      });
+      const threadB = makeThread({
+        id: "thread-B",
+        evener: {
+          ref: "ref-B",
+          capabilities: ALL_TRUE_CAPS,
+          queue: { revision: 0 },
+        },
+      });
+
+      let resolveBRead = (_resp: ThreadReadResponse) => {};
+      const bReadPromise = new Promise<ThreadReadResponse>((r) => {
+        resolveBRead = r;
+      });
+      client.on("thread/read", (params) => {
+        const p = params as { ref: string };
+        if (p.ref === "ref-A") return makeReadResponse(threadA);
+        return bReadPromise;
+      });
+
+      await service.open("ref-A");
+      const openPromise = service.open("ref-B");
+      client.on(
+        "turn/cancelQueued",
+        () =>
+          ({
+            removedText: "x",
+            receipt: makeReceipt(),
+          }) as TurnCancelQueuedResponse,
+      );
+      await expect(service.cancelQueued(0, "entry-1")).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "turn/cancelQueued"),
+      ).toBeUndefined();
+      resolveBRead(makeReadResponse(threadB));
+      await openPromise;
+    });
+
+    it("pending open B denies loadOlder before any wire call", async () => {
+      const { client, service } = setup();
+      const threadA = makeThread({
+        id: "thread-A",
+        evener: {
+          ref: "ref-A",
+          capabilities: ALL_TRUE_CAPS,
+          queue: { revision: 0 },
+        },
+      });
+      const threadB = makeThread({
+        id: "thread-B",
+        evener: {
+          ref: "ref-B",
+          capabilities: ALL_TRUE_CAPS,
+          queue: { revision: 0 },
+        },
+      });
+
+      let resolveBRead = (_resp: ThreadReadResponse) => {};
+      const bReadPromise = new Promise<ThreadReadResponse>((r) => {
+        resolveBRead = r;
+      });
+      client.on("thread/read", (params) => {
+        const p = params as { ref: string };
+        if (p.ref === "ref-A") return makeReadResponse(threadA);
+        return bReadPromise;
+      });
+
+      await service.open("ref-A");
+      const openPromise = service.open("ref-B");
+      client.on(
+        "thread/turns/list",
+        () =>
+          ({
+            data: [],
+            nextCursor: undefined,
+          }) as ThreadTurnsListResponse,
+      );
+      await expect(service.loadOlder("cursor-x")).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "thread/turns/list"),
+      ).toBeUndefined();
+      resolveBRead(makeReadResponse(threadB));
+      await openPromise;
+    });
+
+    it("pending readProjection B denies setReasoningEffort before any wire call", async () => {
+      const { client, service } = setup();
+      const threadA = makeThread({
+        id: "thread-A",
+        evener: {
+          ref: "ref-A",
+          capabilities: ALL_TRUE_CAPS,
+          queue: { revision: 0 },
+        },
+      });
+      const threadB = makeThread({
+        id: "thread-B",
+        evener: {
+          ref: "ref-B",
+          capabilities: ALL_TRUE_CAPS,
+          queue: { revision: 0 },
+        },
+      });
+
+      let resolveBRead = (_resp: ThreadReadResponse) => {};
+      const bReadPromise = new Promise<ThreadReadResponse>((r) => {
+        resolveBRead = r;
+      });
+      client.on("thread/read", (params) => {
+        const p = params as { ref: string };
+        if (p.ref === "ref-A") return makeReadResponse(threadA);
+        return bReadPromise;
+      });
+
+      await service.open("ref-A");
+      // Start readProjection("ref-B") — must clear ref+caps before awaiting.
+      const rpPromise = service.readProjection("ref-B");
+      client.on("thread/reasoning-effort/set", () => EMPTY_RESPONSE);
+      await expect(service.setReasoningEffort("high")).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "thread/reasoning-effort/set"),
+      ).toBeUndefined();
+      resolveBRead(makeReadResponse(threadB));
+      await rpPromise;
+    });
+
+    it("failed open denies setReasoningEffort before any wire call", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      // A second open that fails must not leave ref-2 installed.
+      client.on("thread/read", () => {
+        throw new WireError("boom", -32603, {});
+      });
+      await expect(service.open("ref-2")).rejects.toThrow();
+      client.on("thread/reasoning-effort/set", () => EMPTY_RESPONSE);
+      await expect(service.setReasoningEffort("high")).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "thread/reasoning-effort/set"),
+      ).toBeUndefined();
+    });
+
+    it("failed open denies cancelQueued before any wire call", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      client.on("thread/read", () => {
+        throw new WireError("boom", -32603, {});
+      });
+      await expect(service.open("ref-2")).rejects.toThrow();
+      client.on(
+        "turn/cancelQueued",
+        () =>
+          ({
+            removedText: "x",
+            receipt: makeReceipt(),
+          }) as TurnCancelQueuedResponse,
+      );
+      await expect(service.cancelQueued(0, "entry-1")).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "turn/cancelQueued"),
+      ).toBeUndefined();
+    });
+
+    it("failed open denies loadOlder before any wire call", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      client.on("thread/read", () => {
+        throw new WireError("boom", -32603, {});
+      });
+      await expect(service.open("ref-2")).rejects.toThrow();
+      client.on(
+        "thread/turns/list",
+        () =>
+          ({
+            data: [],
+            nextCursor: undefined,
+          }) as ThreadTurnsListResponse,
+      );
+      await expect(service.loadOlder("cursor-x")).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "thread/turns/list"),
+      ).toBeUndefined();
+    });
+
+    it("failed readProjection denies setReasoningEffort before any wire call", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      client.on("thread/read", () => {
+        throw new WireError("boom", -32603, {});
+      });
+      await expect(service.readProjection("ref-2")).rejects.toThrow();
+      client.on("thread/reasoning-effort/set", () => EMPTY_RESPONSE);
+      await expect(service.setReasoningEffort("high")).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "thread/reasoning-effort/set"),
+      ).toBeUndefined();
+    });
+  });
+
+  describe("refresh during pending/after failure never activates pending/failed ref (R3)", () => {
+    it("refresh B resolving during pending A-open does not publish to cache", async () => {
+      // A refresh started while A's open is pending (ref=null) may never
+      // activate the pending ref. The returned caps are available to the
+      // caller, but the mutation-gating cache stays null/fail-closed until
+      // the successful open installs the pair.
+      const { client, service } = setup();
+      // Refresh response caps have send=false; open response caps have
+      // send=true. If the refresh leaked into the cache, send would throw
+      // even after the open succeeds.
+      const capsRefresh: ThreadCapabilities = {
+        ...ALL_TRUE_CAPS,
+        send: false,
+      };
+      const threadRefresh = makeThread({
+        id: "thread-B",
+        evener: {
+          ref: "ref-B",
+          capabilities: capsRefresh,
+          queue: { revision: 0 },
+        },
+      });
+      const threadOpen = makeThread({
+        id: "thread-B",
+        evener: {
+          ref: "ref-B",
+          capabilities: ALL_TRUE_CAPS,
+          queue: { revision: 0 },
+        },
+      });
+
+      let resolveOpenB = (_resp: ThreadReadResponse) => {};
+      const openBPromise = new Promise<ThreadReadResponse>((r) => {
+        resolveOpenB = r;
+      });
+      let resolveRefreshB = (_resp: ThreadReadResponse) => {};
+      const refreshBPromise0 = new Promise<ThreadReadResponse>((r) => {
+        resolveRefreshB = r;
+      });
+      client.on("thread/read", (params) => {
+        const p = params as { ref: string; subscribe?: boolean };
+        if (p.ref === "ref-B" && p.subscribe === false) return refreshBPromise0;
+        if (p.ref === "ref-B") return openBPromise;
+        return makeReadResponse(makeThread());
+      });
+
+      // Start open("ref-B") — ref=null, caps=null during pending.
+      const openPromise = service.open("ref-B");
+      // Start a refresh of B while B's open is still pending.
+      const refreshPromise = service.refreshCapabilities("ref-B");
+      // Resolve the refresh first (it should NOT publish since ref was null
+      // at refresh START).
+      resolveRefreshB(makeReadResponse(threadRefresh));
+      const refreshCaps = await refreshPromise;
+      // Returned caps are available to the caller.
+      expect(refreshCaps).toEqual(capsRefresh);
+
+      // The cache must still be fail-closed (ref=null): send throws before wire.
+      client.on(
+        "turn/start",
+        () =>
+          ({
+            turn: { id: "t1", itemsView: "default", status: "running" },
+            receipt: makeReceipt(),
+          }) as TurnStartResponse,
+      );
+      await expect(service.send(textInput("hello"))).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "turn/start"),
+      ).toBeUndefined();
+
+      // Now complete B's open — the pair installs and send reaches wire.
+      resolveOpenB(makeReadResponse(threadOpen));
+      await openPromise;
+      const receipt = await service.send(textInput("hello"));
+      expect(receipt).toBeDefined();
+      const startCalls = client.calls.filter((c) => c.method === "turn/start");
+      expect(startCalls.length).toBeGreaterThan(0);
+      expect(startCalls[startCalls.length - 1]?.params).toMatchObject({
+        ref: "ref-B",
+      });
+    });
+
+    it("refresh B resolving after failed open does not publish to cache", async () => {
+      // After a failed open, ref=null. A refresh resolving after the failure
+      // must not publish its caps into the fail-closed cache.
+      const { client, service } = setup();
+      const capsRefresh: ThreadCapabilities = {
+        ...ALL_TRUE_CAPS,
+        send: false,
+      };
+      const threadRefresh = makeThread({
+        id: "thread-B",
+        evener: {
+          ref: "ref-B",
+          capabilities: capsRefresh,
+          queue: { revision: 0 },
+        },
+      });
+
+      let resolveRefresh = (_resp: ThreadReadResponse) => {};
+      const refreshPromise0 = new Promise<ThreadReadResponse>((r) => {
+        resolveRefresh = r;
+      });
+      client.on("thread/read", (params) => {
+        const p = params as { ref: string; subscribe?: boolean };
+        // open("ref-B") fails synchronously.
+        if (p.ref === "ref-B" && p.subscribe !== false) {
+          throw new WireError("boom", -32603, {});
+        }
+        return refreshPromise0;
+      });
+
+      // Start open("ref-B") — it will fail. ref stays null.
+      await expect(service.open("ref-B")).rejects.toThrow();
+      // Start a refresh of B while ref is null (after failure).
+      const refreshPromise = service.refreshCapabilities("ref-B");
+      resolveRefresh(makeReadResponse(threadRefresh));
+      const refreshCaps = await refreshPromise;
+      expect(refreshCaps).toEqual(capsRefresh);
+
+      // Cache must still be fail-closed: send throws before wire.
+      client.on(
+        "turn/start",
+        () =>
+          ({
+            turn: { id: "t1", itemsView: "default", status: "running" },
+            receipt: makeReceipt(),
+          }) as TurnStartResponse,
+      );
+      await expect(service.send(textInput("hello"))).rejects.toThrow();
+      expect(
+        client.calls.find((c) => c.method === "turn/start"),
+      ).toBeUndefined();
+    });
+  });
 });
