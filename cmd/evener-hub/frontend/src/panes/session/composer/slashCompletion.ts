@@ -123,10 +123,9 @@ interface SlashMatch {
   start: number;
 }
 
-interface SlashEmbedding {
+export interface SlashEmbedding {
   end: number;
   start: number;
-  currentRun: number;
   longestRun: number;
 }
 
@@ -141,55 +140,143 @@ function compareEmbeddings(a: SlashEmbedding, b: SlashEmbedding): number {
   return a.start - b.start;
 }
 
-function scoreSlashMatch(item: SlashMenuItem, query: string, index: number): SlashMatch | null {
-  const label = item.label.toLowerCase();
-  const firstCharacter = query[0];
-  if (firstCharacter === undefined) return null;
+export interface SlashMatchEvaluation {
+  embedding: SlashEmbedding | null;
+  operations: number;
+}
 
-  let embeddings: SlashEmbedding[] = [];
-  for (let labelIndex = 0; labelIndex < label.length; labelIndex += 1) {
-    if (label[labelIndex] === firstCharacter) {
-      embeddings.push({ end: labelIndex, start: labelIndex, currentRun: 1, longestRun: 1 });
+// evaluateSlashLabel finds the best valid embedding without enumerating all
+// subsequences. It first computes the maximum possible contiguous run (the
+// longest common substring), then considers every matching block of that
+// length. Prefix/suffix bounds represent every embedding that can achieve the
+// winning contiguousness while keeping the work polynomial.
+export function evaluateSlashLabel(rawLabel: string, rawQuery: string): SlashMatchEvaluation {
+  const label = rawLabel.toLowerCase();
+  const query = rawQuery.toLowerCase();
+  const queryLength = query.length;
+  const labelLength = label.length;
+  let operations = 0;
+  if (queryLength === 0 || labelLength === 0) return { embedding: null, operations };
+  if (label === query) {
+    return { embedding: { start: 0, end: queryLength - 1, longestRun: queryLength }, operations };
+  }
+
+  let longestRun = 0;
+  let previousRuns = new Array<number>(labelLength).fill(0);
+  for (let queryIndex = 0; queryIndex < queryLength; queryIndex += 1) {
+    const currentRuns = new Array<number>(labelLength).fill(0);
+    for (let labelIndex = 0; labelIndex < labelLength; labelIndex += 1) {
+      operations += 1;
+      if (query[queryIndex] !== label[labelIndex]) continue;
+      const previousRun = previousRuns[labelIndex - 1] ?? 0;
+      const run = queryIndex === 0 || labelIndex === 0 ? 1 : previousRun + 1;
+      currentRuns[labelIndex] = run;
+      longestRun = Math.max(longestRun, run);
+    }
+    previousRuns = currentRuns;
+  }
+  if (longestRun === 0) return { embedding: null, operations };
+
+  const fixedEnds = Array.from({ length: labelLength }, () =>
+    new Array<number | undefined>(queryLength + 1).fill(undefined),
+  );
+  for (let start = 0; start < labelLength; start += 1) {
+    operations += 1;
+    const row = fixedEnds[start];
+    if (!row || label[start] !== query[0]) continue;
+    row[1] = start;
+    for (let length = 2; length <= queryLength; length += 1) {
+      operations += 1;
+      const previousEnd = row[length - 1];
+      if (previousEnd === undefined) break;
+      const character = query[length - 1];
+      if (character === undefined) break;
+      const end = label.indexOf(character, previousEnd + 1);
+      operations += 1;
+      if (end < 0) break;
+      row[length] = end;
     }
   }
 
-  for (let queryIndex = 1; queryIndex < query.length; queryIndex += 1) {
-    const queryCharacter = query[queryIndex];
-    if (queryCharacter === undefined) return null;
-    const bestByState = new Map<string, SlashEmbedding>();
-    for (let labelIndex = 0; labelIndex < label.length; labelIndex += 1) {
-      if (label[labelIndex] !== queryCharacter) continue;
-      for (const previous of embeddings) {
-        if (previous.end >= labelIndex) continue;
-        const currentRun = labelIndex === previous.end + 1 ? previous.currentRun + 1 : 1;
-        const candidate: SlashEmbedding = {
-          end: labelIndex,
-          start: previous.start,
-          currentRun,
-          longestRun: Math.max(previous.longestRun, currentRun),
-        };
-        // Beginning and longestRun are both part of the eventual score, but a
-        // shorter run can catch up after later characters (and then beat a
-        // non-beginning embedding). Keep each Pareto-relevant combination
-        // until all query characters have been matched.
-        const stateKey = `${labelIndex}:${currentRun}:${candidate.start === 0 ? 1 : 0}:${candidate.longestRun}`;
-        const existing = bestByState.get(stateKey);
-        if (!existing || compareEmbeddings(candidate, existing) < 0) {
-          bestByState.set(stateKey, candidate);
+  const latestStarts = Array.from({ length: queryLength + 1 }, () =>
+    new Array<number | undefined>(labelLength + 1).fill(undefined),
+  );
+  for (let length = 1; length <= queryLength; length += 1) {
+    const row = latestStarts[length];
+    if (!row) continue;
+    for (let bound = 1; bound <= labelLength; bound += 1) {
+      for (let start = bound - 1; start >= 0; start -= 1) {
+        operations += 1;
+        const end = fixedEnds[start]?.[length];
+        if (end !== undefined && end < bound) {
+          row[bound] = start;
+          break;
         }
       }
     }
-    embeddings = [...bestByState.values()];
   }
 
-  if (embeddings.length === 0) return null;
-  const embedding = embeddings.reduce((best, candidate) => (compareEmbeddings(candidate, best) < 0 ? candidate : best));
-  const start = embedding.start;
-  const end = embedding.end;
+  const suffixEnds = Array.from({ length: queryLength + 1 }, () =>
+    new Array<number | undefined>(labelLength + 1).fill(undefined),
+  );
+  for (let start = 0; start < queryLength; start += 1) {
+    const row = suffixEnds[start];
+    if (!row) continue;
+    for (let bound = 0; bound <= labelLength; bound += 1) {
+      let end = bound - 1;
+      let matched = true;
+      for (let queryIndex = start; queryIndex < queryLength; queryIndex += 1) {
+        operations += 1;
+        const character = query[queryIndex];
+        if (character === undefined) {
+          matched = false;
+          break;
+        }
+        end = label.indexOf(character, end + 1);
+        operations += 1;
+        if (end < 0) {
+          matched = false;
+          break;
+        }
+      }
+      if (matched) row[bound] = end;
+    }
+  }
+
+  let best: SlashEmbedding | null = null;
+  const consider = (candidate: SlashEmbedding) => {
+    if (!best || compareEmbeddings(candidate, best) < 0) best = candidate;
+  };
+  for (let queryStart = 0; queryStart + longestRun <= queryLength; queryStart += 1) {
+    const block = query.slice(queryStart, queryStart + longestRun);
+    for (let labelStart = 0; labelStart + longestRun <= labelLength; labelStart += 1) {
+      operations += 1;
+      if (!label.startsWith(block, labelStart)) continue;
+      const blockEnd = labelStart + longestRun - 1;
+      const end =
+        queryStart + longestRun === queryLength ? blockEnd : suffixEnds[queryStart + longestRun]?.[blockEnd + 1];
+      if (end === undefined) continue;
+
+      const start = queryStart === 0 ? labelStart : latestStarts[queryStart]?.[labelStart];
+      if (start !== undefined) consider({ start, end, longestRun });
+
+      const beginningPrefixEnd = fixedEnds[0]?.[queryStart];
+      const begins =
+        queryStart === 0 ? labelStart === 0 : beginningPrefixEnd !== undefined && beginningPrefixEnd < labelStart;
+      if (begins && (start !== 0 || queryStart !== 0)) consider({ start: 0, end, longestRun });
+    }
+  }
+  return { embedding: best, operations };
+}
+
+function scoreSlashMatch(item: SlashMenuItem, query: string, index: number): SlashMatch | null {
+  const { embedding } = evaluateSlashLabel(item.label, query);
+  if (!embedding) return null;
+  const { start, end } = embedding;
   return {
     item,
     index,
-    exact: label === query,
+    exact: item.label.toLowerCase() === query,
     begins: start === 0,
     contiguousness: embedding.longestRun,
     span: end - start,

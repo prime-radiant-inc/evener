@@ -2,6 +2,7 @@ import { expect, test } from "vitest";
 import type { CommandDescriptor } from "../../../protocol/types.gen";
 import type { ScopedCommand } from "../../../shell/palette/commands";
 import {
+  evaluateSlashLabel,
   filterSlashMenuItems,
   mergeSlashCommands,
   parseSlashToken,
@@ -272,6 +273,14 @@ test("the slash token follows the documented bare or singly-qualified name gramm
 test("the parser accepts a name at the exact 128-character limit", () => {
   const name = "a".repeat(128);
   expect(parseSlashToken(`/${name}`, name.length + 1)).toEqual({ start: 0, end: name.length + 1, query: name });
+});
+
+test("max-length repeated fuzzy labels stay within the deterministic operation bound", () => {
+  const label = "a".repeat(128);
+  const query = "a".repeat(127);
+  const result = evaluateSlashLabel(label, query);
+  expect(result.embedding).toEqual({ start: 0, end: 126, longestRun: 127 });
+  expect(result.operations).toBeLessThan(5_000_000);
 });
 
 // --- spliceSlashCommand ---------------------------------------------------
