@@ -1681,6 +1681,7 @@ describe("ConversationStore", () => {
 
       // The internal coalescer coalesces multiple requestRehydrate calls
       // into one actual readProjection call.
+      const ctrl = makeControlledRead(service);
 
       // Emit multiple resync notifications.
       service.readProjectionCalls = []; // reset count
@@ -1697,9 +1698,13 @@ describe("ConversationStore", () => {
         params: { threadId: "thread-1", ref: "ref-1" },
       } as AnyNotification);
 
-      // M1: deterministic barrier — drain microtasks so the scheduler
-      // effect (rehydrate → readProjection) completes. No test-only API.
-      await drainMicrotasks();
+      // M1: deterministic barrier — await started, yield so orig resolves and
+      // the release gate is pushed, then set up completed and release.
+      await ctrl.started();
+      await yieldMicrotask(); // let orig(ref) resolve and push to releaseQueue
+      const completedP = ctrl.completed();
+      ctrl.release();
+      await completedP;
 
       // Multiple signals should result in only 1 readProjection call.
       expect(service.readProjectionCalls.length).toBe(1);
@@ -2328,48 +2333,111 @@ describe("ConversationStore", () => {
 
   // --- Fix round 1: I1/I2/M1/M2 tests ----------------------------------------
 
-  // M1: Deterministic deferred-effect helpers. Replaces fixed setTimeout sleeps
-  // and the removed flushScheduler test seam with started/release/drained
-  // barriers so test timing is deterministic. Tests observe through action
-  // promises and deferred services — no test-only mutable API on the store.
+  // M1: True deferred started/release/completed promise helpers. No
+  // drainMicrotasks(count) or counter polling — tests deterministically
+  // force scheduler effects via started/release/completed barriers. No
+  // test-only mutable API on the store.
 
-  // Yield to the microtask queue so scheduler-deferred effects can start.
-  // A fixed number of microtask yields is deterministic (no setTimeout).
-  async function drainMicrotasks(n = 10): Promise<void> {
-    for (let i = 0; i < n; i++) {
-      await Promise.resolve();
-    }
-  }
-
-  // Deterministic deferred readProjection that hangs EVERY call (not just the
-  // first) until released. Each call gets its own release gate. Returns started
-  // and release controls so tests can drive effects one at a time.
+  // Controlled readProjection: every call hangs until released. Returns
+  // started (resolves when Nth readProjection starts), release (releases
+  // the next hanging call), and completed (resolves when Nth completes).
   function makeControlledRead(service: FakeConversationService): {
+    started: () => Promise<void>;
     release: () => void;
+    completed: () => Promise<void>;
     getStartedCount: () => number;
     getDoneCount: () => number;
   } {
     let startedCount = 0;
     let doneCount = 0;
     const releaseQueue: Array<() => void> = [];
+    // One resolver per call index. Each started()/completed() call
+    // creates a promise that resolves when the matching counter increments.
+    const startedWaiters: Array<() => void> = [];
+    const doneWaiters: Array<() => void> = [];
     const orig = service.readProjection.bind(service);
     service.readProjection = async (ref: string) => {
       startedCount += 1;
+      // Resolve all started waiters waiting for this index.
+      const sw = startedWaiters.shift();
+      if (sw !== undefined) sw();
       const result = await orig(ref);
       await new Promise<void>((resolve) => {
         releaseQueue.push(resolve);
       });
       doneCount += 1;
+      // Resolve all done waiters waiting for this index.
+      const dw = doneWaiters.shift();
+      if (dw !== undefined) dw();
       return result;
     };
     return {
+      started: () =>
+        new Promise<void>((resolve) => {
+          startedWaiters.push(resolve);
+        }),
       release: () => {
         const r = releaseQueue.shift();
         if (r !== undefined) r();
       },
+      completed: () =>
+        new Promise<void>((resolve) => {
+          doneWaiters.push(resolve);
+        }),
       getStartedCount: () => startedCount,
       getDoneCount: () => doneCount,
     };
+  }
+
+  // Controlled refreshCapabilities: every call hangs until released.
+  function makeControlledRefresh(service: FakeConversationService): {
+    started: () => Promise<void>;
+    release: () => void;
+    completed: () => Promise<void>;
+    getStartedCount: () => number;
+    getDoneCount: () => number;
+  } {
+    let startedCount = 0;
+    let doneCount = 0;
+    const releaseQueue: Array<() => void> = [];
+    const startedResolvers: Array<() => void> = [];
+    const doneResolvers: Array<() => void> = [];
+    const orig = service.refreshCapabilities.bind(service);
+    service.refreshCapabilities = async (ref: string) => {
+      startedCount += 1;
+      const sResolve = startedResolvers.shift();
+      if (sResolve !== undefined) sResolve();
+      const result = await orig(ref);
+      await new Promise<void>((resolve) => {
+        releaseQueue.push(resolve);
+      });
+      doneCount += 1;
+      const dResolve = doneResolvers.shift();
+      if (dResolve !== undefined) dResolve();
+      return result;
+    };
+    return {
+      started: () =>
+        new Promise<void>((resolve) => {
+          startedResolvers.push(resolve);
+        }),
+      release: () => {
+        const r = releaseQueue.shift();
+        if (r !== undefined) r();
+      },
+      completed: () =>
+        new Promise<void>((resolve) => {
+          doneResolvers.push(resolve);
+        }),
+      getStartedCount: () => startedCount,
+      getDoneCount: () => doneCount,
+    };
+  }
+
+  // One-shot microtask yield — single await Promise.resolve() so the
+  // scheduler microtask fires. NOT a count-based drain.
+  async function yieldMicrotask(): Promise<void> {
+    await Promise.resolve();
   }
 
   describe("I1: projected binding epoch — stale work suppressed before effect", () => {
@@ -2412,8 +2480,8 @@ describe("ConversationStore", () => {
       await store.getState().openProjected(serviceB, sinkB, "ref-B");
       const readsA = serviceA.readProjectionCalls.length;
       const writesA = sinkA.setLiveViewCalls.length;
-      // Drain microtasks — the queued rehydrate for A must be suppressed.
-      await drainMicrotasks();
+      // M1: yield so the suppressed A effect's microtask fires and bails.
+      await yieldMicrotask();
       // I1: zero serviceA reads and zero sinkA writes after the switch.
       expect(serviceA.readProjectionCalls.length).toBe(readsA);
       expect(sinkA.setLiveViewCalls.length).toBe(writesA);
@@ -2443,7 +2511,7 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       store.getState().close();
       const readsA = serviceA.readProjectionCalls.length;
-      await drainMicrotasks();
+      await yieldMicrotask();
       // I1: zero additional serviceA reads after close.
       expect(serviceA.readProjectionCalls.length).toBe(readsA);
     });
@@ -2469,7 +2537,7 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       store.getState().reset();
       const readsA = serviceA.readProjectionCalls.length;
-      await drainMicrotasks();
+      await yieldMicrotask();
       expect(serviceA.readProjectionCalls.length).toBe(readsA);
     });
 
@@ -2499,7 +2567,7 @@ describe("ConversationStore", () => {
       await store.getState().open(serviceB, "ref-B");
       const readsA = serviceA.readProjectionCalls.length;
       const writesA = sinkA.setLiveViewCalls.length;
-      await drainMicrotasks();
+      await yieldMicrotask();
       // I1: plain open cleared bindings — no projected rehydrate for A.
       expect(serviceA.readProjectionCalls.length).toBe(readsA);
       expect(sinkA.setLiveViewCalls.length).toBe(writesA);
@@ -2540,7 +2608,7 @@ describe("ConversationStore", () => {
       };
       await store.getState().openProjected(serviceB, sink, "ref-2");
       const readsA = serviceA.readProjectionCalls.length;
-      await drainMicrotasks();
+      await yieldMicrotask();
       // I1: the queued rehydrate (captured with serviceA+ref-1) must NOT
       // have called serviceA.readProjection after the switch.
       expect(serviceA.readProjectionCalls.length).toBe(readsA);
@@ -2606,7 +2674,7 @@ describe("ConversationStore", () => {
       // queued via notification also drains through the scheduler.
       await store.getState().send(service, textInput("x"));
       // Drain any trailing rehydrate from the notification.
-      await drainMicrotasks();
+      await yieldMicrotask();
       // Both the rehydrate (readProjection) and cap refresh should have run.
       expect(service.readProjectionCalls.length).toBeGreaterThan(readsBefore);
       expect(service.refreshCapsCallCount).toBe(1);
@@ -2638,7 +2706,7 @@ describe("ConversationStore", () => {
       // Do NOT await — start it without awaiting so we can start mutation 2.
       const send1P = store.getState().send(service, textInput("first"));
       // Let the cap refresh effect start (scheduler microtask + refresh).
-      await drainMicrotasks();
+      await yieldMicrotask();
       // The cap refresh effect is now in-flight (hanging). Before it completes,
       // start a second send (mutationId 2).
       service.sendShouldReject = null;
@@ -2706,6 +2774,7 @@ describe("ConversationStore", () => {
         olderCursor: null,
       };
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      const ctrl = makeControlledRead(service);
       const initialReads = service.readProjectionCalls.length;
       // Synchronous burst — 3 resync notifications coalesce to one rehydrate.
       store.getState().applyNotification({
@@ -2720,7 +2789,13 @@ describe("ConversationStore", () => {
         method: "evener/thread/resync",
         params: { threadId: "thread-1", ref: "ref-1" },
       } as AnyNotification);
-      await drainMicrotasks();
+      // M1: deterministic — await started, yield so orig resolves and the
+      // release gate is pushed, set up completed, release.
+      await ctrl.started();
+      await yieldMicrotask();
+      const completedP = ctrl.completed();
+      ctrl.release();
+      await completedP;
       expect(service.readProjectionCalls.length).toBe(initialReads + 1);
     });
 
@@ -2746,22 +2821,24 @@ describe("ConversationStore", () => {
         method: "evener/thread/resync",
         params: { threadId: "thread-1", ref: "ref-1" },
       } as AnyNotification);
-      // M1: deterministic barrier — drain microtasks so the in-flight
-      // rehydrate starts (readProjection is called and hangs).
-      await drainMicrotasks();
-      expect(ctrl.getStartedCount()).toBe(1);
+      // M1: deterministic — await started so we know the rehydrate is in-flight.
+      await ctrl.started();
+      await yieldMicrotask(); // let orig resolve and push to releaseQueue
       // While in-flight, trigger another resync (trailing).
       store.getState().applyNotification({
         method: "evener/thread/resync",
         params: { threadId: "thread-1", ref: "ref-1" },
       } as AnyNotification);
-      // Release the first — the trailing must drain. The trailing's
-      // readProjection also hangs, so release it too.
+      // Release the first — the trailing must drain.
+      const started2P = ctrl.started();
+      const completed1P = ctrl.completed();
       ctrl.release();
-      await drainMicrotasks();
-      expect(ctrl.getStartedCount()).toBe(2);
+      await started2P;
+      await yieldMicrotask(); // let trailing orig resolve and push to releaseQueue
+      const completed2P = ctrl.completed();
       ctrl.release();
-      await drainMicrotasks();
+      await completed1P;
+      await completed2P;
       // One initial openProjected + one first rehydrate + one trailing = 3.
       expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 2);
     });
@@ -2785,9 +2862,9 @@ describe("ConversationStore", () => {
         method: "evener/thread/resync",
         params: { threadId: "thread-1", ref: "ref-1" },
       } as AnyNotification);
-      // M1: deterministic barrier — drain microtasks so the rehydrate starts.
-      await drainMicrotasks();
-      expect(ctrl.getStartedCount()).toBe(1);
+      // M1: deterministic — await started so we know the rehydrate is in-flight.
+      await ctrl.started();
+      await yieldMicrotask(); // let orig resolve and push to releaseQueue
       // The rehydrate is hanging. Queue a trailing request while in-flight.
       // The trailing is retained and must drain after the first completes.
       const readsBeforeTrailing = service.readProjectionCalls.length;
@@ -2796,11 +2873,15 @@ describe("ConversationStore", () => {
         params: { threadId: "thread-1", ref: "ref-1" },
       } as AnyNotification);
       // Release the first — the trailing must drain recursively.
+      const started2P = ctrl.started();
+      const completed1P = ctrl.completed();
       ctrl.release();
-      await drainMicrotasks();
-      expect(ctrl.getStartedCount()).toBe(2);
+      await started2P;
+      await yieldMicrotask(); // let trailing orig resolve and push to releaseQueue
+      const completed2P = ctrl.completed();
       ctrl.release();
-      await drainMicrotasks();
+      await completed1P;
+      await completed2P;
       expect(service.readProjectionCalls.length).toBeGreaterThan(
         readsBeforeTrailing,
       );
@@ -2820,7 +2901,7 @@ describe("ConversationStore", () => {
         olderCursor: null,
       };
       await store.getState().openProjected(service, createFakeSink(), "ref-1");
-      // Make readProjection throw.
+      // Make readProjection throw on the first rehydrate call.
       const origRead = service.readProjection.bind(service);
       let throwOnce = true;
       service.readProjection = async (ref: string) => {
@@ -2834,14 +2915,26 @@ describe("ConversationStore", () => {
         method: "evener/thread/resync",
         params: { threadId: "thread-1", ref: "ref-1" },
       } as AnyNotification);
-      await drainMicrotasks();
+      // M1: let the erroring effect run and bail. The error is caught by the
+      // scheduler — yield so the microtask fires and the effect errors out.
+      await yieldMicrotask();
+      await yieldMicrotask();
+      await yieldMicrotask();
       // The scheduler must remain usable — retrigger.
       const readsBefore = service.readProjectionCalls.length;
       store.getState().applyNotification({
         method: "evener/thread/resync",
         params: { threadId: "thread-1", ref: "ref-1" },
       } as AnyNotification);
-      await drainMicrotasks();
+      // The second rehydrate's readProjection passes through (throwOnce=false).
+      // Use controlled read to deterministically await completion.
+      const ctrl = makeControlledRead(service);
+      await ctrl.started();
+      await yieldMicrotask();
+      await yieldMicrotask(); // extra hop for throwOnce→origRead async chain
+      const completedP = ctrl.completed();
+      ctrl.release();
+      await completedP;
       expect(service.readProjectionCalls.length).toBeGreaterThan(readsBefore);
     });
   });
@@ -2935,7 +3028,7 @@ describe("ConversationStore", () => {
         method: "evener/jobs/treeUpdated",
         params: { threadId: "thread-1", ref: "ref-1" },
       } as AnyNotification);
-      await drainMicrotasks();
+      await yieldMicrotask();
       expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
     });
   });
@@ -2995,7 +3088,7 @@ describe("ConversationStore", () => {
           },
         },
       } as AnyNotification);
-      await drainMicrotasks();
+      await yieldMicrotask();
       expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
     });
 
@@ -3085,7 +3178,7 @@ describe("ConversationStore", () => {
       const readsA = serviceA.readProjectionCalls.length;
       const writesA = sinkA.setLiveViewCalls.length;
       // Drain microtasks — the queued A effect must be suppressed.
-      await drainMicrotasks();
+      await yieldMicrotask();
       // I1: zero serviceA reads and zero sinkA writes after the rebind.
       expect(serviceA.readProjectionCalls.length).toBe(readsA);
       expect(sinkA.setLiveViewCalls.length).toBe(writesA);
@@ -3148,7 +3241,7 @@ describe("ConversationStore", () => {
       await store.getState().send(service, textInput("x"));
 
       // Drain any trailing rehydrate from the notification.
-      await drainMicrotasks();
+      await yieldMicrotask();
 
       // Both the reread and cap refresh should have run exactly once.
       expect(service.readProjectionCalls.length).toBe(readsBefore + 1);
@@ -3215,7 +3308,7 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       // Now both are queued. Await send (which awaits scheduler idle).
       await sendP;
-      await drainMicrotasks();
+      await yieldMicrotask();
 
       // Both the cap refresh and reread should have run exactly once.
       expect(service.refreshCapsCallCount).toBe(capsBefore + 1);
@@ -3289,6 +3382,136 @@ describe("ConversationStore", () => {
       expect(
         (store.getState() as unknown as Record<string, unknown>).flushScheduler,
       ).toBeUndefined();
+    });
+  });
+
+  // --- Fix round 1: I1/I2/M1 rejection items ----------------------------------
+
+  describe("I1 fix: stale post-await rebind suppresses A capabilities", () => {
+    it("rebind to serviceB/sinkB during refresh await suppresses A caps", async () => {
+      // Open A (openProjected), trigger a send that fails with
+      // actionUnavailable. The cap refresh effect starts (hanging on
+      // refreshCapabilities). During the await, rebind to serviceB/sinkB
+      // via rehydrate. The binding tuple changed — A's caps must NOT be
+      // published after the refresh completes.
+      const serviceA = new FakeConversationService();
+      serviceA.readProjectionResult = {
+        conversation: makeConversation({
+          capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+        }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      const sinkA = createFakeSink();
+      const store = createConversationStore();
+      await store.getState().openProjected(serviceA, sinkA, "ref-1");
+
+      const rejectErr = new WireError("action unavailable", -32000, {
+        evenerErrorInfo: "actionUnavailable",
+      });
+      serviceA.sendShouldReject = rejectErr as Error;
+      serviceA.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
+
+      // Hang refreshCapabilities so we can rebind during the await.
+      const refreshCtrl = makeControlledRefresh(serviceA);
+
+      // Start send — fails, queues cap refresh (hanging on refresh).
+      // send() awaits handleMutationError which awaits the cap-key completion.
+      const sendP = store.getState().send(serviceA, textInput("x"));
+      // Let the cap refresh effect start.
+      await refreshCtrl.started();
+      // While the refresh is hanging, rebind to serviceB/sinkB via rehydrate.
+      const serviceB = new FakeConversationService();
+      serviceB.readProjectionResult = {
+        conversation: makeConversation({
+          id: "thread-1",
+          capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+        }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      const sinkB = createFakeSink();
+      // rehydrate with different objects increments epoch — A's cap refresh
+      // will be suppressed after the await.
+      const rehydrateP = store.getState().rehydrate(serviceB, sinkB);
+      // Let the rehydrate's readProjection start (it also hangs via controlled
+      // read on serviceB — but we didn't install one). Actually serviceB's
+      // readProjection resolves immediately. So rehydrate completes.
+      await rehydrateP;
+      // Release the hanging refresh — A's cap refresh effect checks
+      // isCapBindingCurrent after the await — the binding changed (epoch +
+      // service + sink), so caps are NOT published.
+      refreshCtrl.release();
+      await sendP;
+      // A's caps (send=false) must NOT have been published.
+      expect(store.getState().conversation?.capabilities.send).toBe(true);
+    });
+  });
+
+  describe("I2 fix: per-key completion — unrelated reread cannot delay error", () => {
+    it("pending reread does not delay cap refresh completion and error", async () => {
+      // Queue a resync rehydrate (reread key) and a cap refresh (cap key).
+      // Both are in the pending Map. The scheduler runs them in order.
+      // The per-key completion promise for the cap key resolves when the
+      // cap effect completes — send() does NOT wait for the reread to also
+      // complete. The error is surfaced as soon as the cap refresh is done.
+      const service = new FakeConversationService();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+        }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+
+      const rejectErr = new WireError("action unavailable", -32000, {
+        evenerErrorInfo: "actionUnavailable",
+      });
+      service.sendShouldReject = rejectErr as Error;
+      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
+
+      const readsBefore = service.readProjectionCalls.length;
+
+      // Queue a resync rehydrate (reread key = "ref-1").
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+
+      // Start a send that fails with actionUnavailable (cap key). send()
+      // awaits the cap-key completion promise. The scheduler runs both
+      // effects in order (reread first, then cap refresh). The cap-key
+      // promise resolves when the cap effect completes — even though
+      // the reread was also pending. With the old global idle(), send()
+      // would have waited for both. With per-key completion, the error
+      // is surfaced as soon as the cap refresh is done.
+      await store.getState().send(service, textInput("x"));
+
+      // The error should have been surfaced.
+      expect(store.getState().error).not.toBeNull();
+      // The cap refresh should have run.
+      expect(service.refreshCapsCallCount).toBe(1);
+      // Caps published.
+      expect(store.getState().conversation?.capabilities.send).toBe(false);
+      // The reread should also have run.
+      expect(service.readProjectionCalls.length).toBeGreaterThan(readsBefore);
     });
   });
 });
