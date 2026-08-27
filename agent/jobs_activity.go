@@ -1055,6 +1055,7 @@ func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID strin
 		RootID:    rootID,
 		SessionID: session.SessionID,
 		Path:      append([]string(nil), path...),
+		After:     activityPositionAfterEntries(session.Entries),
 	})
 	return true
 }
