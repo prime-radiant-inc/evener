@@ -145,6 +145,7 @@ type SessionMeta struct {
 	// Empty when none is configured. Persisted so the cheap routing survives
 	// resume — launch args alone do not carry it across restart.
 	CheapModel               string          `json:"cheap_model,omitempty"`
+	VisionModel              string          `json:"vision_model,omitempty"`
 	Config                   ConfigSnapshot  `json:"config"`     // the session's configuration
 	EnvInfo                  EnvironmentInfo `json:"env_info"`   // captured environment description
 	CreatedAt                time.Time       `json:"created_at"` // when the session was first created

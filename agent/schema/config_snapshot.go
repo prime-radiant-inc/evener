@@ -41,6 +41,7 @@ type ConfigSnapshot struct {
 	OpenAIResponsesContinuation string                     `json:"openai_responses_continuation,omitempty"` // OpenAI Responses continuation mode: off|auto
 	Sandbox                     string                     `json:"sandbox,omitempty"`                       // sandbox mode name (off|read-only|workspace-write|restricted); empty = off
 	SandboxNet                  *bool                      `json:"sandbox_net,omitempty"`                   // sandbox network decision; nil = default (on when sandboxed)
+	VisionModel                 string                     `json:"vision_model,omitempty"`                  // vision side-channel routing: "" | "off" | "model" | "provider/model"
 }
 
 // Clone returns an independently mutable copy of the persisted configuration.
