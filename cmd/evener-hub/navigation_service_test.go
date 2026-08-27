@@ -1076,7 +1076,6 @@ func TestNavigationServiceDeadlineInterruptsMidFingerprintWithoutPublication(t *
 	if _, err := service.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
 		t.Fatal(err)
 	}
-	service.buildTimeout = 30 * time.Millisecond
 	projectKey := (navigationResourceKey{Kind: navigationResourceProject, ProjectKey: "p1"}).Semantic()
 	beforeRevision := service.CurrentRevision(projectKey)
 	beforeStats := service.Stats()
@@ -1091,18 +1090,29 @@ func TestNavigationServiceDeadlineInterruptsMidFingerprintWithoutPublication(t *
 	previous := navigationFingerprintStringChunkContext
 	entered := make(chan struct{})
 	var matchingChunks atomic.Int32
-	var once sync.Once
 	navigationFingerprintStringChunkContext = func(ctx context.Context, chunk string) error {
-		if len(chunk) == maxNavigationTitleRunes && chunk[0] == 'x' && matchingChunks.Add(1) == rowCount/2 {
-			once.Do(func() { close(entered) })
+		if len(chunk) == maxNavigationTitleRunes && chunk[0] == 'x' && matchingChunks.Add(1) == 1 {
+			close(entered)
 			<-ctx.Done()
 		}
 		return ctx.Err()
 	}
 	t.Cleanup(func() { navigationFingerprintStringChunkContext = previous })
 
-	_, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}})
+	buildCtx := newTriggeredDeadlineContext(t.Context())
+	flight := &navigationBuildFlight{
+		done:    make(chan struct{}),
+		hint:    navigationChangeHint{Projects: []string{"p1"}},
+		mutated: true,
+	}
+	service.mu.Lock()
+	service.flight = flight
+	service.mu.Unlock()
+	go service.buildSnapshot(buildCtx, source.Revision(), flight)
 	<-entered
+	buildCtx.expire()
+	<-flight.done
+	err := flight.err
 	if !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("error = %v, want hashing deadline", err)
 	}
@@ -1110,7 +1120,7 @@ func TestNavigationServiceDeadlineInterruptsMidFingerprintWithoutPublication(t *
 	if !errors.As(err, &status) || status.StatusCode() != 503 {
 		t.Fatalf("error = %T %v, want typed 503", err, err)
 	}
-	if got := matchingChunks.Load(); got != rowCount/2 {
+	if got := matchingChunks.Load(); got != 1 {
 		t.Fatalf("fingerprinting continued after cancellation: %d chunks", got)
 	}
 	if got := service.CurrentRevision(projectKey); got != beforeRevision {
@@ -1125,6 +1135,32 @@ func TestNavigationServiceDeadlineInterruptsMidFingerprintWithoutPublication(t *
 	if publications := service.DrainPublications(); len(publications) != 0 {
 		t.Fatalf("canceled fingerprint published: %+v", publications)
 	}
+}
+
+type triggeredDeadlineContext struct {
+	context.Context
+	done chan struct{}
+}
+
+func newTriggeredDeadlineContext(parent context.Context) *triggeredDeadlineContext {
+	return &triggeredDeadlineContext{Context: parent, done: make(chan struct{})}
+}
+
+func (ctx *triggeredDeadlineContext) Done() <-chan struct{} {
+	return ctx.done
+}
+
+func (ctx *triggeredDeadlineContext) Err() error {
+	select {
+	case <-ctx.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
+func (ctx *triggeredDeadlineContext) expire() {
+	close(ctx.done)
 }
 
 type cancelAfterChecksContext struct {
