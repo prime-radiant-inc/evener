@@ -169,7 +169,7 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 
 ### 1.13 Working-directory preflight
 
-- [ ] Before spawning, `GET /api/path/validate?path=&kind=dir` is checked; a failure of the CHECK ITSELF fails OPEN (spawn proceeds anyway) so a flaky validator never blocks a real spawn (`spawn.js:573-580`, code comment at 568-572)
+- [ ] Before spawning, `evener/path/validate` is checked; a failure of the CHECK ITSELF fails OPEN (spawn proceeds anyway) so a flaky validator never blocks a real spawn (`spawn.js:573-580`, code comment at 568-572)
 - [ ] Deterministic "not fixable by creating a directory" errors — literal strings `path is not a directory`, `absolute path required`, `path is required` — render an inline error and abort instead of offering to create (`spawn.js:582-588`)
 - [ ] Any other invalid-path reason offers an IN-FORM (not native `confirm()`) dialog: `` The directory `<path>` doesn't exist yet. Create it and start the session? `` with Cancel / "Create & start" buttons; "Create & start" receives initial focus (`spawn.js:527-566, 589-591`)
 - [ ] Declining aborts the submit with NO error shown (`spawn.js:559-561, 591`)

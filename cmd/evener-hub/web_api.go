@@ -19,7 +19,6 @@ import (
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
-	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/envvars"
@@ -469,18 +468,6 @@ func (s *WebServer) handleAPIReasoningEffort(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-func (s *WebServer) handleAPIPathValidate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "GET required", http.StatusMethodNotAllowed)
-		return
-	}
-	resp := fspaths.ValidateLaunchPath(appwire.PathValidateParams{
-		Path: r.URL.Query().Get("path"),
-		Kind: r.URL.Query().Get("kind"),
-	})
-	writeAPIJSON(w, http.StatusOK, resp)
 }
 
 // handleAPIDirCreate creates a directory (and any missing parents) at an

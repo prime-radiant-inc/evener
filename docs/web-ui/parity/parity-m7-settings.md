@@ -894,9 +894,8 @@ hand-roll their own simpler collection editor directly against `launchconfig.get
 - [ ] `launchconfig` wraps 16 RPCs 1:1 through one `request(method, params)` →
       `EvenerAppwire.request`: `schema`→`evener/launch/schema`, `resolve`→`evener/launch/resolve`,
       `getLayer`→`evener/launch/getLayer`, `setLayer`→`evener/launch/setLayer`,
-      `trustRepo`→`evener/launch/trustRepo`, `validatePath`→`evener/path/validate` (via
-      `EvenerAppwire.validatePath` when present, else a raw `fetch("/api/path/validate?...")` GET
-      fallback); `authList`→`evener/auth/list`, `authStatus`→`evener/auth/status`,
+      `trustRepo`→`evener/launch/trustRepo`, `validatePath`→`evener/path/validate` over AppWire;
+      `authList`→`evener/auth/list`, `authStatus`→`evener/auth/status`,
       `authApiKeySet`→`evener/auth/apiKey/set`, `authLoginStart`→`evener/auth/login/start`,
       `authLoginComplete`→`evener/auth/login/complete`, `authLogout`→`evener/auth/logout`,
       `authDeviceStart`→`evener/auth/device/start`, `authDevicePoll`→`evener/auth/device/poll`;

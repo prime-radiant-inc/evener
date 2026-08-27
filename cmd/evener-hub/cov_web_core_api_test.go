@@ -91,7 +91,6 @@ func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
 		{http.MethodGet, "/_partials/s/id/unknown"},
 		{http.MethodGet, "/manifest.webmanifest"},
 		{http.MethodPost, "/api/health"}, {http.MethodGet, "/api/health"},
-		{http.MethodPost, "/api/path/validate"}, {http.MethodGet, "/api/path/validate?path=/tmp&kind=directory"},
 		{http.MethodPost, "/api/git/head"},
 	} {
 		_ = covWebRequest(t, web, tc.method, tc.target, "")

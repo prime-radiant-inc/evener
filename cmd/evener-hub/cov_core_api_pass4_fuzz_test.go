@@ -131,8 +131,6 @@ func FuzzCoreAPIPass4(f *testing.F) {
 		call(http.MethodGet, "/api/git/head?cwd="+workingDir, "")
 		call(http.MethodGet, "/api/git/head?cwd=/definitely/missing/pass4", "")
 		call(http.MethodPost, "/api/git/head", "")
-		direct(web.handleAPIPathValidate, http.MethodGet, "/api/path/validate?path="+workingDir+"&kind=directory", "")
-		direct(web.handleAPIPathValidate, http.MethodPost, "/api/path/validate", "")
 		direct(web.handleAPIDirCreate, http.MethodPost, "/api/dirs/create", `{}`)
 		direct(web.handleAPIDirCreate, http.MethodPost, "/api/dirs/create", `{"path":"relative"}`)
 		direct(web.handleAPIDirCreate, http.MethodPost, "/api/dirs/create", `{"path":"`+workingDir+`"}`)
