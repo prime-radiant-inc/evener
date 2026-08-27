@@ -1,338 +1,9750 @@
-YªçŠx-®éÜj×¢ëiºÚ+Š§j[h‘éÜ¢éí×^ô×”èµ©hºÚn¶X§zÍ\XÚØYÙHX‚‚š[\Ü
-‚H˜ÛÛ^‚‚H™[˜ÛÙ[™ËÚœÛÛˆ‚‚H™\œ›ÜœÈ‚‚H™›]‚‚H›™]‚‚H›™]Ú‚‚H›™]ÚÚ\İ‚‚H›ÜÈ‚‚H›ÜËÙ^XÈ‚‚Hœ]Ùš[\]‚‚HœÛXÙ\È‚‚Hœİ˜ÛÛˆ‚‚Hœİš[™ÜÈ‚‚HœŞ[˜È‚‚H\İ[™È‚‚H[YH‚‚‚Hœš[Y\˜YX[˜ÛÛKÙ]™[™\‹ØYÙ[Ù]™[È‚‚Hœš[Y\˜YX[˜ÛÛKÙ]™[™\‹ØYÙ[ÜØÚ[XH‚‚Hœš[Y\˜YX[˜ÛÛKÙ]™[™\‹ØYÙ[İ˜[œØÜš\‚‚Hœš[Y\˜YX[˜ÛÛKÙ]™[™\‹Ø\Ú\™H‚‚Hœš[Y\˜YX[˜ÛÛKÙ]™[™\‹Ø]]ÛÜ[˜ZKÛØZ]\İ‚‚Hœš[Y\˜YX[˜ÛÛKÙ]™[™\‹ØÛYÙ]™[™\‹ZX‹Ú[\›˜[Ø\Ûİ\˜ÙH‚‚Hœš[Y\˜YX[˜ÛÛKÙ]™[™\‹ØÛYÙ]™[™\‹ZX‹Ú[\›˜[ØÛÙ^][˜Ú‚‚Hœš[Y\˜YX[˜ÛÛKÙ]™[™\‹ØÛYÙ]™[™\‹ZX‹Ú[\›˜[ÙœÜ]È‚‚Hœš[Y\˜YX[˜ÛÛKÙ]™[™\‹ØÛYÙ]™[™\‹ZX‹Ú[\›˜[ÚX˜ÛÜ™H‚‚Hœš[Y\˜YX[˜ÛÛKÙ]™[™\‹ÚY[YšY\ˆ‚‚Hœš[Y\˜YX[˜ÛÛKÙ]™[™\‹Ú[\›˜[Ø\Ù\™\ˆ‚‚Hœš[Y\˜YX[˜ÛÛKÙ]™[™\‹Ú[\›˜[ÜÙ[\]H‚‚Hœš[Y\˜YX[˜ÛÛKÙ]™[™\‹ÛH‚‚Hœš[Y\˜YX[˜ÛÛKÙ]™[™\‹ÛKÜ›İšY\˜Ù™È‚‚Hœš[Y\˜YX[˜ÛÛKÙ]™[™\‹Ü™[™^›İ\È‚ŠB‚™[˜È\İX””ÔYÚ[”™]šY]Ô›İ]J
-\İ[™Ë•
-HÂ‚\Ù\™\ˆH\Ù\™\‹“™]ÔÙ\™\Š\Ù\™\‹”Ù\™\ÛÛ™šYŞÔÙ\™\“˜[YNˆšXˆ‹Ûİ\˜ÙRQˆ›ØØ[ŸJB‚\™YÚ\İ\”YÚ[’[™\œÊÙ\™\‹™]ÒX”YÚ[œĞÛÛ›Û\Š•[\\Š
-K•[\\Š
-JJB‚[İ]\œˆHÙ\™\‹”›İ]\Š
-K‘\Ü]Ú
-ÛÛ^˜XÚÙÜ›İ[™
+package hub
 
-K\Ú\™K”™\]Y\İÂ‚BSY]Ùˆ\Ú\™K“Y]Ù]™[™\”YÚ[”™]šY]Ë‚BT\˜[\ÎˆœÛÛ‹”˜]ÓY\ÜØYÙJÈ˜İÙˆ‹İ\ŸX
-K‚_JB‚ZYˆ\œˆOHš[Â‚B]‘˜][Šœ™]šY]È›İ]Nˆ	]ˆ‹\œŠB‚_B‚ZYˆËÚÈHİ]Š\Ú\™K”YÚ[”™]šY]Ô™\ÜÛœÙJNÈ[ÚÈÂ‚B]‘˜][Šœ™]šY]È›İ]H™\ÜÛœÙHH	UØ[YÚ[”™]šY]Ô™\ÜÛœÙH‹İ]
-B‚_BŸB‚™[˜È\İX””Õ™XY\İ\Ù\Ğ\Ú\™T™[™^›İ\Ê
-\İ[™Ë•
-HÂ‚\[‘\ˆH•[\\Š
-B‚]Üš]T™[™^›İ\Ê[‘\‹™[™^›İ\Ë‘[^Â‚BTQˆLK‚BT›İØÛÛˆ\Ú\™K”›İØÛÛ™\œÚ[Û‹‚BQ[™Ú[ˆÜÎ‹ËÌLËŒŒŒNŒKÜœÈ‹‚BTÛİ\˜ÙRQˆ›ØØ[‹‚BU™XYQˆÌH‹‚BTÙ\ÜÚ[Û’QˆœÙ\Ü×ÌH‹‚_JB‚\›Üİ\ˆHX˜ÛÜ™K“™]Ô›Üİ\Š[‘\‹š[
-B‚\›Üİ\‹”™Yœ™\Ú
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"net"
+	"net/http"
+	"net/http/httptest"
+	"os"
+	"os/exec"
+	"path/filepath"
+	"slices"
+	"strconv"
+	"strings"
+	"sync"
+	"testing"
+	"time"
 
-B‚‚ZXˆH™]ÒX””Õ\İÙ\™\ŠX˜ÛÜ™K•ÙXÛÛ™šYŞÂ‚BT[‘\ˆ[‘\‹‚BT›Üİ\ˆ›Üİ\‹‚BT\İˆX˜ÛÜ™K“™]Ô\İ[™^
-ˆŠK‚_JB‚YY™\ˆX‹ÛÜÙJ
-B‚‚XÛY[HX[X””ÊXŠB‚YY™\ˆÛY[ÛÜÙJ
-B‚‚Z[š]\œˆHÛY[’[š]X[^™JÛÛ^˜XÚÙÜ›İ[™
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
+	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/auth/openai/oaitest"
+	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
+	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
+	"primeradiant.com/evener/cmd/evener-hub/internal/fspaths"
+	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
+	"primeradiant.com/evener/identifier"
+	"primeradiant.com/evener/internal/appserver"
+	"primeradiant.com/evener/internal/selfupdate"
+	"primeradiant.com/evener/llm"
+	"primeradiant.com/evener/llm/providercfg"
+	"primeradiant.com/evener/rendezvous"
+)
 
-K\Ú\™K’[š]X[^™T\˜[\ŞĞÛY[[™›Îˆ\Ú\™KÛY[[™›ŞÓ˜[YNˆ\İ‹™\œÚ[Ûˆ\İŸ_JB‚ZYˆ\œˆOHš[Â‚B]‘˜][Š’[š]X[^™Nˆ	]ˆ‹\œŠB‚_B‚ZYˆ[š]”›İØÛÛ™\œÚ[ÛˆOH\Ú\™K”›İØÛÛ™\œÚ[ÛˆÂ‚B]‘˜][Šœ›İØÛÛI\H‹[š]”›İØÛÛ™\œÚ[ÛŠB‚_B‚\™\Ü\œˆHÛY[•™XY\İ
-ÛÛ^˜XÚÙÜ›İ[™
+func TestHubRPCPluginPreviewRoute(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
+	registerPluginHandlers(server, newHubPluginsController(t.TempDir(), t.TempDir()))
+	out, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		Method: appwire.MethodEvenerPluginPreview,
+		Params: json.RawMessage(`{"cwd":"/tmp"}`),
+	})
+	if err != nil {
+		t.Fatalf("preview route: %v", err)
+	}
+	if _, ok := out.(appwire.PluginPreviewResponse); !ok {
+		t.Fatalf("preview route response = %T, want PluginPreviewResponse", out)
+	}
+}
 
-K\Ú\™K•™XY\İ\˜[\ŞßJB‚ZYˆ\œˆOHš[Â‚B]‘˜][Š•™XY\İˆ	]ˆ‹\œŠB‚_B‚ZYˆ[Š™\Ü‘]JHOHH™\Ü‘]VÌK’QOHÌHˆ™\Ü‘]VÌK‘]™[™\‹”™YˆOH›ØØ[ÌHˆÂ‚B]‘˜][Š™XYÏIJİˆ‹™\Ü‘]JB‚_BŸB‚™[˜È\İX””ĞY™\\Ù\Õ\›“\İÕÚ][™\œÊ
-\İ[™Ë•
-HÂ‚ZXˆH™]ÒX””Õ\İÙ\™\ŠX˜ÛÜ™K•ÙXÛÛ™šYŞÔ\İˆX˜ÛÜ™K“™]Ô\İ[™^
-ˆŠ_JB‚YY™\ˆX‹ÛÜÙJ
-B‚‚XÛY[HX[X””ÊXŠB‚YY™\ˆÛY[ÛÜÙJ
-B‚‚Z[š]\œˆHÛY[’[š]X[^™JÛÛ^˜XÚÙÜ›İ[™
+func TestHubRPCThreadListUsesAppWireRendezvous(t *testing.T) {
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       101,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws://127.0.0.1:1/rpc",
+		SourceID:  "local",
+		ThreadID:  "th_1",
+		SessionID: "sess_1",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
 
-K\Ú\™K’[š]X[^™T\˜[\ŞÔ›İØÛÛ™\œÚ[Ûˆ\Ú\™K”›İØÛÛ™\œÚ[ÛŸJB‚ZYˆ\œˆOHš[Â‚B]‘˜][Š’[š]X[^™Nˆ	]ˆ‹\œŠB‚_B‚KËÈ™XYİ\›œËÛ\İ\È[\[Y[Y
-^H˜[œØÜš\ØY[™ÊKÛÈHX‚‚KËÈ]\İY™\\ÙHHØ\Xš[]K‚‚ZYˆZ[š]‘™X]\™\Ë•™XY\›œÓ\İÂ‚B]‘˜][Š•™XY\›œÓ\İ›İY™\\ÙY\Ü]HXˆ[™\œÎˆ	Jİˆ‹[š]‘™X]\™\ÊB‚_BŸB‚™[˜È\İ[][Û‘™[˜ÙT™Z™XİÔÛİ\˜ÙT™\ÛÛ][ÛŠ
-\İ[™Ë•
-HÂ‚\İÜ™K\œˆHX˜ÛÜ™K“™]Ñ[][Û”İÜ™J•[\\Š
-JB‚ZYˆ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚\™YˆHØØ[\™YŠÙX•\İÙ\ÜÚ[Û’Q
-B‚ZYˆË\œˆHİÜ™K™YÚ[Šœ›Ú™XİY™[˜ÙKLLŒÍMÎH‹×ZX˜ÛÜ™K‘[][Û•\™Ù]ŞÂ‚BT™Yˆ™Y‹‚BU™XYQˆÙX•\İÙ\ÜÚ[Û’Q‚__JNÈ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚XÙ™ÈHX˜ÛÜ™K•ÙXÛÛ™šYŞÂ‚BQ[][Û”İÜ™NˆİÜ™K‚BT™\İ[YSØÚÜÎˆX˜ÛÜ™K“™]Ô™\İ[YSØÚÜÊ
-K‚_B‚\Ûİ\˜Ù\ÈH™]ÒX”Ûİ\˜ÙT™YÚ\İJÙ™ÊB‚‚WË\œˆHÛİ\˜ÙQ›Ü•™XYÚ]X[˜YÙY][˜Ú
-ÛÛ^˜XÚÙÜ›İ[™
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir: runDir,
+		Roster: roster,
+		Past:   hubcore.NewPastIndex(""),
+	})
+	defer hub.Close()
 
-KÙ™ËÛİ\˜Ù\Ë™Y‹ÙX•\İÙ\ÜÚ[Û’Q
-B‚]˜\ˆÚ\™H\Ú\™K•Ú\™Q\œ›Ü‚‚ZYˆY\œ›ÜœË\Ê\œ‹	Ú\™JHÂ‚B]‘˜][Š™[][™ÈÛİ\˜ÙH™\ÛÛ][Ûˆ\œ›ÜˆH	U	]‹Ø[Ú\™Q\œ›Üˆ‹\œ‹\œŠB‚_B‚Y]KÚÈHÚ\™K‘]KŠ\Ú\™K‘\œ›Ü‘]JB‚ZYˆ[ÚÈ‚BY]K“]]][Û“İ]ÛÛYHOH\Ú\™K“]]][Û“İ]ÛÛYU\™Ù][]Y‚BY]K”™]Q\ÜÜÚ][ÛˆOH\Ú\™K”™]Q\ÜÜÚ][Û“›Û™HÂ‚B]‘˜][Š™[][™ÈÛİ\˜ÙH™\ÛÛ][ÛˆÚ\™H\œ›ÜˆH	Hİˆ‹Ú\™JB‚_BŸB‚™[˜È\İ[][Û‘™[˜ÙQÙ\Ó›İ˜[˜XÚÕÔ\İ™XY
-
-\İ[™Ë•
-HÂ‚\›ÛİH•[\\Š
-B‚]ÛÜšÚ[™Ñ\ˆH•[\\Š
-B‚\›Ú™Xİ\œˆHY[YšY\‹”™\ÛÛ™T›Ú™Xİ
-ÛÜšÚ[™Ñ\ŠB‚ZYˆ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚\İ]Q\ˆHš[\]’›Ú[Š›Ûİœ›Ú™XİÈ‹›Ú™Xİ’Q
-B‚\Ù\ÜÚ[Û’QHZ[”Ô\™[Ù\ÜÚ[Û•Ú]ÛÜšÚ[™Ñ\Šİ]Q\‹ÛÜšÚ[™Ñ\ŠB‚\\İHX˜ÛÜ™K“™]Ô\İ[™^
-š[\]’›Ú[Š›Ûİœ›Ú™XİÈ‹ŠˆŠJB‚ZYˆË\œˆH\İ”™XZ[
+	client := dialHubRPC(t, hub)
+	defer client.Close()
 
-NÈ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚\İÜ™K\œˆHX˜ÛÜ™K“™]Ñ[][Û”İÜ™J›Ûİ
-B‚ZYˆ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚\™YˆHØØ[\™YŠÙ\ÜÚ[Û’Q
-B‚ZYˆË\œˆHİÜ™K™YÚ[Š›Ú™Xİ’Q×ZX˜ÛÜ™K‘[][Û•\™Ù]ŞÂ‚BT™Yˆ™Y‹‚BU™XYQˆÙ\ÜÚ[Û’Q‚__JNÈ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚XÙ™ÈHX˜ÛÜ™K•ÙXÛÛ™šYŞÂ‚BQ[][Û”İÜ™NˆİÜ™K‚BT™\İ[YSØÚÜÎˆX˜ÛÜ™K“™]Ô™\İ[YSØÚÜÊ
-K‚BT\İˆ\İ‚_B‚\Ù\™\ˆH™]ÒX\Ù\™\ŠÙ™Ë™]ÒX”Ûİ\˜ÙT™YÚ\İJÙ™ÊJB‚\˜]Ë\œˆHœÛÛ‹“X\œÚ[
-\Ú\™K•™XY™XY\˜[\ŞÔ™Yˆ™YŸJB‚ZYˆ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚‚WË\œˆHÙ\™\‹”›İ]\Š
-K‘\Ü]Ú
-ÛÛ^˜XÚÙÜ›İ[™
+	init, err := client.Initialize(context.Background(), appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "test", Version: "test"}})
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if init.ProtocolVersion != appwire.ProtocolVersion {
+		t.Fatalf("protocol=%q", init.ProtocolVersion)
+	}
+	resp, err := client.ThreadList(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ThreadList: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].ID != "th_1" || resp.Data[0].Evener.Ref != "local:th_1" {
+		t.Fatalf("threads=%+v", resp.Data)
+	}
+}
 
-K\Ú\™K”™\]Y\İÂ‚BRQˆ\Ú\™K“™]Ò[Q
-JK‚BSY]Ùˆ\Ú\™K“Y]Ù™XY™XY‚BT\˜[\Îˆ˜]Ë‚_JB‚ZYˆZ\Õ\™Ù][]Y\œ›ÜŠ\œŠHÂ‚B]‘˜][Š™[][™È\İ™XY\œ›ÜˆH	U	]‹Ø[\™Ù][]Y‹\œ‹\œŠB‚_BŸB‚™[˜È\İ[][Û‘™[˜ÙT™Z™XİÔ™\İ[YP™Y›Ü™TÜ]Û™\Š
-\İ[™Ë•
-HÂ‚\›ÛİH•[\\Š
-B‚]ÛÜšÚ[™Ñ\ˆH•[\\Š
-B‚\›Ú™Xİ\œˆHY[YšY\‹”™\ÛÛ™T›Ú™Xİ
-ÛÜšÚ[™Ñ\ŠB‚ZYˆ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚\İ]Q\ˆHš[\]’›Ú[Š›Ûİœ›Ú™XİÈ‹›Ú™Xİ’Q
-B‚\Ù\ÜÚ[Û’QHZ[”Ô\™[Ù\ÜÚ[Û•Ú]ÛÜšÚ[™Ñ\Šİ]Q\‹ÛÜšÚ[™Ñ\ŠB‚\\İHX˜ÛÜ™K“™]Ô\İ[™^
-š[\]’›Ú[Š›Ûİœ›Ú™XİÈ‹ŠˆŠJB‚ZYˆË\œˆH\İ”™XZ[
+func TestHubRPCAdvertisesTurnListsWithHandlers(t *testing.T) {
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
 
-NÈ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚\İÜ™K\œˆHX˜ÛÜ™K“™]Ñ[][Û”İÜ™J›Ûİ
-B‚ZYˆ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚\™YˆHØØ[\™YŠÙ\ÜÚ[Û’Q
-B‚ZYˆË\œˆHİÜ™K™YÚ[Š›Ú™Xİ’Q×ZX˜ÛÜ™K‘[][Û•\™Ù]ŞÂ‚BT™Yˆ™Y‹‚BU™XYQˆÙ\ÜÚ[Û’Q‚__JNÈ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚\™\İ[YPØ[ÈH‚\Ü]Û™\ˆH	™˜ZÙT”ÔÜ]Û™\Ü™\İ[YNˆ[˜ÊÛÛ^ÛÛ^X˜ÛÜ™K”™\İ[YT™\]Y\İ
-H
-™[™^›İ\Ë‘[K\œ›ÜŠHÂ‚B\™\İ[YPØ[ÊÊÂ‚B\™]\›ˆ™[™^›İ\Ë‘[^ßK\œ›ÜœË“™]Ê™[][™È\™Ù]™XXÚYÜ]Û™\ˆŠB‚__B‚XÙ™ÈHX˜ÛÜ™K•ÙXÛÛ™šYŞÂ‚BQ[][Û”İÜ™NˆİÜ™K‚BT™\İ[YSØÚÜÎˆX˜ÛÜ™K“™]Ô™\İ[YSØÚÜÊ
-K‚BT\İˆ\İ‚BTÜ]Û™\ˆÜ]Û™\‹‚_B‚‚WË\œˆHX•™XY™\İ[YJÛÛ^˜XÚÙÜ›İ[™
+	client := dialHubRPC(t, hub)
+	defer client.Close()
 
-KÙ™Ë™]ÒX”Ûİ\˜ÙT™YÚ\İJÙ™ÊK\Ú\™K•™XY™\İ[YT\˜[\ŞÔ™Yˆ™YŸJB‚]˜\ˆÚ\™H\Ú\™K•Ú\™Q\œ›Ü‚‚ZYˆY\œ›ÜœË\Ê\œ‹	Ú\™JHÂ‚B]‘˜][Š™[][™È™\İ[YH\œ›ÜˆH	U	]‹Ø[Ú\™Q\œ›Üˆ‹\œ‹\œŠB‚_B‚Y]KÚÈHÚ\™K‘]KŠ\Ú\™K‘\œ›Ü‘]JB‚ZYˆ[ÚÈ]K“]]][Û“İ]ÛÛYHOH\Ú\™K“]]][Û“İ]ÛÛYU\™Ù][]YÂ‚B]‘˜][Š™[][™È™\İ[YHÚ\™H\œ›ÜˆH	Hİˆ‹Ú\™JB‚_B‚ZYˆ™\İ[YPØ[ÈOHÂ‚B]‘˜][Š™[][™È™\İ[YH™XXÚYÜ]Û™\ˆ	Y[Y\È‹™\İ[YPØ[ÊB‚_BŸB‚™[˜È\İ[][Û‘™[˜ÙT™Z™XİÔ™\İ[YUÚ]š[Ü]Û™\Š
-\İ[™Ë•
-HÂ‚\İÜ™K\œˆHX˜ÛÜ™K“™]Ñ[][Û”İÜ™J•[\\Š
-JB‚ZYˆ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚\Ù\ÜÚ[Û’QHŒÓ^UŒPÌÒ]NĞÙPˆ‚‚\™YˆHØØ[\™YŠÙ\ÜÚ[Û’Q
-B‚ZYˆË\œˆHİÜ™K™YÚ[Šœ›Ú™Xİ\™\İ[YK[š[LLŒÍMÎH‹×ZX˜ÛÜ™K‘[][Û•\™Ù]ŞÂ‚BT™Yˆ™Y‹‚BU™XYQˆÙ\ÜÚ[Û’Q‚__JNÈ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚XÙ™ÈHX˜ÛÜ™K•ÙXÛÛ™šYŞÂ‚BQ[][Û”İÜ™NˆİÜ™K‚BT™\İ[YSØÚÜÎˆX˜ÛÜ™K“™]Ô™\İ[YSØÚÜÊ
-K‚_B‚‚WË\œˆHX•™XY™\İ[YJÛÛ^˜XÚÙÜ›İ[™
+	init, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion})
+	if err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	// thread/turns/list is implemented (lazy transcript loading), so the hub
+	// must advertise the capability.
+	if !init.Features.ThreadTurnsList {
+		t.Fatalf("ThreadTurnsList not advertised despite Hub handlers: %+v", init.Features)
+	}
+}
 
-KÙ™Ë\Ûİ\˜ÙK“™]Ô™YÚ\İJ
-K\Ú\™K•™XY™\İ[YT\˜[\ŞÔ™Yˆ™YŸJB‚ZYˆZ\Õ\™Ù][]Y\œ›ÜŠ\œŠHÂ‚B]‘˜][Š™[][™È™\İ[YH\œ›ÜˆÚ]š[Ü]Û™\ˆH	U	]‹Ø[\™Ù][]Y‹\œ‹\œŠB‚_BŸB‚™[˜È\İ[][Û‘™[˜ÙT™Z™XİÓ]]][Û•Ú]\™Ù][]Yİ]ÛÛYJ
-\İ[™Ë•
-HÂ‚\İÜ™K\œˆHX˜ÛÜ™K“™]Ñ[][Û”İÜ™J•[\\Š
-JB‚ZYˆ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚\™YˆHØØ[\™YŠÙX•\İÙ\ÜÚ[Û’Q
-B‚ZYˆË\œˆHİÜ™K™YÚ[Šœ›Ú™Xİ[]]]KLLŒÍMÎH‹×ZX˜ÛÜ™K‘[][Û•\™Ù]ŞÂ‚BT™Yˆ™Y‹‚BU™XYQˆÙX•\İÙ\ÜÚ[Û’Q‚__JNÈ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚XÙ™ÈHX˜ÛÜ™K•ÙXÛÛ™šYŞÂ‚BQ[][Û”İÜ™NˆİÜ™K‚BT™\İ[YSØÚÜÎˆX˜ÛÜ™K“™]Ô™\İ[YSØÚÜÊ
-K‚_B‚\Ûİ\˜ÙHH	™[][Û‘™[˜ÙS]]][Û”Ûİ\˜Ù^ßB‚\Ûİ\˜Ù\ÈH\Ûİ\˜ÙK“™]Ô™YÚ\İJ
-B‚\Ûİ\˜Ù\ËY
-Ûİ\˜ÙJB‚\Ù\™\ˆH™]ÒX\Ù\™\ŠÙ™ËÛİ\˜Ù\ÊB‚]\İÈH×\İXİÂ‚B[Y]Ùİš[™Â‚BZYİš[™Â‚B\\˜[\È[B‚_^Â‚B^Ø\Ú\™K“Y]Ù\›”İ\›]]][Û‹\İ\XY\‹Y[]H‹\Ú\™K•\›”İ\\˜[\ŞÂ‚BBT™Yˆ™Y‹ÛY[]]][Û’Qˆ›]]][Û‹\İ\XY\‹Y[]H‹‚BBR[œ]ˆ×X\Ú\™K’[œ]][^ŞÕ\Nˆ^‹^ˆœİ\Ÿ_K‚B__K‚B^Ø\Ú\™K“Y]Ù\›”İY\‹›]]][Û‹\İY\‹XY\‹Y[]H‹\Ú\™K•\›”İY\”\˜[\ŞÂ‚BBT™Yˆ™Y‹ÛY[]]][Û’Qˆ›]]][Û‹\İY\‹XY\‹Y[]H‹[œ]ˆ×X\Ú\™K’[œ]][^ŞÕ\Nˆ^‹^ˆœİY\ˆŸ_K‚B__K‚B^Ø\Ú\™K“Y]Ù\›’[\œ\›]]][Û‹Z[\œ\XY\‹Y[]H‹\Ú\™K•\›’[\œ\\˜[\ŞÂ‚BBT™Yˆ™Y‹ÛY[]]][Û’Qˆ›]]][Û‹Z[\œ\XY\‹Y[]HŸ_K‚B^Ø\Ú\™K“Y]Ù\›”]Y]YK›]]][Û‹\]Y]YKXY\‹Y[]H‹\Ú\™K•\›”]Y]YT\˜[\ŞÂ‚BBT™Yˆ™Y‹ÛY[]]][Û’Qˆ›]]][Û‹\]Y]YKXY\‹Y[]H‹[œ]ˆ×X\Ú\™K’[œ]][^ŞÕ\Nˆ^‹^ˆœ]Y]YHŸ_K‚B__K‚B^Ø\Ú\™K“Y]Ù\›‘˜Z[\ÔİY\‹›]]][Û‹Y˜Z[‹XY\‹Y[]H‹\Ú\™K•\›‘˜Z[\ÔİY\”\˜[\ŞÂ‚BBT™Yˆ™Y‹ÛY[]]][Û’Qˆ›]]][Û‹Y˜Z[‹XY\‹Y[]H‹‚BBQ^XİY]Y]YT™]š\Ú[ÛˆK‚B__K‚B^Ø\Ú\™K“Y]Ù\›”›Û[İT]Y]YY\ÔİY\‹›]]][Û‹\›Û[İKXY\‹Y[]H‹\Ú\™K•\›”›Û[İT]Y]YY\ÔİY\”\˜[\ŞÂ‚BBT™Yˆ™Y‹ÛY[]]][Û’Qˆ›]]][Û‹\›Û[İKXY\‹Y[]H‹‚BBQ^XİY[RQˆœ]Y]YKX™Y›Ü™KY[]H‹‚B__K‚B^Ø\Ú\™K“Y]Ù\›Ø[˜Ù[]Y]YY›]]][Û‹XØ[˜Ù[XY\‹Y[]H‹\Ú\™K•\›Ø[˜Ù[]Y]YY\˜[\ŞÂ‚BBT™Yˆ™Y‹ÛY[]]][Û’Qˆ›]]][Û‹XØ[˜Ù[XY\‹Y[]H‹‚BBQ^XİY[RQˆœ]Y]YKX™Y›Ü™KY[]H‹‚B__K‚_B‚Y›ÜˆKÈH˜[™ÙH\İÈÂ‚B]”[ŠË›Y]Ù[˜Ê
-\İ[™Ë•
-HÂ‚BB\˜]Ë\œˆHœÛÛ‹“X\œÚ[
-Ëœ\˜[\ÊB‚BBZYˆ\œˆOHš[Â‚BBB]‘˜][
-\œŠB‚BB_B‚BBWË\œˆHÙ\™\‹”›İ]\Š
-K‘\Ü]Ú
-ÛÛ^˜XÚÙÜ›İ[™
+func TestDeletionFenceRejectsSourceResolution(t *testing.T) {
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := localAppRef(webTestSessionID)
+	if _, err := store.Begin("project-fence-0123456789", []hubcore.DeletionTarget{{
+		Ref:      ref,
+		ThreadID: webTestSessionID,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{
+		DeletionStore: store,
+		ResumeLocks:   hubcore.NewResumeLocks(),
+	}
+	sources := newHubSourceRegistry(cfg)
 
-K\Ú\™K”™\]Y\İÂ‚BBBRQˆ\Ú\™K“™]Ò[Q
-[
-H
-ÈJJK‚BBBSY]ÙˆË›Y]Ù‚BBBT\˜[\Îˆ˜]Ë‚BB_JB‚BB]˜\ˆÚ\™H\Ú\™K•Ú\™Q\œ›Ü‚‚BBZYˆY\œ›ÜœË\Ê\œ‹	Ú\™JHÂ‚BBB]‘˜][Š™[][™È]]][Ûˆ\œ›ÜˆH	U	]‹Ø[Ú\™Q\œ›Üˆ‹\œ‹\œŠB‚BB_B‚BBY]KÚÈHÚ\™K‘]KŠ\Ú\™K‘\œ›Ü‘]JB‚BBZYˆ[ÚÈ‚BBBY]KÛY[]]][Û’QOHËšY‚BBBY]K“]]][Û“İ]ÛÛYHOH\Ú\™K“]]][Û“İ]ÛÛYU\™Ù][]Y‚BBBY]K”™]Q\ÜÜÚ][ÛˆOH\Ú\™K”™]Q\ÜÜÚ][Û“›Û™HÂ‚BBB]‘˜][Š™[][™È]]][ÛˆÚ\™H\œ›ÜˆH	Hİˆ‹Ú\™JB‚BB_B‚BBZYˆÛİ\˜ÙK˜Ø[ÖİË›Y]ÙHOHÂ‚BBB]‘˜][Š™[][™È]]][Ûˆ™XXÚY	\ÈÛİ\˜ÙH	Y[Y\È‹Ë›Y]ÙÛİ\˜ÙK˜Ø[ÖİË›Y]ÙJB‚BB_B‚B_JB‚_BŸB‚™[˜È\İ[][Û‘™[˜ÙT™Z™XİÔ™[^P™Y›Ü™TİXœØÜšX™J
-\İ[™Ë•
-HÂ‚\İÜ™K\œˆHX˜ÛÜ™K“™]Ñ[][Û”İÜ™J•[\\Š
-JB‚ZYˆ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚]™XYQHŒÓ^UŒPÌÒ]NĞÙPˆ‚‚\™YˆHØØ[\™YŠ™XYQ
-B‚ZYˆË\œˆHİÜ™K™YÚ[Šœ›Ú™Xİ\™[^KLLŒÍMÎH‹×ZX˜ÛÜ™K‘[][Û•\™Ù]ŞÂ‚BT™Yˆ™Y‹‚BU™XYQˆ™XYQ‚__JNÈ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚\Ûİ\˜ÙHH	™[][Û‘™[˜ÙT™[^TÛİ\˜Ù^Â‚B]™XYˆ\Ú\™K•™XYÂ‚BBRQˆ™XYQ‚BBQ]™[™\ˆ\Ú\™K‘]™[™\•™XYÔ™Yˆ™YŸK‚B_K‚_B‚XÙ™ÈHX˜ÛÜ™K•ÙXÛÛ™šYŞÂ‚BQ[][Û”İÜ™NˆİÜ™K‚BT™\İ[YSØÚÜÎˆX˜ÛÜ™K“™]Ô™\İ[YSØÚÜÊ
-K‚_B‚\Ù\™\ˆH\Ù\™\‹“™]ÔÙ\™\Š\Ù\™\‹”Ù\™\ÛÛ™šYŞÔÙ\™\“˜[YNˆœ™[^K]\İ‹Ûİ\˜ÙRQˆ›ØØ[ŸJB‚\™[^\ÈH™]ÒX”™[^Q[˜İ[ÛœÊÙ\™\‹Ù™Ë\Ûİ\˜ÙK“™]Ô™YÚ\İJ
-JB‚‚Y\œˆH™[^\Ëœİ\™[^JÛÛ^˜XÚÙÜ›İ[™
+	_, err = sourceForThreadWithManagedLaunch(context.Background(), cfg, sources, ref, webTestSessionID)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("deleting source resolution error = %T %v, want WireError", err, err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok ||
+		data.MutationOutcome != appwire.MutationOutcomeTargetDeleted ||
+		data.RetryDisposition != appwire.RetryDispositionNone {
+		t.Fatalf("deleting source resolution wire error = %#v", wire)
+	}
+}
 
-KÛİ\˜ÙK\Ú\™K•™XY™XY\˜[\ŞÔ™Yˆ™YŸKÛİ\˜ÙK™XY
-B‚ZYˆZ\Õ\™Ù][]Y\œ›ÜŠ\œŠHÂ‚B]‘˜][Š™[][™È™[^H\œ›ÜˆH	U	]‹Ø[\™Ù][]Y‹\œ‹\œŠB‚_B‚ZYˆÛİ\˜ÙKœİXœØÜšX™PØ[ÈOHÂ‚B]‘˜][Š™[][™È™[^HİXœØÜšX™Y	Y[Y\È‹Ûİ\˜ÙKœİXœØÜšX™PØ[ÊB‚_BŸB‚™[˜È\İ[][Û‘™[˜ÙPØ[ÛÛ[Z]\š[™Ò[š]X[™[^RSĞ[™›ØÚÜÔX›XØ][ÛŠ
-\İ[™Ë•
-HÂ‚\İÜ™K\œˆHX˜ÛÜ™K“™]Ñ[][Û”İÜ™J•[\\Š
-JB‚ZYˆ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚]™XYQHŒÓ^UŒPÌÒ]NĞÙPˆ‚‚\™YˆHØØ[\™YŠ™XYQ
-B‚\™\İ[YSØÚÜÈHX˜ÛÜ™K“™]Ô™\İ[YSØÚÜÊ
-B‚\Ûİ\˜ÙHH	™[][Û“İÛ™\œÚ\›Ø™T™[^TÛİ\˜Ù^Â‚B]™XYˆ\Ú\™K•™XYÂ‚BBRQˆ™XYQ‚BBQ]™[™\ˆ\Ú\™K‘]™[™\•™XYÔ™Yˆ™YŸK‚B_K‚B\İÜ™NˆİÜ™K‚B\™\İ[YSØÚÜÎˆ™\İ[YSØÚÜË‚B\›Ú™XİQˆœ›Ú™Xİ\™[^KZ[š]X[LLŒÍMÎH‹‚B\™Yˆ™Y‹‚B]™XYQˆ™XYQ‚B\›Ø™SÛØ[ˆK‚B\›Ø™YˆXZÙJÚ[ˆ[][Û“İÛ™\œÚ\›Ø™T™\İ[JK‚_B‚XÙ™ÈHX˜ÛÜ™K•ÙXÛÛ™šYŞÂ‚BQ[][Û”İÜ™NˆİÜ™K‚BT™\İ[YSØÚÜÎˆ™\İ[YSØÚÜË‚_B‚\Ù\™\ˆH\Ù\™\‹“™]ÔÙ\™\Š\Ù\™\‹”Ù\™\ÛÛ™šYŞÔÙ\™\“˜[YNˆœ™[^K]\İ‹Ûİ\˜ÙRQˆ›ØØ[ŸJB‚\™[^\ÈH™]ÒX”™[^Q[˜İ[ÛœÊÙ\™\‹Ù™Ë\Ûİ\˜ÙK“™]Ô™YÚ\İJ
-JB‚‚\™[^Q\œˆH™[^\Ëœİ\™[^JÛÛ^˜XÚÙÜ›İ[™
+func TestDeletionFenceDoesNotFallBackToPastThread(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	project, err := identifier.ResolveProject(workingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", project.ID)
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := hubcore.NewDeletionStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := localAppRef(sessionID)
+	if _, err := store.Begin(project.ID, []hubcore.DeletionTarget{{
+		Ref:      ref,
+		ThreadID: sessionID,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{
+		DeletionStore: store,
+		ResumeLocks:   hubcore.NewResumeLocks(),
+		Past:          past,
+	}
+	server := newHubAppServer(cfg, newHubSourceRegistry(cfg))
+	raw, err := json.Marshal(appwire.ThreadReadParams{Ref: ref})
+	if err != nil {
+		t.Fatal(err)
+	}
 
-KÛİ\˜ÙK\Ú\™K•™XY™XY\˜[\ŞÔ™Yˆ™YŸKÛİ\˜ÙK™XY
-B‚\™\İ[H\Ûİ\˜ÙKœ›Ø™Y‚ZYˆ™\İ[™\œˆOHš[Â‚B]‘˜][
-™\İ[™\œŠB‚_B‚ZYˆ\™\İ[™[]Y™Y›Ü™TİXœØÜšX™HÂ‚B]‘˜][
-œ™[^H[[][ÛˆİÛ™\œÚ\XÜ›ÜÜÈ\İ™X[HKÓÈŠB‚_B‚ZYˆZ\Õ\™Ù][]Y\œ›ÜŠ™[^Q\œŠHÂ‚B]‘˜][Šœ™[^H\œ›ÜˆH	U	]‹Ø[\™Ù][]YY\ˆ[][ÛˆÛÛˆHKÓÈ˜XÙH‹™[^Q\œ‹™[^Q\œŠB‚_BŸB‚™[˜È\İ[][Û‘™[˜ÙPØ[ÛÛ[Z]\š[™Ô™XÛİ™\T™[^RSĞ[™İÜÔX›XØ][ÛŠ
-\İ[™Ë•
-HÂ‚\İÜ™K\œˆHX˜ÛÜ™K“™]Ñ[][Û”İÜ™J•[\\Š
-JB‚ZYˆ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚]™XYQHŒÓ^UŒPÌÒ]NĞÙPˆ‚‚\™YˆHØØ[\™YŠ™XYQ
-B‚\™\İ[YSØÚÜÈHX˜ÛÜ™K“™]Ô™\İ[YSØÚÜÊ
-B‚Z[š]X[›İYšXØ][ÛœÈHXZÙJÚ[ˆ\Ú\™K“›İYšXØ][ÛŠB‚\Ûİ\˜ÙHH	™[][Û“İÛ™\œÚ\›Ø™T™[^TÛİ\˜Ù^Â‚B]™XYˆ\Ú\™K•™XYÂ‚BBRQˆ™XYQ‚BBQ]™[™\ˆ\Ú\™K‘]™[™\•™XYÔ™Yˆ™YŸK‚B_K‚B\İÜ™NˆİÜ™K‚B\™\İ[YSØÚÜÎˆ™\İ[YSØÚÜË‚B\›Ú™XİQˆœ›Ú™Xİ\™[^K\™XÛİ™\KLLŒÍMÎH‹‚B\™Yˆ™Y‹‚B]™XYQˆ™XYQ‚B\›Ø™SÛØ[ˆ‹‚BZ[š]X[›İYšXØ][ÛœÎˆ[š]X[›İYšXØ][ÛœË‚B\›Ø™YˆXZÙJÚ[ˆ[][Û“İÛ™\œÚ\›Ø™T™\İ[JK‚_B‚XÙ™ÈHX˜ÛÜ™K•ÙXÛÛ™šYŞÂ‚BQ[][Û”İÜ™NˆİÜ™K‚BT™\İ[YSØÚÜÎˆ™\İ[YSØÚÜË‚_B‚\Ù\™\ˆH\Ù\™\‹“™]ÔÙ\™\Š\Ù\™\‹”Ù\™\ÛÛ™šYŞÔÙ\™\“˜[YNˆœ™[^K]\İ‹Ûİ\˜ÙRQˆ›ØØ[ŸJB‚\™[^\ÈH™]ÒX”™[^Q[˜İ[ÛœÊÙ\™\‹Ù™Ë\Ûİ\˜ÙK“™]Ô™YÚ\İJ
-JB‚YY™\ˆ™[^\ËœİÜ™[^J›ØØ[ˆˆ
-È™XYQ
-B‚‚ZYˆ\œˆH™[^\Ëœİ\™[^JÛÛ^˜XÚÙÜ›İ[™
+	_, err = server.Router().Dispatch(context.Background(), appwire.Request{
+		ID:     appwire.NewIntID(1),
+		Method: appwire.MethodThreadRead,
+		Params: raw,
+	})
+	if !isTargetDeletedError(err) {
+		t.Fatalf("deleting past read error = %T %v, want targetDeleted", err, err)
+	}
+}
 
-KÛİ\˜ÙK\Ú\™K•™XY™XY\˜[\ŞÔ™Yˆ™YŸKÛİ\˜ÙK™XY
-NÈ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚XÛÜÙJ[š]X[›İYšXØ][ÛœÊB‚\™\İ[H\Ûİ\˜ÙKœ›Ø™Y‚ZYˆ™\İ[™\œˆOHš[Â‚B]‘˜][
-™\İ[™\œŠB‚_B‚ZYˆ\™\İ[™[]Y™Y›Ü™TİXœØÜšX™HÂ‚B]‘˜][
-œ™[^H[[][ÛˆİÛ™\œÚ\XÜ›ÜÜÈ™XÛİ™\HKÓÈŠB‚_BŸB‚™[˜È\İ[][Û‘™[˜ÙU\›”İ\Ù\Ó›İØZ]›Ü”™[^UÚ[SİÛš[™Õ\™Ù]
-
-\İ[™Ë•
-HÂ‚]™XYQHŒÓ^UŒPÌÒ]NĞÙPˆ‚‚\™YˆHØØ[\™YŠ™XYQ
-B‚\™\İ[YSØÚÜÈHX˜ÛÜ™K“™]Ô™\İ[YSØÚÜÊ
-B‚\XÙZÛ\”X›\ÚYHXZÙJÚ[ˆİXİßJB‚\™[X\ÙR[š]X[^™\ˆHXZÙJÚ[ˆİXİßJB‚\Ûİ\˜ÙHH	š[š\š]Y[][Û“İÛ™\œÚ\™[^TÛİ\˜Ù^Â‚B]™XYˆ\Ú\™K•™XYÂ‚BBRQˆ™XYQ‚BBTÙ\ÜÚ[Û’Qˆ™XYQ‚BBTÛİ\˜ÙNˆ›ØØ[‹‚BBQ]™[™\ˆ\Ú\™K‘]™[™\•™XYÔ™Yˆ™YŸK‚B_K‚B[›İYšXØ][ÛœÎˆXZÙJÚ[ˆ\Ú\™K“›İYšXØ][ÛŠK‚B\İXœØÜšX™YˆXZÙJÚ[ˆİXİßKJK‚_B‚XÙ™ÈHX˜ÛÜ™K•ÙXÛÛ™šYŞÂ‚BRX”İ]T›Ûİˆ•[\\Š
-K‚BT™\İ[YSØÚÜÎˆ™\İ[YSØÚÜË‚BT™[^RÛÚÜÎˆX˜ÛÜ™K”™[^SY™XŞXÛRÛÚÜŞÂ‚BBPY\”XÙZÛ\ˆ[˜ÊÛİ™XYQİš[™ÊHÂ‚BBBZYˆÛİ™XYQOH™XYQÂ‚BBBB\™]\›‚‚BBB_B‚BBBXÛÜÙJXÙZÛ\”X›\ÚY
-B‚BBBO\™[X\ÙR[š]X[^™\‚‚BB_K‚B_K‚_B‚\Ûİ\˜Ù\ÈH\Ûİ\˜ÙK“™]Ô™YÚ\İJ
-B‚\Ûİ\˜Ù\ËY
-Ûİ\˜ÙJB‚]˜\ˆ™[^\ÈX”™[^Q[˜İ[ÛœÂ‚\™]š[İ\ÓØœÙ\™Q[˜İ[ÛœÈHØœÙ\™RX”™[^Q[˜İ[ÛœÂ‚[ØœÙ\™RX”™[^Q[˜İ[ÛœÈH[˜ÊÛİX”™[^Q[˜İ[ÛœÊHÂ‚B\™[^\ÈHÛİ‚_B‚]ÛX[\
-[˜Ê
-HÂ‚B[ØœÙ\™RX”™[^Q[˜İ[ÛœÈH™]š[İ\ÓØœÙ\™Q[˜İ[ÛœÂ‚_JB‚\Ù\™\ˆH™]ÒX\Ù\™\ŠÙ™ËÛİ\˜Ù\ÊB‚[ØœÙ\™RX”™[^Q[˜İ[ÛœÈH™]š[İ\ÓØœÙ\™Q[˜İ[ÛœÂ‚YY™\ˆ™[^\ËœİÜ™[^J›ØØ[ˆˆ
-È™XYQ
-B‚‚]ØZ]\’›Ú[™YHXZÙJÚ[ˆİXİßKJB‚\™]š[İ\ÓØœÙ\™UØZ]HØœÙ\™RX”™[^UØZ]‚[ØœÙ\™RX”™[^UØZ]H[˜Ê
-HÂ‚B]ØZ]\’›Ú[™YHİXİß^ßB‚_B‚]ÛX[\
-[˜Ê
-HÂ‚B[ØœÙ\™RX”™[^UØZ]H™]š[İ\ÓØœÙ\™UØZ]‚_JB‚‚Z[š]X[^™\‘Û™HHXZÙJÚ[ˆ\œ›Ü‹JB‚YÛÈ[˜Ê
-HÂ‚BZ[š]X[^™\‘Û™HH™[^\Ëœİ\™[^J‚BBXÛÛ^˜XÚÙÜ›İ[™
+func TestDeletionFenceRejectsResumeBeforeSpawner(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	project, err := identifier.ResolveProject(workingDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", project.ID)
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	store, err := hubcore.NewDeletionStore(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := localAppRef(sessionID)
+	if _, err := store.Begin(project.ID, []hubcore.DeletionTarget{{
+		Ref:      ref,
+		ThreadID: sessionID,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	resumeCalls := 0
+	spawner := &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+		resumeCalls++
+		return rendezvous.Entry{}, errors.New("deleting target reached spawner")
+	}}
+	cfg := hubcore.WebConfig{
+		DeletionStore: store,
+		ResumeLocks:   hubcore.NewResumeLocks(),
+		Past:          past,
+		Spawner:       spawner,
+	}
 
-K‚BB\Ûİ\˜ÙK‚BBX\Ú\™K•™XY™XY\˜[\ŞÔ™Yˆ™YŸK‚BB\Ûİ\˜ÙK™XY‚BJB‚_J
-B‚O\XÙZÛ\”X›\ÚY‚‚\˜]Ë\œˆHœÛÛ‹“X\œÚ[
-\Ú\™K•\›”İ\\˜[\ŞÂ‚BU™XYQˆ™XYQ‚BT™Yˆ™Y‹‚BPÛY[]]][Û’Qˆ\›‹\İ\\™[^K[İÛ™\œÚ\‹‚BR[œ]ˆ×X\Ú\™K’[œ]][^ŞÕ\Nˆ^‹^ˆ˜ÛÛ[YHŸ_K‚_JB‚ZYˆ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚]\›‘Û™HHXZÙJÚ[ˆ\œ›Ü‹JB‚YÛÈ[˜Ê
-HÂ‚BWË\œˆHÙ\™\‹”›İ]\Š
-K‘\Ü]Ú
-ÛÛ^˜XÚÙÜ›İ[™
+	_, err = hubThreadResume(context.Background(), cfg, newHubSourceRegistry(cfg), appwire.ThreadResumeParams{Ref: ref})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("deleting resume error = %T %v, want WireError", err, err)
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if !ok || data.MutationOutcome != appwire.MutationOutcomeTargetDeleted {
+		t.Fatalf("deleting resume wire error = %#v", wire)
+	}
+	if resumeCalls != 0 {
+		t.Fatalf("deleting resume reached spawner %d times", resumeCalls)
+	}
+}
 
-K\Ú\™K”™\]Y\İÂ‚BBRQˆ\Ú\™K“™]Ò[Q
-JK‚BBSY]Ùˆ\Ú\™K“Y]Ù\›”İ\‚BBT\˜[\Îˆ˜]Ë‚B_JB‚B]\›‘Û™HH\œ‚‚_J
-B‚O]ØZ]\’›Ú[™Y‚‚]\™Ù]ØÚÈH™\İ[YSØÚÜË‘›ÜŠ™XYQ
-B‚]\™Ù]Ø\Ñœ™YHH\™Ù]ØÚË•SØÚÊ
-B‚ZYˆ\™Ù]Ø\Ñœ™YHÂ‚B]\™Ù]ØÚË•[›ØÚÊ
-B‚_H[ÙHÂ‚B\™[^\ËœİÜ™[^J›ØØ[ˆˆ
-È™XYQ
-B‚_B‚XÛÜÙJ™[X\ÙR[š]X[^™\ŠB‚Z[š]X[^™\‘\œˆHZ[š]X[^™\‘Û™B‚]\›‘\œˆH]\›‘Û™B‚‚ZYˆ]\™Ù]Ø\Ñœ™YHÂ‚B]‘˜][
-\›‹Üİ\ØZ]Y›ÜˆH™[^H[š]X[^™\ˆÚ[HİÛš[™ÈH[][Ûˆ\™Ù]ŠB‚_B‚ZYˆ[š]X[^™\‘\œˆOHš[Â‚B]‘˜][Šš[š]X[^™H™[^Nˆ	]ˆ‹[š]X[^™\‘\œŠB‚_B‚ZYˆ\›‘\œˆOHš[Â‚B]‘˜][Š\›‹Üİ\ˆ	]ˆ‹\›‘\œŠB‚_B‚\Ù[XİÂ‚XØ\ÙH\Ûİ\˜ÙKœİXœØÜšX™Y‚‚YY˜][‚‚B]‘˜][
-œ™[^H[š]X[^™\ˆY›İİXœØÜšX™HŠB‚_BŸB‚™[˜È\İ[][Û‘™[˜ÙT™Z™XİÑ›ÜšĞ™Y›Ü™S][˜Ú[™ĞÚ[
-
-\İ[™Ë•
-HÂ‚\İÜ™K\œˆHX˜ÛÜ™K“™]Ñ[][Û”İÜ™J•[\\Š
-JB‚ZYˆ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚]™XYQHŒÓ^UŒPÌÒ]NĞÙPˆ‚‚\™YˆHØØ[\™YŠ™XYQ
-B‚ZYˆË\œˆHİÜ™K™YÚ[Šœ›Ú™XİY›ÜšËLLŒÍMÎH‹×ZX˜ÛÜ™K‘[][Û•\™Ù]ŞÂ‚BT™Yˆ™Y‹‚BU™XYQˆ™XYQ‚__JNÈ\œˆOHš[Â‚B]‘˜][
-\œŠB‚_B‚[Û\ÚYHHX\ÚYTÙ\ÜÚ[Û‚‚]ÛX[\
-[˜Ê
-HÈX\ÚYTÙ\ÜÚ[ÛˆHÛ\ÚYHJB‚[][˜ÚØ[ÈH‚ZX\ÚYTÙ\ÜÚ[ÛˆH[˜Êİš[™Ëİš[™ÊH
-İš[™Ë\œ›ÜŠHÂ‚B[][˜ÚØ[ÊÊÂ‚B\™]\›ˆˆ‹\œ›ÜœË“™]Ê™[][™È›ÜšÈ][˜ÚYÚ[ŠB‚_B‚XÙ™ÈHX˜ÛÜ™K•ÙXÛÛ™šYŞÂ‚BQ[][Û”İÜ™NˆİÜ™K‚BT™\İ[YSØÚÜÎˆX˜ÛÜ™K“™]Ô™\İ[YSØÚÜÊ
-K‚BTİ]Q\ˆ•[\\Š
-K‚_B‚‚WË\œˆHX•™XY›ÜšÊÛÛ^˜XÚÙÜ›İ[™
+func TestDeletionFenceRejectsResumeWithNilSpawner(t *testing.T) {
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "02wMz5Txv1C3Hut0M8GCeB"
+	ref := localAppRef(sessionID)
+	if _, err := store.Begin("project-resume-nil-0123456789", []hubcore.DeletionTarget{{
+		Ref:      ref,
+		ThreadID: sessionID,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{
+		DeletionStore: store,
+		ResumeLocks:   hubcore.NewResumeLocks(),
+	}
 
-KÙ™Ë\Ûİ\˜ÙK“™]Ô™YÚ\İJ
-K\Ú\™K•™XY›ÜšÔ\˜[\ŞÂ‚BT™Yˆ™Y‹‚BP\ÚYNˆYK‚_JB‚ZYˆZ\Õ\™Ù][]Y\œ›ÜŠ\œŠHÂ‚B]‘˜][Š™[][™È›ÜšÈ\œ›ÜˆH	U	]‹Ø[\™Ù][]Y‹\œ‹\œŠB‚_B‚ZYˆ][˜ÚØ[ÈOHÂ‚B]‘˜][Š™[][™È›ÜšÈ][˜ÚY	YÚ[™[ˆ‹][˜ÚØ[ÊB‚_BŸB‚\H[][Û‘™[˜ÙT™[^TÛİ\˜ÙHİXİÂ‚\™[^SY™XŞXÛTÛİ\˜ÙB‚\İXœØÜšX™PØ[È[ŸB‚™[˜È
-È
-™[][Û‘™[˜ÙT™[^TÛİ\˜ÙJHQ
+	_, err = hubThreadResume(context.Background(), cfg, appsource.NewRegistry(), appwire.ThreadResumeParams{Ref: ref})
+	if !isTargetDeletedError(err) {
+		t.Fatalf("deleting resume error with nil spawner = %T %v, want targetDeleted", err, err)
+	}
+}
 
-Hİš[™ÈÂ‚\™]\›ˆ›ØØ[‚ŸB‚™[˜È
-È
-™[][Û‘™[˜ÙT™[^TÛİ\˜ÙJHİXœØÜšX™U™XY
-ÛÛ^ÛÛ^\Ú\™K•™XY™XY\˜[\ÊH
-XÚ[ˆ\Ú\™K“›İYšXØ][Û‹\œ›ÜŠHÂ‚\ËœİXœØÜšX™PØ[ÊÊÂ‚\™]\›ˆš[\œ›ÜœË“™]Ê™[][™È™[^H™XXÚYÛİ\˜ÙHİXœØÜš\[ÛˆŠBŸB‚\H[š\š]Y[][Û“İÛ™\œÚ\™[^TÛİ\˜ÙHİXİÂ‚\™[^SY™XŞXÛTÛİ\˜ÙB‚[›İYšXØ][ÛœÈXÚ[ˆ\Ú\™K“›İYšXØ][Û‚‚\İXœØÜšX™YÚ[ˆİXİßBŸB‚™[˜È
-È
-š[š\š]Y[][Û“İÛ™\œÚ\™[^TÛİ\˜ÙJHQ
+func TestDeletionFenceRejectsMutationWithTargetDeletedOutcome(t *testing.T) {
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	ref := localAppRef(webTestSessionID)
+	if _, err := store.Begin("project-mutate-0123456789", []hubcore.DeletionTarget{{
+		Ref:      ref,
+		ThreadID: webTestSessionID,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := hubcore.WebConfig{
+		DeletionStore: store,
+		ResumeLocks:   hubcore.NewResumeLocks(),
+	}
+	source := &deletionFenceMutationSource{}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	server := newHubAppServer(cfg, sources)
+	tests := []struct {
+		method string
+		id     string
+		params any
+	}{
+		{appwire.MethodTurnStart, "mutation-start-after-delete", appwire.TurnStartParams{
+			Ref: ref, ClientMutationID: "mutation-start-after-delete",
+			Input: []appwire.InputItem{{Type: "text", Text: "start"}},
+		}},
+		{appwire.MethodTurnSteer, "mutation-steer-after-delete", appwire.TurnSteerParams{
+			Ref: ref, ClientMutationID: "mutation-steer-after-delete", Input: []appwire.InputItem{{Type: "text", Text: "steer"}},
+		}},
+		{appwire.MethodTurnInterrupt, "mutation-interrupt-after-delete", appwire.TurnInterruptParams{
+			Ref: ref, ClientMutationID: "mutation-interrupt-after-delete"}},
+		{appwire.MethodTurnQueue, "mutation-queue-after-delete", appwire.TurnQueueParams{
+			Ref: ref, ClientMutationID: "mutation-queue-after-delete", Input: []appwire.InputItem{{Type: "text", Text: "queue"}},
+		}},
+		{appwire.MethodTurnDrainAsSteer, "mutation-drain-after-delete", appwire.TurnDrainAsSteerParams{
+			Ref: ref, ClientMutationID: "mutation-drain-after-delete",
+			ExpectedQueueRevision: 1,
+		}},
+		{appwire.MethodTurnPromoteQueuedAsSteer, "mutation-promote-after-delete", appwire.TurnPromoteQueuedAsSteerParams{
+			Ref: ref, ClientMutationID: "mutation-promote-after-delete",
+			ExpectedEntryID: "queue-before-delete",
+		}},
+		{appwire.MethodTurnCancelQueued, "mutation-cancel-after-delete", appwire.TurnCancelQueuedParams{
+			Ref: ref, ClientMutationID: "mutation-cancel-after-delete",
+			ExpectedEntryID: "queue-before-delete",
+		}},
+	}
+	for i, tc := range tests {
+		t.Run(tc.method, func(t *testing.T) {
+			raw, err := json.Marshal(tc.params)
+			if err != nil {
+				t.Fatal(err)
+			}
+			_, err = server.Router().Dispatch(context.Background(), appwire.Request{
+				ID:     appwire.NewIntID(int64(i + 1)),
+				Method: tc.method,
+				Params: raw,
+			})
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("deleting mutation error = %T %v, want WireError", err, err)
+			}
+			data, ok := wire.Data.(appwire.ErrorData)
+			if !ok ||
+				data.ClientMutationID != tc.id ||
+				data.MutationOutcome != appwire.MutationOutcomeTargetDeleted ||
+				data.RetryDisposition != appwire.RetryDispositionNone {
+				t.Fatalf("deleting mutation wire error = %#v", wire)
+			}
+			if source.calls[tc.method] != 0 {
+				t.Fatalf("deleting mutation reached %s source %d times", tc.method, source.calls[tc.method])
+			}
+		})
+	}
+}
 
-Hİš[™ÈÂ‚\™]\›ˆ›ØØ[‚ŸB‚™[˜È
-È
-š[š\š]Y[][Û“İÛ™\œÚ\™[^TÛİ\˜ÙJHİXœØÜšX™U™XY
-‚XÛÛ^ÛÛ^‚X\Ú\™K•™XY™XY\˜[\ËŠH
-XÚ[ˆ\Ú\™K“›İYšXØ][Û‹\œ›ÜŠHÂ‚\ËœİXœØÜšX™YHİXİß^ßB‚\™]\›ˆË››İYšXØ][ÛœËš[ŸB‚™[˜È
-È
-š[š\š]Y[][Û“İÛ™\œÚ\™[^TÛİ\˜ÙJHİ\\›Š‚XÛÛ^ÛÛ^‚X\Ú\™K•\›”İ\\˜[\ËŠH
-\Ú\™K•\›”İ\™\ÜÛœÙK\œ›ÜŠHÂ‚\™]\›ˆ\Ú\™K•\›”İ\™\ÜÛœÙ^Õ\›ˆ\Ú\™K•\›ÒQˆ\›—Üİ\YŸ_Kš[ŸB‚\H[][Û“İÛ™\œÚ\›Ø™T™\İ[İXİÂ‚Y[]Y™Y›Ü™TİXœØÜšX™H›ÛÛ‚Y\œˆ\œ›Ü‚ŸB‚\H[][Û“İÛ™\œÚ\›Ø™T™[^TÛİ\˜ÙHİXİÂ‚\™[^SY™XŞXÛTÛİ\˜ÙB‚\İÜ™H
-šX˜ÛÜ™K‘[][Û”İÜ™B‚\™\İ[YSØÚÜÈ
-šX˜ÛÜ™K”™\İ[YSØÚÜÂ‚\›Ú™XİQİš[™Â‚\™Yˆİš[™Â‚]™XYQİš[™Â‚\›Ø™SÛØ[[‚Z[š]X[›İYšXØ][ÛœÈXÚ[ˆ\Ú\™K“›İYšXØ][Û‚‚\›Ø™YÚ[ˆ[][Û“İÛ™\œÚ\›Ø™T™\İ[‚[]HŞ[˜Ë“]]^‚\İXœØÜšX™PØ[È[ŸB‚™[˜È
-È
-™[][Û“İÛ™\œÚ\›Ø™T™[^TÛİ\˜ÙJHQ
+func TestDeletionFenceRejectsRelayBeforeSubscribe(t *testing.T) {
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadID := "02wMz5Txv1C3Hut0M8GCeB"
+	ref := localAppRef(threadID)
+	if _, err := store.Begin("project-relay-0123456789", []hubcore.DeletionTarget{{
+		Ref:      ref,
+		ThreadID: threadID,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	source := &deletionFenceRelaySource{
+		thread: appwire.Thread{
+			ID:     threadID,
+			Evener: appwire.EvenerThread{Ref: ref},
+		},
+	}
+	cfg := hubcore.WebConfig{
+		DeletionStore: store,
+		ResumeLocks:   hubcore.NewResumeLocks(),
+	}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
+	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
 
-Hİš[™ÈÂ‚\™]\›ˆ›ØØ[‚ŸB‚™[˜È
-È
-™[][Û“İÛ™\œÚ\›Ø™T™[^TÛİ\˜ÙJHİXœØÜšX™U™XY
-‚XÛÛ^ÛÛ^‚X\Ú\™K•™XY™XY\˜[\ËŠH
-XÚ[ˆ\Ú\™K“›İYšXØ][Û‹\œ›ÜŠHÂ‚\Ë›]K“ØÚÊ
-B‚\ËœİXœØÜšX™PØ[ÊÊÂ‚XØ[HËœİXœØÜšX™PØ[Â‚\Ë›]K•[›ØÚÊ
-B‚ZYˆØ[Ëœ›Ø™SÛØ[Â‚B\™]\›ˆËš[š]X[›İYšXØ][ÛœËš[‚_B‚‚[ØÚÈHËœ™\İ[YSØÚÜË‘›ÜŠË™XYQ
-B‚ZYˆ[ØÚË•SØÚÊ
-HÂ‚B\Ëœ›Ø™YH[][Û“İÛ™\œÚ\›Ø™T™\İ[ßB‚B\™]\›ˆš[\œ›ÜœË“™]ÊœİÜ™[^HİÛ™\œÚ\›Ø™HŠB‚_B‚WË\œˆHËœİÜ™K™YÚ[ŠËœ›Ú™XİQ×ZX˜ÛÜ™K‘[][Û•\™Ù]ŞÂ‚BT™YˆËœ™Y‹‚BU™XYQˆË™XYQ‚__JB‚[ØÚË•[›ØÚÊ
-B‚ZYˆ\œˆOHš[Â‚B\Ëœ›Ø™YH[][Û“İÛ™\œÚ\›Ø™T™\İ[Ù\œˆ\œŸB‚B\™]\›ˆš[\œ‚‚_B‚WË[]YHËœİÜ™K•\™Ù]İ]JËœ™Y‹Ë™XYQ
-B‚\Ëœ›Ø™YH[][Û“İÛ™\œÚ\›Ø™T™\İ[Ù[]Y™Y›Ü™TİXœØÜšX™Nˆ[]YB‚\™]\›ˆš[\œ›ÜœË“™]ÊœİÜ™[^HİÛ™\œÚ\›Ø™HŠBŸB‚\H[][Û‘™[˜ÙS]]][Û”Ûİ\˜ÙHİXİÂ‚\™[^SY™XŞXÛTÛİ\˜ÙB‚XØ[ÈX\Üİš[™×Z[ŸB‚™[˜È
-È
-™[][Û‘™[˜ÙS]]][Û”Ûİ\˜ÙJHQ
+	err = relays.startRelay(context.Background(), source, appwire.ThreadReadParams{Ref: ref}, source.thread)
+	if !isTargetDeletedError(err) {
+		t.Fatalf("deleting relay error = %T %v, want targetDeleted", err, err)
+	}
+	if source.subscribeCalls != 0 {
+		t.Fatalf("deleting relay subscribed %d times", source.subscribeCalls)
+	}
+}
 
-Hİš[™ÈÂ‚\™]\›ˆ›ØØ[‚ŸB‚™[˜È
-È
-™[][Û‘™[˜ÙS]]][Û”Ûİ\˜ÙJH]Y]YU\›Š‚XÛÛ^ÛÛ^‚X\Ú\™K•\›”]Y]YT\˜[\ËŠH
-\Ú\™K•\›”]Y]YT™\ÜÛœÙK\œ›ÜŠHÂ‚\Ëœ™XÛÜ™Ø[
-\Ú\™K“Y]Ù\›”]Y]YJB‚\™]\›ˆ\Ú\™K•\›”]Y]YT™\ÜÛœÙ^ßKš[ŸB‚™[˜È
-È
-™[][Û‘™[˜ÙS]]][Û”Ûİ\˜ÙJHİ\\›ŠÛÛ^ÛÛ^\Ú\™K•\›”İ\\˜[\ÊH
-\Ú\™K•\›”İ\™\ÜÛœÙK\œ›ÜŠHÂ‚\Ëœ™XÛÜ™Ø[
-\Ú\™K“Y]Ù\›”İ\
-B‚\™]\›ˆ\Ú\™K•\›”İ\™\ÜÛœÙ^ßKš[ŸB‚™[˜È
-È
-™[][Û‘™[˜ÙS]]][Û”Ûİ\˜ÙJHİY\•\›ŠÛÛ^ÛÛ^\Ú\™K•\›”İY\”\˜[\ÊH
-\Ú\™K•\›”İY\”™\ÜÛœÙK\œ›ÜŠHÂ‚\Ëœ™XÛÜ™Ø[
-\Ú\™K“Y]Ù\›”İY\ŠB‚\™]\›ˆ\Ú\™K•\›”İY\”™\ÜÛœÙ^ßKš[ŸB‚™[˜È
-È
-™[][Û‘™[˜ÙS]]][Û”Ûİ\˜ÙJH[\œ\\›ŠÛÛ^ÛÛ^\Ú\™K•\›’[\œ\\˜[\ÊH
-\Ú\™K•\›’[\œ\™\ÜÛœÙK\œ›ÜŠHÂ‚\Ëœ™XÛÜ™Ø[
-\Ú\™K“Y]Ù\›’[\œ\
-B‚\™]\›ˆ\Ú\™K•\›’[\œ\™\ÜÛœÙ^ßKš[ŸB‚™[˜È
-È
-™[][Û‘™[˜ÙS]]][Û”Ûİ\˜ÙJH˜Z[\ÔİY\ŠÛÛ^ÛÛ^\Ú\™K•\›‘˜Z[\ÔİY\”\˜[\ÊH
-\Ú\™K•\›‘˜Z[\ÔİY\”™\ÜÛœÙK\œ›ÜŠHÂ‚\Ëœ™XÛÜ™Ø[
-\Ú\™K“Y]Ù\›‘˜Z[\ÔİY\ŠB‚\™]\›ˆ\Ú\™K•\›‘˜Z[\ÔİY\”™\ÜÛœÙ^ßKš[ŸB‚™[˜È
-È
-™[][Û‘™[˜ÙS]]][Û”Ûİ\˜ÙJH›Û[İT]Y]YY\ÔİY\ŠÛÛ^ÛÛ^\Ú\™K•\›”›Û[İT]Y]YY\ÔİY\”\˜[\ÊH
-\Ú\™K•\›”›Û[İT]Y]YY\ÔİY\”™\ÜÛœÙK\œ›ÜŠHÂ‚\Ëœ™XÛÜ™Ø[
-\Ú\™K“Y]Ù\›”›Û[İT]Y]YY\ÔİY\ŠB‚\™]\›ˆ\Ú\™K•\›”›Û[İT]Y]YY\ÔİY\”™\ÜÛœÙ^ßKš[ŸB‚™[˜È
-È
-™[][Û‘™[˜ÙS]]][Û”Ûİ\˜ÙJHØ[˜Ù[]Y]YY
-ÛÛ^ÛÛ^\Ú\™K•\›Ø[˜Ù[]Y]YY\˜[\ÊH
-\Ú\™K•\›Ø[˜Ù[]Y]YY™\ÜÛœÙK\œ›ÜŠHÂ‚\Ëœ™XÛÜ™Ø[
-\Ú\™K“Y]Ù\›Ø[˜Ù[]Y]YY
-B‚\™]\›ˆ\Ú\™K•\›Ø[˜Ù[]Y]YY™\ÜÛœÙ^ßKš[ŸB‚™[˜È
-È
-™[][Û‘™[˜ÙS]]][Û”Ûİ\˜ÙJH™XÛÜ™Ø[
-Y]Ùİš[™ÊHÂ‚ZYˆË˜Ø[ÈOHš[Â‚B\Ë˜Ø[ÈHXZÙJX\Üİš[™×Z[
-B‚_B‚\Ë˜Ø[ÖÛY]ÙJÊÂŸB‚™[˜È\İX””Õ\Ü˜YT[œÔÙ[•\]\Š
-\İ[™Ë•
-HÂ‚]˜\ˆÛİÙ[\]K“Ü[ÛœÂ‚\™]š[İ\ÈH[’X”Ù[•\Ü˜YB‚\[’X”Ù[•\Ü˜YHH[˜ÊÈÛÛ^ÛÛ^ÜÈÙ[\]K“Ü[ÛœÊH
-Ù[\]K”™\İ[\œ›ÜŠHÂ‚BYÛİHÜÂ‚B\™]\›ˆÙ[\]K”™\İ[Â‚BBT™[X\ÙNˆœÛ˜\Úİ‹‚BBPÚ[›™[ˆœÛ˜\Úİ‹‚BBP\˜Ú]™Nˆ™]™[™\—Û[^Ø[Y\‹™Şˆ‹‚BBTÚ\™Pš[‘\ˆ‹İ\ÜÚ\™KÙ]™[™\‹Øš[ˆ‹‚BBPš[‘\ˆ‹İ\Øš[ˆ‹‚BBT™\İ\Y\ÜØYÙNˆ”™\İ\]™[™\‹]ZH[™]™[™\‹ZXˆÈ\ÙHH\Ü˜YYš[˜\šY\Ëˆ‹‚B_Kš[‚_B‚]ÛX[\
-[˜Ê
-HÈ[’X”Ù[•\Ü˜YHH™]š[İ\ÈJB‚‚\Ù\™\ˆH™]ÒX\Ù\™\ŠX˜ÛÜ™K•ÙXÛÛ™šYŞÔ\İˆX˜ÛÜ™K“™]Ô\İ[™^
-ˆŠ_K\Ûİ\˜ÙK“™]Ô™YÚ\İJ
-JB‚\\˜[\Ë\œˆHœÛÛ‹“X\œÚ[
-\Ú\™K•\Ü˜YT\˜[\ŞÔ™\]Y\İYˆœÛ˜\ÚİŸJB‚ZYˆ\œˆOHš[Â‚B]‘˜][Š“X\œÚ[\˜[\Îˆ	]ˆ‹\œŠB‚_B‚\˜]Ë\œˆHÙ\™\‹”›İ]\Š
-K‘\Ü]Ú
-ÛÛ^˜XÚÙÜ›İ[™
+func TestDeletionFenceCanCommitDuringInitialRelayIOAndBlocksPublication(t *testing.T) {
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadID := "02wMz5Txv1C3Hut0M8GCeB"
+	ref := localAppRef(threadID)
+	resumeLocks := hubcore.NewResumeLocks()
+	source := &deletionOwnershipProbeRelaySource{
+		thread: appwire.Thread{
+			ID:     threadID,
+			Evener: appwire.EvenerThread{Ref: ref},
+		},
+		store:       store,
+		resumeLocks: resumeLocks,
+		projectID:   "project-relay-initial-0123456789",
+		ref:         ref,
+		threadID:    threadID,
+		probeOnCall: 1,
+		probed:      make(chan deletionOwnershipProbeResult, 1),
+	}
+	cfg := hubcore.WebConfig{
+		DeletionStore: store,
+		ResumeLocks:   resumeLocks,
+	}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
+	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
 
-K\Ú\™K”™\]Y\İÂ‚BRQˆ\Ú\™K“™]Ò[Q
-JK‚BSY]Ùˆ\Ú\™K“Y]Ù]™[™\•\Ü˜YK‚BT\˜[\Îˆ\˜[\Ë‚_JB‚ZYˆ\œˆOHš[Â‚B]‘˜][Š‘\Ü]Ú\Ü˜YNˆ	]ˆ‹\œŠB‚_B‚\™\ÜÚÈH˜]ËŠ\Ú\™K•\Ü˜YT™\ÜÛœÙJB‚ZYˆ[ÚÈÂ‚B]‘˜][Šœ™\ÜÛœÙH\OIU‹˜]ÊB‚_B‚ZYˆ™\ÜÚ[›™[OHœÛ˜\Úİˆ™\Ü\˜Ú]™HOH™]™[™\—Û[^Ø[Y\‹™ŞˆˆÂ‚B]‘˜][Šœ™\ÜÛœÙOIJİˆ‹™\Ü
-B‚_B‚ZYˆÛİ”™\]Y\İYOHœÛ˜\ÚİˆÂ‚B]‘˜][Š”™\]Y\İYI\KØ[Û˜\Úİ‹Ûİ”™\]Y\İY
-B‚_B‚ZYˆÛİİ\œ™[Ú[›™[OHˆˆÂ‚B]‘˜][
-İ\œ™[Ú[›™[\È[\HŠB‚_BŸB‚™[˜È\İ\][\Ñœ›ÛT™\^U\›ÛÛ™\ĞÛÛ[][šXØ]UĞYÙ[Y\ÜØYÙJ
-\İ[™Ë•
-HÂ‚]ÛÛ˜[Y\ÈHX\Üİš[™×\İš[™ŞßB‚Z][\ÈH\][\Ñœ›ÛT™\^U\›Š\›—ÌH‹KØÚ[XK•\›Â‚BRÚ[™ˆTÔÒTÕS•‹‚BSY\ÜØYÙNˆK“Y\ÜØYÙ^ĞÛÛ[ˆ×[KÛÛ[\ŞÂ‚BBRÚ[™ˆÛÛØØ[‹‚BBUÛÛØ[ˆ	›K•ÛÛØ[]^Â‚BBBRQˆ˜Ø[ÌH‹‚BBBS˜[YNˆ˜ÛÛ[][šXØ]H‹‚BBBP\™İ[Y[Îˆ×X]JÈ›Y\ÜØYÙHˆ™Û™H‹™[™İ\›ˆY_X
-K‚BB_K‚B___K‚_KÛÛ˜[Y\ÊB‚‚ZYˆ[Š][\ÊHOHH][\ÖÌK•\HOH˜YÙ[Y\ÜØYÙHˆ][\ÖÌK•^OH™Û™HˆÂ‚B]‘˜][Š˜ÛÛ[][šXØ]H][\ÏIJİˆ‹][\ÊB‚_B‚‚\™\İ[ÈH\][\Ñœ›ÛT™\^U\›Š\›—Ìˆ‹‹ØÚ[XK•\›Â‚BRÚ[™ˆ•ÓÓÔ‘TÕSÈ‹‚BSY\ÜØYÙNˆK“Y\ÜØYÙ^ĞÛÛ[ˆ×[KÛÛ[\ŞÂ‚BBRÚ[™ˆÛÛÜ™\İ[‹‚BBUÛÛ™\İ[ˆ	›K•ÛÛ™\İ[]^ÕÛÛØ[Qˆ˜Ø[ÌH‹ÛÛ[ˆÈ˜XØÙ\YY_XK‚B___K‚_KÛÛ˜[Y\ÊB‚ZYˆ[Š™\İ[ÊHOHÂ‚B]‘˜][Š˜ÛÛ[][šXØ]HÛÛ™\İ[ÈÚİ[™HY[‹Ûİ	Jİˆ‹™\İ[ÊB‚_BŸB‚™[˜È\İ\][\Ñœ›ÛT™\^U\›Ø\œšY\ÕÛÛİ]T˜]Ê
-\İ[™Ë•
-HÂ‚Z][\ÈH\][\Ñœ›ÛT™\^U\›Š\›—ÌH‹KØÚ[XK•\›Â‚BRÚ[™ˆ•ÓÓÔ‘TÕSÈ‹‚BSY\ÜØYÙNˆK“Y\ÜØYÙ^ĞÛÛ[ˆ×[KÛÛ[\ŞÂ‚BBRÚ[™ˆÛÛÜ™\İ[‹‚BBUÛÛ™\İ[ˆ	›K•ÛÛ™\İ[]^Â‚BBBUÛÛØ[Qˆ˜Ø[Ù[YØ]WÜÙ[™‹‚BBBS˜[YNˆ™[YØ]WÜÙ[™‹‚BBBPÛÛ[ˆœİ\Y[YØ]H\›ˆ‹‚BBBUÛÛİ]Nˆ×X]JÈš›Ø—ÚYˆš›Ø—ÌH‹œİ]\Èˆœ[›š[™ÈŸX
-K‚BB_K‚B___K‚_KX\Üİš[™×\İš[™ŞßJB‚‚ZYˆ[Š][\ÊHOHH][\ÖÌK•ÛÛ˜[YHOH™[YØ]WÜÙ[™ˆ][\ÖÌK“İ]]OHœİ\Y[YØ]H\›ˆˆÂ‚B]‘˜][ŠÛÛ™\İ[][\ÏIJİˆ‹][\ÊB‚_B‚ZYˆİš[™Ê][\ÖÌK”˜]ÊHOHÈš›Ø—ÚYˆš›Ø—ÌH‹œİ]\Èˆœ[›š[™ÈŸXÂ‚B]‘˜][ŠÛÛ™\İ[˜]ÈH	\ËØ[™\^HÛÛÜİ]H‹][\ÖÌK”˜]ÊB‚_BŸB‚™[˜È\İ\][\Ñœ›ÛT™\^U\›”›Ú™XİÕ[šÚ[™Ê
-\İ[™Ë•
-HÂ‚]˜\ˆ[H˜[œØÜš\‘[B‚\˜]ÈH×X]JÈ\›ˆÈšÚ[™ˆTÔÒTÕS•‹›Y\ÜØYÙHÈœ›ÛHˆ˜\ÜÚ\İ[‹˜ÛÛ[–Ø
-Â‚BXÈšÚ[™ˆ[šÚ[™È‹[šÚ[™ÈÈ^ˆ“]YH[ˆ\Èİ]ˆŸ_K
-Â‚BXÈšÚ[™ˆ^‹^ˆ•H[œİÙ\ˆ\È‹ˆŸX
-Â‚BX___X
-B‚ZYˆ\œˆHœÛÛ‹•[›X\œÚ[
-˜]Ë	™[JNÈ\œˆOHš[Â‚B]‘˜][Š[›X\œÚ[™\^H[Nˆ	]ˆ‹\œŠB‚_B‚Z][\ÈH\][\Ñœ›ÛT™\^U\›Š\›—ÌH‹K[K•\›‹X\Üİš[™×\İš[™ŞßJB‚‚ZYˆ[Š][\ÊHOHˆÂ‚B]‘˜][Š™^XİY™X\ÛÛš[™È
-ÈYÙ[Y\ÜØYÙKÛİ	Jİˆ‹][\ÊB‚_B‚ZYˆ][\ÖÌK•\HOHœ™X\ÛÛš[™Èˆ][\ÖÌK•^OH“]YH[ˆ\Èİ]ˆˆÂ‚B]‘˜][Šœ™X\ÛÛš[™È][OIJİˆ‹][\ÖÌJB‚_B‚ZYˆ][\ÖÌWK•\HOH˜YÙ[Y\ÜØYÙHˆ][\ÖÌWK•^OH•H[œİÙ\ˆ\È‹ˆˆÂ‚B]‘˜][Š˜YÙ[Y\ÜØYÙH][OIJİˆ‹][\ÖÌWJB‚_BŸB‚™[˜È\İ\][\Ñœ›ÛT™\^U\›”›Ú™XİÔ™YXİY[šÚ[™Ê
-\İ[™Ë•
-HÂ‚]˜\ˆ[H˜[œØÜš\‘[B‚\˜]ÈH×X]JÈ\›ˆÈšÚ[™ˆTÔÒTÕS•‹›Y\ÜØYÙHÈœ›ÛHˆ˜\ÜÚ\İ[‹˜ÛÛ[–Ø
-Â‚BXÈšÚ[™ˆœ™YXİYİ[šÚ[™È‹[šÚ[™ÈÈœ™YXİYYK™[˜Ü\YØÛÛ[ˆ^ˆŸ_K
-Â‚BXÈšÚ[™ˆ^‹^ˆ›ÚÈŸX
-Â‚BX___X
-B‚ZYˆ\œˆHœÛÛ‹•[›X\œÚ[
-˜]Ë	™[JNÈ\œˆOHš[Â‚B]‘˜][Š[›X\œÚ[™\^H[Nˆ	]ˆ‹\œŠB‚_B‚Z][\ÈH\][\Ñœ›ÛT™\^U\›Š\›—ÌH‹K[K•\›‹X\Üİš[™×\İš[™ŞßJB‚‚ZYˆ[Š][\ÊHOHˆÂ‚B]‘˜][Š™^XİY™X\ÛÛš[™È
-ÈYÙ[Y\ÜØYÙKÛİ	Jİˆ‹][\ÊB‚_B‚ZYˆ][\ÖÌK•\HOHœ™X\ÛÛš[™Èˆ][\ÖÌK•^OH–Ü™YXİY[šÚ[™×HˆÂ‚B]‘˜][Šœ™YXİY™X\ÛÛš[™È][OIJİˆ‹][\ÖÌJB‚_BŸB‚™[˜È\İ\][\Ñœ›ÛT™\^U\›”›Ú™XİÕÙX”ÙX\˜Ú
-
-\İ[™Ë•
-HÂ‚]˜\ˆ[H˜[œØÜš\‘[B‚\˜]ÈH×X]JÈ\›ˆÈšÚ[™ˆTÔÒTÕS•‹›Y\ÜØYÙHÈœ›ÛHˆ˜\ÜÚ\İ[‹˜ÛÛ[–Ø
-Â‚BXÈšÚ[™ˆÙX—ÜÙX\˜Ú‹ÙX—ÜÙX\˜ÚÈœ]Y\Hˆ™ÛÈÛÛ^‹œ˜]ÈÈ\HˆÙX—ÜÙX\˜ÚİÛÛÜ™\İ[‹˜ÛÛ[–ŞÈ\HˆÙX—ÜÙX\˜ÚÜ™\İ[‹\›ˆšÎ‹ËÙÛË™]‹Øİ‹]HˆÛÛ^ŸW___X
-Â‚BX___X
-B‚ZYˆ\œˆHœÛÛ‹•[›X\œÚ[
-˜]Ë	™[JNÈ\œˆOHš[Â‚B]‘˜][Š[›X\œÚ[™\^H[Nˆ	]ˆ‹\œŠB‚_B‚Z][\ÈH\][\Ñœ›ÛT™\^U\›Š\›—ÌH‹K[K•\›‹X\Üİš[™×\İš[™ŞßJB‚ZYˆ[Š][\ÊHOHH][\ÖÌK•\HOH˜ÛÛ[X[™^Xİ][Ûˆˆ][\ÖÌK•ÛÛ˜[YHOHÙX—ÜÙX\˜ÚˆÂ‚B]‘˜][ŠÙX—ÜÙX\˜Ú][\ÏIJİˆ‹][\ÊB‚_B‚ZYˆ\İš[™ÜËÛÛZ[œÊ][\ÖÌK\™İ[Y[Ò”ÓÓ‹™ÛÈÛÛ^ŠHÂ‚B]‘˜][Š˜\™ÜÈZ\ÜÚ[™È]Y\Nˆ	\È‹][\ÖÌK\™İ[Y[Ò”ÓÓŠB‚_B‚ZYˆ\İš[™ÜËÛÛZ[œÊ][\ÖÌK“İ]]ÛÛ^ŠH\İš[™ÜËÛÛZ[œÊ][\ÖÌK“İ]]šÎ‹ËÙÛË™]‹ØİŠHÂ‚B]‘˜][Š›İ]]Z\ÜÚ[™È™\İ[Îˆ	\H‹][\ÖÌK“İ]]
-B‚_BŸB‚‹ËÈH˜[œØÜš\š[HØ[ˆÛ[HÛÛ[Ú[™HØÚ[XHØ[ˆXÛÙKˆ™\^B‹ËÈİ[[™ÈHÛY[Û›HÚ]]Ø[ˆ™[™\ˆ]Y[È[™Øİ[Y[\Â‹ËÈ™XXÚ[XYÙ\È›È[Ü™H[ˆ^H™XXÚH]™H]™[\Ù\’[œ]^[ØYÚXÚ‹ËÈ\È›ÈšY[›Üˆ[H][‚™[˜È\İ\][\Ñœ›ÛT™\^U\›’ÙY\Ó›Û’[XYÙT\Óİ]Ù’[XYÙ\Ê
-\İ[™Ë•
-HÂ‚]˜\ˆ[H˜[œØÜš\‘[B‚\˜]ÈH×X]JÈ\›ˆÈšÚ[™ˆ•TÑT—ÒS”U‹›Y\ÜØYÙHÈœ›ÛHˆ\Ù\ˆ‹˜ÛÛ[–Ø
-Â‚BXÈšÚ[™ˆ^‹^ˆœİ[[X\š^™HŸK
-Â‚BXÈšÚ[™ˆ™Øİ[Y[‹™Øİ[Y[È™š[WÛ˜[YHˆœ™\Üœˆ‹›YYXWİ\Hˆ˜\XØ][Û‹ÜˆŸ_K
-Â‚BXÈšÚ[™ˆ˜]Y[È‹˜]Y[ÈÈ›YYXWİ\Hˆ˜]Y[ËİØ]ˆŸ_K
-Â‚BXÈšÚ[™ˆš[XYÙH‹š[XYÙHÈ›YYXWİ\Hˆš[XYÙKÜ™È‹™]Hˆ˜ÑÍ[ˆŸ_X
-Â‚BX___X
-B‚ZYˆ\œˆHœÛÛ‹•[›X\œÚ[
-˜]Ë	™[JNÈ\œˆOHš[Â‚B]‘˜][Š[›X\œÚ[™\^H[Nˆ	]ˆ‹\œŠB‚_B‚Z][\ÈH\][\Ñœ›ÛT™\^U\›Š\›—ÌH‹K[K•\›‹X\Üİš[™×\İš[™ŞßJB‚ZYˆ[Š][\ÊHOHH][\ÖÌK•\HOH\Ù\“Y\ÜØYÙHˆÂ‚B]‘˜][Š™^XİY\Ù\“Y\ÜØYÙKÛİ	Jİˆ‹][\ÊB‚_B‚Z[XYÙ\ÈH][\ÖÌK’[XYÙ\Â‚ZYˆ[Š[}ïMy¶‰ËkºwµçW‚‚""—Ò —vV"ç6÷W&6W2äFB‡6÷W&6R —7'bä6öæf–rä†æFÆW"ÒvV"ä†æFÆW"‚ —7'bå7F'B‚ –FVfW"7'bä6Æ÷6R‚  –6Æ–VçB£ÒF–Ä‡V%%2‡BÂ7'b –FVfW"6Æ–VçBä6Æ÷6R‚ ––bòÂW'"£Ò6Æ–VçBä–æ—F–Æ—¦R†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&Rä–æ—F–Æ—¦U&×7µ&÷Fö6öÅfW'6–öã¢v—&Rå&÷Fö6öÅfW'6–öçÒ“²W'"Òæ–Â° —BäfFÆb‚$–æ—F–Æ—¦S¢Wb"ÂW'" —Ğ —&W7ÂW'"£Ò6Æ–VçBåF‡&VDf÷&²†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&RåF‡&VDf÷&µ&×7° •&Vc¢&6öFWƒ§F…öf÷&²"À •6÷W&6UGW&ä”C¢&6öFW‚×GW&âÓ"À ”ÖöFVÃ¢&wBÓRÖ6öFW‚"À —Ò ––bW'"Òæ–Â° —BäfFÆb‚%F‡&VDf÷&³¢Wb"ÂW'" —Ğ ––b6÷W&6Ræf÷&´6ÆÆVB° —BäfFÂ‚&æöâÖÆö6Â6÷W&6Rf÷&µF‡&VBv2æ÷B6ÆÆVB" —Ğ ––b6÷W&6Ræf÷&µ&×2å6÷W&6UGW&ä”BÒ&6öFW‚×GW&âÓ"ÇÂ6÷W&6Ræf÷&µ&×2äVF—FVD–çWBÒ""° —BäfFÆb‚&f÷&²&×3ÒR·b"Â6÷W&6Ræf÷&µ&×2 —Ğ ––b&W7åF‡&VBäWfVæW"å&VbÒ&6öFWƒ§F…ö6†–ÆB"° —BäfFÆb‚'F‡&VCÒR·b"Â&W7åF‡&VB —Ğ§Ğ ¦gVæ2FW7D‡V%%5F‡&VDf÷&µ&÷WFW4æöäÆö6Åv†öÆUF‡&VDf÷&µv—F†÷WEGW&äf÷&´6&–Æ—G’‡B§FW7F–æråB’° —6÷W&6R£Òff÷&¶–æu&VÆ•6÷W&6W° ––C¢&6öFW‚"À —F‡&VC¢v—&RåF‡&VG° ””C¢'F…÷v†öÆUöf÷&²"À •6W76–öä”C¢'F…÷v†öÆUöf÷&²"À •6÷W&6S¢&6öFW‚"À ”WfVæW#¢v—&RäWfVæW%F‡&VGµ&Vc¢&6öFWƒ§F…÷v†öÆUöf÷&²"Â6&–Æ—F–W3¢v—&RåF‡&VD6&–Æ—F–W7µ6VæC¢G'VW×ÒÀ —ÒÀ –æ÷F–f–6F–öç3¢Ö¶R†6†âv—&Räæ÷F–f–6F–öâÂ’À –6æ6VÆVC¢Ö¶R†6†â7G'V7G·ÒÂ’À —&W7öç6S¢v—&RåF‡&VDf÷&µ&W7öç6WµF‡&VC¢v—&RåF‡&VG° ””C¢'F…÷v†öÆUö6†–ÆB"À •6W76–öä”C¢'F…÷v†öÆUö6†–ÆB"À •6÷W&6S¢&6öFW‚"À ”WfVæW#¢v—&RäWfVæW%F‡&VGµ&Vc¢&6öFWƒ§F…÷v†öÆUö6†–ÆB'ÒÀ —×ÒÀ —Ğ —7'b£Ò‡GGFW7BäæWuVç7F'FVE6W'fW"†æ–Â —vV"£ÒæWuvV%6W'fW"†‡V&6÷&RåvV$6öæf–w´‡V$FG#¢7'bäÆ—7FVæW"äFG"‚’å7G&–ær‚’Â7C¢‡V&6÷&RäæWu7D–æFW‚‚""—Ò —vV"ç6÷W&6W2äFB‡6÷W&6R —7'bä6öæf–rä†æFÆW"ÒvV"ä†æFÆW"‚ —7'bå7F'B‚ –FVfW"7'bä6Æ÷6R‚  –6Æ–VçB£ÒF–Ä‡V%%2‡BÂ7'b –FVfW"6Æ–VçBä6Æ÷6R‚ ––bòÂW'"£Ò6Æ–VçBä–æ—F–Æ—¦R†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&Rä–æ—F–Æ—¦U&×7µ&÷Fö6öÅfW'6–öã¢v—&Rå&÷Fö6öÅfW'6–öçÒ“²W'"Òæ–Â° —BäfFÆb‚$–æ—F–Æ—¦S¢Wb"ÂW'" —Ğ —&W7ÂW'"£Ò6Æ–VçBåF‡&VDf÷&²†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&RåF‡&VDf÷&µ&×7µ&Vc¢&6öFWƒ§F…÷v†öÆUöf÷&²'Ò ––bW'"Òæ–Â° —BäfFÆb‚%F‡&VDf÷&³¢Wb"ÂW'" —Ğ ––b6÷W&6Ræf÷&´6ÆÆVB° —BäfFÂ‚'v†öÆR×F‡&VBf÷&²v2æ÷B&÷WFVBFò6÷W&6R" —Ğ ––b6÷W&6Ræf÷&µ&×2å6÷W&6UGW&ä”BÒ""ÇÂ6÷W&6Ræf÷&µ&×2äVF—FVD–çWBÒ""ÇÂ6÷W&6Ræf÷&µ&×2äÆ&VÂÒ""° —BäfFÆb‚&f÷&²&×3ÒR·b"Â6÷W&6Ræf÷&µ&×2 —Ğ ––b&W7åF‡&VBäWfVæW"å&VbÒ&6öFWƒ§F…÷v†öÆUö6†–ÆB"° —BäfFÆb‚'F‡&VCÒR·b"Â&W7åF‡&VB —Ğ§Ğ ¦gVæ2FW7D‡V%%5F‡&VDf÷&µ&WGW&ç5Væf–Æ&ÆUv†VäæöäÆö6Å6÷W&6T6ææ÷Df÷&²‡B§FW7F–æråB’° —6÷W&6R£Òff÷&¶–æu&VÆ•6÷W&6W° ––C¢&6öFW‚"À —F‡&VC¢v—&RåF‡&VG° ””C¢'F…öæõöf÷&²"À •6W76–öä”C¢'F…öæõöf÷&²"À •6÷W&6S¢&6öFW‚"À ”WfVæW#¢v—&RäWfVæW%F‡&VGµ&Vc¢&6öFWƒ§F…öæõöf÷&²"Â6&–Æ—F–W3¢v—&RåF‡&VD6&–Æ—F–W7µ6VæC¢G'VW×ÒÀ —ÒÀ –æ÷F–f–6F–öç3¢Ö¶R†6†âv—&Räæ÷F–f–6F–öâÂ’À –6æ6VÆVC¢Ö¶R†6†â7G'V7G·ÒÂ’À —Ğ —7'b£Ò‡GGFW7BäæWuVç7F'FVE6W'fW"†æ–Â —vV"£ÒæWuvV%6W'fW"†‡V&6÷&RåvV$6öæf–w´‡V$FG#¢7'bäÆ—7FVæW"äFG"‚’å7G&–ær‚’Â7C¢‡V&6÷&RäæWu7D–æFW‚‚""—Ò —vV"ç6÷W&6W2äFB‡6÷W&6R —7'bä6öæf–rä†æFÆW"ÒvV"ä†æFÆW"‚ —7'bå7F'B‚ –FVfW"7'bä6Æ÷6R‚  –6Æ–VçB£ÒF–Ä‡V%%2‡BÂ7'b –FVfW"6Æ–VçBä6Æ÷6R‚ ––bòÂW'"£Ò6Æ–VçBä–æ—F–Æ—¦R†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&Rä–æ—F–Æ—¦U&×7µ&÷Fö6öÅfW'6–öã¢v—&Rå&÷Fö6öÅfW'6–öçÒ“²W'"Òæ–Â° —BäfFÆb‚$–æ—F–Æ—¦S¢Wb"ÂW'" —Ğ –W'"£Ò6Æ–VçBå&WVW7B†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&RäÖWF†öEF‡&VDf÷&²Âv—&RåF‡&VDf÷&µ&×7° •&Vc¢&6öFWƒ§F…öæõöf÷&²"À •6÷W&6UGW&ä”C¢&6öFW‚×GW&âÓ"À —ÒÂfv—&RåF‡&VDf÷&µ&W7öç6W·Ò ––bW'"ÓÒæ–Â° —BäfFÂ‚%F‡&VDf÷&²7V66VVFVBf÷"6÷W&6Rv—F†÷WBf÷&²6&–Æ—G’" —Ğ ––b6÷W&6Ræf÷&´6ÆÆVB° —BäfFÂ‚&f÷&²&V6†VB6÷W&6RFW7—FRÖ—76–ær6&–Æ—G’" —Ğ —f"v—&Rv—&Råv—&TW'&÷  ––bW'&÷'2ä2†W'"Âgv—&R’° —BäfFÆb‚&W'&÷"UBFöW2æ÷B&W6W'fRv—&TW'&÷#¢Wb"ÂW'"ÂW'" —Ğ ––bv—&Rä6öFRÒv—&Rä6öFUVæf–Æ&ÆR° —BäfFÆb‚'v—&SÒR·b"Âv—&R —Ğ§Ğ ¦gVæ2FW7D‡V%%5F‡&VDf÷&´7&VFW4f÷&¶VEF‡&VB‡B§FW7F–æråB’° —&ö÷B£ÒBåFV×F—"‚ —7FFTF—"£Òf–ÆWF‚ä¦ö–â‡&ö÷BÂ'&ö¦V7G2"Â'&ö¦V7BÖf÷&²Ó" —&VçD”B£Ò'V–ÆE%5&VçE6W76–öâ‡BÂ7FFTF—" —7B£Ò‡V&6÷&RäæWu7D–æFW‚†f–ÆWF‚ä¦ö–â‡&ö÷BÂ'&ö¦V7G2"Â"¢"’ ––bòÂW'"£Ò7Bå&V'V–ÆB‚“²W'"Òæ–Â° —BäfFÂ†W'" —Ğ  –‡V"£ÒæWt‡V%%5FW7E6W'fW"‡BÂ‡V&6÷&RåvV$6öæf–wµ7C¢7GÒ –FVfW"‡V"ä6Æ÷6R‚ –6Æ–VçB£ÒF–Ä‡V%%2‡BÂ‡V" –FVfW"6Æ–VçBä6Æ÷6R‚  ––bòÂW'"£Ò6Æ–VçBä–æ—F–Æ—¦R†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&Rä–æ—F–Æ—¦U&×7µ&÷Fö6öÅfW'6–öã¢v—&Rå&÷Fö6öÅfW'6–öçÒ“²W'"Òæ–Â° —BäfFÆb‚$–æ—F–Æ—¦S¢Wb"ÂW'" —Ğ —&W7ÂW'"£Ò6Æ–VçBåF‡&VDf÷&²†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&RåF‡&VDf÷&µ&×7° •&Vc¢&Æö6Ã¢"²&VçD”BÀ •6÷W&6UGW&ä”C¢#2"À ”VF—FVD–çWC¢'6V6öæBF6²ÂVF—FVB"À ”Æ&VÃ¢&&Vf÷&RVF—B"À —Ò ––bW'"Òæ–Â° —BäfFÆb‚%F‡&VDf÷&³¢Wb"ÂW'" —Ğ ––b&W7åF‡&VBä”BÓÒ""ÇÂ&W7åF‡&VBä”BÓÒ&VçD”BÇÂ&W7åF‡&VBäWfVæW"å&VbÒ&Æö6Ã¢"·&W7åF‡&VBä”B° —BäfFÆb‚'F‡&VCÒR·b"Â&W7åF‡&VB —Ğ –6†–ÆDÖWFÂW'"£Ò66†VÖäÆöE6W76–öäÖWF‡7FFTF—"Â&W7åF‡&VBä”B ––bW'"Òæ–Â° —BäfFÆb‚$ÆöE6W76–öäÖWF†6†–ÆB“¢Wb"ÂW'" —Ğ ––b6†–ÆDÖWFå&VçE6W76–öä”BÒ&VçD”BÇÂ6†–ÆDÖWFäF—fW&vVæ6UGW&âÒ2° —BäfFÆb‚&6†–ÆBÖWFÒR·b"Â6†–ÆDÖWF —Ğ§Ğ ¢òòFW7D‡V%%5F‡&VDf÷&´FVfW$–çWBfW&–f–W2F†Rf÷&²Ög&öÒÖÖW76vRfÆ÷r†—77VP¢òò3C"“¢FVfW$–çWBf÷&·2F†RF‡&VBBF†R6÷W&6RGW&ât•D„õUBVæF–ær¢òò&WÆ6VÖVçBÖW76vRÂ6òF†R6†–ÆBG&ç67&—B†öÆG2öæÇ’F†R&Vf—‚æBF†P¢òò&W7öç6R6'&–W2F†R÷&–v–æÂ–çWBFW‡Bf÷"F†R6Æ–VçBFò7FvR–â—G0¢òò6ö×÷6W"âF†Rf÷&¶VB6W76–öâ×W7Bæ÷BWFò×'VâF†RÖW76vRà¦gVæ2FW7D‡V%%5F‡&VDf÷&´FVfW$–çWB‡B§FW7F–æråB’° —&ö÷B£ÒBåFV×F—"‚ —7FFTF—"£Òf–ÆWF‚ä¦ö–â‡&ö÷BÂ'&ö¦V7G2"Â'&ö¦V7BÖf÷&²Ó" —&VçD”B£Ò'V–ÆE%5&VçE6W76–öâ‡BÂ7FFTF—" —7B£Ò‡V&6÷&RäæWu7D–æFW‚†f–ÆWF‚ä¦ö–â‡&ö÷BÂ'&ö¦V7G2"Â"¢"’ ––bòÂW'"£Ò7Bå&V'V–ÆB‚“²W'"Òæ–Â° —BäfFÂ†W'" —Ğ  –‡V"£ÒæWt‡V%%5FW7E6W'fW"‡BÂ‡V&6÷&RåvV$6öæf–wµ7C¢7GÒ –FVfW"‡V"ä6Æ÷6R‚ –6Æ–VçB£ÒF–Ä‡V%%2‡BÂ‡V" –FVfW"6Æ–VçBä6Æ÷6R‚  ––bòÂW'"£Ò6Æ–VçBä–æ—F–Æ—¦R†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&Rä–æ—F–Æ—¦U&×7µ&÷Fö6öÅfW'6–öã¢v—&Rå&÷Fö6öÅfW'6–öçÒ“²W'"Òæ–Â° —BäfFÆb‚$–æ—F–Æ—¦S¢Wb"ÂW'" —Ğ —&W7ÂW'"£Ò6Æ–VçBåF‡&VDf÷&²†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&RåF‡&VDf÷&µ&×7° •&Vc¢&Æö6Ã¢"²&VçD”BÀ •6÷W&6UGW&ä”C¢#2"À ”FVfW$–çWC¢G'VRÀ —Ò ––bW'"Òæ–Â° —BäfFÆb‚%F‡&VDf÷&³¢Wb"ÂW'" —Ğ ––b&W7åF‡&VBä”BÓÒ""ÇÂ&W7åF‡&VBä”BÓÒ&VçD”BÇÂ&W7åF‡&VBäWfVæW"å&VbÒ&Æö6Ã¢"·&W7åF‡&VBä”B° —BäfFÆb‚'F‡&VCÒR·b"Â&W7åF‡&VB —Ğ ––b&W7ä÷&–v–æÄ–çWBÒ'6V6öæBF6²"° —BäfFÆb‚$÷&–v–æÄ–çWCÒWÂvçBW"Â&W7ä÷&–v–æÄ–çWBÂ'6V6öæBF6²" —Ğ –6†–ÆDÖWFÂW'"£Ò66†VÖäÆöE6W76–öäÖWF‡7FFTF—"Â&W7åF‡&VBä”B ––bW'"Òæ–Â° —BäfFÆb‚$ÆöE6W76–öäÖWF†6†–ÆB“¢Wb"ÂW'" —Ğ ––b6†–ÆDÖWFå&VçE6W76–öä”BÒ&VçD”BÇÂ6†–ÆDÖWFäF—fW&vVæ6UGW&âÒ2° —BäfFÆb‚&6†–ÆBÖWFÒR·b"Â6†–ÆDÖWF —Ğ ’òòF†R6†–ÆBG&ç67&—B×W7B6öçF–âöæÇ’F†R&Vf—‚VçG&–W2µSÂÓ  ’òòæòG&–Æ–ærU4U%ô”åUBGW&âF†Bv÷VÆBWFò×'Vâöâ÷Vâà —&rÂW'"£Ò÷2å&VDf–ÆR†f–ÆWF‚ä¦ö–â‡7FFTF—"Â'6W76–öç2"Â&W7åF‡&VBä”B²"çG&ç67&—Bæ§6öæÂ"’ ––bW'"Òæ–Â° —BäfFÆb‚'&VB6†–ÆBG&ç67&—C¢Wb"ÂW'" —Ğ ––b7G&–æw2ä6öçF–ç2‡7G&–ær‡&r’Â'6V6öæBF6²"’° —BäfFÆb‚&FVfW'&VBf÷&²×W7Bæ÷B6÷’F†RF—fW&v–ærW6W"ÖW76vS¥ÆâW2"Â&r —Ğ§Ğ ¢òòFW7D‡V%%5F‡&VDf÷&´FVfW$–çWE&V¦V7G4VF—FVD–çWBfW&–f–W2F†BFVfW$–çW@¢òòæBVF—FVD–çWB&R×WGVÆÇ’W†6ÇW6—fS¢öæRV—F†W"&WÆ6W2F†RÖW76vP¢òò–æÆ–æR†VF—FVD–çWB’÷"†æG2—B&6²f÷"VF—F–ær†FVfW$–çWB’ÂæWfW"&÷F‚à¦gVæ2FW7D‡V%%5F‡&VDf÷&´FVfW$–çWE&V¦V7G4VF—FVD–çWB‡B§FW7F–æråB’° —&ö÷B£ÒBåFV×F—"‚ —7FFTF—"£Òf–ÆWF‚ä¦ö–â‡&ö÷BÂ'&ö¦V7G2"Â'&ö¦V7BÖf÷&²Ó" —&VçD”B£Ò'V–ÆE%5&VçE6W76–öâ‡BÂ7FFTF—" —7B£Ò‡V&6÷&RäæWu7D–æFW‚†f–ÆWF‚ä¦ö–â‡&ö÷BÂ'&ö¦V7G2"Â"¢"’ ––bòÂW'"£Ò7Bå&V'V–ÆB‚“²W'"Òæ–Â° —BäfFÂ†W'" —Ğ  –‡V"£ÒæWt‡V%%5FW7E6W'fW"‡BÂ‡V&6÷&RåvV$6öæf–wµ7C¢7GÒ –FVfW"‡V"ä6Æ÷6R‚ –6Æ–VçB£ÒF–Ä‡V%%2‡BÂ‡V" –FVfW"6Æ–VçBä6Æ÷6R‚  ––bòÂW'"£Ò6Æ–VçBä–æ—F–Æ—¦R†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&Rä–æ—F–Æ—¦U&×7µ&÷Fö6öÅfW'6–öã¢v—&Rå&÷Fö6öÅfW'6–öçÒ“²W'"Òæ–Â° —BäfFÆb‚$–æ—F–Æ—¦S¢Wb"ÂW'" —Ğ –W'"£Ò6Æ–VçBå&WVW7B†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&RäÖWF†öEF‡&VDf÷&²Âv—&RåF‡&VDf÷&µ&×7° •&Vc¢&Æö6Ã¢"²&VçD”BÀ •6÷W&6UGW&ä”C¢#2"À ”VF—FVD–çWC¢'6V6öæBF6²ÂVF—FVB"À ”FVfW$–çWC¢G'VRÀ —ÒÂfv—&RåF‡&VDf÷&µ&W7öç6W·Ò ––bW'"ÓÒæ–Â° —BäfFÂ‚%F‡&VDf÷&²v—F‚&÷F‚VF—FVD–çWBæBFVfW$–çWB6†÷VÆBf–Â" —Ğ —f"v—&Rv—&Råv—&TW'&÷  ––bW'&÷'2ä2†W'"Âgv—&R’ÇÂv—&Rä6öFRÒv—&Rä6öFT–çfÆ–E&×2° —BäfFÆb‚&W'&÷#ÒWbÂvçB–çfÆ–E&×2"ÂW'" —Ğ§Ğ §G—Rf¶U%57væW"7G'V7B° —7vâgVæ2†6öçFW‡Bä6öçFW‡BÂ‡V&6÷&Rå7vå&WVW7B’‡&VæFW§f÷W2äVçG'’ÂW'&÷" —&W7VÖRgVæ2†6öçFW‡Bä6öçFW‡BÂ‡V&6÷&Rå&W7VÖU&WVW7B’‡&VæFW§f÷W2äVçG'’ÂW'&÷" –ÆVæ6„ÖöFVÇ2gVæ2†6öçFW‡Bä6öçFW‡B’…µÖv—&RäÖöFVÄFW67&—F÷"ÂW'&÷"§Ğ §G—Rf–ÆVE%5&ö&W"7G'V7G·Ğ ¦gVæ2†f–ÆVE%5&ö&W"’&ö&R‡&VæFW§f÷W2äVçG'’’‡V&6÷&Rå&ö&U&W7VÇB° —&WGW&â‡V&6÷&Rå&ö&U&W7VÇG·Ğ§Ğ §G—RG&÷f—'7D6öææV7F–öäÆ—7FVæW"7G'V7B° –æWBäÆ—7FVæW  –öæ6R7–æ2äöæ6P –G&÷VB6†â7G'V7G·Ğ§Ğ ¦gVæ2†Â¦G&÷f—'7D6öææV7F–öäÆ—7FVæW"’66WB‚’†æWBä6öæâÂW'&÷"’° –f÷"° –6öæâÂW'"£ÒÂäÆ—7FVæW"ä66WB‚ ––bW'"Òæ–Â° —&WGW&âæ–ÂÂW'  —Ğ –G&÷VB£ÒfÇ6P –Âæöæ6RäFò†gVæ2‚’° –G&÷VBÒG'VP •òÒ6öæâä6Æ÷6R‚ –6Æ÷6R†ÂæG&÷VB —Ò ––bG&÷VB° –6öçF–çVP —Ğ —&WGW&â6öæâÂæ–À —Ğ§Ğ §G—Rf¶U%4ÖöFVÄ6öçG&7E7væW"7G'V7B° –f¶U%57væW  –6öçG&7Bv—&RäÖöFVÄÆ—7E&W7öç6P –W'"W'&÷ §Ğ ¦gVæ2†b¦f¶U%4ÖöFVÄ6öçG&7E7væW"’Æ—7DÆVæ6„ÖöFVÄ6öçG&7B†6öçFW‡Bä6öçFW‡B’†v—&RäÖöFVÄÆ—7E&W7öç6RÂW'&÷"’° ––bbæW'"Òæ–Â° —&WGW&âv—&RäÖöFVÄÆ—7E&W7öç6W·ÒÂbæW'  —Ğ —&WGW&âbæ6öçG&7BÂæ–À§Ğ §G—Rf¶U%5v÷&¶–ætF—$ÖöFVÄ6öçG&7E7væW"7G'V7B° –f¶U%57væW  –fÆÆ&6²v—&RäÖöFVÄÆ—7E&W7öç6P –6öçG&7Df÷%v÷&¶–ætF—"gVæ2†6öçFW‡Bä6öçFW‡BÂ7G&–ær’†v—&RäÖöFVÄÆ—7E&W7öç6RÂW'&÷"§Ğ ¦gVæ2†b¦f¶U%5v÷&¶–ætF—$ÖöFVÄ6öçG&7E7væW"’Æ—7DÆVæ6„ÖöFVÄ6öçG&7B†6öçFW‡Bä6öçFW‡B’†v—&RäÖöFVÄÆ—7E&W7öç6RÂW'&÷"’° —&WGW&âbæfÆÆ&6²Âæ–À§Ğ ¦gVæ2†b¦f¶U%5v÷&¶–ætF—$ÖöFVÄ6öçG&7E7væW"’Æ—7DÆVæ6„ÖöFVÄ6öçG&7Df÷%v÷&¶–ætF—"†7G‚6öçFW‡Bä6öçFW‡BÂ7vB7G&–ær’†v—&RäÖöFVÄÆ—7E&W7öç6RÂW'&÷"’° ––bbæ6öçG&7Df÷%v÷&¶–ætF—"ÓÒæ–Â° —&WGW&âv—&RäÖöFVÄÆ—7E&W7öç6W·ÒÂæ–À —Ğ —&WGW&âbæ6öçG&7Df÷%v÷&¶–ætF—"†7G‚Â7vB§Ğ ¦gVæ2†b¦f¶U%57væW"’7vâ†7G‚6öçFW‡Bä6öçFW‡BÂ&W‡V&6÷&Rå7vå&WVW7B’‡&VæFW§f÷W2äVçG'’ÂW'&÷"’° ––bbç7vâÒæ–Â° —&WGW&âbç7vâ†7G‚Â&W —Ğ —&WGW&â&VæFW§f÷W2äVçG'—·ÒÂv—&RåVæf–Æ&ÆR‚'7vâæ÷B6öæf–wW&VB"§Ğ ¦gVæ2†b¦f¶U%57væW"’&W7VÖR†7G‚6öçFW‡Bä6öçFW‡BÂ&W‡V&6÷&Rå&W7VÖU&WVW7B’‡&VæFW§f÷W2äVçG'’ÂW'&÷"’° ––bbç&W7VÖRÒæ–Â° —&WGW&âbç&W7VÖR†7G‚Â&W —Ğ —&WGW&â&VæFW§f÷W2äVçG'—·ÒÂv—&RåVæf–Æ&ÆR‚'&W7VÖRæ÷B6öæf–wW&VB"§Ğ ¦gVæ2†b¦f¶U%57væW"’Æ—7DÆVæ6„ÖöFVÇ2†7G‚6öçFW‡Bä6öçFW‡B’…µÖv—&RäÖöFVÄFW67&—F÷"ÂW'&÷"’° ––bbæÆVæ6„ÖöFVÇ2Òæ–Â° —&WGW&âbæÆVæ6„ÖöFVÇ2†7G‚ —Ğ —&WGW&âæ–ÂÂv—&RåVæf–Æ&ÆR‚&ÆVæ6‚ÖöFVÂ6öçG&7Bæ÷B6öæf–wW&VB"§Ğ ¦gVæ2'V–ÆE%5&VçE6W76–öâ‡B§FW7F–æråBÂ7FFTF—"7G&–ær’7G&–ær° —Bä†VÇW"‚ —&WGW&â'V–ÆE%5&VçE6W76–öåv—F…v÷&¶–ætF—"‡BÂ7FFTF—"ÂBåFV×F—"‚’§Ğ ¦gVæ2'V–ÆE%5&VçE6W76–öåv—F…v÷&¶–ætF—"‡B§FW7F–æråBÂ7FFTF—"Âv÷&¶–ætF—"7G&–ær’7G&–ær° —Bä†VÇW"‚ —&VçD”B£Ò#'t×£UG‡c34‡WCÓ„t6T"  ––bW'"£Ò÷2äÖ¶F—$ÆÂ†f–ÆWF‚ä¦ö–â‡7FFTF—"Â'6W76–öç2"’ÂósSR“²W'"Òæ–Â° —BäfFÂ†W'" —Ğ —w&—FW"ÂW'"£ÒG&ç67&—BäæWuw&—FW"†f–ÆWF‚ä¦ö–â‡7FFTF—"Â'6W76–öç2"Â&VçD”B²"çG&ç67&—Bæ§6öæÂ"’ÂG&ç67&—Bä†VFW'° •6W76–öä”C¢&VçD”BÀ ”7&VFVDC¢F–ÖRäæ÷r‚’åUD2‚’À •&öf–ÆT”C¢&÷Væ’"À ”ÖöFVÃ¢&wBÓR"À •v÷&¶–ætF—#¢v÷&¶–ætF—"À —Ò ––bW'"Òæ–Â° —BäfFÂ†W'" —Ğ –f÷"òÂGW&â£Ò&ævRµ×66†VÖåGW&ç° —66†VÖäæWuGW&â‡66†VÖåGW&åW6W$–çWBÂÆÆÒåW6W"‚&f—'7BF6²"’’À —66†VÖäæWuGW&â‡66†VÖåGW&ä76—7FçBÂÆÆÒä76—7FçB‚&f—'7B&WÇ’"’’À —66†VÖäæWuGW&â‡66†VÖåGW&åW6W$–çWBÂÆÆÒåW6W"‚'6V6öæBF6²"’’À —Ò° ––bW'"£Òw&—FW"äVæB‡GW&â“²W'"Òæ–Â° —BäfFÂ†W'" —Ğ —Ğ ––bW'"£Òw&—FW"ä6Æ÷6R‚“²W'"Òæ–Â° —BäfFÂ†W'" —Ğ ––bW'"£Ò66†VÖå6fU6W76–öäÖWF‡7FFTF—"Â66†VÖå6W76–öäÖWF° ””C¢&VçD”BÀ •&öf–ÆT”C¢&÷Væ’"À ”ÖöFVÃ¢&wBÓR"À ”Vçd–æfó¢66†VÖäVçf—&öæÖVçD–æf÷µv÷&¶–ætF—#¢v÷&¶–ætF—'ÒÀ ”7&VFVDC¢F–ÖRäæ÷r‚’åUD2‚’À •WFFVDC¢F–ÖRäæ÷r‚’åUD2‚’À •GW&ä6÷VçC¢"À ”÷&–v–æÅ&ö×C¢'6V6öæBF6²"À —Ò“²W'"Òæ–Â° —BäfFÂ†W'" —Ğ —&WGW&â&VçD”@§Ğ ¦gVæ2ÆVæ6†W%'Vææ–æu&ö6W72‡B§FW7F–æråBÂÆVæ6†W"¦6öFW†ÆVæ6‚ä6öFW„ÆVæ6†W"Â6÷W&6T”B7G&–ær’¦6öFW†ÆVæ6‚äÆVæ6†VD6öFW‚° —Bä†VÇW"‚ –ÆVæ6†W"ä×RäÆö6²‚ –FVfW"ÆVæ6†W"ä×RåVæÆö6²‚ –ÆVæ6†VB£ÒÆVæ6†W"å'Vææ–æu·6÷W&6T”EĞ ––bÆVæ6†VBÓÒæ–ÂÇÂÆVæ6†VBä6ÖBÓÒæ–ÂÇÂÆVæ6†VBä6ÖBå&ö6W72ÓÒæ–Â° —BäfFÆb‚&ÆVæ6†W"†2æò'Vææ–ær&ö6W72f÷"W2"Â6÷W&6T”B —Ğ —&WGW&âÆVæ6†V@§Ğ ¦gVæ2v—DÆVæ6†VD6öFW„W†—FVB‡B§FW7F–æråBÂÆVæ6†VB¦6öFW†ÆVæ6‚äÆVæ6†VD6öFW‚’° —Bä†VÇW"‚ —6VÆV7B° –66RÂÖÆVæ6†VBäW†—FVC  –66RÂ×F–ÖRägFW"ƒ"¢F–ÖRå6V6öæB“  —BäfFÂ‚'F–ÖVB÷WBv—F–ærf÷"ÆVæ6†VB6öFW‚&ö6W72FòW†—B" —Ğ§Ğ ¢òòFW7DÆVæ6…&÷f–FW$ÆÆ÷w5Vç&W÷'FVDÖöFVÇ5ô¶W–VD'”&V†f–÷%FrfW&–f–W2F†@¢òòÆVæ6…&÷f–FW$ÆÆ÷w5Vç&W÷'FVDÖöFVÇ2&WGW&ç2G'VRf÷"ç’–ç7Fæ6RæÖP¢òòv†÷6R&V†f–÷"Fr—2&÷Vç&÷WFW"ÖçF‡&÷–2"Âæ÷B§W7BF†RÆ—FW&Â7G&–ærà¢òò&VæÖVB–ç7Fæ6RÆ–¶R&÷&×v÷&²"ÖVBFòFr&÷Vç&÷WFW"ÖçF‡&÷–2"×W7@¢òò&V†fR–FVçF–6ÆÇ’FòF†R6æöæ–6Â–ç7Fæ6RæÖRà¦gVæ2FW7DÆVæ6…&÷f–FW$ÆÆ÷w5Vç&W÷'FVDÖöFVÇ5ô¶W–VD'”&V†f–÷%Fr‡B§FW7F–æråB’° –6fr£Òg&÷f–FW&6frä6öæf–w° ”–ç7Fæ6W3¢µ×&÷f–FW&6frä–ç7Fæ6T6öæf–w° —´æÖS¢&÷&×v÷&²"ÂG—S¢&÷Vç&÷WFW"ÖçF‡&÷–2'ÒÀ —ÒÀ —Ğ ’òò&VæÖVB–ç7Fæ6Rv—F‚Fr&÷Vç&÷WFW"ÖçF‡&÷–2"×W7BÆÆ÷rVç&W÷'FVBÖöFVÇ2à ––bÆVæ6…&÷f–FW$ÆÆ÷w5Vç&W÷'FVDÖöFVÇ2‚&÷&×v÷&²"Â6fr’° —BäW'&÷"‚'&VæÖVB÷Vç&÷WFW"ÖçF‡&÷–2–ç7Fæ6R×W7BÆÆ÷rVç&W÷'FVBÖöFVÇ2" —Ğ ’òò–FVçF—G’fÆÆ&6²†æò6öæf–r“¢Æ—FW&ÂæÖR&÷Vç&÷WFW"ÖçF‡&÷–2"7F–ÆÂv÷&·2à ––bÆVæ6…&÷f–FW$ÆÆ÷w5Vç&W÷'FVDÖöFVÇ2‚&÷Vç&÷WFW"ÖçF‡&÷–2"Âæ–Â’° —BäW'&÷"‚&6æöæ–6Â÷Vç&÷WFW"ÖçF‡&÷–2×W7BÆÆ÷rVç&W÷'FVBÖöFVÇ2v—F‚æ–Â6öæf–r" —Ğ ’òòæöâÖ÷Vç&÷WFW"ÖçF‡&÷–2–ç7Fæ6R×W7Bæ÷BÆÆ÷rVç&W÷'FVBÖöFVÇ2à ––bÆVæ6…&÷f–FW$ÆÆ÷w5Vç&W÷'FVDÖöFVÇ2‚&÷Vç&÷WFW""Â6fr’° —BäW'&÷"‚&÷Vç&÷WFW"–ç7Fæ6R×W7Bæ÷BÆÆ÷rVç&W÷'FVBÖöFVÇ2" —Ğ§Ğ ¦gVæ2FW7D‡V%%4–ç7Fæ6TÆ—7E&÷WFW5Fô6öçG&öÆÆW"‡B§FW7F–æråB’° –F—"£ÒBåFV×F—"‚ —FöÖÅF‚£Òf–ÆWF‚ä¦ö–â†F—"Â'&÷f–FW'2çFöÖÂ" –6fr£Ò&÷f–FW&6frä6öæf–w° ”–ç7Fæ6W3¢µ×&÷f–FW&6frä–ç7Fæ6T6öæf–w° —´æÖS¢&×’Ö÷Væ’"ÂG—S¢&÷Væ’"Â•7G–ÆS¢'&W7öç6W2'ÒÀ —ÒÀ —Ğ ––bW'"£Ò&÷f–FW&6fråw&—FTf–ÆR‡FöÖÅF‚Â6fr“²W'"Òæ–Â° —BäfFÆb‚%w&—FTf–ÆS¢Wb"ÂW'" —Ğ –‡V"£ÒæWt‡V%%5FW7E6W'fW"‡BÂ‡V&6÷&RåvV$6öæf–w° •7C¢‡V&6÷&RäæWu7D–æFW‚‚""’À •&÷f–FW$6öæf–s¢f6frÀ •&÷f–FW'46öæf–uFƒ¢FöÖÅF‚À ”‡V%7FFU&ö÷C¢F—"À —Ò –FVfW"‡V"ä6Æ÷6R‚ –6Æ–VçB£ÒF–Ä‡V%%2‡BÂ‡V" –FVfW"6Æ–VçBä6Æ÷6R‚  ––bòÂW'"£Ò6Æ–VçBä–æ—F–Æ—¦R†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&Rä–æ—F–Æ—¦U&×7µ&÷Fö6öÅfW'6–öã¢v—&Rå&÷Fö6öÅfW'6–öçÒ“²W'"Òæ–Â° —BäfFÆb‚$–æ—F–Æ—¦S¢Wb"ÂW'" —Ğ —f"&W7v—&Rä–ç7Fæ6TÆ—7E&W7öç6P ––bW'"£Ò6Æ–VçBå&WVW7B†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&RäÖWF†öDWfVæW$–ç7Fæ6TÆ—7BÂv—&RäV×G•&×7·ÒÂg&W7“²W'"Òæ–Â° —BäfFÆb‚&WfVæW"ö–ç7Fæ6RöÆ—7C¢Wb"ÂW'" —Ğ ––bÆVâ‡&W7ä–ç7Fæ6W2’ÒÇÂ&W7ä–ç7Fæ6W5³ÒäæÖRÒ&×’Ö÷Væ’"° —BäfFÆb‚&–ç7Fæ6W3ÒR·b"Â&W7ä–ç7Fæ6W2 —Ğ ––bÆVâ‡&W7äf–Æ&ÆUG—W2’ÓÒ° —BäW'&÷"‚$f–Æ&ÆUG—W2×W7B&RæöâÖV×G’–âÆ—7B&W7öç6R" —Ğ –†4÷Vä’£ÒfÇ6P –f÷"òÂG£Ò&ævR&W7äf–Æ&ÆUG—W2° ––bGÓÒ&÷Væ’"° –†4÷Vä’ÒG'VP —Ğ —Ğ ––b†4÷Vä’° —BäW'&÷&b‚$f–Æ&ÆUG—W3ÒWbÖ—76–ærW‡V7FVBG—RÂ&÷Væ•Â""Â&W7äf–Æ&ÆUG—W2 —Ğ§Ğ ¢òòFW7D‡V%%4–ç7Fæ6T7&VFT'&öF67G4WF…WFFVB&÷fW2F†R&×VÇF—ÆR'&÷w6W'0¢òò7F’–â7–æ2"f÷VæF–ær&WV—&VÖVçBf÷"&÷f–FW"Ö–ç7Fæ6R5%TC¢7V66W76gVÀ¢òòWfVæW"ö–ç7Fæ6Rö7&VFR×W7B'&öF67BWfVæW"öWF‚÷WFFVB6òWfW'’÷F†W ¢òò6öææV7FVB6Æ–VçB&VfWF6†W2—G2æ÷r×7FÆR–ç7Fæ6RÆ—7BâF†Ræ÷F–f–6F–öâ—0¢òò&WW6VB&F†W"F†âæWröæRÖ–çFVBf÷"–ç7Fæ6W3¢æ÷F–f–6F–öç2æ§2Ç&VG¢òòG&VG2WfVæW"öWF‚÷WFFVB2–ÆöBÖvæ÷7F–2‚'6öÖWF†–ær&÷WB7&VFVçF–Ç0¢òò÷"–ç7Fæ6W26†ævVBÂ&VfWF6‚"’Â&VÆöF–ær&÷F‚F†R–ç7Fæ6W2æVÂæBF†P¢òò&÷f–FW'26WGF–æw2F"öâ&V6V—Bà¦gVæ2FW7D‡V%%4–ç7Fæ6T7&VFT'&öF67G4WF…WFFVB‡B§FW7F–æråB’° –ö—FW7Bä—6öÆFT÷Vä”WF‚‡B –F—"£ÒBåFV×F—"‚ —FöÖÅF‚£Òf–ÆWF‚ä¦ö–â†F—"Â'&÷f–FW'2çFöÖÂ" —w&—FTÖ–æ–ÖÅ&÷f–FW'5FöÖÂ‡BÂFöÖÅF‚ –‡V"£ÒæWt‡V%%5FW7E6W'fW"‡BÂ‡V&6÷&RåvV$6öæf–w° •7C¢‡V&6÷&RäæWu7D–æFW‚‚""’À •&÷f–FW'46öæf–uFƒ¢FöÖÅF‚À ”‡V%7FFU&ö÷C¢F—"À —Ò –FVfW"‡V"ä6Æ÷6R‚ –6Æ–VçB£ÒF–Ä‡V%%2‡BÂ‡V" –FVfW"6Æ–VçBä6Æ÷6R‚  ––bòÂW'"£Ò6Æ–VçBä–æ—F–Æ—¦R†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&Rä–æ—F–Æ—¦U&×7µ&÷Fö6öÅfW'6–öã¢v—&Rå&÷Fö6öÅfW'6–öçÒ“²W'"Òæ–Â° —BäfFÆb‚$–æ—F–Æ—¦S¢Wb"ÂW'" —Ğ  —f"&W7v—&Rä–ç7Fæ6TÆ—7E&W7öç6P ––bW'"£Ò6Æ–VçBå&WVW7B†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&RäÖWF†öDWfVæW$–ç7Fæ6T7&VFRÂv—&Rä–ç7Fæ6T7&VFU&×7µG—S¢&çF‡&÷–2"ÂæÖS¢&×—v÷&²'ÒÂg&W7“²W'"Òæ–Â° —BäfFÆb‚&WfVæW"ö–ç7Fæ6Rö7&VFS¢Wb"ÂW'" —Ğ  —6VÆV7B° –66Rv÷B£ÒÂÖ6Æ–VçBäæ÷F–f–6F–öç2‚“  ––bv÷BäÖWF†öBÒv—&Räæ÷F–g”WfVæW$WF…WFFVB° —BäfFÆb‚&ÖWF†öCÒWÂvçBW"Âv÷BäÖWF†öBÂv—&Räæ÷F–g”WfVæW$WF…WFFVB —Ğ –66RÂ×F–ÖRägFW"‡F–ÖRå6V6öæB“  —BäfFÂ‚'F–ÖVB÷WBv—F–ærf÷"WfVæW"öWF‚÷WFFVB'&öF67BgFW"–ç7Fæ6R7&VFR" —Ğ§Ğ ¢òòFW7D‡V%%4–ç7Fæ6TVF—D'&öF67G4WF…WFFVB—2F†RWfVæW"ö–ç7Fæ6RöVF—B6–&Æ–æp¢òòöbFW7D‡V%%4–ç7Fæ6T7&VFT'&öF67G4WF…WFFVC²6VR—G2Fö26öÖÖVçBf÷"v‡¢òòWfVæW"öWF‚÷WFFVB—2F†R&–v‡B‡&WW6VB’æ÷F–f–6F–öâà¦gVæ2FW7D‡V%%4–ç7Fæ6TVF—D'&öF67G4WF…WFFVB‡B§FW7F–æråB’° –ö—FW7Bä—6öÆFT÷Vä”WF‚‡B –F—"£ÒBåFV×F—"‚ —FöÖÅF‚£Òf–ÆWF‚ä¦ö–â†F—"Â'&÷f–FW'2çFöÖÂ" —w&—FTÖ–æ–ÖÅ&÷f–FW'5FöÖÂ‡BÂFöÖÅF‚ –‡V"£ÒæWt‡V%%5FW7E6W'fW"‡BÂ‡V&6÷&RåvV$6öæf–w° •7C¢‡V&6÷&RäæWu7D–æFW‚‚""’À •&÷f–FW'46öæf–uFƒ¢FöÖÅF‚À ”‡V%7FFU&ö÷C¢F—"À —Ò –FVfW"‡V"ä6Æ÷6R‚ –6Æ–VçB£ÒF–Ä‡V%%2‡BÂ‡V" –FVfW"6Æ–VçBä6Æ÷6R‚  ––bòÂW'"£Ò6Æ–VçBä–æ—F–Æ—¦R†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&Rä–æ—F–Æ—¦U&×7µ&÷Fö6öÅfW'6–öã¢v—&Rå&÷Fö6öÅfW'6–öçÒ“²W'"Òæ–Â° —BäfFÆb‚$–æ—F–Æ—¦S¢Wb"ÂW'" —Ğ  —f"&W7v—&Rä–ç7Fæ6TÆ—7E&W7öç6P ––bW'"£Ò6Æ–VçBå&WVW7B†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&RäÖWF†öDWfVæW$–ç7Fæ6TVF—BÂv—&Rä–ç7Fæ6TVF—E&×7´æÖS¢&&6R"Â&6UU$Ã¢&‡GG3¢òöW†×ÆRçFW7B'ÒÂg&W7“²W'"Òæ–Â° —BäfFÆb‚&WfVæW"ö–ç7Fæ6RöVF—C¢Wb"ÂW'" —Ğ  —6VÆV7B° –66Rv÷B£ÒÂÖ6Æ–VçBäæ÷F–f–6F–öç2‚“  ––bv÷BäÖWF†öBÒv—&Räæ÷F–g”WfVæW$WF…WFFVB° —BäfFÆb‚&ÖWF†öCÒWÂvçBW"Âv÷BäÖWF†öBÂv—&Räæ÷F–g”WfVæW$WF…WFFVB —Ğ –66RÂ×F–ÖRägFW"‡F–ÖRå6V6öæB“  —BäfFÂ‚'F–ÖVB÷WBv—F–ærf÷"WfVæW"öWF‚÷WFFVB'&öF67BgFW"–ç7Fæ6RVF—B" —Ğ§Ğ ¢òòFW7D‡V%%4–ç7Fæ6U&VÖ÷fT'&öF67G4WF…WFFVB—2F†RWfVæW"ö–ç7Fæ6R÷&VÖ÷fP¢òò6–&Æ–æröbFW7D‡V%%4–ç7Fæ6T7&VFT'&öF67G4WF…WFFVC²6VR—G2Fö0¢òò6öÖÖVçBf÷"v‡’WfVæW"öWF‚÷WFFVB—2F†R&–v‡B‡&WW6VB’æ÷F–f–6F–öâà¦gVæ2FW7D‡V%%4–ç7Fæ6U&VÖ÷fT'&öF67G4WF…WFFVB‡B§FW7F–æråB’° –ö—FW7Bä—6öÆFT÷Vä”WF‚‡B –F—"£ÒBåFV×F—"‚ —FöÖÅF‚£Òf–ÆWF‚ä¦ö–â†F—"Â'&÷f–FW'2çFöÖÂ" —w&—FTÖ–æ–ÖÅ&÷f–FW'5FöÖÂ‡BÂFöÖÅF‚ –‡V"£ÒæWt‡V%%5FW7E6W'fW"‡BÂ‡V&6÷&RåvV$6öæf–w° •7C¢‡V&6÷&RäæWu7D–æFW‚‚""’À •&÷f–FW'46öæf–uFƒ¢FöÖÅF‚À ”‡V%7FFU&ö÷C¢F—"À —Ò –FVfW"‡V"ä6Æ÷6R‚ –6Æ–VçB£ÒF–Ä‡V%%2‡BÂ‡V" –FVfW"6Æ–VçBä6Æ÷6R‚  ––bòÂW'"£Ò6Æ–VçBä–æ—F–Æ—¦R†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&Rä–æ—F–Æ—¦U&×7µ&÷Fö6öÅfW'6–öã¢v—&Rå&÷Fö6öÅfW'6–öçÒ“²W'"Òæ–Â° —BäfFÆb‚$–æ—F–Æ—¦S¢Wb"ÂW'" —Ğ  —f"&W7v—&Rä–ç7Fæ6TÆ—7E&W7öç6P ––bW'"£Ò6Æ–VçBå&WVW7B†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&RäÖWF†öDWfVæW$–ç7Fæ6U&VÖ÷fRÂv—&Rä–ç7Fæ6U&VÖ÷fU&×7´æÖS¢&&6R'ÒÂg&W7“²W'"Òæ–Â° —BäfFÆb‚&WfVæW"ö–ç7Fæ6R÷&VÖ÷fS¢Wb"ÂW'" —Ğ  —6VÆV7B° –66Rv÷B£ÒÂÖ6Æ–VçBäæ÷F–f–6F–öç2‚“  ––bv÷BäÖWF†öBÒv—&Räæ÷F–g”WfVæW$WF…WFFVB° —BäfFÆb‚&ÖWF†öCÒWÂvçBW"Âv÷BäÖWF†öBÂv—&Räæ÷F–g”WfVæW$WF…WFFVB —Ğ –66RÂ×F–ÖRägFW"‡F–ÖRå6V6öæB“  —BäfFÂ‚'F–ÖVB÷WBv—F–ærf÷"WfVæW"öWF‚÷WFFVB'&öF67BgFW"–ç7Fæ6R&VÖ÷fR" —Ğ§Ğ ¢òòFW7D‡V%%4–ç7Fæ6U6WDFVfVÇD'&öF67G4WF…WFFVB—2F†P¢òòWfVæW"ö–ç7Fæ6R÷6WDFVfVÇB6–&Æ–æröbFW7D‡V%%4–ç7Fæ6T7&VFT'&öF67G4WF…WFFVC°¢òò6VR—G2Fö26öÖÖVçBf÷"v‡’WfVæW"öWF‚÷WFFVB—2F†R&–v‡B‡&WW6VB¢òòæ÷F–f–6F–öâà¦gVæ2FW7D‡V%%4–ç7Fæ6U6WDFVfVÇD'&öF67G4WF…WFFVB‡B§FW7F–æråB’° –ö—FW7Bä—6öÆFT÷Vä”WF‚‡B –F—"£ÒBåFV×F—"‚ —FöÖÅF‚£Òf–ÆWF‚ä¦ö–â†F—"Â'&÷f–FW'2çFöÖÂ" —w&—FTÖ–æ–ÖÅ&÷f–FW'5FöÖÂ‡BÂFöÖÅF‚ –‡V"£ÒæWt‡V%%5FW7E6W'fW"‡BÂ‡V&6÷&RåvV$6öæf–w° •7C¢‡V&6÷&RäæWu7D–æFW‚‚""’À •&÷f–FW'46öæf–uFƒ¢FöÖÅF‚À ”‡V%7FFU&ö÷C¢F—"À —Ò –FVfW"‡V"ä6Æ÷6R‚ –6Æ–VçB£ÒF–Ä‡V%%2‡BÂ‡V" –FVfW"6Æ–VçBä6Æ÷6R‚  ––bòÂW'"£Ò6Æ–VçBä–æ—F–Æ—¦R†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&Rä–æ—F–Æ—¦U&×7µ&÷Fö6öÅfW'6–öã¢v—&Rå&÷Fö6öÅfW'6–öçÒ“²W'"Òæ–Â° —BäfFÆb‚$–æ—F–Æ—¦S¢Wb"ÂW'" —Ğ  —f"&W7v—&Rä–ç7Fæ6TÆ—7E&W7öç6P ––bW'"£Ò6Æ–VçBå&WVW7B†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&RäÖWF†öDWfVæW$–ç7Fæ6U6WDFVfVÇBÂv—&Rä–ç7Fæ6U6WDFVfVÇE&×7´æÖS¢&&6R'ÒÂg&W7“²W'"Òæ–Â° —BäfFÆb‚&WfVæW"ö–ç7Fæ6R÷6WDFVfVÇC¢Wb"ÂW'" —Ğ  —6VÆV7B° –66Rv÷B£ÒÂÖ6Æ–VçBäæ÷F–f–6F–öç2‚“  ––bv÷BäÖWF†öBÒv—&Räæ÷F–g”WfVæW$WF…WFFVB° —BäfFÆb‚&ÖWF†öCÒWÂvçBW"Âv÷BäÖWF†öBÂv—&Räæ÷F–g”WfVæW$WF…WFFVB —Ğ –66RÂ×F–ÖRägFW"‡F–ÖRå6V6öæB“  —BäfFÂ‚'F–ÖVB÷WBv—F–ærf÷"WfVæW"öWF‚÷WFFVB'&öF67BgFW"–ç7Fæ6R6WDFVfVÇB" —Ğ§Ğ ¦gVæ2F–Ä‡V%%2‡B§FW7F–æråBÂ‡V"¦‡GGFW7Bå6W'fW"’¦v—&Rä6Æ–VçB° —Bä†VÇW"‚ —G&ç7÷'BÂW'"£Òv—&RäF–ÅvV%6ö6¶WB†6öçFW‡Bä&6¶w&÷VæB‚’Â'w2"¶‡V"åU$Å¶ÆVâ‚&‡GG"“¥Ò²"÷'2"Â‡V"ä6Æ–VçB‚’ ––bW'"Òæ–Â° —BäfFÆb‚&F–Â‡V"'3¢Wb"ÂW'" —Ğ –6Æ–VçB£Òv—&RäæWt6Æ–VçB‡G&ç7÷'B –6Æ–VçBå7F'B†6öçFW‡Bä&6¶w&÷VæB‚’ —&WGW&â6Æ–Vç@§Ğ ¦gVæ2æWt‡V%%5FW7E6W'fW"‡B§FW7F–æråBÂ6fr‡V&6÷&RåvV$6öæf–r’¦‡GGFW7Bå6W'fW"° —Bä†VÇW"‚ —7'bÂò£ÒæWt‡V%%5FW7E6W'fW%v—F…vV"‡BÂ6fr —&WGW&â7'`§Ğ ¢òòæWt‡V%%5FW7E6W'fW%v—F…vV"&V†fW2Æ–¶RæWt‡V%%5FW7E6W'fW"'WBÇ6ğ¢òò&WGW&ç2F†R6öç7G'V7FVB¥vV%6W'fW"Âf÷"FW7G2F†BæVVBFòv—&Rà¢òòöä6†ævR†öö²öâöæRöb—G26fr7F÷&W2†Rærâ7Bå6WDöä6†ævRÂÖ—'&÷&–æp¢òò'VäÖ–âw26ö×÷6VBWfVæW"÷G&VRö6†ævVBv—&–ær–âÖ–âævò’&Vf÷&RF†R6W'fW ¢òò7F'G26W'f–ær&WVW7G2à¦gVæ2æWt‡V%%5FW7E6W'fW%v—F…vV"‡B§FW7F–æråBÂ6fr‡V&6÷&RåvV$6öæf–r’‚¦‡GGFW7Bå6W'fW"Â¥vV%6W'fW"’° —Bä†VÇW"‚ —7'b£Ò‡GGFW7BäæWuVç7F'FVE6W'fW"†æ–Â –6frä‡V$FG"Ò7'bäÆ—7FVæW"äFG"‚’å7G&–ær‚ —vV"£ÒæWuvV%6W'fW"†6fr —7'bä6öæf–rä†æFÆW"ÒvV"ä†æFÆW"‚ —7'bå7F'B‚ —&WGW&â7'bÂvV §Ğ ¢òòFW7D‡V%%5&Vv—7FW'4W‡V7FVD†æFÆW%6WBÆö6·2–âF†RW†7B6WBöb%2ÖWF†öG0¢òòF†R‡V"6W'fW"&Vv—7FW'2‡v—F‚&÷f–FW'26öæf–r&W6VçB6òF†P¢òò–ç7Fæ6R†æFÆW'2&Vv—7FW"Föò“¢F†R&÷WFW"w2ÖWF†öB6WB×W7BWVÂF†P¢òòÆ—7B&VÆ÷rÂ6ò&÷F‚G&÷VB&Vv—7G&F–öâæBöæRæö&öG’†2æÖVB†W&P¢òòf–ÂâF†BwV&G2F†R6öç7G'V7F÷"FV6ö×÷6—F–öâ‡&Vv—7FW%F‡&VD†æFÆW'2ğ¢òòWF‚ò–ç7Fæ6RòÆVæ6‚òÇVv–âòÖ—62òÇVv–äWFõWw&FR’–â&÷F€¢òòF—&V7F–öç2à¢òğ¢òòWfW'’æÖVBÖWF†öB—2F†VâF—7F6†VB÷fW"F†Rv—&RæB×W7Bæ÷Bç7vW ¢òòÖWF†öDæ÷Df÷VæB(	B&V6†&–Æ—G’F†R&÷WFW"6WBÆöæR6ææ÷B6†÷r(	BW†6WBF†P¢òò†æFÆW'2Æ—7FVB–âæ÷DF—7F6†VBÂv†–6‚7B÷WG6–FRF†R&ö6W72à¦gVæ2FW7D‡V%%5&Vv—7FW'4W‡V7FVD†æFÆW%6WB‡B§FW7F–æråB’° —Bå&ÆÆVÂ‚ –F—"£ÒBåFV×F—"‚ —FöÖÅF‚£Òf–ÆWF‚ä¦ö–â†F—"Â'&÷f–FW'2çFöÖÂ" —&÷d6fr£Ò&÷f–FW&6frä6öæf–w° ”–ç7Fæ6W3¢µ×&÷f–FW&6frä–ç7Fæ6T6öæf–w° —´æÖS¢&×’Ö÷Væ’"ÂG—S¢&÷Væ’"Â•7G–ÆS¢'&W7öç6W2'ÒÀ —ÒÀ —Ğ ––bW'"£Ò&÷f–FW&6fråw&—FTf–ÆR‡FöÖÅF‚Â&÷d6fr“²W'"Òæ–Â° —BäfFÆb‚%w&—FTf–ÆS¢Wb"ÂW'" —Ğ –‡V"ÂvV"£ÒæWt‡V%%5FW7E6W'fW%v—F…vV"‡BÂ‡V&6÷&RåvV$6öæf–w° •7C¢‡V&6÷&RäæWu7D–æFW‚‚""’À •&÷f–FW$6öæf–s¢g&÷d6frÀ •&÷f–FW'46öæf–uFƒ¢FöÖÅF‚À ”‡V%7FFU&ö÷C¢F—"À —Ò –FVfW"‡V"ä6Æ÷6R‚ –6Æ–VçB£ÒF–Ä‡V%%2‡BÂ‡V" –FVfW"6Æ–VçBä6Æ÷6R‚  ––bòÂW'"£Ò6Æ–VçBä–æ—F–Æ—¦R†6öçFW‡Bä&6¶w&÷VæB‚’Âv—&Rä–æ—F–Æ—¦U&×7µ&÷Fö6öÅfW'6–öã¢v—&Rå&÷Fö6öÅfW'6–öçÒ“²W'"Òæ–Â° —BäfFÆb‚$–æ—F–Æ—¦S¢Wb"ÂW'" —Ğ  –W‡V7FVB£Òµ×7G&–æw° –v—&RäÖWF†öEF‡&VDÆ—7BÀ –v—&RäÖWF†öEF‡&VE&VBÀ –v—&RäÖWF†öEF‡&VEGW&ç4Æ—7BÀ –v—&RäÖWF†öDWfVæW%7V&vVçE&Wf–WrÀ –v—&RäÖWF†öEF‡&VE7F'BÀ –v—&RäÖWF†öEF‡&VE&W7VÖRÀ –v—&RäÖWF†öEF‡&VDf÷&²À –v—&RäÖWF†öEGW&å7F'BÀ –v—&RäÖWF†öEGW&å7FVW"À –v—&RäÖWF†öEGW&ä–çFW''WBÀ –v—&RäÖWF†öDWfVæW%6æF&÷„W66ÆF–öå&W6öÇfRÀ –v—&RäÖWF†öEGW&åVWVRÀ –v—&RäÖWF†öEGW&äG&–ä57FVW"À –v—&RäÖWF†öEGW&å&öÖ÷FUVWVVD57FVW"À –v—&RäÖWF†öEGW&ä6æ6VÅVWVVBÀ –v—&RäÖWF†öEF‡&VD6ÆV"À –v—&RäÖWF†öEF‡&VD6ö×7E7F'BÀ –v—&RäÖWF†öEF‡&VE6‡WFF÷vâÀ –v—&RäÖWF†öEF‡&VDÖöFVÅ6WBÀ –v—&RäÖWF†öDWfVæW%F‡&VDæÖU6WBÀ –v—&RäÖWF†öEF‡&VE&V6öæ–ætVff÷'E6WBÀ –v—&RäÖWF†öDvöÅ6WBÀ –v—&RäÖWF†öDWfVæW$WF…7FGW2À –v—&RäÖWF†öDWfVæW$WF…FW7BÀ –v—&RäÖWF†öDWfVæW$WF„Æöv–å7F'BÀ –v—&RäÖWF†öDWfVæW$WF„Æöv–ä6ö×ÆWFRÀ –v—&RäÖWF†öDWfVæW$WF„Æöv÷WBÀ –v—&RäÖWF†öDWfVæW$WF„Æ—7BÀ –v—&RäÖWF†öDWfVæW$WF„”¶W•6WBÀ –v—&RäÖWF†öDWfVæW$WF„FWf–6U7F'BÀ –v—&RäÖWF†öDWfVæW$WF„FWf–6UöÆÂÀ –v—&RäÖWF†öDWfVæW$–ç7Fæ6TÆ—7BÀ –v—&RäÖWF†öDWfVæW$–ç7Fæ6T7&VFRÀ –v—&RäÖWF†öDWfVæW$–ç7Fæ6TVF—BÀ –v—&RäÖWF†öDWfVæW$–ç7Fæ6U&VÖ÷fRÀ –v—&RäÖWF†öDWfVæW$–ç7Fæ6U6WDFVfVÇBÀ –v—&RäÖWF†öDWfVæW$ÆVæ6…&W6öÇfRÀ –v—&RäÖWF†öDWfVæW$ÆVæ6…66†VÖÀ –v—&RäÖWF†öDWfVæW$ÆVæ6„vWDÆ–W"À –v—&RäÖWF†öDWfVæW$ÆVæ6…6WDÆ–W"À –v—&RäÖWF†öDWfVæW$ÆVæ6…G'W7E&WòÀ –v—&RäÖWF†öDWfVæW%Ww&FRÀ –v—&RäÖWF†öDÖöFVÄÆ—7BÀ –v—&RäÖWF†öDWfVæW%F6·4Æ—7BÀ –v—&RäÖWF†öDWfVæW$¦ö'4Æ—7BÀ –v—&RäÖWF†öDWfVæW$¦ö'4÷WGWBÀ –v—&RäÖWF†öDWfVæW%F‡&VEG&ç67&—G4Æ—7BÀ –v—&RäÖWF†öDWfVæW%F‡46ö×ÆWFRÀ –v—&RäÖWF†öDWfVæW%&ö¦V7G5&V6VçBÀ –v—&RäÖWF†öDWfVæW%F…fÆ–FFRÀ –v—&RäÖWF†öDWfVæW$†&æW76W4Æ—7BÀ –v—&RäÖWF†öDWfVæW$6öÖÖæDÆ—7BÀ –v—&RäÖWF†öDWfVæW%6WGF–æw4÷fW'f–WrÀ –v—&RäÖWF†öDWfVæW$Ö&¶WGÆ6TÆ—7BÀ –v—&RäÖWF†öDWfVæW$Ö&¶WGÆ6TFBÀ –v—&RäÖWF†öDWfVæW$Ö&¶WGÆ6U&VÖ÷fRÀ –v—&RäÖWF†öDWfVæW$Ö&¶WGÆ6U&Vg&W6‚À –v—&RäÖWF†öDWfVæW$Ö&¶WGÆ6T'&÷w6RÀ –v—&RäÖWF†öDWfVæW%ÇVv–äÆ—7BÀ –v—&RäÖWF†öDWfVæW%ÇVv–ä–ç7FÆÂÀ –v—&RäÖWF†öDWfVæW%ÇVv–åWw&FRÀ –v—&RäÖWF†öDWfVæW%ÇVv–å&VÖ÷fRÀ –v—&RäÖWF†öDWfVæW%ÇVv–äVæ&ÆRÀ –v—&RäÖWF†öDWfVæW%ÇVv–äF—6&ÆRÀ –v—&RäÖWF†öDWfVæW%ÇVv–å6WDWFõWw&FRÀ –v—&RäÖWF†öDWfVæW%ÇVv–ä6†V6´æ÷rÀ –v—&RäÖWF†öDWfVæW%ÇVv–å&Wf–WrÀ —Ğ  ’òòF†RÆ—7B—2Æö6²Âæ÷B6×ÆS¢æ÷F†–ærÖ’&R&Vv—7FW&VBF†B—BFöW0 ’òòæ÷BæÖRÂ6ò†æFÆW"'&—f–ærv—F†÷WBFW7BæÖ–ær—Bf–Ç2†W&RFöòà —&Vv—7FW&VB£ÒW†6ÇVFT‡V$ÖWF†öG2‡vV"æ%2å&÷WFW"‚’äÖWF†öG2‚’Âv—&Rä6öææV7F–öäÖWF†öDæÖW2‚’ ––bÖ—76–ærÂW‡G&£Ò6WDF–fb†W‡V7FVBÂ&Vv—7FW&VB“²ÆVâ†Ö—76–ær’âÇÂÆVâ†W‡G&’â° —BäW'&÷&b‚&‡V"†æFÆW"6WBF–ffW'2g&öÒF†R6WBF†—2FW7BæÖW3¥ÆâæÖVB'WBäõB&Vv—7FW&VC¢WeÆâ&Vv—7FW&VB'WBäõBæÖVC¢Wb"ÂÖ—76–ærÂW‡G& —Ğ  ’òòæ÷DF—7F6†VB&RæÖVB&÷fR'WBæWfW"6ÆÆVC¢F†V—"†æFÆW'27@ ’òò÷WG6–FRF†—2&ö6W72âWfVæW"÷Ww&FR'Vç2F†R&VÂ6VÆb×WFFR†fWF6‚æ@ ’òò–ç7FÆÂ÷fW"F†R'Vææ–ær&–æ'’’ÂæBF†RÖ&¶WGÆ6RÂÇVv–âæ@ ’òòWFò×Ww&FR†æFÆW'2v÷&²v–ç7BF†RÇVv–â&ö÷B(	Bv†–6‚Âv—F‚æğ ’òòÇVv–å&ö÷B6öæf–wW&VBÂ—2F†RFWfVÆ÷W"w2÷vâÇVv–ç2äFVfVÇE&ö÷B(	Bæ@ ’òòfWF6‚—G2&VÖ÷FR6÷W&6W2â÷ÇVv–ç5÷FW7Bævòæ@ ’òò÷ÇVv–åöWF÷Ww&FU÷FW7BævòG&—fRF†÷6Rv–ç7Bf—‡GW&R&ö÷G2à –æ÷DF—7F6†VB£ÒÖ·7G&–æuÖ&ööÇ° –v—&RäÖWF†öDWfVæW%Ww&FS¢G'VRÀ –v—&RäÖWF†öDWfVæW$Ö&¶WGÆ6TÆ—7C¢G'VRÀ –v—&RäÖWF†öDWfVæW$Ö&¶WGÆ6TFC¢G'VRÀ –v—&RäÖWF†öDWfVæW$Ö&¶WGÆ6U&VÖ÷fS¢G'VRÀ –v—&RäÖWF†öDWfVæW$Ö&¶WGÆ6U&Vg&W6ƒ¢G'VRÀ –v—&RäÖWF†öDWfVæW$Ö&¶WGÆ6T'&÷w6S¢G'VRÀ –v—&RäÖWF†öDWfVæW%ÇVv–äÆ—7C¢G'VRÀ –v—&RäÖWF†öDWfVæW%ÇVv–ä–ç7FÆÃ¢G'VRÀ –v—&RäÖWF†öDWfVæW%ÇVv–åWw&FS¢G'VRÀ –v—&RäÖWF†öDWfVæW%ÇVv–å&VÖ÷fS¢G'VRÀ –v—&RäÖWF†öDWfVæW%ÇVv–äVæ&ÆS¢G'VRÀ –v—&RäÖWF†öDWfVæW%ÇVv–äF—6&ÆS¢G'VRÀ –v—&RäÖWF†öDWfVæW%ÇVv–å6WDWFõWw&FS¢G'VRÀ –v—&RäÖWF†öDWfVæW%ÇVv–ä6†V6´æ÷s¢G'VRÀ —Ğ  –f÷"òÂÖWF†öB£Ò&ævRW‡V7FVB° ––bæ÷DF—7F6†VE¶ÖWF†öEÒ° –6öçF–çVP —Ğ ’òòvRöæÇ’6&R&÷WBF†RF—7F6‚÷WF6öÖRÂæ÷BF†R&W7öç6R&öG’Â6ğ ’òò72æ–Â÷WBâ&Vv—7FW&VB†æFÆW"Ö’7V66VVB÷"&V¦V7BF†RV×G ’òò&×2v—F‚6öÖR÷F†W"W'&÷#²v†B—B×W7BæWfW"&WGW&â—0 ’òòÖWF†öDæ÷Df÷VæBà –W'"£Ò6Æ–VçBå&WVW7B†6öçFW‡Bä&6¶w&÷VæB‚’ÂÖWF†öBÂv—&RäV×G•&×7·ÒÂæ–Â —f"v—&Rv—&Råv—&TW'&÷  ––bW'&÷'2ä2†W'"Âgv—&R’bbv—&Rä6öFRÓÒv—&Rä6öFTÖWF†öDæ÷Df÷VæB° —BäW'&÷&b‚&ÖWF†öBW—2æ÷B&Vv—7FW&VB†ÖWF†öDæ÷Df÷VæB’"ÂÖWF†öB —Ğ —Ğ  ’òò6æ—G’6†V6³¢âVç&Vv—7FW&VBÖWF†öB×W7B&W÷'BÖWF†öDæ÷Df÷VæBÂ&÷f–æp ’òòF†R76W'F–öâ&÷fR—2ÖVæ–ævgVÂà –W'"£Ò6Æ–VçBå&WVW7B†6öçFW‡Bä&6¶w&÷VæB‚’Â&WfVæW"õõöFVf–æ—FVÇ•öæ÷E÷&Vv—7FW&VEõò"Âv—&RäV×G•&×7·ÒÂæ–Â —f"v—&Rv—&Råv—&TW'&÷  ––bW'&÷'2ä2†W'"Âgv—&R’ÇÂv—&Rä6öFRÒv—&Rä6öFTÖWF†öDæ÷Df÷VæB° —BäfFÆb‚&W‡V7FVBÖWF†öDæ÷Df÷VæBf÷"Væ¶æ÷vâÖWF†öBÂv÷BUC¢Wb"ÂW'"ÂW'" —Ğ§Ğ
+	relayErr := relays.startRelay(context.Background(), source, appwire.ThreadReadParams{Ref: ref}, source.thread)
+	result := <-source.probed
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.deletedBeforeSubscribe {
+		t.Fatal("relay held deletion ownership across upstream I/O")
+	}
+	if !isTargetDeletedError(relayErr) {
+		t.Fatalf("relay error = %T %v, want targetDeleted after deletion won the I/O race", relayErr, relayErr)
+	}
+}
+
+func TestDeletionFenceCanCommitDuringRecoveryRelayIOAndStopsPublication(t *testing.T) {
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadID := "02wMz5Txv1C3Hut0M8GCeB"
+	ref := localAppRef(threadID)
+	resumeLocks := hubcore.NewResumeLocks()
+	initialNotifications := make(chan appwire.Notification)
+	source := &deletionOwnershipProbeRelaySource{
+		thread: appwire.Thread{
+			ID:     threadID,
+			Evener: appwire.EvenerThread{Ref: ref},
+		},
+		store:                store,
+		resumeLocks:          resumeLocks,
+		projectID:            "project-relay-recovery-0123456789",
+		ref:                  ref,
+		threadID:             threadID,
+		probeOnCall:          2,
+		initialNotifications: initialNotifications,
+		probed:               make(chan deletionOwnershipProbeResult, 1),
+	}
+	cfg := hubcore.WebConfig{
+		DeletionStore: store,
+		ResumeLocks:   resumeLocks,
+	}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
+	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+	defer relays.stopRelay("local:" + threadID)
+
+	if err := relays.startRelay(context.Background(), source, appwire.ThreadReadParams{Ref: ref}, source.thread); err != nil {
+		t.Fatal(err)
+	}
+	close(initialNotifications)
+	result := <-source.probed
+	if result.err != nil {
+		t.Fatal(result.err)
+	}
+	if !result.deletedBeforeSubscribe {
+		t.Fatal("relay held deletion ownership across recovery I/O")
+	}
+}
+
+func TestDeletionFenceTurnStartDoesNotWaitForRelayWhileOwningTarget(t *testing.T) {
+	threadID := "02wMz5Txv1C3Hut0M8GCeB"
+	ref := localAppRef(threadID)
+	resumeLocks := hubcore.NewResumeLocks()
+	placeholderPublished := make(chan struct{})
+	releaseInitializer := make(chan struct{})
+	source := &inheritedDeletionOwnershipRelaySource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "local",
+			Evener:    appwire.EvenerThread{Ref: ref},
+		},
+		notifications: make(chan appwire.Notification),
+		subscribed:    make(chan struct{}, 1),
+	}
+	cfg := hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		ResumeLocks:  resumeLocks,
+		RelayHooks: hubcore.RelayLifecycleHooks{
+			AfterPlaceholder: func(gotThreadID string) {
+				if gotThreadID != threadID {
+					return
+				}
+				close(placeholderPublished)
+				<-releaseInitializer
+			},
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	var relays hubRelayFunctions
+	previousObserveFunctions := observeHubRelayFunctions
+	observeHubRelayFunctions = func(got hubRelayFunctions) {
+		relays = got
+	}
+	t.Cleanup(func() {
+		observeHubRelayFunctions = previousObserveFunctions
+	})
+	server := newHubAppServer(cfg, sources)
+	observeHubRelayFunctions = previousObserveFunctions
+	defer relays.stopRelay("local:" + threadID)
+
+	waiterJoined := make(chan struct{}, 1)
+	previousObserveWait := observeHubRelayWait
+	observeHubRelayWait = func() {
+		waiterJoined <- struct{}{}
+	}
+	t.Cleanup(func() {
+		observeHubRelayWait = previousObserveWait
+	})
+
+	initializerDone := make(chan error, 1)
+	go func() {
+		initializerDone <- relays.startRelay(
+			context.Background(),
+			source,
+			appwire.ThreadReadParams{Ref: ref},
+			source.thread,
+		)
+	}()
+	<-placeholderPublished
+
+	raw, err := json.Marshal(appwire.TurnStartParams{
+		ThreadID:         threadID,
+		Ref:              ref,
+		ClientMutationID: "turn-start-relay-ownership",
+		Input:            []appwire.InputItem{{Type: "text", Text: "continue"}},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	turnDone := make(chan error, 1)
+	go func() {
+		_, err := server.Router().Dispatch(context.Background(), appwire.Request{
+			ID:     appwire.NewIntID(1),
+			Method: appwire.MethodTurnStart,
+			Params: raw,
+		})
+		turnDone <- err
+	}()
+	<-waiterJoined
+
+	targetLock := resumeLocks.For(threadID)
+	targetWasFree := targetLock.TryLock()
+	if targetWasFree {
+		targetLock.Unlock()
+	} else {
+		relays.stopRelay("local:" + threadID)
+	}
+	close(releaseInitializer)
+	initializerErr := <-initializerDone
+	turnErr := <-turnDone
+
+	if !targetWasFree {
+		t.Fatal("turn/start waited for the relay initializer while owning the deletion target")
+	}
+	if initializerErr != nil {
+		t.Fatalf("initialize relay: %v", initializerErr)
+	}
+	if turnErr != nil {
+		t.Fatalf("turn/start: %v", turnErr)
+	}
+	select {
+	case <-source.subscribed:
+	default:
+		t.Fatal("relay initializer did not subscribe")
+	}
+}
+
+func TestDeletionFenceRejectsForkBeforeLaunchingChild(t *testing.T) {
+	store, err := hubcore.NewDeletionStore(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	threadID := "02wMz5Txv1C3Hut0M8GCeB"
+	ref := localAppRef(threadID)
+	if _, err := store.Begin("project-fork-0123456789", []hubcore.DeletionTarget{{
+		Ref:      ref,
+		ThreadID: threadID,
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	oldAside := hubAsideSession
+	t.Cleanup(func() { hubAsideSession = oldAside })
+	launchCalls := 0
+	hubAsideSession = func(string, string) (string, error) {
+		launchCalls++
+		return "", errors.New("deleting fork launched child")
+	}
+	cfg := hubcore.WebConfig{
+		DeletionStore: store,
+		ResumeLocks:   hubcore.NewResumeLocks(),
+		StateDir:      t.TempDir(),
+	}
+
+	_, err = hubThreadFork(context.Background(), cfg, appsource.NewRegistry(), appwire.ThreadForkParams{
+		Ref:   ref,
+		Aside: true,
+	})
+	if !isTargetDeletedError(err) {
+		t.Fatalf("deleting fork error = %T %v, want targetDeleted", err, err)
+	}
+	if launchCalls != 0 {
+		t.Fatalf("deleting fork launched %d children", launchCalls)
+	}
+}
+
+type deletionFenceRelaySource struct {
+	relayLifecycleSource
+	subscribeCalls int
+}
+
+func (s *deletionFenceRelaySource) ID() string {
+	return "local"
+}
+
+func (s *deletionFenceRelaySource) SubscribeThread(context.Context, appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
+	s.subscribeCalls++
+	return nil, errors.New("deleting relay reached source subscription")
+}
+
+type inheritedDeletionOwnershipRelaySource struct {
+	relayLifecycleSource
+	notifications <-chan appwire.Notification
+	subscribed    chan struct{}
+}
+
+func (s *inheritedDeletionOwnershipRelaySource) ID() string {
+	return "local"
+}
+
+func (s *inheritedDeletionOwnershipRelaySource) SubscribeThread(
+	context.Context,
+	appwire.ThreadReadParams,
+) (<-chan appwire.Notification, error) {
+	s.subscribed <- struct{}{}
+	return s.notifications, nil
+}
+
+func (s *inheritedDeletionOwnershipRelaySource) StartTurn(
+	context.Context,
+	appwire.TurnStartParams,
+) (appwire.TurnStartResponse, error) {
+	return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_started"}}, nil
+}
+
+type deletionOwnershipProbeResult struct {
+	deletedBeforeSubscribe bool
+	err                    error
+}
+
+type deletionOwnershipProbeRelaySource struct {
+	relayLifecycleSource
+	store                *hubcore.DeletionStore
+	resumeLocks          *hubcore.ResumeLocks
+	projectID            string
+	ref                  string
+	threadID             string
+	probeOnCall          int
+	initialNotifications <-chan appwire.Notification
+	probed               chan deletionOwnershipProbeResult
+	mu                   sync.Mutex
+	subscribeCalls       int
+}
+
+func (s *deletionOwnershipProbeRelaySource) ID() string {
+	return "local"
+}
+
+func (s *deletionOwnershipProbeRelaySource) SubscribeThread(
+	context.Context,
+	appwire.ThreadReadParams,
+) (<-chan appwire.Notification, error) {
+	s.mu.Lock()
+	s.subscribeCalls++
+	call := s.subscribeCalls
+	s.mu.Unlock()
+	if call < s.probeOnCall {
+		return s.initialNotifications, nil
+	}
+
+	lock := s.resumeLocks.For(s.threadID)
+	if !lock.TryLock() {
+		s.probed <- deletionOwnershipProbeResult{}
+		return nil, errors.New("stop relay ownership probe")
+	}
+	_, err := s.store.Begin(s.projectID, []hubcore.DeletionTarget{{
+		Ref:      s.ref,
+		ThreadID: s.threadID,
+	}})
+	lock.Unlock()
+	if err != nil {
+		s.probed <- deletionOwnershipProbeResult{err: err}
+		return nil, err
+	}
+	_, deleted := s.store.TargetState(s.ref, s.threadID)
+	s.probed <- deletionOwnershipProbeResult{deletedBeforeSubscribe: deleted}
+	return nil, errors.New("stop relay ownership probe")
+}
+
+type deletionFenceMutationSource struct {
+	relayLifecycleSource
+	calls map[string]int
+}
+
+func (s *deletionFenceMutationSource) ID() string {
+	return "local"
+}
+
+func (s *deletionFenceMutationSource) QueueTurn(
+	context.Context,
+	appwire.TurnQueueParams,
+) (appwire.TurnQueueResponse, error) {
+	s.recordCall(appwire.MethodTurnQueue)
+	return appwire.TurnQueueResponse{}, nil
+}
+
+func (s *deletionFenceMutationSource) StartTurn(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	s.recordCall(appwire.MethodTurnStart)
+	return appwire.TurnStartResponse{}, nil
+}
+
+func (s *deletionFenceMutationSource) SteerTurn(context.Context, appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+	s.recordCall(appwire.MethodTurnSteer)
+	return appwire.TurnSteerResponse{}, nil
+}
+
+func (s *deletionFenceMutationSource) InterruptTurn(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+	s.recordCall(appwire.MethodTurnInterrupt)
+	return appwire.TurnInterruptResponse{}, nil
+}
+
+func (s *deletionFenceMutationSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+	s.recordCall(appwire.MethodTurnDrainAsSteer)
+	return appwire.TurnDrainAsSteerResponse{}, nil
+}
+
+func (s *deletionFenceMutationSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+	s.recordCall(appwire.MethodTurnPromoteQueuedAsSteer)
+	return appwire.TurnPromoteQueuedAsSteerResponse{}, nil
+}
+
+func (s *deletionFenceMutationSource) CancelQueued(context.Context, appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
+	s.recordCall(appwire.MethodTurnCancelQueued)
+	return appwire.TurnCancelQueuedResponse{}, nil
+}
+
+func (s *deletionFenceMutationSource) recordCall(method string) {
+	if s.calls == nil {
+		s.calls = make(map[string]int)
+	}
+	s.calls[method]++
+}
+
+func TestHubRPCUpgradeRunsSelfUpdater(t *testing.T) {
+	var got selfupdate.Options
+	previous := runHubSelfUpgrade
+	runHubSelfUpgrade = func(_ context.Context, opts selfupdate.Options) (selfupdate.Result, error) {
+		got = opts
+		return selfupdate.Result{
+			Release:        "snapshot",
+			Channel:        "snapshot",
+			Archive:        "evener_linux_amd64.tar.gz",
+			ShareBinDir:    "/tmp/share/evener/bin",
+			BinDir:         "/tmp/bin",
+			RestartMessage: "Restart evener-tui and evener-hub to use the upgraded binaries.",
+		}, nil
+	}
+	t.Cleanup(func() { runHubSelfUpgrade = previous })
+
+	server := newHubAppServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, appsource.NewRegistry())
+	params, err := json.Marshal(appwire.UpgradeParams{Requested: "snapshot"})
+	if err != nil {
+		t.Fatalf("MarshalParams: %v", err)
+	}
+	raw, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		ID:     appwire.NewIntID(1),
+		Method: appwire.MethodEvenerUpgrade,
+		Params: params,
+	})
+	if err != nil {
+		t.Fatalf("Dispatch upgrade: %v", err)
+	}
+	resp, ok := raw.(appwire.UpgradeResponse)
+	if !ok {
+		t.Fatalf("response type=%T", raw)
+	}
+	if resp.Channel != "snapshot" || resp.Archive != "evener_linux_amd64.tar.gz" {
+		t.Fatalf("response=%+v", resp)
+	}
+	if got.Requested != "snapshot" {
+		t.Fatalf("Requested=%q, want snapshot", got.Requested)
+	}
+	if got.CurrentChannel == "" {
+		t.Fatal("CurrentChannel is empty")
+	}
+}
+
+func TestAppItemsFromReplayTurnConvertsCommunicateToAgentMessage(t *testing.T) {
+	toolNames := map[string]string{}
+	items := appItemsFromReplayTurn("turn_1", 1, schema.Turn{
+		Kind: "ASSISTANT",
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: "tool_call",
+			ToolCall: &llm.ToolCallData{
+				ID:        "call_1",
+				Name:      "communicate",
+				Arguments: []byte(`{"message":"done","end_turn":true}`),
+			},
+		}}},
+	}, toolNames)
+
+	if len(items) != 1 || items[0].Type != "agentMessage" || items[0].Text != "done" {
+		t.Fatalf("communicate items=%+v", items)
+	}
+
+	results := appItemsFromReplayTurn("turn_2", 2, schema.Turn{
+		Kind: "TOOL_RESULTS",
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind:       "tool_result",
+			ToolResult: &llm.ToolResultData{ToolCallID: "call_1", Content: `{"accepted":true}`},
+		}}},
+	}, toolNames)
+	if len(results) != 0 {
+		t.Fatalf("communicate tool results should be hidden, got %+v", results)
+	}
+}
+
+func TestAppItemsFromReplayTurnCarriesToolStateRaw(t *testing.T) {
+	items := appItemsFromReplayTurn("turn_1", 1, schema.Turn{
+		Kind: "TOOL_RESULTS",
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: "tool_result",
+			ToolResult: &llm.ToolResultData{
+				ToolCallID: "call_delegate_send",
+				Name:       "delegate_send",
+				Content:    "started delegate turn",
+				ToolState:  []byte(`{"job_id":"job_1","status":"running"}`),
+			},
+		}}},
+	}, map[string]string{})
+
+	if len(items) != 1 || items[0].ToolName != "delegate_send" || items[0].Output != "started delegate turn" {
+		t.Fatalf("tool result items=%+v", items)
+	}
+	if string(items[0].Raw) != `{"job_id":"job_1","status":"running"}` {
+		t.Fatalf("tool result Raw = %s, want replay tool_state", items[0].Raw)
+	}
+}
+
+func TestAppItemsFromReplayTurnProjectsThinking(t *testing.T) {
+	var entry transcript.Entry
+	raw := []byte(`{"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[` +
+		`{"kind":"thinking","thinking":{"text":"Let me plan this out."}},` +
+		`{"kind":"text","text":"The answer is 42."}` +
+		`]}}}`)
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatalf("unmarshal replay entry: %v", err)
+	}
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
+
+	if len(items) != 2 {
+		t.Fatalf("expected reasoning + agentMessage, got %+v", items)
+	}
+	if items[0].Type != "reasoning" || items[0].Text != "Let me plan this out." {
+		t.Fatalf("reasoning item=%+v", items[0])
+	}
+	if items[1].Type != "agentMessage" || items[1].Text != "The answer is 42." {
+		t.Fatalf("agent message item=%+v", items[1])
+	}
+}
+
+func TestAppItemsFromReplayTurnProjectsRedactedThinking(t *testing.T) {
+	var entry transcript.Entry
+	raw := []byte(`{"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[` +
+		`{"kind":"redacted_thinking","thinking":{"redacted":true,"encrypted_content":"xyz"}},` +
+		`{"kind":"text","text":"ok"}` +
+		`]}}}`)
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatalf("unmarshal replay entry: %v", err)
+	}
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
+
+	if len(items) != 2 {
+		t.Fatalf("expected reasoning + agentMessage, got %+v", items)
+	}
+	if items[0].Type != "reasoning" || items[0].Text != "[redacted thinking]" {
+		t.Fatalf("redacted reasoning item=%+v", items[0])
+	}
+}
+
+func TestAppItemsFromReplayTurnProjectsWebSearch(t *testing.T) {
+	var entry transcript.Entry
+	raw := []byte(`{"turn":{"kind":"ASSISTANT","message":{"role":"assistant","content":[` +
+		`{"kind":"web_search","web_search":{"query":"go context","raw":{"type":"web_search_tool_result","content":[{"type":"web_search_result","url":"https://go.dev/ctx","title":"Context"}]}}}` +
+		`]}}}`)
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatalf("unmarshal replay entry: %v", err)
+	}
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
+	if len(items) != 1 || items[0].Type != "commandExecution" || items[0].ToolName != "web_search" {
+		t.Fatalf("web_search items=%+v", items)
+	}
+	if !strings.Contains(items[0].ArgumentsJSON, "go context") {
+		t.Fatalf("args missing query: %s", items[0].ArgumentsJSON)
+	}
+	if !strings.Contains(items[0].Output, "Context") || !strings.Contains(items[0].Output, "https://go.dev/ctx") {
+		t.Fatalf("output missing results: %q", items[0].Output)
+	}
+}
+
+// A transcript file can hold any content kind the schema can decode. Replay
+// still hands the client only what it can render: audio and document parts
+// reach Images no more than they reach the live EventUserInput payload, which
+// has no field for them at all.
+func TestAppItemsFromReplayTurnKeepsNonImagePartsOutOfImages(t *testing.T) {
+	var entry transcript.Entry
+	raw := []byte(`{"turn":{"kind":"USER_INPUT","message":{"role":"user","content":[` +
+		`{"kind":"text","text":"summarize"},` +
+		`{"kind":"document","document":{"file_name":"report.pdf","media_type":"application/pdf"}},` +
+		`{"kind":"audio","audio":{"media_type":"audio/wav"}},` +
+		`{"kind":"image","image":{"media_type":"image/png","data":"cG5n"}}` +
+		`]}}}`)
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatalf("unmarshal replay entry: %v", err)
+	}
+	items := appItemsFromReplayTurn("turn_1", 1, entry.Turn, map[string]string{})
+	if len(items) != 1 || items[0].Type != "userMessage" {
+		t.Fatalf("expected userMessage, got %+v", items)
+	}
+	images := items[0].Images
+	if len(images) != 1 {
+		t.Fatalf("expected the picture alone, got %+v", images)
+	}
+	if images[0].Type != "input_image" || images[0].MediaType != "image/png" {
+		t.Fatalf("image=%+v", images[0])
+	}
+}
+
+func TestAppItemsFromReplayTurnDoesNotAcceptLegacyToolCallKind(t *testing.T) {
+	items := appItemsFromReplayTurn("turn_1", 1, schema.Turn{
+		Kind: "ASSISTANT",
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: "commandExecution",
+			ToolCall: &llm.ToolCallData{
+				ID:        "call_legacy",
+				Name:      "read_file",
+				Arguments: []byte(`{"file_path":"/tmp/example.txt"}`),
+			},
+		}}},
+	}, map[string]string{})
+
+	if len(items) != 0 {
+		t.Fatalf("legacy commandExecution transcript part should be ignored, got %+v", items)
+	}
+}
+
+func TestAppItemsFromReplayTurnAcceptsCurrentToolCallKind(t *testing.T) {
+	toolNames := map[string]string{}
+	items := appItemsFromReplayTurn("turn_1", 1, schema.Turn{
+		Kind: "ASSISTANT",
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: "tool_call",
+			ToolCall: &llm.ToolCallData{
+				ID:        "call_read",
+				Name:      "read_file",
+				Arguments: []byte(`{"file_path":"/tmp/example.txt","purpose":"Inspect example output."}`),
+			},
+		}}},
+	}, toolNames)
+	if len(items) != 1 {
+		t.Fatalf("items=%+v, want one tool item", items)
+	}
+	if got := items[0]; got.Type != "commandExecution" || got.CallID != "call_read" || !strings.Contains(got.ArgumentsJSON, "/tmp/example.txt") {
+		t.Fatalf("tool item=%+v", got)
+	}
+	if items[0].Description != "Inspect example output." {
+		t.Fatalf("tool description=%q", items[0].Description)
+	}
+}
+
+func TestAppItemsFromReplayTurnSteeringCarriesImageMetadata(t *testing.T) {
+	img := []byte("png")
+	items := appItemsFromReplayTurn("turn_3", 3, schema.Turn{
+		Kind: "STEERING",
+		Message: llm.Message{Content: []llm.ContentPart{{
+			Kind: "image",
+			Image: &llm.ImageData{
+				Data:      img,
+				MediaType: "image/png",
+			},
+		}}},
+	}, map[string]string{})
+
+	if len(items) != 1 {
+		t.Fatalf("items=%+v, want one steering item", items)
+	}
+	got := items[0]
+	if got.Type != "steering" || got.Text != "[image]" || len(got.Images) != 1 {
+		t.Fatalf("steering item=%+v, want image placeholder and image metadata", got)
+	}
+	if got.Images[0].Metadata["sha"] != imageSha(img) || got.Images[0].Metadata["size"] != strconv.Itoa(len(img)) {
+		t.Fatalf("image metadata=%+v, want sha/size", got.Images[0].Metadata)
+	}
+}
+
+// A steer the human typed is a person speaking, and reload must say so.
+// Decoded from the real on-disk JSON shape (agent/schema.Turn's
+// steering_source tag) so the wire tag is under test, not just the field:
+// the web UI's SteeringItem branches on source === "user" to render the steer
+// exactly like a prompt (issue #24), and an empty Source is stripped by
+// omitempty, leaving the client no source at all rather than a wrong one.
+func TestAppItemsFromReplayTurnSteeringCarriesUserSource(t *testing.T) {
+	var entry transcript.Entry
+	raw := []byte(`{"turn":{"kind":"STEERING","steering_source":"user","message":{"role":"user","content":[` +
+		`{"kind":"text","text":"new worktree"}` +
+		`]}}}`)
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatalf("unmarshal replay entry: %v", err)
+	}
+	items := appItemsFromReplayTurn("turn_3", 3, entry.Turn, map[string]string{})
+
+	if len(items) != 1 {
+		t.Fatalf("items=%+v, want one steering item", items)
+	}
+	if items[0].Type != "steering" || items[0].Source != events.SteeringSourceUser {
+		t.Fatalf("steering item=%+v, want type steering with source %q", items[0], events.SteeringSourceUser)
+	}
+}
+
+// Daemon nudges carry no steering_source on disk, and must stay anonymous:
+// they render as the quiet collapsible divider, never as user speech.
+func TestAppItemsFromReplayTurnSteeringWithoutSourceStaysAnonymous(t *testing.T) {
+	var entry transcript.Entry
+	raw := []byte(`{"turn":{"kind":"STEERING","message":{"role":"user","content":[` +
+		`{"kind":"text","text":"<SYSTEM-REMINDER>nudge</SYSTEM-REMINDER>"}` +
+		`]}}}`)
+	if err := json.Unmarshal(raw, &entry); err != nil {
+		t.Fatalf("unmarshal replay entry: %v", err)
+	}
+	items := appItemsFromReplayTurn("turn_4", 4, entry.Turn, map[string]string{})
+
+	if len(items) != 1 {
+		t.Fatalf("items=%+v, want one steering item", items)
+	}
+	if items[0].Source != "" {
+		t.Fatalf("steering item source=%q, want empty for a daemon nudge", items[0].Source)
+	}
+}
+
+func TestAppItemsFromReplayTurnIncludesCompactionTurns(t *testing.T) {
+	checkpoint := appItemsFromReplayTurn("turn_4", 4, schema.Turn{
+		Kind:    "CHECKPOINT",
+		Message: llm.Message{Content: []llm.ContentPart{{Kind: "text", Text: "[CONTEXT CHECKPOINT]\nfirst compacted state"}}},
+	}, map[string]string{})
+	if len(checkpoint) != 1 {
+		t.Fatalf("checkpoint items=%+v", checkpoint)
+	}
+	if got := checkpoint[0]; got.Type != "systemMessage" || got.Description != "Context checkpoint" || !strings.Contains(got.Text, "first compacted state") {
+		t.Fatalf("checkpoint item=%+v", got)
+	}
+
+	summary := appItemsFromReplayTurn("turn_5", 5, schema.Turn{
+		Kind:    "SUMMARY",
+		Message: llm.Message{Content: []llm.ContentPart{{Kind: "text", Text: "[CONTEXT SUMMARY]\nsecond compacted state"}}},
+	}, map[string]string{})
+	if len(summary) != 1 {
+		t.Fatalf("summary items=%+v", summary)
+	}
+	if got := summary[0]; got.Type != "systemMessage" || got.Description != "Context summary" || !strings.Contains(got.Text, "second compacted state") {
+		t.Fatalf("summary item=%+v", got)
+	}
+}
+
+func TestHubRPCThreadListUsesRosterStatusAndSessionID(t *testing.T) {
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       101,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws://127.0.0.1:1/rpc",
+		SourceID:  "local",
+		ThreadID:  "02wMz5Txv2enqVTitaig6F",
+		SessionID: "02wMz5Txv2enqVTitaig6F",
+	})
+	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: "02wMz5Txv1C3Hut0M8GCeB", status: appwire.ThreadStatusAwaiting})
+	roster.Refresh()
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir: runDir,
+		Roster: roster,
+		Past:   hubcore.NewPastIndex(""),
+	})
+	defer hub.Close()
+
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadList(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ThreadList: %v", err)
+	}
+	if len(resp.Data) != 1 {
+		t.Fatalf("threads=%+v", resp.Data)
+	}
+	thread := resp.Data[0]
+	if thread.ID != "02wMz5Txv1C3Hut0M8GCeB" || thread.SessionID != "02wMz5Txv1C3Hut0M8GCeB" || thread.Evener.Ref != "local:02wMz5Txv1C3Hut0M8GCeB" {
+		t.Fatalf("thread identity=%+v", thread)
+	}
+	if thread.Status.Type != appwire.ThreadStatusAwaiting {
+		t.Fatalf("status=%q, want %q", thread.Status.Type, appwire.ThreadStatusAwaiting)
+	}
+}
+
+func TestHubRPCThreadListIncludesPastThreads(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadList(context.Background(), appwire.ThreadListParams{SearchTerm: "second task"})
+	if err != nil {
+		t.Fatalf("ThreadList: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].ID != sessionID || resp.Data[0].Status.Type != appwire.ThreadStatusNotLoaded {
+		t.Fatalf("threads=%+v", resp.Data)
+	}
+}
+
+func TestHubThreadListProjectsRunningSubagentActive(t *testing.T) {
+	cfg, childID := runningSubagentProjectionConfig(t)
+	resp, err := hubThreadList(context.Background(), cfg, appsource.NewRegistry(), appwire.ThreadListParams{IncludeSubagents: true})
+	if err != nil {
+		t.Fatalf("hubThreadList: %v", err)
+	}
+	for _, thread := range resp.Data {
+		if thread.ID == childID {
+			if thread.Status.Type != appwire.ThreadStatusActive {
+				t.Fatalf("running subagent status = %q, want %q", thread.Status.Type, appwire.ThreadStatusActive)
+			}
+			return
+		}
+	}
+	t.Fatalf("running subagent %s missing from thread list: %+v", childID, resp.Data)
+}
+
+func TestHubThreadListProjectsIdleSubagentIdle(t *testing.T) {
+	cfg, childID := runningSubagentProjectionConfigWithState(t, appwire.ThreadStatusIdle)
+	resp, err := hubThreadList(context.Background(), cfg, appsource.NewRegistry(), appwire.ThreadListParams{IncludeSubagents: true})
+	if err != nil {
+		t.Fatalf("hubThreadList: %v", err)
+	}
+	for _, thread := range resp.Data {
+		if thread.ID == childID {
+			if thread.Status.Type != appwire.ThreadStatusIdle {
+				t.Fatalf("idle subagent status = %q, want %q", thread.Status.Type, appwire.ThreadStatusIdle)
+			}
+			return
+		}
+	}
+	t.Fatalf("idle subagent %s missing from thread list: %+v", childID, resp.Data)
+}
+
+func TestHubRPCThreadListOrdersLiveThreadsDeterministically(t *testing.T) {
+	runDir := t.TempDir()
+	base := time.Now().UTC()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       101,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws://127.0.0.1:1/rpc",
+		SourceID:  "local",
+		ThreadID:  "02wMz5Txv2enqVTitaig6F",
+		SessionID: "02wMz5Txv2enqVTitaig6F",
+		StartedAt: base.Add(-time.Hour),
+	})
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       102,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws://127.0.0.1:2/rpc",
+		SourceID:  "local",
+		ThreadID:  "02wMz5Txv47YP64RR3B9YJ",
+		SessionID: "02wMz5Txv47YP64RR3B9YJ",
+		StartedAt: base,
+	})
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadList(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("ThreadList: %v", err)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("threads=%+v", resp.Data)
+	}
+	if resp.Data[0].ID != "02wMz5Txv47YP64RR3B9YJ" || resp.Data[1].ID != "02wMz5Txv2enqVTitaig6F" {
+		t.Fatalf("order=%s,%s", resp.Data[0].ID, resp.Data[1].ID)
+	}
+}
+
+func TestHubThreadListIncludesEveryRegisteredSource(t *testing.T) {
+	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	entries := []rendezvous.Entry{
+		{
+			PID:       101,
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws://127.0.0.1:1/rpc",
+			SourceID:  "local",
+			ThreadID:  "01EVENER",
+			SessionID: "01EVENER",
+			StartedAt: base.Add(-time.Minute),
+		},
+		{
+			PID:       102,
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws://127.0.0.1:2/rpc",
+			SourceID:  "codex",
+			ThreadID:  "02CODEX",
+			SessionID: "02CODEX",
+			StartedAt: base,
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(appsource.NewLocalDaemonSource("local", func() []rendezvous.Entry { return entries }, nil))
+	sources.Add(appsource.NewLocalDaemonSource("codex", func() []rendezvous.Entry { return entries }, nil))
+
+	resp, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, sources, appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("hubThreadList: %v", err)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("threads=%+v", resp.Data)
+	}
+	if resp.Data[0].Evener.Ref != "codex:02CODEX" || resp.Data[1].Evener.Ref != "local:01EVENER" {
+		t.Fatalf("refs=%s,%s", resp.Data[0].Evener.Ref, resp.Data[1].Evener.Ref)
+	}
+}
+
+func TestHubThreadListIncludesManagedCodexLaunchThreads(t *testing.T) {
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	defer shutdownCodexLauncher(t, launcher)
+	cfg := hubcore.WebConfig{
+		Past:          hubcore.NewPastIndex(""),
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLauncher: launcher,
+	}
+	sources := newHubSourceRegistry(cfg)
+
+	resp, err := hubThreadList(context.Background(), cfg, sources, appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("hubThreadList: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Evener.Ref != "codex-managed:th_fake" {
+		t.Fatalf("threads=%+v", resp.Data)
+	}
+	if _, ok := sources.Source("codex-managed"); !ok {
+		t.Fatal("managed Codex source was not registered")
+	}
+}
+
+func TestHubThreadListDoesNotLaunchManagedCodexOutsideSourceFilter(t *testing.T) {
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	defer shutdownCodexLauncher(t, launcher)
+	cfg := hubcore.WebConfig{
+		Past:          hubcore.NewPastIndex(""),
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLauncher: launcher,
+	}
+	localThread := appwire.Thread{
+		ID:        "01LOCAL",
+		SessionID: "01LOCAL",
+		Source:    "local",
+		Preview:   "local thread",
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+		Evener:    appwire.EvenerThread{Ref: "local:01LOCAL"},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(&listThreadSource{id: "local", thread: localThread})
+
+	resp, err := hubThreadList(context.Background(), cfg, sources, appwire.ThreadListParams{SourceIDs: []string{"local"}})
+	if err != nil {
+		t.Fatalf("hubThreadList: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Evener.Ref != "local:01LOCAL" {
+		t.Fatalf("threads=%+v", resp.Data)
+	}
+	if _, ok := sources.Source("codex-managed"); ok {
+		t.Fatal("managed Codex source was registered despite local-only source filter")
+	}
+}
+
+func TestHubThreadListReturnsManagedCodexLaunchErrorWhenSelectedSourceFails(t *testing.T) {
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "exit")})
+	defer shutdownCodexLauncher(t, launcher)
+	cfg := hubcore.WebConfig{
+		Past:          hubcore.NewPastIndex(""),
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "exit")},
+		CodexLauncher: launcher,
+	}
+	sources := newHubSourceRegistry(cfg)
+
+	_, err := hubThreadList(context.Background(), cfg, sources, appwire.ThreadListParams{SourceIDs: []string{"codex-managed"}})
+	assertHubLaunchError(t, err)
+}
+
+func TestHubThreadListContinuesWhenOptionalSourceFails(t *testing.T) {
+	localThread := appwire.Thread{
+		ID:        "01LOCAL",
+		SessionID: "01LOCAL",
+		Source:    "local",
+		Preview:   "local thread",
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+		Evener:    appwire.EvenerThread{Ref: "local:01LOCAL"},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(&listThreadSource{id: "local", thread: localThread})
+	sources.Add(&listThreadSource{id: "codex", listErr: errors.New("codex offline")})
+
+	resp, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, sources, appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("hubThreadList: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Evener.Ref != "local:01LOCAL" {
+		t.Fatalf("threads=%+v", resp.Data)
+	}
+}
+
+func TestHubThreadListReturnsErrorWhenOnlySelectedSourceFails(t *testing.T) {
+	sources := appsource.NewRegistry()
+	sources.Add(&listThreadSource{id: "codex", listErr: errors.New("codex offline")})
+
+	_, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, sources, appwire.ThreadListParams{SourceIDs: []string{"codex"}})
+	if err == nil || !strings.Contains(err.Error(), "codex offline") {
+		t.Fatalf("hubThreadList error=%v, want codex offline", err)
+	}
+}
+
+func TestHubThreadListReturnsErrorWhenAnySelectedSourceFails(t *testing.T) {
+	localThread := appwire.Thread{
+		ID:        "01LOCAL",
+		SessionID: "01LOCAL",
+		Source:    "local",
+		Preview:   "local thread",
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+		Evener:    appwire.EvenerThread{Ref: "local:01LOCAL"},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(&listThreadSource{id: "local", thread: localThread})
+	sources.Add(&listThreadSource{id: "codex", listErr: errors.New("codex offline")})
+
+	_, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, sources, appwire.ThreadListParams{SourceIDs: []string{"local", "codex"}})
+	if err == nil || !strings.Contains(err.Error(), "codex offline") {
+		t.Fatalf("hubThreadList error=%v, want codex offline", err)
+	}
+}
+
+func TestNewHubSourceRegistryAddsConfiguredCodexSources(t *testing.T) {
+	sources := newHubSourceRegistry(hubcore.WebConfig{
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex-local",
+			Endpoint: "ws://127.0.0.1:9900",
+		}},
+	})
+	if _, ok := sources.Source("local"); !ok {
+		t.Fatal("local source missing")
+	}
+	if source, ok := sources.Source("codex-local"); !ok {
+		t.Fatal("codex source missing")
+	} else if source.ID() != "codex-local" {
+		t.Fatalf("source=%q", source.ID())
+	}
+}
+
+func TestHubThreadListOrdersPastSearchByUpdatedCreatedTitleAndID(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	updated := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	for _, meta := range []schema.SessionMeta{
+		{ID: "02wMz5Txv5aIxgf9yVdd0N", CreatedAt: updated.Add(-2 * time.Hour), UpdatedAt: updated, OriginalPrompt: "beta task"},
+		{ID: "02wMz5Txv1C3Hut0M8GCeB", CreatedAt: updated.Add(-time.Hour), UpdatedAt: updated, OriginalPrompt: "alpha task"},
+		{ID: "02wMz5Txv8Vo4rqb3QYZuV", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalPrompt: "bravo task"},
+		{ID: "02wMz5Txv733WHFsVy66SR", CreatedAt: updated.Add(-3 * time.Hour), UpdatedAt: updated.Add(-time.Hour), OriginalPrompt: "alpha task"},
+	} {
+		if err := schema.SaveSessionMeta(stateDir, meta); err != nil {
+			t.Fatal(err)
+		}
+	}
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	sources := appsource.NewRegistry()
+
+	resp, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: past}, sources, appwire.ThreadListParams{SearchTerm: "task"})
+	if err != nil {
+		t.Fatalf("hubThreadList: %v", err)
+	}
+	got := make([]string, 0, len(resp.Data))
+	for _, thread := range resp.Data {
+		got = append(got, thread.ID)
+	}
+	want := []string{"02wMz5Txv1C3Hut0M8GCeB", "02wMz5Txv5aIxgf9yVdd0N", "02wMz5Txv733WHFsVy66SR", "02wMz5Txv8Vo4rqb3QYZuV"}
+	if len(got) != len(want) {
+		t.Fatalf("order=%v, want %v", got, want)
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("order=%v, want %v", got, want)
+		}
+	}
+}
+
+func TestHubThreadListSearchMatchesProviderOnlyProfile(t *testing.T) {
+	sources := appsource.NewRegistry()
+	sources.Add(&listThreadSource{id: "codex-local", thread: appwire.Thread{
+		ID:        "th_codex",
+		SessionID: "th_codex",
+		Source:    "codex-local",
+		Preview:   "codex replay",
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusNotLoaded},
+		Evener: appwire.EvenerThread{
+			Ref:     "codex-local:th_codex",
+			Profile: "openai",
+		},
+	}})
+
+	resp, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, sources, appwire.ThreadListParams{SearchTerm: "openai"})
+	if err != nil {
+		t.Fatalf("hubThreadList: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Evener.Ref != "codex-local:th_codex" {
+		t.Fatalf("threads=%+v", resp.Data)
+	}
+}
+
+func TestHubThreadListOrdersLiveThreadsUsingPastTimestamps(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-x-0123456789")
+	if err := os.MkdirAll(stateDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	runDir := t.TempDir()
+	base := time.Date(2026, 5, 11, 12, 0, 0, 0, time.UTC)
+	liveUpdated := base
+	pastUpdated := base.Add(-time.Hour)
+	liveStarted := base.Add(-24 * time.Hour)
+
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID:             "02wMz5Txv9yYdSRJat13MZ",
+		CreatedAt:      base.Add(-2 * time.Hour),
+		UpdatedAt:      liveUpdated,
+		OriginalPrompt: "live task",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID:             "02wMz5TxvBRJC3228LTWod",
+		CreatedAt:      base.Add(-3 * time.Hour),
+		UpdatedAt:      pastUpdated,
+		OriginalPrompt: "past task",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       501,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws://127.0.0.1:501/rpc",
+		SourceID:  "local",
+		ThreadID:  "02wMz5Txv9yYdSRJat13MZ",
+		SessionID: "02wMz5Txv9yYdSRJat13MZ",
+		StartedAt: liveStarted,
+	})
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	sources := newHubSourceRegistry(hubcore.WebConfig{RunDir: runDir})
+
+	resp, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: past}, sources, appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("hubThreadList: %v", err)
+	}
+	if len(resp.Data) != 2 {
+		t.Fatalf("threads=%+v", resp.Data)
+	}
+	if resp.Data[0].ID != "02wMz5Txv9yYdSRJat13MZ" || resp.Data[1].ID != "02wMz5TxvBRJC3228LTWod" {
+		t.Fatalf("order=%s,%s", resp.Data[0].ID, resp.Data[1].ID)
+	}
+	if resp.Data[0].UpdatedAt != liveUpdated.Unix() || resp.Data[0].CreatedAt != base.Add(-2*time.Hour).Unix() {
+		t.Fatalf("live timestamps=%+v", resp.Data[0])
+	}
+}
+
+func TestHubRPCThreadReadRoutesToDaemon(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		if params.Ref != "local:th_1" {
+			t.Fatalf("ref=%q", params.Ref)
+		}
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_1", SessionID: "sess_1", Evener: appwire.EvenerThread{Ref: "local:th_1"}}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       102,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  "th_1",
+		SessionID: "sess_1",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir: runDir,
+		Roster: roster,
+		Past:   hubcore.NewPastIndex(""),
+	})
+	defer hub.Close()
+
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1"})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if resp.Thread.ID != "th_1" || resp.Thread.Evener.Ref != "local:th_1" {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+func TestHubRPCThreadReadRoutesReachableErroredDaemon(t *testing.T) {
+	const sessionID = "02wMz5Txv9yYdSRJat13MZ"
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Evener:    appwire.EvenerThread{Ref: params.Ref},
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry: rendezvous.Entry{
+			PID:       103,
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+			SourceID:  "local",
+			ThreadID:  sessionID,
+			SessionID: sessionID,
+		},
+		SessionID: sessionID,
+		Status:    "errored",
+	})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Roster: roster, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID})
+	if err != nil {
+		t.Fatalf("thread/read: %v", err)
+	}
+	if response.Thread.ID != sessionID {
+		t.Fatalf("thread = %+v, want reachable errored daemon", response.Thread)
+	}
+}
+
+func TestHubRPCThreadReadReturnsPastTranscript(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, ItemsView: "full"})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if resp.Thread.ID != sessionID || len(resp.Thread.Turns) != 3 {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+	if got := resp.Thread.Turns[0].Items[0]; got.Type != "userMessage" || got.Text != "first task" {
+		t.Fatalf("first item=%+v", got)
+	}
+	if got := resp.Thread.Turns[1].Items[0]; got.Type != "agentMessage" || got.Text != "first reply" {
+		t.Fatalf("second item=%+v", got)
+	}
+}
+
+func TestHubRPCSubscribedReadReturnsPastForCrashMarker(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-crashed-past-0000000000")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry: rendezvous.Entry{
+			PID:       104,
+			Protocol:  appwire.ProtocolVersion,
+			Endpoint:  "ws://127.0.0.1:1/rpc",
+			SourceID:  "local",
+			ThreadID:  sessionID,
+			SessionID: sessionID,
+		},
+		SessionID: sessionID,
+		Status:    "errored",
+		Crashed:   true,
+	})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Roster: roster, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+		Ref:          "local:" + sessionID,
+		IncludeTurns: true,
+		ItemsView:    "full",
+		Subscribe:    true,
+		TurnLimit:    40,
+	})
+	if err != nil {
+		t.Fatalf("subscribed thread/read: %v", err)
+	}
+	if response.Thread.ID != sessionID || len(response.Thread.Turns) != 3 {
+		t.Fatalf("saved thread = %+v", response.Thread)
+	}
+}
+
+func TestHubRPCSubscribedAtomicFailuresDoNotFallBackToPastAndCanRetry(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-atomic-retry-0000000000")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	thread := appwire.Thread{
+		ID:        sessionID,
+		SessionID: sessionID,
+		Source:    "local",
+		Evener:    appwire.EvenerThread{Ref: "local:" + sessionID},
+	}
+	handoff := &recordingRelayHandoff{
+		committed: make(chan struct{}),
+		aborted:   make(chan struct{}),
+	}
+	var lease *scriptedRelaySessionLease
+	lease = &scriptedRelaySessionLease{
+		readErr:    appwire.SessionUnavailable("canonical actor read failed"),
+		deliveries: make(chan appsource.RelayDelivery),
+		readHook: func() {
+			lease.mu.Lock()
+			lease.readErr = nil
+			lease.readResult = appsource.RelayReadResult{
+				Response: appwire.ThreadReadResponse{Thread: thread},
+			}
+			lease.readHook = func() {
+				lease.mu.Lock()
+				lease.readHook = nil
+				lease.readResult.Handoff = handoff
+				lease.mu.Unlock()
+			}
+			lease.mu.Unlock()
+		},
+	}
+	source := &relaySessionTestSource{
+		thread: thread,
+		lease:  lease,
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         past,
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	params := appwire.ThreadReadParams{
+		Ref:          thread.Evener.Ref,
+		IncludeTurns: true,
+		ItemsView:    "full",
+		Subscribe:    true,
+	}
+	if response, err := client.ThreadRead(context.Background(), params); err == nil {
+		t.Errorf("first subscribed thread/read returned saved transcript %+v after its canonical actor failed", response.Thread)
+	}
+	if response, err := client.ThreadRead(context.Background(), params); err == nil {
+		t.Errorf("second subscribed thread/read returned saved transcript %+v without a live handoff", response.Thread)
+	}
+	response, err := client.ThreadRead(context.Background(), params)
+	if err != nil {
+		t.Fatalf("retry subscribed thread/read: %v", err)
+	}
+	if response.Thread.ID != sessionID {
+		t.Fatalf("retry thread ID = %q, want %q", response.Thread.ID, sessionID)
+	}
+	// The hub commits the handoff after the response enters the connection's
+	// send queue, so the client can observe the response before Commit runs.
+	// Wait for the commit signal instead of assuming that ordering.
+	select {
+	case <-handoff.committed:
+	case <-time.After(time.Second):
+		t.Fatal("successful retry did not commit its live handoff")
+	}
+	if got := lease.readCallCount(); got != 3 {
+		t.Fatalf("canonical actor read calls = %d, want read failure, missing handoff, and successful retry", got)
+	}
+}
+
+func TestHubRPCNonSubscribedAtomicReadFailureCanReturnPastTranscript(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-nonsubscribed-past-0000000000")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	thread := appwire.Thread{
+		ID:        sessionID,
+		SessionID: sessionID,
+		Source:    "local",
+		Evener:    appwire.EvenerThread{Ref: "local:" + sessionID},
+	}
+	source := &relaySessionTestSource{
+		thread: thread,
+		lease: &scriptedRelaySessionLease{
+			readErr:    appwire.SessionUnavailable("canonical actor read failed"),
+			deliveries: make(chan appsource.RelayDelivery),
+		},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(source)
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         past,
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+		Ref:          thread.Evener.Ref,
+		IncludeTurns: true,
+		ItemsView:    "full",
+	})
+	if err != nil {
+		t.Fatalf("non-subscribed thread/read: %v", err)
+	}
+	if response.Thread.ID != sessionID || len(response.Thread.Turns) != 3 {
+		t.Fatalf("non-subscribed saved thread = %+v", response.Thread)
+	}
+}
+
+func TestHubRPCSubscribedNonAtomicReadFailureCanReturnPastTranscript(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-non-atomic-past-0000000000")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	thread := appwire.Thread{
+		ID:        sessionID,
+		SessionID: sessionID,
+		Source:    "local",
+		Evener:    appwire.EvenerThread{Ref: "local:" + sessionID},
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(&pastFallbackRelaySource{
+		thread:  thread,
+		readErr: appwire.SessionUnavailable("non-atomic live read failed"),
+	})
+	appServer := newHubAppServer(hubcore.WebConfig{
+		HubStateRoot: t.TempDir(),
+		Past:         past,
+	}, sources)
+	hub := httptest.NewServer(http.HandlerFunc(appServer.ServeWebSocket))
+	defer hub.Close()
+
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	response, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{
+		Ref:          thread.Evener.Ref,
+		IncludeTurns: true,
+		ItemsView:    "full",
+		Subscribe:    true,
+	})
+	if err != nil {
+		t.Fatalf("non-atomic subscribed thread/read: %v", err)
+	}
+	if response.Thread.ID != sessionID || len(response.Thread.Turns) != 3 {
+		t.Fatalf("non-atomic saved thread = %+v", response.Thread)
+	}
+}
+
+func TestHubRPCThreadReadEnrichesReplayToolOutputImagesFromFiles(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-images-0000000000")
+	cwd := filepath.Join(root, "work")
+	sessionID := "02wMz5TxvCu3kdckfnw0Gh"
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(cwd, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 'p', 'a', 'y'}
+	if err := os.WriteFile(filepath.Join(cwd, "plot.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Unix(1700000000, 0).UTC()
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID:        sessionID,
+		ProfileID: "openai",
+		Model:     "gpt-5",
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: cwd},
+		CreatedAt: now,
+		UpdatedAt: now,
+		TurnCount: 2,
+	}); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", sessionID+".transcript.jsonl"), transcript.Header{
+		SessionID:  sessionID,
+		CreatedAt:  now,
+		ProfileID:  "openai",
+		Model:      "gpt-5",
+		WorkingDir: cwd,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Append(schema.Turn{
+		Kind: schema.TurnAssistant,
+		Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{
+			Kind: llm.ContentToolCall,
+			ToolCall: &llm.ToolCallData{
+				ID:        "call_plot",
+				Name:      "shell",
+				Arguments: json.RawMessage(`{"command":"python plot.py"}`),
+			},
+		}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	toolPNG := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 't', 'o', 'o', 'l'}
+	if err := writer.Append(schema.Turn{
+		Kind: schema.TurnToolResults,
+		Message: llm.Message{Role: llm.RoleTool, ToolCallID: "call_plot", Content: []llm.ContentPart{{
+			Kind: llm.ContentToolResult,
+			ToolResult: &llm.ToolResultData{
+				ToolCallID:     "call_plot",
+				Name:           "shell",
+				Content:        "created plot.png",
+				ImageData:      toolPNG,
+				ImageMediaType: "image/png",
+			},
+		}}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, ItemsView: "full"})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if len(resp.Thread.Turns) != 2 || len(resp.Thread.Turns[1].Items) != 1 {
+		t.Fatalf("turns=%+v", resp.Thread.Turns)
+	}
+	item := resp.Thread.Turns[1].Items[0]
+	if len(item.OutputImages) != 2 {
+		t.Fatalf("OutputImages=%+v, want tool-result then file-backed descriptors", item.OutputImages)
+	}
+	if item.OutputImages[0].Source != "tool-result" || item.OutputImages[0].URL == "" {
+		t.Fatalf("first output image=%+v, want existing tool-result descriptor first", item.OutputImages[0])
+	}
+	if item.OutputImages[1].Source != "shell-path" || item.OutputImages[1].Path != "plot.png" || item.OutputImages[1].URL != "/doc/image?session="+sessionID+"&path=plot.png" {
+		t.Fatalf("second output image=%+v, want shell-path plot.png descriptor", item.OutputImages[1])
+	}
+}
+
+func TestHubRPCThreadReadEnrichesLiveToolOutputImagesFromFiles(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 'p', 'a', 'y'}
+	if err := os.WriteFile(filepath.Join(cwd, "plot.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "02wMz5Txv9yYdSRJat13MZ"
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			CWD:       cwd,
+			Source:    "local",
+			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			Evener:    appwire.EvenerThread{Ref: params.Ref},
+			Turns: []appwire.Turn{{
+				ID: "turn_1",
+				Items: []appwire.ThreadItem{{
+					Type:          "commandExecution",
+					ID:            "item_shell",
+					TurnID:        "turn_1",
+					ToolName:      "shell",
+					CallID:        "call_shell",
+					ArgumentsJSON: `{}`,
+					Output:        "created plot.png",
+					Status:        appwire.TurnStatusCompleted,
+				}},
+				Status: appwire.TurnStatusCompleted,
+			}},
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       17 * 1000,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  sessionID,
+		SessionID: sessionID,
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, ItemsView: "full"})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if len(resp.Thread.Turns) != 1 || len(resp.Thread.Turns[0].Items) != 1 {
+		t.Fatalf("turns=%+v", resp.Thread.Turns)
+	}
+	imgs := resp.Thread.Turns[0].Items[0].OutputImages
+	if len(imgs) != 1 || imgs[0].Source != "shell-path" || imgs[0].Path != "plot.png" || imgs[0].URL != "/doc/image?session="+sessionID+"&path=plot.png" {
+		t.Fatalf("OutputImages=%+v, want live shell-path plot.png descriptor", imgs)
+	}
+}
+
+// TestHubRPCThreadReadStampsTheSHARouteOnLiveDaemonTurns is the reload-into-a-
+// running-session half of the sha-addressed path. The daemon's own snapshot
+// carries tool-result descriptors that name their bytes by sha and no route;
+// the hub is what turns them into something the browser can fetch.
+func TestHubRPCThreadReadStampsTheSHARouteOnLiveDaemonTurns(t *testing.T) {
+	sessionID := "02wMz5Txv9yYdSRJat13MZ"
+	sha := strings.Repeat("f", 64)
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Source:    "local",
+			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			Evener:    appwire.EvenerThread{Ref: params.Ref},
+			Turns: []appwire.Turn{{
+				ID: "turn_1",
+				Items: []appwire.ThreadItem{{
+					Type: "commandExecution", ID: "item_shot", TurnID: "turn_1",
+					ToolName: "screenshot", CallID: "call_shot", ArgumentsJSON: `{}`,
+					Status:       appwire.TurnStatusCompleted,
+					OutputImages: []appwire.OutputImage{{Source: "tool-result", Name: "screenshot", MediaType: "image/png", Size: 12, SHA: sha}},
+				}},
+				Status: appwire.TurnStatusCompleted,
+			}},
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       19 * 1000,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  sessionID,
+		SessionID: sessionID,
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, ItemsView: "full"})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if len(resp.Thread.Turns) != 1 || len(resp.Thread.Turns[0].Items) != 1 {
+		t.Fatalf("turns=%+v", resp.Thread.Turns)
+	}
+	imgs := resp.Thread.Turns[0].Items[0].OutputImages
+	if len(imgs) != 1 || imgs[0].URL != "/s/"+sessionID+"/images/"+sha {
+		t.Fatalf("OutputImages=%+v, want the sha route stamped onto the daemon's descriptor", imgs)
+	}
+}
+
+func TestHubRPCThreadReadMergesPastTurnsForLiveDaemon(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusClosed},
+			Source:    "local",
+			Evener:    appwire.EvenerThread{Ref: params.Ref},
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       103,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  sessionID,
+		SessionID: sessionID,
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true, ItemsView: "full"})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if resp.Thread.Status.Type != appwire.ThreadStatusClosed {
+		t.Fatalf("status=%q", resp.Thread.Status.Type)
+	}
+	if len(resp.Thread.Turns) != 3 {
+		t.Fatalf("turns=%d thread=%+v", len(resp.Thread.Turns), resp.Thread)
+	}
+	if got := resp.Thread.Turns[0].Items[0]; got.Type != "userMessage" || got.Text != "first task" {
+		t.Fatalf("first item=%+v", got)
+	}
+}
+
+func TestHubRPCThreadReadDoesNotReturnLocalPastForNonLocalMissingSource(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-local-0000000000")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + sessionID, IncludeTurns: true})
+	if err == nil {
+		t.Fatalf("ThreadRead returned local past for codex ref: %+v", resp.Thread)
+	}
+}
+
+func TestHubRPCThreadReadDoesNotMergeLocalPastIntoNonLocalLiveThread(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-local-0000000000")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	source := &relayBroadcastSource{
+		thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Source:    "codex",
+			Preview:   "live codex thread",
+			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			Evener:    appwire.EvenerThread{Ref: "codex:" + sessionID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		canceled:      make(chan struct{}, 1),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: past})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + sessionID, IncludeTurns: true})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if len(resp.Thread.Turns) != 0 {
+		t.Fatalf("non-local live thread received local past turns: %+v", resp.Thread.Turns)
+	}
+	if resp.Thread.Preview != "live codex thread" || resp.Thread.Evener.Ref != "codex:"+sessionID {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+func TestHubRPCThreadReadRelaysDaemonNotifications(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, _ appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		appserver.Subscribe(ctx, "th_1")
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_1", SessionID: "sess_1", Evener: appwire.EvenerThread{Ref: "local:th_1"}}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       103,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  "th_1",
+		SessionID: "sess_1",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir: runDir,
+		Roster: roster,
+		Past:   hubcore.NewPastIndex(""),
+	})
+	defer hub.Close()
+
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_1"}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+
+	daemon.Broadcast("th_1", appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+		ThreadID: "th_1",
+		Ref:      "local:th_1",
+		TurnID:   "turn_1",
+		ItemID:   "item_1",
+		Delta:    "hi",
+	})
+
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyAgentMessageDelta {
+			t.Fatalf("method=%q", got.Method)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for relayed notification")
+	}
+}
+
+func TestHubRPCThreadReadRelaysEnrichedOutputImageNotification(t *testing.T) {
+	cwd := t.TempDir()
+	png := []byte{0x89, 'P', 'N', 'G', '\r', '\n', 0x1a, '\n', 'p', 'a', 'y'}
+	if err := os.WriteFile(filepath.Join(cwd, "plot.png"), png, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	sessionID := "01RELAYIMG"
+	source := &relayBroadcastSource{
+		id: "local",
+		thread: appwire.Thread{
+			ID:        "th_img",
+			SessionID: sessionID,
+			CWD:       cwd,
+			Source:    "local",
+			Evener:    appwire.EvenerThread{Ref: "local:th_img", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_img"}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	expectRelaySubscription(t, source.subscribed)
+
+	source.notifications <- *appwire.NotificationMessage(appwire.NotifyItemStarted, map[string]any{
+		"turnId": "turn_1",
+		"item": appwire.ThreadItem{
+			Type:          "commandExecution",
+			ID:            "item_write",
+			ToolName:      "write_file",
+			CallID:        "call_write",
+			ArgumentsJSON: `{"file_path":"plot.png"}`,
+			Status:        appwire.TurnStatusInProgress,
+		},
+	}).Notification
+	source.notifications <- *appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
+		"turnId": "turn_1",
+		"item": appwire.ThreadItem{
+			Type:     "commandExecution",
+			ID:       "item_write",
+			ToolName: "write_file",
+			CallID:   "call_write",
+			Output:   "wrote",
+			Status:   appwire.TurnStatusCompleted,
+		},
+	}).Notification
+
+	var completed appwire.Notification
+	for i := 0; i < 2; i++ {
+		select {
+		case got := <-client.Notifications():
+			if got.Method == appwire.NotifyItemCompleted {
+				completed = got
+				i = 2
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for relayed completed notification")
+		}
+	}
+	if completed.Method == "" {
+		t.Fatal("completed notification was not relayed")
+	}
+	var params struct {
+		Item appwire.ThreadItem `json:"item"`
+	}
+	if err := json.Unmarshal(completed.Params, &params); err != nil {
+		t.Fatalf("unmarshal completed params: %v", err)
+	}
+	imgs := params.Item.OutputImages
+	if len(imgs) != 1 || imgs[0].Source != "written-file" || imgs[0].Path != "plot.png" || imgs[0].URL != "/doc/image?session="+sessionID+"&path=plot.png" {
+		t.Fatalf("OutputImages=%+v, want written-file plot.png /doc/image descriptor", imgs)
+	}
+}
+
+// TestHubRPCRelaysSHARoutedToolResultImageFromARealDaemon is the same check as
+// TestHubRPCThreadReadRelaysSHARoutedToolResultImage on the fanout a REAL local
+// daemon takes: LocalDaemonSource is a RelaySessionSource, so its frames reach
+// the browser through the acknowledged-fanout loop rather than the
+// non-atomic broadcast loop, and the two are separate call sites.
+func TestHubRPCRelaysSHARoutedToolResultImageFromARealDaemon(t *testing.T) {
+	sessionID := "02wMz5Txv733WHFsVy66SR"
+	sha := strings.Repeat("b", 64)
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		appserver.Subscribe(ctx, sessionID)
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID: sessionID, SessionID: sessionID, Source: "local",
+			Evener: appwire.EvenerThread{Ref: params.Ref},
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       21 * 1000,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  sessionID,
+		SessionID: sessionID,
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+
+	daemon.Broadcast(sessionID, appwire.NotifyItemCompleted, appwire.ItemLifecycleParams{
+		ThreadID: sessionID, Ref: "local:" + sessionID, TurnID: "turn_1",
+		Item: appwire.ThreadItem{
+			Type: "commandExecution", ID: "item_shot", TurnID: "turn_1",
+			ToolName: "screenshot", CallID: "call_shot", Status: appwire.TurnStatusCompleted,
+			OutputImages: []appwire.OutputImage{{Source: "tool-result", Name: "screenshot", MediaType: "image/png", Size: 11, SHA: sha}},
+		},
+	})
+
+	deadline := time.After(2 * time.Second)
+	for {
+		select {
+		case got := <-client.Notifications():
+			if got.Method != appwire.NotifyItemCompleted {
+				continue
+			}
+			var params struct {
+				Item appwire.ThreadItem `json:"item"`
+			}
+			if err := json.Unmarshal(got.Params, &params); err != nil {
+				t.Fatalf("unmarshal completed params: %v", err)
+			}
+			imgs := params.Item.OutputImages
+			if len(imgs) != 1 || imgs[0].URL != "/s/"+sessionID+"/images/"+sha {
+				t.Fatalf("OutputImages=%+v, want the sha route stamped on the fanned-out descriptor", imgs)
+			}
+			return
+		case <-deadline:
+			t.Fatal("timed out waiting for the relayed completed notification")
+		}
+	}
+}
+
+// TestHubRPCThreadReadRelaysSHARoutedToolResultImage is the live-streaming path
+// end to end through the relay (kata 2fxm): the daemon publishes an
+// item/completed whose tool-result image is named by sha and nothing else, and
+// the browser must receive a descriptor it can actually fetch.
+func TestHubRPCThreadReadRelaysSHARoutedToolResultImage(t *testing.T) {
+	sessionID := "02wMz5Txv733WHFsVy66SR"
+	sha := strings.Repeat("a", 64)
+	source := &relayBroadcastSource{
+		id: "local",
+		thread: appwire.Thread{
+			ID:        "th_shot",
+			SessionID: sessionID,
+			Source:    "local",
+			Evener:    appwire.EvenerThread{Ref: "local:th_shot", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:th_shot"}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	expectRelaySubscription(t, source.subscribed)
+
+	source.notifications <- *appwire.NotificationMessage(appwire.NotifyItemCompleted, map[string]any{
+		"turnId": "turn_1",
+		"item": appwire.ThreadItem{
+			Type: "commandExecution", ID: "item_shot", ToolName: "screenshot", CallID: "call_shot",
+			Output: "captured", Status: appwire.TurnStatusCompleted,
+			OutputImages: []appwire.OutputImage{{
+				Source: "tool-result", Name: "screenshot", MediaType: "image/png", Size: 11, SHA: sha,
+			}},
+		},
+	}).Notification
+
+	var completed appwire.Notification
+	for range 3 {
+		select {
+		case got := <-client.Notifications():
+			if got.Method == appwire.NotifyItemCompleted {
+				completed = got
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for relayed completed notification")
+		}
+		if completed.Method != "" {
+			break
+		}
+	}
+	if completed.Method == "" {
+		t.Fatal("completed notification was not relayed")
+	}
+	var params struct {
+		Item appwire.ThreadItem `json:"item"`
+	}
+	if err := json.Unmarshal(completed.Params, &params); err != nil {
+		t.Fatalf("unmarshal completed params: %v", err)
+	}
+	imgs := params.Item.OutputImages
+	if len(imgs) != 1 || imgs[0].URL != "/s/"+sessionID+"/images/"+sha {
+		t.Fatalf("OutputImages=%+v, want the sha route stamped on the relayed descriptor", imgs)
+	}
+}
+
+func TestHubRPCThreadReadRelaysNotificationsBySourceQualifiedThread(t *testing.T) {
+	threadID := "shared_thread"
+	sourceA := &relayBroadcastSource{
+		id: "codex-a",
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex-a",
+			Evener:    appwire.EvenerThread{Ref: "codex-a:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		canceled:      make(chan struct{}, 2),
+	}
+	sourceB := &relayBroadcastSource{
+		id: "codex-b",
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex-b",
+			Evener:    appwire.EvenerThread{Ref: "codex-b:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		canceled:      make(chan struct{}, 2),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(sourceA)
+	web.sources.Add(sourceB)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	clientA := dialHubRPC(t, srv)
+	defer clientA.Close()
+	if _, err := clientA.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize clientA: %v", err)
+	}
+	if _, err := clientA.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex-a:" + threadID}); err != nil {
+		t.Fatalf("ThreadRead clientA: %v", err)
+	}
+	clientB := dialHubRPC(t, srv)
+	defer clientB.Close()
+	if _, err := clientB.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize clientB: %v", err)
+	}
+	if _, err := clientB.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex-b:" + threadID}); err != nil {
+		t.Fatalf("ThreadRead clientB: %v", err)
+	}
+
+	sourceB.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: threadID,
+			Ref:      "codex-b:" + threadID,
+			TurnID:   "turn_1",
+			ItemID:   "item_1",
+			Delta:    "from source b",
+		}),
+	}
+
+	select {
+	case got := <-clientB.Notifications():
+		if got.Method != appwire.NotifyAgentMessageDelta {
+			t.Fatalf("clientB method=%q", got.Method)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for source b notification")
+	}
+	// Prove isolation: send a sentinel on sourceA so clientA receives something.
+	// If sourceB's notification had leaked to clientA it would have arrived
+	// first (it was broadcast before the sentinel), so receiving the sentinel
+	// as the first notification structurally proves no cross-source leak.
+	sourceA.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: threadID,
+			Ref:      "codex-a:" + threadID,
+			TurnID:   "turn_sentinel",
+			ItemID:   "item_sentinel",
+			Delta:    "sentinel",
+		}),
+	}
+	select {
+	case got := <-clientA.Notifications():
+		var params appwire.AgentMessageDeltaParams
+		if err := json.Unmarshal(got.Params, &params); err != nil {
+			t.Fatalf("clientA: unmarshal params: %v", err)
+		}
+		if params.Ref != "codex-a:"+threadID {
+			t.Fatalf("clientA received cross-source notification before sentinel: ref=%q", params.Ref)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for sentinel notification on clientA")
+	}
+}
+
+func TestHubRPCThreadReadSubscribeOverridesSourceReadRelayPolicy(t *testing.T) {
+	threadID := "th_codex_live"
+	source := &readRelayDisabledSource{
+		id: "codex",
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	expectRelaySubscription(t, source.subscribed)
+
+	source.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: threadID,
+			Ref:      "codex:" + threadID,
+			TurnID:   "turn_1",
+			ItemID:   "item_1",
+			Delta:    "from codex",
+		}),
+	}
+
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyAgentMessageDelta {
+			t.Fatalf("method=%q", got.Method)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for subscribed codex notification")
+	}
+}
+
+func TestHubRPCThreadReadRecoversEstablishedRelayAfterSourceClose(t *testing.T) {
+	const threadID = "th_recover"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	source := &scriptedRelaySource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
+		readErr <- err
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notificationsA := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notificationsA}
+	select {
+	case err := <-readErr:
+		if err != nil {
+			t.Fatalf("ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial ThreadRead")
+	}
+
+	notificationsA <- relayDeltaNotification(t, threadID, "event A")
+	expectRelayDelta(t, client.Notifications(), "event A")
+	close(notificationsA)
+
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notificationsB := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notificationsB}
+	expectRelayResync(t, client.Notifications(), threadID, "codex:"+threadID)
+	notificationsB <- relayDeltaNotification(t, threadID, "event B")
+	expectRelayDelta(t, client.Notifications(), "event B")
+}
+
+func TestHubRelayRecoveryEmitsThreadResyncBeforeReplacementNotifications(t *testing.T) {
+	const threadID = "th_resync"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	retryClock := newScriptedRelayRetryClock()
+	source := &scriptedRelaySource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.RetryWait = retryClock.Wait
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
+		readErr <- err
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notificationsA := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notificationsA}
+	select {
+	case err := <-readErr:
+		if err != nil {
+			t.Fatalf("ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial ThreadRead")
+	}
+	select {
+	case got := <-client.Notifications():
+		t.Fatalf("initial relay emitted notification %+v, want none", got)
+	default:
+	}
+	notificationsA <- relayDeltaNotification(t, threadID, "initial event")
+	expectRelayDelta(t, client.Notifications(), "initial event")
+
+	close(notificationsA)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("replacement unavailable")}
+	retryClock.releaseWait(t, 100*time.Millisecond)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notificationsB := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notificationsB}
+	expectRelayResync(t, client.Notifications(), threadID, "codex:"+threadID)
+
+	notificationsB <- relayDeltaNotification(t, threadID, "replacement event")
+	expectRelayDelta(t, client.Notifications(), "replacement event")
+}
+
+func TestRelayRetryClockWaitStopsOnCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if err := newRelayRetryClock().Wait(ctx, time.Hour); !errors.Is(err, context.Canceled) {
+		t.Fatalf("Wait error=%v, want context canceled", err)
+	}
+}
+
+func TestRelayRetryBackoffCapsAtFiveSeconds(t *testing.T) {
+	var backoff relayRetryBackoff
+	want := []time.Duration{
+		100 * time.Millisecond,
+		200 * time.Millisecond,
+		400 * time.Millisecond,
+		800 * time.Millisecond,
+		1600 * time.Millisecond,
+		3200 * time.Millisecond,
+		5 * time.Second,
+		5 * time.Second,
+	}
+	for i, delay := range want {
+		if got := backoff.Next(); got != delay {
+			t.Fatalf("Next call %d=%s, want %s", i+1, got, delay)
+		}
+	}
+}
+
+func TestHubRPCThreadReadRelayRecoveryBackoffAndReset(t *testing.T) {
+	const threadID = "th_retry_backoff"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	retryClock := newScriptedRelayRetryClock()
+	source := &scriptedRelaySource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.RetryWait = retryClock.Wait
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
+		readErr <- err
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notificationsA := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notificationsA}
+	select {
+	case err := <-readErr:
+		if err != nil {
+			t.Fatalf("ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial ThreadRead")
+	}
+
+	close(notificationsA)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("recovery failed once")}
+	retryClock.releaseWait(t, 100*time.Millisecond)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("recovery failed twice")}
+	retryClock.releaseWait(t, 200*time.Millisecond)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notificationsB := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notificationsB}
+	expectRelayResync(t, client.Notifications(), threadID, "codex:"+threadID)
+	notificationsB <- relayDeltaNotification(t, threadID, "recovered")
+	expectRelayDelta(t, client.Notifications(), "recovered")
+
+	close(notificationsB)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("recovery failed after success")}
+	retryClock.expectWait(t, 100*time.Millisecond)
+}
+
+// relayTurnStartedNotification builds the turn/started notification the relay
+// forwards from a real source, used to seed the relay's activeTurnID tracking
+// the same way a live daemon would.
+func relayTurnStartedNotification(t *testing.T, threadID, turnID string) appwire.Notification {
+	t.Helper()
+	return appwire.Notification{
+		Method: appwire.NotifyTurnStarted,
+		Params: testRawJSON(t, appwire.TurnStartedParams{
+			ThreadID: threadID,
+			Ref:      "codex:" + threadID,
+			Turn:     appwire.Turn{ID: turnID, Status: appwire.TurnStatusInProgress},
+		}),
+	}
+}
+
+// expectRelaySynthesizedTurnFailure asserts the next notification is the
+// hub-authored turn/completed(failed) kata 3h02 synthesizes once a mid-turn
+// daemon stops answering: the same shape TurnFailureEndCap already renders
+// for a real daemon failure (connection-class, so its "Reconnect & retry"
+// button appears).
+func expectRelaySynthesizedTurnFailure(t *testing.T, notifications <-chan appwire.Notification, wantTurnID, wantMessageContains string) {
+	t.Helper()
+	select {
+	case got := <-notifications:
+		if got.Method != appwire.NotifyTurnCompleted {
+			t.Fatalf("notification method=%q, want %q", got.Method, appwire.NotifyTurnCompleted)
+		}
+		var params appwire.TurnCompletedParams
+		if err := json.Unmarshal(got.Params, &params); err != nil {
+			t.Fatalf("unmarshal turn/completed: %v", err)
+		}
+		if params.Turn.ID != wantTurnID {
+			t.Fatalf("turn.id=%q, want %q", params.Turn.ID, wantTurnID)
+		}
+		if params.Turn.Status != appwire.TurnStatusFailed {
+			t.Fatalf("turn.status=%q, want %q", params.Turn.Status, appwire.TurnStatusFailed)
+		}
+		if params.Turn.Error == nil {
+			t.Fatal("turn.error is nil, want a connection-class TurnError")
+		}
+		if params.Turn.Error.Source != "hub" {
+			t.Fatalf("turn.error.source=%q, want %q", params.Turn.Error.Source, "hub")
+		}
+		if !strings.Contains(params.Turn.Error.Message, wantMessageContains) {
+			t.Fatalf("turn.error.message=%q, want it to contain %q", params.Turn.Error.Message, wantMessageContains)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for the synthesized turn failure")
+	}
+}
+
+// TestHubRelaySynthesizesConnectionFailureForActiveTurnAfterRepeatedRedialFailures
+// covers kata 3h02: a daemon SIGKILLed mid-turn leaves the recovery loop
+// re-dialing a socket nothing answers, forever, with no diagnostic. After
+// relayGiveUpAfterFailures consecutive re-dial failures while a turn is
+// in-progress, the relay must synthesize a failed turn/completed for that
+// turn (source "hub") instead of retrying in total silence - and must fire
+// it exactly once per stall, not on every subsequent retry.
+func TestHubRelaySynthesizesConnectionFailureForActiveTurnAfterRepeatedRedialFailures(t *testing.T) {
+	const threadID = "th_dead_mid_turn"
+	const turnID = "turn_dead"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	retryClock := newScriptedRelayRetryClock()
+	source := &scriptedRelaySource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.RetryWait = retryClock.Wait
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
+		readErr <- err
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notifications := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notifications}
+	select {
+	case err := <-readErr:
+		if err != nil {
+			t.Fatalf("ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial ThreadRead")
+	}
+
+	// The turn opens; the reader is now watching a spinner. Then the daemon
+	// is gone (kill -9): its notification channel closes with no error and
+	// no persisted TurnFailure, exactly like a SIGKILLed process.
+	notifications <- relayTurnStartedNotification(t, threadID, turnID)
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyTurnStarted {
+			t.Fatalf("notification method=%q, want %q", got.Method, appwire.NotifyTurnStarted)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for turn/started")
+	}
+	close(notifications)
+
+	// Two re-dial failures is a blip: no diagnostic yet, no button - the
+	// spinner is exactly as legible (or illegible) as it always was.
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (1)")}
+	retryClock.releaseWait(t, 100*time.Millisecond)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (2)")}
+	retryClock.releaseWait(t, 200*time.Millisecond)
+
+	// The third consecutive failure crosses relayGiveUpAfterFailures: the
+	// relay must stop retrying in silence and tell the reader the turn died.
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (3)")}
+	expectRelaySynthesizedTurnFailure(t, client.Notifications(), turnID, "connection refused (3)")
+	retryClock.releaseWait(t, 400*time.Millisecond)
+
+	// The loop keeps retrying afterward (recovery is still worth having if
+	// the reader clicks "Reconnect & retry" and a fresh relay never
+	// replaces this one before it retires) but must not re-broadcast the
+	// same failure it already reported.
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("local daemon unavailable: connection refused (4)")}
+	select {
+	case got := <-client.Notifications():
+		t.Fatalf("unexpected second notification after give-up: %+v", got)
+	case <-time.After(150 * time.Millisecond):
+	}
+	retryClock.expectWait(t, 800*time.Millisecond)
+}
+
+// TestHubRelayNoSyntheticFailureWithoutActiveTurn covers the scoping half of
+// kata 3h02's fix: a daemon that dies BETWEEN turns (no spinner on screen,
+// nothing for the reader to be confused by) must not manufacture a failed
+// turn out of nothing. The relay keeps retrying in silence exactly as
+// before - there is no turn id to attach a failure to, and no ambiguity for
+// the reader to resolve.
+func TestHubRelayNoSyntheticFailureWithoutActiveTurn(t *testing.T) {
+	const threadID = "th_dead_between_turns"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	retryClock := newScriptedRelayRetryClock()
+	source := &scriptedRelaySource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.RetryWait = retryClock.Wait
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
+		readErr <- err
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notifications := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notifications}
+	select {
+	case err := <-readErr:
+		if err != nil {
+			t.Fatalf("ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial ThreadRead")
+	}
+	close(notifications)
+
+	for i, delay := range []time.Duration{
+		100 * time.Millisecond,
+		200 * time.Millisecond,
+		400 * time.Millisecond,
+		800 * time.Millisecond,
+	} {
+		awaitRelaySubscribeCall(t, subscribeCalls)
+		results <- relaySubscribeResult{err: fmt.Errorf("local daemon unavailable: connection refused (%d)", i+1)}
+		retryClock.releaseWait(t, delay)
+	}
+	select {
+	case got := <-client.Notifications():
+		t.Fatalf("unexpected notification with no active turn: %+v", got)
+	case <-time.After(150 * time.Millisecond):
+	}
+}
+
+func TestHubRPCThreadReadRecoveryBacksOffUnusableChannelsWithoutDroppingFirstNotification(t *testing.T) {
+	const threadID = "th_retry_unusable"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	retryClock := newScriptedRelayRetryClock()
+	source := &scriptedRelaySource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.RetryWait = retryClock.Wait
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
+		readErr <- err
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	established := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: established}
+	select {
+	case err := <-readErr:
+		if err != nil {
+			t.Fatalf("ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial ThreadRead")
+	}
+
+	close(established)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{notifications: nil}
+	retryClock.releaseWait(t, 100*time.Millisecond)
+
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	closed := make(chan appwire.Notification)
+	close(closed)
+	results <- relaySubscribeResult{notifications: closed}
+	retryClock.releaseWait(t, 200*time.Millisecond)
+
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	buffered := make(chan appwire.Notification, 1)
+	buffered <- relayDeltaNotification(t, threadID, "first notification")
+	close(buffered)
+	results <- relaySubscribeResult{notifications: buffered}
+	expectRelayResync(t, client.Notifications(), threadID, "codex:"+threadID)
+	expectRelayDelta(t, client.Notifications(), "first notification")
+
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("failed after usable channel")}
+	retryClock.expectWait(t, 100*time.Millisecond)
+}
+
+func TestHubRPCThreadReadClientCloseCancelsRelayRecoveryWait(t *testing.T) {
+	const threadID = "th_retry_cancel"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	retryClock := newScriptedRelayRetryClock()
+	source := &scriptedRelaySource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	idleExit := make(chan struct{})
+	afterIdleDelete := make(chan struct{})
+	var idleOnce sync.Once
+	var afterIdleOnce sync.Once
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.RetryWait = retryClock.Wait
+	cfg.RelayHooks.IdleExit = func(gotThreadID string) {
+		if gotThreadID == threadID {
+			idleOnce.Do(func() { close(idleExit) })
+		}
+	}
+	cfg.RelayHooks.AfterIdleDelete = func(gotThreadID string) {
+		if gotThreadID == threadID {
+			afterIdleOnce.Do(func() { close(afterIdleDelete) })
+		}
+	}
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
+		readErr <- err
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notifications := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notifications}
+	select {
+	case err := <-readErr:
+		if err != nil {
+			t.Fatalf("ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial ThreadRead")
+	}
+
+	close(notifications)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("recovery failed")}
+	wait := retryClock.nextWait(t)
+	if wait.delay != relayRetryMinDelay {
+		t.Fatalf("relay retry delay=%s, want %s", wait.delay, relayRetryMinDelay)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("client close: %v", err)
+	}
+	select {
+	case <-idleExit:
+	case <-time.After(time.Second):
+		t.Fatal("relay did not observe zero subscribers while retry waited")
+	}
+	select {
+	case <-afterIdleDelete:
+	case <-time.After(time.Second):
+		t.Fatal("relay handle was not removed while retry waited")
+	}
+	select {
+	case <-wait.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("relay retry wait was not canceled")
+	}
+	select {
+	case <-subscribeCalls:
+		t.Fatal("relay subscribed again after recovery cancellation")
+	default:
+	}
+
+	replacementClient := dialHubRPC(t, srv)
+	defer replacementClient.Close()
+	if _, err := replacementClient.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize replacement client: %v", err)
+	}
+	replacementReadErr := make(chan error, 1)
+	go func() {
+		_, err := replacementClient.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
+		replacementReadErr <- err
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	replacementNotifications := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: replacementNotifications}
+	select {
+	case err := <-replacementReadErr:
+		if err != nil {
+			t.Fatalf("replacement ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for replacement ThreadRead")
+	}
+}
+
+func TestHubRPCThreadReadClientCloseCancelsBlockingRecoverySubscribe(t *testing.T) {
+	const threadID = "th_blocking_recovery_cancel"
+	established := make(chan appwire.Notification)
+	replacementResults := make(chan relaySubscribeResult)
+	source := &blockingRecoveryRelaySource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		established:        established,
+		recoveryStarted:    make(chan struct{}),
+		recoveryCanceled:   make(chan struct{}),
+		recoveryReturned:   make(chan struct{}),
+		replacementStarted: make(chan struct{}),
+		replacementResults: replacementResults,
+	}
+	idleExit := make(chan struct{})
+	afterIdleDelete := make(chan struct{})
+	var idleOnce sync.Once
+	var deleteOnce sync.Once
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.IdleExit = func(gotThreadID string) {
+		if gotThreadID == threadID {
+			idleOnce.Do(func() { close(idleExit) })
+		}
+	}
+	cfg.RelayHooks.AfterIdleDelete = func(gotThreadID string) {
+		if gotThreadID == threadID {
+			deleteOnce.Do(func() { close(afterIdleDelete) })
+		}
+	}
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	close(established)
+	select {
+	case <-source.recoveryStarted:
+	case <-time.After(time.Second):
+		t.Fatal("blocking recovery subscribe did not start")
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("client close: %v", err)
+	}
+	select {
+	case <-idleExit:
+	case <-time.After(time.Second):
+		t.Fatal("relay did not service idle tick during blocking recovery subscribe")
+	}
+	select {
+	case <-source.recoveryCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("blocking recovery source context was not canceled")
+	}
+	select {
+	case <-source.recoveryReturned:
+	case <-time.After(time.Second):
+		t.Fatal("blocking recovery subscribe was not joined")
+	}
+	select {
+	case <-afterIdleDelete:
+	case <-time.After(time.Second):
+		t.Fatal("blocking recovery relay handle was not removed")
+	}
+
+	replacementClient := dialHubRPC(t, srv)
+	defer replacementClient.Close()
+	if _, err := replacementClient.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize replacement: %v", err)
+	}
+	replacementRead := make(chan error, 1)
+	go func() {
+		_, err := replacementClient.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
+		replacementRead <- err
+	}()
+	select {
+	case <-source.replacementStarted:
+	case <-time.After(time.Second):
+		t.Fatal("fresh replacement relay did not subscribe")
+	}
+	replacementNotifications := make(chan appwire.Notification)
+	replacementResults <- relaySubscribeResult{notifications: replacementNotifications}
+	select {
+	case err := <-replacementRead:
+		if err != nil {
+			t.Fatalf("replacement ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fresh replacement relay did not become ready")
+	}
+}
+
+func TestHubRPCThreadReadRereadJoinsRelayRecovery(t *testing.T) {
+	const threadID = "th_retry_join"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	retryClock := newScriptedRelayRetryClock()
+	source := &scriptedRelaySource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.RetryWait = retryClock.Wait
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
+		readErr <- err
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notificationsA := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notificationsA}
+	select {
+	case err := <-readErr:
+		if err != nil {
+			t.Fatalf("ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for initial ThreadRead")
+	}
+
+	close(notificationsA)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("recovery failed")}
+	wait := retryClock.nextWait(t)
+	if wait.delay != relayRetryMinDelay {
+		t.Fatalf("relay retry delay=%s, want %s", wait.delay, relayRetryMinDelay)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true}); err != nil {
+		t.Fatalf("concurrent recovery ThreadRead: %v", err)
+	}
+	select {
+	case <-subscribeCalls:
+		t.Fatal("reread created a duplicate relay supervisor")
+	default:
+	}
+	close(wait.release)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	notificationsB := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: notificationsB}
+	expectRelayResync(t, client.Notifications(), threadID, "codex:"+threadID)
+	notificationsB <- relayDeltaNotification(t, threadID, "after joined recovery")
+	expectRelayDelta(t, client.Notifications(), "after joined recovery")
+}
+
+func TestHubRPCThreadReadReplacementStopsOldRelayRecovery(t *testing.T) {
+	const oldThreadID = "th_retry_replaced"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	retryClock := newScriptedRelayRetryClock()
+	oldSource := &scriptedRelaySource{
+		thread: appwire.Thread{
+			ID:        oldThreadID,
+			SessionID: oldThreadID,
+			Source:    "codex-a",
+			Evener:    appwire.EvenerThread{Ref: "codex-a:" + oldThreadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		id:             "codex-a",
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	newSource := &relayBroadcastSource{
+		id: "codex-b",
+		thread: appwire.Thread{
+			ID:        "th_active_replacement",
+			SessionID: "th_active_replacement",
+			Source:    "codex-b",
+			Evener:    appwire.EvenerThread{Ref: "codex-b:th_active_replacement", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 1),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	idleExit := make(chan struct{})
+	afterIdleDelete := make(chan struct{})
+	var idleOnce sync.Once
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.RetryWait = retryClock.Wait
+	cfg.RelayHooks.IdleExit = func(threadID string) {
+		if threadID == oldThreadID {
+			idleOnce.Do(func() { close(idleExit) })
+		}
+	}
+	cfg.RelayHooks.AfterIdleDelete = func(threadID string) {
+		if threadID == oldThreadID {
+			close(afterIdleDelete)
+		}
+	}
+	web := NewWebServer(cfg)
+	web.sources.Add(oldSource)
+	web.sources.Add(newSource)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	readErr := make(chan error, 1)
+	go func() {
+		_, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex-a:" + oldThreadID, Subscribe: true, ReplaceSubscription: true})
+		readErr <- err
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	oldNotifications := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: oldNotifications}
+	select {
+	case err := <-readErr:
+		if err != nil {
+			t.Fatalf("old ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for old ThreadRead")
+	}
+	close(oldNotifications)
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	results <- relaySubscribeResult{err: errors.New("old recovery failed")}
+	wait := retryClock.nextWait(t)
+
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex-b:th_active_replacement", Subscribe: true, ReplaceSubscription: true}); err != nil {
+		t.Fatalf("replacement ThreadRead: %v", err)
+	}
+	expectRelaySubscription(t, newSource.subscribed)
+	select {
+	case <-idleExit:
+	case <-time.After(time.Second):
+		t.Fatal("replaced relay did not reach zero-subscriber idle retirement")
+	}
+	select {
+	case <-afterIdleDelete:
+	case <-time.After(time.Second):
+		t.Fatal("replaced relay handle was not removed")
+	}
+	select {
+	case <-wait.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("replaced relay recovery wait was not canceled")
+	}
+	select {
+	case <-subscribeCalls:
+		t.Fatal("replaced relay subscribed again after idle retirement")
+	default:
+	}
+
+	newSource.notifications <- relayDeltaNotification(t, "th_active_replacement", "active replacement")
+	expectRelayDelta(t, client.Notifications(), "active replacement")
+}
+
+func TestHubRelayCanceledRecoveryDoesNotSubscribeAgain(t *testing.T) {
+	const threadID = "th_stop_no_resubscribe"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	source := &scriptedRelaySource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	_, err := subscribeRelayRecovery(ctx, source, appwire.ThreadReadParams{Ref: "codex:" + threadID})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("recovery subscribe error=%v, want context canceled", err)
+	}
+	select {
+	case <-subscribeCalls:
+		t.Fatal("canceled relay supervisor subscribed again")
+	default:
+	}
+}
+
+func TestHubRelayStopDuringInitializationCancelsSharedHandleAndAllowsFreshStart(t *testing.T) {
+	const threadID = "th_stop_initializing"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	source := &scriptedRelaySource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	placeholderPublished := make(chan struct{})
+	releaseInitializer := make(chan struct{})
+	var placeholderOnce sync.Once
+	cfg := hubcore.WebConfig{}
+	cfg.RelayHooks.RegisterSubscription = func(context.Context, string, bool) bool { return true }
+	cfg.RelayHooks.AfterPlaceholder = func(gotThreadID string) {
+		if gotThreadID == threadID {
+			placeholderOnce.Do(func() { close(placeholderPublished) })
+			<-releaseInitializer
+		}
+	}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
+	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+
+	startResults := make(chan error, 2)
+	go func() {
+		startResults <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
+	}()
+	select {
+	case <-placeholderPublished:
+	case <-time.After(time.Second):
+		t.Fatal("initial relay placeholder was not published")
+	}
+	waiterJoined := make(chan struct{}, 1)
+	previousObserveWait := observeHubRelayWait
+	observeHubRelayWait = func() { waiterJoined <- struct{}{} }
+	defer func() { observeHubRelayWait = previousObserveWait }()
+	go func() {
+		startResults <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
+	}()
+	select {
+	case <-waiterJoined:
+	case <-time.After(time.Second):
+		t.Fatal("concurrent initializer did not join shared relay handle")
+	}
+
+	relays.stopRelay("codex:" + threadID)
+	select {
+	case err := <-startResults:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("shared stop error=%v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		close(releaseInitializer)
+		awaitRelaySubscribeCall(t, subscribeCalls)
+		initial := make(chan appwire.Notification)
+		results <- relaySubscribeResult{notifications: initial}
+		t.Fatal("stopRelay did not unblock initialization waiter")
+	}
+	close(releaseInitializer)
+	select {
+	case err := <-startResults:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("initial owner stop error=%v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("initial relay owner did not return shared cancellation")
+	}
+	select {
+	case <-subscribeCalls:
+		t.Fatal("canceled placeholder entered initial SubscribeThread")
+	default:
+	}
+
+	observeHubRelayWait = previousObserveWait
+	freshResult := make(chan error, 1)
+	go func() {
+		freshResult <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	freshNotifications := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: freshNotifications}
+	select {
+	case err := <-freshResult:
+		if err != nil {
+			t.Fatalf("fresh start after initialization stop: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fresh relay did not become ready after initialization stop")
+	}
+}
+
+func TestHubRelayInitiatingRequestCancellationStopsInitialSubscribeAndAllowsFreshStart(t *testing.T) {
+	const threadID = "th_request_canceled_initializing"
+	initialRelease := make(chan struct{})
+	var releaseInitial sync.Once
+	source := &initialRequestCancelRelaySource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		initialStarted:     make(chan struct{}),
+		initialCanceled:    make(chan struct{}),
+		initialRelease:     initialRelease,
+		initialReturned:    make(chan struct{}),
+		freshStarted:       make(chan struct{}),
+		freshNotifications: make(chan appwire.Notification),
+	}
+	registrations := make(chan struct{}, 2)
+	supervisors := make(chan struct{}, 2)
+	cfg := hubcore.WebConfig{}
+	cfg.RelayHooks.RegisterSubscription = func(context.Context, string, bool) bool {
+		registrations <- struct{}{}
+		return true
+	}
+	cfg.RelayHooks.BeforeSupervisor = func(gotThreadID string) {
+		if gotThreadID == threadID {
+			supervisors <- struct{}{}
+		}
+	}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
+	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+	defer releaseInitial.Do(func() { close(initialRelease) })
+	defer relays.stopRelay("codex:" + threadID)
+
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	startResults := make(chan error, 2)
+	go func() {
+		startResults <- relays.startRelay(requestCtx, source, appwire.ThreadReadParams{}, source.thread)
+	}()
+	select {
+	case <-source.initialStarted:
+	case <-time.After(time.Second):
+		t.Fatal("initial SubscribeThread did not start")
+	}
+
+	waiterJoined := make(chan struct{}, 1)
+	previousObserveWait := observeHubRelayWait
+	observeHubRelayWait = func() { waiterJoined <- struct{}{} }
+	defer func() { observeHubRelayWait = previousObserveWait }()
+	go func() {
+		startResults <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
+	}()
+	select {
+	case <-waiterJoined:
+	case <-time.After(time.Second):
+		t.Fatal("concurrent requester did not join the initializing relay")
+	}
+
+	cancelRequest()
+	select {
+	case <-source.initialCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("initiating request cancellation did not cancel initial SubscribeThread")
+	}
+	select {
+	case err := <-startResults:
+		t.Fatalf("relay returned before canceled initial SubscribeThread joined: %v", err)
+	default:
+	}
+	select {
+	case <-registrations:
+		t.Fatal("canceled initializer registered a downstream subscription")
+	default:
+	}
+	select {
+	case <-supervisors:
+		t.Fatal("canceled initializer launched a supervisor")
+	default:
+	}
+
+	observeHubRelayWait = previousObserveWait
+	freshResult := make(chan error, 1)
+	go func() {
+		freshResult <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
+	}()
+	select {
+	case <-source.freshStarted:
+	case <-time.After(time.Second):
+		t.Fatal("fresh replacement did not start after requester-canceled initialization")
+	}
+	select {
+	case <-registrations:
+	case <-time.After(time.Second):
+		t.Fatal("fresh replacement did not register downstream")
+	}
+	select {
+	case <-supervisors:
+	case <-time.After(time.Second):
+		t.Fatal("fresh replacement did not launch a supervisor")
+	}
+	select {
+	case err := <-freshResult:
+		if err != nil {
+			t.Fatalf("fresh replacement start: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fresh replacement did not become ready")
+	}
+
+	releaseInitial.Do(func() { close(initialRelease) })
+	select {
+	case <-source.initialReturned:
+	case <-time.After(time.Second):
+		t.Fatal("canceled initial SubscribeThread did not return")
+	}
+	for range 2 {
+		select {
+		case err := <-startResults:
+			if !errors.Is(err, context.Canceled) {
+				t.Fatalf("shared initialization result=%v, want context canceled", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("initializer and waiter did not receive shared cancellation")
+		}
+	}
+	select {
+	case <-registrations:
+		t.Fatal("canceled initializer registered downstream after SubscribeThread returned")
+	default:
+	}
+	select {
+	case <-supervisors:
+		t.Fatal("canceled initializer launched a supervisor after SubscribeThread returned")
+	default:
+	}
+}
+
+func TestHubRelaySurvivesInitiatingRequestCancellationAfterAttachment(t *testing.T) {
+	const threadID = "th_request_canceled_established"
+	notifications := make(chan appwire.Notification)
+	source := &relayBroadcastSource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: notifications,
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	cfg := hubcore.WebConfig{}
+	cfg.RelayHooks.RegisterSubscription = func(context.Context, string, bool) bool { return true }
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
+	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+	defer relays.stopRelay("codex:" + threadID)
+
+	requestCtx, cancelRequest := context.WithCancel(context.Background())
+	if err := relays.startRelay(requestCtx, source, appwire.ThreadReadParams{}, source.thread); err != nil {
+		t.Fatalf("start relay: %v", err)
+	}
+	expectRelaySubscription(t, source.subscribed)
+	cancelRequest()
+	select {
+	case <-source.canceled:
+		t.Fatal("established relay was canceled with its initiating request")
+	default:
+	}
+
+	if err := relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread); err != nil {
+		t.Fatalf("join established relay after initiating request cancellation: %v", err)
+	}
+	select {
+	case <-source.subscribed:
+		t.Fatal("initiating request cancellation caused a replacement upstream subscription")
+	default:
+	}
+	notifications <- relayDeltaNotification(t, threadID, "survived request cancellation")
+}
+
+func TestHubRelayStoppedInitializerRejectsSuccessfulSubscribeAndLeavesReplacement(t *testing.T) {
+	const threadID = "th_stale_initializer"
+	oldNotifications := make(chan appwire.Notification)
+	freshNotifications := make(chan appwire.Notification)
+	source := &successfulAfterCancelRelaySource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		initialStarted:     make(chan struct{}),
+		initialCanceled:    make(chan struct{}),
+		releaseInitial:     make(chan struct{}),
+		initialReturned:    make(chan struct{}),
+		oldNotifications:   oldNotifications,
+		freshStarted:       make(chan struct{}),
+		freshNotifications: freshNotifications,
+	}
+	registrationCalls := make(chan struct{}, 2)
+	supervisorStarts := make(chan struct{}, 2)
+	cfg := hubcore.WebConfig{}
+	cfg.RelayHooks.RegisterSubscription = func(context.Context, string, bool) bool {
+		registrationCalls <- struct{}{}
+		return true
+	}
+	cfg.RelayHooks.BeforeSupervisor = func(gotThreadID string) {
+		if gotThreadID == threadID {
+			supervisorStarts <- struct{}{}
+		}
+	}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
+	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+
+	oldResult := make(chan error, 1)
+	go func() {
+		oldResult <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
+	}()
+	select {
+	case <-source.initialStarted:
+	case <-time.After(time.Second):
+		t.Fatal("initial SubscribeThread did not start")
+	}
+	relays.stopRelay("codex:" + threadID)
+	select {
+	case <-source.initialCanceled:
+	case <-time.After(time.Second):
+		t.Fatal("stopped initializer source context was not canceled")
+	}
+
+	freshResult := make(chan error, 1)
+	go func() {
+		freshResult <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
+	}()
+	select {
+	case <-source.freshStarted:
+	case <-time.After(time.Second):
+		t.Fatal("fresh replacement SubscribeThread did not start")
+	}
+	select {
+	case <-registrationCalls:
+	case <-time.After(time.Second):
+		t.Fatal("fresh replacement did not register downstream")
+	}
+	select {
+	case err := <-freshResult:
+		if err != nil {
+			t.Fatalf("fresh replacement start: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fresh replacement did not become ready")
+	}
+	select {
+	case <-supervisorStarts:
+	case <-time.After(time.Second):
+		t.Fatal("fresh replacement supervisor did not start")
+	}
+
+	close(source.releaseInitial)
+	select {
+	case <-source.initialReturned:
+	case <-time.After(time.Second):
+		t.Fatal("stale initial SubscribeThread did not return success")
+	}
+	select {
+	case err := <-oldResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("stale initializer error=%v, want shared context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("stale initializer did not return shared cancellation")
+	}
+	select {
+	case <-registrationCalls:
+		t.Fatal("stale initializer registered downstream after losing ownership")
+	default:
+	}
+	select {
+	case <-supervisorStarts:
+		t.Fatal("stale initializer started a supervisor after losing ownership")
+	default:
+	}
+
+	freshNotifications <- relayDeltaNotification(t, threadID, "fresh remains live")
+}
+
+func TestHubRelayStopImmediatelyAfterReadinessAllowsFreshStart(t *testing.T) {
+	const threadID = "th_stop_ready"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	source := &scriptedRelaySource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	readyReached := make(chan struct{})
+	releaseReady := make(chan struct{})
+	blockFirstReady := make(chan struct{}, 1)
+	blockFirstReady <- struct{}{}
+	cfg := hubcore.WebConfig{}
+	cfg.RelayHooks.RegisterSubscription = func(context.Context, string, bool) bool { return true }
+	cfg.RelayHooks.AfterReady = func(gotThreadID string) {
+		if gotThreadID != threadID {
+			return
+		}
+		select {
+		case <-blockFirstReady:
+			close(readyReached)
+			<-releaseReady
+		default:
+		}
+	}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
+	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+	initialResult := make(chan error, 1)
+	go func() {
+		initialResult <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	initialNotifications := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: initialNotifications}
+	select {
+	case <-readyReached:
+	case <-time.After(time.Second):
+		t.Fatal("initial relay did not reach readiness boundary")
+	}
+
+	relays.stopRelay("codex:" + threadID)
+	freshResult := make(chan error, 1)
+	go func() {
+		freshResult <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
+	}()
+	select {
+	case <-subscribeCalls:
+	case err := <-freshResult:
+		close(releaseReady)
+		t.Fatalf("fresh start returned without subscribing after ready stop: %v", err)
+	case <-time.After(time.Second):
+		close(releaseReady)
+		t.Fatal("fresh start did not replace ready stopped relay")
+	}
+	freshNotifications := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: freshNotifications}
+	select {
+	case err := <-freshResult:
+		if err != nil {
+			t.Fatalf("fresh start after ready stop: %v", err)
+		}
+	case <-time.After(time.Second):
+		close(releaseReady)
+		t.Fatal("fresh relay did not become ready after ready stop")
+	}
+	close(releaseReady)
+	select {
+	case err := <-initialResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("initial ready relay stop error=%v, want context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("initial ready start did not return shared cancellation")
+	}
+}
+
+func TestHubRelayStopBeforeLaunchCommitPreventsSupervisorAndAllowsFreshStart(t *testing.T) {
+	const threadID = "th_stop_launch_commit"
+	results := make(chan relaySubscribeResult)
+	subscribeCalls := make(chan struct{})
+	source := &scriptedRelaySource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		results:        results,
+		subscribeCalls: subscribeCalls,
+	}
+	launchBoundary := make(chan struct{})
+	releaseLaunch := make(chan struct{})
+	launches := make(chan struct{}, 2)
+	blockFirst := make(chan struct{}, 1)
+	blockFirst <- struct{}{}
+	cfg := hubcore.WebConfig{}
+	cfg.RelayHooks.RegisterSubscription = func(context.Context, string, bool) bool { return true }
+	cfg.RelayHooks.BeforeLaunchCommit = func(gotThreadID string) {
+		if gotThreadID != threadID {
+			return
+		}
+		select {
+		case <-blockFirst:
+			close(launchBoundary)
+			<-releaseLaunch
+		default:
+		}
+	}
+	cfg.RelayHooks.BeforeSupervisor = func(gotThreadID string) {
+		if gotThreadID == threadID {
+			launches <- struct{}{}
+		}
+	}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
+	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+
+	oldResult := make(chan error, 1)
+	go func() {
+		oldResult <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	oldNotifications := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: oldNotifications}
+	select {
+	case <-launchBoundary:
+	case <-time.After(time.Second):
+		t.Fatal("old initializer did not reach post-validation pre-launch boundary")
+	}
+
+	relays.stopRelay("codex:" + threadID)
+	freshResult := make(chan error, 1)
+	go func() {
+		freshResult <- relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
+	}()
+	awaitRelaySubscribeCall(t, subscribeCalls)
+	freshNotifications := make(chan appwire.Notification)
+	results <- relaySubscribeResult{notifications: freshNotifications}
+	select {
+	case err := <-freshResult:
+		if err != nil {
+			t.Fatalf("fresh relay start: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("fresh relay did not become ready")
+	}
+	select {
+	case <-launches:
+	case <-time.After(time.Second):
+		t.Fatal("fresh relay supervisor did not launch")
+	}
+
+	close(releaseLaunch)
+	select {
+	case err := <-oldResult:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("old initializer error=%v, want shared context canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("old initializer did not return after losing launch commitment")
+	}
+	select {
+	case <-launches:
+		t.Fatal("old initializer launched supervisor after stop won")
+	default:
+	}
+
+	freshNotifications <- relayDeltaNotification(t, threadID, "fresh survives old launch")
+}
+
+func TestHubRelayInitialRegistrationFailureCancelsAndAllowsFreshStart(t *testing.T) {
+	const threadID = "th_registration_initial"
+	source := &relayBroadcastSource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification),
+		subscribed:    make(chan struct{}, 2),
+		canceled:      make(chan struct{}, 2),
+	}
+	registrationCalls := make(chan bool, 2)
+	cfg := hubcore.WebConfig{}
+	cfg.RelayHooks.RegisterSubscription = func(_ context.Context, _ string, replace bool) bool {
+		registrationCalls <- replace
+		return len(registrationCalls) > 1
+	}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
+	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+
+	err := relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("initial registration error=%v, want context canceled", err)
+	}
+	expectRelaySubscription(t, source.subscribed)
+	select {
+	case <-source.canceled:
+	case <-time.After(time.Second):
+		t.Fatal("failed initial registration did not cancel upstream relay")
+	}
+
+	if err := relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread); err != nil {
+		t.Fatalf("fresh relay after initial registration failure: %v", err)
+	}
+	expectRelaySubscription(t, source.subscribed)
+}
+
+func TestHubRelayExistingRegistrationFailureDoesNotReportAttachment(t *testing.T) {
+	const threadID = "th_registration_existing"
+	source := &relayBroadcastSource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	registrationResults := make(chan bool, 2)
+	registrationResults <- true
+	registrationResults <- false
+	cfg := hubcore.WebConfig{}
+	cfg.RelayHooks.RegisterSubscription = func(context.Context, string, bool) bool {
+		return <-registrationResults
+	}
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "relay-test", SourceID: "local"})
+	relays := newHubRelayFunctions(server, cfg, appsource.NewRegistry())
+
+	if err := relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread); err != nil {
+		t.Fatalf("initial startRelay: %v", err)
+	}
+	expectRelaySubscription(t, source.subscribed)
+	if err := relays.startRelay(context.Background(), source, appwire.ThreadReadParams{}, source.thread); !errors.Is(err, context.Canceled) {
+		t.Fatalf("existing registration error=%v, want context canceled", err)
+	}
+}
+
+func TestHubRPCThreadReadReplaceSubscriptionDropsPreviousRelaySubscriber(t *testing.T) {
+	sourceA := &relayBroadcastSource{
+		id: "codex-a",
+		thread: appwire.Thread{
+			ID:        "th_a",
+			SessionID: "th_a",
+			Source:    "codex-a",
+			Evener:    appwire.EvenerThread{Ref: "codex-a:th_a", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	sourceB := &relayBroadcastSource{
+		id: "codex-b",
+		thread: appwire.Thread{
+			ID:        "th_b",
+			SessionID: "th_b",
+			Source:    "codex-b",
+			Evener:    appwire.EvenerThread{Ref: "codex-b:th_b", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(sourceA)
+	web.sources.Add(sourceB)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex-a:th_a", Subscribe: true, ReplaceSubscription: true}); err != nil {
+		t.Fatalf("ThreadRead sourceA: %v", err)
+	}
+	expectRelaySubscription(t, sourceA.subscribed)
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex-b:th_b", Subscribe: true, ReplaceSubscription: true}); err != nil {
+		t.Fatalf("ThreadRead sourceB: %v", err)
+	}
+	expectRelaySubscription(t, sourceB.subscribed)
+
+	sourceA.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: "th_a",
+			Ref:      "codex-a:th_a",
+			TurnID:   "turn_a",
+			ItemID:   "item_a",
+			Delta:    "from source a",
+		}),
+	}
+	// Send sourceB notification immediately after sourceA. If the replaced
+	// subscription leaked, sourceA's notification would arrive first; the
+	// client must receive sourceB's as the first notification.
+	sourceB.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: "th_b",
+			Ref:      "codex-b:th_b",
+			TurnID:   "turn_b",
+			ItemID:   "item_b",
+			Delta:    "from source b",
+		}),
+	}
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyAgentMessageDelta {
+			t.Fatalf("notification method=%q", got.Method)
+		}
+		var params appwire.AgentMessageDeltaParams
+		if err := json.Unmarshal(got.Params, &params); err != nil {
+			t.Fatalf("unmarshal params: %v", err)
+		}
+		if params.Ref != "codex-b:th_b" {
+			t.Fatalf("client received notification for replaced subscription before sentinel: ref=%q", params.Ref)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for active replacement subscription notification")
+	}
+	select {
+	case <-sourceA.canceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("replaced relay subscriber did not retire the old source relay")
+	}
+}
+
+func TestHubRPCThreadReadAdditiveSubscriptionsReceiveBothRelays(t *testing.T) {
+	sourceA := &relayBroadcastSource{
+		id: "codex-a",
+		thread: appwire.Thread{
+			ID:        "th_a",
+			SessionID: "th_a",
+			Source:    "codex-a",
+			Evener:    appwire.EvenerThread{Ref: "codex-a:th_a", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	sourceB := &relayBroadcastSource{
+		id: "codex-b",
+		thread: appwire.Thread{
+			ID:        "th_b",
+			SessionID: "th_b",
+			Source:    "codex-b",
+			Evener:    appwire.EvenerThread{Ref: "codex-b:th_b", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(sourceA)
+	web.sources.Add(sourceB)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex-a:th_a", Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead sourceA: %v", err)
+	}
+	expectRelaySubscription(t, sourceA.subscribed)
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex-b:th_b", Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead sourceB: %v", err)
+	}
+	expectRelaySubscription(t, sourceB.subscribed)
+
+	sourceA.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: "th_a",
+			Ref:      "codex-a:th_a",
+			TurnID:   "turn_a",
+			ItemID:   "item_a",
+			Delta:    "from source a",
+		}),
+	}
+	sourceB.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: "th_b",
+			Ref:      "codex-b:th_b",
+			TurnID:   "turn_b",
+			ItemID:   "item_b",
+			Delta:    "from source b",
+		}),
+	}
+
+	gotRefs := make(map[string]bool, 2)
+	for len(gotRefs) < 2 {
+		select {
+		case got := <-client.Notifications():
+			if got.Method != appwire.NotifyAgentMessageDelta {
+				continue
+			}
+			var params appwire.AgentMessageDeltaParams
+			if err := json.Unmarshal(got.Params, &params); err != nil {
+				t.Fatalf("unmarshal params: %v", err)
+			}
+			gotRefs[params.Ref] = true
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for both relay notifications; got refs %v", gotRefs)
+		}
+	}
+	if !gotRefs["codex-a:th_a"] || !gotRefs["codex-b:th_b"] {
+		t.Fatalf("received refs %v, want both additive subscriptions", gotRefs)
+	}
+}
+
+func TestHubSourceRegistryRoutesRunningSubagentThroughOwnerDaemon(t *testing.T) {
+	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		ref, err := appwire.ParseRef(params.Ref)
+		if err != nil {
+			return appwire.ThreadReadResponse{}, err
+		}
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        ref.ThreadID,
+			SessionID: ref.ThreadID,
+			Source:    "local",
+			Evener:    appwire.EvenerThread{Ref: params.Ref},
+		}}, nil
+	})
+	httpServer := httptest.NewServer(http.HandlerFunc(app.ServeWebSocket))
+	defer httpServer.Close()
+	entry := rendezvous.Entry{
+		PID:       1,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + httpServer.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  "root",
+		SessionID: "root",
+	}
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:              entry,
+		SessionID:          "root",
+		RunningSubagentIDs: []string{"child"},
+	})
+	registry := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
+	source, ok := registry.Source("local")
+	if !ok {
+		t.Fatal("local source missing")
+	}
+	read, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{Ref: "local:child"})
+	if err != nil {
+		t.Fatalf("read running subagent through owner daemon: %v", err)
+	}
+	if read.Thread.ID != "child" || read.Thread.Evener.Ref != "local:child" {
+		t.Fatalf("child read = %+v", read.Thread)
+	}
+	_, err = source.StartTurn(context.Background(), appwire.TurnStartParams{Ref: "local:child", ClientMutationID: "must-not-hit-root", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("child mutation error = %T %v, want session unavailable instead of owner mutation", err, err)
+	}
+	data, _ := wire.Data.(appwire.ErrorData)
+	if data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+		t.Fatalf("child mutation error = %T %v, want session unavailable instead of owner mutation", err, err)
+	}
+}
+
+func TestHubRPCThreadReadRetiresRelayWhenClientDisconnects(t *testing.T) {
+	source := &relayLifecycleSource{
+		thread: appwire.Thread{
+			ID:        "th_1",
+			SessionID: "th_1",
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:th_1", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		canceled: make(chan struct{}),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_1"}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if err := client.Close(); err != nil {
+		t.Fatalf("client close: %v", err)
+	}
+
+	select {
+	case <-source.canceled:
+	case <-time.After(2 * time.Second):
+		t.Fatal("source relay context was not canceled after client disconnect")
+	}
+}
+
+func TestHubRPCThreadReadKeepsRelayWhenSubscriberArrivesDuringIdleRetirement(t *testing.T) {
+	source := &relayBroadcastSource{
+		thread: appwire.Thread{
+			ID:        "th_1",
+			SessionID: "th_1",
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:th_1", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		canceled:      make(chan struct{}, 2),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+
+	idleReached := make(chan struct{})
+	releaseIdle := make(chan struct{})
+	var idleOnce sync.Once
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.IdleExit = func(threadID string) {
+		if threadID != "th_1" {
+			return
+		}
+		idleOnce.Do(func() { close(idleReached) })
+		<-releaseIdle
+	}
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client1 := dialHubRPC(t, srv)
+	if _, err := client1.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize client1: %v", err)
+	}
+	if _, err := client1.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_1"}); err != nil {
+		t.Fatalf("ThreadRead client1: %v", err)
+	}
+	if err := client1.Close(); err != nil {
+		t.Fatalf("client1 close: %v", err)
+	}
+
+	select {
+	case <-idleReached:
+	case <-time.After(2 * time.Second):
+		t.Fatal("relay did not reach idle retirement window")
+	}
+
+	client2 := dialHubRPC(t, srv)
+	defer client2.Close()
+	if _, err := client2.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize client2: %v", err)
+	}
+	if _, err := client2.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_1"}); err != nil {
+		t.Fatalf("ThreadRead client2: %v", err)
+	}
+	close(releaseIdle)
+
+	source.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: "th_1",
+			Ref:      "codex:th_1",
+			TurnID:   "turn_1",
+			ItemID:   "item_1",
+			Delta:    "still live",
+		}),
+	}
+
+	select {
+	case got := <-client2.Notifications():
+		if got.Method != appwire.NotifyAgentMessageDelta {
+			t.Fatalf("method=%q", got.Method)
+		}
+	case <-source.canceled:
+		t.Fatal("relay was canceled despite a new subscriber")
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for notification after idle-race subscriber")
+	}
+}
+
+func TestHubRPCThreadReadSerializesRereadRegistrationAgainstIdleRetirement(t *testing.T) {
+	const threadID = "th_join_idle"
+	source := &relayBroadcastSource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 1),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	reregistrationReached := make(chan struct{})
+	releaseReregistration := make(chan struct{})
+	idleReached := make(chan struct{})
+	var registrationOnce sync.Once
+	var idleOnce sync.Once
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.BeforeExistingRegistration = func(gotThreadID string) {
+		if gotThreadID == threadID {
+			registrationOnce.Do(func() {
+				close(reregistrationReached)
+				<-releaseReregistration
+			})
+		}
+	}
+	cfg.RelayHooks.IdleExit = func(gotThreadID string) {
+		if gotThreadID == threadID {
+			idleOnce.Do(func() { close(idleReached) })
+		}
+	}
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client1 := dialHubRPC(t, srv)
+	if _, err := client1.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize client1: %v", err)
+	}
+	if _, err := client1.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true}); err != nil {
+		t.Fatalf("ThreadRead client1: %v", err)
+	}
+	expectRelaySubscription(t, source.subscribed)
+
+	client2 := dialHubRPC(t, srv)
+	defer client2.Close()
+	if _, err := client2.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize client2: %v", err)
+	}
+	rereadResult := make(chan error, 1)
+	go func() {
+		_, err := client2.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID, Subscribe: true})
+		rereadResult <- err
+	}()
+	select {
+	case <-reregistrationReached:
+	case <-time.After(time.Second):
+		t.Fatal("reread did not reach post-ready pre-registration boundary")
+	}
+	if err := client1.Close(); err != nil {
+		t.Fatalf("client1 close: %v", err)
+	}
+	select {
+	case <-idleReached:
+	case <-time.After(time.Second):
+		t.Fatal("relay did not reach idle retirement while reread registration paused")
+	}
+	close(releaseReregistration)
+	select {
+	case err := <-rereadResult:
+		if err != nil {
+			t.Fatalf("reread ThreadRead: %v", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("reread registration did not complete")
+	}
+
+	source.notifications <- relayDeltaNotification(t, threadID, "joined before idle delete")
+	expectRelayDelta(t, client2.Notifications(), "joined before idle delete")
+	select {
+	case <-source.canceled:
+		t.Fatal("idle retirement canceled relay after serialized reread registration")
+	default:
+	}
+}
+
+func TestHubRPCThreadReadKeepsReplacementRelayTrackedAfterIdleCleanup(t *testing.T) {
+	const threadID = "th_cleanup"
+	source := &relayBroadcastSource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 4),
+		canceled:      make(chan struct{}, 2),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+
+	afterIdleDelete := make(chan struct{})
+	releaseCleanup := make(chan struct{})
+	cleanupDone := make(chan struct{})
+	var idleOnce sync.Once
+	var cleanupOnce sync.Once
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	cfg.RelayHooks.AfterIdleDelete = func(threadID string) {
+		if threadID != "th_cleanup" {
+			return
+		}
+		idleOnce.Do(func() { close(afterIdleDelete) })
+		<-releaseCleanup
+		cleanupOnce.Do(func() { close(cleanupDone) })
+	}
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client1 := dialHubRPC(t, srv)
+	if _, err := client1.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize client1: %v", err)
+	}
+	if _, err := client1.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID}); err != nil {
+		t.Fatalf("ThreadRead client1: %v", err)
+	}
+	expectRelaySubscription(t, source.subscribed)
+	if err := client1.Close(); err != nil {
+		t.Fatalf("client1 close: %v", err)
+	}
+
+	select {
+	case <-afterIdleDelete:
+	case <-time.After(2 * time.Second):
+		t.Fatal("relay did not reach post-delete cleanup window")
+	}
+
+	client2 := dialHubRPC(t, srv)
+	defer client2.Close()
+	if _, err := client2.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize client2: %v", err)
+	}
+	if _, err := client2.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID}); err != nil {
+		t.Fatalf("ThreadRead client2: %v", err)
+	}
+	expectRelaySubscription(t, source.subscribed)
+	close(releaseCleanup)
+	select {
+	case <-cleanupDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("idle cleanup goroutine did not complete")
+	}
+	drainRelaySubscriptions(source.subscribed)
+
+	if _, err := client2.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID}); err != nil {
+		t.Fatalf("ThreadRead client2 again: %v", err)
+	}
+	select {
+	case <-source.subscribed:
+		t.Fatal("second read started a duplicate replacement relay")
+	default:
+	}
+}
+
+func TestHubRPCThreadReadPropagatesInFlightRelaySubscribeFailure(t *testing.T) {
+	thread := appwire.Thread{
+		ID:        "th_subscribe_fail",
+		SessionID: "th_subscribe_fail",
+		Source:    "codex",
+		Evener:    appwire.EvenerThread{Ref: "codex:th_subscribe_fail", Capabilities: appwire.ThreadCapabilities{Send: true}},
+	}
+	source := &blockingFailingRelaySource{
+		thread:  thread,
+		started: make(chan struct{}),
+		release: make(chan struct{}),
+	}
+	waiterJoined := make(chan struct{}, 1)
+	previousObserveWait := observeHubRelayWait
+	observeHubRelayWait = func() { waiterJoined <- struct{}{} }
+	t.Cleanup(func() { observeHubRelayWait = previousObserveWait })
+	srv := httptest.NewUnstartedServer(nil)
+	cfg := hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")}
+	web := NewWebServer(cfg)
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client1 := dialHubRPC(t, srv)
+	defer client1.Close()
+	if _, err := client1.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize client1: %v", err)
+	}
+	client2 := dialHubRPC(t, srv)
+	defer client2.Close()
+	if _, err := client2.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize client2: %v", err)
+	}
+
+	readErrs := make(chan error, 2)
+	go func() {
+		_, err := client1.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_subscribe_fail"})
+		readErrs <- err
+	}()
+	select {
+	case <-source.started:
+	case <-time.After(time.Second):
+		t.Fatal("first relay subscribe did not start")
+	}
+
+	go func() {
+		_, err := client2.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_subscribe_fail"})
+		readErrs <- err
+	}()
+	select {
+	case <-waiterJoined:
+	case <-time.After(time.Second):
+		t.Fatal("concurrent read did not join in-flight relay subscribe")
+	}
+	close(source.release)
+
+	for range 2 {
+		select {
+		case err := <-readErrs:
+			if err == nil || !strings.Contains(err.Error(), "subscribe failed") {
+				t.Fatalf("read error=%v, want subscribe failed", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("timed out waiting for relay subscribe error")
+		}
+	}
+	if calls := source.subscribeCalls(); calls != 1 {
+		t.Fatalf("subscribe calls=%d, want 1", calls)
+	}
+}
+
+func TestHubRPCThreadReadSubscribeFailureDoesNotLeaveClientSubscribed(t *testing.T) {
+	threadID := "th_retry_subscribe"
+	source := &failFirstRelaySource{
+		thread: appwire.Thread{
+			ID:        threadID,
+			SessionID: threadID,
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:" + threadID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		canceled:      make(chan struct{}, 2),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	failedClient := dialHubRPC(t, srv)
+	defer failedClient.Close()
+	if _, err := failedClient.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize failedClient: %v", err)
+	}
+	if _, err := failedClient.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID}); err == nil || !strings.Contains(err.Error(), "subscribe failed once") {
+		t.Fatalf("ThreadRead failedClient error=%v, want subscribe failed once", err)
+	}
+
+	okClient := dialHubRPC(t, srv)
+	defer okClient.Close()
+	if _, err := okClient.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize okClient: %v", err)
+	}
+	if _, err := okClient.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:" + threadID}); err != nil {
+		t.Fatalf("ThreadRead okClient: %v", err)
+	}
+	source.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: threadID,
+			Ref:      "codex:" + threadID,
+			TurnID:   "turn_1",
+			ItemID:   "item_1",
+			Delta:    "after retry",
+		}),
+	}
+	select {
+	case got := <-okClient.Notifications():
+		if got.Method != appwire.NotifyAgentMessageDelta {
+			t.Fatalf("okClient method=%q", got.Method)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for retry relay notification")
+	}
+	// Send a sentinel and wait for okClient to receive it. After okClient
+	// receives the sentinel the relay pipeline has fully flushed: any
+	// notification that failedClient (if wrongly subscribed) would have
+	// received from the first broadcast is already in its buffer, because
+	// Broadcast enqueues to all subscribers synchronously before moving on.
+	source.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: threadID,
+			Ref:      "codex:" + threadID,
+			TurnID:   "turn_sentinel",
+			ItemID:   "item_sentinel",
+			Delta:    "sentinel",
+		}),
+	}
+	select {
+	case <-okClient.Notifications():
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for sentinel notification")
+	}
+	select {
+	case got := <-failedClient.Notifications():
+		t.Fatalf("failed client received stale relay notification: %+v", got)
+	default:
+	}
+}
+
+func TestHubThreadListKeepsLocalPastWhenNonLocalLiveIDCollides(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-local-0000000000")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	sources := appsource.NewRegistry()
+	sources.Add(&relayBroadcastSource{
+		thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Source:    "codex",
+			Preview:   "live codex thread",
+			Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+			Evener:    appwire.EvenerThread{Ref: "codex:" + sessionID},
+		},
+	})
+
+	resp, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: past}, sources, appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("hubThreadList: %v", err)
+	}
+	var foundLocalPast, foundCodexLive bool
+	for _, thread := range resp.Data {
+		switch thread.Evener.Ref {
+		case "local:" + sessionID:
+			foundLocalPast = true
+		case "codex:" + sessionID:
+			foundCodexLive = true
+		}
+	}
+	if !foundLocalPast || !foundCodexLive {
+		t.Fatalf("found local past=%v codex live=%v threads=%+v", foundLocalPast, foundCodexLive, resp.Data)
+	}
+}
+
+func TestHubThreadListMatchesCodexNativeStatusFilters(t *testing.T) {
+	sources := appsource.NewRegistry()
+	sources.Add(&listThreadSource{id: "codex", thread: appwire.Thread{
+		ID:        "th_codex",
+		SessionID: "th_codex",
+		Source:    "codex",
+		Status:    appwire.ThreadStatus{Type: appwire.ThreadStatusActive},
+		Evener:    appwire.EvenerThread{Ref: "codex:th_codex"},
+	}})
+
+	resp, err := hubThreadList(context.Background(), hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, sources, appwire.ThreadListParams{
+		Statuses: []string{"active"},
+	})
+	if err != nil {
+		t.Fatalf("hubThreadList: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Evener.Ref != "codex:th_codex" {
+		t.Fatalf("threads=%+v", resp.Data)
+	}
+}
+
+type relayLifecycleSource struct {
+	thread   appwire.Thread
+	canceled chan struct{}
+}
+
+type pastFallbackRelaySource struct {
+	relayLifecycleSource
+	readErr error
+}
+
+func (s *pastFallbackRelaySource) ID() string {
+	return "local"
+}
+
+func (s *pastFallbackRelaySource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	return appwire.ThreadReadResponse{}, s.readErr
+}
+
+type relaySubscribeResult struct {
+	notifications <-chan appwire.Notification
+	err           error
+}
+
+type scriptedRelaySource struct {
+	relayLifecycleSource
+	id             string
+	results        <-chan relaySubscribeResult
+	subscribeCalls chan<- struct{}
+}
+
+type blockingRecoveryRelaySource struct {
+	relayLifecycleSource
+	mu                 sync.Mutex
+	calls              int
+	established        <-chan appwire.Notification
+	recoveryStarted    chan struct{}
+	recoveryCanceled   chan struct{}
+	recoveryReturned   chan struct{}
+	replacementStarted chan struct{}
+	replacementResults <-chan relaySubscribeResult
+}
+
+type successfulAfterCancelRelaySource struct {
+	relayLifecycleSource
+	mu                 sync.Mutex
+	calls              int
+	initialStarted     chan struct{}
+	initialCanceled    chan struct{}
+	releaseInitial     chan struct{}
+	initialReturned    chan struct{}
+	oldNotifications   <-chan appwire.Notification
+	freshStarted       chan struct{}
+	freshNotifications <-chan appwire.Notification
+}
+
+type initialRequestCancelRelaySource struct {
+	relayLifecycleSource
+	mu                 sync.Mutex
+	calls              int
+	initialStarted     chan struct{}
+	initialCanceled    chan struct{}
+	initialRelease     chan struct{}
+	initialReturned    chan struct{}
+	freshStarted       chan struct{}
+	freshNotifications <-chan appwire.Notification
+}
+
+func (s *initialRequestCancelRelaySource) SubscribeThread(ctx context.Context, _ appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	s.mu.Unlock()
+	if call == 1 {
+		close(s.initialStarted)
+		<-ctx.Done()
+		close(s.initialCanceled)
+		<-s.initialRelease
+		close(s.initialReturned)
+		return nil, ctx.Err()
+	}
+	close(s.freshStarted)
+	return s.freshNotifications, nil
+}
+
+func (s *successfulAfterCancelRelaySource) SubscribeThread(ctx context.Context, _ appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	s.mu.Unlock()
+	if call == 1 {
+		close(s.initialStarted)
+		go func() {
+			<-ctx.Done()
+			close(s.initialCanceled)
+		}()
+		<-s.releaseInitial
+		close(s.initialReturned)
+		return s.oldNotifications, nil
+	}
+	close(s.freshStarted)
+	return s.freshNotifications, nil
+}
+
+func (s *blockingRecoveryRelaySource) SubscribeThread(ctx context.Context, _ appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
+	s.mu.Lock()
+	s.calls++
+	call := s.calls
+	s.mu.Unlock()
+	switch call {
+	case 1:
+		return s.established, nil
+	case 2:
+		close(s.recoveryStarted)
+		<-ctx.Done()
+		close(s.recoveryCanceled)
+		close(s.recoveryReturned)
+		return nil, ctx.Err()
+	default:
+		if call == 3 {
+			close(s.replacementStarted)
+		}
+		select {
+		case result := <-s.replacementResults:
+			return result.notifications, result.err
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+}
+
+func (s *scriptedRelaySource) ID() string {
+	if s.id != "" {
+		return s.id
+	}
+	return s.relayLifecycleSource.ID()
+}
+
+type relayRetryWait struct {
+	delay    time.Duration
+	release  chan struct{}
+	canceled chan struct{}
+}
+
+type scriptedRelayRetryClock struct {
+	waits chan relayRetryWait
+}
+
+func newScriptedRelayRetryClock() *scriptedRelayRetryClock {
+	return &scriptedRelayRetryClock{waits: make(chan relayRetryWait)}
+}
+
+func (c *scriptedRelayRetryClock) Wait(ctx context.Context, delay time.Duration) error {
+	wait := relayRetryWait{delay: delay, release: make(chan struct{}), canceled: make(chan struct{})}
+	select {
+	case c.waits <- wait:
+	case <-ctx.Done():
+		return ctx.Err()
+	}
+	select {
+	case <-wait.release:
+		return nil
+	case <-ctx.Done():
+		close(wait.canceled)
+		return ctx.Err()
+	}
+}
+
+func (c *scriptedRelayRetryClock) nextWait(t *testing.T) relayRetryWait {
+	t.Helper()
+	select {
+	case wait := <-c.waits:
+		return wait
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for relay retry delay")
+		return relayRetryWait{}
+	}
+}
+
+func (c *scriptedRelayRetryClock) releaseWait(t *testing.T, want time.Duration) {
+	t.Helper()
+	wait := c.nextWait(t)
+	if wait.delay != want {
+		t.Fatalf("relay retry delay=%s, want %s", wait.delay, want)
+	}
+	close(wait.release)
+}
+
+func (c *scriptedRelayRetryClock) expectWait(t *testing.T, want time.Duration) {
+	t.Helper()
+	wait := c.nextWait(t)
+	if wait.delay != want {
+		t.Fatalf("relay retry delay=%s, want %s", wait.delay, want)
+	}
+}
+
+func (s *scriptedRelaySource) SubscribeThread(ctx context.Context, _ appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
+	select {
+	case s.subscribeCalls <- struct{}{}:
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+	select {
+	case result := <-s.results:
+		return result.notifications, result.err
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func awaitRelaySubscribeCall(t *testing.T, calls <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-calls:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for relay subscribe call")
+	}
+}
+
+func relayDeltaNotification(t *testing.T, threadID, delta string) appwire.Notification {
+	t.Helper()
+	return appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: threadID,
+			Ref:      "codex:" + threadID,
+			TurnID:   "turn_1",
+			ItemID:   "item_1",
+			Delta:    delta,
+		}),
+	}
+}
+
+func expectRelayResync(t *testing.T, notifications <-chan appwire.Notification, wantThreadID, wantRef string) {
+	t.Helper()
+	select {
+	case got := <-notifications:
+		if got.Method != appwire.NotifyEvenerThreadResync {
+			t.Fatalf("recovery notification method=%q, want %q", got.Method, appwire.NotifyEvenerThreadResync)
+		}
+		var params appwire.ThreadResyncParams
+		if err := json.Unmarshal(got.Params, &params); err != nil {
+			t.Fatalf("unmarshal thread resync: %v", err)
+		}
+		want := appwire.ThreadResyncParams{ThreadID: wantThreadID, Ref: wantRef}
+		if params != want {
+			t.Fatalf("thread resync params=%+v, want %+v", params, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for thread resync after relay recovery")
+	}
+}
+
+func expectRelayDelta(t *testing.T, notifications <-chan appwire.Notification, want string) {
+	t.Helper()
+	select {
+	case got := <-notifications:
+		var params appwire.AgentMessageDeltaParams
+		if err := json.Unmarshal(got.Params, &params); err != nil {
+			t.Fatalf("unmarshal relay notification: %v", err)
+		}
+		if params.Delta != want {
+			t.Fatalf("relay delta=%q, want %q", params.Delta, want)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for relay delta %q", want)
+	}
+}
+
+type listThreadSource struct {
+	relayLifecycleSource
+	id      string
+	thread  appwire.Thread
+	listErr error
+}
+
+func (s *listThreadSource) ID() string { return s.id }
+
+func (s *listThreadSource) ListTurns(context.Context, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	return appwire.ThreadTurnsListResponse{}, nil
+}
+
+func (s *listThreadSource) ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	if s.listErr != nil {
+		return appwire.ThreadListResponse{}, s.listErr
+	}
+	return appwire.ThreadListResponse{Data: []appwire.Thread{s.thread}}, nil
+}
+
+func (s *relayLifecycleSource) ID() string { return "codex" }
+
+func (s *relayLifecycleSource) ListTurns(context.Context, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	return appwire.ThreadTurnsListResponse{}, nil
+}
+
+func (s *relayLifecycleSource) ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	return appwire.ThreadListResponse{Data: []appwire.Thread{s.thread}}, nil
+}
+
+func (s *relayLifecycleSource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	return appwire.ThreadReadResponse{Thread: s.thread}, nil
+}
+
+func (s *relayLifecycleSource) StartThread(context.Context, appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+	return appwire.ThreadStartResponse{}, appwire.Unavailable("relay lifecycle source does not start threads")
+}
+
+func (s *relayLifecycleSource) ResumeThread(context.Context, appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+	return appwire.ThreadResumeResponse{}, appwire.Unavailable("relay lifecycle source does not resume threads")
+}
+
+func (s *relayLifecycleSource) ForkThread(context.Context, appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
+	return appwire.ThreadForkResponse{}, appwire.Unavailable("relay lifecycle source does not fork threads")
+}
+
+func (s *relayLifecycleSource) StartTurn(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	return appwire.TurnStartResponse{}, appwire.Unavailable("relay lifecycle source does not start turns")
+}
+
+func (s *relayLifecycleSource) SteerTurn(context.Context, appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+	return appwire.TurnSteerResponse{}, appwire.Unavailable("relay lifecycle source does not steer turns")
+}
+
+func (s *relayLifecycleSource) ResolveSandboxEscalation(context.Context, appwire.SandboxEscalationResolveParams) error {
+	return appwire.Unavailable("relay lifecycle source does not resolve escalations")
+}
+
+func (s *relayLifecycleSource) InterruptTurn(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+	return appwire.TurnInterruptResponse{}, appwire.Unavailable("relay lifecycle source does not interrupt turns")
+}
+
+func (s *relayLifecycleSource) QueueTurn(context.Context, appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+	return appwire.TurnQueueResponse{}, appwire.Unavailable("relay lifecycle source does not queue turns")
+}
+
+func (s *relayLifecycleSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+	return appwire.TurnDrainAsSteerResponse{}, appwire.Unavailable("relay lifecycle source does not drain as steer")
+}
+
+func (s *relayLifecycleSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+	return appwire.TurnPromoteQueuedAsSteerResponse{}, appwire.Unavailable("relay lifecycle source does not promote queued messages")
+}
+
+func (s *relayLifecycleSource) CancelQueued(context.Context, appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
+	return appwire.TurnCancelQueuedResponse{}, appwire.Unavailable("relay lifecycle source does not cancel queued messages")
+}
+
+func (s *relayLifecycleSource) CompactThread(context.Context, appwire.ThreadCompactStartParams) error {
+	return appwire.Unavailable("relay lifecycle source does not compact threads")
+}
+
+func (s *relayLifecycleSource) ShutdownThread(context.Context, appwire.ThreadShutdownParams) error {
+	return appwire.Unavailable("relay lifecycle source does not shut down threads")
+}
+
+func (s *relayLifecycleSource) SetThreadModel(context.Context, appwire.ThreadModelSetParams) error {
+	return appwire.Unavailable("relay lifecycle source does not set models")
+}
+
+func (s *relayLifecycleSource) SetThreadName(context.Context, appwire.ThreadNameSetParams) error {
+	return appwire.Unavailable("relay lifecycle source does not set names")
+}
+
+func (s *relayLifecycleSource) SetThreadReasoningEffort(context.Context, appwire.ThreadReasoningEffortSetParams) error {
+	return appwire.Unavailable("relay lifecycle source does not set reasoning effort")
+}
+
+func (s *relayLifecycleSource) GoalSet(context.Context, appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
+	return appwire.GoalSetResponse{}, appwire.Unavailable("relay lifecycle source does not set goals")
+}
+
+func (s *relayLifecycleSource) ClearThread(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
+	return appwire.ThreadClearResponse{}, appwire.Unavailable("relay lifecycle source does not clear threads")
+}
+
+func (s *relayLifecycleSource) ListModels(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
+	return appwire.ModelListResponse{}, appwire.Unavailable("relay lifecycle source does not list models")
+}
+
+func (s *relayLifecycleSource) ListTasks(context.Context, appwire.TaskListParams) (appwire.TaskListResponse, error) {
+	return appwire.TaskListResponse{}, appwire.Unavailable("relay lifecycle source does not list tasks")
+}
+
+func (s *relayLifecycleSource) ListJobs(context.Context, appwire.JobsListParams) (appwire.JobsListResponse, error) {
+	return appwire.JobsListResponse{}, appwire.Unavailable("relay lifecycle source does not list jobs")
+}
+
+func (s *relayLifecycleSource) JobOutput(context.Context, appwire.JobsOutputParams) (appwire.JobsOutputResponse, error) {
+	return appwire.JobsOutputResponse{}, appwire.Unavailable("relay lifecycle source does not read job output")
+}
+
+func (s *relayLifecycleSource) SubscribeThread(ctx context.Context, _ appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
+	out := make(chan appwire.Notification)
+	go func() {
+		defer close(out)
+		<-ctx.Done()
+		close(s.canceled)
+	}()
+	return out, nil
+}
+
+type relayBroadcastSource struct {
+	relayLifecycleSource
+	id            string
+	thread        appwire.Thread
+	notifications chan appwire.Notification
+	subscribed    chan struct{}
+	canceled      chan struct{}
+}
+
+type readRelayDisabledSource struct {
+	relayBroadcastSource
+}
+
+func (s *readRelayDisabledSource) RelayOnThreadRead() bool {
+	return false
+}
+
+type blockingFailingRelaySource struct {
+	relayLifecycleSource
+	mu      sync.Mutex
+	calls   int
+	once    sync.Once
+	started chan struct{}
+	release chan struct{}
+}
+
+type failFirstRelaySource struct {
+	relayBroadcastSource
+	mu    sync.Mutex
+	calls int
+}
+
+type resumeAfterSubscribeUnavailableSource struct {
+	relayBroadcastSource
+	mu          sync.Mutex
+	calls       int
+	startPrompt string
+}
+
+func inputTextForTest(input []appwire.InputItem) string {
+	for _, item := range input {
+		if item.Text != "" {
+			return item.Text
+		}
+	}
+	return ""
+}
+
+func (s *resumeAfterSubscribeUnavailableSource) ID() string { return "local" }
+
+func (s *resumeAfterSubscribeUnavailableSource) SubscribeThread(ctx context.Context, params appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
+	s.mu.Lock()
+	s.calls++
+	calls := s.calls
+	s.mu.Unlock()
+	if calls == 1 {
+		return nil, appwire.SessionUnavailable("stale relay subscription")
+	}
+	return s.relayBroadcastSource.SubscribeThread(ctx, params)
+}
+
+func (s *resumeAfterSubscribeUnavailableSource) StartTurn(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	s.mu.Lock()
+	s.startPrompt = inputTextForTest(params.Input)
+	s.mu.Unlock()
+	return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_resumed"}}, nil
+}
+
+func (s *resumeAfterSubscribeUnavailableSource) subscribeCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func (s *resumeAfterSubscribeUnavailableSource) lastStartPrompt() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.startPrompt
+}
+
+func (s *failFirstRelaySource) SubscribeThread(ctx context.Context, params appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
+	s.mu.Lock()
+	s.calls++
+	calls := s.calls
+	s.mu.Unlock()
+	if calls == 1 {
+		return nil, errors.New("subscribe failed once")
+	}
+	return s.relayBroadcastSource.SubscribeThread(ctx, params)
+}
+
+func (s *blockingFailingRelaySource) SubscribeThread(ctx context.Context, _ appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
+	s.mu.Lock()
+	s.calls++
+	s.mu.Unlock()
+	s.once.Do(func() { close(s.started) })
+	select {
+	case <-s.release:
+		return nil, errors.New("subscribe failed")
+	case <-ctx.Done():
+		return nil, ctx.Err()
+	}
+}
+
+func (s *blockingFailingRelaySource) subscribeCalls() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.calls
+}
+
+func (s *relayBroadcastSource) ID() string {
+	if s.id != "" {
+		return s.id
+	}
+	return "codex"
+}
+
+func (s *relayBroadcastSource) ListTurns(context.Context, appwire.ThreadTurnsListParams) (appwire.ThreadTurnsListResponse, error) {
+	return appwire.ThreadTurnsListResponse{}, nil
+}
+
+func (s *relayBroadcastSource) ListThreads(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+	return appwire.ThreadListResponse{Data: []appwire.Thread{s.thread}}, nil
+}
+
+func (s *relayBroadcastSource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	return appwire.ThreadReadResponse{Thread: s.thread}, nil
+}
+
+func (s *relayBroadcastSource) SubscribeThread(ctx context.Context, _ appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
+	out := make(chan appwire.Notification, 4)
+	if s.subscribed != nil {
+		s.subscribed <- struct{}{}
+	}
+	go func() {
+		defer close(out)
+		for {
+			select {
+			case <-ctx.Done():
+				select {
+				case s.canceled <- struct{}{}:
+				default:
+				}
+				return
+			case notification := <-s.notifications:
+				select {
+				case out <- notification:
+				case <-ctx.Done():
+					select {
+					case s.canceled <- struct{}{}:
+					default:
+					}
+					return
+				}
+			}
+		}
+	}()
+	return out, nil
+}
+
+type startResumeRelaySource struct {
+	relayBroadcastSource
+}
+
+func (s *startResumeRelaySource) StartThread(context.Context, appwire.ThreadStartParams) (appwire.ThreadStartResponse, error) {
+	return appwire.ThreadStartResponse{
+		Thread: s.thread,
+		Turn:   appwire.Turn{ID: "turn_start"},
+	}, nil
+}
+
+func (s *startResumeRelaySource) ResumeThread(context.Context, appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+	return appwire.ThreadResumeResponse{Thread: s.thread}, nil
+}
+
+type startRelayFailureSource struct {
+	startResumeRelaySource
+}
+
+func (s *startRelayFailureSource) SubscribeThread(context.Context, appwire.ThreadReadParams) (<-chan appwire.Notification, error) {
+	return nil, errors.New("subscribe failed after start")
+}
+
+type forkingRelaySource struct {
+	relayBroadcastSource
+	forkCalled bool
+	forkParams appwire.ThreadForkParams
+	response   appwire.ThreadForkResponse
+}
+
+func (s *forkingRelaySource) ForkThread(_ context.Context, params appwire.ThreadForkParams) (appwire.ThreadForkResponse, error) {
+	s.forkCalled = true
+	s.forkParams = params
+	return s.response, nil
+}
+
+func expectRelaySubscription(t *testing.T, subscribed <-chan struct{}) {
+	t.Helper()
+	select {
+	case <-subscribed:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for relay subscription")
+	}
+}
+
+func drainRelaySubscriptions(subscribed <-chan struct{}) {
+	for {
+		select {
+		case <-subscribed:
+		default:
+			return
+		}
+	}
+}
+
+func TestHubRPCThreadActionsRouteToDaemon(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	compactCalled := false
+	shutdownCalled := false
+	modelCalled := ""
+	goalObjective := ""
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		if params.Ref != "local:th_1" {
+			t.Fatalf("read ref=%q", params.Ref)
+		}
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        "th_1",
+			SessionID: "sess_1",
+			Evener: appwire.EvenerThread{
+				Ref: "local:th_1",
+				Capabilities: appwire.ThreadCapabilities{
+					Send:         true,
+					Steer:        true,
+					Interrupt:    true,
+					Compact:      true,
+					Clear:        true,
+					ForkFromTurn: true,
+					Shutdown:     true,
+					ChangeModel:  true,
+					Goal:         true,
+				},
+			},
+		}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadCompactStart, func(_ context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
+		if params.Ref != "local:th_1" {
+			t.Fatalf("compact ref=%q", params.Ref)
+		}
+		compactCalled = true
+		return appwire.EmptyResponse{}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+		if params.Ref != "local:th_1" {
+			t.Fatalf("model ref=%q", params.Ref)
+		}
+		modelCalled = params.ModelProvider + "/" + params.Model
+		return appwire.EmptyResponse{}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadShutdown, func(_ context.Context, params appwire.ThreadShutdownParams) (appwire.EmptyResponse, error) {
+		if params.Ref != "local:th_1" {
+			t.Fatalf("shutdown ref=%q", params.Ref)
+		}
+		shutdownCalled = true
+		return appwire.EmptyResponse{}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodGoalSet, func(_ context.Context, params appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
+		if params.Ref != "local:th_1" {
+			t.Fatalf("goal ref=%q", params.Ref)
+		}
+		goalObjective = params.Objective
+		return appwire.GoalSetResponse{Started: true}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       104,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  "th_1",
+		SessionID: "sess_1",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if err := client.ThreadCompactStart(context.Background(), appwire.ThreadCompactStartParams{Ref: "local:th_1"}); err != nil {
+		t.Fatalf("ThreadCompactStart: %v", err)
+	}
+	if !compactCalled {
+		t.Fatal("compact was not routed")
+	}
+	if err := client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
+		Ref:           "local:th_1",
+		ModelProvider: "openai",
+		Model:         "gpt-5",
+	}); err != nil {
+		t.Fatalf("ThreadModelSet: %v", err)
+	}
+	if modelCalled != "openai/gpt-5" {
+		t.Fatalf("modelCalled=%q", modelCalled)
+	}
+	goalResp, err := client.GoalSet(context.Background(), appwire.GoalSetParams{
+		Ref:       "local:th_1",
+		Objective: "improve coverage",
+	})
+	if err != nil {
+		t.Fatalf("GoalSet: %v", err)
+	}
+	if goalObjective != "improve coverage" {
+		t.Fatalf("goalObjective=%q", goalObjective)
+	}
+	if !goalResp.Started {
+		t.Fatal("GoalSet response Started not propagated")
+	}
+	if err := client.ThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: "local:th_1"}); err != nil {
+		t.Fatalf("ThreadShutdown: %v", err)
+	}
+	if !shutdownCalled {
+		t.Fatal("shutdown was not routed")
+	}
+}
+
+func TestHubRPCTurnMutationsForwardWithoutDynamicCapabilityGates(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        "th_1",
+			SessionID: "sess_1",
+			Evener: appwire.EvenerThread{
+				Ref:          params.Ref,
+				Capabilities: appwire.ThreadCapabilities{},
+			},
+		}}, nil
+	})
+	called := make(map[string]int)
+	receipt := func(method, mutationID string) appwire.MutationReceipt {
+		called[method]++
+		return appwire.MutationReceipt{
+			ClientMutationID: mutationID,
+			Disposition:      appwire.MutationDispositionReplayed,
+			ThreadID:         "th_1",
+			TurnID:           "turn_1",
+			QueueEntryIDs:    []string{"queue_1"},
+			ProjectionState:  appwire.MutationProjectionReflected,
+		}
+	}
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}, Receipt: receipt(appwire.MethodTurnStart, params.ClientMutationID)}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnSteer, func(_ context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+		return appwire.TurnSteerResponse{Receipt: receipt(appwire.MethodTurnSteer, params.ClientMutationID)}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnInterrupt, func(_ context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
+		return appwire.TurnInterruptResponse{Receipt: receipt(appwire.MethodTurnInterrupt, params.ClientMutationID)}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnQueue, func(_ context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
+		if inputTextForTest(params.Input) == "reject" {
+			return appwire.TurnQueueResponse{}, appwire.WireError{
+				Code:    appwire.CodeConflict,
+				Message: "turn changed",
+				Data: appwire.ErrorData{
+					EvenerErrorInfo:  appwire.ErrorConflict,
+					ClientMutationID: params.ClientMutationID,
+					MutationOutcome:  appwire.MutationOutcomeNotAccepted,
+					RetryDisposition: appwire.RetryDispositionNone,
+				},
+			}
+		}
+		return appwire.TurnQueueResponse{Receipt: receipt(appwire.MethodTurnQueue, params.ClientMutationID)}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnDrainAsSteer, func(_ context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
+		return appwire.TurnDrainAsSteerResponse{Receipt: receipt(appwire.MethodTurnDrainAsSteer, params.ClientMutationID)}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnPromoteQueuedAsSteer, func(_ context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
+		return appwire.TurnPromoteQueuedAsSteerResponse{Receipt: receipt(appwire.MethodTurnPromoteQueuedAsSteer, params.ClientMutationID)}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnCancelQueued, func(_ context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
+		return appwire.TurnCancelQueuedResponse{RemovedText: "queued", RemovedImages: 1, Receipt: receipt(appwire.MethodTurnCancelQueued, params.ClientMutationID)}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       os.Getpid(),
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"),
+		SourceID:  "local",
+		ThreadID:  "th_1",
+		SessionID: "sess_1",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir: runDir,
+		Roster: roster,
+		Past:   hubcore.NewPastIndex(""),
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	tests := []struct {
+		name   string
+		method string
+		id     string
+		params any
+		result any
+	}{
+		{"start after response loss", appwire.MethodTurnStart, "mutation-start", appwire.TurnStartParams{Ref: "local:th_1", ClientMutationID: "mutation-start", Input: []appwire.InputItem{{Type: "text", Text: "start"}}}, &appwire.TurnStartResponse{}},
+		{"steer", appwire.MethodTurnSteer, "mutation-steer", appwire.TurnSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-steer", Input: []appwire.InputItem{{Type: "text", Text: "steer"}}}, &appwire.TurnSteerResponse{}},
+		{"interrupt", appwire.MethodTurnInterrupt, "mutation-interrupt", appwire.TurnInterruptParams{Ref: "local:th_1", ClientMutationID: "mutation-interrupt"}, &appwire.TurnInterruptResponse{}},
+		{"queue", appwire.MethodTurnQueue, "mutation-queue", appwire.TurnQueueParams{Ref: "local:th_1", ClientMutationID: "mutation-queue", Input: []appwire.InputItem{{Type: "text", Text: "queue"}}}, &appwire.TurnQueueResponse{}},
+		{"drain", appwire.MethodTurnDrainAsSteer, "mutation-drain", appwire.TurnDrainAsSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-drain", ExpectedQueueRevision: 1}, &appwire.TurnDrainAsSteerResponse{}},
+		{"promote", appwire.MethodTurnPromoteQueuedAsSteer, "mutation-promote", appwire.TurnPromoteQueuedAsSteerParams{Ref: "local:th_1", ClientMutationID: "mutation-promote", ExpectedEntryID: "queue_1", Index: 0}, &appwire.TurnPromoteQueuedAsSteerResponse{}},
+		{"cancel", appwire.MethodTurnCancelQueued, "mutation-cancel", appwire.TurnCancelQueuedParams{Ref: "local:th_1", ClientMutationID: "mutation-cancel", ExpectedEntryID: "queue_1", Index: 0}, &appwire.TurnCancelQueuedResponse{}},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := client.Request(context.Background(), tc.method, tc.params, tc.result); err != nil {
+				t.Fatalf("%s: %v", tc.method, err)
+			}
+			if called[tc.method] != 1 {
+				t.Fatalf("%s daemon calls = %d, want 1", tc.method, called[tc.method])
+			}
+			var got appwire.MutationReceipt
+			switch response := tc.result.(type) {
+			case *appwire.TurnStartResponse:
+				got = response.Receipt
+			case *appwire.TurnSteerResponse:
+				got = response.Receipt
+			case *appwire.TurnInterruptResponse:
+				got = response.Receipt
+			case *appwire.TurnQueueResponse:
+				got = response.Receipt
+			case *appwire.TurnDrainAsSteerResponse:
+				got = response.Receipt
+			case *appwire.TurnPromoteQueuedAsSteerResponse:
+				got = response.Receipt
+			case *appwire.TurnCancelQueuedResponse:
+				got = response.Receipt
+				if response.RemovedText != "queued" || response.RemovedImages != 1 {
+					t.Fatalf("cancel response = %+v", response)
+				}
+			default:
+				t.Fatalf("unexpected response type %T", tc.result)
+			}
+			if got.ClientMutationID != tc.id ||
+				got.Disposition != appwire.MutationDispositionReplayed ||
+				got.TurnID != "turn_1" ||
+				!slices.Equal(got.QueueEntryIDs, []string{"queue_1"}) ||
+				got.ProjectionState != appwire.MutationProjectionReflected {
+				t.Fatalf("receipt = %+v", got)
+			}
+		})
+	}
+
+	rejected := appwire.TurnQueueParams{
+		Ref:              "local:th_1",
+		ClientMutationID: "mutation-reject",
+		Input:            []appwire.InputItem{{Type: "text", Text: "reject"}},
+	}
+	var response appwire.TurnQueueResponse
+	err := client.Request(context.Background(), appwire.MethodTurnQueue, rejected, &response)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("TurnQueue rejection %T=%v, want WireError", err, err)
+	}
+	data, ok := wire.Data.(map[string]any)
+	if !ok ||
+		data["clientMutationId"] != rejected.ClientMutationID ||
+		data["mutationOutcome"] != string(appwire.MutationOutcomeNotAccepted) ||
+		data["retryDisposition"] != string(appwire.RetryDispositionNone) {
+		t.Fatalf("wire=%+v data=%T %#v", wire, wire.Data, wire.Data)
+	}
+}
+
+func TestHubRPCThreadCompactStartResumesPastThread(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Source:    "local",
+			Evener: appwire.EvenerThread{
+				Ref:          params.Ref,
+				Capabilities: appwire.ThreadCapabilities{Compact: true},
+			},
+		}}, nil
+	})
+	compactCalled := false
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadCompactStart, func(_ context.Context, params appwire.ThreadCompactStartParams) (appwire.EmptyResponse, error) {
+		if params.Ref != "local:"+sessionID {
+			t.Fatalf("compact ref=%q", params.Ref)
+		}
+		compactCalled = true
+		return appwire.EmptyResponse{}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	var gotReq hubcore.ResumeRequest
+	resumeCalls := 0
+	spawner := &fakeRPCSpawner{
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			gotReq = req
+			resumeCalls++
+			entry := rendezvous.Entry{
+				PID:        106,
+				Protocol:   appwire.ProtocolVersion,
+				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:   "local",
+				ThreadID:   sessionID,
+				SessionID:  sessionID,
+				WorkingDir: workingDir,
+			}
+			writeRendezvous(t, runDir, entry)
+			return entry, nil
+		},
+	}
+	roster := hubcore.NewRoster(runDir, nil)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if err := client.ThreadCompactStart(context.Background(), appwire.ThreadCompactStartParams{Ref: "local:" + sessionID}); err != nil {
+		t.Fatalf("ThreadCompactStart: %v", err)
+	}
+	if resumeCalls != 1 {
+		t.Fatalf("resume calls=%d, want 1", resumeCalls)
+	}
+	if gotReq.SessionID != sessionID || gotReq.StateDir != stateDir || gotReq.WorkingDir != workingDir {
+		t.Fatalf("resume request=%+v", gotReq)
+	}
+	if !compactCalled {
+		t.Fatal("compact was not routed after resume")
+	}
+}
+
+func TestHubRPCThreadModelSetResumesPastThread(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Source:    "local",
+			Evener: appwire.EvenerThread{
+				Ref:          params.Ref,
+				Capabilities: appwire.ThreadCapabilities{ChangeModel: true},
+			},
+		}}, nil
+	})
+	modelCalled := ""
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadModelSet, func(_ context.Context, params appwire.ThreadModelSetParams) (appwire.EmptyResponse, error) {
+		if params.Ref != "local:"+sessionID {
+			t.Fatalf("model ref=%q", params.Ref)
+		}
+		modelCalled = params.ModelProvider + "/" + params.Model
+		return appwire.EmptyResponse{}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	resumeCalls := 0
+	spawner := &fakeRPCSpawner{
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			if req.SessionID != sessionID || req.StateDir != stateDir || req.WorkingDir != workingDir {
+				t.Fatalf("resume request=%+v", req)
+			}
+			resumeCalls++
+			entry := rendezvous.Entry{
+				PID:        106,
+				Protocol:   appwire.ProtocolVersion,
+				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:   "local",
+				ThreadID:   sessionID,
+				SessionID:  sessionID,
+				WorkingDir: workingDir,
+			}
+			writeRendezvous(t, runDir, entry)
+			return entry, nil
+		},
+	}
+	roster := hubcore.NewRoster(runDir, nil)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if err := client.ThreadModelSet(context.Background(), appwire.ThreadModelSetParams{
+		Ref:           "local:" + sessionID,
+		ModelProvider: "openai",
+		Model:         "gpt-5.6-sol",
+	}); err != nil {
+		t.Fatalf("ThreadModelSet: %v", err)
+	}
+	if resumeCalls != 1 {
+		t.Fatalf("resume calls=%d, want 1", resumeCalls)
+	}
+	if modelCalled != "openai/gpt-5.6-sol" {
+		t.Fatalf("modelCalled=%q", modelCalled)
+	}
+}
+
+func TestHubRPCUnsupportedThreadActionReturnsStructuredUnavailable(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	shutdownCalled := false
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		if params.Ref != "local:th_1" {
+			t.Fatalf("read ref=%q", params.Ref)
+		}
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        "th_1",
+			SessionID: "sess_1",
+			Evener: appwire.EvenerThread{
+				Ref: "local:th_1",
+				Capabilities: appwire.ThreadCapabilities{
+					Send:    true,
+					Compact: true,
+				},
+			},
+		}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadShutdown, func(_ context.Context, params appwire.ThreadShutdownParams) (appwire.EmptyResponse, error) {
+		shutdownCalled = true
+		return appwire.EmptyResponse{}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       105,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  "th_1",
+		SessionID: "sess_1",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	err := client.ThreadShutdown(context.Background(), appwire.ThreadShutdownParams{Ref: "local:th_1"})
+	if err == nil {
+		t.Fatal("ThreadShutdown succeeded for unsupported action")
+	}
+	if shutdownCalled {
+		t.Fatal("unsupported shutdown reached source")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error %T does not preserve WireError: %v", err, err)
+	}
+	if wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("wire=%+v", wire)
+	}
+	data, ok := wire.Data.(map[string]any)
+	if !ok || data["evenerErrorInfo"] != string(appwire.ErrorActionUnavailable) {
+		t.Fatalf("wire data=%#v", wire.Data)
+	}
+}
+
+// TestHubRPCGoalSetGatedByCapability pins /par A6: goal/set is pre-flight gated
+// like every sibling thread action. A source whose ThreadRead reports caps without
+// Goal (e.g. codex) must have goal/set rejected with a structured Unavailable
+// BEFORE the call reaches the source's GoalSet.
+func TestHubRPCGoalSetGatedByCapability(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	goalReached := false
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        "th_1",
+			SessionID: "sess_1",
+			Evener: appwire.EvenerThread{
+				Ref:          "local:th_1",
+				Capabilities: appwire.ThreadCapabilities{Send: true}, // no Goal
+			},
+		}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodGoalSet, func(_ context.Context, _ appwire.GoalSetParams) (appwire.GoalSetResponse, error) {
+		goalReached = true
+		return appwire.GoalSetResponse{Started: true}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       106,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  "th_1",
+		SessionID: "sess_1",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	_, err := client.GoalSet(context.Background(), appwire.GoalSetParams{Ref: "local:th_1", Objective: "do it"})
+	if err == nil {
+		t.Fatal("GoalSet succeeded despite missing Goal capability")
+	}
+	if goalReached {
+		t.Fatal("gated goal/set still reached the source")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error %T does not preserve WireError: %v", err, err)
+	}
+	if wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("wire=%+v", wire)
+	}
+}
+
+func TestHubRPCModelListUsesEvenerLaunchContractWhenDaemonFails(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
+		return appwire.ModelListResponse{}, appwire.InternalError("provider unavailable")
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       104,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  "th_1",
+		SessionID: "th_1",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+
+	spawner := &fakeRPCSpawner{
+		launchModels: func(context.Context) ([]appwire.ModelDescriptor, error) {
+			return []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}, nil
+		},
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir:  runDir,
+		Roster:  roster,
+		Spawner: spawner,
+		Models:  []hubcore.ModelDescriptor{{Provider: "openai", Model: "gpt-stale"}},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ModelList(context.Background(), appwire.ModelListParams{})
+	if err != nil {
+		t.Fatalf("ModelList: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Provider != "openai" || resp.Data[0].Model != "gpt-5.5" {
+		t.Fatalf("models=%+v", resp.Data)
+	}
+}
+
+func TestHubRPCModelListFallsBackToLocalDaemonWithoutLaunchContract(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-daemon"}}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       105,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  "th_1",
+		SessionID: "th_1",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ModelList(context.Background(), appwire.ModelListParams{})
+	if err != nil {
+		t.Fatalf("ModelList: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Provider != "openai" || resp.Data[0].Model != "gpt-daemon" {
+		t.Fatalf("models=%+v", resp.Data)
+	}
+}
+
+func TestHubRPCModelListPrefersEvenerLaunchContract(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-stale"}}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       105,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  "th_1",
+		SessionID: "th_1",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+
+	spawner := &fakeRPCSpawner{
+		launchModels: func(context.Context) ([]appwire.ModelDescriptor, error) {
+			return []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}}, nil
+		},
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ModelList(context.Background(), appwire.ModelListParams{})
+	if err != nil {
+		t.Fatalf("ModelList: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Provider != "openai" || resp.Data[0].Model != "gpt-5.5" {
+		t.Fatalf("models=%+v", resp.Data)
+	}
+}
+
+func TestHubRPCModelListUsesWorkingDirForEvenerLaunchContract(t *testing.T) {
+	spawner := &fakeRPCWorkingDirModelContractSpawner{
+		fallback: appwire.ModelListResponse{
+			Data: []appwire.ModelDescriptor{{Provider: "stale", Model: "wrong"}},
+		},
+		contractForWorkingDir: func(_ context.Context, cwd string) (appwire.ModelListResponse, error) {
+			if cwd != "/tmp/project-with-oauth" {
+				return appwire.ModelListResponse{}, fmt.Errorf("cwd=%q, want /tmp/project-with-oauth", cwd)
+			}
+			return appwire.ModelListResponse{
+				Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-visible-to-agent"}},
+			}, nil
+		},
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Spawner: spawner})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ModelList(context.Background(), appwire.ModelListParams{CWD: "/tmp/project-with-oauth"})
+	if err != nil {
+		t.Fatalf("ModelList: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Provider != "openai" || resp.Data[0].Model != "gpt-visible-to-agent" {
+		t.Fatalf("models=%+v", resp.Data)
+	}
+}
+
+func TestHubRPCModelListRoutesCodexHarnessToSource(t *testing.T) {
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex-local", AdapterNativeInitialize: true})
+	var gotParams appwire.ModelListParams
+	appserver.HandleTyped(codex.Router(), appwire.MethodModelList, func(_ context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
+		gotParams = params
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "codex-local", Model: "gpt-5.3-codex"}}}, nil
+	})
+	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
+	defer codexHTTP.Close()
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex-local",
+			Endpoint: "ws" + codexHTTP.URL[len("http"):],
+		}},
+		Spawner: &fakeRPCModelContractSpawner{
+			contract: appwire.ModelListResponse{
+				Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5.5"}},
+			},
+		},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ModelList(context.Background(), appwire.ModelListParams{Harness: "codex-local"})
+	if err != nil {
+		t.Fatalf("ModelList: %v", err)
+	}
+	if gotParams.Harness != "" {
+		t.Fatalf("codex source received hub harness routing field: %+v", gotParams)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Provider != "codex-local" || resp.Data[0].Model != "gpt-5.3-codex" {
+		t.Fatalf("models=%+v", resp.Data)
+	}
+}
+
+func TestHubRPCModelListDoesNotUseLocalDaemonWhenLaunchContractIsEmpty(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-daemon"}}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       105,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  "th_1",
+		SessionID: "th_1",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir:  runDir,
+		Roster:  roster,
+		Spawner: &fakeRPCModelContractSpawner{contract: appwire.ModelListResponse{}},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ModelList(context.Background(), appwire.ModelListParams{})
+	if err != nil {
+		t.Fatalf("ModelList: %v", err)
+	}
+	if len(resp.Data) != 0 {
+		t.Fatalf("resp=%+v", resp)
+	}
+}
+
+func TestHubRPCModelListDoesNotUseLocalDaemonWhenLaunchContractHasOnlyDiagnostics(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodModelList, func(context.Context, appwire.ModelListParams) (appwire.ModelListResponse, error) {
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-daemon"}}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       105,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  "th_1",
+		SessionID: "th_1",
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+
+	spawner := &fakeRPCModelContractSpawner{
+		contract: appwire.ModelListResponse{
+			Diagnostics: []appwire.ModelListDiagnostic{{
+				Provider: "openai",
+				Source:   "provider",
+				Title:    "Provider error",
+				Message:  "HTTP 403",
+			}},
+		},
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ModelList(context.Background(), appwire.ModelListParams{})
+	if err != nil {
+		t.Fatalf("ModelList: %v", err)
+	}
+	if len(resp.Data) != 0 {
+		t.Fatalf("models=%+v", resp.Data)
+	}
+	if len(resp.Diagnostics) != 1 || resp.Diagnostics[0].Provider != "openai" || !strings.Contains(resp.Diagnostics[0].Message, "403") {
+		t.Fatalf("diagnostics=%+v", resp.Diagnostics)
+	}
+}
+
+func TestHubRPCModelListReportsEvenerLaunchDiagnostics(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	bin := filepath.Join(dir, "fake-evener")
+	script := `#!/bin/sh
+if [ "$1" = "launch-check" ]; then
+  printf '{"protocol":"evener-appwire-v4","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
+  exit 0
+fi
+exit 2
+`
+	writeFakeEvener(t, bin, script)
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir:  t.TempDir(),
+		Spawner: &HubSpawner{Cfg: DefaultConfig(), EvenerBinary: bin, RunDir: t.TempDir(), HubToken: "generated-token"},
+		Past:    hubcore.NewPastIndex(""),
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	var resp struct {
+		Data []struct {
+			Provider string `json:"provider"`
+			Model    string `json:"model"`
+		} `json:"data"`
+		Diagnostics []struct {
+			Provider string `json:"provider"`
+			Source   string `json:"source"`
+			Title    string `json:"title"`
+			Message  string `json:"message"`
+		} `json:"diagnostics"`
+	}
+	if err := client.Request(context.Background(), appwire.MethodModelList, appwire.ModelListParams{}, &resp); err != nil {
+		t.Fatalf("model/list: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0].Provider != "ollama" || resp.Data[0].Model != "local" {
+		t.Fatalf("models=%+v", resp.Data)
+	}
+	if len(resp.Diagnostics) != 1 || resp.Diagnostics[0].Provider != "openai" || resp.Diagnostics[0].Source != "provider" || !strings.Contains(resp.Diagnostics[0].Message, "403") {
+		t.Fatalf("diagnostics=%+v", resp.Diagnostics)
+	}
+}
+
+func TestHubRPCThreadStartKeepsProviderForModelIDsWithSlashes(t *testing.T) {
+	runDir := t.TempDir()
+	var got hubcore.SpawnRequest
+	spawner := &fakeRPCSpawner{
+		spawn: func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
+			got = req
+			return rendezvous.Entry{
+				PID:       106,
+				Protocol:  appwire.ProtocolVersion,
+				SourceID:  "local",
+				ThreadID:  "th_slash_model",
+				SessionID: "sess_slash_model",
+			}, nil
+		},
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		ModelProvider: "openrouter",
+		Model:         "deepseek/deepseek-v4-flash",
+		CWD:           "/tmp",
+	}); err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	if got.Resolved.Effective.Model != "openrouter/deepseek/deepseek-v4-flash" {
+		t.Fatalf("spawn model=%q, want openrouter/deepseek/deepseek-v4-flash", got.Resolved.Effective.Model)
+	}
+}
+
+func TestHubRPCThreadStartDeliversPromptWhenFirstRosterProbeFails(t *testing.T) {
+	const sessionID = "033snFBSHFr78ZbQQMAeBD"
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Source:    "local",
+			Evener: appwire.EvenerThread{
+				Ref:          params.Ref,
+				Capabilities: appwire.ThreadCapabilities{Send: true},
+			},
+		}}, nil
+	})
+	var gotPrompt string
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+		gotPrompt = inputTextForTest(params.Input)
+		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_1"}}, nil
+	})
+	daemonHTTP := httptest.NewUnstartedServer(http.HandlerFunc(daemon.ServeWebSocket))
+	dropper := &dropFirstConnectionListener{
+		Listener: daemonHTTP.Listener,
+		dropped:  make(chan struct{}),
+	}
+	daemonHTTP.Listener = dropper
+	daemonHTTP.Start()
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	entry := rendezvous.Entry{
+		PID:       os.Getpid(),
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"),
+		SourceID:  "local",
+		ThreadID:  sessionID,
+		SessionID: sessionID,
+	}
+	spawner := &fakeRPCSpawner{spawn: func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error) {
+		writeRendezvous(t, runDir, entry)
+		return entry, nil
+	}}
+	roster := hubcore.NewRoster(runDir, failedRPCProber{})
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir:  runDir,
+		Roster:  roster,
+		Spawner: spawner,
+		Past:    hubcore.NewPastIndex(""),
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		Model: "openai/gpt-5",
+		CWD:   "/tmp",
+		Input: []appwire.InputItem{{Type: "text", Text: "review the open PRs"}},
+	})
+	if err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	select {
+	case <-dropper.dropped:
+	default:
+		t.Fatal("startup test did not drop the first daemon connection")
+	}
+	if gotPrompt != "review the open PRs" {
+		t.Fatalf("prompt=%q, want review the open PRs", gotPrompt)
+	}
+	if resp.Thread.Evener.Ref != "local:"+sessionID || resp.Turn.ID != "turn_1" {
+		t.Fatalf("response=%+v", resp)
+	}
+}
+
+func TestHubRPCThreadStartPassesExplicitNonInteractive(t *testing.T) {
+	runDir := t.TempDir()
+	var got hubcore.SpawnRequest
+	spawner := &fakeRPCSpawner{
+		spawn: func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
+			got = req
+			return rendezvous.Entry{
+				PID:       107,
+				Protocol:  appwire.ProtocolVersion,
+				SourceID:  "local",
+				ThreadID:  "th_noninteractive",
+				SessionID: "sess_noninteractive",
+			}, nil
+		},
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	nonInteractive := true
+	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		Model:          "openai/gpt-5.2",
+		CWD:            "/tmp",
+		NonInteractive: &nonInteractive,
+	}); err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	if got.Resolved.Effective.NonInteractive == nil || !*got.Resolved.Effective.NonInteractive {
+		t.Fatalf("spawn non_interactive = %v, want true", got.Resolved.Effective.NonInteractive)
+	}
+}
+
+func TestHubRPCThreadStartPassesNonInteractiveLaunchOverride(t *testing.T) {
+	runDir := t.TempDir()
+	var got hubcore.SpawnRequest
+	spawner := &fakeRPCSpawner{
+		spawn: func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
+			got = req
+			return rendezvous.Entry{
+				PID:       108,
+				Protocol:  appwire.ProtocolVersion,
+				SourceID:  "local",
+				ThreadID:  "th_noninteractive_override",
+				SessionID: "sess_noninteractive_override",
+			}, nil
+		},
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	nonInteractive := true
+	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		Model: "openai/gpt-5.2",
+		CWD:   "/tmp",
+		LaunchOverrides: &appwire.LaunchConfigLayer{
+			NonInteractive: &nonInteractive,
+		},
+	}); err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	if got.Resolved.Effective.NonInteractive == nil || !*got.Resolved.Effective.NonInteractive {
+		t.Fatalf("spawn non_interactive = %v, want true", got.Resolved.Effective.NonInteractive)
+	}
+}
+
+func TestHubRPCThreadStartPropagatesSpawnerStderrAsHubLaunchError(t *testing.T) {
+	runDir := t.TempDir()
+	spawnErr := strings.Join([]string{
+		"daemon spawn failed",
+		"process exited before rendezvous",
+		"exit status 1",
+		`evener serve: session creation: plugin initialization: resolving plugin dir "/Users/jesse/git/superpowers/superpowers": lstat /Users: no such file or directory`,
+	}, ": ")
+	spawner := &fakeRPCSpawner{
+		spawn: func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
+			return rendezvous.Entry{}, errors.New(spawnErr)
+		},
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		ModelProvider: "openai",
+		Model:         "gpt-5",
+		CWD:           "/tmp",
+	})
+	assertHubLaunchError(t, err)
+	if !strings.Contains(err.Error(), "plugin initialization: resolving plugin dir") {
+		t.Fatalf("error did not include daemon stderr: %v", err)
+	}
+}
+
+func TestValidateLaunchPathRejectsMissingPluginDir(t *testing.T) {
+	resp := fspaths.ValidateLaunchPath(appwire.PathValidateParams{Path: filepath.Join(t.TempDir(), "missing"), Kind: "dir"})
+	if resp.Valid {
+		t.Fatalf("valid=%v, want false", resp.Valid)
+	}
+	if !strings.Contains(resp.Error, "no such file") {
+		t.Fatalf("error=%q", resp.Error)
+	}
+}
+
+func TestValidateLaunchPathAcceptsExecutableCommand(t *testing.T) {
+	resp := fspaths.ValidateLaunchPath(appwire.PathValidateParams{Path: "sh", Kind: "command"})
+	if !resp.Valid {
+		t.Fatalf("valid=false error=%q", resp.Error)
+	}
+	if resp.Path == "" || !filepath.IsAbs(resp.Path) {
+		t.Fatalf("resolved command path=%q, want absolute", resp.Path)
+	}
+}
+
+func TestValidateLaunchPathAcceptsMissingOutputFileWithWritableParent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "trace.jsonl")
+	resp := fspaths.ValidateLaunchPath(appwire.PathValidateParams{Path: path, Kind: "output-file"})
+	if !resp.Valid {
+		t.Fatalf("valid=false error=%q", resp.Error)
+	}
+	if resp.Path != path {
+		t.Fatalf("path=%q, want %q", resp.Path, path)
+	}
+}
+
+func TestValidateLaunchPathRejectsOutputFileWithMissingParent(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "trace.jsonl")
+	resp := fspaths.ValidateLaunchPath(appwire.PathValidateParams{Path: path, Kind: "output-file"})
+	if resp.Valid {
+		t.Fatalf("valid=true, want false")
+	}
+	if !strings.Contains(resp.Error, "no such file") {
+		t.Fatalf("error=%q", resp.Error)
+	}
+}
+
+func TestHubRPCThreadStartRejectsModelOutsideEvenerLaunchContractBeforeSpawn(t *testing.T) {
+	runDir := t.TempDir()
+	var spawnCalled bool
+	spawner := &fakeRPCSpawner{
+		spawn: func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
+			spawnCalled = true
+			return rendezvous.Entry{}, nil
+		},
+		launchModels: func(context.Context) ([]appwire.ModelDescriptor, error) {
+			return []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-5"}}, nil
+		},
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir:  runDir,
+		Spawner: spawner,
+		Past:    hubcore.NewPastIndex(""),
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		ModelProvider: "openai",
+		Model:         "gpt-stale",
+		CWD:           "/tmp",
+	})
+	assertHubLaunchError(t, err)
+	if spawnCalled {
+		t.Fatal("spawn was called for a model outside the Evener launch contract")
+	}
+}
+
+func TestHubRPCThreadStartAllowsModelWhenProviderDoesNotEnumerateLaunchModels(t *testing.T) {
+	runDir := t.TempDir()
+	var got hubcore.SpawnRequest
+	spawner := &fakeRPCModelContractSpawner{
+		contract: appwire.ModelListResponse{
+			Data: []appwire.ModelDescriptor{{Provider: "ollama", Model: "local"}},
+			Diagnostics: []appwire.ModelListDiagnostic{{
+				Provider: "openai",
+				Source:   "provider",
+				Title:    "Provider error",
+				Message:  "HTTP 403",
+			}},
+		},
+	}
+	spawner.spawn = func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
+		got = req
+		return rendezvous.Entry{
+			PID:       107,
+			Protocol:  appwire.ProtocolVersion,
+			SourceID:  "local",
+			ThreadID:  "th_non_enumerable_model",
+			SessionID: "sess_non_enumerable_model",
+		}, nil
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		ModelProvider: "openai",
+		Model:         "gpt-5.5",
+		CWD:           "/tmp",
+	}); err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	if got.Resolved.Effective.Model != "openai/gpt-5.5" {
+		t.Fatalf("spawn model=%q, want openai/gpt-5.5", got.Resolved.Effective.Model)
+	}
+}
+
+func TestHubRPCThreadStartAllowsModelWhenProviderHasLaunchDiagnostic(t *testing.T) {
+	runDir := t.TempDir()
+	var got hubcore.SpawnRequest
+	spawner := &fakeRPCModelContractSpawner{
+		contract: appwire.ModelListResponse{
+			Diagnostics: []appwire.ModelListDiagnostic{{
+				Provider: "openai",
+				Source:   "provider",
+				Title:    "Provider error",
+				Message:  "HTTP 403",
+			}},
+		},
+	}
+	spawner.spawn = func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
+		got = req
+		return rendezvous.Entry{
+			PID:       108,
+			Protocol:  appwire.ProtocolVersion,
+			SourceID:  "local",
+			ThreadID:  "th_degraded_model",
+			SessionID: "sess_degraded_model",
+		}, nil
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		ModelProvider: "openai",
+		Model:         "gpt-5.5",
+		CWD:           "/tmp",
+	}); err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	if got.Resolved.Effective.Model != "openai/gpt-5.5" {
+		t.Fatalf("spawn model=%q, want openai/gpt-5.5", got.Resolved.Effective.Model)
+	}
+}
+
+func TestHubRPCThreadStartRejectsProviderMissingFromDegradedLaunchContract(t *testing.T) {
+	runDir := t.TempDir()
+	var spawnCalled bool
+	spawner := &fakeRPCModelContractSpawner{
+		contract: appwire.ModelListResponse{
+			Data: []appwire.ModelDescriptor{{Provider: "ollama", Model: "local"}},
+			Diagnostics: []appwire.ModelListDiagnostic{{
+				Provider: "openai",
+				Source:   "provider",
+				Title:    "Provider error",
+				Message:  "HTTP 403",
+			}},
+		},
+	}
+	spawner.spawn = func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
+		spawnCalled = true
+		return rendezvous.Entry{}, nil
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		ModelProvider: "anthropic",
+		Model:         "claude-test",
+		CWD:           "/tmp",
+	})
+	assertHubLaunchError(t, err)
+	if !strings.Contains(err.Error(), "not reported by the Evener launch harness") {
+		t.Fatalf("error=%v", err)
+	}
+	if spawnCalled {
+		t.Fatal("spawn was called for provider missing from degraded launch contract")
+	}
+}
+
+func TestHubRPCThreadStartAllowsIntentionallySkippedLaunchProvider(t *testing.T) {
+	runDir := t.TempDir()
+	var got hubcore.SpawnRequest
+	spawner := &fakeRPCModelContractSpawner{
+		contract: appwire.ModelListResponse{
+			Data: []appwire.ModelDescriptor{{Provider: "ollama", Model: "local"}},
+			Diagnostics: []appwire.ModelListDiagnostic{{
+				Provider: "openai",
+				Source:   "provider",
+				Title:    "Provider error",
+				Message:  "HTTP 403",
+			}},
+		},
+	}
+	spawner.spawn = func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
+		got = req
+		return rendezvous.Entry{PID: 301, ThreadID: "th_openrouter_anthropic", SessionID: "th_openrouter_anthropic"}, nil
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		ModelProvider: "openrouter-anthropic",
+		Model:         "anthropic/claude-3-5-sonnet",
+		CWD:           "/tmp",
+	})
+	if err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	if got.Resolved.Effective.Model != "openrouter-anthropic/anthropic/claude-3-5-sonnet" {
+		t.Fatalf("spawn model=%q", got.Resolved.Effective.Model)
+	}
+	if resp.Thread.Evener.Ref != "local:th_openrouter_anthropic" {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+func TestHubRPCThreadStartRejectsMalformedModelBeforeSpawn(t *testing.T) {
+	runDir := t.TempDir()
+	var spawnCalled bool
+	spawner := &fakeRPCSpawner{
+		spawn: func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
+			spawnCalled = true
+			return rendezvous.Entry{}, nil
+		},
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir:  runDir,
+		Spawner: spawner,
+		Past:    hubcore.NewPastIndex(""),
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	_, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		Model: "openrouter",
+		CWD:   "/tmp",
+	})
+	if err == nil {
+		t.Fatal("ThreadStart succeeded for malformed model")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error %T does not preserve WireError: %v", err, err)
+	}
+	if wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("wire=%+v", wire)
+	}
+	if spawnCalled {
+		t.Fatal("spawn was called for malformed model")
+	}
+}
+
+func TestThreadStart_LaunchOverridesApplied(t *testing.T) {
+	runDir := t.TempDir()
+	var got hubcore.SpawnRequest
+	spawner := &fakeRPCSpawner{
+		spawn: func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
+			got = req
+			return rendezvous.Entry{
+				PID:       200,
+				Protocol:  appwire.ProtocolVersion,
+				SourceID:  "local",
+				ThreadID:  "th_overrides",
+				SessionID: "sess_overrides",
+			}, nil
+		},
+	}
+	maxRounds := 7
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir:       runDir,
+		HubStateRoot: t.TempDir(),
+		Spawner:      spawner,
+		Past:         hubcore.NewPastIndex(""),
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		Model: "openai/gpt-5",
+		CWD:   "/tmp",
+		LaunchOverrides: &appwire.LaunchConfigLayer{
+			SkillsDirs: []string{"/per-launch"},
+			MaxRounds:  &maxRounds,
+		},
+	}); err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	eff := got.Resolved.Effective
+	if !slices.Contains(eff.SkillsDirs, "/per-launch") {
+		t.Errorf("SkillsDirs = %v, want /per-launch", eff.SkillsDirs)
+	}
+	if eff.MaxRounds == nil || *eff.MaxRounds != 7 {
+		t.Errorf("MaxRounds = %v, want 7", eff.MaxRounds)
+	}
+	// Legacy scalar wins: model comes from params.Model, not launchOverrides.
+	if eff.Model != "openai/gpt-5" {
+		t.Errorf("Model = %q, want openai/gpt-5", eff.Model)
+	}
+}
+
+func TestHubRPCThreadStartUsesGlobalLaunchDefaultModel(t *testing.T) {
+	runDir := t.TempDir()
+	// stateRoot and launchRoot are deliberately distinct: HubStateRoot and
+	// LaunchConfigRoot must resolve independently. Aliasing them (as a
+	// previous version of this test did) would let a regression that wires
+	// ThreadStart's launch resolution back onto HubStateRoot pass silently,
+	// since both fields would coincidentally point at the same directory.
+	stateRoot := t.TempDir()
+	launchRoot := t.TempDir()
+	cwd := t.TempDir()
+	c := newHubLaunchController(launchRoot)
+	if _, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
+		CWD:    cwd,
+		Layer:  "global",
+		Config: appwire.LaunchConfigLayer{Model: "openai/gpt-5"},
+	}); err != nil {
+		t.Fatalf("SetLayer: %v", err)
+	}
+	var got hubcore.SpawnRequest
+	spawner := &fakeRPCModelContractSpawner{
+		spawn: func(_ context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
+			got = req
+			return rendezvous.Entry{
+				PID:       201,
+				Protocol:  appwire.ProtocolVersion,
+				SourceID:  "local",
+				ThreadID:  "th_default_model",
+				SessionID: "sess_default_model",
+			}, nil
+		},
+		contract: appwire.ModelListResponse{Data: []appwire.ModelDescriptor{{
+			Provider: "openai",
+			Model:    "gpt-5",
+		}}},
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir:           runDir,
+		HubStateRoot:     stateRoot,
+		LaunchConfigRoot: launchRoot,
+		Spawner:          spawner,
+		Past:             hubcore.NewPastIndex(""),
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		CWD: cwd,
+	}); err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	if got.Resolved.Effective.Model != "openai/gpt-5" {
+		t.Errorf("Model = %q, want openai/gpt-5", got.Resolved.Effective.Model)
+	}
+	if got.Provider != "openai" {
+		t.Errorf("Provider = %q, want openai", got.Provider)
+	}
+}
+
+func TestHubRPCThreadStartRoutesByHarnessToConfiguredCodexSource(t *testing.T) {
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
+	var startCalled bool
+	var turnCalled bool
+	appserver.HandleTyped(codex.Router(), appwire.MethodThreadStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
+		startCalled = true
+		if params["cwd"] != "/work/project" || params["model"] != "gpt-5.1-codex" {
+			t.Fatalf("thread/start params=%+v", params)
+		}
+		if _, ok := params["harness"]; ok {
+			t.Fatalf("codex thread/start should not receive hub harness routing field: %+v", params)
+		}
+		if _, ok := params["sourceId"]; ok {
+			t.Fatalf("codex thread/start should not receive hub source routing field: %+v", params)
+		}
+		return map[string]any{"thread": map[string]any{
+			"id":            "th_codex",
+			"sessionId":     "th_codex",
+			"preview":       "codex task",
+			"modelProvider": "openai",
+			"createdAt":     100,
+			"updatedAt":     100,
+			"status":        map[string]any{"type": "idle"},
+			"cwd":           "/work/project",
+			"cliVersion":    "codex-test",
+			"source":        "appServer",
+		}}, nil
+	})
+	appserver.HandleTyped(codex.Router(), appwire.MethodTurnStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
+		turnCalled = true
+		if params["threadId"] != "th_codex" {
+			t.Fatalf("turn/start params=%+v", params)
+		}
+		return map[string]any{"turn": map[string]any{
+			"id":        "turn_codex",
+			"items":     []any{},
+			"itemsView": "full",
+			"status":    "inProgress",
+		}}, nil
+	})
+	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
+	defer codexHTTP.Close()
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past: hubcore.NewPastIndex(""),
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex",
+			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
+		}},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		Harness: "codex",
+		CWD:     "/work/project",
+		Input:   []appwire.InputItem{{Type: "text", Text: "hello codex"}},
+		Model:   "gpt-5.1-codex",
+	})
+	if err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	if !startCalled || !turnCalled {
+		t.Fatalf("startCalled=%v turnCalled=%v", startCalled, turnCalled)
+	}
+	if resp.Thread.Evener.Ref != "codex:th_codex" || resp.Turn.ID != "turn_codex" {
+		t.Fatalf("resp=%+v", resp)
+	}
+}
+
+func TestHubRPCThreadStartLaunchesConfiguredCodexAppServer(t *testing.T) {
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	defer shutdownCodexLauncher(t, launcher)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:          hubcore.NewPastIndex(""),
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLauncher: launcher,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		Harness: "codex-managed",
+		CWD:     "/tmp/project",
+		Input:   []appwire.InputItem{{Type: "text", Text: "hello launched codex"}},
+	})
+	if err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	if resp.Thread.Evener.Ref != "codex-managed:th_fake" || resp.Turn.ID != "turn_fake" {
+		t.Fatalf("resp=%+v", resp)
+	}
+}
+
+func TestHubRPCThreadStartRelaunchesConfiguredCodexAppServerAfterExit(t *testing.T) {
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	defer shutdownCodexLauncher(t, launcher)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:          hubcore.NewPastIndex(""),
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLauncher: launcher,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		Harness: "codex-managed",
+		CWD:     "/tmp/project",
+		Input:   []appwire.InputItem{{Type: "text", Text: "first launched codex"}},
+	}); err != nil {
+		t.Fatalf("first ThreadStart: %v", err)
+	}
+	first := launcherRunningProcess(t, launcher, "codex-managed")
+	if err := first.Cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill first codex: %v", err)
+	}
+	waitLaunchedCodexExited(t, first)
+
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		Harness: "codex-managed",
+		CWD:     "/tmp/project",
+		Input:   []appwire.InputItem{{Type: "text", Text: "second launched codex"}},
+	})
+	if err != nil {
+		t.Fatalf("second ThreadStart: %v", err)
+	}
+	if resp.Thread.Evener.Ref != "codex-managed:th_fake" || resp.Turn.ID != "turn_fake" {
+		t.Fatalf("resp=%+v", resp)
+	}
+}
+
+func TestHubRPCThreadResumeEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	defer shutdownCodexLauncher(t, launcher)
+	if _, err := launcher.EnsureSource(context.Background(), "codex-managed", nil); err != nil {
+		t.Fatalf("EnsureSource: %v", err)
+	}
+	first := launcherRunningProcess(t, launcher, "codex-managed")
+	if err := first.Cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill first codex: %v", err)
+	}
+	waitLaunchedCodexExited(t, first)
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:          hubcore.NewPastIndex(""),
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLauncher: launcher,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Ref: "codex-managed:th_fake"})
+	if err != nil {
+		t.Fatalf("ThreadResume: %v", err)
+	}
+	if resp.Thread.Evener.Ref != "codex-managed:th_fake" {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+func TestHubRPCThreadForkEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	defer shutdownCodexLauncher(t, launcher)
+	if _, err := launcher.EnsureSource(context.Background(), "codex-managed", nil); err != nil {
+		t.Fatalf("EnsureSource: %v", err)
+	}
+	first := launcherRunningProcess(t, launcher, "codex-managed")
+	if err := first.Cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill first codex: %v", err)
+	}
+	waitLaunchedCodexExited(t, first)
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:          hubcore.NewPastIndex(""),
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLauncher: launcher,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{Ref: "codex-managed:th_fake"})
+	if err != nil {
+		t.Fatalf("ThreadFork: %v", err)
+	}
+	if resp.Thread.Evener.Ref != "codex-managed:th_fake_child" {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+func TestHubRPCTurnStartEnsuresManagedCodexAppServerAfterExit(t *testing.T) {
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")})
+	defer shutdownCodexLauncher(t, launcher)
+	web := NewWebServer(hubcore.WebConfig{
+		Past:          hubcore.NewPastIndex(""),
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{fakeCodexLaunchConfig("codex-managed", "ready")},
+		CodexLauncher: launcher,
+	})
+	if _, err := launcher.EnsureSource(context.Background(), "codex-managed", web.sources); err != nil {
+		t.Fatalf("EnsureSource: %v", err)
+	}
+	first := launcherRunningProcess(t, launcher, "codex-managed")
+	if err := first.Cmd.Process.Kill(); err != nil {
+		t.Fatalf("kill first codex: %v", err)
+	}
+	waitLaunchedCodexExited(t, first)
+
+	hub := httptest.NewUnstartedServer(nil)
+	web.cfg.HubAddr = hub.Listener.Addr().String()
+	hub.Config.Handler = web.Handler()
+	hub.Start()
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "codex-managed:th_fake", Input: []appwire.InputItem{{Type: "text", Text: "continue"}}}); err == nil {
+		t.Fatal("TurnStart succeeded for Codex source")
+	}
+	next := launcherRunningProcess(t, launcher, "codex-managed")
+	if next == first {
+		t.Fatal("turn/start reused the exited managed Codex process")
+	}
+}
+
+func makeResumeSession(t *testing.T, root, sessionID, profileID, model string) (string, *hubcore.PastIndex) {
+	t.Helper()
+	stateDir := filepath.Join(root, "projects", "project-resume-0000000000")
+	workingDir := t.TempDir()
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID:        sessionID,
+		ProfileID: profileID,
+		Model:     model,
+		EnvInfo:   schema.EnvironmentInfo{WorkingDir: workingDir},
+		CreatedAt: time.Now().UTC(),
+		UpdatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	return stateDir, past
+}
+
+func TestResumeRequestForConfigPassesThroughOpenAIProfileID(t *testing.T) {
+	root := t.TempDir()
+	sessionID := "02wMz5Txv1C3Hut0M8GCeB"
+	stateDir, past := makeResumeSession(t, root, sessionID, "openai", "gpt-4o")
+
+	req, err := resumeRequestForConfig(hubcore.WebConfig{Past: past}, sessionID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.Provider != "openai" {
+		t.Fatalf("provider=%q, want %q", req.Provider, "openai")
+	}
+	if req.Resolved.Effective.Model != "openai/gpt-4o" {
+		t.Fatalf("model=%q, want %q", req.Resolved.Effective.Model, "openai/gpt-4o")
+	}
+	if req.WorkingDir == "" || req.StateDir != stateDir {
+		t.Fatalf("resume request=%+v", req)
+	}
+}
+
+func TestResumeRequestForConfigPassesThroughCustomProfileID(t *testing.T) {
+	root := t.TempDir()
+	sessionID := "02wMz5Txv2enqVTitaig6F"
+	_, past := makeResumeSession(t, root, sessionID, "work", "gpt-4o")
+
+	req, err := resumeRequestForConfig(hubcore.WebConfig{Past: past}, sessionID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.Provider != "work" {
+		t.Fatalf("provider=%q, want %q", req.Provider, "work")
+	}
+	if req.Resolved.Effective.Model != "work/gpt-4o" {
+		t.Fatalf("model=%q, want %q", req.Resolved.Effective.Model, "work/gpt-4o")
+	}
+}
+
+func TestResumeRequestForConfigErrorsOnEmptyProfileID(t *testing.T) {
+	root := t.TempDir()
+	sessionID := "02wMz5Txv47YP64RR3B9YJ"
+	_, past := makeResumeSession(t, root, sessionID, "", "gpt-4o")
+
+	_, err := resumeRequestForConfig(hubcore.WebConfig{Past: past}, sessionID)
+	if err == nil {
+		t.Fatal("expected error for empty profile id, got nil")
+	}
+}
+
+// TestResumeRequestForConfigUsesRestoreRootWhenWorktreeActive proves the
+// native worktree tools spec Â§7 "Hub consumers" migration: a session
+// actively inside a worktree must resume with `--dir` set to its restore
+// root, not the worktree path â€” Task 18's resume re-entry logic takes the
+// session back into the worktree itself; hub-driven `--dir` must not launch
+// straight into it (or a deleted corpse of it), bypassing the lock and
+// validation rules.
+func TestResumeRequestForConfigUsesRestoreRootWhenWorktreeActive(t *testing.T) {
+	root := t.TempDir()
+	sessionID := "02wMz5Txv5aIxgf9yVdd0N"
+	stateDir := filepath.Join(root, "projects", "project-resume-0000000000")
+	restoreRoot := t.TempDir()
+	worktreePath := t.TempDir()
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID:                  sessionID,
+		ProfileID:           "openai",
+		Model:               "gpt-4o",
+		EnvInfo:             schema.EnvironmentInfo{WorkingDir: worktreePath},
+		WorktreePath:        worktreePath,
+		WorktreeManaged:     true,
+		WorktreeRestoreRoot: restoreRoot,
+		CreatedAt:           time.Now().UTC(),
+		UpdatedAt:           time.Now().UTC(),
+	}); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	req, err := resumeRequestForConfig(hubcore.WebConfig{Past: past}, sessionID)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if req.WorkingDir != restoreRoot {
+		t.Fatalf("resume dir=%q, want restore root %q (not the worktree path)", req.WorkingDir, restoreRoot)
+	}
+}
+
+func TestHubRPCThreadStartAllowsBlankCodexPromptWithoutTurnStart(t *testing.T) {
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
+	var startCalled bool
+	var turnCalled bool
+	appserver.HandleTyped(codex.Router(), appwire.MethodThreadStart, func(_ context.Context, _ map[string]any) (map[string]any, error) {
+		startCalled = true
+		return map[string]any{"thread": map[string]any{
+			"id":        "th_blank",
+			"sessionId": "th_blank",
+			"status":    map[string]any{"type": "idle"},
+			"source":    "appServer",
+		}}, nil
+	})
+	appserver.HandleTyped(codex.Router(), appwire.MethodTurnStart, func(_ context.Context, _ map[string]any) (map[string]any, error) {
+		turnCalled = true
+		return nil, errors.New("blank prompt should not start a turn")
+	})
+	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
+	defer codexHTTP.Close()
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past: hubcore.NewPastIndex(""),
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex",
+			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
+		}},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{
+		Harness: "codex",
+		CWD:     "/work/project",
+	})
+	if err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	if !startCalled {
+		t.Fatal("Codex source was not started for blank prompt")
+	}
+	if turnCalled {
+		t.Fatal("Codex turn was started for blank prompt")
+	}
+	if resp.Thread.Evener.Ref != "codex:th_blank" || resp.Turn.ID != "" {
+		t.Fatalf("resp=%+v", resp)
+	}
+}
+
+func TestHubRPCHarnessListIncludesConfiguredCodexSources(t *testing.T) {
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID: "codex-local",
+		}, {}},
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	var resp struct {
+		Data []struct {
+			ID    string `json:"id"`
+			Label string `json:"label"`
+			Kind  string `json:"kind"`
+		} `json:"data"`
+	}
+	if err := client.Request(context.Background(), appwire.MethodEvenerHarnessesList, map[string]any{}, &resp); err != nil {
+		t.Fatalf("evener/harnesses/list: %v", err)
+	}
+	got := map[string]string{}
+	for _, h := range resp.Data {
+		got[h.ID] = h.Kind
+	}
+	if got["evener"] != "evener" || got["codex-local"] != "codex" || got["codex"] != "codex" || got["codex-managed"] != "codex" {
+		t.Fatalf("harnesses=%+v", resp.Data)
+	}
+}
+
+func TestHubRPCThreadResumeSpawnsAndReadsDaemon(t *testing.T) {
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		if params.Ref != "local:th_resumed" {
+			t.Fatalf("ref=%q", params.Ref)
+		}
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "th_resumed", SessionID: "sess_resumed", Evener: appwire.EvenerThread{Ref: "local:th_resumed"}}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	spawner := &fakeRPCSpawner{
+		resume: func(ctx context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			if req.SessionID != "sess_old" {
+				t.Fatalf("resume session=%q", req.SessionID)
+			}
+			entry := rendezvous.Entry{
+				PID:       105,
+				Protocol:  appwire.ProtocolVersion,
+				Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:  "local",
+				ThreadID:  "th_resumed",
+				SessionID: "sess_resumed",
+			}
+			writeRendezvous(t, runDir, entry)
+			return entry, nil
+		},
+	}
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Spawner: spawner, Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Session: "sess_old"})
+	if err != nil {
+		t.Fatalf("ThreadResume: %v", err)
+	}
+	if resp.Thread.ID != "th_resumed" || resp.Thread.Evener.Ref != "local:th_resumed" {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+func TestHubRPCThreadResumeReplacesIncompatibleRosterDaemon(t *testing.T) {
+	const sessionID = "sess_old"
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Evener:    appwire.EvenerThread{Ref: params.Ref},
+		}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       104,
+		Protocol:  "evener-appwire-v1",
+		Endpoint:  "ws://127.0.0.1:1/rpc",
+		SourceID:  "local",
+		ThreadID:  sessionID,
+		SessionID: sessionID,
+	})
+	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusIdle})
+	roster.Refresh()
+	if stale, ok := roster.Find(sessionID); !ok || stale.Status == "errored" {
+		t.Fatalf("stale roster entry = %+v, %v; want non-errored incompatible daemon", stale, ok)
+	}
+
+	resumeCalls := 0
+	spawner := &fakeRPCSpawner{
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			if req.SessionID != sessionID {
+				t.Fatalf("resume session=%q", req.SessionID)
+			}
+			resumeCalls++
+			entry := rendezvous.Entry{
+				PID:       105,
+				Protocol:  appwire.ProtocolVersion,
+				Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:  "local",
+				ThreadID:  sessionID,
+				SessionID: sessionID,
+			}
+			writeRendezvous(t, runDir, entry)
+			roster.Refresh()
+			return entry, nil
+		},
+	}
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir:      runDir,
+		Roster:      roster,
+		Spawner:     spawner,
+		Past:        hubcore.NewPastIndex(""),
+		ResumeLocks: hubcore.NewResumeLocks(),
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Session: sessionID})
+	if err != nil {
+		t.Fatalf("ThreadResume: %v", err)
+	}
+	if resumeCalls != 1 {
+		t.Fatalf("resume calls=%d, want 1", resumeCalls)
+	}
+	if resp.Thread.ID != sessionID || resp.Thread.Evener.Ref != "local:"+sessionID {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+// A replacement spawn cannot win the session's exclusive API-log reservation
+// while the daemon it is replacing is still running, so the operator's only
+// way forward is to stop that process. The hub holds its pid and address in
+// the roster at the moment it refuses to reuse it; the failure must hand both
+// over instead of leaving the operator to find the holder with lsof (kata
+// ew86, demonstrated live against a real v1 daemon).
+func TestHubRPCThreadResumeNamesLiveIncompatibleDaemonWhenReplacementFails(t *testing.T) {
+	const (
+		sessionID   = "sess_old"
+		blockerPID  = 104
+		blockerHTTP = "127.0.0.1:61535"
+		// Verbatim shape of the failure a real replacement daemon dies with.
+		spawnFailure = "resume failed: process exited before rendezvous: exit status 1: " +
+			"evener serve: session sess_old is already running; send work to the live session or fork it: " +
+			"API log target is already running: /state/sessions/sess_old.api.jsonl"
+	)
+
+	tests := []struct {
+		name        string
+		rosterEntry *rendezvous.Entry
+		wantContain []string
+		wantAbsent  []string
+	}{
+		{
+			name: "live incompatible daemon still owns the session",
+			rosterEntry: &rendezvous.Entry{
+				PID:       blockerPID,
+				Protocol:  "evener-appwire-v1",
+				Address:   blockerHTTP,
+				Endpoint:  "ws://" + blockerHTTP + "/rpc",
+				SourceID:  "local",
+				ThreadID:  sessionID,
+				SessionID: sessionID,
+			},
+			wantContain: []string{
+				// the holder
+				"pid 104",
+				// why the hub will not just talk to it
+				"evener-appwire-v1",
+				appwire.ProtocolVersion,
+				// the remedy the operator can actually run
+				"http://" + blockerHTTP + "/shutdown",
+				// the underlying cause, preserved
+				spawnFailure,
+			},
+		},
+		{
+			name:        "no live daemon to blame",
+			rosterEntry: nil,
+			wantContain: []string{spawnFailure},
+			// Nothing died holding the session, so the hub must not invent a
+			// holder or a pid.
+			wantAbsent: []string{"pid ", "/shutdown"},
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runDir := t.TempDir()
+			var roster *hubcore.Roster
+			if tc.rosterEntry != nil {
+				writeRendezvous(t, runDir, *tc.rosterEntry)
+				roster = hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusIdle})
+			} else {
+				roster = hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusIdle})
+			}
+			roster.Refresh()
+
+			spawner := &fakeRPCSpawner{
+				resume: func(_ context.Context, _ hubcore.ResumeRequest) (rendezvous.Entry, error) {
+					return rendezvous.Entry{}, errors.New(spawnFailure)
+				},
+			}
+
+			hub := newHubRPCTestServer(t, hubcore.WebConfig{
+				RunDir:      runDir,
+				Roster:      roster,
+				Spawner:     spawner,
+				Past:        hubcore.NewPastIndex(""),
+				ResumeLocks: hubcore.NewResumeLocks(),
+			})
+			defer hub.Close()
+			client := dialHubRPC(t, hub)
+			defer client.Close()
+
+			if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+				t.Fatalf("Initialize: %v", err)
+			}
+			_, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Session: sessionID})
+			if err == nil {
+				t.Fatal("ThreadResume succeeded, want the replacement spawn to fail")
+			}
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("ThreadResume error %T=%v, want WireError", err, err)
+			}
+			for _, want := range tc.wantContain {
+				if !strings.Contains(wire.Message, want) {
+					t.Fatalf("resume error is missing %q:\n%s", want, wire.Message)
+				}
+			}
+			for _, absent := range tc.wantAbsent {
+				if strings.Contains(wire.Message, absent) {
+					t.Fatalf("resume error should not contain %q:\n%s", absent, wire.Message)
+				}
+			}
+		})
+	}
+}
+
+func TestHubRPCThreadResumeRoutesConfiguredCodexSource(t *testing.T) {
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
+	var resumeCalled bool
+	appserver.HandleTyped(codex.Router(), appwire.MethodThreadResume, func(_ context.Context, params map[string]any) (map[string]any, error) {
+		resumeCalled = true
+		if params["threadId"] != "th_codex" {
+			t.Fatalf("thread/resume params=%+v", params)
+		}
+		for _, field := range []string{"pluginDirs", "enabledPlugins"} {
+			if _, present := params[field]; present {
+				t.Fatalf("thread/resume unexpectedly carried launch selection %q: %+v", field, params)
+			}
+		}
+		return map[string]any{"thread": map[string]any{
+			"id":            "th_codex",
+			"sessionId":     "th_codex",
+			"preview":       "resumed codex",
+			"modelProvider": "openai",
+			"status":        map[string]any{"type": "idle"},
+			"source":        "appServer",
+		}}, nil
+	})
+	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
+	defer codexHTTP.Close()
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past: hubcore.NewPastIndex(""),
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex",
+			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
+		}},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Ref: "codex:th_codex"})
+	if err != nil {
+		t.Fatalf("ThreadResume: %v", err)
+	}
+	if !resumeCalled {
+		t.Fatal("codex resume was not routed")
+	}
+	if resp.Thread.Evener.Ref != "codex:th_codex" {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+func TestHubRPCThreadReadDoesNotResumeConfiguredCodexSource(t *testing.T) {
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
+	var readCalled bool
+	appserver.HandleTyped(codex.Router(), appwire.MethodThreadRead, func(_ context.Context, params map[string]any) (map[string]any, error) {
+		readCalled = true
+		if params["threadId"] != "th_codex" {
+			t.Fatalf("thread/read params=%+v", params)
+		}
+		return map[string]any{"thread": map[string]any{
+			"id":        "th_codex",
+			"sessionId": "th_codex",
+			"preview":   "read-only codex",
+			"status":    map[string]any{"type": "idle"},
+			"source":    "appServer",
+		}}, nil
+	})
+	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
+	defer codexHTTP.Close()
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past: hubcore.NewPastIndex(""),
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex",
+			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
+		}},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "codex:th_codex"})
+	if err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if !readCalled {
+		t.Fatal("codex read was not routed")
+	}
+	if resp.Thread.Evener.Ref != "codex:th_codex" {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+func TestHubRPCThreadCompactRoutesConfiguredCodexSource(t *testing.T) {
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
+	var compactCalled bool
+	appserver.HandleTyped(codex.Router(), appwire.MethodThreadRead, func(_ context.Context, params map[string]any) (map[string]any, error) {
+		if params["threadId"] != "th_codex" {
+			t.Fatalf("thread/read params=%+v", params)
+		}
+		return map[string]any{"thread": map[string]any{
+			"id":        "th_codex",
+			"sessionId": "th_codex",
+			"preview":   "compact codex",
+			"status":    map[string]any{"type": "idle"},
+			"source":    "appServer",
+		}}, nil
+	})
+	appserver.HandleTyped(codex.Router(), appwire.MethodThreadCompactStart, func(_ context.Context, params map[string]any) (map[string]any, error) {
+		compactCalled = true
+		if params["threadId"] != "th_codex" {
+			t.Fatalf("thread/compact/start params=%+v", params)
+		}
+		return map[string]any{}, nil
+	})
+	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
+	defer codexHTTP.Close()
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past: hubcore.NewPastIndex(""),
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex",
+			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
+		}},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if err := client.ThreadCompactStart(context.Background(), appwire.ThreadCompactStartParams{Ref: "codex:th_codex"}); err != nil {
+		t.Fatalf("ThreadCompactStart: %v", err)
+	}
+	if !compactCalled {
+		t.Fatal("configured Codex source was not compacted")
+	}
+}
+
+func TestHubRPCThreadForkRoutesConfiguredCodexSource(t *testing.T) {
+	codex := appserver.NewServer(appserver.ServerConfig{ServerName: "codex-test", SourceID: "codex", AdapterNativeInitialize: true})
+	var forkCalled bool
+	appserver.HandleTyped(codex.Router(), appwire.MethodThreadRead, func(_ context.Context, params map[string]any) (map[string]any, error) {
+		if params["threadId"] != "th_codex" {
+			t.Fatalf("thread/read params=%+v", params)
+		}
+		return map[string]any{"thread": map[string]any{
+			"id":        "th_codex",
+			"sessionId": "th_codex",
+			"status":    map[string]any{"type": "idle"},
+			"source":    "appServer",
+		}}, nil
+	})
+	appserver.HandleTyped(codex.Router(), appwire.MethodThreadFork, func(_ context.Context, params map[string]any) (map[string]any, error) {
+		forkCalled = true
+		if params["threadId"] != "th_codex" {
+			t.Fatalf("thread/fork params=%+v", params)
+		}
+		return map[string]any{"thread": map[string]any{
+			"id":        "th_codex_child",
+			"sessionId": "th_codex_child",
+			"status":    map[string]any{"type": "idle"},
+			"source":    "appServer",
+		}}, nil
+	})
+	codexHTTP := httptest.NewServer(http.HandlerFunc(codex.ServeWebSocket))
+	defer codexHTTP.Close()
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past: hubcore.NewPastIndex(""),
+		CodexSources: []appsource.CodexSourceConfig{{
+			ID:       "codex",
+			Endpoint: "ws" + strings.TrimPrefix(codexHTTP.URL, "http"),
+		}},
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{Ref: "codex:th_codex"})
+	if err != nil {
+		t.Fatalf("ThreadFork: %v", err)
+	}
+	if !forkCalled {
+		t.Fatal("configured Codex source was not forked")
+	}
+	if resp.Thread.Evener.Ref != "codex:th_codex_child" {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+func TestHubRPCThreadStartRelaysReturnedSourceThread(t *testing.T) {
+	source := &startResumeRelaySource{
+		id: "codex",
+		thread: appwire.Thread{
+			ID:        "th_start_relay",
+			SessionID: "th_start_relay",
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:th_start_relay", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Harness: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
+	if err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	if resp.Thread.Evener.Ref != "codex:th_start_relay" {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+	expectRelaySubscription(t, source.subscribed)
+
+	source.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: "th_start_relay",
+			Ref:      "codex:th_start_relay",
+			TurnID:   "turn_1",
+			ItemID:   "item_1",
+			Delta:    "after start",
+		}),
+	}
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyAgentMessageDelta {
+			t.Fatalf("method=%q", got.Method)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for start relay notification")
+	}
+}
+
+func TestHubRPCThreadStartReturnsThreadWhenPostStartRelayFails(t *testing.T) {
+	source := &startRelayFailureSource{
+		id: "codex",
+		thread: appwire.Thread{
+			ID:        "th_start_relay_fail",
+			SessionID: "th_start_relay_fail",
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:th_start_relay_fail", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadStart(context.Background(), appwire.ThreadStartParams{Harness: "codex", CWD: "/work", Input: []appwire.InputItem{{Type: "text", Text: "hello"}}})
+	if err != nil {
+		t.Fatalf("ThreadStart: %v", err)
+	}
+	if resp.Thread.Evener.Ref != "codex:th_start_relay_fail" {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyWarning {
+			t.Fatalf("method=%q, want warning", got.Method)
+		}
+		if !strings.Contains(string(got.Params), "subscribe failed after start") || !strings.Contains(string(got.Params), `"source":"hub"`) {
+			t.Fatalf("warning params=%s", got.Params)
+		}
+		payload := warningPayload(got.Params)
+		if payload["source"] != "hub" || payload["title"] != "Live updates unavailable" {
+			t.Fatalf("warning payload=%+v", payload)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for relay warning")
+	}
+}
+
+func TestHubRPCThreadResumeRelaysReturnedSourceThread(t *testing.T) {
+	source := &startResumeRelaySource{
+		id: "codex",
+		thread: appwire.Thread{
+			ID:        "th_resume_relay",
+			SessionID: "th_resume_relay",
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:th_resume_relay", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 4),
+		subscribed:    make(chan struct{}, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadResume(context.Background(), appwire.ThreadResumeParams{Ref: "codex:th_resume_relay"})
+	if err != nil {
+		t.Fatalf("ThreadResume: %v", err)
+	}
+	if resp.Thread.Evener.Ref != "codex:th_resume_relay" {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+	expectRelaySubscription(t, source.subscribed)
+
+	source.notifications <- appwire.Notification{
+		Method: appwire.NotifyAgentMessageDelta,
+		Params: testRawJSON(t, appwire.AgentMessageDeltaParams{
+			ThreadID: "th_resume_relay",
+			Ref:      "codex:th_resume_relay",
+			TurnID:   "turn_1",
+			ItemID:   "item_1",
+			Delta:    "after resume",
+		}),
+	}
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyAgentMessageDelta {
+			t.Fatalf("method=%q", got.Method)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for resume relay notification")
+	}
+}
+
+func TestHubRPCTurnStartBlocksUnknownMutationWhenAutoResumeFails(t *testing.T) {
+	oldResolve, oldResume := resolveTurnStartSource, resumeTurnStartThread
+	t.Cleanup(func() {
+		resolveTurnStartSource, resumeTurnStartThread = oldResolve, oldResume
+	})
+
+	const (
+		mutationID    = "mutation-resume-failed"
+		resumeMessage = "restore session: incompatible mutation snapshot"
+	)
+	tests := []struct {
+		name           string
+		configure      func(*int)
+		wantStartCalls int
+	}{
+		{
+			name: "initial source resolution",
+			configure: func(_ *int) {
+				resolveTurnStartSource = func(context.Context, hubcore.WebConfig, *appsource.Registry, string, string) (appsource.Source, error) {
+					return nil, errors.New("source unavailable")
+				}
+			},
+		},
+		{
+			name: "session unavailable while starting turn",
+			configure: func(startCalls *int) {
+				source := &scriptedAppSource{
+					id: "local",
+					startTurn: func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+						(*startCalls)++
+						return appwire.TurnStartResponse{}, appwire.SessionUnavailable("daemon went away")
+					},
+				}
+				resolveTurnStartSource = func(context.Context, hubcore.WebConfig, *appsource.Registry, string, string) (appsource.Source, error) {
+					return source, nil
+				}
+			},
+			wantStartCalls: 1,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			startCalls := 0
+			resumeCalls := 0
+			tc.configure(&startCalls)
+			resumeTurnStartThread = func(context.Context, hubcore.WebConfig, *appsource.Registry, appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+				resumeCalls++
+				return appwire.ThreadResumeResponse{}, appwire.HubLaunchError(resumeMessage)
+			}
+
+			server := newHubAppServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, appsource.NewRegistry())
+			_, err := exactDispatch(context.Background(), t, server, appwire.MethodTurnStart, appwire.TurnStartParams{
+				ClientMutationID: mutationID,
+			})
+
+			var wire appwire.WireError
+			if !errors.As(err, &wire) {
+				t.Fatalf("TurnStart error %T=%v, want WireError", err, err)
+			}
+			data, ok := wire.Data.(appwire.ErrorData)
+			if !ok ||
+				wire.Code != appwire.CodeInternalError ||
+				wire.Message != resumeMessage ||
+				data.EvenerErrorInfo != appwire.ErrorMutationOutcomeUnknown ||
+				data.ClientMutationID != mutationID ||
+				data.MutationOutcome != appwire.MutationOutcomeUnknown ||
+				data.RetryDisposition != appwire.RetryDispositionBlocked ||
+				data.Cause != "persistenceUnavailable" {
+				t.Fatalf("wire code=%d message=%q data=%#v", wire.Code, wire.Message, wire.Data)
+			}
+			if resumeCalls != 1 {
+				t.Fatalf("resume calls=%d, want 1", resumeCalls)
+			}
+			if startCalls != tc.wantStartCalls {
+				t.Fatalf("start calls=%d, want %d", startCalls, tc.wantStartCalls)
+			}
+		})
+	}
+}
+
+func TestHubRPCTurnStartResumesPastThread(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
+	})
+	var gotPrompt string
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+		gotPrompt = inputTextForTest(params.Input)
+		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_4"}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	spawner := &fakeRPCSpawner{
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			if req.WorkingDir != workingDir {
+				t.Fatalf("resume request=%+v", req)
+			}
+			entry := rendezvous.Entry{
+				PID:        106,
+				Protocol:   appwire.ProtocolVersion,
+				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:   "local",
+				ThreadID:   sessionID,
+				SessionID:  sessionID,
+				WorkingDir: workingDir,
+			}
+			writeRendezvous(t, runDir, entry)
+			return entry, nil
+		},
+	}
+	roster := hubcore.NewRoster(runDir, nil)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}}); err != nil {
+		t.Fatalf("TurnStart: %v", err)
+	}
+	if gotPrompt != "resume work" {
+		t.Fatalf("prompt=%q", gotPrompt)
+	}
+}
+
+func TestHubRPCTurnStartResumesPastThreadAfterRelaySubscribeUnavailable(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	source := &resumeAfterSubscribeUnavailableSource{
+		thread: appwire.Thread{
+			ID:        sessionID,
+			SessionID: sessionID,
+			Source:    "local",
+			Evener:    appwire.EvenerThread{Ref: "local:" + sessionID, Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 1),
+	}
+	spawner := &fakeRPCSpawner{
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			if req.WorkingDir != workingDir {
+				t.Fatalf("resume request=%+v", req)
+			}
+			return rendezvous.Entry{
+				Protocol:   appwire.ProtocolVersion,
+				SourceID:   "local",
+				ThreadID:   sessionID,
+				SessionID:  sessionID,
+				WorkingDir: workingDir,
+			}, nil
+		},
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Spawner: spawner, Past: past})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume after relay"}}}); err != nil {
+		t.Fatalf("TurnStart: %v", err)
+	}
+	if prompt := source.lastStartPrompt(); prompt != "resume after relay" {
+		t.Fatalf("start prompt=%q", prompt)
+	}
+	if calls := source.subscribeCalls(); calls != 2 {
+		t.Fatalf("subscribe calls=%d, want 2", calls)
+	}
+}
+
+func TestHubRPCTurnStartDoesNotResumePastThreadOnLiveStartError(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		appserver.Subscribe(ctx, sessionID)
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+		return appwire.TurnStartResponse{}, appwire.Unavailable("session is processing")
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       107,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  sessionID,
+		SessionID: sessionID,
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	resumeCalled := false
+	spawner := &fakeRPCSpawner{
+		resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			resumeCalled = true
+			return rendezvous.Entry{}, errors.New("resume should not be called")
+		},
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
+	if err == nil || !strings.Contains(err.Error(), "session is processing") {
+		t.Fatalf("TurnStart err=%v, want live start error", err)
+	}
+	if resumeCalled {
+		t.Fatal("resume was called for a non-stale live StartTurn error")
+	}
+}
+
+func TestHubRPCTurnStartDoesNotResumePastThreadOnGenericSubstringError(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		appserver.Subscribe(ctx, sessionID)
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+		return appwire.TurnStartResponse{}, appwire.InternalError("tool output included connection refused")
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       108,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  "ws" + daemonHTTP.URL[len("http"):],
+		SourceID:  "local",
+		ThreadID:  sessionID,
+		SessionID: sessionID,
+	})
+	roster := hubcore.NewRoster(runDir, nil)
+	roster.Refresh()
+	resumeCalled := false
+	spawner := &fakeRPCSpawner{
+		resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			resumeCalled = true
+			return rendezvous.Entry{}, errors.New("resume should not be called")
+		},
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
+	if err == nil || !strings.Contains(err.Error(), "connection refused") {
+		t.Fatalf("TurnStart err=%v, want live start error", err)
+	}
+	if resumeCalled {
+		t.Fatal("resume was called for a generic live StartTurn error")
+	}
+}
+
+func TestHubRPCTurnStartResumesPastThreadAndRelaysNotifications(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		appserver.Subscribe(ctx, sessionID)
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_4"}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	spawner := &fakeRPCSpawner{
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			if req.WorkingDir != workingDir {
+				t.Fatalf("resume request=%+v", req)
+			}
+			entry := rendezvous.Entry{
+				PID:        107,
+				Protocol:   appwire.ProtocolVersion,
+				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:   "local",
+				ThreadID:   sessionID,
+				SessionID:  sessionID,
+				WorkingDir: workingDir,
+			}
+			writeRendezvous(t, runDir, entry)
+			return entry, nil
+		},
+	}
+	roster := hubcore.NewRoster(runDir, nil)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{RunDir: runDir, Roster: roster, Spawner: spawner, Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	if _, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:" + sessionID, IncludeTurns: true}); err != nil {
+		t.Fatalf("ThreadRead: %v", err)
+	}
+	if _, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}}); err != nil {
+		t.Fatalf("TurnStart: %v", err)
+	}
+
+	daemon.Broadcast(sessionID, appwire.NotifyAgentMessageDelta, appwire.AgentMessageDeltaParams{
+		ThreadID: sessionID,
+		Ref:      "local:" + sessionID,
+		TurnID:   "turn_4",
+		ItemID:   "item_1",
+		Delta:    "live update",
+	})
+
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyAgentMessageDelta {
+			t.Fatalf("method=%q", got.Method)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for resumed turn notification")
+	}
+}
+
+func TestHubRPCTurnStartResumesPastThreadAfterLocalTransportError(t *testing.T) {
+	root := t.TempDir()
+	workingDir := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-past-0000000000")
+	sessionID := buildRPCParentSessionWithWorkingDir(t, stateDir, workingDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	staleAddress := ln.Addr().String()
+	staleEndpoint := "ws://" + ln.Addr().String() + "/rpc"
+	if err := ln.Close(); err != nil {
+		t.Fatal(err)
+	}
+
+	daemon := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodThreadRead, func(ctx context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		appserver.Subscribe(ctx, sessionID)
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: sessionID, SessionID: sessionID, Source: "local", Evener: appwire.EvenerThread{Ref: params.Ref, Capabilities: appwire.ThreadCapabilities{Send: true}}}}, nil
+	})
+	appserver.HandleTyped(daemon.Router(), appwire.MethodTurnStart, func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+		return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_recovered"}}, nil
+	})
+	daemonHTTP := httptest.NewServer(http.HandlerFunc(daemon.ServeWebSocket))
+	defer daemonHTTP.Close()
+
+	runDir := t.TempDir()
+	writeRendezvous(t, runDir, rendezvous.Entry{
+		PID:       -1,
+		Address:   staleAddress,
+		Protocol:  appwire.ProtocolVersion,
+		Endpoint:  staleEndpoint,
+		SourceID:  "local",
+		ThreadID:  sessionID,
+		SessionID: sessionID,
+		StartedAt: time.Now().UTC(), // fresh crash: within the roster's crash-retention window
+	})
+	prober := perAddrProber{byAddr: map[string]struct{ SessionID, Status string }{}}
+	roster := hubcore.NewRoster(runDir, prober)
+	roster.Refresh()
+	if stale, ok := roster.Find(sessionID); !ok || stale.Status != "errored" || !stale.Crashed {
+		t.Fatalf("stale roster entry = %+v, %v; want retained crash marker", stale, ok)
+	}
+	resumeCalled := false
+	spawner := &fakeRPCSpawner{
+		resume: func(_ context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			if req.WorkingDir != workingDir {
+				t.Fatalf("resume request=%+v", req)
+			}
+			resumeCalled = true
+			entry := rendezvous.Entry{
+				PID:        110,
+				Address:    daemonHTTP.Listener.Addr().String(),
+				Protocol:   appwire.ProtocolVersion,
+				Endpoint:   "ws" + daemonHTTP.URL[len("http"):],
+				SourceID:   "local",
+				ThreadID:   sessionID,
+				SessionID:  sessionID,
+				WorkingDir: workingDir,
+				StartedAt:  time.Now().UTC(), // a real spawn stamps StartedAt; it must outrank the stale crashed entry
+			}
+			prober.byAddr[entry.Address] = struct{ SessionID, Status string }{SessionID: sessionID, Status: "idle"}
+			writeRendezvous(t, runDir, entry)
+			roster.Refresh()
+			return entry, nil
+		},
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		RunDir:      runDir,
+		Roster:      roster,
+		Spawner:     spawner,
+		Past:        past,
+		ResumeLocks: hubcore.NewResumeLocks(),
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation", Ref: "local:" + sessionID, Input: []appwire.InputItem{{Type: "text", Text: "resume work"}}})
+	if err != nil {
+		t.Fatalf("TurnStart: %v", err)
+	}
+	if !resumeCalled {
+		t.Fatal("resume was not called after local transport error")
+	}
+	if resp.Turn.ID != "turn_recovered" {
+		t.Fatalf("turn=%+v", resp.Turn)
+	}
+}
+
+// TestHubKnowsRefAcceptsManagedLaunchRefWithoutPastEntry guards the kata ws5f
+// fix: the MethodTurnStart resume gate must accept managed-launch refs (e.g.
+// codex:thread_xxx) even when they aren't in the local past index, so that an
+// auto-resume retry fires when the managed daemon dies mid-turn.
+func TestHubKnowsRefAcceptsManagedLaunchRefWithoutPastEntry(t *testing.T) {
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}})
+	cfg := hubcore.WebConfig{Past: hubcore.NewPastIndex(""), CodexLauncher: launcher}
+	if !hubKnowsRef(cfg, "codex-managed:th_known") {
+		t.Fatal("hubKnowsRef should accept managed-launch ref")
+	}
+	if hubKnowsRef(cfg, "codex-unknown:th_known") {
+		t.Fatal("hubKnowsRef should reject ref whose source is not managed")
+	}
+	if hubKnowsRef(cfg, "local:th_not_in_past") {
+		t.Fatal("hubKnowsRef should reject local ref with no past entry")
+	}
+}
+
+// resumeAfterSessionUnavailableManagedSource simulates a managed codex daemon
+// that returns SessionUnavailable on the first StartTurn (the daemon just
+// died), then succeeds after the hub calls ResumeThread.
+type resumeAfterSessionUnavailableManagedSource struct {
+	relayLifecycleSource
+	id           string
+	mu           sync.Mutex
+	startCalls   int
+	resumeCalls  int
+	thread       appwire.Thread
+	startPrompts []string
+}
+
+func (s *resumeAfterSessionUnavailableManagedSource) ID() string { return s.id }
+
+func (s *resumeAfterSessionUnavailableManagedSource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	return appwire.ThreadReadResponse{Thread: s.thread}, nil
+}
+
+func (s *resumeAfterSessionUnavailableManagedSource) ResumeThread(_ context.Context, _ appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+	s.mu.Lock()
+	s.resumeCalls++
+	s.mu.Unlock()
+	return appwire.ThreadResumeResponse{Thread: s.thread}, nil
+}
+
+func (s *resumeAfterSessionUnavailableManagedSource) StartTurn(_ context.Context, params appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	s.mu.Lock()
+	s.startCalls++
+	calls := s.startCalls
+	s.startPrompts = append(s.startPrompts, inputTextForTest(params.Input))
+	s.mu.Unlock()
+	if calls == 1 {
+		return appwire.TurnStartResponse{}, appwire.SessionUnavailable("managed daemon went away")
+	}
+	return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_after_resume"}}, nil
+}
+
+func (s *resumeAfterSessionUnavailableManagedSource) counts() (start, resume int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.startCalls, s.resumeCalls
+}
+
+// seedManagedSource pokes a fake source into the CodexLauncher's caches so
+// that EnsureSource returns it without spawning a real process.
+func seedManagedSource(t *testing.T, launcher *codexlaunch.CodexLauncher, sourceID string, source appsource.Source) {
+	t.Helper()
+	launcher.Mu.Lock()
+	defer launcher.Mu.Unlock()
+	launcher.Sources[sourceID] = source
+	launcher.Running[sourceID] = &codexlaunch.LaunchedCodex{
+		Cmd:    &exec.Cmd{},
+		Exited: make(chan struct{}),
+	}
+}
+
+// TestHubRPCTurnStartResumesManagedLaunchRefOnSessionUnavailable verifies that
+// the auto-resume retry fires for a non-local managed-launch ref when the
+// backing daemon returns SessionUnavailable. Previously the past-index gate
+// at MethodTurnStart skipped the retry entirely for any non-local ref (kata
+// ws5f).
+func TestHubRPCTurnStartResumesManagedLaunchRefOnSessionUnavailable(t *testing.T) {
+	launcher := codexlaunch.NewCodexLauncher([]codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}})
+	fake := &resumeAfterSessionUnavailableManagedSource{
+		canceled: make(chan struct{}, 1),
+		id:       "codex-managed",
+		thread: appwire.Thread{
+			ID:        "th_managed",
+			SessionID: "th_managed",
+			Source:    "codex-managed",
+			Evener: appwire.EvenerThread{
+				Ref:          "codex-managed:th_managed",
+				Capabilities: appwire.ThreadCapabilities{Send: true},
+			},
+		},
+	}
+	seedManagedSource(t, launcher, "codex-managed", fake)
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:          hubcore.NewPastIndex(""),
+		CodexLaunches: []codexlaunch.CodexLaunchConfig{{ID: "codex-managed"}},
+		CodexLauncher: launcher,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation",
+		Ref:   "codex-managed:th_managed",
+		Input: []appwire.InputItem{{Type: "text", Text: "keep going"}},
+	})
+	if err != nil {
+		t.Fatalf("TurnStart: %v", err)
+	}
+	if resp.Turn.ID != "turn_after_resume" {
+		t.Fatalf("turn=%+v, want turn_after_resume", resp.Turn)
+	}
+	starts, resumes := fake.counts()
+	if starts != 2 {
+		t.Fatalf("StartTurn calls=%d, want 2 (initial + retry after resume)", starts)
+	}
+	if resumes != 1 {
+		t.Fatalf("ResumeThread calls=%d, want 1", resumes)
+	}
+}
+
+// sessionUnavailableOnceSource returns SessionUnavailable on the first
+// StartTurn and tracks ResumeThread calls.
+type sessionUnavailableOnceSource struct {
+	relayLifecycleSource
+	id          string
+	mu          sync.Mutex
+	startCalls  int
+	resumeCalls int
+	thread      appwire.Thread
+}
+
+func (s *sessionUnavailableOnceSource) ID() string { return s.id }
+
+func (s *sessionUnavailableOnceSource) ReadThread(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+	return appwire.ThreadReadResponse{Thread: s.thread}, nil
+}
+
+func (s *sessionUnavailableOnceSource) ResumeThread(context.Context, appwire.ThreadResumeParams) (appwire.ThreadResumeResponse, error) {
+	s.mu.Lock()
+	s.resumeCalls++
+	s.mu.Unlock()
+	return appwire.ThreadResumeResponse{Thread: s.thread}, nil
+}
+
+func (s *sessionUnavailableOnceSource) StartTurn(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
+	s.mu.Lock()
+	s.startCalls++
+	calls := s.startCalls
+	s.mu.Unlock()
+	if calls == 1 {
+		return appwire.TurnStartResponse{}, appwire.SessionUnavailable("daemon went away")
+	}
+	return appwire.TurnStartResponse{Turn: appwire.Turn{ID: "turn_recovered"}}, nil
+}
+
+func (s *sessionUnavailableOnceSource) counts() (start, resume int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.startCalls, s.resumeCalls
+}
+
+// TestHubRPCTurnStartDoesNotResumeUnknownNonLocalRef confirms the resume gate
+// still refuses non-local refs the hub does not know about (no managed launch,
+// no past entry) even after widening the gate to include managed-launch
+// sources (kata ws5f). The hub should bubble up the original SessionUnavailable
+// error without attempting a resume.
+func TestHubRPCTurnStartDoesNotResumeUnknownNonLocalRef(t *testing.T) {
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	fake := &sessionUnavailableOnceSource{
+		canceled: make(chan struct{}, 1),
+		id:       "codex",
+		thread: appwire.Thread{
+			ID:        "th_unknown",
+			SessionID: "th_unknown",
+			Source:    "codex",
+			Evener: appwire.EvenerThread{
+				Ref:          "codex:th_unknown",
+				Capabilities: appwire.ThreadCapabilities{Send: true},
+			},
+		},
+	}
+	web.sources.Add(fake)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	_, err := client.TurnStart(context.Background(), appwire.TurnStartParams{ClientMutationID: "test-mutation",
+		Ref:   "codex:th_unknown",
+		Input: []appwire.InputItem{{Type: "text", Text: "should not resume"}},
+	})
+	if err == nil {
+		t.Fatal("TurnStart succeeded, want SessionUnavailable error")
+	}
+	if !strings.Contains(err.Error(), "daemon went away") {
+		t.Fatalf("err=%v, want daemon went away", err)
+	}
+	starts, resumes := fake.counts()
+	if starts != 1 {
+		t.Fatalf("StartTurn calls=%d, want 1 (no retry for unknown ref)", starts)
+	}
+	if resumes != 0 {
+		t.Fatalf("ResumeThread calls=%d, want 0 (gate must reject unknown non-local ref)", resumes)
+	}
+}
+
+func TestHubRPCPathsCompleteReturnsMatchingDirectories(t *testing.T) {
+	root := t.TempDir()
+	alpha := filepath.Join(root, "alpha")
+	if err := os.Mkdir(alpha, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, "beta"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "alpine.txt"), []byte("no"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	for i := range 35 {
+		if err := os.Mkdir(filepath.Join(root, fmt.Sprintf("child-%02d", i)), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	newProject := filepath.Join(root, "new-project")
+	if err := os.Mkdir(newProject, 0o755); err != nil {
+		t.Fatal(err)
+	}
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.PathsComplete(context.Background(), appwire.PathsCompleteParams{Prefix: filepath.Join(root, "alph")})
+	if err != nil {
+		t.Fatalf("PathsComplete: %v", err)
+	}
+	if len(resp.Data) != 1 || resp.Data[0] != alpha {
+		t.Fatalf("dirs=%+v, want [%s]", resp.Data, alpha)
+	}
+
+	all, err := client.PathsComplete(context.Background(), appwire.PathsCompleteParams{Prefix: root + "/"})
+	if err != nil {
+		t.Fatalf("PathsComplete all children: %v", err)
+	}
+	if len(all.Data) != 38 {
+		t.Fatalf("all dirs=%d, want every one of 38 children", len(all.Data))
+	}
+
+	fuzzy, err := client.PathsComplete(context.Background(), appwire.PathsCompleteParams{Prefix: filepath.Join(root, "nwprj")})
+	if err != nil {
+		t.Fatalf("PathsComplete fuzzy: %v", err)
+	}
+	if len(fuzzy.Data) != 1 || fuzzy.Data[0] != newProject {
+		t.Fatalf("fuzzy dirs=%+v, want [%s]", fuzzy.Data, newProject)
+	}
+}
+
+// TestHubRPCProjectsRecentReturnsMostRecentDirs covers the session creation
+// flows' recent-project source (issue #35): evener/projects/recent serves the
+// past index's distinct working dirs, most-recently-used first, defaulting to
+// the 15-option cap when the request carries no limit.
+func TestHubRPCProjectsRecentReturnsMostRecentDirs(t *testing.T) {
+	// RecentProjectDirs drops dirs that no longer exist on disk (issue #50),
+	// so every seeded WorkingDir must be a real directory.
+	root := t.TempDir()
+	mkdir := func(name string) string {
+		dir := filepath.Join(root, name)
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("MkdirAll(%s): %v", dir, err)
+		}
+		return dir
+	}
+	alpha := mkdir("alpha")
+	beta := mkdir("beta")
+
+	past := hubcore.NewPastIndex("")
+	now := time.Now().UTC()
+	metas := []schema.SessionMeta{
+		{ID: "02wMz5Txv1C3Hut0M8GCeB", UpdatedAt: now.Add(-1 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: alpha}},
+		{ID: "02wMz5Txv2enqVTitaig6F", UpdatedAt: now.Add(-2 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: beta}},
+		{ID: "02wMz5Txv5aIxgf9yVdd0N", UpdatedAt: now.Add(-3 * time.Minute), EnvInfo: schema.EnvironmentInfo{WorkingDir: alpha}}, // older dup â€” dropped
+	}
+	for n := range 20 {
+		metas = append(metas, schema.SessionMeta{
+			ID:        fmt.Sprintf("02wMz5Txv1C3Hut0M8GC%02d", n),
+			UpdatedAt: now.Add(-time.Duration(n+4) * time.Minute),
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: mkdir(fmt.Sprintf("proj-%02d", n))},
+		})
+	}
+	past.SeedForTest(metas)
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ProjectsRecent(context.Background(), appwire.ProjectsRecentParams{})
+	if err != nil {
+		t.Fatalf("ProjectsRecent: %v", err)
+	}
+	if len(resp.Data) != 15 {
+		t.Fatalf("recent dirs=%d, want the default 15-option cap", len(resp.Data))
+	}
+	if resp.Data[0] != alpha || resp.Data[1] != beta {
+		t.Fatalf("recent dirs[0:2]=%v, want [%s %s] (most recently used first)", resp.Data[:2], alpha, beta)
+	}
+
+	limited, err := client.ProjectsRecent(context.Background(), appwire.ProjectsRecentParams{Limit: 2})
+	if err != nil {
+		t.Fatalf("ProjectsRecent limit=2: %v", err)
+	}
+	if len(limited.Data) != 2 || limited.Data[0] != alpha || limited.Data[1] != beta {
+		t.Fatalf("recent dirs limit=2 = %v, want [%s %s]", limited.Data, alpha, beta)
+	}
+}
+
+// TestHubRPCProjectsRecentEmptyMarshalsAsEmptyArray pins the WIRE shape of a
+// hub with no remembered projects. A nil Data slice marshals as JSON `null`,
+// but the wire type declares `data: string[]` (non-nullable in the generated
+// TypeScript), so a null reaches the browser as a value the type system
+// promised was impossible and the first `.length` on it crashes the pane.
+func TestHubRPCProjectsRecentEmptyMarshalsAsEmptyArray(t *testing.T) {
+	for name, cfg := range map[string]hubcore.WebConfig{
+		"no past index": {},
+		"empty past":    {Past: hubcore.NewPastIndex("")},
+	} {
+		t.Run(name, func(t *testing.T) {
+			server := newHubAppServer(cfg, appsource.NewRegistry())
+			raw, err := server.Router().Dispatch(context.Background(), appwire.Request{
+				ID:     appwire.NewIntID(1),
+				Method: appwire.MethodEvenerProjectsRecent,
+				Params: json.RawMessage(`{}`),
+			})
+			if err != nil {
+				t.Fatalf("Dispatch projects/recent: %v", err)
+			}
+			encoded, err := json.Marshal(raw)
+			if err != nil {
+				t.Fatalf("marshal: %v", err)
+			}
+			if string(encoded) != `{"data":[]}` {
+				t.Fatalf("marshalled empty recents = %s, want {\"data\":[]}", encoded)
+			}
+		})
+	}
+}
+
+func TestHubRPCThreadForkRoutesNonLocalCapableSource(t *testing.T) {
+	source := &forkingRelaySource{
+		id: "codex",
+		thread: appwire.Thread{
+			ID:        "th_fork",
+			SessionID: "th_fork",
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:th_fork", Capabilities: appwire.ThreadCapabilities{ForkFromTurn: true}},
+		},
+		notifications: make(chan appwire.Notification, 1),
+		canceled:      make(chan struct{}, 1),
+		response: appwire.ThreadForkResponse{Thread: appwire.Thread{
+			ID:        "th_child",
+			SessionID: "th_child",
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:th_child"},
+		}},
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
+		Ref:          "codex:th_fork",
+		SourceTurnID: "codex-turn-1",
+		Model:        "gpt-5-codex",
+	})
+	if err != nil {
+		t.Fatalf("ThreadFork: %v", err)
+	}
+	if !source.forkCalled {
+		t.Fatal("non-local source ForkThread was not called")
+	}
+	if source.forkParams.SourceTurnID != "codex-turn-1" || source.forkParams.EditedInput != "" {
+		t.Fatalf("fork params=%+v", source.forkParams)
+	}
+	if resp.Thread.Evener.Ref != "codex:th_child" {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+func TestHubRPCThreadForkRoutesNonLocalWholeThreadForkWithoutTurnForkCapability(t *testing.T) {
+	source := &forkingRelaySource{
+		id: "codex",
+		thread: appwire.Thread{
+			ID:        "th_whole_fork",
+			SessionID: "th_whole_fork",
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:th_whole_fork", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 1),
+		canceled:      make(chan struct{}, 1),
+		response: appwire.ThreadForkResponse{Thread: appwire.Thread{
+			ID:        "th_whole_child",
+			SessionID: "th_whole_child",
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:th_whole_child"},
+		}},
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{Ref: "codex:th_whole_fork"})
+	if err != nil {
+		t.Fatalf("ThreadFork: %v", err)
+	}
+	if !source.forkCalled {
+		t.Fatal("whole-thread fork was not routed to source")
+	}
+	if source.forkParams.SourceTurnID != "" || source.forkParams.EditedInput != "" || source.forkParams.Label != "" {
+		t.Fatalf("fork params=%+v", source.forkParams)
+	}
+	if resp.Thread.Evener.Ref != "codex:th_whole_child" {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+}
+
+func TestHubRPCThreadForkReturnsUnavailableWhenNonLocalSourceCannotFork(t *testing.T) {
+	source := &forkingRelaySource{
+		id: "codex",
+		thread: appwire.Thread{
+			ID:        "th_no_fork",
+			SessionID: "th_no_fork",
+			Source:    "codex",
+			Evener:    appwire.EvenerThread{Ref: "codex:th_no_fork", Capabilities: appwire.ThreadCapabilities{Send: true}},
+		},
+		notifications: make(chan appwire.Notification, 1),
+		canceled:      make(chan struct{}, 1),
+	}
+	srv := httptest.NewUnstartedServer(nil)
+	web := NewWebServer(hubcore.WebConfig{HubAddr: srv.Listener.Addr().String(), Past: hubcore.NewPastIndex("")})
+	web.sources.Add(source)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	defer srv.Close()
+
+	client := dialHubRPC(t, srv)
+	defer client.Close()
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	err := client.Request(context.Background(), appwire.MethodThreadFork, appwire.ThreadForkParams{
+		Ref:          "codex:th_no_fork",
+		SourceTurnID: "codex-turn-1",
+	}, &appwire.ThreadForkResponse{})
+	if err == nil {
+		t.Fatal("ThreadFork succeeded for source without fork capability")
+	}
+	if source.forkCalled {
+		t.Fatal("fork reached source despite missing capability")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		t.Fatalf("error %T does not preserve WireError: %v", err, err)
+	}
+	if wire.Code != appwire.CodeUnavailable {
+		t.Fatalf("wire=%+v", wire)
+	}
+}
+
+func TestHubRPCThreadForkCreatesForkedThread(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-fork-0000000000")
+	parentID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
+		Ref:          "local:" + parentID,
+		SourceTurnID: "3",
+		EditedInput:  "second task, edited",
+		Label:        "before edit",
+	})
+	if err != nil {
+		t.Fatalf("ThreadFork: %v", err)
+	}
+	if resp.Thread.ID == "" || resp.Thread.ID == parentID || resp.Thread.Evener.Ref != "local:"+resp.Thread.ID {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+	childMeta, err := schema.LoadSessionMeta(stateDir, resp.Thread.ID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(child): %v", err)
+	}
+	if childMeta.ParentSessionID != parentID || childMeta.DivergenceTurn != 3 {
+		t.Fatalf("child meta=%+v", childMeta)
+	}
+}
+
+// TestHubRPCThreadForkDeferInput verifies the fork-from-message flow (issue
+// #42): deferInput forks the thread at the source turn WITHOUT appending a
+// replacement message, so the child transcript holds only the prefix and the
+// response carries the original input text for the client to stage in its
+// composer. The forked session must not auto-run the message.
+func TestHubRPCThreadForkDeferInput(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-fork-0000000000")
+	parentID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	resp, err := client.ThreadFork(context.Background(), appwire.ThreadForkParams{
+		Ref:          "local:" + parentID,
+		SourceTurnID: "3",
+		DeferInput:   true,
+	})
+	if err != nil {
+		t.Fatalf("ThreadFork: %v", err)
+	}
+	if resp.Thread.ID == "" || resp.Thread.ID == parentID || resp.Thread.Evener.Ref != "local:"+resp.Thread.ID {
+		t.Fatalf("thread=%+v", resp.Thread)
+	}
+	if resp.OriginalInput != "second task" {
+		t.Fatalf("OriginalInput=%q, want %q", resp.OriginalInput, "second task")
+	}
+	childMeta, err := schema.LoadSessionMeta(stateDir, resp.Thread.ID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(child): %v", err)
+	}
+	if childMeta.ParentSessionID != parentID || childMeta.DivergenceTurn != 3 {
+		t.Fatalf("child meta=%+v", childMeta)
+	}
+	// The child transcript must contain only the prefix entries [U1, A1]:
+	// no trailing USER_INPUT turn that would auto-run on open.
+	raw, err := os.ReadFile(filepath.Join(stateDir, "sessions", resp.Thread.ID+".transcript.jsonl"))
+	if err != nil {
+		t.Fatalf("read child transcript: %v", err)
+	}
+	if strings.Contains(string(raw), "second task") {
+		t.Fatalf("deferred fork must not copy the diverging user message:\n%s", raw)
+	}
+}
+
+// TestHubRPCThreadForkDeferInputRejectsEditedInput verifies that deferInput
+// and editedInput are mutually exclusive: one either replaces the message
+// inline (editedInput) or hands it back for editing (deferInput), never both.
+func TestHubRPCThreadForkDeferInputRejectsEditedInput(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-fork-0000000000")
+	parentID := buildRPCParentSession(t, stateDir)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{Past: past})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	err := client.Request(context.Background(), appwire.MethodThreadFork, appwire.ThreadForkParams{
+		Ref:          "local:" + parentID,
+		SourceTurnID: "3",
+		EditedInput:  "second task, edited",
+		DeferInput:   true,
+	}, &appwire.ThreadForkResponse{})
+	if err == nil {
+		t.Fatal("ThreadFork with both editedInput and deferInput should fail")
+	}
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeInvalidParams {
+		t.Fatalf("error=%v, want InvalidParams", err)
+	}
+}
+
+type fakeRPCSpawner struct {
+	spawn        func(context.Context, hubcore.SpawnRequest) (rendezvous.Entry, error)
+	resume       func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error)
+	launchModels func(context.Context) ([]appwire.ModelDescriptor, error)
+}
+
+type failedRPCProber struct{}
+
+func (failedRPCProber) Probe(rendezvous.Entry) hubcore.ProbeResult {
+	return hubcore.ProbeResult{}
+}
+
+type dropFirstConnectionListener struct {
+	net.Listener
+	once    sync.Once
+	dropped chan struct{}
+}
+
+func (l *dropFirstConnectionListener) Accept() (net.Conn, error) {
+	for {
+		conn, err := l.Listener.Accept()
+		if err != nil {
+			return nil, err
+		}
+		dropped := false
+		l.once.Do(func() {
+			dropped = true
+			_ = conn.Close()
+			close(l.dropped)
+		})
+		if dropped {
+			continue
+		}
+		return conn, nil
+	}
+}
+
+type fakeRPCModelContractSpawner struct {
+	fakeRPCSpawner
+	contract appwire.ModelListResponse
+	err      error
+}
+
+func (f *fakeRPCModelContractSpawner) ListLaunchModelContract(context.Context) (appwire.ModelListResponse, error) {
+	if f.err != nil {
+		return appwire.ModelListResponse{}, f.err
+	}
+	return f.contract, nil
+}
+
+type fakeRPCWorkingDirModelContractSpawner struct {
+	fakeRPCSpawner
+	fallback              appwire.ModelListResponse
+	contractForWorkingDir func(context.Context, string) (appwire.ModelListResponse, error)
+}
+
+func (f *fakeRPCWorkingDirModelContractSpawner) ListLaunchModelContract(context.Context) (appwire.ModelListResponse, error) {
+	return f.fallback, nil
+}
+
+func (f *fakeRPCWorkingDirModelContractSpawner) ListLaunchModelContractForWorkingDir(ctx context.Context, cwd string) (appwire.ModelListResponse, error) {
+	if f.contractForWorkingDir == nil {
+		return appwire.ModelListResponse{}, nil
+	}
+	return f.contractForWorkingDir(ctx, cwd)
+}
+
+func (f *fakeRPCSpawner) Spawn(ctx context.Context, req hubcore.SpawnRequest) (rendezvous.Entry, error) {
+	if f.spawn != nil {
+		return f.spawn(ctx, req)
+	}
+	return rendezvous.Entry{}, appwire.Unavailable("spawn not configured")
+}
+
+func (f *fakeRPCSpawner) Resume(ctx context.Context, req hubcore.ResumeRequest) (rendezvous.Entry, error) {
+	if f.resume != nil {
+		return f.resume(ctx, req)
+	}
+	return rendezvous.Entry{}, appwire.Unavailable("resume not configured")
+}
+
+func (f *fakeRPCSpawner) ListLaunchModels(ctx context.Context) ([]appwire.ModelDescriptor, error) {
+	if f.launchModels != nil {
+		return f.launchModels(ctx)
+	}
+	return nil, appwire.Unavailable("launch model contract not configured")
+}
+
+func buildRPCParentSession(t *testing.T, stateDir string) string {
+	t.Helper()
+	return buildRPCParentSessionWithWorkingDir(t, stateDir, t.TempDir())
+}
+
+func buildRPCParentSessionWithWorkingDir(t *testing.T, stateDir, workingDir string) string {
+	t.Helper()
+	parentID := "02wMz5Txv1C3Hut0M8GCeB"
+	if err := os.MkdirAll(filepath.Join(stateDir, "sessions"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writer, err := transcript.NewWriter(filepath.Join(stateDir, "sessions", parentID+".transcript.jsonl"), transcript.Header{
+		SessionID:  parentID,
+		CreatedAt:  time.Now().UTC(),
+		ProfileID:  "openai",
+		Model:      "gpt-5",
+		WorkingDir: workingDir,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, turn := range []schema.Turn{
+		schema.NewTurn(schema.TurnUserInput, llm.User("first task")),
+		schema.NewTurn(schema.TurnAssistant, llm.Assistant("first reply")),
+		schema.NewTurn(schema.TurnUserInput, llm.User("second task")),
+	} {
+		if err := writer.Append(turn); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID:             parentID,
+		ProfileID:      "openai",
+		Model:          "gpt-5",
+		EnvInfo:        schema.EnvironmentInfo{WorkingDir: workingDir},
+		CreatedAt:      time.Now().UTC(),
+		UpdatedAt:      time.Now().UTC(),
+		TurnCount:      2,
+		OriginalPrompt: "second task",
+	}); err != nil {
+		t.Fatal(err)
+	}
+	return parentID
+}
+
+func launcherRunningProcess(t *testing.T, launcher *codexlaunch.CodexLauncher, sourceID string) *codexlaunch.LaunchedCodex {
+	t.Helper()
+	launcher.Mu.Lock()
+	defer launcher.Mu.Unlock()
+	launched := launcher.Running[sourceID]
+	if launched == nil || launched.Cmd == nil || launched.Cmd.Process == nil {
+		t.Fatalf("launcher has no running process for %s", sourceID)
+	}
+	return launched
+}
+
+func waitLaunchedCodexExited(t *testing.T, launched *codexlaunch.LaunchedCodex) {
+	t.Helper()
+	select {
+	case <-launched.Exited:
+	case <-time.After(2 * time.Second):
+		t.Fatal("timed out waiting for launched codex process to exit")
+	}
+}
+
+// TestLaunchProviderAllowsUnreportedModels_KeyedByBehaviorTag verifies that
+// launchProviderAllowsUnreportedModels returns true for any instance name
+// whose behavior tag is "openrouter-anthropic", not just the literal string.
+// A renamed instance like "ora-work" mapped to tag "openrouter-anthropic" must
+// behave identically to the canonical instance name.
+func TestLaunchProviderAllowsUnreportedModels_KeyedByBehaviorTag(t *testing.T) {
+	cfg := &providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
+			{Name: "ora-work", Type: "openrouter-anthropic"},
+		},
+	}
+	// Renamed instance with tag "openrouter-anthropic" must allow unreported models.
+	if !launchProviderAllowsUnreportedModels("ora-work", cfg) {
+		t.Error("renamed openrouter-anthropic instance must allow unreported models")
+	}
+	// Identity fallback (no config): literal name "openrouter-anthropic" still works.
+	if !launchProviderAllowsUnreportedModels("openrouter-anthropic", nil) {
+		t.Error("canonical openrouter-anthropic must allow unreported models with nil config")
+	}
+	// A non-openrouter-anthropic instance must not allow unreported models.
+	if launchProviderAllowsUnreportedModels("openrouter", cfg) {
+		t.Error("openrouter instance must not allow unreported models")
+	}
+}
+
+func TestHubRPCInstanceListRoutesToController(t *testing.T) {
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	cfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
+			{Name: "my-openai", Type: "openai", APIStyle: "responses"},
+		},
+	}
+	if err := providercfg.WriteFile(tomlPath, cfg); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		ProviderConfig:      &cfg,
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+	var resp appwire.InstanceListResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceList, appwire.EmptyParams{}, &resp); err != nil {
+		t.Fatalf("evener/instance/list: %v", err)
+	}
+	if len(resp.Instances) != 1 || resp.Instances[0].Name != "my-openai" {
+		t.Fatalf("instances=%+v", resp.Instances)
+	}
+	if len(resp.AvailableTypes) == 0 {
+		t.Error("AvailableTypes must be non-empty in list response")
+	}
+	hasOpenAI := false
+	for _, tp := range resp.AvailableTypes {
+		if tp == "openai" {
+			hasOpenAI = true
+		}
+	}
+	if !hasOpenAI {
+		t.Errorf("AvailableTypes=%v missing expected type \"openai\"", resp.AvailableTypes)
+	}
+}
+
+// TestHubRPCInstanceCreateBroadcastsAuthUpdated proves the "multiple browsers
+// stay in sync" founding requirement for provider-instance CRUD: a successful
+// evener/instance/create must broadcast evener/auth/updated so every other
+// connected client refetches its now-stale instance list. The notification is
+// reused rather than a new one minted for instances: notifications.js already
+// treats evener/auth/updated as payload-agnostic ("something about credentials
+// or instances changed, refetch"), reloading both the instances panel and the
+// providers settings tab on receipt.
+func TestHubRPCInstanceCreateBroadcastsAuthUpdated(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	writeMinimalProvidersToml(t, tomlPath)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var resp appwire.InstanceListResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceCreate, appwire.InstanceCreateParams{Type: "anthropic", Name: "mywork"}, &resp); err != nil {
+		t.Fatalf("evener/instance/create: %v", err)
+	}
+
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyEvenerAuthUpdated {
+			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifyEvenerAuthUpdated)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for evener/auth/updated broadcast after instance create")
+	}
+}
+
+// TestHubRPCInstanceEditBroadcastsAuthUpdated is the evener/instance/edit sibling
+// of TestHubRPCInstanceCreateBroadcastsAuthUpdated; see its doc comment for why
+// evener/auth/updated is the right (reused) notification.
+func TestHubRPCInstanceEditBroadcastsAuthUpdated(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	writeMinimalProvidersToml(t, tomlPath)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var resp appwire.InstanceListResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceEdit, appwire.InstanceEditParams{Name: "base", BaseURL: "https://example.test"}, &resp); err != nil {
+		t.Fatalf("evener/instance/edit: %v", err)
+	}
+
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyEvenerAuthUpdated {
+			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifyEvenerAuthUpdated)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for evener/auth/updated broadcast after instance edit")
+	}
+}
+
+// TestHubRPCInstanceRemoveBroadcastsAuthUpdated is the evener/instance/remove
+// sibling of TestHubRPCInstanceCreateBroadcastsAuthUpdated; see its doc
+// comment for why evener/auth/updated is the right (reused) notification.
+func TestHubRPCInstanceRemoveBroadcastsAuthUpdated(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	writeMinimalProvidersToml(t, tomlPath)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var resp appwire.InstanceListResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceRemove, appwire.InstanceRemoveParams{Name: "base"}, &resp); err != nil {
+		t.Fatalf("evener/instance/remove: %v", err)
+	}
+
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyEvenerAuthUpdated {
+			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifyEvenerAuthUpdated)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for evener/auth/updated broadcast after instance remove")
+	}
+}
+
+// TestHubRPCInstanceSetDefaultBroadcastsAuthUpdated is the
+// evener/instance/setDefault sibling of TestHubRPCInstanceCreateBroadcastsAuthUpdated;
+// see its doc comment for why evener/auth/updated is the right (reused)
+// notification.
+func TestHubRPCInstanceSetDefaultBroadcastsAuthUpdated(t *testing.T) {
+	oaitest.IsolateOpenAIAuth(t)
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	writeMinimalProvidersToml(t, tomlPath)
+	hub := newHubRPCTestServer(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	var resp appwire.InstanceListResponse
+	if err := client.Request(context.Background(), appwire.MethodEvenerInstanceSetDefault, appwire.InstanceSetDefaultParams{Name: "base"}, &resp); err != nil {
+		t.Fatalf("evener/instance/setDefault: %v", err)
+	}
+
+	select {
+	case got := <-client.Notifications():
+		if got.Method != appwire.NotifyEvenerAuthUpdated {
+			t.Fatalf("method=%q, want %q", got.Method, appwire.NotifyEvenerAuthUpdated)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for evener/auth/updated broadcast after instance setDefault")
+	}
+}
+
+func dialHubRPC(t *testing.T, hub *httptest.Server) *appwire.Client {
+	t.Helper()
+	transport, err := appwire.DialWebSocket(context.Background(), "ws"+hub.URL[len("http"):]+"/rpc", hub.Client())
+	if err != nil {
+		t.Fatalf("dial hub rpc: %v", err)
+	}
+	client := appwire.NewClient(transport)
+	client.Start(context.Background())
+	return client
+}
+
+func newHubRPCTestServer(t *testing.T, cfg hubcore.WebConfig) *httptest.Server {
+	t.Helper()
+	srv, _ := newHubRPCTestServerWithWeb(t, cfg)
+	return srv
+}
+
+// newHubRPCTestServerWithWeb behaves like newHubRPCTestServer but also
+// returns the constructed *WebServer, for tests that need to wire an
+// onChange hook on one of its cfg stores (e.g. past.SetOnChange, mirroring
+// runMain's composed evener/tree/changed wiring in main.go) before the server
+// starts serving requests.
+func newHubRPCTestServerWithWeb(t *testing.T, cfg hubcore.WebConfig) (*httptest.Server, *WebServer) {
+	t.Helper()
+	srv := httptest.NewUnstartedServer(nil)
+	cfg.HubAddr = srv.Listener.Addr().String()
+	web := NewWebServer(cfg)
+	srv.Config.Handler = web.Handler()
+	srv.Start()
+	return srv, web
+}
+
+// TestHubRPCRegistersExpectedHandlerSet locks in the exact set of RPC methods
+// the hub app server registers (with a providers config present so the
+// instance handlers register too): the router's method set must equal the
+// list below, so both a dropped registration and one nobody has named here
+// fail. That guards the constructor decomposition (registerThreadHandlers /
+// Auth / Instance / Launch / Plugin / Misc / PluginAutoUpgrade) in both
+// directions.
+//
+// Every named method is then dispatched over the wire and must not answer
+// methodNotFound â€” reachability the router set alone cannot show â€” except the
+// handlers listed in notDispatched, which act outside the process.
+func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	tomlPath := filepath.Join(dir, "providers.toml")
+	provCfg := providercfg.Config{
+		Instances: []providercfg.InstanceConfig{
+			{Name: "my-openai", Type: "openai", APIStyle: "responses"},
+		},
+	}
+	if err := providercfg.WriteFile(tomlPath, provCfg); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	hub, web := newHubRPCTestServerWithWeb(t, hubcore.WebConfig{
+		Past:                hubcore.NewPastIndex(""),
+		ProviderConfig:      &provCfg,
+		ProvidersConfigPath: tomlPath,
+		HubStateRoot:        dir,
+	})
+	defer hub.Close()
+	client := dialHubRPC(t, hub)
+	defer client.Close()
+
+	if _, err := client.Initialize(context.Background(), appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("Initialize: %v", err)
+	}
+
+	expected := []string{
+		appwire.MethodThreadList,
+		appwire.MethodThreadRead,
+		appwire.MethodThreadTurnsList,
+		appwire.MethodEvenerSubagentPreview,
+		appwire.MethodThreadStart,
+		appwire.MethodThreadResume,
+		appwire.MethodThreadFork,
+		appwire.MethodTurnStart,
+		appwire.MethodTurnSteer,
+		appwire.MethodTurnInterrupt,
+		appwire.MethodEvenerSandboxEscalationResolve,
+		appwire.MethodTurnQueue,
+		appwire.MethodTurnDrainAsSteer,
+		appwire.MethodTurnPromoteQueuedAsSteer,
+		appwire.MethodTurnCancelQueued,
+		appwire.MethodThreadClear,
+		appwire.MethodThreadCompactStart,
+		appwire.MethodThreadShutdown,
+		appwire.MethodThreadModelSet,
+		appwire.MethodEvenerThreadNameSet,
+		appwire.MethodThreadReasoningEffortSet,
+		appwire.MethodGoalSet,
+		appwire.MethodEvenerAuthStatus,
+		appwire.MethodEvenerAuthTest,
+		appwire.MethodEvenerAuthLoginStart,
+		appwire.MethodEvenerAuthLoginComplete,
+		appwire.MethodEvenerAuthLogout,
+		appwire.MethodEvenerAuthList,
+		appwire.MethodEvenerAuthApiKeySet,
+		appwire.MethodEvenerAuthDeviceStart,
+		appwire.MethodEvenerAuthDevicePoll,
+		appwire.MethodEvenerInstanceList,
+		appwire.MethodEvenerInstanceCreate,
+		appwire.MethodEvenerInstanceEdit,
+		appwire.MethodEvenerInstanceRemove,
+		appwire.MethodEvenerInstanceSetDefault,
+		appwire.MethodEvenerLaunchResolve,
+		appwire.MethodEvenerLaunchSchema,
+		appwire.MethodEvenerLaunchGetLayer,
+		appwire.MethodEvenerLaunchSetLayer,
+		appwire.MethodEvenerLaunchTrustRepo,
+		appwire.MethodEvenerUpgrade,
+		appwire.MethodModelList,
+		appwire.MethodEvenerTasksList,
+		appwire.MethodEvenerJobsList,
+		appwire.MethodEvenerJobsOutput,
+		appwire.MethodEvenerThreadTranscriptsList,
+		appwire.MethodEvenerPathsComplete,
+		appwire.MethodEvenerProjectsRecent,
+		appwire.MethodEvenerPathValidate,
+		appwire.MethodEvenerHarnessesList,
+		appwire.MethodEvenerCommandList,
+		appwire.MethodEvenerSettingsOverview,
+		appwire.MethodEvenerMarketplaceList,
+		appwire.MethodEvenerMarketplaceAdd,
+		appwire.MethodEvenerMarketplaceRemove,
+		appwire.MethodEvenerMarketplaceRefresh,
+		appwire.MethodEvenerMarketplaceBrowse,
+		appwire.MethodEvenerPluginList,
+		appwire.MethodEvenerPluginInstall,
+		appwire.MethodEvenerPluginUpgrade,
+		appwire.MethodEvenerPluginRemove,
+		appwire.MethodEvenerPluginEnable,
+		appwire.MethodEvenerPluginDisable,
+		appwire.MethodEvenerPluginSetAutoUpgrade,
+		appwire.MethodEvenerPluginCheckNow,
+		appwire.MethodEvenerPluginPreview,
+	}
+
+	// The list is a lock, not a sample: nothing may be registered that it does
+	// not name, so a handler arriving without a test naming it fails here too.
+	registered := excludeHubMethods(web.appRPC.Router().Methods(), appwire.ConnectionMethodNames())
+	if missing, extra := setDiff(expected, registered); len(missing) > 0 || len(extra) > 0 {
+		t.Errorf("hub handler set differs from the set this test names:\n  named but NOT registered: %v\n  registered but NOT named: %v", missing, extra)
+	}
+
+	// notDispatched are named above but never called: their handlers act
+	// outside this process. evener/upgrade runs the real self-update (fetch and
+	// install over the running binary), and the marketplace, plugin and
+	// auto-upgrade handlers work against the plugin root â€” which, with no
+	// PluginRoot configured, is the developer's own plugins.DefaultRoot â€” and
+	// fetch its remote sources. app_plugins_test.go and
+	// app_plugin_autoupgrade_test.go drive those against fixture roots.
+	notDispatched := map[string]bool{
+		appwire.MethodEvenerUpgrade:              true,
+		appwire.MethodEvenerMarketplaceList:      true,
+		appwire.MethodEvenerMarketplaceAdd:       true,
+		appwire.MethodEvenerMarketplaceRemove:    true,
+		appwire.MethodEvenerMarketplaceRefresh:   true,
+		appwire.MethodEvenerMarketplaceBrowse:    true,
+		appwire.MethodEvenerPluginList:           true,
+		appwire.MethodEvenerPluginInstall:        true,
+		appwire.MethodEvenerPluginUpgrade:        true,
+		appwire.MethodEvenerPluginRemove:         true,
+		appwire.MethodEvenerPluginEnable:         true,
+		appwire.MethodEvenerPluginDisable:        true,
+		appwire.MethodEvenerPluginSetAutoUpgrade: true,
+		appwire.MethodEvenerPluginCheckNow:       true,
+	}
+
+	for _, method := range expected {
+		if notDispatched[method] {
+			continue
+		}
+		// We only care about the dispatch outcome, not the response body, so
+		// pass a nil out. A registered handler may succeed or reject the empty
+		// params with some other error; what it must never return is
+		// methodNotFound.
+		err := client.Request(context.Background(), method, appwire.EmptyParams{}, nil)
+		var wire appwire.WireError
+		if errors.As(err, &wire) && wire.Code == appwire.CodeMethodNotFound {
+			t.Errorf("method %q is not registered (methodNotFound)", method)
+		}
+	}
+
+	// Sanity check: an unregistered method must report methodNotFound, proving
+	// the assertion above is meaningful.
+	err := client.Request(context.Background(), "evener/__definitely_not_registered__", appwire.EmptyParams{}, nil)
+	var wire appwire.WireError
+	if !errors.As(err, &wire) || wire.Code != appwire.CodeMethodNotFound {
+		t.Fatalf("expected methodNotFound for unknown method, got %T: %v", err, err)
+	}
+}
