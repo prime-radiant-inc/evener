@@ -551,8 +551,9 @@ export function initNavigation(
   const ownedClient = client;
   const start = (info?: InitializeResponse | NavigationCapability | null) => {
     if (ownedClient !== activeClient || epoch !== bootEpoch) return;
-    const cap: NavigationCapability | undefined =
-      info && "navigation" in info ? info.navigation : info && "version" in info ? info : undefined;
+    let cap: NavigationCapability | undefined;
+    if (info && "navigation" in info) cap = info.navigation;
+    else if (info && "version" in info) cap = info;
     if (!cap) {
       navigationStore.setState({
         mode: "error",

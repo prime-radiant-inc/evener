@@ -41,11 +41,15 @@ const deepFreeze = <T>(value: T): T => {
   }
   return value;
 };
+const freezeValue = <T>(value: T): T => {
+  if (value === null || Object.isFrozen(value)) return value;
+  return deepFreeze(clone(value));
+};
 const frozen = (state: ResourceState): ResourceState =>
   Object.freeze({
     ...state,
-    key: Object.isFrozen(state.key) ? state.key : deepFreeze(clone(state.key)),
-    data: state.data === null ? null : Object.isFrozen(state.data) ? state.data : deepFreeze(clone(state.data)),
+    key: freezeValue(state.key),
+    data: freezeValue(state.data),
   });
 
 export class NavigationRevalidator {
@@ -306,9 +310,8 @@ export class NavigationRevalidator {
   private targetsSatisfied(targets: NavigationInvalidationTarget[], generationID: string): boolean {
     if (generationID !== this.generationIDValue) return false;
     return targets.every((target) => {
-      const matching = [...this.entries.values()].filter((entry) => matchesTarget(entry.state.key, target));
-      if (matching.length === 0) return true;
-      return matching.every((entry) => {
+      return [...this.entries.values()].every((entry) => {
+        if (!matchesTarget(entry.state.key, target)) return true;
         const revision = target.revision;
         return (
           !entry.state.loading &&

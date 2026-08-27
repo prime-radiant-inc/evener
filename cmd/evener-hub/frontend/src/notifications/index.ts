@@ -44,7 +44,7 @@ function onNavigationAttention(): void {
   if (state.attention.changed.length === 0 && prevNavigationAttention === null) return;
   const next = new Map(prevNavigationAttention);
   for (const changed of state.attention.changed) {
-    const level = changed.level === "error" ? "error" : changed.level === "needs_you" ? "needs_you" : null;
+    const level = changed.level === "error" || changed.level === "needs_you" ? changed.level : null;
     if (!level) {
       next.delete(changed.threadId);
       continue;

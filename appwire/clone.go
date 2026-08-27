@@ -182,10 +182,5 @@ func clonePendingMutation(m PendingMutation) PendingMutation {
 }
 
 func cloneStringIntMap(m map[string]int) map[string]int {
-	if m == nil {
-		return nil
-	}
-	cp := make(map[string]int, len(m))
-	maps.Copy(cp, m)
-	return cp
+	return maps.Clone(m)
 }

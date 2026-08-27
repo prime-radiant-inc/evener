@@ -54,6 +54,7 @@ import {
   archivedProjectNodes,
   archivedSessionGroups,
   catalogOverflowNode,
+  type OverflowPage,
   type OverflowRailNode,
   overrideLookup,
   pinSectionDisclosureID,
@@ -698,6 +699,21 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
     }
     handleToggle(node);
   }
+  async function loadOverflowPage(page: OverflowPage): Promise<void> {
+    if (page.projectKey && page.tier) {
+      await navigationStore.getState().loadProjectPage(page.projectKey, page.tier, page.offset, page.limit);
+      return;
+    }
+    if (page.section) {
+      await navigationStore.getState().loadSection(page.section, page.offset, page.limit);
+      return;
+    }
+    if (page.sectionId) {
+      await navigationStore.getState().loadPinSection(page.sectionId, page.offset, page.limit);
+      return;
+    }
+    if (page.catalog) await navigationStore.getState().loadCatalog(page.catalog, page.offset, page.limit);
+  }
   async function revealOverflow(node: OverflowRailNode) {
     const pages = node.pages.slice(0, 1).filter((page) => {
       const key = JSON.stringify(page);
@@ -706,19 +722,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
       return true;
     });
     try {
-      await Promise.all(
-        pages.map((page) =>
-          page.projectKey && page.tier
-            ? navigationStore.getState().loadProjectPage(page.projectKey, page.tier, page.offset, page.limit)
-            : page.section
-              ? navigationStore.getState().loadSection(page.section, page.offset, page.limit)
-              : page.sectionId
-                ? navigationStore.getState().loadPinSection(page.sectionId, page.offset, page.limit)
-                : page.catalog
-                  ? navigationStore.getState().loadCatalog(page.catalog, page.offset, page.limit)
-                  : Promise.resolve(),
-        ),
-      );
+      await Promise.all(pages.map(loadOverflowPage));
     } catch (error) {
       toasts.push("error", `Couldn't load older sessions: ${errorText(error)}`);
     } finally {

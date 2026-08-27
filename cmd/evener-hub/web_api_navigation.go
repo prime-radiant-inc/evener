@@ -10,7 +10,6 @@ import (
 	"strconv"
 	"strings"
 	"time"
-	"unicode/utf8"
 )
 
 const navigationPathPrefix = "/api/navigation"
@@ -280,13 +279,13 @@ func navigationEscapedPath(r *http.Request) (string, error) {
 
 func navigationIdentity(raw, kind string) (string, error) {
 	decoded, err := url.PathUnescape(raw)
-	if err != nil || !utf8.ValidString(decoded) || decoded == "" || len(decoded) > maxNavigationIdentityBytes {
-		return "", navigationBadRequest()
-	}
-	if url.PathEscape(decoded) != raw {
+	if err != nil {
 		return "", navigationBadRequest()
 	}
 	if err := validateNavigationIdentity(kind, decoded, false); err != nil {
+		return "", navigationBadRequest()
+	}
+	if url.PathEscape(decoded) != raw {
 		return "", navigationBadRequest()
 	}
 	return decoded, nil
