@@ -86,7 +86,7 @@ describe("AppwireClient", () => {
       id: 1,
       method: "initialize",
       params: {
-        protocolVersion: "evener-appwire-v3",
+        protocolVersion: APPWIRE_PROTOCOL_VERSION,
         clientInfo: DEFAULT_CLIENT_INFO,
         capabilities: DEFAULT_CAPABILITIES,
       },
@@ -134,7 +134,7 @@ describe("AppwireClient", () => {
       id: frame.id,
       error: {
         code: -32600,
-        message: `protocol version "evener-appwire-v2" is incompatible; want "evener-appwire-v3"`,
+        message: `protocol version "evener-appwire-v2" is incompatible; want "${APPWIRE_PROTOCOL_VERSION}"`,
       },
     });
 
@@ -488,7 +488,7 @@ describe("AppwireClient", () => {
       id: initialize.id,
       error: {
         code: -32600,
-        message: `protocol version "evener-appwire-v2" is incompatible; want "evener-appwire-v3"`,
+        message: `protocol version "evener-appwire-v2" is incompatible; want "${APPWIRE_PROTOCOL_VERSION}"`,
       },
     });
     await flushUntil(() => client.state === "closed");

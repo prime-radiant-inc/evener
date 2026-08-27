@@ -32,8 +32,7 @@ func requireCovMutationError(t *testing.T, err error, want string, unavailable b
 	if unavailable {
 		wantWire := appwire.SessionUnavailable(want)
 		data, ok := wire.Data.(appwire.ErrorData)
-		wantData := wantWire.Data.(appwire.ErrorData)
-		if wire.Code != wantWire.Code || wire.Message != wantWire.Message || !ok || data.EvenerErrorInfo != wantData.EvenerErrorInfo {
+		if wire.Code != wantWire.Code || wire.Message != wantWire.Message || !ok || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
 			t.Fatalf("wire error = %#v, want %#v", wire, wantWire)
 		}
 	}
