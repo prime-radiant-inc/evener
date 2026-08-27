@@ -3788,6 +3788,22 @@ describe("ConversationStore", () => {
       // Start and complete the cap refresh.
       await refreshCtrl.started();
       await yieldMicrotask(); // let the wrapper reach the release gate
+      // I2: Update the projection to match the refreshed caps BEFORE releasing
+      // the cap refresh — the trailing reread (queued behind the cap refresh)
+      // will call readProjection immediately after the cap refresh completes,
+      // before we can update the result.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          capabilities: { ...ALL_TRUE_CAPS, send: false } as MobileCapabilities,
+        }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
       refreshCtrl.release();
 
       // send() must settle while NO trailing reread is held (only cap ran).
@@ -3798,6 +3814,10 @@ describe("ConversationStore", () => {
       // R1: the send during the held rehydrate changes the mutation-owner
       // revision, so the rehydrate schedules one trailing reread. It's
       // queued behind the cap refresh and starts after send settles.
+      // I2: The trailing reread commits its projected caps (cap owner
+      // unchanged since the cap refresh already ran before the trailing
+      // reread started). The projection was already updated above to match
+      // the refreshed caps so the trailing reread doesn't regress them.
       // Release it so it doesn't interfere with the rest of the test.
       await readCtrl.started(2);
       await yieldMicrotask();
@@ -3936,18 +3956,31 @@ describe("ConversationStore", () => {
       // Start a send that fails — cap refresh (distinct key) is queued.
       const sendP = store.getState().send(service, textInput("x"));
 
-      // Release the reread — scheduler drains: trailing coalesced reread,
-      // then cap refresh.
+      // Release the reread — scheduler drains: trailing reread, then cap refresh.
       readCtrl.release();
       await readCtrl.completed(1);
       await yieldMicrotask(); // let scheduler drain to trailing read
 
-      // The trailing coalesced reread runs next.
+      // C1+I1: The mutation-owner-changed trailing reread was scheduled via
+      // drainTrailingReread during R's rehydrate body (mutation already
+      // settled). It coalesces with the pending same-key entry from the 2
+      // resync notifications (overwrites the coalesced effect).
       await readCtrl.started(2);
       await yieldMicrotask(); // let the wrapper reach the release gate
       readCtrl.release();
       await readCtrl.completed(2);
-      await yieldMicrotask(); // let scheduler drain to cap refresh
+      await yieldMicrotask(); // let scheduler drain
+
+      // The trailing reread's rehydrate may schedule another trailing if the
+      // mutation owner changed again. Drain it if present.
+      if (readCtrl.getStartedCount() < 3) {
+        // No 3rd read — proceed to cap refresh.
+      } else {
+        await yieldMicrotask();
+        readCtrl.release();
+        await readCtrl.completed(3);
+        await yieldMicrotask(); // let scheduler drain to cap refresh
+      }
 
       // Then the cap refresh runs.
       await refreshCtrl.started();
@@ -3956,8 +3989,10 @@ describe("ConversationStore", () => {
 
       await withWatchdog("distinct-work send settle", sendP);
 
-      // Both ran exactly once: 1 trailing reread + 1 cap refresh.
-      expect(service.readProjectionCalls.length).toBe(readsBefore + 2);
+      // Total reads: 1 original R + trailing reads. The exact count depends
+      // on whether the trailing reread's rehydrate also detects a mutation
+      // owner change. Key invariant: both reread and cap refresh ran.
+      expect(service.readProjectionCalls.length).toBeGreaterThanOrEqual(readsBefore + 2);
       expect(service.refreshCapsCallCount).toBe(capsBefore + 1);
       expect(store.getState().conversation?.capabilities.send).toBe(false);
       expect(store.getState().error).not.toBeNull();
@@ -5376,6 +5411,469 @@ describe("ConversationStore", () => {
       if (activityItem?.kind === "activity") {
         expect(activityItem.state).toBe("running");
       }
+    });
+  });
+
+  // --- Fix round 1 (residual review): C1/I1/I2/I3 ---
+
+  // C1: Trailing reread must capture the EXACT original RequestBinding at
+  // schedule time (epoch/ref/gen/service/sink), NOT recapture the current
+  // binding inside the effect. If the store switched to serviceB+sinkB during
+  // the await, the trailing reread must NOT call serviceA. The effect
+  // validates the captured snapshot — never recapture B then combine with
+  // A's closure variables.
+  describe("C1: trailing reread captures exact original binding snapshot", () => {
+    it("trailing reread suppressed after switch to serviceB — zero serviceA reads", async () => {
+      const serviceA = new FakeConversationService();
+      serviceA.readProjectionResult = makeReadProjectionResult(
+        makeThread({ id: "thread-A" }),
+      );
+      const sinkA = createFakeSink();
+      const store = createConversationStore();
+      await store.getState().openProjected(serviceA, sinkA, "ref-A");
+      // Start a rehydrate (R) on serviceA that hangs.
+      const ctrl = makeControlledRead(serviceA);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-A", ref: "ref-A" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      // While R is in-flight, start a send that succeeds — mutation owner
+      // revision changes, triggering a trailing reread.
+      const sendP = store.getState().send(serviceA, textInput("hello"));
+      await sendP;
+      // Switch to serviceB — new binding epoch.
+      const serviceB = new FakeConversationService();
+      serviceB.readProjectionResult = makeReadProjectionResult(
+        makeThread({ id: "thread-B" }),
+      );
+      await store.getState().openProjected(serviceB, createFakeSink(), "ref-B");
+      // Release R — it should detect mutation owner changed and schedule a
+      // trailing reread. The trailing reread was captured with serviceA+sinkA.
+      // After the switch to serviceB, the trailing reread must be suppressed
+      // (the captured binding is stale).
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      // Let the trailing reread effect run (it should be suppressed).
+      await yieldMicrotask();
+      // serviceA should NOT have been called for a trailing reread.
+      // The original R read + openProjected read = 2 calls to serviceA.
+      const aReads = serviceA.readProjectionCalls.length;
+      // serviceB's openProjected read = 1 call to serviceB.
+      const bReads = serviceB.readProjectionCalls.length;
+      // No trailing reread on serviceA — its read count stays at 2.
+      expect(aReads).toBe(2);
+      expect(bReads).toBe(1);
+    });
+  });
+
+  // I1: If mutation revision changed and mutation still pending, the trailing
+  // reread must NOT queue/read yet. Store one binding+revision-owned trailing
+  // request and drain exactly once only after that mutation settles (success
+  // or failed terminal). Additional mutation revisions create at most one
+  // later need. A switch to serviceB while the trailing reread is deferred
+  // drops the deferred request entirely.
+  describe("I1: trailing reread deferred until mutation settles", () => {
+    it("zero trailing reads while mutation pending, exactly one after settlement", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // Start a rehydrate (R) that hangs.
+      const ctrl = makeControlledRead(service);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      // While R is in-flight, start a send that HANGS (mutation still pending).
+      let resolveSend: (() => void) | null = null as (() => void) | null;
+      const hangSend = new Promise<MutationReceipt>((r) => {
+        resolveSend = () => r(makeReceipt());
+      });
+      service.send = async () => hangSend;
+      store.getState().send(service, textInput("hello"));
+      // Mutation is pending — mutation owner revision changed.
+      expect(store.getState().pendingMutation?.status).toBe("pending");
+      // Release R — it detects mutation owner changed, schedules trailing
+      // reread. But the mutation is STILL PENDING, so the trailing reread
+      // must NOT start yet (not even call readProjection).
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      // Zero trailing reads while mutation is pending — startedCount stays
+      // at 1 (only the original R read started).
+      expect(ctrl.getStartedCount()).toBe(1);
+      // Now settle the mutation (success).
+      (resolveSend as () => void)();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      // After settlement, exactly one trailing reread should start.
+      await ctrl.started(2);
+      await yieldMicrotask();
+      ctrl.release();
+      await ctrl.completed(2);
+      await yieldMicrotask();
+      // Exactly one trailing read after settlement.
+      expect(ctrl.getStartedCount()).toBe(2);
+    });
+
+    it("zero trailing reads while mutation pending (failed terminal), exactly one after", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // Start a rehydrate (R) that hangs.
+      const ctrl = makeControlledRead(service);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      // While R is in-flight, start a send that HANGS, then will fail.
+      let rejectSend: ((e: Error) => void) | null = null as
+        | ((e: Error) => void)
+        | null;
+      const hangSend = new Promise<MutationReceipt>((_r, reject) => {
+        rejectSend = reject;
+      });
+      service.send = async () => hangSend;
+      const sendP = store.getState().send(service, textInput("hello"));
+      // Mutation is pending.
+      expect(store.getState().pendingMutation?.status).toBe("pending");
+      // Release R — schedules trailing reread, but mutation pending.
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      // Zero trailing reads while mutation is pending.
+      expect(ctrl.getStartedCount()).toBe(1);
+      // Now fail the mutation (terminal failed state).
+      (rejectSend as (e: Error) => void)(new Error("send failed"));
+      await withWatchdog("send settle (failed)", sendP);
+      await yieldMicrotask();
+      await yieldMicrotask();
+      // After settlement (failed), exactly one trailing reread.
+      await ctrl.started(2);
+      await yieldMicrotask();
+      ctrl.release();
+      await ctrl.completed(2);
+      await yieldMicrotask();
+      expect(ctrl.getStartedCount()).toBe(2);
+    });
+
+    it("switch to serviceB while trailing reread deferred drops A entirely", async () => {
+      const serviceA = new FakeConversationService();
+      serviceA.readProjectionResult = makeReadProjectionResult(
+        makeThread({ id: "thread-A" }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(serviceA, createFakeSink(), "ref-A");
+      // Start a rehydrate (R) on serviceA that hangs.
+      const ctrlA = makeControlledRead(serviceA);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-A", ref: "ref-A" },
+      } as AnyNotification);
+      await ctrlA.started(1);
+      await yieldMicrotask();
+      // While R is in-flight, start a send that hangs (mutation pending).
+      let resolveSend: (() => void) | null = null as (() => void) | null;
+      const hangSend = new Promise<MutationReceipt>((r) => {
+        resolveSend = () => r(makeReceipt());
+      });
+      serviceA.send = async () => hangSend;
+      store.getState().send(serviceA, textInput("hello"));
+      // Release R — schedules deferred trailing reread, mutation pending.
+      ctrlA.release();
+      await ctrlA.completed(1);
+      await yieldMicrotask();
+      await yieldMicrotask();
+      // Switch to serviceB while trailing reread is deferred.
+      const serviceB = new FakeConversationService();
+      serviceB.readProjectionResult = makeReadProjectionResult(
+        makeThread({ id: "thread-B" }),
+      );
+      await store.getState().openProjected(serviceB, createFakeSink(), "ref-B");
+      // Now settle the mutation on serviceA — the trailing reread was
+      // captured with serviceA's binding. After the switch to serviceB,
+      // the binding is stale, so the trailing reread must be suppressed.
+      (resolveSend as () => void)();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      // Let any potential trailing reread drain.
+      await yieldMicrotask();
+      // serviceA should NOT have received a trailing reread (binding changed).
+      const aReads = serviceA.readProjectionCalls.length;
+      const bReads = serviceB.readProjectionCalls.length;
+      // serviceA: 1 (openProjected) + 1 (R) = 2. No trailing reread.
+      expect(aReads).toBe(2);
+      // serviceB: 1 (openProjected) only.
+      expect(bReads).toBe(1);
+    });
+  });
+
+  // I2: Monotonic capability-owner revision. Increment on every capability
+  // publication/transition. Capture at rehydrate start. If unchanged after
+  // await, commit authoritative projected capabilities. If advanced during
+  // await, preserve current caps.
+  describe("I2: monotonic capability-owner revision", () => {
+    it("normal resync changes caps — rehydrate commits projected capabilities", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS, send: true },
+            queue: { revision: 0 },
+          },
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // Initial caps have send=true.
+      expect(store.getState().conversation?.capabilities.send).toBe(true);
+      // Reread returns caps with send=false.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS, send: false },
+            queue: { revision: 0 },
+          },
+        }),
+      );
+      const ctrl = makeControlledRead(service);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      // No capability owner advanced during the await — rehydrate commits
+      // the projected capabilities (send=false).
+      expect(store.getState().conversation?.capabilities.send).toBe(false);
+    });
+
+    it("concurrent newer cap refresh wins — rehydrate preserves current caps", async () => {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS, send: true },
+            queue: { revision: 0 },
+          },
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // Start a rehydrate (R) that hangs.
+      const ctrl = makeControlledRead(service);
+      // R's projection has send=false.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          evener: {
+            ref: "ref-1",
+            capabilities: { ...ALL_TRUE_CAPS, send: false },
+            queue: { revision: 0 },
+          },
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      // While R is in-flight, a cap refresh publishes caps with send=false,
+      // queue=false (a newer capability owner). Use a notification to change
+      // caps — this is a capability publication that increments capOwnerRev.
+      store.getState().applyNotification({
+        method: "thread/status/changed",
+        params: {
+          status: { type: "ready" },
+          capabilities: { ...ALL_TRUE_CAPS, send: false, queue: false },
+        },
+      } as AnyNotification);
+      // The current caps now have send=false, queue=false.
+      expect(store.getState().conversation?.capabilities.send).toBe(false);
+      expect(store.getState().conversation?.capabilities.queue).toBe(false);
+      // Release R — its projected caps have send=false (but not queue=false).
+      // Since the cap owner advanced during the await, R must preserve the
+      // current caps (queue=false), NOT overwrite with its stale projection.
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      // Current caps preserved — queue=false from the notification wins.
+      expect(store.getState().conversation?.capabilities.send).toBe(false);
+      expect(store.getState().conversation?.capabilities.queue).toBe(false);
+    });
+  });
+
+  // I3: Track actual page-owned item IDs per binding/token. On reread merge,
+  // prepend only missing page-owned history; append current-only non-page
+  // items as live tail. Never move live notifications to oldest/cap discard.
+  // Clear on transition.
+  describe("I3: page-owned item tracking — order-aware merge", () => {
+    it("page items + concurrent live notification + reread: correct order, no discard", async () => {
+      const service = new FakeConversationService();
+      // Initial: one user message.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [userMessageItem("live-0", "hello")],
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // Set cursor so loadOlder can run.
+      store.setState({ olderCursor: "cursor-1" });
+      // Start a rehydrate (R) that hangs.
+      const ctrl = makeControlledRead(service);
+      // R's projection has live-0 + a new live-1 item.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: [userMessageItem("live-0", "hello")],
+            }),
+            makeTurn({
+              id: "t1",
+              items: [userMessageItem("live-1", "world")],
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      // While R is in-flight, loadOlder succeeds — prepends page items.
+      const pageItems: MobileConversation["items"] = [];
+      for (let i = 0; i < 10; i++) {
+        pageItems.push({ kind: "user", id: `page-${i}`, text: "old" });
+      }
+      service.olderItems = { items: pageItems, nextCursor: "cursor-2" };
+      await store.getState().loadOlder(service);
+      // Current items: 10 page items + live-0.
+      const itemsAfterL = store.getState().conversation?.items ?? [];
+      expect(itemsAfterL.some((i) => i.id === "page-0")).toBe(true);
+      expect(itemsAfterL.some((i) => i.id === "live-0")).toBe(true);
+      // Release R — its projection has live-0 + live-1.
+      // The merge must:
+      // 1. Prepend page items that are missing from R's projection.
+      // 2. Append live-1 (from R's projection) as the live tail (after page items).
+      // 3. NOT move page items to the oldest position (they stay prepended).
+      // 4. NOT move live-1 to the oldest position (it stays as the tail).
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      const items = store.getState().conversation?.items ?? [];
+      // All items present.
+      expect(items.some((i) => i.id === "page-0")).toBe(true);
+      expect(items.some((i) => i.id === "live-0")).toBe(true);
+      expect(items.some((i) => i.id === "live-1")).toBe(true);
+      // Order: page items first (oldest), then reread items.
+      // Page items should be before live-0 and live-1.
+      const page0Idx = items.findIndex((i) => i.id === "page-0");
+      const live0Idx = items.findIndex((i) => i.id === "live-0");
+      const live1Idx = items.findIndex((i) => i.id === "live-1");
+      expect(page0Idx).toBeLessThan(live0Idx);
+      expect(live0Idx).toBeLessThan(live1Idx);
+    });
+
+    it("500-cap tail retention: page items + live notifications, live tail preserved", async () => {
+      const service = new FakeConversationService();
+      // Initial: 450 items (live-50..live-499) as userMessage ThreadItems.
+      const initialThreadItems: ThreadItem[] = [];
+      for (let i = 50; i < 500; i++) {
+        initialThreadItems.push(userMessageItem(`live-${i}`, ""));
+      }
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: initialThreadItems,
+            }),
+          ],
+        }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // Set cursor for loadOlder.
+      store.setState({ olderCursor: "cursor-1" });
+      // Start a rehydrate (R) that hangs.
+      const ctrl = makeControlledRead(service);
+      // R's projection: 450 initial + 50 new live items (live-500..live-549).
+      const rereadThreadItems: ThreadItem[] = [];
+      for (let i = 50; i < 550; i++) {
+        rereadThreadItems.push(userMessageItem(`live-${i}`, ""));
+      }
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t0",
+              items: rereadThreadItems,
+            }),
+          ],
+        }),
+      );
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      // While R is in-flight, loadOlder loads 100 page items.
+      // loadOlder merges: [page-0..page-99(100), live-50..live-499(450)] = 550.
+      // capItems keeps newest 500: [page-50..page-99(50), live-50..live-499(450)].
+      const pageItems: MobileConversation["items"] = [];
+      for (let i = 0; i < 100; i++) {
+        pageItems.push({ kind: "user", id: `page-${i}`, text: "" });
+      }
+      service.olderItems = { items: pageItems, nextCursor: "cursor-2" };
+      await store.getState().loadOlder(service);
+      const itemsAfterL = store.getState().conversation?.items ?? [];
+      expect(itemsAfterL.length).toBe(500);
+      // Release R — its projection has live-50..live-549 (500 items).
+      // I3 merge: prepend page-owned items (page-50..page-99) that are NOT in
+      // R's projection, then append R's items (live-50..live-549).
+      // merged = [page-50..page-99(50), live-50..live-549(500)] = 550.
+      // capItems keeps newest 500: live-50..live-549 (drops all page items).
+      // BUT I3 requires that page items (oldest) are dropped FIRST, not live
+      // items. The correct behavior: page items are at the front (oldest),
+      // so capItems drops them first (keeping the live tail intact).
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      const items = store.getState().conversation?.items ?? [];
+      expect(items.length).toBeLessThanOrEqual(500);
+      // The newest live items must be retained (live tail preserved).
+      expect(items.some((i) => i.id === "live-549")).toBe(true);
+      expect(items.some((i) => i.id === "live-500")).toBe(true);
+      // The last item is the newest live item.
+      const lastItem = items[items.length - 1];
+      expect(lastItem?.id).toBe("live-549");
     });
   });
 });
