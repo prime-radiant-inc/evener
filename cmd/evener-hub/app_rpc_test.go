@@ -18,7 +18,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/coder/websocket"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
@@ -98,78 +97,20 @@ func TestHubRPCSteersSurvivingDaemonAfterHubRestart(t *testing.T) {
 	)
 
 	steered := make(chan appwire.TurnSteerParams, 1)
-	daemonHTTP := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		conn, err := websocket.Accept(w, r, nil)
-		if err != nil {
-			return
-		}
-		transport := appwire.NewWSTransport(conn)
-		defer transport.Close() //nolint:errcheck // test server connection cleanup
-		for {
-			message, err := transport.Recv(r.Context())
-			if err != nil {
-				return
-			}
-			if message.Request == nil {
-				continue
-			}
-			switch message.Request.Method {
-			case appwire.MethodInitialize:
-				var params appwire.InitializeParams
-				if err := json.Unmarshal(message.Request.Params, &params); err != nil {
-					_ = transport.Send(r.Context(), appwire.ErrorMessage(message.Request.ID, appwire.InvalidParams(err.Error())))
-					continue
-				}
-				if params.ProtocolVersion != daemonProtocol {
-					_ = transport.Send(r.Context(), appwire.ErrorMessage(message.Request.ID, appwire.InvalidRequest(
-						fmt.Sprintf("protocol version %q is incompatible; want %q", params.ProtocolVersion, daemonProtocol),
-					)))
-					continue
-				}
-				_ = transport.Send(r.Context(), appwire.ResponseMessage(message.Request.ID, appwire.InitializeResponse{
-					ProtocolVersion: daemonProtocol,
-					SourceID:        "local",
-				}))
-			case appwire.MethodTurnSteer:
-				var params appwire.TurnSteerParams
-				if err := json.Unmarshal(message.Request.Params, &params); err != nil {
-					_ = transport.Send(r.Context(), appwire.ErrorMessage(message.Request.ID, appwire.InvalidParams(err.Error())))
-					continue
-				}
-				steered <- params
-				_ = transport.Send(r.Context(), appwire.ResponseMessage(message.Request.ID, appwire.TurnSteerResponse{
-					Receipt: appwire.MutationReceipt{
-						ClientMutationID: params.ClientMutationID,
-						Disposition:      appwire.MutationDispositionApplied,
-						ThreadID:         threadID,
-						ProjectionState:  appwire.MutationProjectionReflected,
-					},
-				}))
-			case appwire.MethodThreadRead:
-				_ = transport.Send(r.Context(), appwire.ResponseMessage(message.Request.ID, appwire.ThreadReadResponse{
-					Thread: appwire.Thread{
-						ID:        threadID,
-						SessionID: threadID,
-						Source:    "local",
-						Evener:    appwire.EvenerThread{Ref: "local:" + threadID},
-					},
-				}))
-			default:
-				_ = transport.Send(r.Context(), appwire.ErrorMessage(message.Request.ID, appwire.MethodNotFound(message.Request.Method)))
-			}
-		}
-	}))
+	runDir := t.TempDir()
+	daemonHTTP := startAppwireTestDaemonWithProtocol(t, runDir, threadID, daemonProtocol, func(daemon *appserver.Server) {
+		appserver.HandleTyped(daemon.Router(), appwire.MethodTurnSteer, func(_ context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
+			steered <- params
+			return appwire.TurnSteerResponse{Receipt: appwire.MutationReceipt{
+				ClientMutationID: params.ClientMutationID,
+				Disposition:      appwire.MutationDispositionApplied,
+				ThreadID:         threadID,
+				ProjectionState:  appwire.MutationProjectionReflected,
+			}}, nil
+		})
+	})
 	defer daemonHTTP.Close()
 
-	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{
-		PID:       101,
-		Protocol:  daemonProtocol,
-		Endpoint:  "ws" + strings.TrimPrefix(daemonHTTP.URL, "http"),
-		SourceID:  "local",
-		ThreadID:  threadID,
-		SessionID: threadID,
-	})
 	roster := hubcore.NewRoster(runDir, fakeProber{sessionID: threadID, status: appwire.ThreadStatusActive})
 	roster.Refresh()
 

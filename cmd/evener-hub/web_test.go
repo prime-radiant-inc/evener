@@ -2161,8 +2161,22 @@ func TestWeb_ApiDirCreate(t *testing.T) {
 }
 
 func startAppwireTestDaemon(t *testing.T, dir, sessionID string, register func(*appserver.Server)) *httptest.Server {
+	return startAppwireTestDaemonWithProtocol(t, dir, sessionID, appwire.ProtocolVersion, register)
+}
+
+func startAppwireTestDaemonWithProtocol(t *testing.T, dir, sessionID, protocolVersion string, register func(*appserver.Server)) *httptest.Server {
 	t.Helper()
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
+	if protocolVersion != appwire.ProtocolVersion {
+		appserver.HandleTyped(app.Router(), appwire.MethodInitialize, func(_ context.Context, params appwire.InitializeParams) (appwire.InitializeResponse, error) {
+			if params.ProtocolVersion != protocolVersion {
+				return appwire.InitializeResponse{}, appwire.InvalidRequest(
+					fmt.Sprintf("protocol version %q is incompatible; want %q", params.ProtocolVersion, protocolVersion),
+				)
+			}
+			return appwire.InitializeResponse{ProtocolVersion: protocolVersion, SourceID: "local"}, nil
+		})
+	}
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
 		ref := params.Ref
 		if ref == "" {
@@ -2202,7 +2216,7 @@ func startAppwireTestDaemon(t *testing.T, dir, sessionID string, register func(*
 	writeRendezvous(t, dir, rendezvous.Entry{
 		PID:        200,
 		Address:    strings.TrimPrefix(srv.URL, "http://"),
-		Protocol:   appwire.ProtocolVersion,
+		Protocol:   protocolVersion,
 		Endpoint:   "ws" + srv.URL[len("http"):] + "/rpc",
 		SourceID:   "local",
 		ThreadID:   sessionID,
