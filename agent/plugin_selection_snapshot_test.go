@@ -143,7 +143,7 @@ func TestPluginSelectionExcludedContributionsDoNotInitialize(t *testing.T) {
 	}
 	selectedSkill := false
 	for _, skill := range ds.Skills {
-		if skill.Name == "one" {
+		if skill.Name == "selected:one" {
 			selectedSkill = true
 		}
 		if skill.Name == "excluded:one" {
