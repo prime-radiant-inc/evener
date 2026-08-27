@@ -105,6 +105,7 @@ type hubModel struct {
 	forkDraft                      *hubForkDraft
 	sessionThemePicker             *tuipick.ThemePicker
 	sessionModelPicker             *tuipick.ModelPicker
+	sessionVisionModelPicker       *tuipick.ModelPicker
 	sessionEffortPicker            *tuipick.ModelPicker
 	sessionTranscriptPicker        *tuipick.ModelPicker
 	sessionPanel                   *hubSessionPanel

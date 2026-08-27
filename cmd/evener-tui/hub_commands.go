@@ -118,6 +118,11 @@ type hubSessionModelsMsg struct {
 	err    error
 }
 
+type hubVisionModelsMsg struct {
+	models []tuipick.ModelPickerItem
+	err    error
+}
+
 type hubSpawnOptionsMsg struct {
 	harnesses                   []string
 	harnessKinds                map[string]string
@@ -288,6 +293,42 @@ func fetchHubSessionModels(client *appwire.Client, workingDir string) tea.Cmd {
 		}
 		return hubSessionModelsMsg{models: modelPickerItemsFromResponse(resp, false)}
 	}
+}
+
+// fetchHubVisionSessionModels loads the session's launchable models and filters
+// them to vision-capable ones (embedded catalog), prepending the two pseudo-
+// entries of the vision setting: current-model and off.
+func fetchHubVisionSessionModels(client *appwire.Client, workingDir string) tea.Cmd {
+	workingDir = strings.TrimSpace(workingDir)
+	return func() tea.Msg {
+		resp, err := client.ModelList(context.Background(), appwire.ModelListParams{CWD: workingDir})
+		if err != nil {
+			return hubVisionModelsMsg{err: err}
+		}
+		return hubVisionModelsMsg{models: visionModelPickerItems(modelPickerItemsFromResponse(resp, false))}
+	}
+}
+
+func visionModelPickerItems(items []tuipick.ModelPickerItem) []tuipick.ModelPickerItem {
+	cat := llm.EmbeddedModelCatalog()
+	capable := func(id string) bool {
+		if cat == nil {
+			return false
+		}
+		_, model := splitProviderModel(id)
+		mi := cat.LookupModelInfo(model)
+		return mi != nil && mi.SupportsVision
+	}
+	out := []tuipick.ModelPickerItem{
+		{ID: "", Display: "Current model"},
+		{ID: "off", Display: "Off"},
+	}
+	for _, item := range items {
+		if capable(item.ID) {
+			out = append(out, item)
+		}
+	}
+	return out
 }
 
 func fetchHubSpawnOptions(client *appwire.Client, workingDir string) tea.Cmd {
@@ -637,6 +678,25 @@ func reasoningEffortLevelKnown(levels []string, level string) bool {
 		}
 	}
 	return false
+}
+
+// visionModelRefKnown reports whether ref parses as a vision-model setting —
+// "", "off", a bare model, or "provider/model" — so /vision-model can reject
+// a malformed ref client-side without a wire round trip.
+func visionModelRefKnown(ref string) bool {
+	ref = strings.TrimSpace(ref)
+	if ref == "" || strings.EqualFold(ref, "off") {
+		return true
+	}
+	prov, model, ok := strings.Cut(ref, "/")
+	return !ok || (prov != "" && model != "")
+}
+
+func sendHubVisionModelAction(client *appwire.Client, ref appwire.Ref, visionModel string) tea.Cmd {
+	return func() tea.Msg {
+		err := client.ThreadVisionModelSet(context.Background(), appwire.ThreadVisionModelSetParams{Ref: ref.String(), VisionModel: visionModel})
+		return hubActionMsg{action: "vision-model", err: err}
+	}
 }
 
 func sendHubEffortAction(client *appwire.Client, ref appwire.Ref, level string) tea.Cmd {
