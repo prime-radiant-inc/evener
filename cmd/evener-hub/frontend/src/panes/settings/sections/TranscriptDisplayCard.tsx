@@ -8,7 +8,7 @@ import {
   visibleCategoryInventory,
 } from "../../../transcriptDisplay/config";
 import { makeTranscriptPreviewModel } from "../../../transcriptDisplay/previewFixture";
-import { Button } from "../../../widgets/button";
+import { Button, Card } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { TranscriptBody } from "../../session/transcript/TranscriptBody";
 import { TranscriptDetailEditor } from "../../session/transcript/TranscriptDetailEditor";
@@ -27,18 +27,17 @@ export interface TranscriptDisplayCardProps {
 }
 
 const CLASS = {
-  root: requireClass(styles.root, "transcriptDisplayCard.module.css", "root"),
+  content: requireClass(styles.content, "transcriptDisplayCard.module.css", "content"),
   heading: requireClass(styles.heading, "transcriptDisplayCard.module.css", "heading"),
-  current: requireClass(styles.current, "transcriptDisplayCard.module.css", "current"),
   controls: requireClass(styles.controls, "transcriptDisplayCard.module.css", "controls"),
   preview: requireClass(styles.preview, "transcriptDisplayCard.module.css", "preview"),
   example: requireClass(styles.example, "transcriptDisplayCard.module.css", "example"),
+  mobileCanvas: requireClass(styles.mobileCanvas, "transcriptDisplayCard.module.css", "mobileCanvas"),
   inventory: requireClass(styles.inventory, "transcriptDisplayCard.module.css", "inventory"),
   inventoryRow: requireClass(styles.inventoryRow, "transcriptDisplayCard.module.css", "inventoryRow"),
   scope: requireClass(styles.scope, "transcriptDisplayCard.module.css", "scope"),
   status: requireClass(styles.status, "transcriptDisplayCard.module.css", "status"),
   error: requireClass(styles.error, "transcriptDisplayCard.module.css", "error"),
-  retry: requireClass(styles.retry, "transcriptDisplayCard.module.css", "retry"),
 };
 
 const CATEGORY_LABELS: Readonly<Record<TranscriptDisplayCategory, string>> = {
@@ -88,72 +87,71 @@ export function TranscriptDisplayCard({
   const cardId = `transcript-display-card-${layout}`;
 
   return (
-    <article className={CLASS.root} data-testid={cardId} aria-labelledby={`${cardId}-heading`}>
-      <header className={CLASS.heading}>
-        <div>
-          <h2 id={`${cardId}-heading`}>{name} default</h2>
-          <p className={CLASS.current}>
-            Current detail: <strong>{contentSummary(config.content)}</strong>
-            {draft !== undefined && <span> · Draft preview</span>}
-          </p>
-        </div>
-        <span>Hub revision {confirmed.revision}</span>
-      </header>
+    <article data-testid={cardId} aria-labelledby={`${cardId}-heading`}>
+      <Card>
+        <div className={CLASS.content}>
+          <header className={CLASS.heading}>
+            <h2 id={`${cardId}-heading`}>{name} default</h2>
+            <span>Hub revision {confirmed.revision}</span>
+          </header>
 
-      <div className={CLASS.controls} data-testid={`transcript-display-controls-${layout}`}>
-        <TranscriptDetailEditor value={config} onChange={onChange} compact={false} disabled={disabled} />
-      </div>
-
-      {localOverride === undefined ? (
-        <p className={CLASS.scope}>
-          No browser-local live override is set for this layout. This browser follows the hub default unless a live
-          transcript choice is made.
-        </p>
-      ) : (
-        <p className={CLASS.scope}>
-          A browser-local live view is overriding this hub default ({contentSummary(localOverride.content)}). Changing
-          this card does not replace that local choice.
-        </p>
-      )}
-
-      {saveState === "saving" && (
-        <p className={CLASS.status} role="status" aria-live="polite">
-          Saving hub default…
-        </p>
-      )}
-      {saveState === "error" && (
-        <div className={CLASS.error} role="alert">
-          <span>{error ?? "Could not save this hub default."}</span>
-          <span className={CLASS.retry}>
-            <Button size="sm" variant="secondary" onClick={onRetry} disabled={disabled}>
-              Retry
-            </Button>
-          </span>
-        </div>
-      )}
-
-      <section className={CLASS.preview} aria-labelledby={`${cardId}-example-heading`}>
-        <div className={CLASS.example}>
-          <h3 id={`${cardId}-example-heading`}>Example only—not your data</h3>
-          <div data-testid={`transcript-display-preview-${layout}`}>
-            <TranscriptBody
-              model={previewModel}
-              config={config}
-              surface="preview"
-              disclosureScope={`settings:transcript-display:${layout}`}
-              sessionRef={`settings-preview:${layout}`}
-            />
+          <div className={CLASS.controls} data-testid={`transcript-display-controls-${layout}`}>
+            <TranscriptDetailEditor value={config} onChange={onChange} compact={false} disabled={disabled} />
           </div>
+
+          {localOverride === undefined ? (
+            <p className={CLASS.scope}>
+              No browser-local live override is set for this layout. This browser follows the hub default unless a live
+              transcript choice is made.
+            </p>
+          ) : (
+            <p className={CLASS.scope}>
+              A browser-local live view is overriding this hub default ({contentSummary(localOverride.content)}).
+              Changing this card does not replace that local choice.
+            </p>
+          )}
+
+          {saveState === "saving" && (
+            <p className={CLASS.status} role="status" aria-live="polite">
+              Saving hub default…
+            </p>
+          )}
+          {saveState === "error" && (
+            <div className={CLASS.error} role="alert">
+              <span>{error ?? "Could not save this hub default."}</span>
+              <Button size="sm" variant="secondary" onClick={onRetry} disabled={disabled}>
+                Retry
+              </Button>
+            </div>
+          )}
+
+          <section className={CLASS.preview} aria-labelledby={`${cardId}-example-heading`}>
+            <div
+              className={layout === "mobile" ? `${CLASS.example} ${CLASS.mobileCanvas}` : CLASS.example}
+              data-testid={`transcript-display-preview-canvas-${layout}`}
+            >
+              <h3 id={`${cardId}-example-heading`}>Example only—not your data</h3>
+              <div data-testid={`transcript-display-preview-${layout}`}>
+                <TranscriptBody
+                  model={previewModel}
+                  config={config}
+                  surface="preview"
+                  disclosureScope={`settings:transcript-display:${layout}`}
+                  sessionRef={`settings-preview:${layout}`}
+                />
+              </div>
+            </div>
+            <div className={CLASS.inventory}>
+              <p className={CLASS.inventoryRow}>
+                <strong>Shown:</strong> {categoryList(inventory.visible)}
+              </p>
+              <p className={CLASS.inventoryRow}>
+                <strong>Hidden:</strong> {categoryList(inventory.hidden)}
+              </p>
+            </div>
+          </section>
         </div>
-        <div className={CLASS.inventory}>
-          <p className={CLASS.inventoryRow}>
-            <strong>Shown:</strong> {categoryList(inventory.visible)}
-          </p>
-          <p className={CLASS.inventoryRow}>
-            <strong>Hidden:</strong> {categoryList(inventory.hidden)}
-          </p>
-        </div>
-      </section>
+      </Card>
     </article>
   );
 }

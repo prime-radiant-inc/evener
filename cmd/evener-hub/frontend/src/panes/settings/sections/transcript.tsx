@@ -70,28 +70,11 @@ export function TranscriptSection() {
     saveOperations.current[layout] = operation;
     setPending((current) => ({ ...current, [layout]: { state: "saving", config } }));
     try {
-      const confirmedBefore = confirmedFor(layout, transcriptDisplayStore.getState().hub);
       const canonical = await transcriptDisplayStore.getState().patchHubDefault(layout, config);
-      if (
-        canonical.revision === confirmedBefore.revision &&
-        configFingerprint(canonical.config) !== configFingerprint(config)
-      ) {
+      if (saveOperations.current[layout] !== operation) return;
+      const storeState = transcriptDisplayStore.getState();
+      if (configFingerprint(canonical.config) !== configFingerprint(config) || storeState.drafts[layout] !== undefined)
         throw new Error("Hub did not acknowledge this transcript display default.");
-      }
-      if (saveOperations.current[layout] !== operation) {
-        const currentDraft = transcriptDisplayStore.getState().drafts[layout];
-        if (currentDraft !== undefined) {
-          setPending((current) => ({
-            ...current,
-            [layout]: {
-              state: "error",
-              config: currentDraft,
-              error: "Hub did not acknowledge this transcript display default.",
-            },
-          }));
-        }
-        return;
-      }
       // patchHubDefault returns only a fully validated canonical response for
       // this layout. Do not inspect store-wide errors: another layout may be
       // settling concurrently.
@@ -121,7 +104,10 @@ export function TranscriptSection() {
     else void transcriptDisplayStore.getState().refreshHubDefaults();
   }
 
-  const serverIssue = hubError !== null && !Object.values(pending).some((state) => state?.state === "error");
+  const layoutIssue =
+    Object.values(hubErrors).some((message) => message !== undefined) ||
+    Object.values(pending).some((state) => state?.state === "saving" || state?.state === "error");
+  const serverIssue = hubError !== null && !layoutIssue;
   const disabled = hubSupport !== "supported" || hubLoading || serverIssue;
   const status =
     hubSupport === "unknown"
@@ -134,9 +120,9 @@ export function TranscriptSection() {
 
   return (
     <div className={CLASS.root}>
-      <p className={CLASS.intro}>Transcript display defaults are stored by this hub.</p>
-      <p className={CLASS.intro}>Hub defaults sync to devices paired with this hub.</p>
-      <p className={CLASS.intro}>A live transcript choice is browser-local and does not change another machine.</p>
+      <p className={CLASS.intro}>
+        Transcript display defaults sync to devices paired with this hub. Live transcript choices remain browser-local.
+      </p>
 
       {storageWarning !== null && (
         <p className={CLASS.error} role="alert">
