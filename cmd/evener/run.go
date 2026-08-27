@@ -37,6 +37,7 @@ type runConfig struct {
 	prompt                    string
 	model                     string
 	fastCheapModel            string // --fast-cheap-model override for auxiliary side calls
+	visionModel               string // --vision-model override for the image-description side-channel
 	workDir                   string
 	stateDir                  string   // --state-dir override
 	systemPrompt              string   // --system-prompt file path
@@ -273,6 +274,10 @@ func run(ctx context.Context, cfg runConfig) error {
 	if err != nil {
 		return err
 	}
+	visionModel, err := applyVisionModel(profile, cfg.visionModel, client)
+	if err != nil {
+		return err
+	}
 	env := execenv.NewLocalExecutionEnvironment(cfg.workDir)
 	// A daemon/session launched outside the developer's shell rc chain (macOS
 	// launchd, a GUI app, systemd) inherits a PATH lacking tool directories like
@@ -302,6 +307,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		ContextStrategy:             cfg.contextStrategy,
 		ExportATIFPath:              cfg.exportATIF,
 		ExportATIFProviderHandles:   cfg.exportATIFProviderHandles,
+		VisionModel:                 visionModel,
 		NonInteractive:              true,
 		TurnEndsProcess:             true,
 		SystemPromptAsUser:          cfg.systemPromptAsUser,
