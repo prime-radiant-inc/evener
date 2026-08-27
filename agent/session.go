@@ -1219,6 +1219,7 @@ func (s *Session) SetVisionModel(ref string) error {
 	s.cfg.VisionModel = ref
 	s.mu.Unlock()
 	s.emit(events.EventVisionModelChanged, events.VisionModelChangedData{OldVisionModel: old, NewVisionModel: ref})
+	s.maybeAutoSave()
 	return nil
 }
 
