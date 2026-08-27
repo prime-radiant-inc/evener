@@ -190,6 +190,12 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // The hub's resolved default model for this cwd ("" until resolve confirms
   // one): what the Effort ladder keys off while Model reads "(default)".
   const [resolvedDefaultModel, setResolvedDefaultModel] = useState("");
+  // The whole effective layer of the same launch/resolve (null until it
+  // lands, or after it fails): every launch-config control whose unset state
+  // reads "(default)" prepends its entry here - "high (default)",
+  // "On (default)", "anthropic/claude-sonnet-4 (default)" - so the word
+  // "(default)" never stands in for an answer the hub actually knows.
+  const [resolvedDefaults, setResolvedDefaults] = useState<LaunchConfigLayer | null>(null);
   const pluginRevision = useExtensionsStore((state) => state.pluginRevision);
   const pluginSelectionSupported = harnessSupportsPluginSelection(harness, harnesses);
   const combinedOverrides = pluginSelectionSupported
@@ -508,12 +514,14 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     if (cwd.trim() === "") {
       setNoDefaultModel(false);
       setResolvedDefaultModel("");
+      setResolvedDefaults(null);
       return undefined;
     }
     let active = true;
     Promise.all([resolveConfig(advancedOverrides), loadModels().catch(() => null)]).then(
       ([result, models]) => {
         if (!active) return;
+        setResolvedDefaults(result.effective);
         const defaultModel = (result.effective.model ?? "").trim();
         setNoDefaultModel(defaultModel === "");
         setResolvedDefaultModel(defaultModel);
@@ -530,6 +538,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
         if (active) {
           setNoDefaultModel(false);
           setResolvedDefaultModel("");
+          setResolvedDefaults(null);
         }
       },
     );
@@ -564,8 +573,12 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     reasoningEffort !== "" && reasoningEffort !== "none" && !effortLevels.includes(reasoningEffort)
       ? reasoningEffort
       : null;
+  // The effort a session started now would inherit: prepended onto the empty
+  // option's "(default)" once launch/resolve has landed with one.
+  const resolvedEffortDefault =
+    typeof resolvedDefaults?.reasoningEffort === "string" ? resolvedDefaults.reasoningEffort.trim() : "";
   const effortOptions = [
-    { value: "", label: "(default)" },
+    { value: "", label: resolvedEffortDefault !== "" ? `${resolvedEffortDefault} (default)` : "(default)" },
     ...effortLevels.filter((level) => level !== "none").map((level) => ({ value: level, label: level })),
     ...(preservedEffort === null ? [] : [{ value: preservedEffort, label: preservedEffort }]),
     { value: "none", label: "none" },
@@ -871,10 +884,16 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                     control for one setting. The label follows the same rules
                     the desktop field's does - the required-choice word when
                     the hub has confirmed no default (kata xgk8), otherwise
-                    the chosen model or "(default)". */}
+                    the chosen model, the resolved default model's own
+                    "<model> (default)", or plain "(default)" until the
+                    resolve lands. */}
                 <span className={CLASS.modelTrigger} data-testid="spawn-model-slot">
                   <ModelSwitchTrigger
-                    label={modelRequired ? MODEL_CHOOSE_LABEL : model || "(default)"}
+                    label={
+                      modelRequired
+                        ? MODEL_CHOOSE_LABEL
+                        : model || (resolvedDefaultModel !== "" ? `${resolvedDefaultModel} (default)` : "(default)")
+                    }
                     value={model}
                     loadCatalog={loadCatalog}
                     onPick={handleModelPickEntry}
@@ -977,7 +996,13 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
               loadModels={loadModels}
               harness={harness || undefined}
               cwd={cwd || undefined}
-              emptyLabel={modelRequired ? MODEL_CHOOSE_LABEL : undefined}
+              emptyLabel={
+                modelRequired
+                  ? MODEL_CHOOSE_LABEL
+                  : resolvedDefaultModel !== ""
+                    ? `${resolvedDefaultModel} (default)`
+                    : undefined
+              }
             />
             {modelRequired && (
               <p className={CLASS.modelNote} role="alert">
@@ -1076,6 +1101,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
           resolveConfig={resolveConfig}
           loadCatalog={loadCatalog}
           complete={complete}
+          resolvedDefaults={resolvedDefaults ?? undefined}
         >
           <FormRow label="Harness" htmlFor="spawn-harness">
             <Select

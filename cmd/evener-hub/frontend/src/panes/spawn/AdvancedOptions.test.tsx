@@ -68,6 +68,7 @@ function renderPanel(
       resolveConfig={resolveConfig as (o: unknown) => Promise<LaunchConfigResolved>}
       loadCatalog={loadCatalog}
       complete={complete}
+      resolvedDefaults={over.resolvedDefaults}
     >
       {children}
     </AdvancedOptions>,
@@ -123,6 +124,93 @@ test("a boolean control collects true/false and drops the (default)", async () =
   await user.selectOptions(screen.getByLabelText("No project prompts"), "On");
 
   expect(onOverridesChange).toHaveBeenLastCalledWith({ noProjectPrompts: true });
+});
+
+// --- resolved-default labels -------------------------------------------------
+//
+// The panel receives the effective layer of the pane's own launch/resolve as
+// `resolvedDefaults`: a control whose unset state reads "(default)" prepends
+// the value a session started now would inherit. Until the resolve lands (no
+// prop), the label stays plain "(default)".
+
+test("a boolean control's (default) option names the resolved default (On/Off)", async () => {
+  const user = userEvent.setup();
+  renderPanel(
+    [
+      option({ wireField: "noProjectPrompts", kind: "boolean", label: "No project prompts" }),
+      option({ wireField: "verbose", kind: "boolean", label: "Verbose event log" }),
+      option({ wireField: "nonInteractive", kind: "boolean", label: "Non-interactive" }),
+    ],
+    { resolvedDefaults: { noProjectPrompts: true, verbose: false } },
+  );
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  const labels = (name: string) =>
+    Array.from((screen.getByLabelText(name) as HTMLSelectElement).options).map((o) => o.textContent);
+  expect(labels("No project prompts")).toEqual(["On (default)", "On", "Off"]);
+  expect(labels("Verbose event log")).toEqual(["Off (default)", "On", "Off"]);
+  // No layer sets this one: the plain word stays.
+  expect(labels("Non-interactive")).toEqual(["(default)", "On", "Off"]);
+});
+
+test("a select control renders exactly one empty option, carrying the resolved default's label", async () => {
+  const user = userEvent.setup();
+  // reasoning_effort's real schema ships its OWN { value: "", label:
+  // "(default)" } choice (schema.go's reasoningChoices): the panel owns the
+  // empty option, so the schema's is dropped rather than duplicated.
+  renderPanel(
+    [
+      option({
+        wireField: "reasoningEffort",
+        kind: "select",
+        label: "Reasoning effort",
+        choices: [
+          { value: "", label: "(default)" },
+          { value: "high", label: "high" },
+          { value: "max", label: "max" },
+        ],
+      }),
+    ],
+    { resolvedDefaults: { reasoningEffort: "high" } },
+  );
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  const select = screen.getByLabelText("Reasoning effort") as HTMLSelectElement;
+  expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["high (default)", "high", "max"]);
+  expect(Array.from(select.options).map((o) => o.value)).toEqual(["", "high", "max"]);
+});
+
+test("a select control without a resolved default dedupes the schema's own empty choice to a plain (default)", async () => {
+  const user = userEvent.setup();
+  renderPanel([
+    option({
+      wireField: "reasoningEffort",
+      kind: "select",
+      label: "Reasoning effort",
+      choices: [
+        { value: "", label: "(default)" },
+        { value: "high", label: "high" },
+      ],
+    }),
+  ]);
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  const select = screen.getByLabelText("Reasoning effort") as HTMLSelectElement;
+  expect(Array.from(select.options).map((o) => o.textContent)).toEqual(["(default)", "high"]);
+});
+
+test("a modelPicker control names the resolved default model", async () => {
+  const user = userEvent.setup();
+  renderPanel([option({ wireField: "fastCheapModel", kind: "modelPicker", label: "Fast cheap model" })], {
+    resolvedDefaults: { fastCheapModel: "openai/gpt-5" },
+  });
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  expect(screen.getByRole("button", { name: /change model/i }).textContent).toContain("openai/gpt-5 (default)");
 });
 
 test("an integer control collects a parsed number", async () => {
