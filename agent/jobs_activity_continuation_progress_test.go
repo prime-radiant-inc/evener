@@ -80,6 +80,68 @@ func TestLoadSessionJobActivityTree_SizeContinuationWalksRetainedJobsOnce(t *tes
 	}
 }
 
+func TestLoadSessionJobActivityTree_SizeContinuationSkipsUnrepresentableEntry(t *testing.T) {
+	stateDir := t.TempDir()
+	const rootID = "rootoversizedpage"
+	started := time.Unix(3_000, 0).UTC()
+	normalStarted := started.Add(time.Second)
+	s1cov_writeJobLog(t, stateDir, rootID,
+		jobstore.Event{
+			Kind:             jobstore.EventJobStarted,
+			TS:               started,
+			JobID:            "oversized_job",
+			Type:             jobstore.JobShell,
+			OwnerSessionID:   rootID,
+			VisibleToSession: rootID,
+			StartedAt:        &started,
+			Description:      strings.Repeat("x", activityMaxEncodedBytes+(256<<10)),
+		},
+		jobstore.Event{
+			Kind:             jobstore.EventJobStarted,
+			TS:               normalStarted,
+			JobID:            "normal_job",
+			Type:             jobstore.JobShell,
+			OwnerSessionID:   rootID,
+			VisibleToSession: rootID,
+			StartedAt:        &normalStarted,
+			Description:      "reachable after oversized job",
+		},
+	)
+	savePastActivityMeta(t, stateDir, rootID, "Oversized continuation")
+
+	first, err := LoadSessionJobActivityTree(stateDir, rootID, appwire.JobsListParams{})
+	if err != nil {
+		t.Fatalf("load omission page: %v", err)
+	}
+	assertActivityPageBound(t, 1, first)
+	if len(first.Root.Entries) != 0 {
+		t.Fatalf("omission page entries = %+v, want no representable entries", first.Root.Entries)
+	}
+	if first.Root.Branch.Error == "" {
+		t.Fatal("omission page branch error is empty")
+	}
+	if first.Root.Branch.Continuation == "" || !first.Root.Branch.Truncated {
+		t.Fatalf("omission page branch = %+v, want a continuation", first.Root.Branch)
+	}
+
+	second, err := LoadSessionJobActivityTree(stateDir, rootID, appwire.JobsListParams{
+		Continuation: first.Root.Branch.Continuation,
+	})
+	if err != nil {
+		t.Fatalf("load page after omission: %v", err)
+	}
+	assertActivityPageBound(t, 2, second)
+	if len(second.Root.Entries) != 1 || second.Root.Entries[0].Job == nil {
+		t.Fatalf("page after omission entries = %+v, want one shell job", second.Root.Entries)
+	}
+	if second.Root.Entries[0].Job.JobID != "normal_job" {
+		t.Fatalf("page after omission job = %q, want normal_job", second.Root.Entries[0].Job.JobID)
+	}
+	if second.Root.Branch.Truncated || second.Root.Branch.Continuation != "" {
+		t.Fatalf("page after omission branch = %+v, want terminal completion", second.Root.Branch)
+	}
+}
+
 func TestLoadSessionJobActivityTree_DepthContinuationStartsAtOmittedBranch(t *testing.T) {
 	stateDir := t.TempDir()
 	const delegateCount = activityMaxNewDepth*2 + 6

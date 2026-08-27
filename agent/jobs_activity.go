@@ -890,7 +890,10 @@ func activityPositionAfterEntries(entries []appwire.JobActivityEntry) *activityE
 	if len(entries) == 0 {
 		return nil
 	}
-	entry := entries[len(entries)-1]
+	return activityEntryPositionFor(entries[len(entries)-1])
+}
+
+func activityEntryPositionFor(entry appwire.JobActivityEntry) *activityEntryPosition {
 	if entry.Job != nil {
 		return &activityEntryPosition{Kind: "shell", ID: entry.Job.JobID}
 	}
@@ -1048,14 +1051,25 @@ func trimActivityTrailingEntry(session *appwire.JobActivitySession, rootID strin
 			return true
 		}
 	}
+	removed := *entry
 	session.Entries = session.Entries[:i]
 	session.Branch.Truncated = true
+	after := activityPositionAfterEntries(session.Entries)
+	if raw, err := json.Marshal(removed); err == nil && len(raw) > activityMaxEncodedBytes {
+		after = activityEntryPositionFor(removed)
+		if after != nil {
+			appendActivityBranchError(
+				&session.Branch,
+				fmt.Sprintf("activity entry %q exceeds the %d-byte page limit and was omitted", after.ID, activityMaxEncodedBytes),
+			)
+		}
+	}
 	session.Branch.Continuation = encodeActivityContinuation(activityContinuation{
 		Version:   activityContinuationV1,
 		RootID:    rootID,
 		SessionID: session.SessionID,
 		Path:      append([]string(nil), path...),
-		After:     activityPositionAfterEntries(session.Entries),
+		After:     after,
 	})
 	return true
 }
