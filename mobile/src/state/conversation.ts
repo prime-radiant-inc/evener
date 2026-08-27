@@ -594,8 +594,11 @@ export function createConversationStore() {
     // failed terminal mutation). A still-pending mutation keeps the request
     // deferred.
     const currentMutation = storeGet?.().pendingMutation;
-    if (currentMutation !== null && currentMutation !== undefined &&
-        currentMutation.status === "pending") {
+    if (
+      currentMutation !== null &&
+      currentMutation !== undefined &&
+      currentMutation.status === "pending"
+    ) {
       return;
     }
     const { binding } = trailingReread;
