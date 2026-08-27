@@ -883,10 +883,15 @@
 }
 
 .concept-field-notes .fn-older-records {
+  display: block;
   width: min(100%, 46rem);
   margin-inline: auto;
-  padding: 0.55rem 0.2rem;
+  padding: 0.55rem 0.9rem;
+  border: 1px solid var(--fn-control-line);
+  border-radius: 0.35rem;
+  background: transparent;
   color: var(--fn-muted);
+  cursor: pointer;
   font-size: 0.78rem;
   text-align: center;
 }

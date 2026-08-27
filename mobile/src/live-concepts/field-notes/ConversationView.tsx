@@ -292,9 +292,15 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
       </fieldset>
 
       {conversation.olderAvailable ? (
-        <p className="fn-older-records" data-older-available>
-          Older records available
-        </p>
+        <button
+          className="fn-older-records"
+          data-older-available
+          type="button"
+          disabled={pending}
+          onClick={() => dispatch({ type: "loadOlder" })}
+        >
+          Load older
+        </button>
       ) : null}
 
       <section
