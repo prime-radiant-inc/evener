@@ -34,13 +34,23 @@ func ResolveUserOnly(stateRoot string, overrides Layer) (Resolved, error) {
 	return resolveUserOnlyFS(afero.NewOsFs(), stateRoot, overrides)
 }
 
-func resolveUserOnlyFS(fs afero.Fs, stateRoot string, overrides Layer) (Resolved, error) {
-	var pathDiags []Diagnostic
-	g, err := loadLayerFS(fs, filepath.Join(stateRoot, "launch.toml"))
+// loadGlobalLayerFS reads and validates the global layer, the one step shared
+// by a full directory resolution and the user-only preview before one exists.
+func loadGlobalLayerFS(fs afero.Fs, globalPath string) (Layer, []Diagnostic, error) {
+	g, err := loadLayerFS(fs, globalPath)
 	if err != nil {
-		return Resolved{}, fmt.Errorf("global: %w", err)
+		return Layer{}, nil, fmt.Errorf("global: %w", err)
 	}
-	g = validateAbsolutePaths(LayerGlobal, g, &pathDiags)
+	var diags []Diagnostic
+	g = validateAbsolutePaths(LayerGlobal, g, &diags)
+	return g, diags, nil
+}
+
+func resolveUserOnlyFS(fs afero.Fs, stateRoot string, overrides Layer) (Resolved, error) {
+	g, pathDiags, err := loadGlobalLayerFS(fs, filepath.Join(stateRoot, "launch.toml"))
+	if err != nil {
+		return Resolved{}, err
+	}
 	resolved, _ := mergeLayers(map[LayerName]Layer{
 		LayerGlobal: g,
 		LayerLaunch: overrides,
@@ -62,11 +72,11 @@ func resolveFSWithProject(fs afero.Fs, stateRoot, cwd string, project identifier
 	layers := map[LayerName]Layer{}
 	var pathDiags []Diagnostic
 
-	g, err := loadLayerFS(fs, paths.Global)
+	g, gDiags, err := loadGlobalLayerFS(fs, paths.Global)
 	if err != nil {
-		return Resolved{}, fmt.Errorf("global: %w", err)
+		return Resolved{}, err
 	}
-	g = validateAbsolutePaths(LayerGlobal, g, &pathDiags)
+	pathDiags = append(pathDiags, gDiags...)
 	layers[LayerGlobal] = g
 
 	// In-repo: load + hash + trust check.
