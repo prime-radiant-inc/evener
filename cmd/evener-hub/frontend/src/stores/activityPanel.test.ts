@@ -4,7 +4,7 @@ import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "./activityPanel";
 import { schedulePanelStoreEviction } from "./panelStoreEviction";
 
-function tree(revision = 1) {
+function tree(revision = 1): ActivityTree {
   return {
     revision,
     root: {
@@ -114,7 +114,6 @@ describe("activityPanelStore", () => {
   test("rejects a continuation from another revision and requests a root restart", () => {
     resetActivityPanelStoreForTests();
     const retained = tree(1);
-    retained.root.diagnostics = ["retained diagnostic"];
     retained.root.branch = { truncated: true, continuation: "page-2", error: "retained branch error" };
     const first = activityPanelStore.getState().beginFetch("ref_a");
     activityPanelStore.getState().publishFetch("ref_a", first, { kind: "ready", tree: retained });
@@ -131,7 +130,6 @@ describe("activityPanelStore", () => {
       tree: {
         revision: 1,
         root: {
-          diagnostics: ["retained diagnostic"],
           branch: { truncated: true, continuation: "page-2", error: "retained branch error" },
         },
       },

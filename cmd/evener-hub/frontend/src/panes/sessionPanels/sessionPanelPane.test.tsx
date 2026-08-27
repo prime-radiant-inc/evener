@@ -242,7 +242,7 @@ function activityRootTree(): ActivityTree {
 
 function continuedActivityTree(): ActivityTree {
   return {
-    revision: 2,
+    revision: 1,
     root: {
       kind: "session",
       sessionId: "session_a",
@@ -556,6 +556,12 @@ test("retains Activity continuation failure, retry, and graft across remounts", 
     retriedContinuation.resolve({ data: continuedActivityTree() });
     await Promise.resolve();
   });
+  const resolvedEntry = activityPanelStore.getState().entries.get(model.ref);
+  expect(resolvedEntry?.pending).toBeUndefined();
+  if (resolvedEntry?.load.kind !== "ready") throw new Error("expected retained activity after continuation retry");
+  const resolvedDelegate = resolvedEntry.load.tree.root.entries[0];
+  if (resolvedDelegate?.kind !== "delegate") throw new Error("expected retained delegate after continuation retry");
+  expect(resolvedDelegate.delegate.child?.entries).toHaveLength(1);
 
   seedModel(model);
   render(<SessionPanelPane params={{ ref: model.ref }} paneId="panel-activity-grafted" focused kind="activity" />);
