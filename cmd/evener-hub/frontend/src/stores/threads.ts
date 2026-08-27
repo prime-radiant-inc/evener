@@ -170,6 +170,7 @@ export interface ThreadsStoreState {
   cancelQueued(ref: string, index: number, expectedEntryId: string): Promise<void>;
   setModel(ref: string, modelProvider: string, model: string): Promise<void>;
   setReasoningEffort(ref: string, level: string): Promise<void>;
+  setVisionModel(ref: string, visionModel: string): Promise<void>;
   // Sets or clears the session's /goal objective (an empty objective
   // clears it). Returns whether the goal loop started immediately (false
   // when cleared, or when a turn is already running and the goal picks up
@@ -1969,6 +1970,15 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
     const client = requireClient();
     try {
       await client.request("thread/reasoning-effort/set", { ref, reasoningEffort: level });
+    } catch (err) {
+      throw mapConflict(err);
+    }
+  },
+
+  async setVisionModel(ref, visionModel) {
+    const client = requireClient();
+    try {
+      await client.request("thread/vision-model/set", { ref, visionModel });
     } catch (err) {
       throw mapConflict(err);
     }

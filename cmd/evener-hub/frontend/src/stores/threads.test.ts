@@ -97,6 +97,7 @@ const CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
@@ -3531,6 +3532,25 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
 
     const call = fake.calls.find((c) => c.method === "thread/model/set");
     expect(call?.params).toEqual({ ref: "ref_a", modelProvider: "anthropic", model: "claude-opus-4-1" });
+  });
+
+  test("setVisionModel sends thread/vision-model/set with {ref, visionModel}", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/vision-model/set", () => ({}));
+
+    await threadsStore.getState().setVisionModel("ref_a", "off");
+
+    const call = fake.calls.find((c) => c.method === "thread/vision-model/set");
+    expect(call?.params).toEqual({ ref: "ref_a", visionModel: "off" });
+  });
+
+  test("setVisionModel maps a Conflict rejection to ConflictError", async () => {
+    const fake = connectFakeClient();
+    fake.on("thread/vision-model/set", () => {
+      throw new WireError("vision model unavailable", -32013, { evenerErrorInfo: "conflict" });
+    });
+
+    await expect(threadsStore.getState().setVisionModel("ref_a", "off")).rejects.toBeInstanceOf(ConflictError);
   });
 
   test("setReasoningEffort sends thread/reasoning-effort/set with {ref, reasoningEffort: level}", async () => {
