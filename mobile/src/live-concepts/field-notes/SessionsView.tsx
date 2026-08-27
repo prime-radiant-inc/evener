@@ -66,18 +66,29 @@ export function SessionsView({ state, dispatch }: SessionsViewProps) {
 
       <div
         className="fn-refresh-status"
+        data-roster-status={roster.status}
         data-refresh-state={roster.status}
         role="status"
         aria-live="polite"
       >
         {roster.status === "loading" ? (
           <span>Refreshing the roster…</span>
+        ) : roster.status === "idle" ? (
+          <span>Roster is idle</span>
+        ) : roster.status === "offline" ? (
+          <span>Offline — refresh unavailable</span>
         ) : roster.status === "error" ? (
           <span>Refresh failed</span>
         ) : (
           <span>Up to date</span>
         )}
       </div>
+
+      {roster.status === "error" && roster.error ? (
+        <p className="fn-roster-error" data-roster-error>
+          {roster.error}
+        </p>
+      ) : null}
 
       {roster.groups.length === 0 ? (
         <section className="fn-inline-state" data-session-filter-empty="true">

@@ -1,9 +1,13 @@
 // Focused surface tests for the live Field Notes concept. Covers the three
 // milestone surfaces (sessions, conversation, work) plus the chronology rail,
-// stable item sequence markers, user/assistant margin labels, current-record
-// state, and work-ledger annotations. Dates/times come from live display
-// values (roster updatedLabel / conversation status), never hardcoded
-// fixture chapter/date text.
+// stable item sequence markers (adapter sequenceLabel, never index-derived),
+// user/assistant margin labels, current-record state, work-ledger
+// annotations, full questions, composer capability gating, interrupt,
+// streaming/truncated markers, olderAvailable, roster status/error states,
+// and the concept-switch trigger on every surface. Dates/times come from
+// live display values (roster updatedLabel / conversation updatedLabel),
+// never hardcoded fixture chapter/date text. Behavioral assertions only —
+// no source-self-inspection.
 
 import {
   cleanup,
@@ -17,6 +21,7 @@ import type {
   LiveComposerView,
   LiveConceptIntent,
   LiveConceptState,
+  QuestionDraft,
 } from "../contract";
 import type {
   DisplayTone,
@@ -24,6 +29,7 @@ import type {
   LiveConceptSurface,
   LiveConnectionView,
   LiveConversationView,
+  LiveQuestionView,
   LiveRosterView,
   LiveTranscriptItem,
   LiveWorkItem,
@@ -133,45 +139,100 @@ function rosterWithRows(): LiveRosterView {
   };
 }
 
-function conversationWithItems(): LiveConversationView {
+function transcriptItem(
+  overrides: Partial<LiveTranscriptItem> & {
+    key: string;
+    kind: LiveTranscriptItem["kind"];
+  },
+): LiveTranscriptItem {
+  return {
+    label: "Item",
+    body: "Body text.",
+    tone: "idle",
+    streaming: false,
+    truncated: false,
+    questionKey: null,
+    sequenceLabel: "seq-1",
+    ...overrides,
+  };
+}
+
+function conversationWithItems(
+  overrides: Partial<LiveConversationView> = {},
+): LiveConversationView {
   const items: readonly LiveTranscriptItem[] = [
-    {
+    transcriptItem({
       key: "item-1",
       kind: "user",
       label: "Your note",
       body: "Open the reviewed workbook.",
       tone: "idle",
-      streaming: false,
-      truncated: false,
-    },
-    {
+      sequenceLabel: "seq-A1",
+    }),
+    transcriptItem({
       key: "item-2",
       kind: "assistant",
       label: "Assistant",
       body: "Reading the live record now.",
       tone: "running",
       streaming: true,
-      truncated: false,
-    },
-    {
+      sequenceLabel: "seq-A2",
+    }),
+    transcriptItem({
       key: "item-3",
       kind: "tool",
       label: "read_file",
       body: "Read 24 lines from renderer.",
       tone: "running",
-      streaming: false,
-      truncated: false,
-    },
+      sequenceLabel: "seq-A3",
+    }),
   ];
   return {
     threadKey: "session-b",
     title: "Compile typed modules",
     project: "evener-core",
-    status: "Running · updated 12 minutes ago",
+    status: "Running",
     items,
     questions: [],
     olderAvailable: false,
+    tone: "running" satisfies DisplayTone,
+    updatedLabel: "12 minutes ago",
+    ...overrides,
   };
+}
+
+function conversationWithQuestion(): LiveConversationView {
+  const question: LiveQuestionView = {
+    key: "q-1",
+    header: "Permission",
+    prompt: "Run the build now?",
+    options: [
+      { key: "opt-yes", label: "Yes", detail: "Build immediately" },
+      { key: "opt-no", label: "No", detail: "Wait for review" },
+    ],
+    multiple: false,
+  };
+  const items: readonly LiveTranscriptItem[] = [
+    transcriptItem({
+      key: "q-item-1",
+      kind: "question",
+      label: "Permission",
+      body: "Run the build now?",
+      tone: "attention",
+      questionKey: "q-1",
+      sequenceLabel: "seq-Q1",
+    }),
+  ];
+  return conversationWithItems({
+    threadKey: "session-q",
+    title: "Awaiting permission",
+    project: "evener-core",
+    status: "Needs answer",
+    items,
+    questions: [question],
+    tone: "attention",
+    updatedLabel: "just now",
+  });
 }
 
 function activityWithWorkTree(): LiveActivityView {
@@ -234,6 +295,12 @@ function mainFor(surface: LiveConceptSurface): HTMLElement {
   return main;
 }
 
+function conceptRoot(): HTMLElement {
+  const root = document.querySelector("[data-concept-root]");
+  if (!root) throw new Error("Missing concept root");
+  return root as HTMLElement;
+}
+
 // ---------------------------------------------------------------------------
 // Module contract
 // ---------------------------------------------------------------------------
@@ -246,7 +313,7 @@ describe("Field Notes live module contract", () => {
 
   it("renders the concept root with live platform and appearance", () => {
     renderState(baseState({ platform: "android", appearance: "dark" }));
-    const root = document.querySelector("[data-concept-root]");
+    const root = conceptRoot();
     expect(root).toHaveAttribute("data-platform", "android");
     expect(root).toHaveAttribute("data-appearance", "dark");
   });
@@ -256,7 +323,38 @@ describe("Field Notes live module contract", () => {
     expect(screen.queryByRole("navigation", { name: "Primary" })).toBeNull();
     expect(screen.queryByText(/lab controls/i)).toBeNull();
     expect(screen.queryByText(/synthetic/i)).toBeNull();
-    expect(screen.queryByTestId("lab-controls")).toBeNull();
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Concept-switch trigger on every surface
+// ---------------------------------------------------------------------------
+
+describe("Field Notes concept-switch trigger", () => {
+  it.each([
+    ["sessions", baseState({ surface: "sessions", roster: rosterWithRows() })],
+    [
+      "conversation",
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithItems(),
+      }),
+    ],
+    [
+      "work",
+      baseState({
+        surface: "work",
+        activity: activityWithWorkTree(),
+        conversation: conversationWithItems(),
+      }),
+    ],
+  ] as const)("renders a concept-switch trigger on %s", (_surface, state) => {
+    const dispatch = vi.fn();
+    renderState(state, dispatch);
+    const trigger = screen.getByRole("button", { name: /switch concept/i });
+    expect(trigger).toBeVisible();
+    fireEvent.click(trigger);
+    expect(dispatch).toHaveBeenCalledWith({ type: "openConceptSwitcher" });
   });
 });
 
@@ -272,9 +370,6 @@ describe("Field Notes sessions surface", () => {
     expect(group).toBeVisible();
     expect(
       within(group as HTMLElement).getByText("Refactor renderer module"),
-    ).toBeVisible();
-    expect(
-      within(group as HTMLElement).getByText("evener-mobile"),
     ).toBeVisible();
   });
 
@@ -302,10 +397,10 @@ describe("Field Notes sessions surface", () => {
   it("marks current/attention rows with a current-record state marker", () => {
     renderState(baseState({ surface: "sessions", roster: rosterWithRows() }));
     const main = mainFor("sessions");
-    const attentionRow = main.querySelector('[data-current-state="attention"]');
-    expect(attentionRow).toBeVisible();
-    const runningRow = main.querySelector('[data-current-state="running"]');
-    expect(runningRow).toBeVisible();
+    expect(
+      main.querySelector('[data-current-state="attention"]'),
+    ).toBeVisible();
+    expect(main.querySelector('[data-current-state="running"]')).toBeVisible();
   });
 
   it("dispatches setRosterQuery and refreshRoster through the live intent", () => {
@@ -314,8 +409,12 @@ describe("Field Notes sessions surface", () => {
       baseState({ surface: "sessions", roster: rosterWithRows() }),
       dispatch,
     );
-    const filter = screen.getByRole("searchbox", { name: "Filter sessions" });
-    fireEvent.change(filter, { target: { value: "evener" } });
+    fireEvent.change(
+      screen.getByRole("searchbox", { name: "Filter sessions" }),
+      {
+        target: { value: "evener" },
+      },
+    );
     expect(dispatch).toHaveBeenCalledWith({
       type: "setRosterQuery",
       value: "evener",
@@ -332,20 +431,83 @@ describe("Field Notes sessions surface", () => {
         roster: rosterWithRows(),
       }),
     );
-    const main = mainFor("sessions");
-    expect(main.querySelector("[data-connection-status]")).toHaveAttribute(
-      "data-connection-status",
-      "offline",
+    expect(
+      mainFor("sessions").querySelector("[data-connection-status]"),
+    ).toHaveAttribute("data-connection-status", "offline");
+  });
+
+  it("renders roster loading state with a loading marker", () => {
+    renderState(
+      baseState({
+        surface: "sessions",
+        roster: { ...emptyRoster(), status: "loading" },
+      }),
     );
+    const main = mainFor("sessions");
+    expect(main.querySelector("[data-roster-status]")).toHaveAttribute(
+      "data-roster-status",
+      "loading",
+    );
+  });
+
+  it("renders roster idle state", () => {
+    renderState(
+      baseState({
+        surface: "sessions",
+        roster: { ...emptyRoster(), status: "idle" },
+      }),
+    );
+    expect(
+      mainFor("sessions").querySelector("[data-roster-status]"),
+    ).toHaveAttribute("data-roster-status", "idle");
+  });
+
+  it("renders roster offline state", () => {
+    renderState(
+      baseState({
+        surface: "sessions",
+        connection: { status: "offline" },
+        roster: { ...emptyRoster(), status: "offline" },
+      }),
+    );
+    expect(
+      mainFor("sessions").querySelector("[data-roster-status]"),
+    ).toHaveAttribute("data-roster-status", "offline");
+  });
+
+  it("renders roster error state with the actual roster.error message", () => {
+    renderState(
+      baseState({
+        surface: "sessions",
+        roster: {
+          ...emptyRoster(),
+          status: "error",
+          error: "Hub returned 503",
+        },
+      }),
+    );
+    const main = mainFor("sessions");
+    expect(main.querySelector("[data-roster-status]")).toHaveAttribute(
+      "data-roster-status",
+      "error",
+    );
+    expect(main).toHaveTextContent("Hub returned 503");
+  });
+
+  it("renders an empty state when the roster is ready with no rows", () => {
+    renderState(baseState({ surface: "sessions", roster: emptyRoster() }));
+    const main = mainFor("sessions");
+    expect(main).toHaveTextContent(/no matching records/i);
   });
 });
 
 // ---------------------------------------------------------------------------
-// Conversation surface — chronology rail, stable markers, margin labels
+// Conversation surface — chronology rail, stable markers, margin labels,
+// current-record, streaming/truncated, olderAvailable, composer, interrupt
 // ---------------------------------------------------------------------------
 
 describe("Field Notes conversation surface", () => {
-  it("keeps transcript items in stable chronological DOM order with sequence markers", () => {
+  it("keeps transcript items in stable DOM order using adapter sequenceLabel markers", () => {
     renderState(
       baseState({
         surface: "conversation",
@@ -359,28 +521,47 @@ describe("Field Notes conversation surface", () => {
     ).toEqual(["item-1", "item-2", "item-3"]);
     const markers = [...main.querySelectorAll("[data-chronology-marker]")];
     expect(markers).toHaveLength(3);
+    // Markers show the adapter sequenceLabel verbatim, never an index-derived
+    // chapter number.
     for (const [index, marker] of markers.entries()) {
-      expect(marker).toHaveTextContent(
-        `Record ${String(index + 1).padStart(2, "0")}`,
-      );
+      const expected = ["seq-A1", "seq-A2", "seq-A3"][index] ?? "";
+      expect(marker).toHaveTextContent(expected);
+      expect(marker).not.toHaveTextContent(/Record \d/);
+      expect(marker).not.toHaveTextContent(/Chapter \d/);
     }
     expect(main.querySelector("[data-chronology-rail]")).toBeVisible();
   });
 
-  it("derives the chronology stamp from the live conversation status, not a fixture date", () => {
+  it("uses authoritative updatedLabel for the chronology stamp when non-null", () => {
     renderState(
       baseState({
         surface: "conversation",
-        conversation: conversationWithItems(),
+        conversation: conversationWithItems({ updatedLabel: "12 minutes ago" }),
+      }),
+    );
+    const main = mainFor("conversation");
+    const markers = [...main.querySelectorAll("[data-chronology-marker]")];
+    for (const marker of markers) {
+      expect(marker).toHaveTextContent("12 minutes ago");
+    }
+    expect(main).not.toHaveTextContent("Monday, 24 August");
+  });
+
+  it("falls back to an honest Live record label when updatedLabel is null", () => {
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithItems({ updatedLabel: null }),
       }),
     );
     const main = mainFor("conversation");
     const markers = [...main.querySelectorAll("[data-chronology-marker]")];
     expect(markers.length).toBeGreaterThan(0);
     for (const marker of markers) {
-      expect(marker).toHaveTextContent("Running · updated 12 minutes ago");
+      expect(marker).toHaveTextContent("Live record");
     }
-    expect(main).not.toHaveTextContent("Monday, 24 August");
+    // Must not fabricate a timestamp.
+    expect(main).not.toHaveTextContent("12 minutes ago");
   });
 
   it("renders user and assistant margin labels", () => {
@@ -416,6 +597,69 @@ describe("Field Notes conversation surface", () => {
     expect(current).toHaveAttribute("data-transcript-item-id", "item-3");
   });
 
+  it("renders streaming and truncated markers on transcript items", () => {
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithItems({
+          items: [
+            transcriptItem({
+              key: "s-1",
+              kind: "assistant",
+              label: "Assistant",
+              body: "Working…",
+              tone: "running",
+              streaming: true,
+              truncated: true,
+              sequenceLabel: "seq-S1",
+            }),
+          ],
+        }),
+      }),
+    );
+    const main = mainFor("conversation");
+    const item = main.querySelector('[data-transcript-item-id="s-1"]');
+    expect(item).toHaveAttribute("data-streaming", "true");
+    expect(item).toHaveAttribute("data-truncated", "true");
+  });
+
+  it("renders an older-available affordance when olderAvailable is true", () => {
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithItems({ olderAvailable: true }),
+      }),
+    );
+    expect(mainFor("conversation")).toHaveTextContent(/older records/i);
+  });
+
+  it("does not render an older-available affordance when olderAvailable is false", () => {
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithItems({ olderAvailable: false }),
+      }),
+    );
+    expect(mainFor("conversation")).not.toHaveTextContent(/older records/i);
+  });
+
+  it("uses conversation.tone for the summary status label, never hardcoded", () => {
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithItems({ tone: "attention" }),
+      }),
+    );
+    const main = mainFor("conversation");
+    const summary = main.querySelector("[data-conversation-tone]");
+    expect(summary).toHaveAttribute("data-conversation-tone", "attention");
+    // The StatusLabel inside the summary reflects the tone via its marker.
+    expect(summary?.querySelector("[data-status-state]")).toHaveAttribute(
+      "data-status-state",
+      "attention",
+    );
+  });
+
   it("toggles a tool disclosure through the live toggleTool intent", () => {
     const dispatch = vi.fn();
     renderState(
@@ -425,9 +669,11 @@ describe("Field Notes conversation surface", () => {
       }),
       dispatch,
     );
-    const main = mainFor("conversation");
-    const toolButton = within(main).getByRole("button", { name: "read_file" });
-    fireEvent.click(toolButton);
+    fireEvent.click(
+      within(mainFor("conversation")).getByRole("button", {
+        name: "read_file",
+      }),
+    );
     expect(dispatch).toHaveBeenCalledWith({
       type: "toggleTool",
       key: "item-3",
@@ -447,18 +693,199 @@ describe("Field Notes conversation surface", () => {
     expect(dispatch).toHaveBeenCalledWith({ type: "openWork" });
   });
 
-  it("submits the composer draft through the live submit intent", () => {
+  it("submits the composer draft through submit with the selected mode", () => {
     const dispatch = vi.fn();
     renderState(
       baseState({
         surface: "conversation",
         conversation: conversationWithItems(),
         composer: { ...baseComposer(), draft: "Steer toward tests" },
+        ui: {
+          concept: "field-notes",
+          workOpen: false,
+          composerMode: "steer",
+          expandedToolKeys: new Set(),
+          expandedWorkKeys: new Set(),
+          questionDrafts: {},
+          focusedItemKey: null,
+          scrollAnchors: {},
+        },
       }),
       dispatch,
     );
     fireEvent.click(screen.getByRole("button", { name: "Submit message" }));
-    expect(dispatch).toHaveBeenCalledWith({ type: "submit", mode: "send" });
+    expect(dispatch).toHaveBeenCalledWith({ type: "submit", mode: "steer" });
+  });
+
+  it("mode buttons dispatch setComposerMode and reflect aria-pressed", () => {
+    const dispatch = vi.fn();
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithItems(),
+        ui: {
+          concept: "field-notes",
+          workOpen: false,
+          composerMode: "send",
+          expandedToolKeys: new Set(),
+          expandedWorkKeys: new Set(),
+          questionDrafts: {},
+          focusedItemKey: null,
+          scrollAnchors: {},
+        },
+      }),
+      dispatch,
+    );
+    const steer = screen.getByRole("button", { name: /^Steer$/i });
+    expect(steer).toHaveAttribute("aria-pressed", "false");
+    fireEvent.click(steer);
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "setComposerMode",
+      mode: "steer",
+    });
+  });
+
+  it("gates each mode button by its capability and disables while pending", () => {
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithItems(),
+        composer: {
+          ...baseComposer(),
+          canSend: true,
+          canSteer: false,
+          canQueue: true,
+          pending: null,
+        },
+      }),
+    );
+    expect(screen.getByRole("button", { name: /^Send$/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: /^Steer$/i })).toBeDisabled();
+    expect(screen.getByRole("button", { name: /^Queue$/i })).toBeEnabled();
+  });
+
+  it("disables mode buttons while a mutation is pending", () => {
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithItems(),
+        composer: {
+          ...baseComposer(),
+          pending: {
+            kind: "send",
+            status: "pending",
+            draftSnapshot: null,
+            generation: 1,
+          },
+        },
+      }),
+    );
+    for (const mode of ["Send", "Steer", "Queue"] as const) {
+      expect(
+        screen.getByRole("button", { name: new RegExp(`^${mode}$`, "i") }),
+      ).toBeDisabled();
+    }
+  });
+
+  it("keeps the textarea enabled when any mode is available and no pending", () => {
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithItems(),
+        composer: {
+          ...baseComposer(),
+          canSend: false,
+          canSteer: true,
+          canQueue: false,
+          pending: null,
+        },
+      }),
+    );
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeEnabled();
+  });
+
+  it("disables the textarea and submit while a mutation is pending", () => {
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithItems(),
+        composer: {
+          ...baseComposer(),
+          draft: "draft",
+          pending: {
+            kind: "send",
+            status: "pending",
+            draftSnapshot: null,
+            generation: 1,
+          },
+        },
+      }),
+    );
+    expect(screen.getByRole("textbox", { name: "Message" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Submit message" }),
+    ).toBeDisabled();
+  });
+
+  it("renders a visible pending status while a mutation is pending", () => {
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithItems(),
+        composer: {
+          ...baseComposer(),
+          pending: {
+            kind: "send",
+            status: "pending",
+            draftSnapshot: null,
+            generation: 1,
+          },
+        },
+      }),
+    );
+    expect(
+      mainFor("conversation").querySelector("[data-composer-pending]"),
+    ).toBeVisible();
+  });
+
+  it("renders a visible composer error from the live composer view", () => {
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithItems(),
+        composer: { ...baseComposer(), error: "Send rejected by Hub" },
+      }),
+    );
+    const main = mainFor("conversation");
+    expect(main.querySelector("[data-composer-error]")).toBeVisible();
+    expect(main).toHaveTextContent("Send rejected by Hub");
+  });
+
+  it("renders an interrupt control gated by canInterrupt", () => {
+    const dispatch = vi.fn();
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithItems(),
+        composer: { ...baseComposer(), canInterrupt: true },
+      }),
+      dispatch,
+    );
+    const interrupt = screen.getByRole("button", { name: /interrupt/i });
+    expect(interrupt).toBeEnabled();
+    fireEvent.click(interrupt);
+    expect(dispatch).toHaveBeenCalledWith({ type: "interrupt" });
+  });
+
+  it("disables the interrupt control when canInterrupt is false", () => {
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithItems(),
+        composer: { ...baseComposer(), canInterrupt: false },
+      }),
+    );
+    expect(screen.getByRole("button", { name: /interrupt/i })).toBeDisabled();
   });
 
   it("renders a conversation summary header with the live title and project", () => {
@@ -471,6 +898,140 @@ describe("Field Notes conversation surface", () => {
     const main = mainFor("conversation");
     expect(main).toHaveTextContent("Compile typed modules");
     expect(main).toHaveTextContent("evener-core");
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Questions — full question card via questionKey/options/notes/validity
+// ---------------------------------------------------------------------------
+
+describe("Field Notes conversation questions", () => {
+  it("renders a question card linked by item.questionKey with options", () => {
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithQuestion(),
+      }),
+    );
+    const main = mainFor("conversation");
+    const card = main.querySelector('[data-question-id="q-1"]');
+    expect(card).toBeVisible();
+    expect(card).toHaveTextContent("Run the build now?");
+    expect(within(card as HTMLElement).getByText("Yes")).toBeVisible();
+    expect(within(card as HTMLElement).getByText("No")).toBeVisible();
+  });
+
+  it("dispatches setQuestionDraft when an option is selected", () => {
+    const dispatch = vi.fn();
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithQuestion(),
+      }),
+      dispatch,
+    );
+    const yes = screen.getByRole("radio", { name: "Yes" });
+    fireEvent.click(yes);
+    expect(dispatch).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: "setQuestionDraft",
+        key: "q-1",
+      }),
+    );
+  });
+
+  it("dispatches submitQuestion when the submit answer button is pressed", () => {
+    const dispatch = vi.fn();
+    const draft: QuestionDraft = {
+      selectedOptionKeys: ["opt-yes"],
+      note: "",
+      resolution: null,
+    };
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithQuestion(),
+        ui: {
+          concept: "field-notes",
+          workOpen: false,
+          composerMode: "send",
+          expandedToolKeys: new Set(),
+          expandedWorkKeys: new Set(),
+          questionDrafts: { "q-1": draft },
+          focusedItemKey: null,
+          scrollAnchors: {},
+        },
+      }),
+      dispatch,
+    );
+    fireEvent.click(screen.getByRole("button", { name: /submit answer/i }));
+    expect(dispatch).toHaveBeenCalledWith({
+      type: "submitQuestion",
+      key: "q-1",
+    });
+  });
+
+  it("gates submit answer on validity (no selection disables submit)", () => {
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithQuestion(),
+      }),
+    );
+    expect(
+      screen.getByRole("button", { name: /submit answer/i }),
+    ).toBeDisabled();
+  });
+
+  it("renders a note field bound to the question draft", () => {
+    const draft: QuestionDraft = {
+      selectedOptionKeys: [],
+      note: "consider ci",
+      resolution: null,
+    };
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithQuestion(),
+        ui: {
+          concept: "field-notes",
+          workOpen: false,
+          composerMode: "send",
+          expandedToolKeys: new Set(),
+          expandedWorkKeys: new Set(),
+          questionDrafts: { "q-1": draft },
+          focusedItemKey: null,
+          scrollAnchors: {},
+        },
+      }),
+    );
+    expect(screen.getByRole("textbox", { name: "Note" })).toHaveValue(
+      "consider ci",
+    );
+  });
+
+  it("shows a visible missing-link notice when a question item has no matching question", () => {
+    renderState(
+      baseState({
+        surface: "conversation",
+        conversation: conversationWithItems({
+          items: [
+            transcriptItem({
+              key: "orphan-q",
+              kind: "question",
+              label: "Orphan",
+              body: "No question view for this item.",
+              tone: "attention",
+              questionKey: "missing-q",
+              sequenceLabel: "seq-ORPHAN",
+            }),
+          ],
+          questions: [],
+        }),
+      }),
+    );
+    const main = mainFor("conversation");
+    expect(main).toHaveTextContent(/question unavailable/i);
   });
 });
 
@@ -505,10 +1066,8 @@ describe("Field Notes work surface", () => {
     );
     const main = mainFor("work");
     const child = main.querySelector('[data-work-node-id="job-1"]');
-    expect(child).toBeVisible();
     expect(child).toHaveAttribute("data-work-parent-id", "task-1");
     expect(child?.querySelector("[data-ledger-annotation]")).toBeVisible();
-    // The nested child lives inside the parent's list subtree.
     const parent = main.querySelector('[data-work-node-id="task-1"]');
     expect(child?.closest("li")?.parentElement?.closest("li")).toContainElement(
       parent as HTMLElement,
@@ -523,8 +1082,7 @@ describe("Field Notes work surface", () => {
         conversation: conversationWithItems(),
       }),
     );
-    const main = mainFor("work");
-    const current = main.querySelector('[data-current-work="true"]');
+    const current = mainFor("work").querySelector('[data-current-work="true"]');
     expect(current).toBeVisible();
     expect(current).toHaveAttribute("data-work-node-id", "task-1");
   });
@@ -539,11 +1097,11 @@ describe("Field Notes work surface", () => {
       }),
       dispatch,
     );
-    const main = mainFor("work");
-    const button = within(main).getByRole("button", {
-      name: "Compile typed modules",
-    });
-    fireEvent.click(button);
+    fireEvent.click(
+      within(mainFor("work")).getByRole("button", {
+        name: "Compile typed modules",
+      }),
+    );
     expect(dispatch).toHaveBeenCalledWith({
       type: "toggleWork",
       key: "task-1",

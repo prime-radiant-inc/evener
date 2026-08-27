@@ -239,6 +239,24 @@
   place-items: center;
 }
 
+.concept-field-notes .fn-topbar__actions {
+  display: flex;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+.concept-field-notes .fn-topbar__actions button {
+  display: inline-flex;
+  padding: 0 0.8rem;
+  border: 1px solid var(--fn-control-line);
+  border-radius: 0.35rem;
+  align-items: center;
+  gap: 0.4rem;
+  background: transparent;
+  cursor: pointer;
+  white-space: nowrap;
+}
+
 .concept-field-notes .fn-scroll-owner {
   width: 100%;
   min-height: 0;
@@ -299,6 +317,16 @@
 
 .concept-field-notes .fn-refresh-status[data-refresh-state="loading"] {
   color: var(--fn-accent);
+}
+
+.concept-field-notes .fn-roster-error {
+  margin: 0 0 1rem;
+  padding: 0.65rem 0.75rem;
+  border-left: 3px solid var(--fn-danger);
+  background: color-mix(in srgb, var(--fn-danger) 9%, transparent);
+  color: var(--fn-danger);
+  font-size: 0.82rem;
+  line-height: 1.45;
 }
 
 .concept-field-notes .fn-session-groups,
@@ -720,6 +748,105 @@
   line-height: 1.5;
 }
 
+.concept-field-notes .fn-question-missing {
+  padding: 0.8rem 0.2rem;
+  border-block: 1px solid var(--fn-line);
+  color: var(--fn-muted);
+}
+
+.concept-field-notes .fn-question-missing h3 {
+  margin-top: 0.25rem;
+  font-size: 0.95rem;
+}
+
+.concept-field-notes .fn-question-missing p {
+  margin-top: 0.35rem;
+  line-height: 1.5;
+}
+
+.concept-field-notes .fn-question-card {
+  padding: 1rem;
+  border-left: 3px solid var(--fn-accent);
+}
+
+.concept-field-notes .fn-question-card fieldset {
+  padding: 0;
+  border: 0;
+  margin: 0;
+}
+
+.concept-field-notes .fn-question-card legend {
+  display: grid;
+  width: 100%;
+  margin-bottom: 0.75rem;
+  gap: 0.25rem;
+  font-size: 1.12rem;
+  font-weight: 720;
+  line-height: 1.35;
+}
+
+.concept-field-notes .fn-question-options {
+  border-block: 1px solid var(--fn-line);
+}
+
+.concept-field-notes .fn-question-option {
+  display: grid;
+  padding: 0.7rem 0;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 0.7rem;
+  cursor: pointer;
+}
+
+.concept-field-notes .fn-question-option + .fn-question-option {
+  border-top: 1px solid var(--fn-line);
+}
+
+.concept-field-notes .fn-question-option input {
+  width: 1.2rem;
+  height: 1.2rem;
+  accent-color: var(--fn-accent);
+}
+
+.concept-field-notes .fn-question-option > span {
+  display: grid;
+  gap: 0.12rem;
+}
+
+.concept-field-notes .fn-question-option small {
+  color: var(--fn-muted);
+  font-size: 0.72rem;
+}
+
+.concept-field-notes .fn-question-actions {
+  display: flex;
+  margin-top: 0.8rem;
+  flex-wrap: wrap;
+  gap: 0.45rem;
+}
+
+.concept-field-notes .fn-field {
+  display: grid;
+  margin-top: 0.8rem;
+  gap: 0.35rem;
+  color: var(--fn-muted);
+  font-size: 0.78rem;
+  font-weight: 690;
+}
+
+.concept-field-notes .fn-field textarea {
+  width: 100%;
+  min-height: 3.5rem;
+  padding: 0.7rem 0.75rem;
+  border: 1px solid var(--fn-control-line);
+  border-radius: 0.65rem;
+  outline: 0;
+  background: var(--fn-bg);
+  color: var(--fn-ink);
+  resize: vertical;
+  line-height: 1.5;
+}
+
 .concept-field-notes .fn-primary-action {
   border: 0;
   border-radius: 0.75rem;
@@ -743,6 +870,25 @@
   background: color-mix(in srgb, var(--fn-danger) 9%, var(--fn-surface));
   color: var(--fn-danger);
   font-size: 0.82rem;
+}
+
+.concept-field-notes .fn-composer-pending {
+  width: min(100%, 46rem);
+  margin-inline: auto;
+  padding: 0.55rem 0.8rem;
+  border-left: 3px solid var(--fn-accent);
+  background: color-mix(in srgb, var(--fn-accent) 8%, var(--fn-surface));
+  color: var(--fn-accent);
+  font-size: 0.82rem;
+}
+
+.concept-field-notes .fn-older-records {
+  width: min(100%, 46rem);
+  margin-inline: auto;
+  padding: 0.55rem 0.2rem;
+  color: var(--fn-muted);
+  font-size: 0.78rem;
+  text-align: center;
 }
 
 .concept-field-notes .fn-composer {
@@ -801,6 +947,32 @@
 }
 
 .concept-field-notes .fn-composer__submit span {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  clip-path: inset(50%);
+  overflow: hidden;
+}
+
+.concept-field-notes .fn-composer__actions {
+  display: flex;
+  grid-column: 2;
+  align-items: stretch;
+  gap: 0.35rem;
+}
+
+.concept-field-notes .fn-composer__interrupt {
+  display: grid;
+  padding: 0;
+  border: 1px solid var(--fn-control-line);
+  border-radius: 0.75rem;
+  background: transparent;
+  color: inherit;
+  cursor: pointer;
+  place-items: center;
+}
+
+.concept-field-notes .fn-composer__interrupt span {
   position: absolute;
   width: 1px;
   height: 1px;

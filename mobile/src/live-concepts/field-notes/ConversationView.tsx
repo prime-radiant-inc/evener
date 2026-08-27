@@ -1,28 +1,50 @@
-import type { LiveConceptIntent, LiveConceptState } from "../contract";
-import type { LiveTranscriptItem } from "../model";
+import type {
+  LiveConceptIntent,
+  LiveConceptState,
+  QuestionDraft,
+} from "../contract";
+import type { LiveQuestionView, LiveTranscriptItem } from "../model";
 import { Icon } from "../shared/Icon";
 import { StatusLabel } from "../shared/StatusLabel";
 import { StatusDisclosure } from "./StatusDisclosure";
 
 // Live adaptation of the Field Notes conversation surface. Preserves the
-// chronology rail, stable item sequence markers, user/assistant margin
-// labels, and current-record state. Dates come from the live conversation
-// status; chapter numbers come from item position. No synthetic turn
-// controls, no fixture.
+// chronology rail, stable item sequence markers (adapter sequenceLabel),
+// user/assistant margin labels, and current-record state. Chronology uses
+// the authoritative updatedLabel when non-null, otherwise an honest "Live
+// record" label. The summary uses conversation.tone (never hardcoded).
+// Full questions link via item.questionKey. No synthetic turn controls,
+// no fixture, no index-derived chapter numbers.
 
 export interface ConversationViewProps {
   state: LiveConceptState;
   dispatch(intent: LiveConceptIntent): void;
 }
 
+const MODE_CAPABILITY: Readonly<
+  Record<"send" | "steer" | "queue", "canSend" | "canSteer" | "canQueue">
+> = {
+  send: "canSend",
+  steer: "canSteer",
+  queue: "canQueue",
+};
+
+function chronologyStampLabel(conversation: {
+  updatedLabel: string | null;
+}): string {
+  return conversation.updatedLabel ?? "Live record";
+}
+
 function TranscriptContent({
   item,
   state,
   dispatch,
+  question,
 }: {
   item: LiveTranscriptItem;
   state: LiveConceptState;
   dispatch(intent: LiveConceptIntent): void;
+  question: LiveQuestionView | undefined;
 }) {
   switch (item.kind) {
     case "user":
@@ -71,10 +93,19 @@ function TranscriptContent({
         </div>
       );
     case "question":
-      return (
-        <section className="fn-question-summary" data-question-id={item.key}>
-          <h3>{item.label}</h3>
-          <p>{item.body}</p>
+      return question ? (
+        <QuestionCard question={question} state={state} dispatch={dispatch} />
+      ) : (
+        <section
+          className="fn-question-missing"
+          data-question-missing
+          role="alert"
+        >
+          <h3>Question unavailable</h3>
+          <p>
+            This transcript item links to a question that is not present in the
+            live record.
+          </p>
         </section>
       );
     case "failure":
@@ -101,6 +132,105 @@ function TranscriptContent({
   }
 }
 
+function QuestionCard({
+  question,
+  state,
+  dispatch,
+}: {
+  question: LiveQuestionView;
+  state: LiveConceptState;
+  dispatch(intent: LiveConceptIntent): void;
+}) {
+  const draft: QuestionDraft = state.ui.questionDrafts[question.key] ?? {
+    selectedOptionKeys: [],
+    note: "",
+    resolution: null,
+  };
+  const selected = new Set(draft.selectedOptionKeys);
+  const isValid = draft.selectedOptionKeys.length > 0;
+  const inputType = question.multiple ? "checkbox" : "radio";
+  const name = `fn-question-${question.key}`;
+
+  function setOption(key: string, checked: boolean): void {
+    const next = question.multiple
+      ? checked
+        ? [...draft.selectedOptionKeys, key]
+        : draft.selectedOptionKeys.filter((k) => k !== key)
+      : checked
+        ? [key]
+        : [];
+    dispatch({
+      type: "setQuestionDraft",
+      key: question.key,
+      value: { ...draft, selectedOptionKeys: next },
+    });
+  }
+
+  return (
+    <form
+      className="fn-question-card fn-resolve-enter"
+      data-question-id={question.key}
+      onSubmit={(event) => {
+        event.preventDefault();
+        dispatch({ type: "submitQuestion", key: question.key });
+      }}
+    >
+      <fieldset>
+        <legend>
+          <span className="fn-eyebrow">
+            {question.multiple ? "Choose one or more" : "Choose one"}
+          </span>
+          <span>{question.prompt}</span>
+        </legend>
+        <div className="fn-question-options">
+          {question.options.map((option) => {
+            const detailId = `fn-question-${question.key}-option-${option.key}`;
+            return (
+              <label className="fn-question-option" key={option.key}>
+                <input
+                  type={inputType}
+                  name={name}
+                  aria-label={option.label}
+                  aria-describedby={detailId}
+                  checked={selected.has(option.key)}
+                  onChange={(event) =>
+                    setOption(option.key, event.currentTarget.checked)
+                  }
+                />
+                <span>
+                  <strong>{option.label}</strong>
+                  <small id={detailId}>{option.detail}</small>
+                </span>
+              </label>
+            );
+          })}
+        </div>
+      </fieldset>
+
+      <label className="fn-field">
+        <span>Note</span>
+        <textarea
+          aria-label="Note"
+          value={draft.note}
+          onChange={(event) =>
+            dispatch({
+              type: "setQuestionDraft",
+              key: question.key,
+              value: { ...draft, note: event.currentTarget.value },
+            })
+          }
+        />
+      </label>
+
+      <div className="fn-question-actions">
+        <button className="fn-primary-action" type="submit" disabled={!isValid}>
+          Submit answer
+        </button>
+      </div>
+    </form>
+  );
+}
+
 export function ConversationView({ state, dispatch }: ConversationViewProps) {
   const { conversation, composer, connection } = state;
   if (!conversation) {
@@ -115,8 +245,14 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
   const offline =
     connection.status === "offline" || connection.status === "error";
   const items = conversation.items;
-  const composerDisabled =
-    offline || !composer.canSend || composer.pending !== null;
+  const questionsByKey = new Map(conversation.questions.map((q) => [q.key, q]));
+  const stampLabel = chronologyStampLabel(conversation);
+  const pending = composer.pending !== null;
+  const anyModeAvailable =
+    composer.canSend || composer.canSteer || composer.canQueue;
+  const textareaDisabled = offline || pending || !anyModeAvailable;
+  const submitDisabled =
+    offline || pending || composer.draft.trim().length === 0;
 
   return (
     <div className="fn-conversation fn-route-enter">
@@ -134,13 +270,17 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
         </div>
       ) : null}
 
-      <section className="fn-session-summary" aria-label="Record summary">
+      <section
+        className="fn-session-summary"
+        aria-label="Record summary"
+        data-conversation-tone={conversation.tone}
+      >
         <div>
           <p className="fn-eyebrow">{conversation.project}</p>
           <h2>{conversation.title}</h2>
           <p>{conversation.status}</p>
         </div>
-        <StatusLabel state="running" />
+        <StatusLabel state={conversation.tone} />
       </section>
 
       <fieldset className="fn-session-actions">
@@ -150,6 +290,12 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
           Work
         </button>
       </fieldset>
+
+      {conversation.olderAvailable ? (
+        <p className="fn-older-records" data-older-available>
+          Older records available
+        </p>
+      ) : null}
 
       <section
         className="fn-transcript"
@@ -162,7 +308,7 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
             <p>Send the first message to begin this live thread.</p>
           </div>
         ) : (
-          items.map((item, itemIndex) => {
+          items.map((item) => {
             const isCurrent = item.kind === "tool" && item.tone === "running";
             return (
               <article
@@ -175,16 +321,23 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
                   item.kind === "tool" ? "reading-flow" : undefined
                 }
                 data-current-record={isCurrent ? "true" : undefined}
+                data-streaming={item.streaming ? "true" : undefined}
+                data-truncated={item.truncated ? "true" : undefined}
                 key={item.key}
               >
                 <div className="fn-chronology-stamp" data-chronology-marker>
-                  <span>{conversation.status}</span>
-                  <span>Record {String(itemIndex + 1).padStart(2, "0")}</span>
+                  <span>{stampLabel}</span>
+                  <span>{item.sequenceLabel}</span>
                 </div>
                 <TranscriptContent
                   item={item}
                   state={state}
                   dispatch={dispatch}
+                  question={
+                    item.questionKey
+                      ? questionsByKey.get(item.questionKey)
+                      : undefined
+                  }
                 />
               </article>
             );
@@ -192,8 +345,21 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
         )}
       </section>
 
+      {composer.pending ? (
+        <section
+          className="fn-composer-pending"
+          data-composer-pending
+          role="status"
+          aria-live="polite"
+        >
+          <span>
+            {composer.pending.kind} is {composer.pending.status}…
+          </span>
+        </section>
+      ) : null}
+
       {composer.error ? (
-        <section className="fn-composer-error" role="alert">
+        <section className="fn-composer-error" data-composer-error role="alert">
           {composer.error}
         </section>
       ) : null}
@@ -201,17 +367,20 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
       <section className="fn-composer" aria-label="Message composer">
         <fieldset className="fn-composer__modes">
           <legend className="fn-visually-hidden">Composer mode</legend>
-          {(["send", "steer", "queue"] as const).map((mode) => (
-            <button
-              type="button"
-              aria-pressed={state.ui.composerMode === mode}
-              disabled={composer.pending !== null}
-              key={mode}
-              onClick={() => dispatch({ type: "submit", mode })}
-            >
-              {mode.charAt(0).toUpperCase() + mode.slice(1)}
-            </button>
-          ))}
+          {(["send", "steer", "queue"] as const).map((mode) => {
+            const capability = composer[MODE_CAPABILITY[mode]];
+            return (
+              <button
+                type="button"
+                aria-pressed={state.ui.composerMode === mode}
+                disabled={!capability || pending}
+                key={mode}
+                onClick={() => dispatch({ type: "setComposerMode", mode })}
+              >
+                {mode.charAt(0).toUpperCase() + mode.slice(1)}
+              </button>
+            );
+          })}
         </fieldset>
         <label>
           <span className="fn-visually-hidden">Message</span>
@@ -219,26 +388,36 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
             aria-label="Message"
             placeholder="Message or steer…"
             value={composer.draft}
-            disabled={composerDisabled}
+            disabled={textareaDisabled}
             onChange={(event) =>
               dispatch({ type: "setDraft", value: event.currentTarget.value })
             }
           />
         </label>
-        <button
-          className="fn-primary-action fn-composer__submit"
-          type="button"
-          aria-label="Submit message"
-          disabled={
-            composer.draft.trim().length === 0 || composer.pending !== null
-          }
-          onClick={() =>
-            dispatch({ type: "submit", mode: state.ui.composerMode })
-          }
-        >
-          <Icon name="send" decorative />
-          <span>Submit message</span>
-        </button>
+        <div className="fn-composer__actions">
+          <button
+            className="fn-primary-action fn-composer__submit"
+            type="button"
+            aria-label="Submit message"
+            disabled={submitDisabled}
+            onClick={() =>
+              dispatch({ type: "submit", mode: state.ui.composerMode })
+            }
+          >
+            <Icon name="send" decorative />
+            <span>Submit message</span>
+          </button>
+          <button
+            className="fn-composer__interrupt"
+            type="button"
+            aria-label="Interrupt"
+            disabled={!composer.canInterrupt}
+            onClick={() => dispatch({ type: "interrupt" })}
+          >
+            <Icon name="stop" decorative />
+            <span>Interrupt</span>
+          </button>
+        </div>
       </section>
     </div>
   );
