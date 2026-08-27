@@ -95,7 +95,12 @@ export function SegmentedControl<T extends string = string>({
 
   const selectedIndex = options.findIndex((option) => option.value === value);
   const selectedOption = options[selectedIndex];
-  const tabbableIndex = disabled ? -1 : selectedOption?.disabled ? firstEnabledIndex(options) : selectedIndex;
+  let tabbableIndex = selectedIndex;
+  if (disabled) {
+    tabbableIndex = -1;
+  } else if (selectedOption?.disabled) {
+    tabbableIndex = firstEnabledIndex(options);
+  }
   const sizeClass = size === "sm" ? CLASS.sm : CLASS.md;
 
   function choose(index: number) {

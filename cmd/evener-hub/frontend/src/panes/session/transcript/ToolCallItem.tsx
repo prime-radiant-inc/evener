@@ -121,7 +121,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
     isDelegate ? rowKeyForDelegateItem(item) : "",
   );
   const stableDelegate = thread?.delegates?.find((delegate) => {
-    if (sessionRef === undefined || stableDelegateId === undefined) return undefined;
+    if (sessionRef === undefined || stableDelegateId === undefined) return false;
     return delegate.delegateId === stableDelegateId;
   });
   const delegateKind = delegateStatusForOutput(delegateOutput, delegateRow, stableDelegate, live);
@@ -160,7 +160,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   // so the button's absPath needs no cast.
   const openBesideButton =
     canOpenBeside && openBesidePath !== undefined && sessionRef !== undefined ? (
-      <FileOpenBesideButton absPath={openBesidePath} sessionRef={sessionRef} cwd={thread?.cwd} />
+      <FileOpenBesideButton absPath={openBesidePath} sessionRef={sessionRef} cwd={cwd} />
     ) : null;
   // read_file (openBesideInline) quotes its path verbatim inside the summary,
   // so the control rides INLINE between the file name and the line range
@@ -215,11 +215,12 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
   const statedPurpose = statedPurposeOf(item);
   const useProjectedSummary = projectedSummary !== undefined && statedPurpose === undefined;
   const summary = useProjectedSummary ? projectedSummary : descriptor.summary(item, { cwd }) + (summarySuffix ?? "");
-  const purpose = isDelegate
-    ? delegatePurposeOf(item)
-    : projectedSummary !== undefined && statedPurpose !== undefined
-      ? projectedSummary
-      : item.description;
+  let purpose = item.description;
+  if (isDelegate) {
+    purpose = delegatePurposeOf(item);
+  } else if (projectedSummary !== undefined && statedPurpose !== undefined) {
+    purpose = projectedSummary;
+  }
   // kata xw3t: the URL, if any, embedded in this row's own summary text -
   // web_fetch's only descriptor with one today. Read directly off the item
   // (not the thread model): unlike summarySuffix, nothing about which URL a
@@ -366,7 +367,7 @@ function ToolCallItemBody({ item, live, sessionRef, projectedSummary, renderCont
               below. Echoing detail() here too duplicated that fact on screen
               (kata wksf) instead of adding a second way to reach it. */}
           {hasErrorText && <div className={CLASS.error}>{item.error}</div>}
-          {Body && <Body item={item} live={live} sessionRef={sessionRef} cwd={thread?.cwd} />}
+          {Body && <Body item={item} live={live} sessionRef={sessionRef} cwd={cwd} />}
           <ImageGallery images={item.outputImages} size={descriptor.outputImageSize} />
         </div>
       )}

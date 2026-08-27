@@ -300,12 +300,14 @@ export function projectThread(model: ThreadModel, config: TranscriptDisplayConfi
       const decision = decisionFor(item, turn, normalized, vector);
       if (decision === "hidden") continue;
 
-      const entry =
-        decision === "item"
-          ? itemEntry(item, turn.id, itemSourceIndex)
-          : decision === "intent"
-            ? intentEntry(item, turn.id, itemSourceIndex)
-            : criticalEntry(item, turn.id, itemSourceIndex);
+      let entry: ProjectedEntry;
+      if (decision === "item") {
+        entry = itemEntry(item, turn.id, itemSourceIndex);
+      } else if (decision === "intent") {
+        entry = intentEntry(item, turn.id, itemSourceIndex);
+      } else {
+        entry = criticalEntry(item, turn.id, itemSourceIndex);
+      }
       visibleItems.push(item);
       entries.push(entry);
       addAnchor(anchors, entry, projectedIndex);

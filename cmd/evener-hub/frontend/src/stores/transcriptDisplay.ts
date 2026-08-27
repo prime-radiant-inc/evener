@@ -81,20 +81,22 @@ interface LocalMessage {
   fingerprint: string | null;
 }
 
-const initialState = (): Omit<
+function initialState(): Omit<
   TranscriptDisplayStoreState,
   "setViewport" | "setLocal" | "clearLocal" | "effective" | "applyHubChange" | "refreshHubDefaults" | "patchHubDefault"
-> => ({
-  viewport: "desktop",
-  local: {},
-  hub: {},
-  drafts: {},
-  hubLoading: false,
-  hubError: null,
-  hubErrors: {},
-  storageWarning: null,
-  hubSupport: "unknown",
-});
+> {
+  return {
+    viewport: "desktop",
+    local: {},
+    hub: {},
+    drafts: {},
+    hubLoading: false,
+    hubError: null,
+    hubErrors: {},
+    storageWarning: null,
+    hubSupport: "unknown",
+  };
+}
 
 let initialized = false;
 let channel: BroadcastChannel | null = null;
@@ -131,13 +133,14 @@ function publishEffectiveTransition(
 ): void {
   const beforeConfig = effectiveForLayers(before, before.viewport);
   const afterConfig = effectiveForLayers(after, after.viewport);
-  const changed = configFingerprint(beforeConfig) !== configFingerprint(afterConfig);
+  const afterFingerprint = configFingerprint(afterConfig);
+  const changed = configFingerprint(beforeConfig) !== afterFingerprint;
   if (!changed && !force) {
     publish();
     return;
   }
   transitionTranscriptViews(publish, accessibleConfigSummary(afterConfig), {
-    fingerprint: configFingerprint(afterConfig),
+    fingerprint: afterFingerprint,
     targetLayout,
     force,
     prepareRemount: force,
@@ -417,9 +420,7 @@ async function refreshFor(client: AppwireClientLike, epoch: number): Promise<voi
 function rewireClient(client: AppwireClientLike): void {
   if (client === wiredClient) return;
   invalidateReadyGeneration();
-  unwireNotification?.();
   unwireReady?.();
-  unwireNotification = null;
   unwireReady = null;
   wiredClient = client;
   unwireReady = client.onReady(() => {
@@ -447,9 +448,7 @@ function onConnectionChange(
   }
   if (state.client === null && wiredClient !== null) {
     invalidateReadyGeneration();
-    unwireNotification?.();
     unwireReady?.();
-    unwireNotification = null;
     unwireReady = null;
     wiredClient = null;
   }
@@ -569,9 +568,6 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
         const revision = resultRecord.revision;
         const responseLayout = resultRecord.layout;
         const exactResponse =
-          typeof result === "object" &&
-          result !== null &&
-          !Array.isArray(result) &&
           Object.keys(resultRecord).length === 3 &&
           Object.hasOwn(resultRecord, "layout") &&
           Object.hasOwn(resultRecord, "revision") &&
@@ -623,14 +619,15 @@ export const transcriptDisplayStore: StoreApi<TranscriptDisplayStoreState> = cre
           });
           throw error;
         }
+        const message = error instanceof Error ? error.message : String(error);
         const drafts = { ...transcriptDisplayStore.getState().drafts };
         delete drafts[layout];
         transcriptDisplayStore.setState({
           drafts,
-          hubError: error instanceof Error ? error.message : String(error),
+          hubError: message,
           hubErrors: {
             ...transcriptDisplayStore.getState().hubErrors,
-            [layout]: error instanceof Error ? error.message : String(error),
+            [layout]: message,
           },
         });
         throw error;
@@ -683,9 +680,7 @@ export function resetTranscriptDisplayStoreForTests(): void {
   detachBrowserSync();
   initialized = false;
   invalidateReadyGeneration();
-  unwireNotification?.();
   unwireReady?.();
-  unwireNotification = null;
   unwireReady = null;
   activeReadyClient = null;
   activeReadyEpoch = -1;
