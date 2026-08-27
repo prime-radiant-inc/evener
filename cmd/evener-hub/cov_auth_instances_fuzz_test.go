@@ -59,8 +59,9 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 		// expected values instead of discarding the result
 		// (docs/developing-evener/coverage.md's executed-vs-tested note on the
 		// evenerfuzz cov_* driver family).
-		if got := effectiveHubAuthEnv(map[string]string{"COV_AUTH": "1"}); got["COV_AUTH"] != "1" {
-			t.Fatalf("effectiveHubAuthEnv: COV_AUTH = %q, want \"1\"", got["COV_AUTH"])
+		t.Setenv("COV_AUTH", "ambient")
+		if got := effectiveHubAuthEnv(map[string]string{"COV_AUTH": "launch"}); got["COV_AUTH"] != "launch" {
+			t.Fatalf("effectiveHubAuthEnv: COV_AUTH = %q, want launch env to override ambient value", got["COV_AUTH"])
 		}
 		wantStateDir := filepath.Join(root, ".local", "state", "evener")
 		if runtime.GOOS == "windows" {
@@ -84,6 +85,8 @@ func FuzzAuthInstancesFactories(f *testing.F) {
 			{now.Add(-time.Second), authopenai.AuthStatus{Source: authopenai.AuthSourceOAuth, Expiry: now.Add(-time.Second), NeedsLogin: true}, true},
 			// Expires inside the 5-minute refresh window but not yet: signed in, needs refresh.
 			{now.Add(time.Minute), authopenai.AuthStatus{SignedIn: true, Source: authopenai.AuthSourceOAuth, Expiry: now.Add(time.Minute), NeedsRefresh: true}, true},
+			// Strictly distinguishes the 5-minute window from a 1-minute window.
+			{now.Add(3 * time.Minute), authopenai.AuthStatus{SignedIn: true, Source: authopenai.AuthSourceOAuth, Expiry: now.Add(3 * time.Minute), NeedsRefresh: true}, true},
 			// Comfortably valid: signed in, no refresh due.
 			{now.Add(time.Hour), authopenai.AuthStatus{SignedIn: true, Source: authopenai.AuthSourceOAuth, Expiry: now.Add(time.Hour)}, false},
 		} {
