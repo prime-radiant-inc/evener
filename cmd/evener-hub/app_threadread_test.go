@@ -89,10 +89,43 @@ func TestPastThreadReadCarriesSkillCatalog(t *testing.T) {
 			t.Fatalf("skills = %+v, missing %q", thread.Evener.Diagnostics.Skills, want)
 		}
 	}
+	wantNames := []string{"doctoring-evener", "extra-skill", "fixture-plugin:plugin-skill", "project-skill"}
+	if len(thread.Evener.Diagnostics.Skills) != len(wantNames) {
+		t.Fatalf("skill catalog = %+v, want exactly %d entries", thread.Evener.Diagnostics.Skills, len(wantNames))
+	}
+	for i, want := range wantNames {
+		if got := thread.Evener.Diagnostics.Skills[i].Name; got != want {
+			t.Fatalf("skill catalog order = %+v, want %v", thread.Evener.Diagnostics.Skills, wantNames)
+		}
+	}
+	descriptions := map[string]string{
+		"extra-skill":                 "extra description",
+		"fixture-plugin:plugin-skill": "plugin description",
+		"project-skill":               "project description",
+		"doctoring-evener":            "extra override",
+	}
+	for _, got := range thread.Evener.Diagnostics.Skills {
+		if want, ok := descriptions[got.Name]; ok && got.Description != want {
+			t.Fatalf("%s description = %q, want %q", got.Name, got.Description, want)
+		}
+	}
 	for _, got := range thread.Evener.Diagnostics.Skills {
 		if strings.Contains(got.Name, string(filepath.Separator)) {
 			t.Fatalf("skill metadata contains a path: %+v", got)
 		}
+	}
+}
+
+func TestPastThreadReadResponseCarriesSkillCatalog(t *testing.T) {
+	cfg, entry := seedPastSessionWithSkillFixtures(t)
+	response, ok, err := pastThreadReadResponse(cfg, appwire.ThreadReadParams{
+		Ref: "local:" + entry.Meta.ID, IncludeTurns: true, TurnLimit: 1,
+	})
+	if err != nil || !ok {
+		t.Fatalf("pastThreadReadResponse = %v, %v", err, ok)
+	}
+	if response.Thread.Evener.Diagnostics == nil || !hasSkill(response.Thread.Evener.Diagnostics.Skills, "fixture-plugin:plugin-skill") {
+		t.Fatalf("bounded response diagnostics = %+v", response.Thread.Evener.Diagnostics)
 	}
 }
 
@@ -147,11 +180,13 @@ func seedPastSessionWithSkillFixtures(t *testing.T) (hubcore.WebConfig, hubcore.
 	extraDir := filepath.Join(root, "extra-skills")
 	pluginDir := filepath.Join(root, "plugin")
 	writeSkillFixture(t, filepath.Join(workingDir, "skills"), "project-skill", "project description")
+	writeSkillFixture(t, filepath.Join(workingDir, "skills"), "doctoring-evener", "project override")
 	writeSkillFixture(t, extraDir, "extra-skill", "extra description")
+	writeSkillFixture(t, extraDir, "doctoring-evener", "extra override")
 	if err := os.MkdirAll(filepath.Join(pluginDir, ".claude-plugin"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	manifest := []byte(`{"name":"fixture-plugin"}`)
+	manifest := []byte(`{"name":"fixture-plugin","mcpServers":123}`)
 	if err := os.WriteFile(filepath.Join(pluginDir, ".claude-plugin", "plugin.json"), manifest, 0o600); err != nil {
 		t.Fatal(err)
 	}

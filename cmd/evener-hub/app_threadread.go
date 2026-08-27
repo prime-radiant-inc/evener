@@ -157,7 +157,9 @@ func mergePastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 	if err != nil {
 		return appwire.Thread{}, err
 	}
-	past = attachPastThreadSkillCatalog(entry, past)
+	if live.Evener.Diagnostics == nil {
+		past = attachPastThreadSkillCatalog(entry, past)
+	}
 	if live.ID == "" {
 		live.ID = past.ID
 	}
@@ -229,9 +231,16 @@ func discoverPastThreadSkills(entry hubcore.PastEntry) []appwire.EvenerSkillInfo
 		maps.Copy(all, skill.DiscoverSkills(env, entry.Meta.Config.SkillsDirs...))
 	}
 
-	loaded, _ := plugin.LoadAllFailSoft(entry.Meta.Config.PluginDirs)
-	for _, instance := range loaded {
-		maps.Copy(all, instance.Skills)
+	for _, dir := range entry.Meta.Config.PluginDirs {
+		pluginName, ok := pastThreadPluginName(dir)
+		if !ok {
+			continue
+		}
+		pluginSkills := make(map[string]skill.SkillMeta)
+		skill.ScanSkillsDir(filepath.Join(dir, "skills"), pluginSkills)
+		for name, meta := range pluginSkills {
+			all[pluginName+":"+name] = meta
+		}
 	}
 
 	entries := skill.CatalogEntries(all)
@@ -240,6 +249,31 @@ func discoverPastThreadSkills(entry hubcore.PastEntry) []appwire.EvenerSkillInfo
 		result = append(result, appwire.EvenerSkillInfo{Name: entry.Name, Description: entry.Description})
 	}
 	return result
+}
+
+// pastThreadPluginName reads only the plugin manifest fields needed to locate
+// its skill directory. In particular, this does not load agents, commands,
+// hooks, or MCP configuration: a malformed unrelated component must not hide
+// otherwise valid plugin skills from a cold thread read.
+func pastThreadPluginName(dir string) (string, bool) {
+	for _, manifestPath := range []string{
+		filepath.Join(dir, ".claude-plugin", "plugin.json"),
+		filepath.Join(dir, ".codex-plugin", "plugin.json"),
+	} {
+		data, err := os.ReadFile(manifestPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				continue
+			}
+			return "", false
+		}
+		manifest, err := plugin.ParseManifest(data)
+		if err != nil {
+			return "", false
+		}
+		return manifest.Name, true
+	}
+	return "", false
 }
 
 func attachPastThreadSkillCatalog(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
