@@ -159,14 +159,6 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 	}
 
 	// Skills
-	hasUseSkill := false
-	for _, td := range s.profile.ToolDefinitions() {
-		if td.Name == "use_skill" {
-			hasUseSkill = true
-			break
-		}
-	}
-	data.HasUseSkill = hasUseSkill
 	for skillName, sm := range s.skills {
 		data.Skills = append(data.Skills, skillEntry{
 			Name: sm.Name, CatalogName: skillName, Description: sm.Description,
@@ -181,6 +173,7 @@ func (s *Session) buildPromptData(env execenv.ExecutionEnvironment) promptData {
 	// Prompting with canonical names while the API receives mapped names such as
 	// exec_command/grep_files/find_files is contradictory and confuses tool use.
 	actualDefs := append([]llm.ToolDefinition(nil), s.cachedToolDefs...)
+	data.HasUseSkill = toolNameSetFromDefinitions(actualDefs)["use_skill"]
 	data.CallableToolNames = toolNamesFromDefinitions(actualDefs)
 	data.UnavailableProfileToolNames = unavailableToolNames(profileDefs, actualDefs)
 

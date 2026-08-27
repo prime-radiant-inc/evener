@@ -26,6 +26,20 @@ func useSkillCall(id, skillName string) llm.ToolCallData {
 	}
 }
 
+func TestBuildPromptDataHasUseSkillTracksCallableDefinitions(t *testing.T) {
+	t.Parallel()
+	s := newTestSession(t)
+	s.cachedToolDefs = []llm.ToolDefinition{{Name: "read_file"}}
+	if s.buildPromptData(s.currentEnv()).HasUseSkill {
+		t.Fatal("unavailable use_skill was advertised")
+	}
+
+	s.cachedToolDefs = []llm.ToolDefinition{{Name: "read_file"}, {Name: "use_skill"}}
+	if !s.buildPromptData(s.currentEnv()).HasUseSkill {
+		t.Fatal("callable use_skill was not advertised")
+	}
+}
+
 // use_skill tests exercise provider profiles that expose the use_skill tool.
 
 func TestUseSkill_ReturnsBody(t *testing.T) {
@@ -82,6 +96,85 @@ func TestUseSkill_ReturnsBody(t *testing.T) {
 	}
 	if !found {
 		t.Fatalf("expected skill body 'Greet people warmly' in tool result of second request")
+	}
+}
+
+func TestUseSkill_InlineMentionPreservesUserInput(t *testing.T) {
+	t.Parallel()
+	root := t.TempDir()
+	markGitRoot(t, root)
+	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nGreet people warmly.\n")
+
+	c := llm.NewClient()
+	skillCall := useSkillCall("s1", "greet")
+	comm := communicateCall("c1", "done")
+	adapter := &fakeAdapter{
+		name: "anthropic",
+		steps: []func(req llm.Request) llm.Response{
+			func(req llm.Request) llm.Response { return toolCallResponse(skillCall) },
+			func(req llm.Request) llm.Response { return toolCallResponse(comm) },
+		},
+	}
+	c.Register(adapter)
+
+	sess, err := NewSession(c, newAnthropicProfile("claude-test"), execenv.NewLocalExecutionEnvironment(root), SessionConfig{})
+	if err != nil {
+		t.Fatalf("NewSession: %v", err)
+	}
+
+	var eventsSeen []events.SessionEvent
+	eventsDone := make(chan struct{})
+	go func() {
+		defer close(eventsDone)
+		for ev := range sess.Events() {
+			eventsSeen = append(eventsSeen, ev)
+		}
+	}()
+
+	input := "Please use /greet for Jesse"
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
+	defer cancel()
+	if _, err := sess.ProcessInput(ctx, input, nil); err != nil {
+		t.Fatalf("ProcessInput: %v", err)
+	}
+	sess.Close()
+	<-eventsDone
+
+	var userInputs []string
+	for _, ev := range eventsSeen {
+		if ev.Kind != events.EventUserInput {
+			continue
+		}
+		data, ok := ev.Data.(events.UserInputData)
+		if ok {
+			userInputs = append(userInputs, data.Text)
+		}
+	}
+	if len(userInputs) != 1 || userInputs[0] != input {
+		t.Fatalf("user input events = %q, want complete sentence %q", userInputs, input)
+	}
+	if strings.Contains(userInputs[0], "Greet people warmly.") {
+		t.Fatal("inline mention expanded the skill body before the model turn")
+	}
+
+	requests := adapter.Requests()
+	if len(requests) < 2 {
+		t.Fatalf("expected tool follow-up request, got %d requests", len(requests))
+	}
+	foundSkillBody := false
+	for _, msg := range requests[1].Messages {
+		for _, part := range msg.Content {
+			if part.Kind != llm.ContentToolResult {
+				continue
+			}
+			content, _ := part.ToolResult.Content.(string)
+			if strings.Contains(content, "Greet people warmly.") {
+				foundSkillBody = true
+			}
+		}
+	}
+	if !foundSkillBody {
+		t.Fatal("scripted inline use_skill call did not return the skill body")
 	}
 }
 
