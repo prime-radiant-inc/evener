@@ -210,6 +210,14 @@ test("ranking chooses the best valid embedding instead of the first character oc
   expect(filterSlashMenuItems(items, "abc").map((item) => item.key)).toEqual(["alternate", "competitor"]);
 });
 
+test("repeated characters retain a beginning embedding that catches up later", () => {
+  const items: SlashMenuItem[] = [
+    { key: "competitor", invocation: "/zabxba", label: "zabxba", hint: "", kind: "skill" },
+    { key: "repeated", invocation: "/aababa", label: "aababa", hint: "", kind: "skill" },
+  ];
+  expect(filterSlashMenuItems(items, "abba").map((item) => item.key)).toEqual(["repeated", "competitor"]);
+});
+
 test("command and skill rows with the same name retain distinct keys", () => {
   const items = mergeSlashCommands(
     [builtin("review", "review command")],

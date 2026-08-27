@@ -168,7 +168,11 @@ function scoreSlashMatch(item: SlashMenuItem, query: string, index: number): Sla
           currentRun,
           longestRun: Math.max(previous.longestRun, currentRun),
         };
-        const stateKey = `${labelIndex}:${currentRun}`;
+        // Beginning and longestRun are both part of the eventual score, but a
+        // shorter run can catch up after later characters (and then beat a
+        // non-beginning embedding). Keep each Pareto-relevant combination
+        // until all query characters have been matched.
+        const stateKey = `${labelIndex}:${currentRun}:${candidate.start === 0 ? 1 : 0}:${candidate.longestRun}`;
         const existing = bestByState.get(stateKey);
         if (!existing || compareEmbeddings(candidate, existing) < 0) {
           bestByState.set(stateKey, candidate);
