@@ -43,6 +43,7 @@ exports[`fixture basic-turn reduces to the expected model 1`] = `
   "reasoningEffort": undefined,
   "reasoningEffortLevels": [],
   "ref": "ref_1001",
+  "skills": [],
   "status": {
     "type": "idle",
   },
@@ -212,6 +213,7 @@ exports[`fixture queue-and-status reduces to the expected model 1`] = `
     "high",
   ],
   "ref": "ref_4001",
+  "skills": [],
   "status": {
     "type": "active",
   },
@@ -331,6 +333,7 @@ exports[`fixture streaming-with-reset reduces to the expected model 1`] = `
   "reasoningEffort": undefined,
   "reasoningEffortLevels": [],
   "ref": "ref_2001",
+  "skills": [],
   "status": {
     "type": "idle",
   },
@@ -458,6 +461,7 @@ exports[`fixture tool-and-jobs reduces to the expected model 1`] = `
   "reasoningEffort": undefined,
   "reasoningEffortLevels": [],
   "ref": "ref_3001",
+  "skills": [],
   "status": {
     "type": "idle",
   },

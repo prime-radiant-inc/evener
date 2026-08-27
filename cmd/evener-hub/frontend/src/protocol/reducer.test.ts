@@ -129,7 +129,7 @@ const CAPABILITIES: ThreadCapabilities = {
 };
 
 type TestThreadOverrides = Omit<Partial<Thread>, "evener"> & {
-  evener?: Omit<Thread["evener"], "queue"> & { queue: Partial<QueueState> };
+  evener?: Partial<Omit<Thread["evener"], "queue">> & { queue?: Partial<QueueState> };
 };
 
 function testThread(overrides: TestThreadOverrides = {}): Thread {
@@ -194,6 +194,22 @@ test("hydrateThread preserves an explicit empty plugin inventory", () => {
 
 test("hydrateThread leaves diagnostics unavailable when the wire omits them", () => {
   expect(testHydrate().diagnostics).toBeUndefined();
+});
+
+test("hydrateThread retains canonical skill descriptors", () => {
+  const model = testHydrate({
+    evener: { diagnostics: { skills: [{ name: "plugin:simplify", description: "rewrite" }] } },
+  });
+  expect(model.skills).toEqual([{ name: "plugin:simplify", description: "rewrite" }]);
+});
+
+test("hydrateThread defaults missing skills and copies wire descriptors", () => {
+  expect(testHydrate().skills).toEqual([]);
+
+  const skills = [{ name: "plugin:simplify", description: "rewrite" }];
+  const model = testHydrate({ evener: { diagnostics: { skills } } });
+  expect(model.skills).not.toBe(skills);
+  expect(model.skills?.[0]).not.toBe(skills[0]);
 });
 
 function testEscalation(overrides: Partial<SandboxEscalationRequested> = {}): SandboxEscalationRequested {
