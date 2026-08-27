@@ -201,6 +201,27 @@ function booleanDefaultLabel(option: LaunchOption, resolvedDefaults: LaunchConfi
   return "(default)";
 }
 
+/** The longest a resolved default runs in a placeholder before it is clipped:
+ * long free-text values (a system prompt) must not turn a placeholder into a
+ * wall of text. */
+const DEFAULT_PLACEHOLDER_MAX = 60;
+
+/** The placeholder naming the resolved default for the input-based controls
+ * (integer, text, and the browsable path widget): "<value> (default)", with
+ * long strings clipped. "" when no layer sets the field - the inputs stay
+ * bare then, exactly as they were before the resolved-default labels. */
+function inputDefaultPlaceholder(option: LaunchOption, resolvedDefaults: LaunchConfigLayer | undefined): string {
+  const value = resolvedValue(option, resolvedDefaults);
+  if (typeof value === "number" && Number.isFinite(value)) return `${value} (default)`;
+  if (typeof value === "string" && value.trim() !== "") {
+    const trimmed = value.trim();
+    const shown =
+      trimmed.length > DEFAULT_PLACEHOLDER_MAX ? `${trimmed.slice(0, DEFAULT_PLACEHOLDER_MAX - 1)}…` : trimmed;
+    return `${shown} (default)`;
+  }
+  return "";
+}
+
 /** The schema's browsable path kinds, mapped onto the widget's. A "command"
  * pathKind names an executable to resolve on PATH and "" names no path at all,
  * so neither is browsable - those stay plain text boxes. */
@@ -235,7 +256,12 @@ function Control({
   function textRow() {
     return (
       <FormRow label={option.label} htmlFor={controlId} help={option.description} error={error || undefined}>
-        <Input id={controlId} value={current} onChange={(e) => onScalar(e.target.value)} />
+        <Input
+          id={controlId}
+          value={current}
+          onChange={(e) => onScalar(e.target.value)}
+          placeholder={inputDefaultPlaceholder(option, resolvedDefaults) || undefined}
+        />
       </FormRow>
     );
   }
@@ -288,7 +314,13 @@ function Control({
     case "integer":
       return (
         <FormRow label={option.label} htmlFor={controlId} help={option.description}>
-          <Input id={controlId} type="number" value={current} onChange={(e) => onScalar(e.target.value)} />
+          <Input
+            id={controlId}
+            type="number"
+            value={current}
+            onChange={(e) => onScalar(e.target.value)}
+            placeholder={inputDefaultPlaceholder(option, resolvedDefaults) || undefined}
+          />
         </FormRow>
       );
     case "path": {
@@ -302,7 +334,17 @@ function Control({
       // evener/path/validate failure.
       return (
         <FormRow label={option.label} htmlFor={controlId} help={option.description} error={error || undefined}>
-          <PathField id={controlId} value={current} onChange={onScalar} kind={pathKind} complete={complete} />
+          <PathField
+            id={controlId}
+            value={current}
+            onChange={onScalar}
+            kind={pathKind}
+            complete={complete}
+            // The trigger's empty face names the resolved default path the way
+            // the selects' empty options do; undefined keeps its built-in
+            // "(default)" when no layer sets the field.
+            placeholder={inputDefaultPlaceholder(option, resolvedDefaults) || undefined}
+          />
         </FormRow>
       );
     }

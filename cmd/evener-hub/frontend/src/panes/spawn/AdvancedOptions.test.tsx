@@ -213,6 +213,61 @@ test("a modelPicker control names the resolved default model", async () => {
   expect(screen.getByRole("button", { name: /change model/i }).textContent).toContain("openai/gpt-5 (default)");
 });
 
+test("an integer control's placeholder names the resolved default", async () => {
+  const user = userEvent.setup();
+  renderPanel(
+    [
+      option({ wireField: "maxRounds", kind: "integer", label: "Max rounds" }),
+      option({ wireField: "maxSubagentDepth", kind: "integer", label: "Max subagent depth" }),
+    ],
+    { resolvedDefaults: { maxRounds: 250 } },
+  );
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  expect((screen.getByLabelText("Max rounds") as HTMLInputElement).placeholder).toBe("250 (default)");
+  // No layer sets this one: the input stays bare, exactly as before.
+  expect((screen.getByLabelText("Max subagent depth") as HTMLInputElement).placeholder).toBe("");
+});
+
+test("a text control's placeholder names the resolved default, clipped when long", async () => {
+  const user = userEvent.setup();
+  renderPanel(
+    [
+      option({ wireField: "agent", kind: "text", label: "Agent" }),
+      option({ wireField: "systemPromptText", kind: "text", label: "System prompt text" }),
+    ],
+    { resolvedDefaults: { agent: "evener-canary", systemPromptText: "x".repeat(120) } },
+  );
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  expect((screen.getByLabelText("Agent") as HTMLInputElement).placeholder).toBe("evener-canary (default)");
+  // A long free-text default (a system prompt) is clipped, not dumped whole.
+  const promptPlaceholder = (screen.getByLabelText("System prompt text") as HTMLInputElement).placeholder;
+  expect(promptPlaceholder.endsWith("… (default)")).toBe(true);
+  expect(promptPlaceholder.length).toBeLessThan(80);
+});
+
+test("a browsable path control's trigger names the resolved default path", async () => {
+  const user = userEvent.setup();
+  renderPanel(
+    [
+      option({ wireField: "traceFile", kind: "path", pathKind: "outputFile", label: "Trace file" }),
+      option({ wireField: "cpuProfile", kind: "path", pathKind: "outputFile", label: "CPU profile" }),
+    ],
+    { resolvedDefaults: { traceFile: "/tmp/demo-trace.log" } },
+  );
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  expect(screen.getByRole("button", { name: /Trace file/i }).textContent).toContain("/tmp/demo-trace.log (default)");
+  // No layer sets this one: the plain "(default)" trigger stays.
+  const cpuTrigger = screen.getByRole("button", { name: /CPU profile/i });
+  expect(cpuTrigger.textContent).toContain("(default)");
+  expect(cpuTrigger.textContent).not.toContain("demo-trace");
+});
+
 test("an integer control collects a parsed number", async () => {
   const user = userEvent.setup();
   const { onOverridesChange } = renderPanel([option({ wireField: "maxRounds", kind: "integer", label: "Max rounds" })]);
