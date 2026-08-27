@@ -13,8 +13,6 @@ import { describe, expect, it } from "vitest";
 import type { MobileConversation } from "../conversation/model";
 import type { OpaqueKeyAllocator } from "./project-conversation";
 import {
-  _resetStripOpCount,
-  _stripOpCount,
   createLiveConversationProjector,
   ProjectionCapacityError,
 } from "./project-conversation";
@@ -2446,30 +2444,124 @@ describe("createLiveConversationProjector", () => {
       ],
     });
 
-    _resetStripOpCount();
-    const { view } = p.project(conv, { ...OPTS });
-    const ops = _stripOpCount();
+    // Black/gray-box oracle: spy on String.prototype.split, replace, and the
+    // String iterator to prove the strip algorithm does NOT use repeated
+    // whole-string split/replace/rescan. The old fixed-point implementation
+    // called stripped.split(marker).join("") in a loop; on this adversarial
+    // input that loop runs O(n) passes, each O(n) → O(n²) split calls on the
+    // full string. The new KMP stack reducer iterates the string once via its
+    // iterator and never calls split/replace on the oversized content.
+    let splitCalls = 0;
+    let replaceCalls = 0;
+    let stringIteratorCreations = 0;
+    const origSplit = String.prototype.split;
+    const origReplace = String.prototype.replace;
+    const origStringIterator = String.prototype[Symbol.iterator];
 
-    const item = view.items.find((i) => i.kind === "assistant");
-    expect(item?.truncated).toBe(true);
-    const body = item?.body ?? "";
-    const count = body.split(marker).length - 1;
-    expect(count).toBe(1);
-    expect(body.endsWith(marker)).toBe(true);
-    expect(utf8Bytes(body)).toBeLessThanOrEqual(65536);
+    // Track array push/length-mutations to bound stack work proportionally to n.
+    let arrayPushCalls = 0;
+    let arrayJoinCalls = 0;
+    const origArrayPush = Array.prototype.push;
+    const origArrayJoin = Array.prototype.join;
 
-    // Operation-count oracle: work must be bounded linearly by input length.
-    // Input length = n * (A.length + B.length) + padding.length.
-    // Linear means ops <= C * inputLength for a small constant C.
-    const inputLength = largeText.length;
-    expect(ops).toBeLessThanOrEqual(inputLength * 4);
-    // And strictly sub-quadratic: ops must be much less than inputLength².
-    expect(ops).toBeLessThan((inputLength * inputLength) / 1000);
+    try {
+      String.prototype.split = function (
+        this: string,
+        ...args: Parameters<string["split"]>
+      ): string[] {
+        if (this.length > marker.length) splitCalls++;
+        return origSplit.apply(this, args);
+      } as string["split"];
+      String.prototype.replace = function (
+        this: string,
+        ...args: Parameters<string["replace"]>
+      ): string {
+        if (this.length > marker.length) replaceCalls++;
+        return origReplace.apply(this, args);
+      } as string["replace"];
+      // Spies must be restored in finally; use a loose type for the iterator
+      // override since StringIterator<string> and IterableIterator<string>
+      // differ in [Symbol.dispose].
+      const iteratorSpy: (this: string) => IterableIterator<string> = function (
+        this: string,
+      ): IterableIterator<string> {
+        if (this.length > marker.length) stringIteratorCreations++;
+        return origStringIterator.call(this) as IterableIterator<string>;
+      };
+      (String.prototype as { [Symbol.iterator]: unknown })[Symbol.iterator] =
+        iteratorSpy;
+      Array.prototype.push = function (
+        this: unknown[],
+        ...args: unknown[]
+      ): number {
+        arrayPushCalls++;
+        return origArrayPush.apply(this, args);
+      } as typeof Array.prototype.push;
+      Array.prototype.join = function (
+        this: unknown[],
+        ...args: Parameters<typeof origArrayJoin>
+      ): string {
+        arrayJoinCalls++;
+        return origArrayJoin.apply(this, args);
+      } as typeof Array.prototype.join;
+
+      const { view } = p.project(conv, { ...OPTS });
+
+      const item = view.items.find((i) => i.kind === "assistant");
+      expect(item?.truncated).toBe(true);
+      const body = item?.body ?? "";
+      // Use the original split for assertions (not the spy) to avoid polluting
+      // the split-call count. The spy is only for monitoring the projector.
+      const splitOrig = origSplit as unknown as (
+        this: string,
+        sep: string,
+      ) => string[];
+      const markerCount = splitOrig.call(body, marker).length - 1;
+      expect(markerCount).toBe(1);
+      expect(body.endsWith(marker)).toBe(true);
+      expect(utf8Bytes(body)).toBeLessThanOrEqual(65536);
+
+      // No repeated whole-string split/replace/rescan: the old fixed-point
+      // implementation would call split on the oversized text at least once
+      // (and O(n) times on this adversarial input). The KMP reducer never
+      // calls split or replace on the large string.
+      expect(splitCalls).toBe(0);
+      expect(replaceCalls).toBe(0);
+
+      // One input traversal: the String iterator is created exactly once for
+      // the oversized content (the for...of loop in stripMarkersLinear).
+      expect(stringIteratorCreations).toBe(1);
+
+      // Bounded actual stack mutations proportional to n: each character is
+      // pushed at most once, so total push calls are O(input length). The old
+      // fixed-point implementation did no push/pop but did O(n) full-string
+      // split+join passes. Here we prove pushes are linear, not quadratic.
+      const inputLength = largeText.length;
+      expect(arrayPushCalls).toBeGreaterThan(0);
+      expect(arrayPushCalls).toBeLessThanOrEqual(inputLength * 2);
+
+      // One output join: the final result is built with a single .join("").
+      // Multiple join calls would indicate repeated string assembly.
+      // (arrayJoinCalls counts all joins on arrays; the projector's key/seq
+      // allocation paths use Maps, not array joins, so join is dominated by
+      // the strip output. We assert at least one join occurred and that the
+      // total is small — the old split().join() loop would call join once
+      // per pass, i.e. O(n) times.)
+      expect(arrayJoinCalls).toBeGreaterThanOrEqual(1);
+      expect(arrayJoinCalls).toBeLessThanOrEqual(inputLength / 1000 + 10);
+    } finally {
+      String.prototype.split = origSplit;
+      String.prototype.replace = origReplace;
+      (String.prototype as { [Symbol.iterator]: unknown })[Symbol.iterator] =
+        origStringIterator;
+      Array.prototype.push = origArrayPush;
+      Array.prototype.join = origArrayJoin;
+    }
   });
 
   // --- R4: same-failed-projector transactional zero-retention -----------------
 
-  it("collision-once allocator on same projector: tight cap proves zero retained identities", () => {
+  it("always-colliding allocator on same projector: tight cap proves zero retained identities", () => {
     // Allocator collides on every call during the first projection, then
     // recovers with unique values on the second. A tight capacity means ANY
     // leaked identity from the failed projection would exhaust the cap on
