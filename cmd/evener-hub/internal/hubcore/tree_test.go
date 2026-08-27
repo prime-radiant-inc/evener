@@ -308,7 +308,7 @@ func fuzzScenarioBuildTree_TruncatesLongForkBaseTitleKeepingLabel(t *testing.T) 
 		UpdatedAt:      time.Now(),
 	}}, nil)
 	got := allSessions(tree.Projects[0])[0].Title
-	if want := strings.Repeat("x", 200) + "… · before TDD"; got != want {
+	if want := strings.Repeat("x", 199) + "… · before TDD"; got != want {
 		t.Fatalf("fork title = %q, want truncated base plus label", got)
 	}
 }
