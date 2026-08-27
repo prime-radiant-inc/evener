@@ -22,10 +22,12 @@ setting, `vision_model`, with three states:
 | `provider/model` or bare `model` | Side-channel on, routed to that model; cross-provider allowed; provider refusal falls back to the session model |
 
 The setting is a launch-time CLI flag (`--vision-model`), a persisted session
-config field, a runtime mutation (`thread/vision-model/set`), and a picker in
-the hub web UI whose entries are **Current model**, **Off**, and the
-vision-capable models from the catalog. Picking the current model reproduces
-today's same-model behavior, so one control is the whole user surface.
+config field, a runtime mutation (`thread/vision-model/set`), a picker in the
+hub web UI, and a `/vision` command in the TUI. Both pickers offer **Current
+model**, **Off**, and the vision-capable models from the catalog. Picking the
+current model reproduces today's same-model behavior, so one concept is the
+whole user surface. Every consumer — web frontend, TUI, hub — reaches the
+mutation through the appwire method.
 
 ## Goals
 
@@ -34,7 +36,8 @@ today's same-model behavior, so one control is the whole user surface.
   a different registered provider.
 - Preserve current behavior when the setting is unset.
 - Persist the setting so resumes and spawned children inherit it.
-- Allow mid-session changes from the hub web UI without restarting the session.
+- Allow mid-session changes from the hub web UI and the TUI without restarting
+  the session.
 - Reuse the existing cheap-model routing machinery (refusal learning, fallback
   to the session model) rather than building a parallel path.
 
@@ -43,11 +46,10 @@ today's same-model behavior, so one control is the whole user surface.
 - An `auto` mode that infers the side-channel from catalog vision capability.
   The setting is explicit; capability metadata only filters picker entries.
 - A spawn-pane field in the launch UI. The CLI flag covers launch-time
-  selection; the picker covers running sessions.
-- An `evener-tui` command. Per the product decision, `--vision-model=` is the
-  entire terminal surface.
-- A `hubapi` Go client method. Only the web frontend consumes the new wire
-  method in this wave; the TUI has no command that would need it.
+  selection; the pickers cover running sessions.
+- A `hubapi` Go HTTP client method. The TUI and the web frontend both consume
+  the appwire method directly (`appwire.Client`); nothing in this wave uses
+  hubapi's REST surface.
 - Validating that a configured vision model advertises `supports_vision`. The
   catalog is incomplete by nature; users may deliberately route to an
   uncatalogued model. Capability is picker metadata, not a gate.
@@ -184,6 +186,9 @@ in the client, else launch fails with an error.
 - The thread payload gains `VisionModel string `json:"visionModel"`` beside
   the model fields, so a client reads the current setting without a separate
   round trip.
+- `appwire.Client` gains a typed `ThreadVisionModelSet` method beside
+  `ThreadModelSet` and `ThreadReasoningEffortSet`; this is the single client
+  path every consumer (hub frontend, TUI) uses.
 
 ### Server (daemon)
 
@@ -221,6 +226,17 @@ how the model fields reach `pastEntryThread` today.
   `changeVisionModel` is false; mid-turn Conflicts surface as toasts, same as
   the model switch.
 - Touched files pass `npx biome check --write` before the frontend gates.
+
+### TUI
+
+`evener-tui` gains a `/vision` hub command mirroring `/model`. Bare `/vision`
+opens the shared model picker with **Current model**, **Off**, and the
+vision-capable catalog entries (filtered on `supports_vision`, with the active
+setting marked like `/model`'s "(active)" tag); `/vision <ref>` and
+`/vision off` set directly. Both forms call
+`appwire.Client.ThreadVisionModelSet`, and the result lands through the
+existing `hubActionMsg` path with a "Vision model updated." confirmation.
+Mid-turn Conflicts surface the same way `/model` conflicts do.
 
 ## Error handling
 
@@ -261,6 +277,10 @@ All gates run per AGENTS.md: `make lint`, `make vet`, `make test`, plus
 - **frontend**: store action and reducer tests; `VisionModelSwitch` renders
   the three entry kinds, filters by `supports_vision`, sends the right wire
   values, and disables on capability.
+- **TUI**: `/vision` registry tests mirroring the `/model` command tests —
+  direct set with a ref and with `off`, picker opens with the three entry
+  kinds, wire call carries the ref; tmux e2e alongside the existing `/model`
+  e2e where the harness supports it.
 - **cmd/evener**: flag parsing; cross-provider launch validation accepted and
   rejected cases.
 
