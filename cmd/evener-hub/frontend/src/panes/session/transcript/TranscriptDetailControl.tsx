@@ -1,5 +1,5 @@
-import type { Ref } from "react";
-import { useState } from "react";
+import type { Ref, RefObject } from "react";
+import { useId, useRef, useState } from "react";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { transcriptDisplayStore, useTranscriptDisplayStore } from "../../../stores/transcriptDisplay";
 import {
@@ -9,9 +9,8 @@ import {
   resolveEffectiveConfig,
   type ViewportClass,
 } from "../../../transcriptDisplay/config";
+import { Button, Popover, Sheet } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { Popover } from "../../../widgets/popover";
-import { Sheet } from "../../../widgets/sheet";
 import { TranscriptDetailEditor } from "./TranscriptDetailEditor";
 import styles from "./transcriptDisplay.module.css";
 
@@ -23,7 +22,6 @@ export interface TranscriptDetailControlProps {
 
 const CLASS = {
   root: requireClass(styles.detailControl, "transcriptDisplay.module.css", "detailControl"),
-  trigger: requireClass(styles.detailTrigger, "transcriptDisplay.module.css", "detailTrigger"),
   panel: requireClass(styles.detailPanel, "transcriptDisplay.module.css", "detailPanel"),
   panelTitle: requireClass(styles.detailPanelTitle, "transcriptDisplay.module.css", "detailPanelTitle"),
   content: requireClass(styles.detailContent, "transcriptDisplay.module.css", "detailContent"),
@@ -38,7 +36,7 @@ function summaryFor(sources: EffectiveConfigSources): string {
   const normalized = resolveEffectiveConfig(sources);
   const extras = advancedEnabledCount(normalized);
   const content = contentSummary(normalized.content);
-  return extras === 0 ? `Detail: ${content}` : `Detail: ${content} · ${extras} advanced`;
+  return extras === 0 ? `Detail: ${content}` : `Detail: ${content} · ${extras} extras`;
 }
 
 interface DetailPanelProps {
@@ -53,6 +51,36 @@ interface DetailPanelProps {
   onClearLocal(): void;
   onEditHubDefaults(): void;
   showTitle: boolean;
+  headingId: string;
+  showActions: boolean;
+  editButtonRef: RefObject<HTMLButtonElement | null>;
+}
+
+interface DetailActionsProps {
+  localExists: boolean;
+  editButtonRef: RefObject<HTMLButtonElement | null>;
+  onClearLocal(): void;
+  onEditHubDefaults(): void;
+}
+
+function DetailActions({ localExists, editButtonRef, onClearLocal, onEditHubDefaults }: DetailActionsProps) {
+  function clearLocal(): void {
+    editButtonRef.current?.focus();
+    onClearLocal();
+  }
+
+  return (
+    <div className={CLASS.actions}>
+      {localExists && (
+        <Button size="sm" variant="secondary" onClick={clearLocal}>
+          Use hub default
+        </Button>
+      )}
+      <Button ref={editButtonRef} size="sm" variant="quiet" onClick={onEditHubDefaults}>
+        Edit hub defaults
+      </Button>
+    </div>
+  );
 }
 
 function DetailPanel({
@@ -67,17 +95,27 @@ function DetailPanel({
   onClearLocal,
   onEditHubDefaults,
   showTitle,
+  headingId,
+  showActions,
+  editButtonRef,
 }: DetailPanelProps) {
   const layoutName = layout === "desktop" ? "Desktop" : "Mobile";
   const statusMessages: string[] = [];
   if (hubLoading) statusMessages.push("Loading hub default…");
   if (hubSupport === "unsupported")
     statusMessages.push("This older hub does not support transcript display defaults. Local changes still work.");
-  if (hubError !== null) statusMessages.push(`Hub default status: ${hubError}`);
+  const failureMessages = new Map<string, string>();
+  if (hubError !== null) failureMessages.set(hubError, `Hub default status: ${hubError}`);
+  if (storageWarning !== null && !failureMessages.has(storageWarning))
+    failureMessages.set(storageWarning, storageWarning);
 
   return (
     <div className={showTitle ? CLASS.content : CLASS.sheetContent}>
-      {showTitle && <h2 className={CLASS.panelTitle}>Transcript display details</h2>}
+      {showTitle && (
+        <h2 id={headingId} className={CLASS.panelTitle}>
+          Transcript display details
+        </h2>
+      )}
       <p className={CLASS.scope}>{localExists ? `Local ${layoutName} view` : "Using hub default"}</p>
       {statusMessages.length > 0 && (
         <div className={CLASS.status} role="status" aria-live="polite">
@@ -86,28 +124,30 @@ function DetailPanel({
           ))}
         </div>
       )}
-      {storageWarning !== null && (
-        <p className={CLASS.warning} role="alert">
-          {storageWarning}
-        </p>
+      {failureMessages.size > 0 && (
+        <div className={CLASS.warning} role="alert">
+          {[...failureMessages.values()].map((message) => (
+            <p key={message}>{message}</p>
+          ))}
+        </div>
       )}
       <TranscriptDetailEditor value={effectiveConfig} compact onChange={onChange} />
-      <div className={CLASS.actions}>
-        {localExists && (
-          <button type="button" onClick={onClearLocal}>
-            Use hub default
-          </button>
-        )}
-        <button type="button" onClick={onEditHubDefaults}>
-          Edit hub defaults
-        </button>
-      </div>
+      {showActions && (
+        <DetailActions
+          localExists={localExists}
+          editButtonRef={editButtonRef}
+          onClearLocal={onClearLocal}
+          onEditHubDefaults={onEditHubDefaults}
+        />
+      )}
     </div>
   );
 }
 
 export function TranscriptDetailControl({ layout, onEditHubDefaults, triggerRef }: TranscriptDetailControlProps) {
   const [open, setOpen] = useState(false);
+  const headingId = useId();
+  const editButtonRef = useRef<HTMLButtonElement>(null);
   const isMobile = useIsMobile();
   const local = useTranscriptDisplayStore((state) => state.local[layout]);
   const hub = useTranscriptDisplayStore((state) => state.hub[layout]);
@@ -140,20 +180,32 @@ export function TranscriptDetailControl({ layout, onEditHubDefaults, triggerRef 
       onClearLocal={() => transcriptDisplayStore.getState().clearLocal(layout)}
       onEditHubDefaults={editHubDefaults}
       showTitle={!isMobile}
+      headingId={headingId}
+      showActions={!isMobile}
+      editButtonRef={editButtonRef}
+    />
+  );
+
+  const footer = (
+    <DetailActions
+      localExists={local !== undefined}
+      editButtonRef={editButtonRef}
+      onClearLocal={() => transcriptDisplayStore.getState().clearLocal(layout)}
+      onEditHubDefaults={editHubDefaults}
     />
   );
 
   const trigger = (
-    <button
+    <Button
       ref={triggerRef}
-      type="button"
-      className={CLASS.trigger}
+      size="sm"
+      variant="secondary"
       aria-expanded={open}
-      aria-haspopup={isMobile ? "dialog" : "true"}
-      onClick={() => setOpen((value) => !value)}
+      aria-haspopup="dialog"
+      onClick={() => setOpen((current) => !current)}
     >
       {triggerLabel}
-    </button>
+    </Button>
   );
 
   return (
@@ -161,13 +213,28 @@ export function TranscriptDetailControl({ layout, onEditHubDefaults, triggerRef 
       {isMobile ? (
         <>
           {trigger}
-          <Sheet open={open} side="bottom" size="wide" onClose={close} title="Transcript display details">
+          <Sheet
+            open={open}
+            side="bottom"
+            size="wide"
+            onClose={close}
+            title="Transcript display details"
+            footer={footer}
+          >
             {panel}
           </Sheet>
         </>
       ) : (
-        <Popover open={open} onClose={close} trigger={trigger} data-testid="transcript-detail-popover">
-          <div className={CLASS.panel}>{panel}</div>
+        <Popover
+          open={open}
+          onClose={close}
+          closeOnScroll={false}
+          trigger={trigger}
+          data-testid="transcript-detail-popover"
+        >
+          <div className={CLASS.panel} role="dialog" aria-modal="false" aria-labelledby={headingId}>
+            {panel}
+          </div>
         </Popover>
       )}
     </div>

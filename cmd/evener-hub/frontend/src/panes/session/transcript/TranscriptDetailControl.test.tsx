@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { cleanup, render, screen } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { resetMobileViewportForTests } from "../../../shell/useIsMobile";
@@ -76,14 +76,27 @@ test("renders a desktop Popover with effective compact summary, scope, reset, an
   render(<TranscriptDetailControl layout="desktop" onEditHubDefaults={onEditHubDefaults} />);
 
   const trigger = screen.getByRole("button", { name: "Detail: Tools" });
+  expect(trigger.className).toMatch(/secondary/);
+  expect(trigger.className).toMatch(/sm/);
+  expect(trigger.getAttribute("aria-haspopup")).toBe("dialog");
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
   await user.click(trigger);
+
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  const dialog = screen.getByRole("dialog", { name: "Transcript display details" });
+  expect(dialog.getAttribute("aria-modal")).toBe("false");
+  expect(dialog.getAttribute("aria-labelledby")).not.toBeNull();
+  expect(screen.getByRole("heading", { name: "Transcript display details" })).toBeTruthy();
 
   expect(screen.getByRole("radio", { name: "Tools" })).toBeTruthy();
   expect(screen.getByText("Using hub default")).toBeTruthy();
   expect(screen.queryByRole("button", { name: "Use hub default" })).toBeNull();
 
+  const editButton = screen.getByRole("button", { name: "Edit hub defaults" });
+  expect(editButton.className).toMatch(/quiet/);
   await user.click(screen.getByRole("button", { name: "Edit hub defaults" }));
   expect(onEditHubDefaults).toHaveBeenCalledOnce();
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
 });
 
 test("keeps the portaled desktop panel as the container for compact descendants", async () => {
@@ -97,8 +110,13 @@ test("keeps the portaled desktop panel as the container for compact descendants"
 
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "transcriptDisplay.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
-  expect(css).toMatch(/\.detailPanel,\s*\.detailSheetContent\s*\{[^}]*container-type:\s*inline-size/);
-  expect(css).toMatch(/@container\s+transcript-detail-panel\s*\([^)]*\)[\s\S]*\.detailPanel\s+\.fieldsets/);
+  expect(css).toMatch(
+    /\.detailPanel\s*\{[^}]*container-type:\s*inline-size[^}]*container-name:\s*transcript-detail-panel/,
+  );
+  expect(css).not.toMatch(/\.detailPanel,\s*\.detailSheetContent\s*\{/);
+  expect(css).not.toMatch(/\.detailSheetContent\s*\{[^}]*container-type/);
+  expect(css).toMatch(/@container\s+transcript-detail-panel\s*\([^)]*\)[\s\S]*\.detailPanel\s+\.detailActions/);
+  expect(css).not.toMatch(/\.detailSheetContent\s+\.fieldsets/);
 });
 
 test("sets and clears only the browser-local value for the selected layout", async () => {
@@ -111,7 +129,8 @@ test("sets and clears only the browser-local value for the selected layout", asy
   expect(transcriptDisplayStore.getState().local.desktop).toEqual(config("activity"));
   expect(transcriptDisplayStore.getState().hub.desktop).toEqual(hubDesktop);
   expect(screen.getByText("Local Desktop view")).toBeTruthy();
-  expect(screen.getByRole("button", { name: "Use hub default" })).toBeTruthy();
+  const useDefaultButton = screen.getByRole("button", { name: "Use hub default" });
+  expect(useDefaultButton.className).toMatch(/secondary/);
 
   await user.click(screen.getByRole("button", { name: "Use hub default" }));
   expect(transcriptDisplayStore.getState().local.desktop).toBeUndefined();
@@ -128,8 +147,8 @@ test("keeps Custom and Advanced extras truthful in the trigger and editor summar
   seedStore({ local: { desktop: custom } });
   render(<TranscriptDetailControl layout="desktop" onEditHubDefaults={() => {}} />);
 
-  await user.click(screen.getByRole("button", { name: "Detail: Custom · 2 advanced" }));
-  expect(screen.getByRole("button", { name: /Advanced · Custom content · 2 extras/ })).toBeTruthy();
+  await user.click(screen.getByRole("button", { name: "Detail: Custom · 2 extras" }));
+  expect(screen.getByText("Customize & advanced · Custom content · 2 extras")).toBeTruthy();
   expect(screen.getByText("Local Desktop view")).toBeTruthy();
 });
 
@@ -149,36 +168,194 @@ test("shows older-hub/loading/storage status without disabling local editing", a
   expect(transcriptDisplayStore.getState().local.desktop).toEqual(config("activity"));
 });
 
+test("consolidates passive status and failures into one announcement region each", async () => {
+  const user = userEvent.setup();
+  seedStore({
+    hubSupport: "unsupported",
+    hubLoading: true,
+    hubError: "Hub unavailable",
+    storageWarning: "Storage warning",
+  });
+  render(<TranscriptDetailControl layout="desktop" onEditHubDefaults={() => {}} />);
+
+  await user.click(screen.getByRole("button", { name: "Detail: Tools" }));
+
+  const statuses = screen.getAllByRole("status");
+  expect(statuses).toHaveLength(1);
+  expect(statuses[0]?.textContent).toContain("Loading hub default");
+  expect(statuses[0]?.textContent).toContain("older hub does not support");
+  expect(statuses[0]?.textContent).not.toContain("Hub unavailable");
+
+  const alerts = screen.getAllByRole("alert");
+  expect(alerts).toHaveLength(1);
+  expect(alerts[0]?.textContent).toContain("Hub unavailable");
+  expect(alerts[0]?.textContent).toContain("Storage warning");
+  expect(screen.getAllByText("Storage warning")).toHaveLength(1);
+});
+
+test("deduplicates identical raw hub and storage failures while retaining hub context", async () => {
+  const user = userEvent.setup();
+  seedStore({ hubError: "Same failure", storageWarning: "Same failure" });
+  render(<TranscriptDetailControl layout="desktop" onEditHubDefaults={() => {}} />);
+
+  await user.click(screen.getByRole("button", { name: "Detail: Tools" }));
+
+  const alert = screen.getByRole("alert");
+  expect(alert.querySelectorAll("p")).toHaveLength(1);
+  expect(alert.textContent).toBe("Hub default status: Same failure");
+});
+
+test("does not dismiss the desktop Popover on internal or window scroll", async () => {
+  const user = userEvent.setup();
+  render(<TranscriptDetailControl layout="desktop" onEditHubDefaults={() => {}} />);
+
+  const trigger = screen.getByRole("button", { name: "Detail: Tools" });
+  await user.click(trigger);
+  const popover = screen.getByTestId("transcript-detail-popover");
+  const panel = popover.querySelector('[class*="detailPanel"]');
+  expect(panel).not.toBeNull();
+
+  fireEvent.scroll(panel as HTMLElement);
+  window.dispatchEvent(new Event("scroll"));
+
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
+  expect(screen.getByRole("dialog", { name: "Transcript display details" })).toBeTruthy();
+});
+
 test("uses a bottom mobile Sheet and restores focus to the forwarded trigger ref", async () => {
   const user = userEvent.setup();
   mobileQuery(true);
+  seedStore({ local: { mobile: config("intent") } });
   const triggerRef = { current: null } as React.RefObject<HTMLButtonElement | null>;
   render(<TranscriptDetailControl layout="mobile" onEditHubDefaults={() => {}} triggerRef={triggerRef} />);
 
   const trigger = screen.getByRole("button", { name: "Detail: Intent" });
   expect(triggerRef.current).toBe(trigger);
+  expect(trigger.getAttribute("aria-haspopup")).toBe("dialog");
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
   await user.click(trigger);
+  expect(trigger.getAttribute("aria-expanded")).toBe("true");
 
   const dialog = screen.getByRole("dialog", { name: "Transcript display details" });
   expect(dialog).toBeTruthy();
+  expect(dialog.getAttribute("aria-modal")).toBe("true");
   expect(dialog.className).toContain("bottom");
   expect(screen.getByRole("radio", { name: "Intent" })).toBeTruthy();
+  expect(screen.getByRole("button", { name: "Use hub default" }).className).toMatch(/secondary/);
+  expect(screen.getByRole("button", { name: "Edit hub defaults" }).className).toMatch(/quiet/);
 
   await user.keyboard("{Escape}");
   expect(screen.queryByRole("dialog", { name: "Transcript display details" })).toBeNull();
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
   expect(document.activeElement).toBe(trigger);
 });
 
-test("CSS provides wrapper, panel, container compaction, and reduced-motion contracts", () => {
+test("keeps Desktop focus after reset so Escape closes and restores trigger focus", async () => {
+  const user = userEvent.setup();
+  seedStore({ local: { desktop: config("activity") } });
+  render(<TranscriptDetailControl layout="desktop" onEditHubDefaults={() => {}} />);
+
+  const trigger = screen.getByRole("button", { name: "Detail: Activity" });
+  await user.click(trigger);
+  const useDefault = screen.getByRole("button", { name: "Use hub default" });
+  const edit = screen.getByRole("button", { name: "Edit hub defaults" });
+  await user.click(useDefault);
+
+  expect(document.activeElement).toBe(edit);
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog", { name: "Transcript display details" })).toBeNull();
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  expect(document.activeElement).toBe(trigger);
+});
+
+test("keeps Mobile focus after reset so Escape closes and restores trigger focus", async () => {
+  const user = userEvent.setup();
+  mobileQuery(true);
+  seedStore({ local: { mobile: config("activity") } });
+  render(<TranscriptDetailControl layout="mobile" onEditHubDefaults={() => {}} />);
+
+  const trigger = screen.getByRole("button", { name: "Detail: Activity" });
+  await user.click(trigger);
+  const useDefault = screen.getByRole("button", { name: "Use hub default" });
+  const edit = screen.getByRole("button", { name: "Edit hub defaults" });
+  await user.click(useDefault);
+
+  expect(document.activeElement).toBe(edit);
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog", { name: "Transcript display details" })).toBeNull();
+  expect(trigger.getAttribute("aria-expanded")).toBe("false");
+  expect(document.activeElement).toBe(trigger);
+});
+
+test("sets and resets only Mobile local state when Desktop local state already exists", async () => {
+  const user = userEvent.setup();
+  mobileQuery(true);
+  const desktopLocal = config("tools");
+  seedStore({ local: { desktop: desktopLocal } });
+  render(<TranscriptDetailControl layout="mobile" onEditHubDefaults={() => {}} />);
+
+  await user.click(screen.getByRole("button", { name: "Detail: Intent" }));
+  expect(screen.queryByRole("button", { name: "Use hub default" })).toBeNull();
+  expect(screen.getByRole("button", { name: "Edit hub defaults" }).className).toMatch(/quiet/);
+  await user.click(screen.getByRole("radio", { name: "Activity" }));
+  expect(transcriptDisplayStore.getState().local.mobile).toEqual(config("activity"));
+  expect(transcriptDisplayStore.getState().local.desktop).toEqual(desktopLocal);
+  expect(transcriptDisplayStore.getState().hub).toEqual({ desktop: hubDesktop, mobile: hubMobile });
+
+  await user.click(screen.getByRole("button", { name: "Use hub default" }));
+  expect(transcriptDisplayStore.getState().local.mobile).toBeUndefined();
+  expect(transcriptDisplayStore.getState().local.desktop).toEqual(desktopLocal);
+  expect(transcriptDisplayStore.getState().hub).toEqual({ desktop: hubDesktop, mobile: hubMobile });
+});
+
+test("composes the detail control only from shared Buttons and public widget APIs", () => {
+  const here = dirname(fileURLToPath(import.meta.url));
+  const source = readFileSync(join(here, "TranscriptDetailControl.tsx"), "utf8");
+
+  expect(source).toMatch(/import \{ Button, Popover, Sheet \} from "\.\.\/\.\.\/\.\.\/widgets";/);
+  expect(source).not.toMatch(/<button\b/);
+  expect(source.match(/<Button\b/g)).toHaveLength(3);
+  expect(source.match(/variant="secondary"/g)).toHaveLength(2);
+  expect(source).toMatch(/<Button ref=\{editButtonRef\} size="sm" variant="quiet"/);
+});
+
+test("CSS keeps live detail layout-only with no private motion or chrome", () => {
   const here = dirname(fileURLToPath(import.meta.url));
   const css = readFileSync(join(here, "transcriptDisplay.module.css"), "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
 
   expect(css).toMatch(/\.detailControl\s*\{/);
   expect(css).toMatch(/\.detailPanel\s*\{/);
-  expect(css).toMatch(/\.detailPanel\s*\{[^}]*max-height:\s*calc\(100dvh - var\(--space-4\)\)/);
-  expect(css).toMatch(/\.detailPanel\s*\{[^}]*overflow-y:\s*auto/);
-  expect(css).toMatch(/@container\s*\(/);
-  expect(css).toMatch(/prefers-reduced-motion:\s*reduce/);
+  const directPanelRules = [...css.matchAll(/(^|\n)(?!\s*@)([^{}]+)\{([^{}]*)\}/gm)].filter((match) =>
+    match[2]?.split(",").some((selector) => selector.trim() === ".detailPanel"),
+  );
+  expect(directPanelRules).toHaveLength(1);
+  const panelSelector = directPanelRules[0]?.[2] ?? "";
+  expect(panelSelector.trim()).toBe(".detailPanel");
+  const panelBody = directPanelRules[0]?.[3] ?? "";
+  const panelProperties = [...panelBody.matchAll(/(?:^|;)\s*([a-z-]+)\s*:/g)].map((match) => match[1]).sort();
+  expect(panelProperties).toEqual(
+    ["box-sizing", "container-name", "container-type", "inline-size", "max-block-size", "overflow-y", "padding"].sort(),
+  );
+  expect(panelBody).toMatch(/box-sizing:\s*border-box/);
+  expect(panelBody).toMatch(/inline-size:\s*min\(42rem, calc\(100vw - var\(--space-8\)\)\)/);
+  expect(panelBody).toMatch(/padding:\s*var\(--space-4\)/);
+  expect(panelBody).toMatch(/max-block-size:\s*calc\(100dvh - var\(--space-8\)\)/);
+  expect(panelBody).toMatch(/overflow-y:\s*auto/);
+  expect(panelBody).not.toMatch(/background|box-shadow|border-radius/);
+  expect(panelBody).not.toMatch(/(?:^|[;\n])\s*border(?:-[a-z-]+)?\s*:/);
+  const statusMatch = /\.detailStatus,\s*\.detailWarning\s*\{([^}]*)\}/.exec(css);
+  expect(statusMatch).not.toBeNull();
+  const statusBody = statusMatch?.[1] ?? "";
+  expect(statusBody).toMatch(/background:\s*var\(--surface-inset\)/);
+  expect(statusBody).toMatch(/line-height:\s*var\(--line-height-body\)/);
+  expect(css).not.toMatch(/border-inline-start|--accent|--warning/);
+  expect(css).not.toMatch(/line-height:\s*1\.(?:45|5)\b/);
+  expect(css).not.toMatch(/prefers-reduced-motion/);
+  expect(css).toMatch(/@container\s+/);
   expect(css).not.toMatch(/@media\s*\([^)]*width/);
-  expect(css).toMatch(/min-height:\s*44px/);
+  expect(css).not.toMatch(/\.detailControl\s*\{[^}]*container-type/);
+  expect(css).not.toMatch(/\.detailSheetContent\s*\{[^}]*container-(?:type|name)/);
+  expect(css).not.toMatch(/\.detailActions\s+button/);
+  expect(css).not.toMatch(/\.detailSheetContent\s+\.detailActions/);
+  expect(css).not.toMatch(/\.detailTrigger\s*\{/);
 });
