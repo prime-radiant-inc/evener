@@ -25,6 +25,30 @@ func ResolveWithProject(stateRoot, cwd string, project identifier.Project, overr
 	return resolveFSWithProject(afero.NewOsFs(), stateRoot, cwd, project, overrides)
 }
 
+// ResolveUserOnly resolves the layers that exist before a launch directory is
+// chosen: the global (user) layer plus the per-launch overrides. Repo and
+// project layers are unknowable without a directory, so this answers "what
+// applies everywhere" — once a directory exists, the full Resolve supersedes
+// it.
+func ResolveUserOnly(stateRoot string, overrides Layer) (Resolved, error) {
+	return resolveUserOnlyFS(afero.NewOsFs(), stateRoot, overrides)
+}
+
+func resolveUserOnlyFS(fs afero.Fs, stateRoot string, overrides Layer) (Resolved, error) {
+	var pathDiags []Diagnostic
+	g, err := loadLayerFS(fs, filepath.Join(stateRoot, "launch.toml"))
+	if err != nil {
+		return Resolved{}, fmt.Errorf("global: %w", err)
+	}
+	g = validateAbsolutePaths(LayerGlobal, g, &pathDiags)
+	resolved, _ := mergeLayers(map[LayerName]Layer{
+		LayerGlobal: g,
+		LayerLaunch: overrides,
+	})
+	resolved.Diagnostics = append(resolved.Diagnostics, pathDiags...)
+	return resolved, nil
+}
+
 func resolveFS(fs afero.Fs, stateRoot, cwd string, overrides Layer) (Resolved, error) {
 	project, err := identifier.ResolveProject(cwd)
 	if err != nil {

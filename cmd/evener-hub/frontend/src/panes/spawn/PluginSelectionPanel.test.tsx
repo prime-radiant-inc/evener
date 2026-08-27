@@ -53,16 +53,30 @@ function renderPanel(overrides: Partial<React.ComponentProps<typeof PluginSelect
 
 afterEach(cleanup);
 
-test("renders named switches, metadata, counts, and honest selected state", () => {
+test("renders named switches, source subheading, counts, and description", () => {
   renderPanel();
 
   expect(screen.getByRole("switch", { name: "alpha" }).getAttribute("aria-checked")).toBe("true");
   expect(screen.getByRole("switch", { name: "beta" }).getAttribute("aria-checked")).toBe("false");
-  expect(screen.getByText("@ acme")).toBeTruthy();
-  expect(screen.getByText("/tmp/beta")).toBeTruthy();
+  expect(screen.getByText("installed from acme")).toBeTruthy();
+  expect(screen.getByText("directory: /tmp/beta")).toBeTruthy();
   expect(screen.getByText("2 skills · 1 agent · 1 command")).toBeTruthy();
-  expect(screen.getByText("off for session")).toBeTruthy();
+  expect(screen.getByText("Alpha tools")).toBeTruthy();
   expect(screen.getByText("1 of 2 selected")).toBeTruthy();
+  expect(screen.queryByText(/for session$/)).toBeNull();
+  expect(screen.queryByText(/^Showing /)).toBeNull();
+});
+
+test("each row orders source subheading, then counts, then description", () => {
+  renderPanel();
+
+  const text = screen.getByTestId("plugin-selection-panel").textContent ?? "";
+  const sourceAt = text.indexOf("installed from acme");
+  const countsAt = text.indexOf("2 skills · 1 agent · 1 command");
+  const descriptionAt = text.indexOf("Alpha tools");
+  expect(sourceAt).toBeGreaterThanOrEqual(0);
+  expect(sourceAt).toBeLessThan(countsAt);
+  expect(countsAt).toBeLessThan(descriptionAt);
 });
 
 test("keyboard toggles a switch and materializes explicit selection", async () => {
@@ -76,49 +90,14 @@ test("keyboard toggles a switch and materializes explicit selection", async () =
   expect(onSelectionChange).toHaveBeenCalledWith({ mode: "explicit", names: ["alpha", "beta"] });
 });
 
-test("filters by name, source, and description and supports All and None", async () => {
+test("supports All and None", async () => {
   const user = userEvent.setup();
   const { onSelectionChange } = renderPanel();
-  const filter = screen.getByRole("searchbox", { name: "Filter plugins" });
 
-  await user.type(filter, "helpers");
-  expect(screen.queryByRole("switch", { name: "alpha" })).toBeNull();
-  expect(screen.getByRole("switch", { name: "beta" })).toBeTruthy();
-  await user.clear(filter);
   await user.click(screen.getByRole("button", { name: "None" }));
   expect(onSelectionChange).toHaveBeenLastCalledWith({ mode: "explicit", names: [] });
   await user.click(screen.getByRole("button", { name: "All" }));
   expect(onSelectionChange).toHaveBeenLastCalledWith({ mode: "explicit", names: ["alpha", "beta"] });
-});
-
-test("simultaneously mounted panels keep distinct filter label targets", () => {
-  render(
-    <>
-      <PluginSelectionPanel
-        preview={preview}
-        selection={{ mode: "default" }}
-        onSelectionChange={vi.fn()}
-        onRetry={vi.fn()}
-      />
-      <PluginSelectionPanel
-        preview={preview}
-        selection={{ mode: "default" }}
-        onSelectionChange={vi.fn()}
-        onRetry={vi.fn()}
-      />
-    </>,
-  );
-
-  const panels = screen.getAllByTestId("plugin-selection-panel");
-  expect(panels).toHaveLength(2);
-  const ids = panels.map((panel) => {
-    const label = within(panel).getByText("Filter plugins", { selector: "label" });
-    const input = within(panel).getByRole("searchbox") as HTMLInputElement;
-    expect(label.getAttribute("for")).toBe(input.id);
-    expect(input.id).not.toBe("");
-    return input.id;
-  });
-  expect(new Set(ids).size).toBe(2);
 });
 
 test("exposes diagnostics and blocking selection errors without relying on color", async () => {

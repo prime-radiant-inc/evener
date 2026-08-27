@@ -245,12 +245,16 @@ function assertResult(result, expectedWidth) {
     }
     if (result.plugins.sheet.height < 120) failures.push(`plugin sheet is too short to be usable: ${JSON.stringify(result.plugins.sheet)}`);
   }
-  if (result.plugins.filter === null || result.plugins.filter.width <= 1 || result.plugins.filter.height <= 1) {
-    failures.push(`plugin filter is not measurable at ${expectedWidth}px`);
-  } else if (mobile && result.plugins.filter.height < TAP_MIN_PX - 0.5) {
-    failures.push(`plugin filter is ${result.plugins.filter.height}px tall, below the ${TAP_MIN_PX}px touch floor`);
-  } else if (!mobile && result.plugins.filter.height >= 44) {
-    failures.push(`desktop plugin filter dimensions changed unexpectedly: ${JSON.stringify(result.plugins.filter)}`);
+  // The panel owns no filter and no scroll container: rows render the source
+  // subheading, counts and description under each name, and the list grows to
+  // fit them.
+  if (result.plugins.metadata === null || result.plugins.metadata.width <= 1 || result.plugins.metadata.height <= 1) {
+    failures.push(`plugin row metadata (source/counts/description) is not measurable at ${expectedWidth}px`);
+  }
+  if (result.plugins.listOverflowY !== "visible") {
+    failures.push(
+      `plugin list is a scroll container (overflow-y: ${result.plugins.listOverflowY}) at ${expectedWidth}px - it should expand to fit`,
+    );
   }
   if (result.plugins.switches.length === 0) {
     failures.push(`plugin switches are not measurable at ${expectedWidth}px`);

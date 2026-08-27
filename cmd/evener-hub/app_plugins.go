@@ -55,18 +55,32 @@ func newHubPluginsController(root string, launchConfigRoots ...string) *hubPlugi
 // session state are never touched.
 func (c *hubPluginsController) Preview(ctx context.Context, params appwire.PluginPreviewParams) (appwire.PluginPreviewResponse, error) {
 	_ = ctx // retained in the controller API for parity with other RPC reads
-	cwd, project, cleanup, err := pluginPreviewCWD(params.CWD)
-	if err != nil {
-		return appwire.PluginPreviewResponse{}, err
-	}
-	defer cleanup()
 	var overrides launchconfig.Layer
 	if params.LaunchOverrides != nil {
 		overrides = launchconfig.FromWire(*params.LaunchOverrides)
 	}
-	resolved, err := launchconfig.ResolveWithProject(c.launchConfigRoot, cwd, project, overrides)
-	if err != nil {
-		return appwire.PluginPreviewResponse{}, err
+	var resolved launchconfig.Resolved
+	if strings.TrimSpace(params.CWD) == "" {
+		// No launch directory chosen yet: the user-level inventory (global
+		// layer + per-launch overrides) is all that exists. Repo and project
+		// layers resolve once a directory is picked, and clients re-preview
+		// then.
+		userResolved, err := launchconfig.ResolveUserOnly(c.launchConfigRoot, overrides)
+		if err != nil {
+			return appwire.PluginPreviewResponse{}, err
+		}
+		resolved = userResolved
+	} else {
+		cwd, project, cleanup, err := pluginPreviewCWD(params.CWD)
+		if err != nil {
+			return appwire.PluginPreviewResponse{}, err
+		}
+		defer cleanup()
+		fullResolved, err := launchconfig.ResolveWithProject(c.launchConfigRoot, cwd, project, overrides)
+		if err != nil {
+			return appwire.PluginPreviewResponse{}, err
+		}
+		resolved = fullResolved
 	}
 	resolution, err := c.mgr.ResolveForLaunch(resolved.Effective.PluginDirs, resolved.Effective.EnabledPlugins)
 	if err != nil {

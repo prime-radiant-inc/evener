@@ -32,6 +32,7 @@ fake.on("evener/plugin/preview", () => ({
   plugins: [
     {
       name: "spawnguard-plugin",
+      description: "Spawnguard marketplace tools",
       source: "installed",
       marketplace: "spawnguard",
       selected: true,
@@ -43,6 +44,7 @@ fake.on("evener/plugin/preview", () => ({
     },
     {
       name: "spawnguard-directory",
+      description: "Directory-sourced helpers",
       source: "directory",
       path: "/tmp/spawnguard-plugin",
       selected: true,
@@ -280,7 +282,8 @@ function measureSpawn() {
   const pluginSheet = document.querySelector<HTMLElement>('[role="dialog"][aria-labelledby] h2')?.parentElement
     ?.parentElement;
   const start = document.querySelector<HTMLElement>('[data-testid="spawn-submit"]');
-  const pluginFilter = document.querySelector<HTMLElement>('[data-testid="plugin-selection-panel"] input');
+  const pluginList = document.querySelector<HTMLElement>('[data-testid="plugin-selection-list"]');
+  const pluginMetadata = document.querySelector<HTMLElement>('[data-testid="plugin-row-metadata"]');
   const pluginSwitches = Array.from(
     document.querySelectorAll<HTMLElement>('[data-testid="plugin-selection-panel"] [role="switch"]'),
   );
@@ -310,7 +313,12 @@ function measureSpawn() {
       row: pluginRow ? boxOf(pluginRow) : null,
       sheet: pluginSheet ? boxOf(pluginSheet) : null,
       start: start ? boxOf(start) : null,
-      filter: pluginFilter ? boxOf(pluginFilter) : null,
+      // The list must expand to fit its rows (the panel owns no scroll
+      // container), so the guard reads the computed overflow rather than a box.
+      listOverflowY: pluginList ? getComputedStyle(pluginList).overflowY : null,
+      // First row's subheading block (source, counts, description under the
+      // name) - the layout the rows are contracted to render.
+      metadata: pluginMetadata ? boxOf(pluginMetadata) : null,
       switches: pluginSwitches.map(boxOf),
     },
     overflow: scanHorizontalOverflow(),

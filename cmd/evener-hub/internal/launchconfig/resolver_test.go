@@ -31,6 +31,32 @@ func TestDecodeTrustedRepoLayerRejectsEnabledPlugins(t *testing.T) {
 	}
 }
 
+func TestResolveUserOnlyMergesGlobalAndLaunch(t *testing.T) {
+	stateRoot := t.TempDir()
+	writeFile(t, filepath.Join(stateRoot, "launch.toml"), `plugin_dirs = ["/absolute/plugins", "relative/plugins"]
+`)
+	launch := []string{"launch-pick"}
+	resolved, err := ResolveUserOnly(stateRoot, Layer{EnabledPlugins: &launch})
+	if err != nil {
+		t.Fatalf("ResolveUserOnly: %v", err)
+	}
+	// The launch layer lands on top; the relative global plugin_dirs entry
+	// drops out with a diagnostic while the absolute one survives.
+	if resolved.Effective.EnabledPlugins == nil || !reflect.DeepEqual(*resolved.Effective.EnabledPlugins, launch) {
+		t.Fatalf("EnabledPlugins = %#v, want %v", resolved.Effective.EnabledPlugins, launch)
+	}
+	if !reflect.DeepEqual(resolved.Effective.PluginDirs, []string{"/absolute/plugins"}) {
+		t.Fatalf("PluginDirs = %v, want only the absolute entry", resolved.Effective.PluginDirs)
+	}
+	if len(resolved.Diagnostics) != 1 || resolved.Diagnostics[0].Layer != LayerGlobal || resolved.Diagnostics[0].Field != "plugin_dirs" {
+		t.Fatalf("Diagnostics = %#v, want one global plugin_dirs diagnostic", resolved.Diagnostics)
+	}
+	// No directory means no project identity and no repo status.
+	if resolved.Project != (identifier.Project{}) || resolved.Repo != nil {
+		t.Fatalf("Project/Repo = %+v/%+v, want both unset", resolved.Project, resolved.Repo)
+	}
+}
+
 func checkResolve_LayersMerge(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := t.TempDir()
