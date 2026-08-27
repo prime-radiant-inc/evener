@@ -1,4 +1,4 @@
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../../protocol/testing/fakeClient";
@@ -348,6 +348,68 @@ describe("PathListField", () => {
     );
     expect(screen.getByText(/No skill directories configured/i)).toBeTruthy();
   });
+
+  test("inherited entries render as grayed ghost rows tagged (default), with no remove button", () => {
+    render(
+      <PathListField
+        option={pathListOption()}
+        items={["/opt/local-skills"]}
+        onChange={() => {}}
+        validatePath={async () => ({ path: "", valid: true })}
+        inheritedItems={["/etc/defaults/skills"]}
+      />,
+    );
+
+    const list = screen.getByRole("list", { name: "Skill directories" });
+    const rows = within(list).getAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+    const [localRow, ghost] = rows as [HTMLElement, HTMLElement];
+    // Local row keeps its remove button.
+    expect(within(localRow).getByRole("button", { name: "Remove /opt/local-skills" })).toBeTruthy();
+    // Ghost row has no remove button and is tagged (default).
+    expect(ghost.textContent).toContain("/etc/defaults/skills");
+    expect(ghost.textContent).toContain("(default)");
+    expect(within(ghost).queryByRole("button")).toBeNull();
+  });
+
+  test("inherited entries suppress the empty message", () => {
+    render(
+      <PathListField
+        option={pathListOption()}
+        items={[]}
+        onChange={() => {}}
+        validatePath={async () => ({ path: "", valid: true })}
+        inheritedItems={["/etc/defaults/skills"]}
+      />,
+    );
+
+    expect(screen.queryByText(/No skill directories configured/i)).toBeNull();
+    expect(screen.getByText("/etc/defaults/skills")).toBeTruthy();
+  });
+
+  test("a local add that matches an inherited entry replaces its ghost", async () => {
+    const user = userEvent.setup();
+    connectPathLister({});
+    const onChange = vi.fn();
+    render(
+      <PathListField
+        option={pathListOption()}
+        items={[]}
+        onChange={onChange}
+        validatePath={async () => ({ path: "/etc/defaults/skills", valid: true })}
+        inheritedItems={["/etc/defaults/skills"]}
+      />,
+    );
+
+    // The ghost starts visible.
+    const list = screen.getByRole("list", { name: "Skill directories" });
+    expect(within(list).getByText("/etc/defaults/skills")).toBeTruthy();
+
+    // Add the same path locally.
+    await typePath(user, "/etc/defaults/skills");
+    await user.click(screen.getByRole("button", { name: "Add" }));
+    await waitFor(() => expect(onChange).toHaveBeenCalledWith(["/etc/defaults/skills"]));
+  });
 });
 
 describe("ModelListField", () => {
@@ -434,6 +496,44 @@ describe("ModelListField", () => {
     await user.click(screen.getByRole("button", { name: "Add" }));
     await waitFor(() => expect(onExplicitEmptyChange).toHaveBeenCalledWith(false));
   });
+
+  test("inherited fallbacks render as ghost rows tagged (default), with no remove button", () => {
+    render(
+      <ModelListField
+        option={modelFallbacksOption}
+        items={["openai/gpt-5-mini"]}
+        onChange={() => {}}
+        explicitEmpty={false}
+        onExplicitEmptyChange={() => {}}
+        inheritedItems={["anthropic/claude-haiku-4-5"]}
+      />,
+    );
+
+    const list = screen.getByRole("list", { name: "Model fallbacks" });
+    const rows = within(list).getAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+    const [localRow, ghost] = rows as [HTMLElement, HTMLElement];
+    expect(within(localRow).getByRole("button", { name: "Remove openai/gpt-5-mini" })).toBeTruthy();
+    expect(ghost.textContent).toContain("anthropic/claude-haiku-4-5");
+    expect(ghost.textContent).toContain("(default)");
+    expect(within(ghost).queryByRole("button")).toBeNull();
+  });
+
+  test("inherited fallbacks suppress the empty message", () => {
+    render(
+      <ModelListField
+        option={modelFallbacksOption}
+        items={[]}
+        onChange={() => {}}
+        explicitEmpty={false}
+        onExplicitEmptyChange={() => {}}
+        inheritedItems={["anthropic/claude-haiku-4-5"]}
+      />,
+    );
+
+    const list = screen.getByRole("list", { name: "Model fallbacks" });
+    expect(within(list).getByText("anthropic/claude-haiku-4-5")).toBeTruthy();
+  });
 });
 
 describe("EnvMapField", () => {
@@ -504,6 +604,41 @@ describe("EnvMapField", () => {
     screen.getByRole("button", { name: "Remove FOO=bar" }).click();
     expect(onChange).toHaveBeenCalledWith({ BAZ: "qux" });
   });
+
+  test("inherited entries render as ghost rows tagged (default), with no remove button", () => {
+    render(
+      <EnvMapField
+        option={envOption}
+        value={{ LOCAL: "1" }}
+        onChange={() => {}}
+        inheritedItems={[{ name: "EDITOR", value: "vim" }]}
+      />,
+    );
+
+    const list = screen.getByRole("list", { name: "Environment variables" });
+    const rows = within(list).getAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+    const [localRow, ghost] = rows as [HTMLElement, HTMLElement];
+    expect(within(localRow).getByRole("button", { name: "Remove LOCAL=1" })).toBeTruthy();
+    expect(ghost.textContent).toContain("EDITOR=vim");
+    expect(ghost.textContent).toContain("(default)");
+    expect(within(ghost).queryByRole("button")).toBeNull();
+  });
+
+  test("inherited entries suppress the empty message", () => {
+    render(
+      <EnvMapField
+        option={envOption}
+        value={{}}
+        onChange={() => {}}
+        inheritedItems={[{ name: "EDITOR", value: "vim" }]}
+      />,
+    );
+
+    const list = screen.getByRole("list", { name: "Environment variables" });
+    expect(within(list).getByText("EDITOR=vim")).toBeTruthy();
+    expect(within(list).queryByText(/No environment variables configured/i)).toBeNull();
+  });
 });
 
 describe("McpServerListField", () => {
@@ -561,5 +696,42 @@ describe("McpServerListField", () => {
     await user.click(screen.getByRole("button", { name: "Add" }));
     expect(validateCommand).not.toHaveBeenCalled();
     expect(onChange).not.toHaveBeenCalled();
+  });
+
+  test("inherited servers render as ghost rows tagged (default), with no remove button", () => {
+    render(
+      <McpServerListField
+        option={mcpOption}
+        items={[{ name: "fs", command: "mcp-fs", args: ["--root", "/"] }]}
+        onChange={() => {}}
+        validateCommand={async () => ({ path: "", valid: true })}
+        inheritedItems={[{ name: "docs", command: "npx", args: ["docs-mcp"] }]}
+      />,
+    );
+
+    const list = screen.getByRole("list", { name: "MCP servers" });
+    const rows = within(list).getAllByRole("listitem");
+    expect(rows).toHaveLength(2);
+    const [localRow, ghost] = rows as [HTMLElement, HTMLElement];
+    expect(within(localRow).getByRole("button", { name: /Remove fs → mcp-fs/i })).toBeTruthy();
+    expect(ghost.textContent).toContain("docs → npx docs-mcp");
+    expect(ghost.textContent).toContain("(default)");
+    expect(within(ghost).queryByRole("button")).toBeNull();
+  });
+
+  test("inherited servers suppress the empty message", () => {
+    render(
+      <McpServerListField
+        option={mcpOption}
+        items={[]}
+        onChange={() => {}}
+        validateCommand={async () => ({ path: "", valid: true })}
+        inheritedItems={[{ name: "docs", command: "npx", args: ["docs-mcp"] }]}
+      />,
+    );
+
+    const list = screen.getByRole("list", { name: "MCP servers" });
+    expect(within(list).getByText("docs → npx docs-mcp")).toBeTruthy();
+    expect(within(list).queryByText(/No MCP servers configured/i)).toBeNull();
   });
 });
