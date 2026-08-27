@@ -274,6 +274,21 @@ function continuedPartialTree(revision = 1) {
   };
 }
 
+function partialContinuationPage(jobId: string, description: string, continuation?: string) {
+  const page = cloneFixture(continuedPartialTree());
+  const entry = page.root.entries[0];
+  if (entry?.kind !== "delegate" || !entry.delegate.child) {
+    throw new Error("partial continuation fixture is missing its delegate child");
+  }
+  entry.delegate.projectionRevision = 1;
+  const job = entry.delegate.child.entries[0];
+  if (job?.kind !== "shell") throw new Error("partial continuation fixture is missing its shell job");
+  job.job.jobId = jobId;
+  job.job.description = description;
+  entry.delegate.child.branch = continuation ? { truncated: true, continuation } : {};
+  return page;
+}
+
 function emptyTree() {
   return {
     revision: 1,
@@ -682,6 +697,45 @@ describe("ActivityPanel", () => {
       ref: "ref_root",
       continuation: "partial-page-2",
     });
+  });
+
+  test("same-revision nested continuation deltas append exactly once and advance to completion", async () => {
+    const user = userEvent.setup();
+    const fake = connectFakeClient();
+    fake.on("evener/jobs/list", ({ continuation }) => {
+      if (!continuation) {
+        return { data: partialContinuationPage("job_partial_page_1", "first page shell", "partial-page-2") };
+      }
+      if (continuation === "partial-page-2") {
+        return { data: partialContinuationPage("job_partial_page_2", "second page shell", "partial-page-3") };
+      }
+      if (continuation === "partial-page-3") {
+        return { data: partialContinuationPage("job_partial_page_3", "third page shell") };
+      }
+      throw new Error(`unexpected continuation ${continuation}`);
+    });
+
+    render(<ActivityPanel sessionRef="ref_root" model={testModel()} now={0} />);
+    await user.click(screen.getByRole("button", { name: "Activity" }));
+    await screen.findByRole("tree");
+    expect(screen.getByRole("treeitem", { name: /first page shell/i })).toBeTruthy();
+
+    await user.click(screen.getByRole("button", { name: /load more/i }));
+    expect(await screen.findByRole("treeitem", { name: /second page shell/i })).toBeTruthy();
+    expect(screen.getAllByRole("treeitem", { name: /first page shell/i })).toHaveLength(1);
+    expect(screen.getAllByRole("treeitem", { name: /second page shell/i })).toHaveLength(1);
+
+    await user.click(screen.getByRole("button", { name: /load more/i }));
+    expect(await screen.findByRole("treeitem", { name: /third page shell/i })).toBeTruthy();
+    expect(screen.getAllByRole("treeitem", { name: /first page shell/i })).toHaveLength(1);
+    expect(screen.getAllByRole("treeitem", { name: /second page shell/i })).toHaveLength(1);
+    expect(screen.getAllByRole("treeitem", { name: /third page shell/i })).toHaveLength(1);
+    expect(screen.queryByRole("button", { name: /load more/i })).toBeNull();
+    expect(fake.calls.filter((call) => call.method === "evener/jobs/list").map((call) => call.params)).toEqual([
+      { ref: "ref_root" },
+      { ref: "ref_root", continuation: "partial-page-2" },
+      { ref: "ref_root", continuation: "partial-page-3" },
+    ]);
   });
 
   test("a continuation from another revision is discarded and restarts from the root", async () => {

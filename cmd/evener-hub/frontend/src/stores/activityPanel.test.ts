@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import type { ActivityTree } from "../panes/session/chrome/activityData";
+import { type ActivityEntry, type ActivityTree, activityNodeID } from "../panes/session/chrome/activityData";
 import { resetWorkspaceStoreForTests } from "../shell/workspace";
 import { activityPanelStore, resetActivityPanelStoreForTests } from "./activityPanel";
 import { schedulePanelStoreEviction } from "./panelStoreEviction";
@@ -18,6 +18,32 @@ function tree(revision = 1): ActivityTree {
       branch: {},
     },
   };
+}
+
+function shell(jobId: string): ActivityEntry {
+  return {
+    kind: "shell",
+    job: {
+      jobId,
+      ownerSessionId: "sess_a",
+      ownerRef: "ref_a",
+      type: "shell",
+      status: "completed",
+      terminal: true,
+      background: false,
+      hasOutput: false,
+      description: jobId,
+      startedAt: "2026-01-01T00:00:00Z",
+      outputBytes: 0,
+    },
+  };
+}
+
+function rootPage(jobId: string, continuation?: string): ActivityTree {
+  const page = tree();
+  page.root.entries = [shell(jobId)];
+  page.root.branch = continuation ? { truncated: true, continuation } : {};
+  return page;
 }
 
 describe("activityPanelStore", () => {
@@ -109,6 +135,39 @@ describe("activityPanelStore", () => {
       kind: "ready",
       tree: { root: { counts: { active: 1, failed: 0, completed: 0, complete: true } } },
     });
+  });
+
+  test("appends same-revision root continuation deltas exactly once until the branch completes", () => {
+    resetActivityPanelStoreForTests();
+    const first = activityPanelStore.getState().beginFetch("ref_a");
+    activityPanelStore
+      .getState()
+      .publishFetch("ref_a", first, { kind: "ready", tree: rootPage("job_page_1", "page-2") });
+
+    const second = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
+    activityPanelStore
+      .getState()
+      .publishFetch("ref_a", second, { kind: "ready", tree: rootPage("job_page_2", "page-3") });
+
+    let entry = activityPanelStore.getState().entries.get("ref_a");
+    if (entry?.load.kind !== "ready") throw new Error("expected ready activity tree after page two");
+    expect(entry.load.tree.root.entries.map((activity) => activityNodeID(activity))).toEqual([
+      "job:job_page_1",
+      "job:job_page_2",
+    ]);
+    expect(entry.load.tree.root.branch.continuation).toBe("page-3");
+
+    const third = activityPanelStore.getState().beginFetch("ref_a", { nodeID: "session:sess_a" });
+    activityPanelStore.getState().publishFetch("ref_a", third, { kind: "ready", tree: rootPage("job_page_3") });
+
+    entry = activityPanelStore.getState().entries.get("ref_a");
+    if (entry?.load.kind !== "ready") throw new Error("expected ready activity tree after page three");
+    expect(entry.load.tree.root.entries.map((activity) => activityNodeID(activity))).toEqual([
+      "job:job_page_1",
+      "job:job_page_2",
+      "job:job_page_3",
+    ]);
+    expect(entry.load.tree.root.branch.continuation).toBeUndefined();
   });
 
   test("rejects a continuation from another revision and requests a root restart", () => {
