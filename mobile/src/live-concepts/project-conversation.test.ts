@@ -2561,11 +2561,11 @@ describe("createLiveConversationProjector", () => {
 
   // --- R4: same-failed-projector transactional zero-retention -----------------
 
-  it("always-colliding allocator on same projector: tight cap proves zero retained identities", () => {
+  it("always-colliding allocator on same projector: exact retry keys prove rollback", () => {
     // Allocator collides on every call during the first projection, then
-    // recovers with unique values on the second. A tight capacity means ANY
-    // leaked identity from the failed projection would exhaust the cap on
-    // retry on the SAME projector.
+    // recovers with unique values on the second. The exact retry key sequence,
+    // rather than capacity alone, proves that the failed projection retained
+    // neither identity mappings nor allocator progress on the same projector.
     let phase: "collide" | "recover" = "collide";
     let n = 0;
     const smartAlloc: OpaqueKeyAllocator = () => {
@@ -2573,9 +2573,9 @@ describe("createLiveConversationProjector", () => {
       n++;
       return `r${n}`;
     };
-    // 2 user items → 3 identities (thread + 2 items). cap=3 is exact.
-    // If the failed projection leaked even 1 identity, totalIdentities > 0
-    // and 3 new identities would exceed the cap of 3 on retry.
+    // 2 user items → 3 identities (thread + 2 items). cap=3 is exact, but a
+    // leaked mapping could also make a retry identity no longer new, so the
+    // key-sequence assertions below carry the rollback proof.
     const p = createLiveConversationProjector({
       allocator: smartAlloc,
       maxRegistrySize: 3,
@@ -2591,11 +2591,8 @@ describe("createLiveConversationProjector", () => {
 
     // Switch to recovery phase and retry on SAME projector.
     phase = "recover";
-    // 3 new identities must fit cap=3 — proves zero leaked from failure.
-    // Assert exact retry identity keys to prove the rollback: if any identity
-    // or counter leaked from the failed projection, the allocator counter n
-    // would be offset and these keys would differ, or the projection would
-    // throw ProjectionCapacityError because totalIdentities > 0.
+    // Assert exact retry identity keys to prove rollback: leaked identity or
+    // counter state would offset the allocator sequence or reuse a stale key.
     // Allocation order: u1 key(r1), u1 seq(r2), u2 key(r3), u2 seq(r4),
     // thread(r5). 3 identities, 5 allocations.
     const result = p.project(conv, { ...OPTS });
