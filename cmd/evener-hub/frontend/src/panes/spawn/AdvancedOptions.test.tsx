@@ -268,6 +268,94 @@ test("a browsable path control's trigger names the resolved default path", async
   expect(cpuTrigger.textContent).not.toContain("demo-trace");
 });
 
+// --- inherited collection rows ----------------------------------------------
+//
+// A collection control's own list holds only the user's per-launch additions;
+// entries the effective config would inherit used to be invisible ("None."
+// even when a session would pick up several). The panel renders them as
+// ghost rows - tagged "(default)", no remove button - computed as the
+// resolved effective value minus the user's local entries, which matches each
+// kind's merge semantics (pathList/mcps append, env per-key, modelFallbacks
+// replace) because resolvedDefaults is the resolve RPC's effective layer and
+// already contains the local overrides.
+
+test("a pathList control ghosts inherited entries, and a local add replaces its ghost", async () => {
+  const user = userEvent.setup();
+  renderPanel([option({ wireField: "skillsDirs", kind: "pathList", pathKind: "dir", label: "Skill directories" })], {
+    resolvedDefaults: { skillsDirs: ["/opt/skills"] },
+  });
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  const list = screen.getByRole("list", { name: "Skill directories" });
+  expect(within(list).queryByText("None.")).toBeNull();
+  const ghost = within(list).getByText("/opt/skills").closest("li") as HTMLElement;
+  expect(ghost.textContent).toContain("(default)");
+  expect(within(ghost).queryByRole("button")).toBeNull();
+
+  // Adding the same path locally turns it into an ordinary removable row and
+  // drops the ghost (the effective layer already contains the local entry).
+  await typePath(user, pathTrigger(/browse/i), "/opt/skills");
+  await user.click(screen.getByRole("button", { name: "Add" }));
+  const row = within(list).getByText("/opt/skills").closest("li") as HTMLElement;
+  expect(row.textContent).not.toContain("(default)");
+  expect(within(row).getByRole("button", { name: "Remove /opt/skills" })).toBeTruthy();
+  expect(within(list).getAllByRole("listitem")).toHaveLength(1);
+});
+
+test("a modelList control ghosts inherited fallbacks", async () => {
+  const user = userEvent.setup();
+  renderPanel([option({ wireField: "modelFallbacks", kind: "modelList", label: "Model fallbacks" })], {
+    resolvedDefaults: { modelFallbacks: ["openai/gpt-5"] },
+  });
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  const list = screen.getByRole("list", { name: "Model fallbacks" });
+  const ghost = within(list).getByText("openai/gpt-5").closest("li") as HTMLElement;
+  expect(ghost.textContent).toContain("(default)");
+  expect(within(ghost).queryByRole("button")).toBeNull();
+});
+
+test("an envMap control ghosts inherited entries, and a local override of the same key replaces its ghost", async () => {
+  const user = userEvent.setup();
+  renderPanel([option({ wireField: "env", kind: "envMap", label: "Env vars" })], {
+    resolvedDefaults: { env: { EDITOR: "vim", PAGER: "less" } },
+  });
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  const list = screen.getByRole("list", { name: "Env vars" });
+  expect(within(list).queryByText("None.")).toBeNull();
+  for (const text of ["EDITOR=vim", "PAGER=less"]) {
+    const ghost = within(list).getByText(text).closest("li") as HTMLElement;
+    expect(ghost.textContent).toContain("(default)");
+    expect(within(ghost).queryByRole("button")).toBeNull();
+  }
+
+  // Overriding one key locally replaces exactly that ghost row.
+  await user.type(screen.getByPlaceholderText("NAME=value"), "EDITOR=emacs{Enter}");
+  const row = within(list).getByText("EDITOR=emacs").closest("li") as HTMLElement;
+  expect(row.textContent).not.toContain("(default)");
+  expect(within(row).getByRole("button", { name: "Remove EDITOR" })).toBeTruthy();
+  expect(within(list).queryByText("EDITOR=vim")).toBeNull();
+  expect(within(list).getByText("PAGER=less")).toBeTruthy();
+});
+
+test("an mcpServerList control ghosts inherited servers", async () => {
+  const user = userEvent.setup();
+  renderPanel([option({ wireField: "mcps", kind: "mcpServerList", label: "MCP servers" })], {
+    resolvedDefaults: { mcps: [{ name: "docs", command: "npx", args: ["docs-mcp"] }] },
+  });
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+
+  const list = screen.getByRole("list", { name: "MCP servers" });
+  const ghost = within(list).getByText("docs: npx docs-mcp").closest("li") as HTMLElement;
+  expect(ghost.textContent).toContain("(default)");
+  expect(within(ghost).queryByRole("button")).toBeNull();
+});
+
 test("an integer control collects a parsed number", async () => {
   const user = userEvent.setup();
   const { onOverridesChange } = renderPanel([option({ wireField: "maxRounds", kind: "integer", label: "Max rounds" })]);
