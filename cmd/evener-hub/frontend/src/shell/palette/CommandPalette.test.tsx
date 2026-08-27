@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { act, cleanup, render, renderHook, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, renderHook, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import "../../panes/sessionPanels";
@@ -11,7 +11,7 @@ import { WireError } from "../../protocol/errors";
 import "../../panes/sessionPanels";
 import type { ItemModel, ThreadModel, TurnModel } from "../../protocol/model";
 import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { NavigationSessionSummary, ThreadCapabilities } from "../../protocol/types.gen";
+import type { NavigationSessionSummary, SearchResult, ThreadCapabilities } from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
 import { connectionStore } from "../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
@@ -21,7 +21,7 @@ import { Toast } from "../../widgets";
 import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { CommandPalette, commandErrorMessage } from "./CommandPalette";
 import { openPalette, paletteStore } from "./paletteController";
-import type { SearchResult } from "./search";
+import { renderPalette as render, scriptSearch } from "./paletteTestUtils";
 
 // See stores/prefs.test.ts: Node 26 shadows jsdom's localStorage.
 class MemoryStorage {
@@ -104,8 +104,6 @@ function focusSession(ref: string, overrides: Partial<ThreadModel> = {}): void {
   threadsStore.setState({ threads: new Map([[ref, testModel({ ref, ...overrides })]]) });
 }
 
-let fetchMock: ReturnType<typeof vi.fn>;
-
 beforeEach(() => {
   paletteStore.setState({ open: false, query: "", openSeq: 0 });
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
@@ -117,8 +115,6 @@ beforeEach(() => {
   resetComposerFocusStoreForTests();
   localStorage.clear();
   window.history.pushState({}, "", "/");
-  fetchMock = vi.fn();
-  vi.stubGlobal("fetch", fetchMock);
   // Keep viewport tests isolated from direct matchMedia assignments.
   // @ts-expect-error jsdom baseline has no matchMedia.
   delete window.matchMedia;
@@ -539,17 +535,14 @@ test("typing after /help leaves the help panel and returns to a real command lis
 
 // --- search mode ---
 
-test("search mode renders Live and Past sections from /api/search with highlighting", async () => {
+test("search mode renders Live and Past sections from AppWire with highlighting", async () => {
   const user = userEvent.setup();
-  fetchMock.mockResolvedValue({
-    ok: true,
-    status: 200,
-    json: () =>
-      Promise.resolve({
-        live: [{ id: "local:a", title: "frobnitz worker", project: "proj", state: "active", age: "now" }],
-        past: [{ id: "p1", title: "old frobnitz run", project: "old", state: "ended", age: "2h" }],
-      }),
-  } as Response);
+  scriptSearch({
+    live: [
+      { id: "local:a", ref: "local:local:a", title: "frobnitz worker", project: "proj", state: "active", age: "now" },
+    ],
+    past: [{ id: "p1", ref: "local:p1", title: "old frobnitz run", project: "old", state: "ended", age: "2h" }],
+  });
 
   render(<CommandPalette />);
   act(() => openPalette());
@@ -565,11 +558,7 @@ test("search mode renders Live and Past sections from /api/search with highlight
 
 test("in-session search scans the focused ThreadModel's turns", async () => {
   const user = userEvent.setup();
-  fetchMock.mockResolvedValue({
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve({ live: [], past: [] }),
-  } as Response);
+  scriptSearch({ live: [], past: [] });
   focusSession("ref_a", { turns: [turn([item("i1", "please investigate the frobnitz")])] });
 
   render(<CommandPalette />);
@@ -627,11 +616,7 @@ test('typing past a bare "?" leaves the help view and resumes filtering, same as
 // required now (see search.ts), and a fixture omitting it would be describing
 // a response the hub cannot produce.
 async function searchAndClick(user: ReturnType<typeof userEvent.setup>, result: SearchResult, term: string) {
-  fetchMock.mockResolvedValue({
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve({ live: [result], past: [] }),
-  } as Response);
+  scriptSearch({ live: [result], past: [] });
   render(<CommandPalette />);
   act(() => openPalette());
   await user.type(screen.getByRole("combobox"), term);

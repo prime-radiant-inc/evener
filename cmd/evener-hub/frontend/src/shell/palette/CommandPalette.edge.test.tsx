@@ -8,7 +8,7 @@
 // - buildView: recent commands header (735), handoff row (744-746)
 // - renderResults: enum loading/error empty states (829-832)
 
-import { act, cleanup, render, renderHook, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, renderHook, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import "../../panes/sessionPanels";
@@ -23,6 +23,7 @@ import { resetThreadsStoreForTests, threadsStore } from "../../stores/threads";
 import { resetWorkspaceStoreForTests, workspaceStore } from "../workspace";
 import { CommandPalette, commandErrorMessage } from "./CommandPalette";
 import { openPalette, paletteStore } from "./paletteController";
+import { renderPalette as render, scriptSearch, scriptSearchFailure } from "./paletteTestUtils";
 
 class MemoryStorage {
   private store = new Map<string, string>();
@@ -104,8 +105,6 @@ function focusSession(ref: string, overrides: Partial<ThreadModel> = {}): void {
   threadsStore.setState({ threads: new Map([[ref, testModel({ ref, ...overrides })]]) });
 }
 
-let fetchMock: ReturnType<typeof vi.fn>;
-
 beforeEach(() => {
   paletteStore.setState({ open: false, query: "", openSeq: 0 });
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
@@ -117,8 +116,6 @@ beforeEach(() => {
   resetComposerFocusStoreForTests();
   localStorage.clear();
   window.history.pushState({}, "", "/");
-  fetchMock = vi.fn();
-  vi.stubGlobal("fetch", fetchMock);
   // @ts-expect-error jsdom baseline has no matchMedia.
   delete window.matchMedia;
 });
@@ -146,12 +143,7 @@ test("commandErrorMessage uses err.message for Error instances", () => {
 
 test("a failed search shows 'Search failed' empty state", async () => {
   const user = userEvent.setup();
-  fetchMock.mockResolvedValue({
-    ok: false,
-    status: 500,
-    statusText: "Internal Server Error",
-    json: () => Promise.resolve({ error: "server error" }),
-  } as Response);
+  scriptSearchFailure();
 
   render(<CommandPalette />);
   act(() => openPalette());
@@ -165,11 +157,7 @@ test("a failed search shows 'Search failed' empty state", async () => {
 test("Shift+Enter on an in-session search result closes the palette without navigating", async () => {
   const user = userEvent.setup();
   const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
-  fetchMock.mockResolvedValue({
-    ok: true,
-    status: 200,
-    json: () => Promise.resolve({ live: [], past: [] }),
-  } as Response);
+  scriptSearch({ live: [], past: [] });
   focusSession("ref_a", { turns: [turn([item("i1", "search term found here")])] });
 
   render(<CommandPalette />);
@@ -189,15 +177,10 @@ test("Shift+Enter on an in-session search result closes the palette without navi
 test("Mod+Enter on a search result opens in a new tab via window.open", async () => {
   const user = userEvent.setup();
   const openSpy = vi.spyOn(window, "open").mockImplementation(() => null);
-  fetchMock.mockResolvedValue({
-    ok: true,
-    status: 200,
-    json: () =>
-      Promise.resolve({
-        live: [{ id: "live1", ref: "local:live1", title: "live result", project: "p", state: "active", age: "now" }],
-        past: [],
-      }),
-  } as Response);
+  scriptSearch({
+    live: [{ id: "live1", ref: "local:live1", title: "live result", project: "p", state: "active", age: "now" }],
+    past: [],
+  });
 
   render(<CommandPalette />);
   act(() => openPalette());
@@ -231,15 +214,10 @@ test("arrow-down then Enter on the handoff row hands off to the composer", async
 
 test("clicking a past search result navigates to the session", async () => {
   const user = userEvent.setup();
-  fetchMock.mockResolvedValue({
-    ok: true,
-    status: 200,
-    json: () =>
-      Promise.resolve({
-        live: [],
-        past: [{ id: "past1", ref: "local:past1", title: "old session", project: "p", state: "ended", age: "2h" }],
-      }),
-  } as Response);
+  scriptSearch({
+    live: [],
+    past: [{ id: "past1", ref: "local:past1", title: "old session", project: "p", state: "ended", age: "2h" }],
+  });
 
   render(<CommandPalette />);
   act(() => openPalette());

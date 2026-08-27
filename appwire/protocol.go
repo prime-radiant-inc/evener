@@ -121,6 +121,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerProjectsRecent, ProjectsRecentParams{}, ProjectsRecentResponse{}, ScopeHub, "Lists the most recently used project working directories (session creation path-dropdown options; default cap 15)."},
 	{MethodEvenerPathValidate, PathValidateParams{}, PathValidateResponse{}, ScopeHub, "Validates a launch path."},
 	{MethodEvenerNavigationRead, NavigationReadParams{}, NavigationReadResponse{}, ScopeHub, "Reads one bounded, revisioned hub navigation resource, optionally conditional on its ETag."},
+	{MethodEvenerSearch, SearchParams{}, SearchResponse{}, ScopeHub, "Searches live and persisted sessions for the hub command palette."},
 	{MethodEvenerHarnessesList, HarnessListParams{}, HarnessListResponse{}, ScopeHub, "Lists available harness descriptors."},
 	{MethodEvenerUpgrade, UpgradeParams{}, UpgradeResponse{}, ScopeHub, "Performs or reports a evener binary upgrade."},
 	{MethodEvenerAuthStatus, AuthStatusParams{}, AuthStatusResponse{}, ScopeHub, "Reports auth/credential status for a provider."},

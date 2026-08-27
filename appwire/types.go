@@ -58,6 +58,7 @@ const (
 	MethodEvenerProjectsRecent        = "evener/projects/recent"
 	MethodEvenerPathValidate          = "evener/path/validate"
 	MethodEvenerNavigationRead        = "evener/navigation/read"
+	MethodEvenerSearch                = "evener/search"
 	MethodEvenerHarnessesList         = "evener/harnesses/list"
 	MethodEvenerUpgrade               = "evener/upgrade"
 	MethodEvenerAuthStatus            = "evener/auth/status"
@@ -230,6 +231,31 @@ type NavigationReadResponse struct {
 	Revision     uint64          `json:"revision"`
 	ETag         string          `json:"etag"`
 	Data         json.RawMessage `json:"data,omitempty"`
+}
+
+// SearchParams selects matching live and past sessions for the hub command
+// palette. An empty query returns the most recent past sessions and all live
+// sessions, matching the palette's initial result set.
+type SearchParams struct {
+	Query string `json:"query,omitempty"`
+}
+
+// SearchResult is one session hit from the hub's live or past search index.
+// Ref is the qualified session reference that clients use to open the hit.
+type SearchResult struct {
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	Project string `json:"project"`
+	State   string `json:"state"`
+	Age     string `json:"age"`
+	Ref     string `json:"ref"`
+}
+
+// SearchResponse groups matching live sessions separately from persisted
+// sessions so the command palette can render its two result sections.
+type SearchResponse struct {
+	Live []SearchResult `json:"live"`
+	Past []SearchResult `json:"past"`
 }
 
 type ServerInfo struct {

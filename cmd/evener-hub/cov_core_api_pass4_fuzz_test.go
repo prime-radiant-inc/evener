@@ -107,8 +107,6 @@ func FuzzCoreAPIPass4(f *testing.F) {
 			return rec
 		}
 
-		call(http.MethodGet, "/api/search?q=live", "")
-		call(http.MethodGet, "/api/search?q=", "")
 		call(http.MethodGet, "/api/health", "")
 		call(http.MethodPost, "/api/health", "")
 		direct := func(fn func(http.ResponseWriter, *http.Request), method, target, body string) *httptest.ResponseRecorder {

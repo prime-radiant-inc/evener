@@ -179,7 +179,6 @@ func FuzzExactTails(f *testing.F) {
 		)
 		liveWeb := NewWebServer(hubcore.WebConfig{Roster: roster})
 		liveWeb.sources = appsource.NewRegistry()
-		liveWeb.handleApiSearch(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/search", nil))
 		liveWeb.handleAPIModel(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"model":"p/m"}`)), "live-a")
 		liveWeb.handleAPIReasoningEffort(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"reasoning_effort":"high"}`)), "live-a")
 		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
@@ -255,7 +254,6 @@ func FuzzExactTails(f *testing.F) {
 		liveWeb.handleAPIModel(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"model":"p/m"}`)), "live-a")
 		ensureAPIActionAvailable = oldEnsureAction
 		_ = appendProjectDeleteLiveSkip(nil, "id")
-		sortLiveForSearch([]hubcore.LiveEntry{{SessionID: "b"}, {SessionID: "a"}}, nil)
 		t.Setenv(envvars.Home.Name, "")
 		(&WebServer{}).handleManifest(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil))
 	})

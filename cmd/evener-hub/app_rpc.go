@@ -769,11 +769,14 @@ func notifyPluginUpdated(server *appserver.Server) {
 // count (issue #35): the 15 most recently used projects.
 const recentProjectDirsLimit = 15
 
-// registerMiscHandlers registers the remaining hub RPC handlers: model list,
-// task list, transcript list, directory completion, path validation, and the
-// harness descriptor list.
+// registerMiscHandlers registers the remaining hub RPC handlers: search,
+// model list, task list, transcript list, directory completion, path
+// validation, and the harness descriptor list.
 func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) {
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerUpgrade, hubUpgrade)
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSearch, func(_ context.Context, params appwire.SearchParams) (appwire.SearchResponse, error) {
+		return hubSearch(cfg, params), nil
+	})
 	appserver.HandleTyped(server.Router(), appwire.MethodModelList, func(ctx context.Context, params appwire.ModelListParams) (appwire.ModelListResponse, error) {
 		return hubModelList(ctx, cfg, sources, params)
 	})

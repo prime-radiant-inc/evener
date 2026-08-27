@@ -217,7 +217,7 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 
 - [ ] Queries are debounced 150ms before hitting the backend (`search.js:46, 903-917`)
 - [ ] An empty (trimmed) query clears results locally without any backend call (`search.js:904-909`)
-- [ ] Prefers `window.EvenerAppwire.search(query)`; REST fallback is `GET /api/search?q=` (`search.js:911-913`)
+- [ ] Uses the shared AppWire connection for `evener/search(query)`; there is no REST fallback (`search.js:911-913`)
 - [ ] Results render up to three sections, in this fixed order: "Live", `"Past · N"`, `"In session · N"` (`search.js:919-946`)
 - [ ] In-session matches are computed entirely CLIENT-SIDE by scanning `.user-message, .assistant-message, .system-line` under `#conversation` for a case-insensitive substring match, tracking a 1-based turn counter as it walks (`search.js:961-982`)
 - [ ] In-session snippet building shows ~40 characters of context on each side of the match, with a leading/trailing `…` only when truncated, and `<mark>` around the exact matched substring (`search.js:984-992`)

@@ -1,9 +1,6 @@
 // Search mode: the palette's default mode (query is empty or doesn't start
 // with "/"). Three concerns, all ported from search.js's search-mode block:
-//   - fetchSearch: the backend session search. REST GET /api/search?q= only -
-//     there is NO appwire `search` method (parity-m6-surfaces.md §2.3,
-//     verified against the wire catalog). Wire shape is pinned against
-//     cmd/evener-hub/web_api.go handleApiSearch + web_types.go searchResponse.
+//   - fetchSearch: the backend session search over the typed AppWire method.
 //   - findInSessionMatches: the "In session · N" section. The legacy scanned
 //     #conversation's DOM (search.js:961-982); the new transcript is
 //     virtualized, so this scans the focused session's ThreadModel directly
@@ -14,27 +11,8 @@
 //     legacy's escapeHtml has no successor here.
 
 import type { ItemModel, ThreadModel } from "../../protocol/model";
-
-export interface SearchResult {
-  id: string;
-  // The qualified, routable ref (e.g. "local:abc") - how a session is opened.
-  // REQUIRED, not optional: handleApiSearch sets Ref at both of its
-  // construction sites and the Go field carries no omitempty
-  // (cmd/evener-hub/web_types.go), whose own doc comment states that the bare ID
-  // "cannot be used to open a hit". Typing it optional bought nothing but a
-  // fallback that built an unroutable URL naming a session differently from
-  // the rail - which opened it a second time in its own pane.
-  ref: string;
-  title: string;
-  project: string;
-  state: string;
-  age: string;
-}
-
-export interface SearchResponse {
-  live: SearchResult[];
-  past: SearchResult[];
-}
+import type { AppwireClientLike } from "../../protocol/testing/fakeClient";
+import type { SearchResponse } from "../../protocol/types.gen";
 
 // One text run of a highlighted string: `mark` true means it is the matched
 // substring (rendered inside <mark>), false means surrounding context.
@@ -49,19 +27,8 @@ export interface InSessionMatch {
   snippet: HighlightPart[];
 }
 
-// The daemon auth-guards the whole mux (see auth.ts) and reads a same-origin
-// cookie/bearer, so this rides same-origin credentials like every other REST
-// call in this app (shell/rail/actions.ts).
-export async function fetchSearch(query: string): Promise<SearchResponse> {
-  const res = await fetch(`/api/search?q=${encodeURIComponent(query)}`, { credentials: "same-origin" });
-  if (!res.ok) throw new Error(`search failed: HTTP ${res.status}`);
-  const data = (await res.json()) as { live?: SearchResult[] | null; past?: SearchResult[] | null };
-  return {
-    // Go encodes an empty result slice as JSON null, not [] - normalize both
-    // (and a missing field) to an empty array.
-    live: Array.isArray(data.live) ? data.live : [],
-    past: Array.isArray(data.past) ? data.past : [],
-  };
+export function fetchSearch(query: string, client: AppwireClientLike): Promise<SearchResponse> {
+  return client.request("evener/search", { query });
 }
 
 // normalizeWhitespace collapses runs of whitespace to a single space and

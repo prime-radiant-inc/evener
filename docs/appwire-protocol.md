@@ -117,6 +117,7 @@ no router (reserved).
 | `evener/projects/recent` | hub | `ProjectsRecentParams` | `ProjectsRecentResponse` | Lists the most recently used project working directories (session creation path-dropdown options; default cap 15). |
 | `evener/path/validate` | hub | `PathValidateParams` | `PathValidateResponse` | Validates a launch path. |
 | `evener/navigation/read` | hub | `NavigationReadParams` | `NavigationReadResponse` | Reads one bounded, revisioned hub navigation resource, optionally conditional on its ETag. |
+| `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches live and persisted sessions for the hub command palette. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
 | `evener/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a evener binary upgrade. |
 | `evener/auth/status` | hub | `AuthStatusParams` | `AuthStatusResponse` | Reports auth/credential status for a provider. |
@@ -1116,6 +1117,21 @@ _(no fields)_
 | `threadId` | `string` |  |  |
 | `ref` | `string` |  |  |
 | `escalationId` | `string` |  |  |
+
+
+### `SearchParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `query` | `string` | yes |  |
+
+
+### `SearchResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `live` | `[]appwire.SearchResult` |  |  |
+| `past` | `[]appwire.SearchResult` |  |  |
 
 
 ### `SettingsOverviewResponse`

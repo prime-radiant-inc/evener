@@ -35,7 +35,6 @@ func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
 		req := httptest.NewRequest(http.MethodGet, target, nil)
 		validAssetPath(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) })).ServeHTTP(httptest.NewRecorder(), req)
 	}
-	web.handleApiSearch(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/api/search?q=x", nil))
 	for _, id := range []string{"bare", "local:thread", "remote:thread"} {
 		_ = appRefFromRouteID(id)
 		_ = canonicalRouteID(id)

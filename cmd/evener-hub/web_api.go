@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -19,7 +18,6 @@ import (
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
-	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/hubapi"
@@ -32,53 +30,6 @@ var (
 		return s.ensureSessionActionAvailable(id, action)
 	}
 )
-
-func (s *WebServer) handleApiSearch(w http.ResponseWriter, r *http.Request) {
-	q := strings.ToLower(strings.TrimSpace(r.URL.Query().Get("q")))
-	var resp searchResponse
-	if s.cfg.Roster != nil {
-		live := s.cfg.Roster.List()
-		sortLiveForSearch(live, s.cfg.Past)
-		for _, le := range live {
-			if le.SessionID == "" {
-				continue
-			}
-			title := liveTitle(le.SessionID, le, s.cfg.Past)
-			if q == "" || strings.Contains(strings.ToLower(le.SessionID), q) || strings.Contains(strings.ToLower(title), q) {
-				resp.Live = append(resp.Live, searchResult{
-					ID:      le.SessionID,
-					Title:   title,
-					State:   hubcore.NormalizeState(le.Status),
-					Project: filepath.Base(le.WorkingDir),
-					Age:     "now",
-					Ref:     hubRefFromTreeNodeID(le.SessionID).String(),
-				})
-			}
-		}
-	}
-	if s.cfg.Past != nil {
-		// Empty query → most-recent N. Substring match otherwise.
-		results := s.cfg.Past.Search(q, 20, 0)
-		for _, e := range results {
-			resp.Past = append(resp.Past, searchResult{
-				ID:      e.Meta.ID,
-				Title:   searchPastTitle(e),
-				State:   "ended",
-				Project: filepath.Base(e.Meta.EnvInfo.WorkingDir),
-				Age:     hubcore.AgeString(e.Meta.UpdatedAt),
-				Ref:     hubRefFromTreeNodeID(e.Meta.ID).String(),
-			})
-		}
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(resp) //nolint:errcheck
-}
-
-func sortLiveForSearch(live []hubcore.LiveEntry, past *hubcore.PastIndex) {
-	sort.SliceStable(live, func(i, j int) bool {
-		return hubcore.LiveEntryWithPastLess(live[i], live[j], past)
-	})
-}
 
 func writeAPIJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")

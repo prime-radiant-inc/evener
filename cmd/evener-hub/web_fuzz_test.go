@@ -103,7 +103,7 @@ func FuzzWebHandler(f *testing.F) {
 		{9, ""},                   // /_partials/settings (defaults to general)
 		{12, ""},                  // /api/tree
 		{13, ""},                  // /api/health
-		{14, ""},                  // /api/search
+		{14, ""},                  // former /api/search route; index retained for corpus stability
 		{16, ""},                  // /settings
 	}
 	for _, s := range seeds {
