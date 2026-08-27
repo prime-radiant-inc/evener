@@ -640,10 +640,8 @@ func TestNavigationConcurrentCachedBytesAndMetricsHTTP(t *testing.T) {
 	const requests = 36
 	var group sync.WaitGroup
 	errs := make(chan error, requests)
-	for index := 0; index < requests; index++ {
-		group.Add(1)
-		go func(index int) {
-			defer group.Done()
+	for index := range requests {
+		group.Go(func() {
 			accept, conditional := "", ""
 			want := identityBytes
 			if index%3 == 1 {
@@ -662,7 +660,7 @@ func TestNavigationConcurrentCachedBytesAndMetricsHTTP(t *testing.T) {
 			if response.Code != http.StatusOK || !bytes.Equal(response.Body.Bytes(), want) {
 				errs <- fmt.Errorf("cached response=%d bytes=%d", response.Code, response.Body.Len())
 			}
-		}(index)
+		})
 	}
 	group.Wait()
 	close(errs)

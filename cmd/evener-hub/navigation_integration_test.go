@@ -20,7 +20,6 @@ type navigationHydrationStats struct {
 	requests         int
 	uncompressedJSON int
 	transferredBytes int
-	conditional304   int
 	etag             string
 }
 
@@ -412,7 +411,7 @@ func TestNavigationIntegration(t *testing.T) {
 			t.Fatal("fixture past index is empty")
 		}
 		target := entries[0]
-		target.Meta.Name = target.Meta.Name + "-changed"
+		target.Meta.Name += "-changed"
 		if changed := past.UpdateMeta(target.ID, target.Meta); !changed {
 			t.Fatal("UpdateMeta reported no change")
 		}

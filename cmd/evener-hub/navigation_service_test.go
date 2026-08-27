@@ -795,14 +795,12 @@ func TestNavigationServiceConcurrentRefreshCoalescesCoreBuild(t *testing.T) {
 	var failures atomic.Int32
 	var wg sync.WaitGroup
 	for range 20 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			<-start
 			if _, err := service.Refresh(t.Context(), navigationChangeHint{Projects: []string{"p1"}}); err != nil {
 				failures.Add(1)
 			}
-		}()
+		})
 	}
 	close(start)
 	<-source.entered

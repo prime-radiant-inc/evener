@@ -64,7 +64,7 @@ func TestNavigationConditionalGET(t *testing.T) {
 }
 
 func TestNavigationRoutesAndBasePrefix(t *testing.T) {
-	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
+	_, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.EscapedPath() != "/hub/api/navigation/pin-sections/p%2F+%252F" {
 			t.Errorf("path: got %q", r.URL.EscapedPath())
 		}

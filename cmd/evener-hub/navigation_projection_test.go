@@ -397,16 +397,16 @@ func countNavigationNodes(rows []hubapi.NavigationSessionSummary) int {
 }
 
 func navigationDepth(rows []hubapi.NavigationSessionSummary) int {
-	max := 0
+	maxDepth := 0
 	var visit func([]hubapi.NavigationSessionSummary, int)
 	visit = func(nodes []hubapi.NavigationSessionSummary, depth int) {
 		for _, node := range nodes {
-			if depth > max {
-				max = depth
+			if depth > maxDepth {
+				maxDepth = depth
 			}
 			visit(node.Children, depth+1)
 		}
 	}
 	visit(rows, 1)
-	return max
+	return maxDepth
 }

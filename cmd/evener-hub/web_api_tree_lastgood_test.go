@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -110,7 +111,7 @@ func TestLegacyRepresentationCachesAndSeparatesShapes(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if string(first.JSON) != string(second.JSON) || builds.Load() != 1 {
+	if !bytes.Equal(first.JSON, second.JSON) || builds.Load() != 1 {
 		t.Fatalf("cache builds=%d bytes differ", builds.Load())
 	}
 	if _, err := service.LegacyRepresentation(t.Context(), "summary", build); err != nil {
@@ -124,12 +125,10 @@ func TestLegacyRepresentationCachesAndSeparatesShapes(t *testing.T) {
 	}
 	if len(first.JSON) == 0 || first.JSON[len(first.JSON)-1] != '\n' {
 		start := len(first.JSON) - 8
-		if start < 0 {
-			start = 0
-		}
+		start = max(start, 0)
 		t.Fatalf("legacy JSON framing = %q, want trailing newline", first.JSON[start:])
 	}
-	if string(first.JSON) != string(second.JSON) {
+	if !bytes.Equal(first.JSON, second.JSON) {
 		t.Fatal("cached legacy encoding changed between requests")
 	}
 }
@@ -150,14 +149,12 @@ func TestLegacyRepresentationRevisionAndConcurrentCoalescing(t *testing.T) {
 		return map[string]string{"ok": "yes"}, nil
 	}
 	var wg sync.WaitGroup
-	for i := 0; i < 8; i++ {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+	for range 8 {
+		wg.Go(func() {
 			if _, err := service.LegacyRepresentation(context.Background(), "full", build); err != nil {
 				t.Errorf("legacy: %v", err)
 			}
-		}()
+		})
 	}
 	<-entered
 	close(release)
@@ -246,12 +243,12 @@ func TestLegacyRepresentationFreezesGeneratedAtPerRevision(t *testing.T) {
 		t.Fatal(err)
 	}
 	second, err := service.LegacyRepresentation(t.Context(), "frozen", build)
-	if err != nil || string(first.JSON) != string(second.JSON) {
+	if err != nil || !bytes.Equal(first.JSON, second.JSON) {
 		t.Fatalf("cached generated_at changed: %v", err)
 	}
 	source.changeTitle("new revision")
 	third, err := service.LegacyRepresentation(t.Context(), "frozen", build)
-	if err != nil || string(first.JSON) == string(third.JSON) {
+	if err != nil || bytes.Equal(first.JSON, third.JSON) {
 		t.Fatalf("new revision did not change frozen representation: %v", err)
 	}
 }

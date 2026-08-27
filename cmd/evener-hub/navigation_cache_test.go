@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"sync"
@@ -34,13 +35,11 @@ func TestNavigationCacheConcurrentMissBuildsOnce(t *testing.T) {
 	errs := make(chan error, callers)
 	var wg sync.WaitGroup
 	for range callers {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
+		wg.Go(func() {
 			representation, err := cache.Get(context.Background(), key, build)
 			results <- representation
 			errs <- err
-		}()
+		})
 	}
 	<-buildStarted
 	close(buildRelease)
@@ -58,7 +57,7 @@ func TestNavigationCacheConcurrentMissBuildsOnce(t *testing.T) {
 			first = representation
 			continue
 		}
-		if string(representation.JSON) != string(first.JSON) || representation.ETag != first.ETag {
+		if !bytes.Equal(representation.JSON, first.JSON) || representation.ETag != first.ETag {
 			t.Fatal("coalesced callers received different representations")
 		}
 	}
@@ -180,7 +179,7 @@ func TestNavigationCacheBuildsBothEncodingsOnce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if calls.Load() != 1 || string(first.JSON) != string(second.JSON) || string(first.Gzip) != string(second.Gzip) {
+	if calls.Load() != 1 || !bytes.Equal(first.JSON, second.JSON) || !bytes.Equal(first.Gzip, second.Gzip) {
 		t.Fatal("warm lookup rebuilt or changed encoded representation")
 	}
 	reader, err := gzip.NewReader(bytes.NewReader(first.Gzip))
@@ -272,7 +271,7 @@ func TestNavigationCacheBuildFailureAndCancellation(t *testing.T) {
 	var calls atomic.Int32
 	build := func(context.Context) (navigationRepresentation, error) {
 		if calls.Add(1) == 1 {
-			return navigationRepresentation{}, fmt.Errorf("build failed")
+			return navigationRepresentation{}, errors.New("build failed")
 		}
 		return representationFixture("retry", 1), nil
 	}
@@ -302,7 +301,7 @@ func TestNavigationCacheBuildFailureAndCancellation(t *testing.T) {
 	<-ownerStarted
 	waiterContext, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := cache.Get(waiterContext, ownerKey, owner); err != context.Canceled {
+	if _, err := cache.Get(waiterContext, ownerKey, owner); !errors.Is(err, context.Canceled) {
 		t.Fatalf("canceled waiter error=%v, want context canceled", err)
 	}
 	close(ownerRelease)

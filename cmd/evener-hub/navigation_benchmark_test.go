@@ -180,22 +180,6 @@ func legacyNavigationAge(at, now time.Time) string {
 	}
 }
 
-// countLegacySessions counts sessions in the navigation manifest's raw JSON
-// body by scanning for session-ref occurrences in project resources. The
-// frozen baseline JSON carries exactly 1000 sessions across 20 projects.
-func countLegacySessions(tb testing.TB, body []byte) int {
-	tb.Helper()
-	// Count occurrences of "ref":" in the body — each session row carries one.
-	return bytes.Count(body, []byte(`"ref":"`))
-}
-
-// countProjectKeys counts the distinct project keys in the navigation
-// manifest's raw JSON body by scanning for "key":" occurrences in the
-// project catalog section.
-func countProjectKeys(body []byte) int {
-	return bytes.Count(body, []byte(`"key":"`))
-}
-
 // requestNavigationManifest issues a gzip-accepting GET /api/navigation through
 // the real HTTP handler and returns the raw (compressed) response bytes.
 func requestNavigationManifest(tb testing.TB, web *WebServer) []byte {
