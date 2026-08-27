@@ -1,27 +1,25 @@
 // createLiveActivityProjector — pure projection from an ActivityView into a
 // LiveActivityView for live-concept renderers. No DOM, no network, no clock.
-// Same input → same output.
+// Same input on the same projector instance → same output.
 //
-// The projector INSTANCE owns a private registry. Stable keys survive
+// The projector INSTANCE owns a private scoped registry. Stable keys survive
 // hierarchy insertion/reorder/patch. Labels are display-safe inputs only;
 // raw diagnostic IDs live only in the private operational map returned
 // alongside the view. Duplicate/colliding source IDs are detected and produce
-// distinct stable display keys.
+// a documented safe error, never shared/swapped keys.
 //
-// Work entry keys are opaque stable private keys, not raw labels or IDs.
-// This ensures collision-safe keys and prevents operational identifiers from
-// leaking into the DOM.
+// Activity identity includes stable parent path + kind + rawId. This prevents
+// key swaps when entries are reordered across parents. For entries without
+// diagnostics, the label is used with a collision-safe occurrence counter.
+// Duplicate raw IDs within the same scope produce a safe error.
 
 import type { ActivityView, WorkEntry, WorkTone } from "../services/activity";
 import type { DisplayTone, LiveActivityView, LiveWorkItem } from "./model";
 
-// --- operational map (private) -----------------------------------------------
+// --- operational map (snapshot) ----------------------------------------------
 
 export interface ActivityOperationalMap {
-  // Opaque work key → raw diagnostic ID (from RedactedDiagnostic.rawId).
-  // For entries without diagnostics, the raw label is used as the source
-  // identity so duplicate labels still get distinct keys.
-  readonly keys: Map<string, string>;
+  readonly keys: ReadonlyMap<string, string>;
 }
 
 // --- projector instance ------------------------------------------------------
@@ -31,14 +29,20 @@ export interface LiveActivityProjector {
     live: LiveActivityView;
     operational: ActivityOperationalMap;
   };
+  reset(scope?: string): void;
+  dispose(): void;
 }
 
-// --- opaque key derivation ---------------------------------------------------
+// --- key allocator ------------------------------------------------------------
 
-function makeOpaqueId(): string {
-  const bytes = new Uint8Array(4);
-  crypto.getRandomValues(bytes);
-  return Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("");
+export type OpaqueKeyAllocator = () => string;
+
+function defaultAllocator(): OpaqueKeyAllocator {
+  let n = 0;
+  return () => {
+    n += 1;
+    return `w${n}`;
+  };
 }
 
 // --- tone mapping ------------------------------------------------------------
@@ -60,58 +64,74 @@ function mapTone(tone: WorkTone): DisplayTone {
 
 // --- projector factory -------------------------------------------------------
 
-export function createLiveActivityProjector(): LiveActivityProjector {
-  // Private registry: maps namespace+sourceId → opaque key.
-  // The source identity for a work entry is its diagnostic rawId if present,
-  // otherwise the label. This means duplicate labels (without diagnostics)
-  // still get distinct keys via the per-occurrence counter suffix.
+const DEFAULT_MAX_REGISTRY = 10_000;
+
+export function createLiveActivityProjector(options?: {
+  allocator?: OpaqueKeyAllocator;
+  maxRegistrySize?: number;
+}): LiveActivityProjector {
+  const alloc = options?.allocator ?? defaultAllocator();
+  const maxReg = options?.maxRegistrySize ?? DEFAULT_MAX_REGISTRY;
+
+  // Private scoped registry: maps "scope:parentPath:kind:sourceId" → opaque key.
   const keyRegistry = new Map<string, string>();
-  const operationalKeys = new Map<string, string>();
 
-  const salt = makeOpaqueId();
-  let keyCounter = 0;
+  function evictIfNeeded(): void {
+    while (keyRegistry.size >= maxReg) {
+      const first = keyRegistry.keys().next();
+      if (first.done) break;
+      keyRegistry.delete(first.value);
+    }
+  }
 
-  // Allocate or retrieve a stable opaque key for a source identity.
-  function stableKey(namespace: string, sourceId: string): string {
-    const regKey = `${namespace}:${sourceId}`;
+  function stableKey(regKey: string): string {
     let k = keyRegistry.get(regKey);
     if (k === undefined) {
-      keyCounter += 1;
-      k = `${salt}${keyCounter.toString(36)}`;
+      evictIfNeeded();
+      k = alloc();
       keyRegistry.set(regKey, k);
     }
     return k;
   }
 
-  // Project a WorkEntry into a LiveWorkItem. The source identity for key
-  // stability is the diagnostic rawId if available, otherwise the label.
-  // Duplicate labels without diagnostics are disambiguated by an occurrence
-  // counter passed from the caller.
+  // C2: Activity identity includes stable parent path + kind + rawId.
+  // Duplicate raw identity in the same scope → documented safe error.
   function projectWorkEntry(
     entry: WorkEntry,
+    parentPath: string,
     occurrenceMap: Map<string, number>,
+    seenIds: Set<string>,
   ): LiveWorkItem {
-    // Determine source identity: prefer diagnostic rawId, fall back to label.
     const rawId = entry.diagnostics?.rawId;
     let sourceId: string;
-    let operationalId: string;
+
     if (rawId !== undefined && rawId !== "") {
+      // C2: Duplicate raw identity within the same parent path → safe error,
+      // never share/swap keys. The same rawId under a different parent is a
+      // legitimate distinct identity (different parentPath).
+      const dupKey = `${parentPath}:${rawId}`;
+      if (seenIds.has(dupKey)) {
+        throw new Error(
+          `Duplicate activity raw ID "${rawId}" under the same parent — cannot assign distinct stable keys`,
+        );
+      }
+      seenIds.add(dupKey);
       sourceId = rawId;
-      operationalId = rawId;
     } else {
-      // For entries without diagnostics, use label + occurrence count to
-      // distinguish duplicate labels.
+      // For entries without diagnostics, use label + occurrence count.
       const occ = occurrenceMap.get(entry.label) ?? 0;
       occurrenceMap.set(entry.label, occ + 1);
       sourceId = `${entry.label}#${occ}`;
-      operationalId = entry.label;
     }
 
-    const key = stableKey(entry.kind, sourceId);
-    operationalKeys.set(key, operationalId);
+    // Identity includes parent path so the same child under different parents
+    // gets a different key (no cross-parent aliasing).
+    const childPath = `${parentPath}/${entry.kind}:${sourceId}`;
+    const regKey = childPath;
+    const key = stableKey(regKey);
 
     const children = (entry.children ?? []).map((c) =>
-      projectWorkEntry(c, occurrenceMap),
+      projectWorkEntry(c, childPath, occurrenceMap, seenIds),
     );
 
     return {
@@ -130,10 +150,20 @@ export function createLiveActivityProjector(): LiveActivityProjector {
       operational: ActivityOperationalMap;
     } {
       const occurrenceMap = new Map<string, number>();
+      const seenIds = new Set<string>();
+      const opKeys = new Map<string, string>();
+
+      const work = view.work.map((w) => {
+        const item = projectWorkEntry(w, "root", occurrenceMap, seenIds);
+        const rawId = w.diagnostics?.rawId;
+        opKeys.set(item.key, rawId ?? w.label);
+        return item;
+      });
+
       return {
         live: {
           tasks: view.tasks.map((t) => ({ status: t.status, count: t.count })),
-          work: view.work.map((w) => projectWorkEntry(w, occurrenceMap)),
+          work,
           usage: {
             totalTokens: view.usage.totalTokens,
             cost: view.usage.cost,
@@ -142,9 +172,24 @@ export function createLiveActivityProjector(): LiveActivityProjector {
           },
         },
         operational: {
-          keys: operationalKeys,
+          keys: opKeys,
         },
       };
+    },
+
+    reset(scope?: string): void {
+      if (scope === undefined) {
+        keyRegistry.clear();
+      } else {
+        const prefix = `${scope}:`;
+        for (const k of keyRegistry.keys()) {
+          if (k.startsWith(prefix)) keyRegistry.delete(k);
+        }
+      }
+    },
+
+    dispose(): void {
+      keyRegistry.clear();
     },
   };
 }
