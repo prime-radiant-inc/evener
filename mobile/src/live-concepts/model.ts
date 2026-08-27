@@ -45,6 +45,8 @@ export interface LiveTranscriptItem {
   tone: DisplayTone;
   streaming: boolean;
   truncated: boolean;
+  questionKey: string | null;
+  sequenceLabel: string;
 }
 
 export interface LiveQuestionView {
@@ -63,6 +65,8 @@ export interface LiveConversationView {
   items: readonly LiveTranscriptItem[];
   questions: readonly LiveQuestionView[];
   olderAvailable: boolean;
+  tone: DisplayTone;
+  updatedLabel: string | null;
 }
 
 export interface LiveWorkItem {

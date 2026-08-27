@@ -196,6 +196,42 @@ interface LiveComposerView {
 }
 ```
 
+`LiveConversationView` carries the conversation-level display tone and a nullable authoritative updated label:
+
+```ts
+interface LiveConversationView {
+  threadKey: string;
+  title: string;
+  project: string;
+  status: string;
+  items: readonly LiveTranscriptItem[];
+  questions: readonly LiveQuestionView[];
+  olderAvailable: boolean;
+  tone: DisplayTone;
+  updatedLabel: string | null;
+}
+```
+
+`tone` reflects the overall conversation display tone. `updatedLabel` is `null` when no authoritative timestamp exists; the renderer must not fabricate one. The adapter only sets `updatedLabel` from a server-provided authoritative value, and the live projection never invents a timestamp to fill the field.
+
+`LiveTranscriptItem` carries a question link and a stable sequence label:
+
+```ts
+interface LiveTranscriptItem {
+  key: string;
+  kind: "user" | "assistant" | "tool" | "question" | "failure" | "attachment";
+  label: string;
+  body: string;
+  tone: DisplayTone;
+  streaming: boolean;
+  truncated: boolean;
+  questionKey: string | null;
+  sequenceLabel: string;
+}
+```
+
+`sequenceLabel` is opaque, stable adapter output used only for ordering and stable disclosure identity across renders; it is not a user-facing ID and the adapter must keep it stable for a given source item across re-projections. `questionKey` links a transcript item to its `LiveQuestionView`; it is `null` when the item is not a question-bearing turn.
+
 ### Intents
 
 ```ts
@@ -208,6 +244,7 @@ type LiveConceptIntent =
   | { type: "openWork" }
   | { type: "closeWork" }
   | { type: "setDraft"; value: string }
+  | { type: "setComposerMode"; mode: "send" | "steer" | "queue" }
   | { type: "submit"; mode: "send" | "steer" | "queue" }
   | { type: "interrupt" }
   | { type: "toggleTool"; key: string }
@@ -221,6 +258,8 @@ type LiveConceptIntent =
 ```
 
 There are no scenario, fixture, synthetic completion, Lab Controls, global Search, or prototype reset intents.
+
+`setComposerMode` selects the active composer mode as **local UI state** only; it changes no Hub state and performs no command. `submit` remains a distinct intent that carries the selected mode and invokes the matching capability-gated conversation-store command. Separating selection from submission keeps mode choice presentation-only and makes the actual command explicit and testable.
 
 ### Props
 
@@ -368,7 +407,8 @@ On concept switch:
 | filter roster | roster-store/local query |
 | open conversation | push production route and open bounded subscribed read |
 | set draft | `conversationStore.setDraft()` |
-| submit send/steer/queue | matching conversation-store command, capability-gated |
+| set composer mode | local UI state only; no Hub command |
+| submit send/steer/queue | matching conversation-store command, capability-gated, using the selected mode |
 | interrupt | `conversationStore.interrupt()` |
 | toggle tool/work | local disclosure state |
 | open/close Work | local surface over active conversation |
