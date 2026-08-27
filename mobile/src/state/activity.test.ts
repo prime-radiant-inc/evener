@@ -238,6 +238,7 @@ describe("ActivityStore", () => {
         capabilities: ALL_TRUE_CAPS as MobileCapabilities,
       };
       store.getState().setView(initialView);
+      store.getState().setThreadIdentity("thread-1", "ref-1");
       store.getState().applyNotification({
         method: "evener/job/started",
         params: {
@@ -268,6 +269,7 @@ describe("ActivityStore", () => {
         capabilities: ALL_TRUE_CAPS as MobileCapabilities,
       };
       store.getState().setView(initialView);
+      store.getState().setThreadIdentity("thread-1", "ref-1");
       store.getState().applyNotification({
         method: "evener/delegate/updated",
         params: {
@@ -286,12 +288,16 @@ describe("ActivityStore", () => {
             resumable: true,
             projectionRevision: 1,
             needsAttention: false,
+            description: "secret delegated task prompt text",
           },
         },
       } as AnyNotification);
       const v = store.getState().view;
       expect(v?.work).toHaveLength(1);
       expect(v?.work[0]?.kind).toBe("delegate");
+      // I6: label uses type (not description/task/prompt)
+      expect(v?.work[0]?.label).toBe("subagent");
+      expect(v?.work[0]?.label).not.toContain("secret");
       // Sanitized: no transcriptRef exposed in the view model
       expect(v?.work[0]?.diagnostics).not.toHaveProperty("transcriptRef");
     });
@@ -305,6 +311,7 @@ describe("ActivityStore", () => {
         capabilities: ALL_TRUE_CAPS as MobileCapabilities,
       };
       store.getState().setView(initialView);
+      store.getState().setThreadIdentity("thread-1", "ref-1");
       store.getState().applyNotification({
         method: "evener/task/updated",
         params: {
@@ -330,6 +337,7 @@ describe("ActivityStore", () => {
         capabilities: ALL_TRUE_CAPS as MobileCapabilities,
       };
       store.getState().setView(initialView);
+      store.getState().setThreadIdentity("thread-1", "ref-1");
       store.getState().applyNotification({
         method: "turn/completed",
         params: {
@@ -373,6 +381,7 @@ describe("ActivityStore", () => {
         capabilities: ALL_TRUE_CAPS as MobileCapabilities,
       };
       store.getState().setView(initialView);
+      store.getState().setThreadIdentity("thread-1", "ref-1");
       store.getState().setCoalescer(coalescer);
 
       // Emit multiple jobs/treeUpdated notifications
@@ -419,6 +428,7 @@ describe("ActivityStore", () => {
         usage: {},
         capabilities: ALL_TRUE_CAPS as MobileCapabilities,
       });
+      store.getState().setThreadIdentity("thread-1", "ref-1");
       const genBefore = store.getState().generationForTest();
       store.getState().reset();
       const genAfter = store.getState().generationForTest();
@@ -437,12 +447,62 @@ describe("ActivityStore", () => {
       // View should still be null after reset
       expect(store.getState().view).toBeNull();
     });
+
+    it("C3: rejects notification from wrong thread identity", () => {
+      const store = createActivityStore();
+      store.getState().setView({
+        tasks: [],
+        work: [],
+        usage: {},
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+      });
+      // Set thread identity to thread-1/ref-1
+      store.getState().setThreadIdentity("thread-1", "ref-1");
+      // A notification for a different thread should be rejected
+      store.getState().applyNotification({
+        method: "evener/task/updated",
+        params: {
+          threadId: "thread-2",
+          ref: "ref-2",
+          total: 5,
+          done: 5,
+        },
+      } as AnyNotification);
+      // View should remain unchanged (no tasks patched)
+      expect(store.getState().view?.tasks).toHaveLength(0);
+    });
+
+    it("C3: accepts notification matching thread identity", () => {
+      const store = createActivityStore();
+      store.getState().setView({
+        tasks: [],
+        work: [],
+        usage: {},
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+      });
+      store.getState().setThreadIdentity("thread-1", "ref-1");
+      store.getState().applyNotification({
+        method: "evener/task/updated",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          total: 5,
+          done: 5,
+        },
+      } as AnyNotification);
+      expect(store.getState().view?.tasks).toHaveLength(3);
+      const doneGroup = store
+        .getState()
+        .view?.tasks.find((g) => g.status === "done");
+      expect(doneGroup?.count).toBe(5);
+    });
   });
 });
 
 // Ensure the type is exported and shaped as a Zustand store.
 function _typeCheck(state: ActivityState): void {
   state.project(createActivityService(), {} as Thread);
+  state.setThreadIdentity("thread-1", "ref-1");
   state.reset();
 }
 void _typeCheck;

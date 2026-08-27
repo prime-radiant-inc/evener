@@ -589,7 +589,7 @@ describe("ConversationService", () => {
       await service.open("ref-1");
       // Clear previous calls so we see only readProjection's request.
       client.calls.length = 0;
-      await service.readProjection?.("ref-1");
+      await service.readProjection("ref-1");
       const call = client.calls.find((c) => c.method === "thread/read");
       expect(call).toBeDefined();
       expect(call?.params).toMatchObject({
@@ -604,7 +604,7 @@ describe("ConversationService", () => {
     it("returns ConversationReadProjection with conversation, activity, olderCursor", async () => {
       const { service } = setup({ olderCursor: "older-abc" });
       await service.open("ref-1");
-      const result = await service.readProjection?.("ref-1");
+      const result = await service.readProjection("ref-1");
       expect(result).toBeDefined();
       expect(result?.conversation).toBeDefined();
       expect(result?.conversation.id).toBe("thread-1");
@@ -619,7 +619,7 @@ describe("ConversationService", () => {
     it("does not expose a raw Thread in the projection result", async () => {
       const { service } = setup();
       await service.open("ref-1");
-      const result = await service.readProjection?.("ref-1");
+      const result = await service.readProjection("ref-1");
       expect(result).toBeDefined();
       // The result must not carry a raw Thread — only conversation + activity.
       const keys = Object.keys(result ?? {});
@@ -629,16 +629,15 @@ describe("ConversationService", () => {
       );
     });
 
-    it("passes cursor to readProjection when provided", async () => {
-      const { client, service } = setup({ olderCursor: "page-1" });
+    it("does not send cursor to thread/read (cursor belongs to thread/turns/list)", async () => {
+      const { client, service } = setup();
       await service.open("ref-1");
       client.calls.length = 0;
-      await service.readProjection?.("ref-1", "page-1");
+      await service.readProjection("ref-1");
       const call = client.calls.find((c) => c.method === "thread/read");
-      expect(call?.params).toMatchObject({
-        ref: "ref-1",
-        cursor: "page-1",
-      });
+      expect(call).toBeDefined();
+      const params = call?.params as Record<string, unknown>;
+      expect(params).not.toHaveProperty("cursor");
     });
 
     it("activity contains sanitized tasks/work/usage from the thread", async () => {
@@ -663,13 +662,36 @@ describe("ConversationService", () => {
       });
       const { service } = setup({ thread });
       await service.open("ref-1");
-      const result = await service.readProjection?.("ref-1");
+      const result = await service.readProjection("ref-1");
       expect(result?.activity.tasks).toHaveLength(3);
       const doneGroup = result?.activity.tasks.find((g) => g.status === "done");
       expect(doneGroup?.count).toBe(2);
       expect(result?.activity.work).toHaveLength(1);
       expect(result?.activity.work[0]?.label).toBe("shell");
       expect(result?.activity.usage.totalTokens).toBe(150);
+    });
+  });
+
+  describe("refreshCapabilities (non-subscribing)", () => {
+    it("reads thread metadata without subscribing or loading turns", async () => {
+      const { client, service } = setup();
+      await service.open("ref-1");
+      client.calls.length = 0;
+      const caps = await service.refreshCapabilities();
+      expect(caps).not.toBeNull();
+      expect(caps?.send).toBe(true);
+      const call = client.calls.find((c) => c.method === "thread/read");
+      expect(call).toBeDefined();
+      const params = call?.params as Record<string, unknown>;
+      expect(params.includeTurns).toBe(false);
+      expect(params.subscribe).toBe(false);
+      expect(params).not.toHaveProperty("replaceSubscription");
+    });
+
+    it("returns null when no thread is open", async () => {
+      const { service } = setup();
+      const caps = await service.refreshCapabilities();
+      expect(caps).toBeNull();
     });
   });
 

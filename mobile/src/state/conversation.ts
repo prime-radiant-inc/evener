@@ -3,13 +3,14 @@
 // projection, draft, paging cursor, and mutation lifecycle.
 //
 // Generation safety (CRITICAL):
-// - conversationGeneration increments on every open; late frames from an older
-//   generation cannot overwrite a newer conversation's state.
+// - conversationGeneration increments on every open, close, and reset; late
+//   frames from an older generation cannot overwrite a newer conversation's
+//   state.
 // - applyNotification checks threadId/ref against the current conversation and
 //   silently drops mismatches.
 // - Profile switching calls reset() before opening a new conversation.
 // - The store never auto-retries a user mutation. On conflict, it restores the
-//   draft and sets error.
+//   draft (only if no new text was typed) and sets error.
 //
 // The store holds the MobileConversation projection (never the raw wire
 // Thread). Notifications update the projection in place; a re-read via
@@ -20,7 +21,6 @@ import { create } from "zustand";
 import type {
   AnyNotification,
   InputItem,
-  MutationReceipt,
   ThreadCapabilities,
   ThreadItem,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
@@ -30,7 +30,10 @@ import type {
   MobileTimelineItem,
   MobileUsage,
 } from "../conversation/model";
-import type { ConversationService } from "../services/conversation";
+import type {
+  ConversationService,
+  LiveConversationService,
+} from "../services/conversation";
 import type { ActivityState } from "./activity";
 
 export type ConversationStatus =
@@ -42,7 +45,8 @@ export type ConversationStatus =
 
 // Mutation lifecycle state for send/steer/queue/interrupt. The store tracks
 // the kind, pending/failed status, the exact draft snapshot at submission,
-// and the conversation generation that initiated it.
+// and the conversation generation that initiated it. On failure, the failed
+// state PERSISTS until a subsequent mutation or open clears it.
 export interface ConversationMutationState {
   kind: "send" | "steer" | "queue" | "interrupt";
   status: "pending" | "failed";
@@ -59,14 +63,40 @@ export interface RehydrateCoalescer {
 
 // --- limits and truncation helpers (centralized) ----------------------------
 
-export const MAX_ITEM_TEXT = 64 * 1024; // 64 KiB
+export const MAX_ITEM_BYTES = 64 * 1024; // 64 KiB in UTF-8 bytes
 export const TRUNCATION_MARKER = "… truncated";
 export const RETAINED_ITEM_CAP = 500;
 
-// Truncate a string to maxLen + marker, ending with "… truncated" exactly once.
-export function truncateText(text: string, maxLen: number): string {
-  if (text.length <= maxLen) return text;
-  return text.slice(0, maxLen - TRUNCATION_MARKER.length) + TRUNCATION_MARKER;
+// Truncate a string to maxBytes in UTF-8 + marker, ending with "… truncated"
+// exactly once. Uses TextEncoder for byte-accurate measurement and ensures the
+// result is valid Unicode (no split surrogate pairs).
+const textEncoder = new TextEncoder();
+const markerBytes = textEncoder.encode(TRUNCATION_MARKER);
+
+export function truncateText(text: string, maxBytes: number): string {
+  const encoded = textEncoder.encode(text);
+  if (encoded.length <= maxBytes) return text;
+  const targetBytes = maxBytes - markerBytes.length;
+  // Decode a subarray up to targetBytes, then re-encode to verify the actual
+  // byte length (the decoder may add replacement chars at a boundary).
+  const decoder = new TextDecoder("utf-8", { fatal: false });
+  let truncated = decoder.decode(encoded.subarray(0, targetBytes));
+  // If the re-encoded truncated text + marker exceeds maxBytes (due to
+  // replacement chars at the boundary), trim further.
+  let truncatedBytes = textEncoder.encode(truncated);
+  while (
+    truncatedBytes.length + markerBytes.length > maxBytes &&
+    truncated.length > 0
+  ) {
+    truncated = truncated.slice(0, -1);
+    truncatedBytes = textEncoder.encode(truncated);
+  }
+  return truncated + TRUNCATION_MARKER;
+}
+
+// Check if text exceeds the byte limit (for setting truncated flag in projections).
+export function exceedsByteLimit(text: string, maxBytes: number): boolean {
+  return textEncoder.encode(text).length > maxBytes;
 }
 
 // Apply truncation to an item's text-bearing fields (arguments, output, error,
@@ -74,20 +104,20 @@ export function truncateText(text: string, maxLen: number): string {
 function truncateItem(item: MobileTimelineItem): MobileTimelineItem {
   switch (item.kind) {
     case "assistant":
-      return { ...item, markdown: truncateText(item.markdown, MAX_ITEM_TEXT) };
+      return { ...item, markdown: truncateText(item.markdown, MAX_ITEM_BYTES) };
     case "activity":
       return {
         ...item,
         detail: {
           ...item.detail,
           arguments: item.detail.arguments
-            ? truncateText(item.detail.arguments, MAX_ITEM_TEXT)
+            ? truncateText(item.detail.arguments, MAX_ITEM_BYTES)
             : item.detail.arguments,
           output: item.detail.output
-            ? truncateText(item.detail.output, MAX_ITEM_TEXT)
+            ? truncateText(item.detail.output, MAX_ITEM_BYTES)
             : item.detail.output,
           error: item.detail.error
-            ? truncateText(item.detail.error, MAX_ITEM_TEXT)
+            ? truncateText(item.detail.error, MAX_ITEM_BYTES)
             : item.detail.error,
         },
       };
@@ -96,10 +126,19 @@ function truncateItem(item: MobileTimelineItem): MobileTimelineItem {
   }
 }
 
-// Enforce the 500-item retained cap. Trims the oldest items (front of array)
-// when the list exceeds the cap, since newest items are at the end.
-function capItems(items: MobileTimelineItem[]): MobileTimelineItem[] {
+// Enforce the 500-item retained cap. When prepending older items, trims the
+// NEWEST items (end of array) so the oldest rows are retained for paging.
+// When appending, trims the oldest (front of array).
+function capItems(
+  items: MobileTimelineItem[],
+  mode: "append" | "prepend" = "append",
+): MobileTimelineItem[] {
   if (items.length <= RETAINED_ITEM_CAP) return items;
+  if (mode === "prepend") {
+    // Keep the oldest RETAINED_ITEM_CAP items (front of the merged array).
+    return items.slice(0, RETAINED_ITEM_CAP);
+  }
+  // Default: keep the newest RETAINED_ITEM_CAP items.
   return items.slice(items.length - RETAINED_ITEM_CAP);
 }
 
@@ -118,22 +157,20 @@ export interface ConversationState {
   readonly draft: string;
   readonly pendingSend: string | null;
   readonly pendingMutation?: ConversationMutationState | null;
-  readonly expandedToolKeys?: ReadonlySet<string>;
 
   open(service: ConversationService, ref: string): Promise<void>;
   openProjected?(
-    service: ConversationService,
+    service: LiveConversationService,
     activityStore: { getState: () => ActivityState },
     ref: string,
   ): Promise<void>;
   rehydrate?(
-    service: ConversationService,
+    service: LiveConversationService,
     activityStore: { getState: () => ActivityState },
   ): Promise<void>;
   setCoalescer?(coalescer: RehydrateCoalescer): void;
   loadOlder(service: ConversationService): Promise<void>;
   setDraft(text: string): void;
-  setExpandedToolKeys?(keys: ReadonlySet<string>): void;
   send(service: ConversationService, input: InputItem[]): Promise<void>;
   steer(service: ConversationService, input: InputItem[]): Promise<void>;
   queue(service: ConversationService, input: InputItem[]): Promise<void>;
@@ -228,6 +265,18 @@ function projectSingleItem(item: ThreadItem): MobileTimelineItem | null {
   return null;
 }
 
+// Known notification methods that we handle explicitly. The default branch
+// only resyncs for unsupported item/* transitions, not for all unknown
+// notifications, to avoid reread storms from unrelated notification families.
+const ITEM_NOTIFICATION_METHODS = new Set([
+  "item/started",
+  "item/completed",
+  "item/agentMessage/delta",
+  "item/agentMessage/reset",
+  "item/reasoning/summaryTextDelta",
+  "item/toolOutput/delta",
+]);
+
 export function createConversationStore() {
   let conversationGen = 0;
   let coalescer: RehydrateCoalescer | null = null;
@@ -247,7 +296,6 @@ export function createConversationStore() {
     draft: "",
     pendingSend: null,
     pendingMutation: null,
-    expandedToolKeys: new Set<string>(),
 
     async open(service, ref) {
       // Increment conversation generation so late frames from a previous
@@ -292,11 +340,9 @@ export function createConversationStore() {
     },
 
     async openProjected(service, activityStore, ref) {
-      if (!service.readProjection) {
-        // Fallback to open() if readProjection is not available.
-        return get().open(service, ref);
-      }
       const gen = ++conversationGen;
+      // Reset thread-scoped state (draft, pending mutation) — presentation state
+      // now lives outside the store (in live-ui-store).
       set({
         status: "opening",
         ref,
@@ -304,6 +350,7 @@ export function createConversationStore() {
         conversation: null,
         olderCursor: null,
         loadingOlder: false,
+        draft: "",
         pendingSend: null,
         pendingMutation: null,
         conversationGeneration: gen,
@@ -323,7 +370,9 @@ export function createConversationStore() {
         activityStore.getState().setView(activity);
         service.subscribeNotifications((n) => {
           if (gen !== conversationGen) return;
+          // Route notifications to BOTH stores — conversation and activity.
           get().applyNotification(n);
+          activityStore.getState().applyNotification(n);
         });
       } catch (err) {
         if (gen !== conversationGen) return;
@@ -336,18 +385,17 @@ export function createConversationStore() {
 
     async rehydrate(service, activityStore) {
       // Rehydrate uses readProjection to refresh the conversation without
-      // calling destructive open(). Preserves draft and presentation state.
+      // calling destructive open(). Preserves draft.
       const state = get();
       if (state.ref === null) return;
       const ref = state.ref;
       const currentDraft = state.draft;
-      const currentExpanded = state.expandedToolKeys;
-      if (!service.readProjection) return;
+      const gen = state.conversationGeneration;
       try {
         const { conversation, activity, olderCursor } =
           await service.readProjection(ref);
         // Guard: a newer generation may have opened during the await.
-        if (get().conversationGeneration !== state.conversationGeneration) {
+        if (get().conversationGeneration !== gen) {
           return;
         }
         set({
@@ -356,16 +404,18 @@ export function createConversationStore() {
             items: capItems(conversation.items.map(truncateItem)),
           },
           olderCursor,
-          // Preserve draft and presentation state
+          // Preserve draft
           draft: currentDraft,
-          expandedToolKeys: currentExpanded,
           error: null,
         });
         activityStore.getState().setView(activity);
       } catch (err) {
-        set({
-          error: err instanceof Error ? err.message : String(err),
-        });
+        // Stale safety: only set error if the generation hasn't changed.
+        if (get().conversationGeneration === gen) {
+          set({
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
     },
 
@@ -377,20 +427,23 @@ export function createConversationStore() {
       const state = get();
       if (state.loadingOlder || state.conversation === null) return;
       const cursor = state.olderCursor ?? "";
+      const gen = state.conversationGeneration;
       set({ loadingOlder: true });
       try {
         const result = await service.loadOlder(cursor);
-        // Guard: the conversation may have changed during the await.
-        if (get().conversation === null || get().ref !== state.ref) {
+        // Guard: the conversation generation may have changed during the await.
+        if (get().conversationGeneration !== gen) {
           set({ loadingOlder: false });
           return;
         }
         const currentConv = get().conversation;
         if (currentConv !== null) {
-          const merged = capItems([
-            ...result.items.map(truncateItem),
-            ...currentConv.items,
-          ]);
+          // Prepend older items, then trim from the newest (end) so the oldest
+          // rows are retained for continued paging utility.
+          const merged = capItems(
+            [...result.items.map(truncateItem), ...currentConv.items],
+            "prepend",
+          );
           set({
             conversation: { ...currentConv, items: merged },
             olderCursor: result.nextCursor ?? null,
@@ -398,19 +451,18 @@ export function createConversationStore() {
           });
         }
       } catch (err) {
-        set({
-          loadingOlder: false,
-          error: err instanceof Error ? err.message : String(err),
-        });
+        // Stale safety: only set error if generation hasn't changed.
+        if (get().conversationGeneration === gen) {
+          set({
+            loadingOlder: false,
+            error: err instanceof Error ? err.message : String(err),
+          });
+        }
       }
     },
 
     setDraft(text) {
       set({ draft: text });
-    },
-
-    setExpandedToolKeys(keys) {
-      set({ expandedToolKeys: keys });
     },
 
     async send(service, input) {
@@ -427,38 +479,21 @@ export function createConversationStore() {
       };
       set({ draft: "", pendingSend: "pending", pendingMutation: mutation });
       try {
-        const receipt: MutationReceipt = await service.send(input);
+        await service.send(input);
         if (get().pendingMutation?.generation === gen) {
           set({ pendingSend: null, pendingMutation: null, error: null });
         }
-        void receipt;
       } catch (err) {
-        if (isActionUnavailableError(err) && state.ref !== null) {
-          // Refresh capabilities before surfacing the error.
-          try {
-            const refreshed = await service.open(state.ref);
-            if (get().conversationGeneration === gen) {
-              set({
-                conversation: {
-                  ...(get().conversation as MobileConversation),
-                  capabilities: refreshed.capabilities,
-                },
-              });
-            }
-          } catch {
-            // If refresh fails, continue to surface the original error.
-          }
-        }
-        if (get().pendingMutation?.generation === gen) {
-          set({
-            pendingSend: null,
-            pendingMutation: { ...mutation, status: "failed" },
-            draft: draftText,
-            error: err instanceof Error ? err.message : String(err),
-          });
-          // Clear the failed mutation state after setting error + draft.
-          set({ pendingMutation: null });
-        }
+        await handleMutationError(
+          err,
+          service,
+          state.ref,
+          gen,
+          mutation,
+          draftText,
+          set,
+          get,
+        );
       }
     },
 
@@ -474,36 +509,24 @@ export function createConversationStore() {
         draftSnapshot: draftText,
         generation: gen,
       };
-      set({ pendingMutation: mutation });
+      // Steer/queue clear the draft on submit like send.
+      set({ draft: "", pendingMutation: mutation });
       try {
         await service.steer(input);
         if (get().pendingMutation?.generation === gen) {
           set({ pendingMutation: null, error: null });
         }
       } catch (err) {
-        if (isActionUnavailableError(err) && state.ref !== null) {
-          try {
-            const refreshed = await service.open(state.ref);
-            if (get().conversationGeneration === gen) {
-              set({
-                conversation: {
-                  ...(get().conversation as MobileConversation),
-                  capabilities: refreshed.capabilities,
-                },
-              });
-            }
-          } catch {
-            // If refresh fails, continue to surface the original error.
-          }
-        }
-        if (get().pendingMutation?.generation === gen) {
-          set({
-            pendingMutation: { ...mutation, status: "failed" },
-            draft: draftText,
-            error: err instanceof Error ? err.message : String(err),
-          });
-          set({ pendingMutation: null });
-        }
+        await handleMutationError(
+          err,
+          service,
+          state.ref,
+          gen,
+          mutation,
+          draftText,
+          set,
+          get,
+        );
       }
     },
 
@@ -519,36 +542,23 @@ export function createConversationStore() {
         draftSnapshot: draftText,
         generation: gen,
       };
-      set({ pendingMutation: mutation });
+      set({ draft: "", pendingMutation: mutation });
       try {
         await service.queue(input);
         if (get().pendingMutation?.generation === gen) {
           set({ pendingMutation: null, error: null });
         }
       } catch (err) {
-        if (isActionUnavailableError(err) && state.ref !== null) {
-          try {
-            const refreshed = await service.open(state.ref);
-            if (get().conversationGeneration === gen) {
-              set({
-                conversation: {
-                  ...(get().conversation as MobileConversation),
-                  capabilities: refreshed.capabilities,
-                },
-              });
-            }
-          } catch {
-            // If refresh fails, continue to surface the original error.
-          }
-        }
-        if (get().pendingMutation?.generation === gen) {
-          set({
-            pendingMutation: { ...mutation, status: "failed" },
-            draft: draftText,
-            error: err instanceof Error ? err.message : String(err),
-          });
-          set({ pendingMutation: null });
-        }
+        await handleMutationError(
+          err,
+          service,
+          state.ref,
+          gen,
+          mutation,
+          draftText,
+          set,
+          get,
+        );
       }
     },
 
@@ -560,9 +570,11 @@ export function createConversationStore() {
       const mutation: ConversationMutationState = {
         kind: "interrupt",
         status: "pending",
-        draftSnapshot: state.draft || null,
+        // Interrupt does NOT snapshot the draft — it should remain as-is.
+        draftSnapshot: null,
         generation: gen,
       };
+      // Interrupt does NOT clear the draft.
       set({ pendingMutation: mutation });
       try {
         await service.interrupt();
@@ -570,32 +582,23 @@ export function createConversationStore() {
           set({ pendingMutation: null, error: null });
         }
       } catch (err) {
-        if (isActionUnavailableError(err) && state.ref !== null) {
-          try {
-            const refreshed = await service.open(state.ref);
-            if (get().conversationGeneration === gen) {
-              set({
-                conversation: {
-                  ...(get().conversation as MobileConversation),
-                  capabilities: refreshed.capabilities,
-                },
-              });
-            }
-          } catch {
-            // If refresh fails, continue to surface the original error.
-          }
-        }
-        if (get().pendingMutation?.generation === gen) {
-          set({
-            pendingMutation: { ...mutation, status: "failed" },
-            error: err instanceof Error ? err.message : String(err),
-          });
-          set({ pendingMutation: null });
-        }
+        await handleMutationError(
+          err,
+          service,
+          state.ref,
+          gen,
+          mutation,
+          null,
+          set,
+          get,
+        );
       }
     },
 
     close() {
+      // Increment generation so late frames from the closed conversation
+      // cannot repopulate the store.
+      ++conversationGen;
       set({
         status: "closed",
         conversation: null,
@@ -605,6 +608,7 @@ export function createConversationStore() {
         pendingMutation: null,
         olderCursor: null,
         loadingOlder: false,
+        conversationGeneration: conversationGen,
       });
     },
 
@@ -724,7 +728,6 @@ export function createConversationStore() {
               (i) => i.id === params.item.id,
             );
             if (existingIdx >= 0) {
-              // Replace existing item
               set({
                 conversation: {
                   ...conv,
@@ -734,7 +737,6 @@ export function createConversationStore() {
                 },
               });
             } else {
-              // Insert new item
               set({
                 conversation: {
                   ...conv,
@@ -756,11 +758,81 @@ export function createConversationStore() {
           const projected = projectSingleItem(params.item);
           if (projected !== null) {
             const truncated = truncateItem(projected);
+            const existingIdx = conv.items.findIndex(
+              (i) => i.id === params.item.id,
+            );
+            if (existingIdx >= 0) {
+              // Replace existing item.
+              set({
+                conversation: {
+                  ...conv,
+                  items: conv.items.map((i, idx) =>
+                    idx === existingIdx ? truncated : i,
+                  ),
+                },
+              });
+            } else {
+              // UPSERT: insert the authoritative completed item even if the
+              // start notification was missed.
+              set({
+                conversation: {
+                  ...conv,
+                  items: capItems([...conv.items, truncated]),
+                },
+              });
+            }
+          } else {
+            if (coalescer !== null && state.ref !== null) {
+              coalescer.requestRehydrate(state.ref);
+            }
+          }
+          break;
+        }
+
+        case "item/agentMessage/delta": {
+          const params = n.params as { itemId: string; delta: string };
+          const existing = conv.items.find(
+            (i) => i.id === params.itemId && i.kind === "assistant",
+          );
+          if (existing) {
             set({
               conversation: {
                 ...conv,
-                items: conv.items.map((i) =>
-                  i.id === params.item.id ? truncated : i,
+                items: conv.items.map((item) =>
+                  item.kind === "assistant" && item.id === params.itemId
+                    ? {
+                        ...item,
+                        markdown: truncateText(
+                          item.markdown + params.delta,
+                          MAX_ITEM_BYTES,
+                        ),
+                      }
+                    : item,
+                ),
+              },
+            });
+          } else {
+            // Delta targeting missing item — trigger resync.
+            if (coalescer !== null && state.ref !== null) {
+              coalescer.requestRehydrate(state.ref);
+            }
+          }
+          break;
+        }
+
+        case "item/agentMessage/reset": {
+          const params = n.params as { itemId: string };
+          const existing = conv.items.find(
+            (i) => i.id === params.itemId && i.kind === "assistant",
+          );
+          if (existing) {
+            set({
+              conversation: {
+                ...conv,
+                items: conv.items.map((item) =>
+                  item.kind === "assistant" && item.id === params.itemId
+                    ? { ...item, markdown: "" }
+                    : item,
                 ),
               },
             });
@@ -772,87 +844,70 @@ export function createConversationStore() {
           break;
         }
 
-        case "item/agentMessage/delta": {
-          const params = n.params as { itemId: string; delta: string };
-          set({
-            conversation: {
-              ...conv,
-              items: conv.items.map((item) =>
-                item.kind === "assistant" && item.id === params.itemId
-                  ? {
-                      ...item,
-                      markdown: truncateText(
-                        item.markdown + params.delta,
-                        MAX_ITEM_TEXT,
-                      ),
-                    }
-                  : item,
-              ),
-            },
-          });
-          break;
-        }
-
-        case "item/agentMessage/reset": {
-          const params = n.params as { itemId: string };
-          set({
-            conversation: {
-              ...conv,
-              items: conv.items.map((item) =>
-                item.kind === "assistant" && item.id === params.itemId
-                  ? { ...item, markdown: "" }
-                  : item,
-              ),
-            },
-          });
-          break;
-        }
-
         case "item/reasoning/summaryTextDelta": {
           const params = n.params as { itemId: string; delta: string };
-          set({
-            conversation: {
-              ...conv,
-              items: conv.items.map((item) =>
-                item.kind === "activity" && item.id === params.itemId
-                  ? {
-                      ...item,
-                      detail: {
-                        ...item.detail,
-                        output: truncateText(
-                          (item.detail.output ?? "") + params.delta,
-                          MAX_ITEM_TEXT,
-                        ),
-                      },
-                    }
-                  : item,
-              ),
-            },
-          });
+          const existing = conv.items.find(
+            (i) => i.id === params.itemId && i.kind === "activity",
+          );
+          if (existing) {
+            set({
+              conversation: {
+                ...conv,
+                items: conv.items.map((item) =>
+                  item.kind === "activity" && item.id === params.itemId
+                    ? {
+                        ...item,
+                        detail: {
+                          ...item.detail,
+                          output: truncateText(
+                            (item.detail.output ?? "") + params.delta,
+                            MAX_ITEM_BYTES,
+                          ),
+                        },
+                      }
+                    : item,
+                ),
+              },
+            });
+          } else {
+            // Delta targeting missing or wrong-kind item — trigger resync.
+            if (coalescer !== null && state.ref !== null) {
+              coalescer.requestRehydrate(state.ref);
+            }
+          }
           break;
         }
 
         case "item/toolOutput/delta": {
           const params = n.params as { itemId: string; delta: string };
-          set({
-            conversation: {
-              ...conv,
-              items: conv.items.map((item) =>
-                item.kind === "activity" && item.id === params.itemId
-                  ? {
-                      ...item,
-                      detail: {
-                        ...item.detail,
-                        output: truncateText(
-                          (item.detail.output ?? "") + params.delta,
-                          MAX_ITEM_TEXT,
-                        ),
-                      },
-                    }
-                  : item,
-              ),
-            },
-          });
+          const existing = conv.items.find(
+            (i) => i.id === params.itemId && i.kind === "activity",
+          );
+          if (existing) {
+            set({
+              conversation: {
+                ...conv,
+                items: conv.items.map((item) =>
+                  item.kind === "activity" && item.id === params.itemId
+                    ? {
+                        ...item,
+                        detail: {
+                          ...item.detail,
+                          output: truncateText(
+                            (item.detail.output ?? "") + params.delta,
+                            MAX_ITEM_BYTES,
+                          ),
+                        },
+                      }
+                    : item,
+                ),
+              },
+            });
+          } else {
+            if (coalescer !== null && state.ref !== null) {
+              coalescer.requestRehydrate(state.ref);
+            }
+          }
           break;
         }
 
@@ -866,7 +921,10 @@ export function createConversationStore() {
             detail: params.message ?? "",
           };
           set({
-            conversation: { ...conv, items: [...conv.items, failureItem] },
+            conversation: {
+              ...conv,
+              items: capItems([...conv.items, failureItem]),
+            },
           });
           break;
         }
@@ -880,10 +938,18 @@ export function createConversationStore() {
           break;
         }
 
-        // Unsupported item transitions coalesce to one rehydrate.
+        // Default: only resync for unsupported item/* transitions, not for
+        // all unknown notifications — to avoid reread storms from unrelated
+        // notification families.
         default: {
-          if (coalescer !== null && state.ref !== null) {
-            coalescer.requestRehydrate(state.ref);
+          if (
+            typeof n.method === "string" &&
+            n.method.startsWith("item/") &&
+            !ITEM_NOTIFICATION_METHODS.has(n.method)
+          ) {
+            if (coalescer !== null && state.ref !== null) {
+              coalescer.requestRehydrate(state.ref);
+            }
           }
           break;
         }
@@ -909,6 +975,58 @@ export function createConversationStore() {
       });
     },
   }));
+}
+
+// Shared mutation error handler: on actionUnavailable, uses the non-subscribing
+// refreshCapabilities (never open()) to publish refreshed caps before
+// surfacing the error. On failure, the failed mutation state PERSISTS (not
+// cleared to null). The draft is only restored if no new text was typed
+// during the in-flight mutation.
+async function handleMutationError(
+  err: unknown,
+  service: ConversationService,
+  ref: string | null,
+  gen: number,
+  mutation: ConversationMutationState,
+  draftSnapshot: string | null,
+  set: (partial: Partial<ConversationState>) => void,
+  get: () => ConversationState,
+): Promise<void> {
+  if (isActionUnavailableError(err) && ref !== null) {
+    // Use the non-subscribing capability refresh — never open().
+    // Only available on LiveConversationService; check for the method.
+    const liveService = service as LiveConversationService;
+    if (typeof liveService.refreshCapabilities === "function") {
+      try {
+        const refreshed = await liveService.refreshCapabilities();
+        if (get().conversationGeneration === gen && refreshed !== null) {
+          const currentConv = get().conversation;
+          if (currentConv !== null) {
+            set({
+              conversation: {
+                ...currentConv,
+                capabilities: { ...refreshed },
+              },
+            });
+          }
+        }
+      } catch {
+        // If refresh fails, continue to surface the original error.
+      }
+    }
+  }
+  if (get().pendingMutation?.generation === gen) {
+    // The failed mutation state PERSISTS — do NOT clear pendingMutation.
+    const currentDraft = get().draft;
+    // Only restore the draft if no new text was typed during the mutation.
+    const shouldRestore = currentDraft === "" && draftSnapshot !== null;
+    set({
+      pendingMutation: { ...mutation, status: "failed" },
+      pendingSend: null,
+      ...(shouldRestore ? { draft: draftSnapshot } : {}),
+      error: err instanceof Error ? err.message : String(err),
+    });
+  }
 }
 
 // Re-export the MobileCapabilities type for consumers that import from the

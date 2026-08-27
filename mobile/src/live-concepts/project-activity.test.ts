@@ -134,6 +134,8 @@ describe("projectLiveActivity", () => {
     // Check that the serialized JSON does not contain the raw ID
     const json = JSON.stringify(entry);
     expect(json).not.toContain("job-secret-id");
+    // C2: keys should be opaque — not the raw label
+    expect(entry?.key).not.toBe("shell");
   });
 
   it("does not expose commands, paths, prompts, profile IDs, or refs", () => {
@@ -187,6 +189,24 @@ describe("projectLiveActivity", () => {
     expect(parent?.children).toHaveLength(2);
     expect(parent?.children[0]?.kind).toBe("job");
     expect(parent?.children[1]?.kind).toBe("watch");
+  });
+
+  it("uses opaque collision-safe keys (C2/I6)", () => {
+    const view = makeActivityView({
+      work: [
+        { kind: "job", label: "shell", tone: "running" },
+        { kind: "job", label: "shell", tone: "terminal" },
+        { kind: "delegate", label: "shell", tone: "running" },
+      ],
+    });
+    const live = projectLiveActivity(view);
+    const keys = live.work.map((w) => w.key);
+    // All keys must be unique (collision-safe)
+    expect(new Set(keys).size).toBe(keys.length);
+    // Keys must NOT be raw labels
+    for (const key of keys) {
+      expect(key).not.toBe("shell");
+    }
   });
 
   it("maps tone values correctly", () => {
