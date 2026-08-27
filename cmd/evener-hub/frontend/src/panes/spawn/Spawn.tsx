@@ -56,7 +56,7 @@ import { AttachIcon } from "../session/composer/attachments/AttachIcon";
 import { imageFilesFromClipboard } from "../session/composer/attachments/clipboard";
 import { type TextEditor, useAttachments } from "../session/composer/attachments/useAttachments";
 import { AdvancedOptions } from "./AdvancedOptions";
-import { ACCESS_MODE_OPTIONS } from "./accessMode";
+import { ACCESS_MODE_OPTIONS, accessModeDefaultLabel } from "./accessMode";
 import { resolveHeadBranch } from "./branch";
 import { harnessSupportsPluginSelection, harnessUsesEvenerModels } from "./harnessModels";
 import { MobileSettingRows } from "./MobileSettingRows";
@@ -583,6 +583,15 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     ...(preservedEffort === null ? [] : [{ value: preservedEffort, label: preservedEffort }]),
     { value: "none", label: "none" },
   ];
+  // Access mode is the chip-level face of the launch-config sandbox field
+  // (floor §1.8), so its empty option follows the same rule as Effort's:
+  // name the inherited sandbox in the chip's own friendly wording
+  // ("Workspace write (default)") once resolve lands, plain "(default)"
+  // until then.
+  const accessOptions = [
+    { value: "", label: accessModeDefaultLabel(resolvedDefaults?.sandbox ?? "") },
+    ...ACCESS_MODE_OPTIONS,
+  ];
 
   // A chosen effort the (new) model's ladder doesn't name can't stay selected
   // - the select must never display a value it doesn't offer, so the choice
@@ -1084,7 +1093,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             reasoningDisabled={effortDisabled}
             onReasoningChange={setReasoningEffort}
             accessMode={accessMode}
-            accessOptions={[{ value: "", label: "(default)" }, ...ACCESS_MODE_OPTIONS]}
+            accessOptions={accessOptions}
             onAccessChange={setAccessMode}
             pluginPreview={pluginPreview.state}
             pluginSelection={pluginSelection}
@@ -1116,7 +1125,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
               id="spawn-access"
               value={accessMode}
               onChange={(e) => setAccessMode(e.target.value)}
-              options={[{ value: "", label: "(default)" }, ...ACCESS_MODE_OPTIONS]}
+              options={accessOptions}
             />
           </FormRow>
         </AdvancedOptions>
