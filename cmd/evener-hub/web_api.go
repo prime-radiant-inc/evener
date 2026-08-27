@@ -4,7 +4,6 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
 	"net/http"
 	"net/netip"
 	"net/url"
@@ -28,7 +27,6 @@ import (
 )
 
 var (
-	webHubUpgrade            = hubUpgrade
 	gitCommand               = exec.CommandContext
 	mobileHostnameProfile    = idna.New(idna.MapForLookup(), idna.StrictDomainName(false), idna.CheckHyphens(false))
 	ensureAPIActionAvailable = func(s *WebServer, id, action string) error {
@@ -282,24 +280,6 @@ func isPrivateMobileHTTPAddr(addr netip.Addr) bool {
 		return true
 	}
 	return addr.Is4() && netip.MustParsePrefix("100.64.0.0/10").Contains(addr)
-}
-
-func (s *WebServer) handleAPIUpgrade(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeAPIError(w, http.StatusMethodNotAllowed, "POST required")
-		return
-	}
-	var params appwire.UpgradeParams
-	if err := json.NewDecoder(r.Body).Decode(&params); err != nil && !errors.Is(err, io.EOF) {
-		writeAPIError(w, http.StatusBadRequest, err.Error())
-		return
-	}
-	resp, err := webHubUpgrade(r.Context(), params)
-	if err != nil {
-		writeAPIError(w, http.StatusBadGateway, err.Error())
-		return
-	}
-	writeAPIJSON(w, http.StatusOK, resp)
 }
 
 func (s *WebServer) apiStateGlob() string {

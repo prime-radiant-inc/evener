@@ -20,7 +20,7 @@ type mutRoute struct {
 }
 
 // mutatingRoutes are exactly the routes the Phase-4 read-only handler fuzz
-// excluded: the spawn/dir-create/upgrade POSTs, the live-git and live-models
+// excluded: the spawn/dir-create POSTs, the live-git and live-models
 // seam reads, and the session/turn action verbs (clear/model/effort/interrupt/
 // compact/shutdown/send/fork under /api/sessions, and steer/queue/drain-as-steer
 // under /s). Under the B0 sandbox every one of these is contained: spawn hits
@@ -29,7 +29,6 @@ type mutRoute struct {
 var mutatingRoutes = []mutRoute{
 	{http.MethodPost, "/api/spawn", true},
 	{http.MethodPost, "/api/dirs/create", true},
-	{http.MethodPost, "/api/upgrade", true},
 	{http.MethodGet, "/api/git/head?cwd={id}", false},
 	{http.MethodGet, "/api/models?harness={id}", false},
 	{http.MethodPost, "/api/sessions/{id}/clear", false},
@@ -73,13 +72,12 @@ func isServerFault(code int) bool {
 //   - no server fault (isServerFault: a 500 or non-deliberate 5xx is a defect);
 //   - never serve the out-of-root secret (path-escape tripwire);
 //   - never dial the network (the deny-transport tripwire) — no spawn reaches a
-//     real subprocess, no model/git/upgrade call reaches a provider.
+//     real subprocess, no model/git call reaches a provider.
 //
 // The recording spawner and recording mkdir guarantee no real process or
 // directory is ever materialized regardless of input, so those escapes need no
 // separate per-iteration assertion.
 func FuzzWebMutatingHandler(f *testing.F) {
-	stubSelfUpgrade(f)
 	deny := installDenyTransportTB(f)
 
 	s := newSandbox(f)
@@ -109,7 +107,6 @@ func FuzzWebMutatingHandler(f *testing.F) {
 		// limit is 8 MiB, not worth a multi-MiB corpus entry).
 		{"/api/spawn", "", `{"harness":"evener","working_dir":"` + s.CWD + `","items":[{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"}]}`},
 		{"/api/dirs/create", "", `{"path":"` + s.CWD + `/new"}`},
-		{"/api/upgrade", "", `{"requested":"latest"}`},
 		{"/api/git/head?cwd={id}", s.CWD, ""},
 		{"/api/models?harness={id}", "evener", ""},
 		{"/api/models?harness={id}", "codex", ""},
