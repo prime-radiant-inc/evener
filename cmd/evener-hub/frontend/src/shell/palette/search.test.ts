@@ -1,69 +1,42 @@
 // @vitest-environment node
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { expect, test } from "vitest";
 import type { ItemModel, ThreadModel, TurnModel } from "../../protocol/model";
+import { FakeClient } from "../../protocol/testing/fakeClient";
+import type { SearchResponse } from "../../protocol/types.gen";
 import { buildSnippet, fetchSearch, findInSessionMatches, highlightParts } from "./search";
 
-// --- fetchSearch: REST GET /api/search?q= (no appwire `search` method
-// exists - parity-m6-surfaces.md §2.3, verified). Wire shape confirmed
-// against cmd/evener-hub/web_api.go handleApiSearch + web_types.go
-// searchResponse: {live, past} of {id,title,project,state,age}, and Go
-// encodes an empty slice as JSON null.
+// --- fetchSearch: typed AppWire request ---
 
-function jsonResponse(body: unknown, status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    statusText: status === 200 ? "OK" : "Error",
-    json: () => Promise.resolve(body),
-  } as Response;
-}
+test("fetchSearch sends the query through evener/search", async () => {
+  const client = new FakeClient();
+  const response: SearchResponse = { live: [], past: [] };
+  client.on("evener/search", (params) => {
+    expect(params).toEqual({ query: "a b/c" });
+    return response;
+  });
 
-let fetchMock: ReturnType<typeof vi.fn>;
-beforeEach(() => {
-  fetchMock = vi.fn();
-  vi.stubGlobal("fetch", fetchMock);
-});
-afterEach(() => {
-  vi.unstubAllGlobals();
-  vi.restoreAllMocks();
+  await expect(fetchSearch("a b/c", client)).resolves.toEqual(response);
+  expect(client.calls).toEqual([{ method: "evener/search", params: { query: "a b/c" } }]);
 });
 
-test("fetchSearch GETs /api/search with the URL-encoded query and same-origin credentials", async () => {
-  fetchMock.mockResolvedValueOnce(jsonResponse({ live: [], past: [] }));
-  await fetchSearch("a b/c");
-  expect(fetchMock).toHaveBeenCalledWith("/api/search?q=a%20b%2Fc", { credentials: "same-origin" });
-});
-
-test("fetchSearch returns the live and past rows verbatim", async () => {
-  const body = {
-    live: [{ id: "local:a", title: "Live one", project: "proj", state: "active", age: "now" }],
-    past: [{ id: "p1", title: "Past one", project: "old", state: "ended", age: "2h" }],
+test("fetchSearch returns typed live and past rows, including qualified refs", async () => {
+  const client = new FakeClient();
+  const response: SearchResponse = {
+    live: [{ id: "bare", ref: "local:qualified", title: "Live one", project: "proj", state: "active", age: "now" }],
+    past: [{ id: "p1", ref: "local:p1", title: "Past one", project: "old", state: "ended", age: "2h" }],
   };
-  fetchMock.mockResolvedValueOnce(jsonResponse(body));
-  const resp = await fetchSearch("one");
-  expect(resp).toEqual(body);
+  client.on("evener/search", () => response);
+
+  await expect(fetchSearch("one", client)).resolves.toEqual(response);
 });
 
-test("fetchSearch preserves the optional qualified ref a new hub sends (I3)", async () => {
-  fetchMock.mockResolvedValueOnce(
-    jsonResponse({
-      live: [{ id: "bare", ref: "local:qualified", title: "t", project: "p", state: "active", age: "now" }],
-      past: [],
-    }),
-  );
-  const resp = await fetchSearch("t");
-  expect(resp.live[0]?.ref).toBe("local:qualified");
-});
+test("fetchSearch propagates an AppWire failure", async () => {
+  const client = new FakeClient();
+  client.on("evener/search", () => {
+    throw new Error("search failed");
+  });
 
-test("fetchSearch normalizes Go's null empty-slice encoding to []", async () => {
-  fetchMock.mockResolvedValueOnce(jsonResponse({ live: null, past: null }));
-  const resp = await fetchSearch("nothing");
-  expect(resp).toEqual({ live: [], past: [] });
-});
-
-test("fetchSearch rejects on a non-ok response", async () => {
-  fetchMock.mockResolvedValueOnce(jsonResponse({}, 500));
-  await expect(fetchSearch("x")).rejects.toThrow();
+  await expect(fetchSearch("x", client)).rejects.toThrow("search failed");
 });
 
 // --- findInSessionMatches: scans the focused ThreadModel (turns -> items ->

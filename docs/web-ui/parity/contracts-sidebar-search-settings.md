@@ -139,7 +139,7 @@ bottom of each group where relevant.
 - if the Aside command fails, the dialog stays open and shows the failure inline in the palette instead of navigating away (test-search-aside.js)
 
 ### test-search-commands.js
-- typing a leading `/` switches the palette into Commands mode and lists the command set locally without ever calling `/api/search` (test-search-commands.js)
+- typing a leading `/` switches the palette into Commands mode and lists the command set locally without ever requesting `evener/search` (test-search-commands.js)
 - command names fuzzy-match the typed filter (e.g. "/comp" and "/cm" both match "Compact transcript"); non-matching commands are hidden (test-search-commands.js)
 - command visibility is state-gated: e.g. "Compact transcript" is hidden on the home page and once the session has ended; live-session-only commands (like "Switch model") only show on a live session; ended-only commands (copy-id, tasks) only show once the session has ended (test-search-commands.js)
 - an argless command (e.g. Compact) runs via a plain POST to `/s/<id>/compact` and closes the dialog on success (test-search-commands.js)
@@ -162,7 +162,7 @@ bottom of each group where relevant.
 - typing a plain (non-`/`) query while a conversation is open adds an "In session" results section that highlights the matched substring in `<mark>` and shows the turn's position (test-search.js)
 - pressing Enter (or Shift+Enter) on an in-session result scrolls the matched transcript element into view and marks it with `.search-hit` (test-search.js)
 - the in-session section is omitted entirely when there's no `#conversation` on the page (e.g. the home/new-session view) (test-search.js)
-- an empty query shows the palette's empty-state copy and renders no results, without calling `/api/search` (test-search.js)
+- an empty query shows the palette's empty-state copy and renders no results, without requesting `evener/search` (test-search.js)
 
 ## Settings Tabs
 

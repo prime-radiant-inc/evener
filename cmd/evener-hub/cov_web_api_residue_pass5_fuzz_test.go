@@ -115,7 +115,6 @@ func FuzzWebAPIResiduePass5(f *testing.F) {
 
 		_ = canonicalRouteID("local:x")
 
-		call(web.handleApiSearch, http.MethodGet, "/api/search?q=no-match", "")
 		_ = evenerErrorInfoFromData(nil)
 		_ = evenerErrorInfoFromData(map[string]any{"evenerErrorInfo": 1})
 		webNil := NewWebServer(hubcore.WebConfig{})

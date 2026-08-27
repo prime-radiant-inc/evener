@@ -1168,6 +1168,24 @@ export interface SandboxEscalationResolved {
   escalationId: string;
 }
 
+export interface SearchParams {
+  query?: string;
+}
+
+export interface SearchResponse {
+  live: SearchResult[];
+  past: SearchResult[];
+}
+
+export interface SearchResult {
+  id: string;
+  title: string;
+  project: string;
+  state: string;
+  age: string;
+  ref: string;
+}
+
 export interface ServerInfo {
   name: string;
   version: string;
@@ -1729,6 +1747,7 @@ export const METHOD_NAMES = [
   "evener/projects/recent",
   "evener/path/validate",
   "evener/navigation/read",
+  "evener/search",
   "evener/harnesses/list",
   "evener/upgrade",
   "evener/auth/status",
@@ -1886,6 +1905,7 @@ export interface MethodTypes {
   "evener/projects/recent": { params: ProjectsRecentParams; result: ProjectsRecentResponse };
   "evener/path/validate": { params: PathValidateParams; result: PathValidateResponse };
   "evener/navigation/read": { params: NavigationReadParams; result: NavigationReadResponse };
+  "evener/search": { params: SearchParams; result: SearchResponse };
   "evener/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };
   "evener/upgrade": { params: UpgradeParams; result: UpgradeResponse };
   "evener/auth/status": { params: AuthStatusParams; result: AuthStatusResponse };

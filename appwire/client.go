@@ -543,6 +543,12 @@ func (c *Client) NavigationRead(ctx context.Context, params NavigationReadParams
 	return out, err
 }
 
+func (c *Client) Search(ctx context.Context, params SearchParams) (SearchResponse, error) {
+	var out SearchResponse
+	err := c.request(ctx, MethodEvenerSearch, params, &out)
+	return out, err
+}
+
 func (c *Client) HarnessList(ctx context.Context, params HarnessListParams) (HarnessListResponse, error) {
 	var out HarnessListResponse
 	err := c.request(ctx, MethodEvenerHarnessesList, params, &out)

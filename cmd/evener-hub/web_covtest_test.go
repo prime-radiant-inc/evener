@@ -841,27 +841,6 @@ func TestCovHubDetailFromAppThreadEmptyState(t *testing.T) {
 	}
 }
 
-// --- web_api.go: handleApiSearch (empty query) ---
-
-// TestCovHandleApiSearchEmpty covers handleApiSearch with an empty query and
-// no roster configured (web_api.go:33-35).
-func TestCovHandleApiSearchEmpty(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	req := httptest.NewRequest(http.MethodGet, "/api/search", nil)
-	rec := httptest.NewRecorder()
-	web.handleApiSearch(rec, req)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("expected 200, got %d", rec.Code)
-	}
-	var got searchResponse
-	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
-		t.Fatalf("decode search response: %v", err)
-	}
-	if !reflect.DeepEqual(got, searchResponse{}) {
-		t.Fatalf("empty search response = %#v, want zero response", got)
-	}
-}
-
 // --- webnext.go: webassetsHandler ---
 
 // TestCovWebassetsHandlerTraversal covers the path-traversal guard

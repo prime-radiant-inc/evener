@@ -111,7 +111,7 @@ rm -rf "$proj" "$run"
   match is older than the 200th-newest — out of scope here; this
   scenario asserts the *false* case and the presence of the field.
 - This is the agent-tool path (`find_session_transcripts`), distinct
-  from the `/api/search` + `⌘K` overlay covered by
+  from the `evener/search` AppWire + `⌘K` overlay covered by
   `search-finds-content-across-sessions.md`. They share intent (content
   search) but are different surfaces; a regression in one need not break
   the other.

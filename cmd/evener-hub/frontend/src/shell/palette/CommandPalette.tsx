@@ -11,14 +11,21 @@ import { useStore } from "zustand";
 import { requestComposerFocus } from "../../panes/session/composer/composerFocus";
 import { requestQuoteInsert } from "../../panes/session/composer/quoteInsert";
 import { errorText, isHubLaunchError } from "../../protocol/errors";
-import type { CommandDescriptor, NavigationSessionSummary } from "../../protocol/types.gen";
+import type {
+  CommandDescriptor,
+  NavigationSessionSummary,
+  SearchResponse,
+  SearchResult,
+} from "../../protocol/types.gen";
 import { useCommandCatalog } from "../../stores/commandCatalog";
+import { useConnectionStore } from "../../stores/connection";
 import { selectNeedsYouRows, selectNextSectionOffset, selectSectionRemaining } from "../../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { keyID } from "../../stores/navigation/types";
 import { threadsStore } from "../../stores/threads";
 import { Chip, Dialog, KeyHint, StatusDot, useToasts } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { useClient } from "../clientContext";
 import { openNeedsYouSession } from "../rail/needsYouCycle";
 import { cadenceStateFor } from "../rail/RailRow";
 import { navigate } from "../routing";
@@ -40,15 +47,7 @@ import { computeMode } from "./mode";
 import { buildPaletteContext, focusedModel } from "./paletteContext";
 import { closePalette, usePaletteStore } from "./paletteController";
 import { rememberCommand } from "./recentCommands";
-import {
-  fetchSearch,
-  findInSessionMatches,
-  type HighlightPart,
-  highlightParts,
-  type InSessionMatch,
-  type SearchResponse,
-  type SearchResult,
-} from "./search";
+import { fetchSearch, findInSessionMatches, type HighlightPart, highlightParts, type InSessionMatch } from "./search";
 
 const CLASS = {
   palette: requireClass(styles.palette, "commandpalette.module.css", "palette"),
@@ -213,6 +212,8 @@ export function CommandPalette() {
 function PaletteBody({ initialQuery }: { initialQuery: string }) {
   const toasts = useToasts();
   const catalogCommands = useCommandCatalog((state) => state.commands);
+  const searchClient = useClient();
+  const connectionState = useConnectionStore((state) => state.state);
   // UX fix: the empty-query view's needs-you list (Mod+J's palette-visible
   // counterpart, needsYouCycle.ts's own tree-order source of truth).
   const navigation = useNavigationStore();
@@ -288,16 +289,26 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
   // Debounced search (§2.3): an empty query clears locally with no backend
   // call; otherwise a stale-drop token guards out-of-order responses.
   useEffect(() => {
-    if (mode !== "search") return;
+    if (mode !== "search") {
+      searchTokenRef.current += 1;
+      return;
+    }
     const q = query.trim();
     if (!q) {
+      searchTokenRef.current += 1;
+      setSearchResp(null);
+      setSearchFailed(false);
+      return;
+    }
+    if (!searchClient || connectionState !== "ready") {
+      searchTokenRef.current += 1;
       setSearchResp(null);
       setSearchFailed(false);
       return;
     }
     const timer = setTimeout(() => {
       const token = ++searchTokenRef.current;
-      fetchSearch(q).then(
+      fetchSearch(q, searchClient).then(
         (resp) => {
           if (searchTokenRef.current === token) {
             setSearchResp(resp);
@@ -312,8 +323,11 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
         },
       );
     }, SEARCH_DEBOUNCE_MS);
-    return () => clearTimeout(timer);
-  }, [mode, query]);
+    return () => {
+      clearTimeout(timer);
+      searchTokenRef.current += 1;
+    };
+  }, [connectionState, mode, query, searchClient]);
 
   // Load an enum command's option source once on entering args mode (§2.6): a
   // thenable shows Loading… then resolves to options or a "couldn't load"
@@ -521,11 +535,9 @@ function PaletteBody({ initialQuery }: { initialQuery: string }) {
     }
     if (item.kind === "live" || item.kind === "past") {
       closePalette();
-      // By the qualified ref, and only that: the hub's own searchResult doc
-      // comment (cmd/evener-hub/web_types.go) states that a bare id cannot be
-      // used to open a hit, and `ref` ships on every row. A bare-id URL no
-      // longer routes (shell/routing.ts's isRef), and naming a session
-      // differently from the rail is what used to open it twice in two panes.
+      // The AppWire SearchResult contract carries the qualified ref every row
+      // uses to open a session. A bare-id URL does not route, and naming a
+      // session differently from the rail can open it twice in two panes.
       const url = `/s/${encodeURIComponent(item.result.ref)}`;
       if (newTab) window.open(url, "_blank");
       else navigate(url);

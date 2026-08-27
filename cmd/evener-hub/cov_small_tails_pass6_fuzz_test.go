@@ -90,10 +90,6 @@ func FuzzSmallTailsPass6(f *testing.F) {
 			fn(httptest.NewRecorder(), httptest.NewRequest(method, target, strings.NewReader(body)))
 		}
 
-		// Search sorting, empty-session filtering, query rejection and inclusion.
-		call(web.handleApiSearch, http.MethodGet, "/api/search?q=no-match", "")
-		call(web.handleApiSearch, http.MethodGet, "/api/search?q=tail", "")
-
 		// Source read/action failures cover the endpoint-specific wire paths.
 		source.readErr = appwire.Unavailable("read")
 		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIClear(w, r, "01TAIL") }, http.MethodPost, "/", "")
