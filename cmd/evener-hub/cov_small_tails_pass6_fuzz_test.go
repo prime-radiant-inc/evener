@@ -94,14 +94,6 @@ func FuzzSmallTailsPass6(f *testing.F) {
 		call(web.handleApiSearch, http.MethodGet, "/api/search?q=no-match", "")
 		call(web.handleApiSearch, http.MethodGet, "/api/search?q=tail", "")
 
-		// Upgrade's command failure is external and injected deterministically.
-		oldUpgrade := webHubUpgrade
-		webHubUpgrade = func(context.Context, appwire.UpgradeParams) (appwire.UpgradeResponse, error) {
-			return appwire.UpgradeResponse{}, errors.New("upgrade")
-		}
-		call(web.handleAPIUpgrade, http.MethodPost, "/api/upgrade", "{}")
-		webHubUpgrade = oldUpgrade
-
 		// Source read/action failures cover the endpoint-specific wire paths.
 		source.readErr = appwire.Unavailable("read")
 		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIClear(w, r, "01TAIL") }, http.MethodPost, "/", "")

@@ -28,7 +28,6 @@ import (
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/internal/appserver"
-	"primeradiant.com/evener/internal/selfupdate"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/rendezvous"
@@ -98,45 +97,6 @@ func (s *WebServer) injectMetasForTest(metas []schema.SessionMeta) {
 	idx := hubcore.NewPastIndex("")
 	idx.SeedForTest(metas)
 	s.cfg.Past = idx
-}
-
-func TestWebAPIUpgradeRunsSelfUpdater(t *testing.T) {
-	var got selfupdate.Options
-	previous := runHubSelfUpgrade
-	runHubSelfUpgrade = func(_ context.Context, opts selfupdate.Options) (selfupdate.Result, error) {
-		got = opts
-		return selfupdate.Result{
-			Release:        "snapshot",
-			Channel:        "snapshot",
-			Archive:        "evener_linux_amd64.tar.gz",
-			ShareBinDir:    "/tmp/share/evener/bin",
-			BinDir:         "/tmp/bin",
-			RestartMessage: "Restart evener-tui and evener-hub to use the upgraded binaries.",
-		}, nil
-	}
-	t.Cleanup(func() { runHubSelfUpgrade = previous })
-
-	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
-	req := httptest.NewRequest(http.MethodPost, "/api/upgrade", strings.NewReader(`{"requested":"snapshot"}`))
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
-	var resp appwire.UpgradeResponse
-	if err := json.NewDecoder(rec.Body).Decode(&resp); err != nil {
-		t.Fatalf("decode response: %v", err)
-	}
-	if resp.Channel != "snapshot" || resp.Archive != "evener_linux_amd64.tar.gz" {
-		t.Fatalf("response=%+v", resp)
-	}
-	if got.Requested != "snapshot" {
-		t.Fatalf("Requested=%q, want snapshot", got.Requested)
-	}
-	if got.CurrentChannel == "" {
-		t.Fatal("CurrentChannel is empty")
-	}
 }
 
 func TestWriteSessionActionErrorSetsEvenerErrorInfoHeader(t *testing.T) {

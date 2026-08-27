@@ -117,8 +117,6 @@ func FuzzCoreAPIPass4(f *testing.F) {
 			fn(rec, req)
 			return rec
 		}
-		direct(web.handleAPIUpgrade, http.MethodGet, "/api/upgrade", "")
-		direct(web.handleAPIUpgrade, http.MethodPost, "/api/upgrade", "{")
 		call(http.MethodPost, "/api/sessions/remote:thread/clear", "")
 		direct(func(w http.ResponseWriter, r *http.Request) { web.handleAPIClear(w, r, "remote:thread") }, http.MethodGet, "/clear", "")
 		direct(func(w http.ResponseWriter, r *http.Request) { web.handleAPIClear(w, r, "local:missing") }, http.MethodPost, "/clear", "")
