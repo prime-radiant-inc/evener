@@ -13,9 +13,34 @@ function needsAttentionTone(
   return tone === "attention";
 }
 
+function rosterStatusLabel(status: LiveRosterView["status"]): string {
+  switch (status) {
+    case "loading":
+      return "Refreshing the live roster…";
+    case "ready":
+      return "Up to date";
+    case "idle":
+      return "Roster idle";
+    case "offline":
+      return "Roster offline";
+    case "error":
+      return "Roster unavailable";
+  }
+}
+
 export function SessionsView({ state, dispatch }: SessionsViewProps) {
   const roster = state.roster;
   const loading = roster.status === "loading";
+  const showGroups =
+    roster.status !== "error" &&
+    roster.status !== "offline" &&
+    roster.groups.length > 0;
+  const showEmpty =
+    roster.status !== "error" &&
+    roster.status !== "loading" &&
+    roster.status !== "offline" &&
+    roster.status !== "idle" &&
+    roster.groups.length === 0;
 
   return (
     <div className="co-sessions co-route-enter">
@@ -51,28 +76,31 @@ export function SessionsView({ state, dispatch }: SessionsViewProps) {
         role="status"
         aria-live="polite"
       >
-        {loading ? (
-          <span>Refreshing the live roster…</span>
-        ) : roster.status === "ready" ? (
-          <span>Up to date</span>
-        ) : null}
+        <span>{rosterStatusLabel(roster.status)}</span>
       </div>
 
       {roster.status === "error" && roster.error ? (
         <section className="co-inline-state" data-roster-error="true">
-          <h2>Roster unavailable</h2>
+          <h2>{rosterStatusLabel("error")}</h2>
           <p>{roster.error}</p>
         </section>
       ) : null}
 
-      {roster.status !== "error" && roster.groups.length === 0 ? (
+      {roster.status === "offline" ? (
+        <section className="co-inline-state" data-roster-offline="true">
+          <h2>Roster offline</h2>
+          <p>Connect to a Hub to load the live roster.</p>
+        </section>
+      ) : null}
+
+      {showEmpty ? (
         <section className="co-inline-state" data-session-filter-empty="true">
           <h2>No matching sessions</h2>
           <p>Try a title or project name from the live roster.</p>
         </section>
       ) : null}
 
-      {roster.groups.length > 0 ? (
+      {showGroups ? (
         <div className="co-session-groups">
           {roster.groups.map((group) => (
             <section
