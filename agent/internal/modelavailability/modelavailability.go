@@ -357,4 +357,4 @@ func (s *Snapshot) pageAtOffset(p Page, off, maxCount, maxBytes int) Page {
 	return p
 }
 
-func (p Page) SerializedBytes() int { b, _ := json.Marshal(p); return len(b) }
+func (p Page) SerializedBytes() int { b, _ := json.MarshalIndent(p, "", "  "); return len(b) }

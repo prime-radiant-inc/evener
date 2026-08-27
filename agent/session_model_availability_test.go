@@ -285,8 +285,7 @@ func TestModelListToolReturnsEveryChoiceExactlyOnceWithinPageBound(t *testing.T)
 	}
 	defer sess.Close()
 
-	registered := sess.reg.Get("model_list")
-	if registered == nil {
+	if sess.reg.Get("model_list") == nil {
 		t.Fatal("model_list is not registered")
 	}
 	const maxBytes = 512
@@ -294,20 +293,7 @@ func TestModelListToolReturnsEveryChoiceExactlyOnceWithinPageBound(t *testing.T)
 	cursor := ""
 	pages := 0
 	for {
-		raw, err := registered.Exec(context.Background(), sess.env, map[string]any{
-			"cursor": cursor, "max_count": float64(modelavailability.DefaultPageMaxCount), "max_bytes": float64(maxBytes),
-		})
-		if err != nil {
-			t.Fatalf("model_list page %d: %v", pages, err)
-		}
-		page := raw.(modelavailability.Page)
-		encoded, err := json.Marshal(page)
-		if err != nil {
-			t.Fatalf("marshal page %d: %v", pages, err)
-		}
-		if len(encoded) > maxBytes {
-			t.Fatalf("page %d = %d bytes, exceeds %d", pages, len(encoded), maxBytes)
-		}
+		page := executeModelListPage(t, sess, cursor, modelavailability.DefaultPageMaxCount, maxBytes)
 		if len(page.Oversized) != 0 {
 			t.Fatalf("page %d marked ordinary choices oversized: %v", pages, page.Oversized)
 		}
@@ -346,24 +332,36 @@ func TestModelListToolReturnsBoundedEmptyTerminalPage(t *testing.T) {
 	}
 	defer sess.Close()
 
-	registered := sess.reg.Get("model_list")
-	if registered == nil {
+	if sess.reg.Get("model_list") == nil {
 		t.Fatal("model_list is not registered")
 	}
 	const maxBytes = 512
-	raw, err := registered.Exec(context.Background(), sess.env, map[string]any{"max_bytes": float64(maxBytes)})
-	if err != nil {
-		t.Fatalf("model_list empty page: %v", err)
-	}
-	page := raw.(modelavailability.Page)
+	page := executeModelListPage(t, sess, "", modelavailability.DefaultPageMaxCount, maxBytes)
 	if !page.Terminal || len(page.Choices) != 0 || page.Next != "" {
 		t.Fatalf("empty page = %#v", page)
 	}
-	encoded, err := json.Marshal(page)
+}
+
+func executeModelListPage(t *testing.T, sess *Session, cursor string, maxCount, maxBytes int) modelavailability.Page {
+	t.Helper()
+	args, err := json.Marshal(map[string]any{
+		"cursor": cursor, "max_count": maxCount, "max_bytes": maxBytes,
+	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(encoded) > maxBytes {
-		t.Fatalf("empty terminal page = %d bytes, exceeds %d", len(encoded), maxBytes)
+	result := sess.reg.ExecuteCall(context.Background(), sess.env, llm.ToolCallData{
+		ID: "model-list-page", Name: "model_list", Arguments: args,
+	})
+	if result.IsError {
+		t.Fatalf("model_list: %s", result.Output)
 	}
+	if len([]byte(result.Output)) > maxBytes {
+		t.Fatalf("public model_list output = %d bytes, exceeds %d", len([]byte(result.Output)), maxBytes)
+	}
+	var page modelavailability.Page
+	if err := json.Unmarshal([]byte(result.Output), &page); err != nil {
+		t.Fatalf("decode model_list output: %v", err)
+	}
+	return page
 }
