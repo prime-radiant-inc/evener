@@ -832,14 +832,6 @@ export function createConversationStore() {
   // happens to end with "… truncated" does not freeze delta appends.
   const truncatedItemIds = new Set<string>();
 
-  // Task 2A-Items: Per-item activity family — tracks whether each activity
-  // item is a "reasoning" or "tool" family item, so delta notifications can
-  // verify they target the matching family. Populated from projectSingleItem
-  // (which has the wire ThreadItem.type) and from truncateAndRecord (which
-  // derives the family from the mobile item's label — "Reasoning" → reasoning,
-  // everything else → tool, matching the projector's labeling in project.ts).
-  const itemFamilies = new Map<string, "reasoning" | "tool">();
-
   // Truncate items and record which item IDs were truncated (F12).
   // Called from open/openProjected/rehydrate to seed the truncation set.
   // Task 2A-Items: also records activity item families (reasoning vs tool)
@@ -854,25 +846,17 @@ export function createConversationStore() {
   function truncateAndRecord(
     items: MobileTimelineItem[],
   ): MobileTimelineItem[] {
-    return items.map((item) => {
-      if (item.kind === "activity") {
-        // Task 2A-Items: record the activity family from the label. The
-        // projector labels reasoning items "Reasoning" and tool items with
-        // the toolName. This matches project.ts projectItem exactly.
-        itemFamilies.set(
-          item.id,
-          item.label === "Reasoning" ? "reasoning" : "tool",
-        );
-      }
-      return truncateItem(item);
-    });
+    // Task 2A-Family: family is read directly from item.family (required,
+    // set by the projector from the wire type). No label inference, no
+    // side-channel family map.
+    return items.map((item) => truncateItem(item));
   }
 
   // Task 2A-Truncation: Exact reconciliation of truncation ownership from the
   // FINAL retained/merged items (pre-truncation content). Replaces add-only
   // frozen tracking on every authoritative install path
   // (open/openProjected/rehydrate/loadOlder). Rebuilds truncatedItemIds and
-  // itemFamilies exactly from the final actual content:
+  // (no family map to rebuild — family is read from item.family directly):
   //   - An item whose original content exceeds the byte limit → frozen.
   //   - An item whose original content is short → unfrozen, even if it was
   //     frozen before (authoritative short version unfreezes).
@@ -890,8 +874,6 @@ export function createConversationStore() {
   //     frozen via supersededFrozenIds. Only superseded IDs that are STILL in
   //     truncatedItemIds at call time are passed — a short lifecycle/delta/reset
   //     that removed the freeze stays unfrozen.
-  //   - Activity families are rebuilt from labels so family discrimination
-  //     continues to work for retained items.
   // `items` are the FINAL retained items BEFORE truncateItem runs (so
   // exceedsByteLimit sees the original oversized content). `priorFrozenIds`
   // is the set of IDs frozen before this call (captured by the caller before
@@ -906,7 +888,6 @@ export function createConversationStore() {
   ): void {
     const retainedIds = new Set(items.map((i) => i.id));
     truncatedItemIds.clear();
-    itemFamilies.clear();
     for (const item of items) {
       let needsTruncation = false;
       if (item.kind === "assistant") {
@@ -919,10 +900,6 @@ export function createConversationStore() {
             exceedsByteLimit(item.detail.output, MAX_ITEM_BYTES)) ||
           (item.detail.error !== undefined &&
             exceedsByteLimit(item.detail.error, MAX_ITEM_BYTES));
-        itemFamilies.set(
-          item.id,
-          item.label === "Reasoning" ? "reasoning" : "tool",
-        );
       }
       // Freeze if: original content is oversized, OR the item was already
       // frozen and remains in the final set (priorFrozenIds), OR the item
@@ -946,12 +923,6 @@ export function createConversationStore() {
   function truncateAndRecordSingle(
     item: MobileTimelineItem,
   ): MobileTimelineItem {
-    if (item.kind === "activity") {
-      itemFamilies.set(
-        item.id,
-        item.label === "Reasoning" ? "reasoning" : "tool",
-      );
-    }
     let needsTruncation = false;
     if (item.kind === "assistant") {
       needsTruncation = exceedsByteLimit(item.markdown, MAX_ITEM_BYTES);
@@ -986,9 +957,6 @@ export function createConversationStore() {
     }
     for (const id of [...liveOwnedRevs.keys()]) {
       if (!retainedIds.has(id)) liveOwnedRevs.delete(id);
-    }
-    for (const id of [...itemFamilies.keys()]) {
-      if (!retainedIds.has(id)) itemFamilies.delete(id);
     }
   }
 
@@ -1037,7 +1005,6 @@ export function createConversationStore() {
         pageOwnedIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
-        itemFamilies.clear();
         set({
           status: "opening",
           ref,
@@ -1098,7 +1065,6 @@ export function createConversationStore() {
         pageOwnedIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
-        itemFamilies.clear();
         // Reset thread-scoped state (draft, pending mutation) — presentation state
         // now lives outside the store (in live-ui-store).
         // F4: reset the activity sink on thread change.
@@ -1778,7 +1744,6 @@ export function createConversationStore() {
         pageOwnedIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
-        itemFamilies.clear();
         // F4: reset the activity sink on close.
         if (activitySink !== null) {
           activitySink.reset();
@@ -2084,56 +2049,45 @@ export function createConversationStore() {
             const existing = conv.items.find(
               (i) => i.id === params.itemId && i.kind === "activity",
             );
-            // Task 2A-Items: exact delta family — reasoning deltas apply only
-            // to the matching reasoning item family. If the target's recorded
-            // family is "tool", this is a wrong family → reread, no text
-            // mutation. If the family is unknown (not tracked, e.g. loaded
-            // from a fixture without family info), accept to preserve
-            // existing behavior.
+            // Task 2A-Family: exact delta family from required item.family
+            // (never label inference). Reasoning delta mutates only family=
+            // reasoning. Missing target, wrong family, or unknown family =>
+            // no mutation/live revision/freeze change, request authoritative
+            // reread.
             if (
-              existing &&
-              existing.kind === "activity" &&
-              itemFamilies.get(params.itemId) === "tool"
+              !existing ||
+              existing.kind !== "activity" ||
+              existing.family !== "reasoning"
             ) {
               if (state.ref !== null) {
                 requestRehydrate(state.ref);
               }
               break;
             }
-            if (existing) {
-              // F12: Per-item truncation ownership.
-              if (truncatedItemIds.has(params.itemId)) {
-                break;
-              }
-              const combined =
-                (existing.kind === "activity"
-                  ? (existing.detail.output ?? "")
-                  : "") + params.delta;
-              const truncated = truncateText(combined, MAX_ITEM_BYTES);
-              if (truncated !== combined) {
-                truncatedItemIds.add(params.itemId);
-              }
-              // Fix round 1: Mark as live-owned — accepted reasoning delta.
-              markLiveOwned(params.itemId);
-              set({
-                conversation: {
-                  ...conv,
-                  items: conv.items.map((item) =>
-                    item.kind === "activity" && item.id === params.itemId
-                      ? {
-                          ...item,
-                          detail: { ...item.detail, output: truncated },
-                        }
-                      : item,
-                  ),
-                },
-              });
-            } else {
-              // Delta targeting missing or wrong-kind item — trigger resync.
-              if (state.ref !== null) {
-                requestRehydrate(state.ref);
-              }
+            // F12: Per-item truncation ownership — frozen guard.
+            if (truncatedItemIds.has(params.itemId)) {
+              break;
             }
+            const combined = (existing.detail.output ?? "") + params.delta;
+            const truncated = truncateText(combined, MAX_ITEM_BYTES);
+            if (truncated !== combined) {
+              truncatedItemIds.add(params.itemId);
+            }
+            // Mark live revision only on accepted exact update.
+            markLiveOwned(params.itemId);
+            set({
+              conversation: {
+                ...conv,
+                items: conv.items.map((item) =>
+                  item.kind === "activity" && item.id === params.itemId
+                    ? {
+                        ...item,
+                        detail: { ...item.detail, output: truncated },
+                      }
+                    : item,
+                ),
+              },
+            });
             break;
           }
 
@@ -2146,68 +2100,64 @@ export function createConversationStore() {
             const existing = conv.items.find(
               (i) => i.id === params.itemId && i.kind === "activity",
             );
-            // Task 2A-Items: exact delta family — tool-output deltas apply
-            // only to the matching tool item and, where the protocol supplies
-            // it, matching callId. If the target's recorded family is
-            // "reasoning", this is a wrong family → reread. If the target has
-            // a callId and the delta's callId differs, that's a wrong call →
-            // reread. If the family is unknown (not tracked), accept to
-            // preserve existing behavior. No text mutation on reread.
-            if (existing && existing.kind === "activity") {
-              const family = itemFamilies.get(params.itemId);
-              if (family === "reasoning") {
-                // Wrong family — reasoning item cannot receive tool output.
-                if (state.ref !== null) {
-                  requestRehydrate(state.ref);
-                }
-                break;
-              }
-              const itemCallId = existing.detail.callId;
-              if (
-                itemCallId !== undefined &&
-                params.callId !== undefined &&
-                itemCallId !== params.callId
-              ) {
-                // Wrong call — the delta targets a different tool call.
-                if (state.ref !== null) {
-                  requestRehydrate(state.ref);
-                }
-                break;
-              }
-            }
-            if (existing) {
-              // F12: Per-item truncation ownership.
-              if (truncatedItemIds.has(params.itemId)) {
-                break;
-              }
-              const combined =
-                (existing.kind === "activity"
-                  ? (existing.detail.output ?? "")
-                  : "") + params.delta;
-              const truncated = truncateText(combined, MAX_ITEM_BYTES);
-              if (truncated !== combined) {
-                truncatedItemIds.add(params.itemId);
-              }
-              // Fix round 1: Mark as live-owned — accepted tool output delta.
-              markLiveOwned(params.itemId);
-              set({
-                conversation: {
-                  ...conv,
-                  items: conv.items.map((item) =>
-                    item.kind === "activity" && item.id === params.itemId
-                      ? {
-                          ...item,
-                          detail: { ...item.detail, output: truncated },
-                        }
-                      : item,
-                  ),
-                },
-              });
-            } else {
+            // Task 2A-Family: exact delta family from required item.family
+            // (never label inference). Tool-output delta mutates only family=
+            // tool AND requires stored detail.callId and incoming params.callId
+            // both present strings and exactly equal. Missing target, missing
+            // either callId, mismatch, unknown family, or wrong family => no
+            // mutation/live revision/freeze change, request authoritative
+            // reread.
+            if (!existing || existing.kind !== "activity") {
               if (state.ref !== null) {
                 requestRehydrate(state.ref);
               }
+              break;
             }
+            if (existing.family !== "tool") {
+              // Wrong family or unknown family — not a tool item.
+              if (state.ref !== null) {
+                requestRehydrate(state.ref);
+              }
+              break;
+            }
+            {
+              const itemCallId = existing.detail.callId;
+              if (
+                typeof itemCallId !== "string" ||
+                typeof params.callId !== "string" ||
+                itemCallId !== params.callId
+              ) {
+                // Missing either callId, or mismatch — no mutation.
+                if (state.ref !== null) {
+                  requestRehydrate(state.ref);
+                }
+                break;
+              }
+            }
+            // F12: Per-item truncation ownership — frozen guard.
+            if (truncatedItemIds.has(params.itemId)) {
+              break;
+            }
+            const combined = (existing.detail.output ?? "") + params.delta;
+            const truncated = truncateText(combined, MAX_ITEM_BYTES);
+            if (truncated !== combined) {
+              truncatedItemIds.add(params.itemId);
+            }
+            // Mark live revision only on accepted exact update.
+            markLiveOwned(params.itemId);
+            set({
+              conversation: {
+                ...conv,
+                items: conv.items.map((item) =>
+                  item.kind === "activity" && item.id === params.itemId
+                    ? {
+                        ...item,
+                        detail: { ...item.detail, output: truncated },
+                      }
+                    : item,
+                ),
+              },
+            });
             break;
           }
 
@@ -2277,7 +2227,6 @@ export function createConversationStore() {
         pageOwnedIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
-        itemFamilies.clear();
         // F4: reset the activity sink on thread change.
         if (activitySink !== null) {
           activitySink.reset();
