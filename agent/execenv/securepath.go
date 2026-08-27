@@ -36,8 +36,10 @@ var (
 // rather than redirect.
 //
 // A sandboxFS is built once per LocalExecutionEnvironment from its resolved
-// policy (see e.sandbox()) and is only ever constructed for an ENFORCED policy —
-// off mode / a nil policy never builds one, so those paths keep today's
+// policy (see e.sandbox()) and is only ever constructed for a policy that
+// confines the file tools — every enforced mode, plus the write-blocked off
+// policy a read-only delegate degrades to where no OS backend can enforce one.
+// Plain off mode / a nil policy never builds one, so those paths keep today's
 // afero/os behavior byte-for-byte. It caches an O_DIRECTORY fd for each allowed
 // root the first time that root is used, so a later swap of the root directory
 // itself cannot redirect resolution.
@@ -70,14 +72,16 @@ func (s *sandboxFS) isGranted(abs string) bool {
 	return s.grant != "" && abs == s.grant
 }
 
-// newSandboxFS builds a sandboxFS for an enforced resolved policy. The caller
-// (e.sandbox()) guarantees policy != nil and policy.Enforced().
+// newSandboxFS builds a sandboxFS for a file-tool-confining resolved policy. The
+// caller (e.sandbox()) guarantees policy != nil and policy.FileToolConfined().
 //
 // scratchDir, when non-empty, is the concrete per-session scratch directory
-// (agent/sandbox.SessionScratch.Dir, via the env's Wrapper.SessionTmp()) folded
-// into the policy's file-tool grants via WithSessionScratch: Resolve ran before
-// the directory existed, so p alone never carries it. A blank scratchDir (an
-// unsandboxed caller, or a policy resolved without a wrapper) leaves p untouched.
+// (agent/sandbox.SessionScratch.Dir, via the env's Wrapper.SessionTmp() or, for a
+// wrapper-less write-blocked env, its own session scratch) folded into the
+// policy's file-tool grants via WithSessionScratch: Resolve ran before the
+// directory existed, so p alone never carries it. A blank scratchDir (an
+// unsandboxed caller, or a policy resolved without a scratch dir) leaves p
+// untouched.
 func newSandboxFS(p *sandbox.ResolvedPolicy, scratchDir string) *sandboxFS {
 	policy := p
 	if scratchDir != "" {

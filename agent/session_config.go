@@ -437,6 +437,9 @@ type testConfig struct {
 	// leaves it nil and probes the live host (sandbox.RealProber); tests inject a
 	// sandbox.FakeProber so the resume path never shells out to bwrap.
 	sandboxProber sandbox.Prober
+	// fileToolEnforceable replaces the runtime secure-open capability probe for
+	// deterministic delegate sandbox tests. Nil probes the live process.
+	fileToolEnforceable func() bool
 
 	// envProbes, when non-nil, replaces envctx.DefaultProbes() wholesale for the
 	// session's environment-context collector — including the production

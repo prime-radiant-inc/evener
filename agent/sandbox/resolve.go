@@ -171,8 +171,33 @@ type ResolvedPolicy struct {
 	resolveHost   HostFacts
 }
 
-// Enforced reports whether this policy imposes any containment. False for off.
+// Enforced reports whether an OS sandbox is in force for this policy. False for
+// off. It is the question the kernel-wrapper layer asks — whether to build bwrap
+// arguments, print the startup enforcement line, or announce a box in the prompt
+// — and is deliberately NOT the question the in-process file tools ask; see
+// FileToolConfined.
 func (rp ResolvedPolicy) Enforced() bool { return rp.Mode != ModeOff }
+
+// FileToolConfined reports whether the in-process file-tool layer must enforce
+// this policy's grants. Every enforced mode confines the file tools, and so does
+// a write-blocked OFF policy: that is the read-only delegate scope degraded on a
+// host with no sandbox backend, where the file tools are the only enforcement
+// available and carry the whole write boundary (the shell stays unconfined, which
+// both the delegate and its parent are told). A plain off policy confines
+// nothing, so the file tools keep today's byte-identical os path.
+func (rp ResolvedPolicy) FileToolConfined() bool { return rp.Mode != ModeOff || rp.WriteBlocked }
+
+// FileToolEnforceable reports whether this OS has an in-process file-tool
+// enforcement implementation. Its race-safe primitives (openat2 /
+// RESOLVE_NO_SYMLINKS on Linux, the O_NOFOLLOW tail walk on darwin) exist only
+// there; every other platform's stand-ins fail closed on EVERY operation, reads
+// included. Linux callers must separately prove the live process may use openat2:
+// an older kernel or seccomp policy can reject the syscall even though the OS has
+// the implementation. The delegate fallback combines this platform check with
+// execenv's runtime probe before deriving a wrapperless policy.
+func FileToolEnforceable(host HostFacts) bool {
+	return host.OS == "linux" || host.OS == "darwin"
+}
 
 // RefusalError is the typed fail-closed refusal returned when the host cannot
 // enforce the requested (mode, network) — the floor's "full contract or refuse"
@@ -232,17 +257,39 @@ func guardedHostRoots(candidates []string, home, worktree string) []string {
 // process environment): the credential denylist anchors on host.Home, and the
 // git layout is resolved structurally from cwd's on-disk .git entries.
 //
-// Off short-circuits before any host check, so off resolves on every host
-// (including Windows) — it is today's behavior with no containment.
+// PLAIN off short-circuits before any host check, so it resolves on every host
+// (including Windows) — it is today's behavior with no containment. A WRITE-BLOCKED
+// off policy is not that: it is the read-only delegate scope degraded on a host
+// with no backend, and it confines the file tools, so it takes the ordinary path
+// through the denylist, the git surface and the scope builder (skipping only the
+// backend choice, which is what it has none of).
 func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, error) {
-	if policy.Mode == ModeOff {
+	if policy.Mode == ModeOff && !policy.WriteBlocked {
 		return ResolvedPolicy{Mode: ModeOff, Network: true, Backend: BackendNone, resolveInputs: policy, resolveHost: host}, nil
+	}
+
+	// The write-blocked box has no kernel wrapper behind it, so the in-process file
+	// tools ARE its enforcement. Where their race-safe primitives do not exist, every
+	// file operation fails closed instead — a delegate with broken file tools rather
+	// than a confined one — so refuse here, at the resolver, rather than leave it to
+	// whichever caller derived the request.
+	if policy.Mode == ModeOff && !FileToolEnforceable(host) {
+		return ResolvedPolicy{}, &RefusalError{
+			Mode: policy.Mode, Net: true,
+			Reason: fmt.Sprintf("a write-blocked sandbox is enforced by the in-process file tools, which have no race-safe primitives on %s; only an unconfined --sandbox off is available there", host.OS),
+		}
 	}
 
 	// Network defaults ON when sandboxed: a nil policy.Network is the unset default,
 	// a non-nil value an explicit choice. Collapse to a concrete bool exactly once
 	// here so the zero value can never silently disable egress.
 	netOn := policy.Network == nil || *policy.Network
+	if policy.Mode == ModeOff {
+		// off applies no network confinement whatever the request said — there is no
+		// wrapper to unshare a namespace — so reporting anything but "on" would
+		// overstate, exactly as the plain-off short-circuit above hard-codes it.
+		netOn = true
+	}
 
 	// A sandboxed session needs an absolute home to anchor the credential denylist.
 	// Without one (e.g. the home-directory env var is unset in a bare service),
@@ -297,9 +344,15 @@ func Resolve(policy SandboxPolicy, host HostFacts, cwd string) (ResolvedPolicy, 
 		}
 	}
 
-	backend, refusal := chooseBackend(policy, host, netOn)
-	if refusal != nil {
-		return ResolvedPolicy{}, refusal
+	// A write-blocked off policy chooses no backend — it exists precisely because
+	// none is available, and asking would reproduce the refusal it replaces.
+	backend := BackendNone
+	if policy.Mode != ModeOff {
+		chosen, refusal := chooseBackend(policy, host, netOn)
+		if refusal != nil {
+			return ResolvedPolicy{}, refusal
+		}
+		backend = chosen
 	}
 
 	masked := policy.EffectiveDenylist(host.Home)
@@ -458,9 +511,23 @@ func cacheStrategyFor(mode Mode, backend Backend, host HostFacts) CacheStrategy 
 // scopesFor builds the file-tool and spawned-process access scopes for a mode.
 func scopesFor(policy SandboxPolicy, host HostFacts, layout GitLayout, worktree string) (fileTool, spawned AccessScope) {
 	switch policy.Mode {
-	case ModeReadOnly:
+	case ModeOff, ModeReadOnly:
 		// Reads anywhere (minus masked); no writes (session tmp is the only scratch).
-		fileTool = AccessScope{Read: ReadAnywhere}
+		// ModeOff reaches here only as the write-blocked degrade — plain off never
+		// calls scopesFor — and takes read-only's scope by construction, because
+		// read-only is the box it stands in for.
+		//
+		// The worktree is a READ root even though reads are already allowed anywhere.
+		// It is an ANCHOR, not a limit: openRead resolves an in-root target beneath
+		// this root's fd, which tolerates a symlinked ANCESTOR of the worktree while
+		// still refusing a symlink component INSIDE it. Without it every read takes
+		// the "/"-anchored no-symlinks path, and a workspace reached through a
+		// symlinked ancestor (a bind-mounted link, a symlinked checkout, macOS
+		// /tmp) is unreadable — a workspace shape, not an attack. The other modes
+		// need no equivalent: their worktree is already a WRITE root, which openRead
+		// anchors at first.
+		anchor := dedupeRoots([]string{worktree})
+		fileTool = AccessScope{Read: ReadAnywhere, ReadRoots: anchor}
 		spawned = AccessScope{Read: ReadAnywhere}
 
 	case ModeWorkspaceWrite:

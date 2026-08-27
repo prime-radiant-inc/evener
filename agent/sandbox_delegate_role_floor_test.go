@@ -268,7 +268,7 @@ func TestRestoreDelegate_ReadOnlyRoleSandboxFloor(t *testing.T) {
 		wantWriteBlocked bool
 	}{
 		{name: "explicit off", snapshot: &delegatestore.SandboxSnapshot{Mode: "off"}},
-		{name: "off with ignored write-blocked option", snapshot: &delegatestore.SandboxSnapshot{Mode: "off", WriteBlocked: true}},
+		{name: "off with unwritable write-blocked option", snapshot: &delegatestore.SandboxSnapshot{Mode: "off", WriteBlocked: true}},
 		{name: "explicit workspace-write", snapshot: &delegatestore.SandboxSnapshot{Mode: "workspace-write"}},
 		{name: "explicit restricted", snapshot: &delegatestore.SandboxSnapshot{Mode: "restricted"}},
 		{name: "explicit read-only", snapshot: &delegatestore.SandboxSnapshot{Mode: "read-only"}, allowed: true, wantMode: sandbox.ModeReadOnly},
