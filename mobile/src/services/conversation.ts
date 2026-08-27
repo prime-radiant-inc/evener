@@ -16,7 +16,6 @@
 // capabilities). The store owns profile/connection/conversation generations.
 
 import type { AppwireClient } from "../../../cmd/evener-hub/frontend/src/protocol/client";
-import { WireError } from "../../../cmd/evener-hub/frontend/src/protocol/errors";
 import type {
   AnyNotification,
   InputItem,
@@ -103,11 +102,6 @@ export interface LiveConversationService extends ConversationService {
   refreshCapabilities(): Promise<ThreadCapabilities | null>;
 }
 
-// The evenerErrorInfo value the hub stamps when an action is not available for
-// the current thread state (appwire/errors.go: ErrorActionUnavailable). A
-// WireError carrying this triggers a capability re-read.
-const ERROR_INFO_ACTION_UNAVAILABLE = "actionUnavailable";
-
 let defaultIdCounter = 0;
 function defaultIdFactory(): string {
   if (
@@ -161,31 +155,16 @@ export function createConversationService(
     return capabilities;
   }
 
-  // isActionUnavailable returns true when a WireError carries the
-  // actionUnavailable evenerErrorInfo, signalling the thread's capabilities
-  // changed since the last read.
-  function isActionUnavailable(err: unknown): boolean {
-    return (
-      err instanceof WireError &&
-      err.evenerErrorInfo === ERROR_INFO_ACTION_UNAVAILABLE
-    );
-  }
-
   // withCapabilityRefresh wraps a mutation: if the server rejects with
-  // actionUnavailable, refresh capabilities and re-throw so the store can
-  // surface the error. The store never auto-retries the mutation.
+  // actionUnavailable, the service just re-throws — it does NOT auto-refresh
+  // capabilities. Exactly one non-subscribing thread/read occurs, and it is
+  // driven by the store's handleMutationError (F2). The store is the sole
+  // caller of refreshCapabilities; the service never duplicates the read.
   async function withCapabilityRefresh<T>(
     _action: string,
     fn: () => Promise<T>,
   ): Promise<T> {
-    try {
-      return await fn();
-    } catch (err) {
-      if (isActionUnavailable(err)) {
-        await refreshCapabilities();
-      }
-      throw err;
-    }
+    return fn();
   }
 
   return {
