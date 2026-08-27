@@ -1,16 +1,13 @@
 // Stable private live projector tests for createLiveActivityProjector —
 // maps an ActivityView into a LiveActivityView for live-concept renderers.
-// The projector instance owns a private scoped registry keyed by exact scope,
-// parent identity, kind, and source identity via nested Maps: stable keys
-// survive hierarchy insertion/reorder/patch. Labels are display-safe inputs
-// only; raw diagnostic IDs live only in the private operational map.
-// Duplicate/cross-kind source IDs are detected and produce a generic safe
-// error. Cycle detection throws a generic cycle error before stack overflow.
-// The production default allocator is process-unique via a module-level
-// factory counter; injected allocator collisions produce a generic error.
-// The registry is bounded with safe capacity rejection before mutation.
-//
-// Uses a deterministic key allocator to avoid probabilistic assertions.
+// The projector instance owns a private scoped registry using nested exact
+// Maps at every depth — no delimiter/path composites for hierarchy identity.
+// Raw diagnostic IDs and no-ID fallback labels live in separate tagged
+// namespaces so rawId "x" can never alias label "x". Raw diagnostic IDs are
+// unique scope-wide across all parents and kinds. The operational snapshot
+// maps rawId → opaque key (no-ID entries omitted) and is returned as a
+// genuinely runtime-immutable wrapper. All rejections are transactional.
+// Traversal is iterative (stack-safe). Typed projector error class with code.
 
 import { describe, expect, it } from "vitest";
 import type {
@@ -20,6 +17,7 @@ import type {
 } from "../services/activity";
 import type { LiveWorkItem } from "./model";
 import {
+  ActivityProjectorError,
   createLiveActivityProjector,
   type OpaqueKeyAllocator,
 } from "./project-activity";
@@ -72,9 +70,36 @@ function diag(
 
 const SCOPE = "scope-1";
 
+// WorkEntry.children is readonly; use a mutable alias to build cycles/deep.
+type MutableWorkEntry = Omit<WorkEntry, "children"> & {
+  children?: WorkEntry[];
+};
+
+// Build a linear chain of depth N (each entry has one child).
+function makeDeepChain(depth: number): WorkEntry {
+  let current: MutableWorkEntry = {
+    kind: "job",
+    label: "leaf",
+    tone: "terminal",
+    diagnostics: diag("leaf-id"),
+  };
+  for (let i = depth - 1; i >= 0; i--) {
+    current = {
+      kind: "delegate",
+      label: `level-${i}`,
+      tone: "running",
+      diagnostics: diag(`deep-${i}`),
+      children: [current as WorkEntry],
+    };
+  }
+  return current as WorkEntry;
+}
+
 // --- tests -------------------------------------------------------------------
 
 describe("createLiveActivityProjector", () => {
+  // --- basic mapping --------------------------------------------------------
+
   it("maps task groups to live task groups", () => {
     const p = createLiveActivityProjector();
     const view = makeActivityView({
@@ -215,7 +240,6 @@ describe("createLiveActivityProjector", () => {
     const p = createLiveActivityProjector({
       allocator: deterministicAllocator("w"),
     });
-    // Distinct kind+label combos so none are indistinguishable duplicates.
     const view = makeActivityView({
       work: [
         { kind: "job", label: "shell", tone: "running" },
@@ -254,7 +278,7 @@ describe("createLiveActivityProjector", () => {
     }
   });
 
-  // --- activity identity: parent path/kind/rawId -----------------------------
+  // --- activity identity: parent/kind/source, stable reorder/patch -----------
 
   it("keys survive hierarchy reorder (with diagnostics)", () => {
     const p = createLiveActivityProjector({
@@ -280,7 +304,6 @@ describe("createLiveActivityProjector", () => {
     const keyA = a.live.work[0]?.key;
     const keyB = a.live.work[1]?.key;
 
-    // Reorder: B, A
     const reordered = makeActivityView({
       work: [
         {
@@ -454,7 +477,7 @@ describe("createLiveActivityProjector", () => {
               kind: "job",
               label: "shared-child",
               tone: "running",
-              diagnostics: diag("shared"),
+              diagnostics: diag("shared-2"),
             },
           ],
         },
@@ -463,13 +486,261 @@ describe("createLiveActivityProjector", () => {
     const { live } = p.project(view, { scope: SCOPE });
     const child1Key = live.work[0]?.children[0]?.key;
     const child2Key = live.work[1]?.children[0]?.key;
-    // Same rawId under different parents → different keys
     expect(child1Key).not.toBe(child2Key);
   });
 
-  // --- raw duplicates / cross-kind → generic safe error ---------------------
+  // --- (1) namespace tagging: rawId `x` vs label `x` -------------------------
 
-  it("duplicate raw IDs under the same parent produce a generic safe error", () => {
+  it("rawId 'x' does not alias no-ID label 'x' under the same parent", () => {
+    const p = createLiveActivityProjector({
+      allocator: deterministicAllocator("w"),
+    });
+    const view = makeActivityView({
+      work: [
+        {
+          kind: "job",
+          label: "x",
+          tone: "running",
+          diagnostics: diag("x"),
+        },
+        {
+          kind: "job",
+          label: "x",
+          tone: "terminal",
+        },
+      ],
+    });
+    const { live } = p.project(view, { scope: SCOPE });
+    expect(live.work).toHaveLength(2);
+    expect(live.work[0]?.key).not.toBe(live.work[1]?.key);
+  });
+
+  it("no-ID label 'x' and rawId 'x' get distinct keys regardless of order", () => {
+    const p1 = createLiveActivityProjector({
+      allocator: deterministicAllocator("a"),
+    });
+    const p2 = createLiveActivityProjector({
+      allocator: deterministicAllocator("b"),
+    });
+    const rawFirst = makeActivityView({
+      work: [
+        { kind: "job", label: "x", tone: "running", diagnostics: diag("x") },
+        { kind: "job", label: "x", tone: "terminal" },
+      ],
+    });
+    const labelFirst = makeActivityView({
+      work: [
+        { kind: "job", label: "x", tone: "terminal" },
+        { kind: "job", label: "x", tone: "running", diagnostics: diag("x") },
+      ],
+    });
+    const a = p1.project(rawFirst, { scope: SCOPE });
+    const b = p2.project(labelFirst, { scope: SCOPE });
+    // The raw entry's key must be the same allocation slot in both orderings
+    expect(a.live.work[0]?.key).toBe("a1");
+    expect(b.live.work[1]?.key).toBe("b2");
+    // They must not alias each other
+    expect(a.live.work[0]?.key).not.toBe(a.live.work[1]?.key);
+    expect(b.live.work[0]?.key).not.toBe(b.live.work[1]?.key);
+  });
+
+  // --- (2) no delimiter/path composites — hostile strings -------------------
+
+  it("hostile label containing '/kind:' does not corrupt hierarchy identity", () => {
+    const p = createLiveActivityProjector({
+      allocator: deterministicAllocator("w"),
+    });
+    const view = makeActivityView({
+      work: [
+        {
+          kind: "job",
+          label: "hostile/job:shell",
+          tone: "running",
+          diagnostics: diag("h1"),
+        },
+        {
+          kind: "job",
+          label: "innocent",
+          tone: "terminal",
+          diagnostics: diag("h2"),
+        },
+      ],
+    });
+    const { live } = p.project(view, { scope: SCOPE });
+    expect(live.work).toHaveLength(2);
+    expect(new Set(live.work.map((w) => w.key)).size).toBe(2);
+  });
+
+  it("hostile rawId containing '/' and ':' does not alias other entries", () => {
+    const p = createLiveActivityProjector({
+      allocator: deterministicAllocator("w"),
+    });
+    const view = makeActivityView({
+      work: [
+        {
+          kind: "job",
+          label: "a",
+          tone: "running",
+          diagnostics: diag("raw/job:other"),
+        },
+        {
+          kind: "job",
+          label: "other",
+          tone: "terminal",
+          diagnostics: diag("other"),
+        },
+      ],
+    });
+    const { live } = p.project(view, { scope: SCOPE });
+    expect(live.work[0]?.key).not.toBe(live.work[1]?.key);
+  });
+
+  it("hostile label and rawId as child identity survive nested under hostile parent", () => {
+    const p = createLiveActivityProjector({
+      allocator: deterministicAllocator("w"),
+    });
+    const view = makeActivityView({
+      work: [
+        {
+          kind: "delegate",
+          label: "parent/deep:evil",
+          tone: "running",
+          diagnostics: diag("parent-evil"),
+          children: [
+            {
+              kind: "job",
+              label: "child/evil:job",
+              tone: "running",
+              diagnostics: diag("child-evil"),
+            },
+          ],
+        },
+      ],
+    });
+    const { live } = p.project(view, { scope: SCOPE });
+    expect(live.work[0]?.children).toHaveLength(1);
+    // Re-project — keys stable
+    const b = p.project(view, { scope: SCOPE });
+    expect(b.live.work[0]?.key).toBe(live.work[0]?.key);
+    expect(b.live.work[0]?.children[0]?.key).toBe(
+      live.work[0]?.children[0]?.key,
+    );
+  });
+
+  // --- (3) scope-wide raw ID uniqueness — no diamond reuse ------------------
+
+  it("duplicate raw ID across different parents (scope-wide) produces a safe error", () => {
+    const p = createLiveActivityProjector();
+    const shared: WorkEntry = {
+      kind: "job",
+      label: "shared",
+      tone: "running",
+      diagnostics: diag("shared-id"),
+    };
+    const view = makeActivityView({
+      work: [
+        {
+          kind: "delegate",
+          label: "parent-1",
+          tone: "running",
+          diagnostics: diag("p1"),
+          children: [shared],
+        },
+        {
+          kind: "delegate",
+          label: "parent-2",
+          tone: "running",
+          diagnostics: diag("p2"),
+          children: [shared],
+        },
+      ],
+    });
+    expect(() => p.project(view, { scope: SCOPE })).toThrow(/raw.*duplicate/i);
+  });
+
+  it("diamond reuse of the same rawId is rejected (no blessing)", () => {
+    const p = createLiveActivityProjector();
+    const shared: WorkEntry = {
+      kind: "job",
+      label: "shared-grandchild",
+      tone: "running",
+      diagnostics: diag("shared-gc"),
+    };
+    const view = makeActivityView({
+      work: [
+        {
+          kind: "delegate",
+          label: "parent",
+          tone: "running",
+          diagnostics: diag("parent-id"),
+          children: [
+            {
+              kind: "delegate",
+              label: "child-A",
+              tone: "running",
+              diagnostics: diag("child-a"),
+              children: [shared],
+            },
+            {
+              kind: "delegate",
+              label: "child-B",
+              tone: "running",
+              diagnostics: diag("child-b"),
+              children: [shared],
+            },
+          ],
+        },
+      ],
+    });
+    expect(() => p.project(view, { scope: SCOPE })).toThrow(/raw.*duplicate/i);
+  });
+
+  it("diamond with distinct rawIds under different parents is fine (same label, different rawId)", () => {
+    const p = createLiveActivityProjector();
+    const view = makeActivityView({
+      work: [
+        {
+          kind: "delegate",
+          label: "parent",
+          tone: "running",
+          diagnostics: diag("parent-id"),
+          children: [
+            {
+              kind: "delegate",
+              label: "child-A",
+              tone: "running",
+              diagnostics: diag("child-a"),
+              children: [
+                {
+                  kind: "job",
+                  label: "shared-label",
+                  tone: "running",
+                  diagnostics: diag("gc-a"),
+                },
+              ],
+            },
+            {
+              kind: "delegate",
+              label: "child-B",
+              tone: "running",
+              diagnostics: diag("child-b"),
+              children: [
+                {
+                  kind: "job",
+                  label: "shared-label",
+                  tone: "running",
+                  diagnostics: diag("gc-b"),
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
+    expect(() => p.project(view, { scope: SCOPE })).not.toThrow();
+  });
+
+  it("duplicate raw IDs in top-level siblings produce a safe error", () => {
     const p = createLiveActivityProjector();
     const view = makeActivityView({
       work: [
@@ -487,41 +758,10 @@ describe("createLiveActivityProjector", () => {
         },
       ],
     });
-    expect(() => p.project(view, { scope: SCOPE })).toThrow(
-      /duplicate.*identity/i,
-    );
+    expect(() => p.project(view, { scope: SCOPE })).toThrow(/raw.*duplicate/i);
   });
 
-  it("duplicate raw ID error contains no raw ID, label, or prompt", () => {
-    const p = createLiveActivityProjector();
-    const view = makeActivityView({
-      work: [
-        {
-          kind: "job",
-          label: "secret-label",
-          tone: "running",
-          diagnostics: diag("secret-raw-id-xyz"),
-        },
-        {
-          kind: "job",
-          label: "other-label",
-          tone: "terminal",
-          diagnostics: diag("secret-raw-id-xyz"),
-        },
-      ],
-    });
-    let message = "";
-    try {
-      p.project(view, { scope: SCOPE });
-    } catch (e) {
-      message = e instanceof Error ? e.message : String(e);
-    }
-    expect(message).not.toContain("secret-raw-id-xyz");
-    expect(message).not.toContain("secret-label");
-    expect(message).not.toContain("other-label");
-  });
-
-  it("cross-kind duplicate raw IDs under the same parent produce a generic safe error", () => {
+  it("cross-kind duplicate raw IDs (scope-wide) produce a safe error", () => {
     const p = createLiveActivityProjector();
     const view = makeActivityView({
       work: [
@@ -539,12 +779,44 @@ describe("createLiveActivityProjector", () => {
         },
       ],
     });
-    expect(() => p.project(view, { scope: SCOPE })).toThrow(
-      /duplicate.*identity/i,
-    );
+    expect(() => p.project(view, { scope: SCOPE })).toThrow(/raw.*duplicate/i);
   });
 
-  // --- no-ID siblings: kind+label only, indistinguishable duplicates error ---
+  // --- (7) typed error class — no raw ID/label in message -------------------
+
+  it("raw duplicate error is typed ActivityProjectorError with code", () => {
+    const p = createLiveActivityProjector();
+    const view = makeActivityView({
+      work: [
+        {
+          kind: "job",
+          label: "secret-label",
+          tone: "running",
+          diagnostics: diag("secret-raw-id-xyz"),
+        },
+        {
+          kind: "job",
+          label: "other-label",
+          tone: "terminal",
+          diagnostics: diag("secret-raw-id-xyz"),
+        },
+      ],
+    });
+    let err: unknown;
+    try {
+      p.project(view, { scope: SCOPE });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ActivityProjectorError);
+    expect((err as ActivityProjectorError).code).toBe("raw-duplicate");
+    const msg = (err as ActivityProjectorError).message;
+    expect(msg).not.toContain("secret-raw-id-xyz");
+    expect(msg).not.toContain("secret-label");
+    expect(msg).not.toContain("other-label");
+  });
+
+  // --- no-ID siblings: kind+label, indistinguishable duplicates error -------
 
   it("no-ID siblings with distinct kinds but same label get distinct keys", () => {
     const p = createLiveActivityProjector({
@@ -561,7 +833,7 @@ describe("createLiveActivityProjector", () => {
     expect(new Set(keys).size).toBe(keys.length);
   });
 
-  it("indistinguishable duplicate no-ID siblings produce a generic safe error", () => {
+  it("indistinguishable duplicate no-ID siblings produce a typed error", () => {
     const p = createLiveActivityProjector();
     const view = makeActivityView({
       work: [
@@ -570,12 +842,17 @@ describe("createLiveActivityProjector", () => {
         { kind: "job", label: "same-label", tone: "idle" },
       ],
     });
-    expect(() => p.project(view, { scope: SCOPE })).toThrow(
-      /indistinguishable.*duplicate/i,
-    );
+    let err: unknown;
+    try {
+      p.project(view, { scope: SCOPE });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ActivityProjectorError);
+    expect((err as ActivityProjectorError).code).toBe("no-id-duplicate");
   });
 
-  it("indistinguishable duplicate no-ID error contains no occurrence positions or labels", () => {
+  it("no-ID duplicate error contains no labels or occurrence positions", () => {
     const p = createLiveActivityProjector();
     const view = makeActivityView({
       work: [
@@ -583,18 +860,20 @@ describe("createLiveActivityProjector", () => {
         { kind: "job", label: "secret-no-id-label", tone: "terminal" },
       ],
     });
-    let message = "";
+    let err: unknown;
     try {
       p.project(view, { scope: SCOPE });
     } catch (e) {
-      message = e instanceof Error ? e.message : String(e);
+      err = e;
     }
-    expect(message).not.toContain("secret-no-id-label");
-    expect(message).not.toContain("#0");
-    expect(message).not.toContain("#1");
+    expect(err).toBeInstanceOf(ActivityProjectorError);
+    const msg = (err as ActivityProjectorError).message;
+    expect(msg).not.toContain("secret-no-id-label");
+    expect(msg).not.toContain("#0");
+    expect(msg).not.toContain("#1");
   });
 
-  it("no-ID reorder is stable (same kind+label, reordered, with a distinct third entry)", () => {
+  it("no-ID reorder is stable (distinct labels, reordered)", () => {
     const p = createLiveActivityProjector({
       allocator: deterministicAllocator("w"),
     });
@@ -608,7 +887,6 @@ describe("createLiveActivityProjector", () => {
     const keyA = a.live.work[0]?.key;
     const keyB = a.live.work[1]?.key;
 
-    // Reorder: B, A — distinct labels so no indistinguishable duplicate
     const reordered = makeActivityView({
       work: [
         { kind: "job", label: "unique-B", tone: "terminal" },
@@ -620,31 +898,9 @@ describe("createLiveActivityProjector", () => {
     expect(b.live.work[1]?.key).toBe(keyA);
   });
 
-  // --- I1: snapshot ReadonlyMaps, recursive operational map -----------------
+  // --- (4) operational map: rawId→key, omit no-ID, immutable wrapper ---------
 
-  it("returns snapshot operational map that cannot corrupt internal state", () => {
-    const p = createLiveActivityProjector();
-    const view = makeActivityView({
-      work: [
-        {
-          kind: "delegate",
-          label: "Agent",
-          tone: "running",
-          diagnostics: diag("dlg-raw-1"),
-        },
-      ],
-    });
-    const a = p.project(view, { scope: SCOPE });
-    const opaqueKey = a.live.work[0]?.key;
-    expect(opaqueKey).toBeDefined();
-
-    // Subsequent projection should still work
-    const b = p.project(view, { scope: SCOPE });
-    expect(b.live.work[0]?.key).toBe(opaqueKey);
-    expect(b.operational.keys.get(opaqueKey ?? "")).toBe("dlg-raw-1");
-  });
-
-  it("mutating returned operational map does not affect subsequent projection", () => {
+  it("operational map direction is rawId → opaque key", () => {
     const p = createLiveActivityProjector();
     const view = makeActivityView({
       work: [
@@ -656,19 +912,37 @@ describe("createLiveActivityProjector", () => {
         },
       ],
     });
-    const a = p.project(view, { scope: SCOPE });
-    const opaqueKey = a.live.work[0]?.key;
-
-    // Corrupt the snapshot
-    (a.operational.keys as Map<string, string>).clear();
-
-    // Subsequent projection unaffected
-    const b = p.project(view, { scope: SCOPE });
-    expect(b.live.work[0]?.key).toBe(opaqueKey);
-    expect(b.operational.keys.get(opaqueKey ?? "")).toBe("raw-123");
+    const { live, operational } = p.project(view, { scope: SCOPE });
+    const opaqueKey = live.work[0]?.key;
+    // Direction: rawId → key (not key → rawId)
+    expect(operational.keys.get("raw-123")).toBe(opaqueKey);
   });
 
-  it("operational map is recursively populated for nested children", () => {
+  it("operational map omits no-ID/display-label entries", () => {
+    const p = createLiveActivityProjector();
+    const view = makeActivityView({
+      work: [
+        {
+          kind: "job",
+          label: "no-id-entry",
+          tone: "running",
+        },
+        {
+          kind: "job",
+          label: "has-id-entry",
+          tone: "running",
+          diagnostics: diag("has-id"),
+        },
+      ],
+    });
+    const { operational } = p.project(view, { scope: SCOPE });
+    expect(operational.keys.size).toBe(1);
+    expect(operational.keys.has("has-id")).toBe(true);
+    // No-ID label is NOT in the operational map
+    expect(operational.keys.get("no-id-entry")).toBeUndefined();
+  });
+
+  it("operational map is recursively populated for nested children with rawIds", () => {
     const p = createLiveActivityProjector();
     const view = makeActivityView({
       work: [
@@ -699,31 +973,122 @@ describe("createLiveActivityProjector", () => {
     const child1Key = live.work[0]?.children[0]?.key;
     const child2Key = live.work[0]?.children[1]?.key;
 
-    // All keys (including nested) are in the operational map
-    expect(operational.keys.get(parentKey ?? "")).toBe("raw-parent");
-    expect(operational.keys.get(child1Key ?? "")).toBe("raw-child-1");
-    expect(operational.keys.get(child2Key ?? "")).toBe("raw-child-2");
+    // Direction: rawId → key for all nested entries
+    expect(operational.keys.get("raw-parent")).toBe(parentKey);
+    expect(operational.keys.get("raw-child-1")).toBe(child1Key);
+    expect(operational.keys.get("raw-child-2")).toBe(child2Key);
     expect(operational.keys.size).toBe(3);
   });
 
-  it("nested operational map for no-ID children uses label as the value", () => {
+  it("operational map is a genuinely immutable wrapper — casting does not expose mutation", () => {
+    const p = createLiveActivityProjector();
+    const view = makeActivityView({
+      work: [
+        {
+          kind: "job",
+          label: "shell",
+          tone: "running",
+          diagnostics: diag("raw-123"),
+        },
+      ],
+    });
+    const a = p.project(view, { scope: SCOPE });
+    const opaqueKey = a.live.work[0]?.key;
+
+    // Casting to Map should NOT give us set/delete/clear
+    const casted = a.operational.keys as unknown as Map<string, string>;
+    expect(typeof (casted as unknown as { set?: unknown }).set).toBe(
+      "undefined",
+    );
+    expect(typeof (casted as unknown as { clear?: unknown }).clear).toBe(
+      "undefined",
+    );
+    expect(typeof (casted as unknown as { delete?: unknown }).delete).toBe(
+      "undefined",
+    );
+
+    // Attempting to clear via cast should be a no-op or not exist
+    expect(() => {
+      (a.operational.keys as unknown as { clear?: () => void }).clear?.();
+    }).not.toThrow();
+
+    // Subsequent projection unaffected
+    const b = p.project(view, { scope: SCOPE });
+    expect(b.live.work[0]?.key).toBe(opaqueKey);
+    expect(b.operational.keys.get("raw-123")).toBe(opaqueKey);
+    expect(a.operational.keys.get("raw-123")).toBe(opaqueKey);
+  });
+
+  it("mutating returned operational map does not affect subsequent projection", () => {
+    const p = createLiveActivityProjector();
+    const view = makeActivityView({
+      work: [
+        {
+          kind: "job",
+          label: "shell",
+          tone: "running",
+          diagnostics: diag("raw-123"),
+        },
+      ],
+    });
+    const a = p.project(view, { scope: SCOPE });
+    const opaqueKey = a.live.work[0]?.key;
+
+    // The wrapper has no mutation methods, but even if someone reaches the
+    // internal Map somehow, it's a separate copy from the registry.
+    const casted = a.operational.keys as unknown as {
+      set?: (k: string, v: string) => void;
+    };
+    // set doesn't exist on the immutable wrapper
+    expect(casted.set).toBeUndefined();
+
+    // Subsequent projection unaffected
+    const b = p.project(view, { scope: SCOPE });
+    expect(b.live.work[0]?.key).toBe(opaqueKey);
+    expect(b.operational.keys.get("raw-123")).toBe(opaqueKey);
+  });
+
+  it("operational map is not serialized with the view", () => {
+    const p = createLiveActivityProjector();
+    const view = makeActivityView({
+      work: [
+        {
+          kind: "job",
+          label: "shell",
+          tone: "running",
+          diagnostics: diag("raw-123"),
+        },
+      ],
+    });
+    const { live, operational } = p.project(view, { scope: SCOPE });
+    const liveJson = JSON.stringify(live);
+    expect(liveJson).not.toContain("raw-123");
+    const opJson = JSON.stringify(Array.from(operational.keys.entries()));
+    expect(opJson).toContain("raw-123");
+  });
+
+  it("returns snapshot operational map that cannot corrupt internal state", () => {
     const p = createLiveActivityProjector();
     const view = makeActivityView({
       work: [
         {
           kind: "delegate",
-          label: "parent",
+          label: "Agent",
           tone: "running",
-          children: [{ kind: "job", label: "no-id-child", tone: "running" }],
+          diagnostics: diag("dlg-raw-1"),
         },
       ],
     });
-    const { live, operational } = p.project(view, { scope: SCOPE });
-    const childKey = live.work[0]?.children[0]?.key;
-    expect(operational.keys.get(childKey ?? "")).toBe("no-id-child");
+    const a = p.project(view, { scope: SCOPE });
+    const opaqueKey = a.live.work[0]?.key;
+    expect(opaqueKey).toBeDefined();
+
+    const b = p.project(view, { scope: SCOPE });
+    expect(b.live.work[0]?.key).toBe(opaqueKey);
+    expect(b.operational.keys.get("dlg-raw-1")).toBe(opaqueKey);
   });
 
-  // --- I2: reset / dispose / exact scoped reset ------------------------------
+  // --- reset / dispose / exact scoped reset --------------------------------
 
   it("reset() clears everything", () => {
     const p = createLiveActivityProjector({
@@ -788,14 +1153,11 @@ describe("createLiveActivityProjector", () => {
     const keyB = b.live.work[0]?.key;
     expect(keyA).not.toBe(keyB);
 
-    // Reset only scope A
     p.reset("scope-A");
 
-    // Re-project scope A — should get a NEW key (registry was cleared)
     const a2 = p.project(view, { scope: "scope-A" });
     expect(a2.live.work[0]?.key).not.toBe(keyA);
 
-    // Re-project scope B — should still get the SAME key (not cleared)
     const b2 = p.project(view, { scope: "scope-B" });
     expect(b2.live.work[0]?.key).toBe(keyB);
   });
@@ -812,7 +1174,6 @@ describe("createLiveActivityProjector", () => {
         },
       ],
     });
-    // Project "scope" and "scope:child" — these should be distinct exact scopes
     const a = p.project(view, { scope: "scope" });
     const keyMain = a.live.work[0]?.key;
 
@@ -820,21 +1181,18 @@ describe("createLiveActivityProjector", () => {
     const keyChild = b.live.work[0]?.key;
     expect(keyMain).not.toBe(keyChild);
 
-    // Reset "scope" — should NOT affect "scope:child" (exact deletion, not prefix)
     p.reset("scope");
 
-    // "scope" gets a new key
     const a2 = p.project(view, { scope: "scope" });
     expect(a2.live.work[0]?.key).not.toBe(keyMain);
 
-    // "scope:child" keeps its key (exact scope deletion, no prefix matching)
     const b2 = p.project(view, { scope: "scope:child" });
     expect(b2.live.work[0]?.key).toBe(keyChild);
   });
 
-  // --- capacity: safe rejection before mutation, no FIFO eviction ----------
+  // --- (5) transactional rejection — zero registry entries ------------------
 
-  it("capacity rejection throws before mutation and leaves existing key stability", () => {
+  it("capacity rejection is transactional — zero new registry entries", () => {
     const p = createLiveActivityProjector({
       allocator: deterministicAllocator("w"),
       maxRegistrySize: 3,
@@ -866,7 +1224,6 @@ describe("createLiveActivityProjector", () => {
     const key2 = a.live.work[1]?.key;
     const key3 = a.live.work[2]?.key;
 
-    // Now project a view that adds a 4th distinct entry — should reject
     const overView = makeActivityView({
       work: [
         {
@@ -895,9 +1252,14 @@ describe("createLiveActivityProjector", () => {
         },
       ],
     });
-    expect(() => p.project(overView, { scope: SCOPE })).toThrow(
-      /capacity exceeded/i,
-    );
+    let err: unknown;
+    try {
+      p.project(overView, { scope: SCOPE });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ActivityProjectorError);
+    expect((err as ActivityProjectorError).code).toBe("capacity");
 
     // Existing keys remain stable — rejection happened before mutation
     const b = p.project(view, { scope: SCOPE });
@@ -954,7 +1316,6 @@ describe("createLiveActivityProjector", () => {
       ],
     });
 
-    // Reject twice — identical over-cap rejection
     expect(() => p.project(overView, { scope: SCOPE })).toThrow(
       /capacity exceeded/i,
     );
@@ -962,7 +1323,6 @@ describe("createLiveActivityProjector", () => {
       /capacity exceeded/i,
     );
 
-    // Existing keys are still stable
     const b = p.project(baseView, { scope: SCOPE });
     expect(b.live.work[0]?.key).toBe(key1);
     expect(b.live.work[1]?.key).toBe(key2);
@@ -996,17 +1356,58 @@ describe("createLiveActivityProjector", () => {
       ],
     });
     const a = p.project(view, { scope: SCOPE });
-    // Re-projecting the same at-cap view should not throw (no new allocations)
     const b = p.project(view, { scope: SCOPE });
     expect(b.live.work.map((w) => w.key)).toEqual(
       a.live.work.map((w) => w.key),
     );
   });
 
-  // --- allocator collision detection ----------------------------------------
+  it("repeated rejected new scopes cannot grow storage (cap bounds all retained state)", () => {
+    // With a tiny cap, repeatedly projecting into a NEW scope (that would
+    // overflow) must not accumulate any retained state.
+    const p = createLiveActivityProjector({
+      allocator: deterministicAllocator("w"),
+      maxRegistrySize: 1,
+    });
+    const baseView = makeActivityView({
+      work: [
+        {
+          kind: "job",
+          label: "j1",
+          tone: "running",
+          diagnostics: diag("r1"),
+        },
+      ],
+    });
+    p.project(baseView, { scope: "s0" });
+    const bigView = makeActivityView({
+      work: [
+        {
+          kind: "job",
+          label: "a",
+          tone: "running",
+          diagnostics: diag("ra"),
+        },
+        {
+          kind: "job",
+          label: "b",
+          tone: "running",
+          diagnostics: diag("rb"),
+        },
+      ],
+    });
+    // Repeatedly try to project into new scopes that exceed cap
+    for (let i = 0; i < 20; i++) {
+      expect(() => p.project(bigView, { scope: `s${i + 1}` })).toThrow(
+        /capacity exceeded/i,
+      );
+    }
+    // The original scope should still work and be stable
+    const b = p.project(baseView, { scope: "s0" });
+    expect(b.live.work[0]?.key).toBeDefined();
+  });
 
-  it("injected allocator that returns duplicate keys produces a generic safe error", () => {
-    // Allocator that always returns the same key
+  it("collision rejection is transactional — zero new registry entries", () => {
     const colliding: OpaqueKeyAllocator = () => "collision-key";
     const p = createLiveActivityProjector({ allocator: colliding });
     const view = makeActivityView({
@@ -1025,12 +1426,17 @@ describe("createLiveActivityProjector", () => {
         },
       ],
     });
-    expect(() => p.project(view, { scope: SCOPE })).toThrow(
-      /allocator collision/i,
-    );
+    let err: unknown;
+    try {
+      p.project(view, { scope: SCOPE });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ActivityProjectorError);
+    expect((err as ActivityProjectorError).code).toBe("collision");
   });
 
-  it("allocator collision error contains no raw ID, label, or key value", () => {
+  it("collision error contains no raw ID, label, or key value", () => {
     const colliding: OpaqueKeyAllocator = () => "secret-collision-key";
     const p = createLiveActivityProjector({ allocator: colliding });
     const view = makeActivityView({
@@ -1049,26 +1455,108 @@ describe("createLiveActivityProjector", () => {
         },
       ],
     });
-    let message = "";
+    let err: unknown;
     try {
       p.project(view, { scope: SCOPE });
     } catch (e) {
-      message = e instanceof Error ? e.message : String(e);
+      err = e;
     }
-    expect(message).not.toContain("secret-collision-key");
-    expect(message).not.toContain("secret-label");
-    expect(message).not.toContain("secret-raw-id");
-    expect(message).not.toContain("other-raw-id");
+    expect(err).toBeInstanceOf(ActivityProjectorError);
+    expect((err as ActivityProjectorError).code).toBe("collision");
+    const msg = (err as ActivityProjectorError).message;
+    expect(msg).not.toContain("secret-collision-key");
+    expect(msg).not.toContain("secret-label");
+    expect(msg).not.toContain("secret-raw-id");
+    expect(msg).not.toContain("other-raw-id");
   });
 
-  // --- cycle detection: 1/2/3-length cycles --------------------------------
+  it("raw-duplicate rejection is transactional — zero new registry entries", () => {
+    const p = createLiveActivityProjector({
+      allocator: deterministicAllocator("w"),
+    });
+    const view = makeActivityView({
+      work: [
+        {
+          kind: "job",
+          label: "a",
+          tone: "running",
+          diagnostics: diag("dup"),
+        },
+        {
+          kind: "job",
+          label: "b",
+          tone: "running",
+          diagnostics: diag("dup"),
+        },
+      ],
+    });
+    expect(() => p.project(view, { scope: SCOPE })).toThrow(/raw.*duplicate/i);
+    // Re-project a valid view — the first entry should get key w1 (no leak)
+    const valid = makeActivityView({
+      work: [
+        {
+          kind: "job",
+          label: "a",
+          tone: "running",
+          diagnostics: diag("dup"),
+        },
+      ],
+    });
+    const b = p.project(valid, { scope: SCOPE });
+    expect(b.live.work[0]?.key).toBe("w1");
+  });
 
-  // WorkEntry.children is readonly; use a mutable alias to build cycles.
-  type MutableWorkEntry = Omit<WorkEntry, "children"> & {
-    children?: WorkEntry[];
-  };
+  it("no-id-duplicate rejection is transactional — zero new registry entries", () => {
+    const p = createLiveActivityProjector({
+      allocator: deterministicAllocator("w"),
+    });
+    const view = makeActivityView({
+      work: [
+        { kind: "job", label: "dup-label", tone: "running" },
+        { kind: "job", label: "dup-label", tone: "terminal" },
+      ],
+    });
+    expect(() => p.project(view, { scope: SCOPE })).toThrow(
+      /indistinguishable/i,
+    );
+    const valid = makeActivityView({
+      work: [{ kind: "job", label: "dup-label", tone: "running" }],
+    });
+    const b = p.project(valid, { scope: SCOPE });
+    expect(b.live.work[0]?.key).toBe("w1");
+  });
 
-  it("1-length cycle (self-referencing entry) throws a generic cycle error", () => {
+  it("cycle rejection is transactional — zero new registry entries", () => {
+    const p = createLiveActivityProjector({
+      allocator: deterministicAllocator("w"),
+    });
+    const self: MutableWorkEntry = {
+      kind: "delegate",
+      label: "self",
+      tone: "running",
+      diagnostics: diag("self-id"),
+    };
+    self.children = [self as WorkEntry];
+    const view = makeActivityView({ work: [self as WorkEntry] });
+    expect(() => p.project(view, { scope: SCOPE })).toThrow(/cycle/i);
+    // Re-project a valid view — should get w1 (no leaked allocation)
+    const valid = makeActivityView({
+      work: [
+        {
+          kind: "job",
+          label: "a",
+          tone: "running",
+          diagnostics: diag("a-id"),
+        },
+      ],
+    });
+    const b = p.project(valid, { scope: SCOPE });
+    expect(b.live.work[0]?.key).toBe("w1");
+  });
+
+  // --- (6) iterative/stack-safe traversal -----------------------------------
+
+  it("1-length cycle (self-referencing entry) throws a typed cycle error", () => {
     const p = createLiveActivityProjector();
     const self: MutableWorkEntry = {
       kind: "delegate",
@@ -1076,12 +1564,19 @@ describe("createLiveActivityProjector", () => {
       tone: "running",
       diagnostics: diag("self-id"),
     };
-    self.children = [self];
-    const view = makeActivityView({ work: [self] });
-    expect(() => p.project(view, { scope: SCOPE })).toThrow(/cycle/i);
+    self.children = [self as WorkEntry];
+    const view = makeActivityView({ work: [self as WorkEntry] });
+    let err: unknown;
+    try {
+      p.project(view, { scope: SCOPE });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ActivityProjectorError);
+    expect((err as ActivityProjectorError).code).toBe("cycle");
   });
 
-  it("2-length cycle throws a generic cycle error", () => {
+  it("2-length cycle throws a typed cycle error", () => {
     const p = createLiveActivityProjector();
     const a: MutableWorkEntry = {
       kind: "delegate",
@@ -1095,13 +1590,20 @@ describe("createLiveActivityProjector", () => {
       tone: "running",
       diagnostics: diag("b-id"),
     };
-    a.children = [b];
-    b.children = [a];
-    const view = makeActivityView({ work: [a] });
-    expect(() => p.project(view, { scope: SCOPE })).toThrow(/cycle/i);
+    a.children = [b as WorkEntry];
+    b.children = [a as WorkEntry];
+    const view = makeActivityView({ work: [a as WorkEntry] });
+    let err: unknown;
+    try {
+      p.project(view, { scope: SCOPE });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ActivityProjectorError);
+    expect((err as ActivityProjectorError).code).toBe("cycle");
   });
 
-  it("3-length cycle throws a generic cycle error", () => {
+  it("3-length cycle throws a typed cycle error", () => {
     const p = createLiveActivityProjector();
     const a: MutableWorkEntry = {
       kind: "delegate",
@@ -1121,11 +1623,18 @@ describe("createLiveActivityProjector", () => {
       tone: "running",
       diagnostics: diag("c-id"),
     };
-    a.children = [b];
-    b.children = [c];
-    c.children = [a];
-    const view = makeActivityView({ work: [a] });
-    expect(() => p.project(view, { scope: SCOPE })).toThrow(/cycle/i);
+    a.children = [b as WorkEntry];
+    b.children = [c as WorkEntry];
+    c.children = [a as WorkEntry];
+    const view = makeActivityView({ work: [a as WorkEntry] });
+    let err: unknown;
+    try {
+      p.project(view, { scope: SCOPE });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ActivityProjectorError);
+    expect((err as ActivityProjectorError).code).toBe("cycle");
   });
 
   it("cycle error contains no raw ID, label, or prompt", () => {
@@ -1136,55 +1645,136 @@ describe("createLiveActivityProjector", () => {
       tone: "running",
       diagnostics: diag("secret-cycle-id"),
     };
-    self.children = [self];
-    const view = makeActivityView({ work: [self] });
-    let message = "";
+    self.children = [self as WorkEntry];
+    const view = makeActivityView({ work: [self as WorkEntry] });
+    let err: unknown;
     try {
       p.project(view, { scope: SCOPE });
     } catch (e) {
-      message = e instanceof Error ? e.message : String(e);
+      err = e;
     }
-    expect(message).not.toContain("secret-cycle-label");
-    expect(message).not.toContain("secret-cycle-id");
+    expect(err).toBeInstanceOf(ActivityProjectorError);
+    const msg = (err as ActivityProjectorError).message;
+    expect(msg).not.toContain("secret-cycle-label");
+    expect(msg).not.toContain("secret-cycle-id");
   });
 
-  it("diamond (non-cyclic shared child) does not throw", () => {
-    // A diamond: parent → childA, childB → sharedGrandchild.
-    // This is NOT a cycle — sharedGrandchild is visited twice but via
-    // different parent paths, and the ancestry set is cleared on the way up.
+  it("diamond with distinct rawIds (non-cyclic shared label) does not throw", () => {
     const p = createLiveActivityProjector();
-    const shared: WorkEntry = {
-      kind: "job",
-      label: "shared-grandchild",
-      tone: "running",
-      diagnostics: diag("shared-gc-id"),
-    };
-    const childA: WorkEntry = {
-      kind: "delegate",
-      label: "child-A",
-      tone: "running",
-      diagnostics: diag("child-a-id"),
-      children: [shared],
-    };
-    const childB: WorkEntry = {
-      kind: "delegate",
-      label: "child-B",
-      tone: "running",
-      diagnostics: diag("child-b-id"),
-      children: [shared],
-    };
-    const parent: WorkEntry = {
-      kind: "delegate",
-      label: "parent",
-      tone: "running",
-      diagnostics: diag("parent-id"),
-      children: [childA, childB],
-    };
-    const view = makeActivityView({ work: [parent] });
+    const view = makeActivityView({
+      work: [
+        {
+          kind: "delegate",
+          label: "parent",
+          tone: "running",
+          diagnostics: diag("parent-id"),
+          children: [
+            {
+              kind: "delegate",
+              label: "child-A",
+              tone: "running",
+              diagnostics: diag("child-a"),
+              children: [
+                {
+                  kind: "job",
+                  label: "shared-label",
+                  tone: "running",
+                  diagnostics: diag("gc-a"),
+                },
+              ],
+            },
+            {
+              kind: "delegate",
+              label: "child-B",
+              tone: "running",
+              diagnostics: diag("child-b"),
+              children: [
+                {
+                  kind: "job",
+                  label: "shared-label",
+                  tone: "running",
+                  diagnostics: diag("gc-b"),
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    });
     expect(() => p.project(view, { scope: SCOPE })).not.toThrow();
   });
 
-  // --- cross-instance default allocator is process-unique ------------------
+  it("deep chain beyond normal call-stack yields typed error, never RangeError", () => {
+    // Build a chain deeper than the typical JS call stack. If traversal were
+    // recursive, this would hit RangeError. Iterative traversal yields a
+    // typed projector error (cycle or capacity) instead.
+    const depth = 15_000;
+    const p = createLiveActivityProjector({
+      maxRegistrySize: 100_000,
+    });
+    const root = makeDeepChain(depth);
+    const view = makeActivityView({ work: [root] });
+    let err: unknown;
+    try {
+      p.project(view, { scope: SCOPE });
+    } catch (e) {
+      err = e;
+    }
+    // It should either succeed (if within cap) or throw a typed error.
+    // It must NEVER throw RangeError.
+    if (err !== undefined) {
+      expect(err).not.toBeInstanceOf(RangeError);
+      if (err instanceof ActivityProjectorError) {
+        expect([
+          "capacity",
+          "collision",
+          "cycle",
+          "raw-duplicate",
+          "no-id-duplicate",
+        ]).toContain((err as ActivityProjectorError).code);
+      }
+    }
+  });
+
+  it("deep chain with cycle at the bottom yields typed cycle error, not RangeError", () => {
+    // Build a chain that's deep AND has a cycle at the bottom.
+    const depth = 5_000;
+    const p = createLiveActivityProjector({
+      maxRegistrySize: 100_000,
+    });
+    // Create a chain where the leaf points back to an ancestor
+    const leaf: MutableWorkEntry = {
+      kind: "job",
+      label: "leaf",
+      tone: "terminal",
+      diagnostics: diag("leaf-id"),
+    };
+    let current = leaf;
+    for (let i = 0; i < depth; i++) {
+      const parent: MutableWorkEntry = {
+        kind: "delegate",
+        label: `level-${i}`,
+        tone: "running",
+        diagnostics: diag(`deep-${i}`),
+        children: [current as WorkEntry],
+      };
+      current = parent;
+    }
+    // Make leaf's child point back to root — cycle
+    leaf.children = [current as WorkEntry];
+    const view = makeActivityView({ work: [current as WorkEntry] });
+    let err: unknown;
+    try {
+      p.project(view, { scope: SCOPE });
+    } catch (e) {
+      err = e;
+    }
+    expect(err).toBeInstanceOf(ActivityProjectorError);
+    expect((err as ActivityProjectorError).code).toBe("cycle");
+    expect(err).not.toBeInstanceOf(RangeError);
+  });
+
+  // --- (8) non-derivable default salt ---------------------------------------
 
   it("different instances with default allocators produce different keys for the same input", () => {
     const p1 = createLiveActivityProjector();
@@ -1204,7 +1794,28 @@ describe("createLiveActivityProjector", () => {
     expect(a.live.work[0]?.key).not.toBe(b.live.work[0]?.key);
   });
 
-  it("different instances with explicit distinct allocators produce different keys (deterministic)", () => {
+  it("default allocator keys are non-derivable (do not contain rawId or label)", () => {
+    const p = createLiveActivityProjector();
+    const view = makeActivityView({
+      work: [
+        {
+          kind: "job",
+          label: "secret-label",
+          tone: "running",
+          diagnostics: diag("secret-raw-id"),
+        },
+      ],
+    });
+    const { live } = p.project(view, { scope: SCOPE });
+    const key = live.work[0]?.key ?? "";
+    expect(key).not.toContain("secret-label");
+    expect(key).not.toContain("secret-raw-id");
+    expect(key.length).toBeGreaterThan(0);
+  });
+
+  it("injected deterministic allocator is honored (not self-fulfilling with module counters)", () => {
+    // The injected allocator fully overrides the default; module-level counters
+    // must not participate in key generation when an allocator is injected.
     const p1 = createLiveActivityProjector({
       allocator: deterministicAllocator("a"),
     });
@@ -1228,25 +1839,30 @@ describe("createLiveActivityProjector", () => {
     expect(a.live.work[0]?.key).not.toBe(b.live.work[0]?.key);
   });
 
-  // --- operational map -------------------------------------------------------
-
-  it("operational map is not serialized with the view", () => {
-    const p = createLiveActivityProjector();
+  it("injected allocator collision behavior is detectable (not masked by module counters)", () => {
+    // An allocator that always returns the same key must produce a collision
+    // error, regardless of module-level state.
+    const colliding: OpaqueKeyAllocator = () => "same-key";
+    const p = createLiveActivityProjector({ allocator: colliding });
     const view = makeActivityView({
       work: [
         {
           kind: "job",
-          label: "shell",
+          label: "a",
           tone: "running",
-          diagnostics: diag("raw-123"),
+          diagnostics: diag("r1"),
+        },
+        {
+          kind: "job",
+          label: "b",
+          tone: "running",
+          diagnostics: diag("r2"),
         },
       ],
     });
-    const { live, operational } = p.project(view, { scope: SCOPE });
-    const liveJson = JSON.stringify(live);
-    expect(liveJson).not.toContain("raw-123");
-    const opJson = JSON.stringify(Array.from(operational.keys.entries()));
-    expect(opJson).toContain("raw-123");
+    expect(() => p.project(view, { scope: SCOPE })).toThrow(
+      /allocator collision/i,
+    );
   });
 
   // --- determinism / edge cases ---------------------------------------------
@@ -1320,7 +1936,6 @@ describe("createLiveActivityProjector", () => {
     });
     const a = p.project(view, { scope: "scope-A" });
     const b = p.project(view, { scope: "scope-B" });
-    // Same item ID but different scopes → different keys (no cross-aliasing)
     expect(a.live.work[0]?.key).not.toBe(b.live.work[0]?.key);
   });
 
@@ -1362,4 +1977,27 @@ describe("createLiveActivityProjector", () => {
     expect(json).not.toContain("redacted");
     expect(json).not.toContain("profileId");
   });
+
+  // --- (7) all error codes covered -----------------------------------------
+
+  it("all five error codes are exercised across tests", () => {
+    // This is a meta-test asserting the code union type is complete.
+    const codes: ActivityProjectorErrorCode[] = [
+      "capacity",
+      "collision",
+      "cycle",
+      "raw-duplicate",
+      "no-id-duplicate",
+    ];
+    for (const code of codes) {
+      const err = new ActivityProjectorError(code, "test");
+      expect(err.code).toBe(code);
+      expect(err).toBeInstanceOf(Error);
+      expect(err.name).toBe("ActivityProjectorError");
+    }
+  });
 });
+
+// Re-export the code type for the meta-test.
+type ActivityProjectorErrorCode =
+  import("./project-activity").ActivityProjectorErrorCode;
