@@ -84,15 +84,15 @@ const modelSwitchEnumerationTimeout = 8 * time.Second
 func resolveModelSwitchTarget(client *llm.Client, profile *provider.Profile) (*provider.Profile, error) {
 	ctx, cancel := context.WithTimeout(context.Background(), modelSwitchEnumerationTimeout)
 	defer cancel()
-	filled, models, ok := fillLiveModelMetadata(ctx, client, profile)
-	if !ok {
+	filled, enumeration := fillLiveModelMetadata(ctx, client, profile)
+	if enumeration.err != nil {
 		// Fail open unconditionally: a non-enumerable instance (adapter
 		// doesn't implement ModelLister) and any enumeration failure
 		// (timeout, auth error, etc.) both accept the switch, with no live
 		// metadata to fill.
 		return filled, nil
 	}
-	if err := validateModelSwitchMembership(client, filled, models); err != nil {
+	if err := validateModelSwitchMembership(client, filled, enumeration.models); err != nil {
 		return filled, err
 	}
 	return filled, nil

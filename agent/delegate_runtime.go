@@ -1599,6 +1599,7 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 		}
 	}
 	restoreCfg := RestoreSessionConfig{
+		LifetimeContext:         s.cfg.LifetimeContext,
 		StateDir:                s.stateDir,
 		Project:                 s.cfg.Project,
 		ResolveProfile:          s.resolveProfile,

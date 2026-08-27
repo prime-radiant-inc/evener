@@ -110,6 +110,23 @@ type DelegateSandboxSchema struct {
 	RequireNonOffModeForNetwork bool
 	SandboxDescription          string
 	SandboxNetDescription       string
+	// ModelDescription is appended to the model override description when a
+	// caller has captured a bounded, startup-frozen availability snapshot.
+	// Empty preserves the generic string contract.
+	ModelDescription string
+}
+
+const delegateModelOverrideDescription = "Model override. Default: the delegate captures your CURRENT model at the moment it is spawned (so a delegate spawned after you switch models inherits the new one, and one spawned before keeps the model it started with). An explicit value here pins the delegate to that model instead, regardless of your current or future model."
+
+// DelegateModelDescriptionAdditionBudget reports how many bytes may be
+// appended to the model parameter's fixed description without exceeding the
+// caller's total schema-description budget.
+func DelegateModelDescriptionAdditionBudget(maxBytes int) int {
+	budget := maxBytes - len([]byte(delegateModelOverrideDescription)) - 1
+	if budget < 0 {
+		return 0
+	}
+	return budget
 }
 
 // DefDelegate defines the delegate tool, which starts a NEW delegate
@@ -158,7 +175,7 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 			"properties": map[string]any{
 				"task":                 map[string]any{"type": "string"},
 				"agent_type":           agentTypeSchema,
-				"model":                map[string]any{"type": "string", "description": "Model override. Default: the delegate captures your CURRENT model at the moment it is spawned (so a delegate spawned after you switch models inherits the new one, and one spawned before keeps the model it started with). An explicit value here pins the delegate to that model instead, regardless of your current or future model."},
+				"model":                map[string]any{"type": "string", "description": delegateModelOverrideDescription},
 				"reasoning_effort":     map[string]any{"type": "string", "description": "Reasoning effort for this delegate (low, medium, or high). Default inherits from parent.", "enum": []string{"low", "medium", "high"}},
 				"delegation_allowance": map[string]any{"type": "integer", "description": "0 (default): a leaf delegate that cannot itself delegate. >0: the delegate may delegate, granting onward allowances strictly smaller than this; must be strictly less than your own allowance. The allowance only takes effect if the chosen agent_type actually has the `delegate` tool: the built-in `subagent` role is a non-delegating leaf, so a >0 allowance on it is a silent no-op. For a multi-level tree, omit agent_type (the default role can delegate)."},
 				"watch_parent":         map[string]any{"type": "boolean", "description": "Grant this child permission to observe your session with job_watch(source=\"parent\"). This does not grant delegation or any transitive watch permission."},
@@ -186,6 +203,9 @@ func DefDelegateWithSandbox(agentTypes []string, sandboxSchema DelegateSandboxSc
 		},
 	}
 	props := def.Parameters["properties"].(map[string]any)
+	if sandboxSchema.ModelDescription != "" {
+		props["model"].(map[string]any)["description"] = strings.TrimSpace(props["model"].(map[string]any)["description"].(string) + " " + sandboxSchema.ModelDescription)
+	}
 	if !sandboxSchema.Available {
 		delete(props, "sandbox")
 		delete(props, "sandbox_net")
@@ -251,6 +271,24 @@ func DefDelegateSend() llm.ToolDefinition {
 				"max_wait_ms": map[string]any{"type": "integer", "description": "0 (default): deliver/start without waiting. >0: for a newly started delegate generation, wait inline up to this many ms for its result; delivery to a running delegate or caller returns once delivered."},
 			},
 			"required": []string{"to", "message"},
+		},
+	}
+}
+
+// DefModelList exposes a bounded read-only view of a startup-frozen model
+// snapshot. Cursor values are opaque and snapshot-authenticated by the agent.
+func DefModelList() llm.ToolDefinition {
+	return llm.ToolDefinition{
+		Name:        "model_list",
+		Description: "List choices from the startup-frozen model availability snapshot. This is read-only; use the opaque cursor returned for the next page. Pages are bounded by both max_count and max_bytes and are never truncated.",
+		Parameters: map[string]any{
+			"type":                 "object",
+			"additionalProperties": false,
+			"properties": map[string]any{
+				"cursor":    map[string]any{"type": "string", "description": "Opaque snapshot-bound continuation cursor; omit for the first page."},
+				"max_count": map[string]any{"type": "integer", "minimum": 1, "maximum": 128},
+				"max_bytes": map[string]any{"type": "integer", "minimum": 1, "maximum": 4096},
+			},
 		},
 	}
 }
