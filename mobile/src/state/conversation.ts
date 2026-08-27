@@ -832,8 +832,18 @@ export function createConversationStore() {
   // happens to end with "… truncated" does not freeze delta appends.
   const truncatedItemIds = new Set<string>();
 
+  // Task 2A-Items: Per-item activity family — tracks whether each activity
+  // item is a "reasoning" or "tool" family item, so delta notifications can
+  // verify they target the matching family. Populated from projectSingleItem
+  // (which has the wire ThreadItem.type) and from truncateAndRecord (which
+  // derives the family from the mobile item's label — "Reasoning" → reasoning,
+  // everything else → tool, matching the projector's labeling in project.ts).
+  const itemFamilies = new Map<string, "reasoning" | "tool">();
+
   // Truncate items and record which item IDs were truncated (F12).
   // Called from open/openProjected/rehydrate to seed the truncation set.
+  // Task 2A-Items: also records activity item families (reasoning vs tool)
+  // from the mobile item's label, matching the projector's labeling.
   function truncateAndRecord(
     items: MobileTimelineItem[],
   ): MobileTimelineItem[] {
@@ -850,12 +860,32 @@ export function createConversationStore() {
             exceedsByteLimit(item.detail.output, MAX_ITEM_BYTES)) ||
           (item.detail.error !== undefined &&
             exceedsByteLimit(item.detail.error, MAX_ITEM_BYTES));
+        // Task 2A-Items: record the activity family from the label. The
+        // projector labels reasoning items "Reasoning" and tool items with
+        // the toolName. This matches project.ts projectItem exactly.
+        itemFamilies.set(
+          item.id,
+          item.label === "Reasoning" ? "reasoning" : "tool",
+        );
       }
       if (needsTruncation) {
         truncatedItemIds.add(item.id);
       }
       return truncateItem(item);
     });
+  }
+
+  // Task 2A-Items: truncate a single item and record its truncation/family
+  // state. Returns a non-undefined MobileTimelineItem (the input is known
+  // non-null). Used by item/started and item/completed for authoritative
+  // replacement — also removes any stale freeze entry first so the new
+  // content can accept future deltas.
+  function truncateAndRecordSingle(
+    item: MobileTimelineItem,
+  ): MobileTimelineItem {
+    const [result] = truncateAndRecord([item]);
+    if (result === undefined) return item;
+    return result;
   }
 
   return create<LiveConversationState>((rawSet, get) => {
@@ -902,6 +932,8 @@ export function createConversationStore() {
         trailingReread = null;
         pageOwnedIds.clear();
         liveOwnedRevs.clear();
+        truncatedItemIds.clear();
+        itemFamilies.clear();
         set({
           status: "opening",
           ref,
@@ -954,6 +986,8 @@ export function createConversationStore() {
         trailingReread = null;
         pageOwnedIds.clear();
         liveOwnedRevs.clear();
+        truncatedItemIds.clear();
+        itemFamilies.clear();
         // Reset thread-scoped state (draft, pending mutation) — presentation state
         // now lives outside the store (in live-ui-store).
         // F4: reset the activity sink on thread change.
@@ -1292,8 +1326,16 @@ export function createConversationStore() {
             // F10: Dedupe by source item identity — items from older pages
             // that already exist in the current conversation (same id) are
             // dropped, keeping the newer (live tail) version.
+            // Task 2A-Items: also dedupe within the incoming page by updating
+            // the seen set during traversal, preserving order and first
+            // occurrence semantics.
             const existingIds = new Set(currentConv.items.map((i) => i.id));
-            const deduped = result.items.filter((i) => !existingIds.has(i.id));
+            const deduped: MobileTimelineItem[] = [];
+            for (const item of result.items) {
+              if (existingIds.has(item.id)) continue;
+              existingIds.add(item.id);
+              deduped.push(item);
+            }
             // I3: Record page-owned item IDs — these are items loaded from
             // older pages. They are tracked so the rehydrate page-race merge
             // can distinguish page-owned history from live notifications.
@@ -1302,8 +1344,10 @@ export function createConversationStore() {
             }
             // Prepend older (deduped) items, then trim from the oldest (front)
             // so the newest live tail is retained (finding 8).
+            // Task 2A-Items: use truncateAndRecord so activity families are
+            // recorded for paged items too.
             const merged = capItems([
-              ...deduped.map(truncateItem),
+              ...truncateAndRecord(deduped),
               ...currentConv.items,
             ]);
             // F8: If we're at the cap and the merge trimmed older items,
@@ -1566,6 +1610,7 @@ export function createConversationStore() {
         pageOwnedIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
+        itemFamilies.clear();
         // F4: reset the activity sink on close.
         if (activitySink !== null) {
           activitySink.reset();
@@ -1705,7 +1750,10 @@ export function createConversationStore() {
             const params = n.params as { item: ThreadItem };
             const projected = projectSingleItem(params.item, conv.askPending);
             if (projected !== null) {
-              const truncated = truncateItem(projected);
+              // Task 2A-Items: authoritative replacement — remove any stale
+              // freeze entry so the new content can accept future deltas.
+              truncatedItemIds.delete(params.item.id);
+              const truncated = truncateAndRecordSingle(projected);
               const existingIdx = conv.items.findIndex(
                 (i) => i.id === params.item.id,
               );
@@ -1744,7 +1792,10 @@ export function createConversationStore() {
             const params = n.params as { item: ThreadItem };
             const projected = projectSingleItem(params.item, conv.askPending);
             if (projected !== null) {
-              const truncated = truncateItem(projected);
+              // Task 2A-Items: authoritative replacement — remove any stale
+              // freeze entry so the new content can accept future deltas.
+              truncatedItemIds.delete(params.item.id);
+              const truncated = truncateAndRecordSingle(projected);
               const existingIdx = conv.items.findIndex(
                 (i) => i.id === params.item.id,
               );
@@ -1853,6 +1904,22 @@ export function createConversationStore() {
             const existing = conv.items.find(
               (i) => i.id === params.itemId && i.kind === "activity",
             );
+            // Task 2A-Items: exact delta family — reasoning deltas apply only
+            // to the matching reasoning item family. If the target's recorded
+            // family is "tool", this is a wrong family → reread, no text
+            // mutation. If the family is unknown (not tracked, e.g. loaded
+            // from a fixture without family info), accept to preserve
+            // existing behavior.
+            if (
+              existing &&
+              existing.kind === "activity" &&
+              itemFamilies.get(params.itemId) === "tool"
+            ) {
+              if (state.ref !== null) {
+                requestRehydrate(state.ref);
+              }
+              break;
+            }
             if (existing) {
               // F12: Per-item truncation ownership.
               if (truncatedItemIds.has(params.itemId)) {
@@ -1891,10 +1958,43 @@ export function createConversationStore() {
           }
 
           case "item/toolOutput/delta": {
-            const params = n.params as { itemId: string; delta: string };
+            const params = n.params as {
+              itemId: string;
+              callId: string;
+              delta: string;
+            };
             const existing = conv.items.find(
               (i) => i.id === params.itemId && i.kind === "activity",
             );
+            // Task 2A-Items: exact delta family — tool-output deltas apply
+            // only to the matching tool item and, where the protocol supplies
+            // it, matching callId. If the target's recorded family is
+            // "reasoning", this is a wrong family → reread. If the target has
+            // a callId and the delta's callId differs, that's a wrong call →
+            // reread. If the family is unknown (not tracked), accept to
+            // preserve existing behavior. No text mutation on reread.
+            if (existing && existing.kind === "activity") {
+              const family = itemFamilies.get(params.itemId);
+              if (family === "reasoning") {
+                // Wrong family — reasoning item cannot receive tool output.
+                if (state.ref !== null) {
+                  requestRehydrate(state.ref);
+                }
+                break;
+              }
+              const itemCallId = existing.detail.callId;
+              if (
+                itemCallId !== undefined &&
+                params.callId !== undefined &&
+                itemCallId !== params.callId
+              ) {
+                // Wrong call — the delta targets a different tool call.
+                if (state.ref !== null) {
+                  requestRehydrate(state.ref);
+                }
+                break;
+              }
+            }
             if (existing) {
               // F12: Per-item truncation ownership.
               if (truncatedItemIds.has(params.itemId)) {
@@ -1993,6 +2093,7 @@ export function createConversationStore() {
         pageOwnedIds.clear();
         liveOwnedRevs.clear();
         truncatedItemIds.clear();
+        itemFamilies.clear();
         // F4: reset the activity sink on thread change.
         if (activitySink !== null) {
           activitySink.reset();
