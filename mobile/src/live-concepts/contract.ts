@@ -4,7 +4,7 @@ import type { UseBoundStore } from "zustand/react";
 import type { NativeBridge } from "../native/client";
 import type { ConversationService } from "../services/conversation";
 import type { RosterService } from "../services/roster";
-import type { ActivityState } from "../state/activity";
+import type { LiveActivityState } from "../state/activity";
 import type { ConnectionState } from "../state/connection";
 import type { ConversationState } from "../state/conversation";
 import type { NavigationState } from "../state/navigation";
@@ -119,7 +119,7 @@ export interface LiveConceptRuntime {
   rosterService: RosterService | null;
   conversationStore: BoundStore<ConversationState>;
   conversationService: ConversationService | null;
-  activityStore: BoundStore<ActivityState>;
+  activityStore: BoundStore<LiveActivityState>;
   native: NativeBridge;
   profileId: string | null;
 }
