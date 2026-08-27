@@ -302,4 +302,94 @@ describe("projectLiveConversation", () => {
       }
     }
   });
+
+  // --- contract-required fields (tone, updatedLabel, questionKey, sequenceLabel) ---
+
+  it("produces required tone on the conversation view", () => {
+    const conv = makeConversation({ status: "running" });
+    const view = projectLiveConversation(conv, "ref-1");
+    expect(view.tone).toBe("running");
+  });
+
+  it("produces idle tone for ready status", () => {
+    const conv = makeConversation({ status: "ready" });
+    const view = projectLiveConversation(conv, "ref-1");
+    expect(view.tone).toBe("idle");
+  });
+
+  it("produces failed tone for error status", () => {
+    const conv = makeConversation({ status: "error" });
+    const view = projectLiveConversation(conv, "ref-1");
+    expect(view.tone).toBe("failed");
+  });
+
+  it("produces updatedLabel null — never fabricates a timestamp", () => {
+    const conv = makeConversation();
+    const view = projectLiveConversation(conv, "ref-1");
+    expect(view.updatedLabel).toBeNull();
+  });
+
+  it("produces questionKey null on non-question items", () => {
+    const conv = makeConversation({
+      items: [{ kind: "user", id: "u1", text: "hi" }],
+    });
+    const view = projectLiveConversation(conv, "ref-1");
+    expect(view.items[0]?.questionKey).toBeNull();
+  });
+
+  it("produces questionKey linking to the corresponding LiveQuestionView", () => {
+    const conv = makeConversation({
+      items: [
+        {
+          kind: "question",
+          id: "q1",
+          batch: {
+            callId: "call-1",
+            questions: [
+              {
+                key: "call-1:0",
+                header: "Choose",
+                question: "Which?",
+                options: [{ label: "A", detail: "Option A" }],
+                multiSelect: false,
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const view = projectLiveConversation(conv, "ref-1");
+    const item = view.items.find((i) => i.kind === "question");
+    expect(item?.questionKey).not.toBeNull();
+    // The questionKey should match one of the questions in the questions array
+    expect(view.questions.some((q) => q.key === item?.questionKey)).toBe(true);
+  });
+
+  it("produces opaque stable sequenceLabel on every item", () => {
+    const conv = makeConversation({
+      items: [
+        { kind: "user", id: "u1", text: "first" },
+        { kind: "assistant", id: "a1", markdown: "second", streaming: false },
+        { kind: "user", id: "u2", text: "third" },
+      ],
+    });
+    const view = projectLiveConversation(conv, "ref-1");
+    // Every item has a sequenceLabel
+    for (const item of view.items) {
+      expect(item.sequenceLabel).toBeDefined();
+      expect(typeof item.sequenceLabel).toBe("string");
+      expect(item.sequenceLabel.length).toBeGreaterThan(0);
+    }
+    // SequenceLabels are stable — same input produces same labels
+    const view2 = projectLiveConversation(conv, "ref-1");
+    expect(view.items.map((i) => i.sequenceLabel)).toEqual(
+      view2.items.map((i) => i.sequenceLabel),
+    );
+    // SequenceLabels do not expose raw item IDs
+    for (const item of view.items) {
+      expect(item.sequenceLabel).not.toContain("u1");
+      expect(item.sequenceLabel).not.toContain("a1");
+      expect(item.sequenceLabel).not.toContain("u2");
+    }
+  });
 });
