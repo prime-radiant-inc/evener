@@ -3727,7 +3727,17 @@ describe("ConversationStore", () => {
       expect(service.refreshCapsCallCount).toBe(capsBefore + 1);
       expect(store.getState().conversation?.capabilities.send).toBe(false);
       expect(store.getState().error).not.toBeNull();
-      expect(service.readProjectionCalls.length).toBe(readsBefore + 1);
+      // R1: the send during the held rehydrate changes the mutation-owner
+      // revision, so the rehydrate schedules one trailing reread. The
+      // trailing reread goes through the scheduler (queued behind the cap
+      // refresh). It starts after the cap refresh completes. Release it.
+      await readCtrl.started(2);
+      await yieldMicrotask();
+      readCtrl.release();
+      await readCtrl.completed(2);
+      await yieldMicrotask();
+      // Total: original held rehydrate + one trailing reread.
+      expect(service.readProjectionCalls.length).toBe(readsBefore + 2);
     });
 
     it("trailing reread may remain held after cap settles — no hang", async () => {
@@ -3785,6 +3795,16 @@ describe("ConversationStore", () => {
       expect(store.getState().error).not.toBeNull();
       expect(store.getState().conversation?.capabilities.send).toBe(false);
 
+      // R1: the send during the held rehydrate changes the mutation-owner
+      // revision, so the rehydrate schedules one trailing reread. It's
+      // queued behind the cap refresh and starts after send settles.
+      // Release it so it doesn't interfere with the rest of the test.
+      await readCtrl.started(2);
+      await yieldMicrotask();
+      readCtrl.release();
+      await readCtrl.completed(2);
+      await yieldMicrotask();
+
       // Now queue another trailing reread that remains held — it must not
       // affect the already-settled send.
       const trailingReadsBefore = service.readProjectionCalls.length;
@@ -3792,14 +3812,14 @@ describe("ConversationStore", () => {
         method: "evener/thread/resync",
         params: { threadId: "thread-1", ref: "ref-1" },
       } as AnyNotification);
-      await readCtrl.started(2);
+      await readCtrl.started(3);
       await yieldMicrotask(); // let the wrapper reach the release gate
       // The trailing reread is held — send already settled, unaffected.
       expect(store.getState().error).not.toBeNull();
       expect(store.getState().conversation?.capabilities.send).toBe(false);
       // Release it to clean up.
       readCtrl.release();
-      await readCtrl.completed(2);
+      await readCtrl.completed(3);
       expect(service.readProjectionCalls.length).toBe(trailingReadsBefore + 1);
     });
   });
@@ -4920,6 +4940,442 @@ describe("ConversationStore", () => {
       expect(store.getState().pendingMutation).toBeNull();
       // Caps should NOT have been published by the stale mutation 1.
       expect(store.getState().conversation?.capabilities.send).toBe(true);
+    });
+  });
+
+  // --- Residual: R1 — monotonic mutation-owner and error-owner revisions ---
+
+  describe("R1: monotonic mutation-owner revision — ABA safe", () => {
+    it("rehydrate success cannot clear error after mutation cleared+re-set same error (ABA)", async () => {
+      // The error owner revision must increment even when the error string
+      // is cleared then re-set to the same value. A stale rehydrate that
+      // captured the old error revision must NOT clear the new error.
+      // Real ABA: mutation1 fails (error="boom"), mutation2 starts (error
+      // cleared via set), mutation2 fails (error="boom" again). The
+      // error-owner revision incremented on each transition.
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // Start a rehydrate (R) that hangs.
+      const ctrl = makeControlledRead(service);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      // While R is in-flight, mutation1 fails — sets error "boom".
+      service.sendShouldReject = new Error("boom");
+      await store.getState().send(service, textInput("first"));
+      expect(store.getState().error).toBe("boom");
+      // Mutation2 starts — clears error via set (errorOwnerRev increments).
+      // Then mutation2 also fails with the SAME error string — ABA.
+      service.sendShouldReject = new Error("boom");
+      await store.getState().send(service, textInput("second"));
+      expect(store.getState().error).toBe("boom");
+      // Release R — it must NOT clear the error (the error-owner revision
+      // changed during the await, even though the string is the same).
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      // Clean up any trailing reread from the mutation owner change.
+      ctrl.release();
+      await yieldMicrotask();
+      expect(store.getState().error).toBe("boom");
+    });
+
+    it("rehydrate success cannot publish projection after mutation ABA (same mutationId)", async () => {
+      // The mutation-owner revision must increment when a mutation is set
+      // then cleared then a new mutation set (even if mutationId wraps or
+      // the same pendingMutation shape reappears). A stale rehydrate must
+      // not publish a predating projection.
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              items: [
+                { kind: "user", id: "u1", text: "initial" } as never,
+              ] as never,
+            }),
+          ],
+        }),
+      );
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // Start a rehydrate (R) that hangs — it captured the initial mutation
+      // owner revision (no mutation pending → revision 0).
+      const ctrl = makeControlledRead(service);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      // While R is in-flight, start a send (sets pendingMutation, increments
+      // mutation-owner revision), then let it succeed (clears pendingMutation,
+      // increments mutation-owner revision again).
+      const sendP = store.getState().send(service, textInput("hello"));
+      await sendP;
+      // pendingMutation is null again, but the mutation-owner revision
+      // incremented twice (set + clear). R's captured revision (0) is stale.
+      expect(store.getState().pendingMutation).toBeNull();
+      // Change the projection result so R would publish a stale projection
+      // (different items).
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              items: [
+                { kind: "user", id: "stale-item", text: "stale" } as never,
+              ] as never,
+            }),
+          ],
+        }),
+      );
+      // Release R — it must NOT replace the conversation because the
+      // mutation-owner revision changed during the await.
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      // The conversation should NOT have been replaced by R's stale
+      // projection. The items from the original open should remain.
+      const items = store.getState().conversation?.items ?? [];
+      expect(items.some((i) => i.id === "u1")).toBe(true);
+      expect(items.some((i) => i.id === "stale-item")).toBe(false);
+    });
+
+    it("rehydrate failure installs rejection before controlled read captures it and proves true reject", async () => {
+      // The failure path must capture the error-owner revision BEFORE the
+      // read that rejects. If a newer error owner writes during the await,
+      // R's failure must not overwrite it.
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // Start a rehydrate (R) that hangs — the read will reject.
+      const ctrl = makeControlledErrorRead(service);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      // While R is in-flight, a mutation fails — sets a mutation error.
+      service.sendShouldReject = new Error("mutation boom");
+      await store.getState().send(service, textInput("x"));
+      expect(store.getState().error).toBe("mutation boom");
+      // Now release R's first call — it rejects.
+      ctrl.releaseFirst();
+      // R's failure must NOT overwrite the mutation error.
+      await yieldMicrotask();
+      await yieldMicrotask();
+      expect(store.getState().error).toBe("mutation boom");
+      expect(store.getState().pendingMutation?.status).toBe("failed");
+      // Clean up the trailing reread if one was scheduled.
+      ctrl.release();
+      await yieldMicrotask();
+    });
+
+    it("if mutation owner changed during rehydrate, one bounded trailing reread is scheduled", async () => {
+      // When the mutation owner changes during a rehydrate, the rehydrate
+      // must not publish its projection. Instead, exactly one trailing
+      // authoritative reread is scheduled through the scheduler (no loop,
+      // no reentrant await). The trailing reread publishes the fresh
+      // projection once the mutation has settled.
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      // Initial projection has no items.
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // Start a rehydrate (R) that hangs.
+      const ctrl = makeControlledRead(service);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      const readsBeforeMutation = service.readProjectionCalls.length;
+      // While R is in-flight, start a send that succeeds (mutation owner
+      // revision increments: set then clear).
+      const sendP = store.getState().send(service, textInput("hello"));
+      await sendP;
+      // Change the projection so the trailing reread returns fresh items.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({
+              id: "t1",
+              items: [
+                { kind: "user", id: "fresh-item", text: "fresh" } as never,
+              ] as never,
+            }),
+          ],
+        }),
+      );
+      // Release R — it must not publish, but must schedule one trailing reread.
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      // The trailing reread was scheduled via the scheduler. It needs to
+      // start and complete. Since it goes through the same scheduler, it
+      // hangs on the controlled read. Let it start and release it.
+      await ctrl.started(2);
+      await yieldMicrotask();
+      ctrl.release();
+      await ctrl.completed(2);
+      await yieldMicrotask();
+      // Exactly one trailing reread was scheduled (in addition to the
+      // original rehydrate read).
+      expect(service.readProjectionCalls.length).toBe(readsBeforeMutation + 1);
+      // The trailing reread publishes the fresh projection.
+      const items = store.getState().conversation?.items ?? [];
+      expect(items.some((i) => i.id === "fresh-item")).toBe(true);
+    });
+  });
+
+  // --- Residual: R2 — page-race must not drop authoritative outcome ---
+
+  describe("R2: page-race preserves authoritative outcome", () => {
+    it("ask reread racing page success: authoritative question appears, page items/cursor preserved", async () => {
+      // A rehydrate (R) is triggered by an ask_user notification. While R
+      // is in-flight, a loadOlder (L) succeeds, prepending page items and
+      // advancing the cursor. R's projection contains a question. When R
+      // completes, the question must appear AND the page items/cursor must
+      // be preserved (merged, not dropped).
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      // Initial: empty conversation.
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      // Set up R's projection to contain a question.
+      const askThread = makeThread({
+        turns: [
+          makeTurn({
+            id: "t1",
+            items: [askUserItem("ask-1", VALID_ASK_ARGS)],
+            status: "completed",
+          }),
+        ],
+      });
+      service.readProjectionResult = makeReadProjectionResult(askThread);
+      // Trigger R via ask_user notification — it hangs.
+      const ctrl = makeControlledRead(service);
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: askUserItem("ask-1", VALID_ASK_ARGS),
+        },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      // While R is in-flight, L succeeds — prepends page items, advances cursor.
+      service.olderItems = {
+        items: [{ kind: "user", id: "old-page-item", text: "older" }],
+        nextCursor: "cursor-2",
+      };
+      await store.getState().loadOlder(service);
+      const itemsAfterL = store.getState().conversation?.items ?? [];
+      const cursorAfterL = store.getState().olderCursor;
+      expect(itemsAfterL.some((i) => i.id === "old-page-item")).toBe(true);
+      expect(cursorAfterL).toBe("cursor-2");
+      // Release R — the question must appear AND page items/cursor preserved.
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      const items = store.getState().conversation?.items ?? [];
+      // Question row from R's projection appears.
+      expect(items.some((i) => i.kind === "question")).toBe(true);
+      // Page items from L are preserved (not dropped).
+      expect(items.some((i) => i.id === "old-page-item")).toBe(true);
+      // Cursor from L is preserved.
+      expect(store.getState().olderCursor).toBe("cursor-2");
+    });
+
+    it("activity reread racing page failure: authoritative activity appears, page error preserved", async () => {
+      // A rehydrate (R) is triggered by an unknown item notification. While
+      // R is in-flight, a loadOlder (L) fails, setting a page error. R's
+      // projection contains an activity item. When R completes, the activity
+      // must appear AND the page error must be preserved.
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      // Initial: empty conversation.
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      // Set up R's projection to contain an activity item.
+      const activityThread = makeThread({
+        turns: [
+          makeTurn({
+            id: "t1",
+            items: [
+              {
+                type: "commandExecution",
+                id: "tool-1",
+                toolName: "bash",
+                status: "completed",
+                argumentsJson: "{}",
+                output: "done",
+              } as ThreadItem,
+            ],
+            status: "completed",
+          }),
+        ],
+      });
+      service.readProjectionResult = makeReadProjectionResult(activityThread);
+      // Trigger R via resync — it hangs.
+      const ctrl = makeControlledRead(service);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      // While R is in-flight, L fails — sets a page error.
+      service.olderItems = Promise.reject(
+        new Error("page load failed"),
+      ) as never;
+      await store
+        .getState()
+        .loadOlder(service)
+        .catch(() => {});
+      expect(store.getState().error).not.toBeNull();
+      const errorAfterL = store.getState().error;
+      // Release R — the activity must appear AND page error preserved.
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      const items = store.getState().conversation?.items ?? [];
+      // Activity row from R's projection appears.
+      expect(
+        items.some((i) => i.kind === "activity" && i.id === "tool-1"),
+      ).toBe(true);
+      // Page error is preserved.
+      expect(store.getState().error).toBe(errorAfterL);
+    });
+  });
+
+  // --- Residual: R3 — real malformed/incomplete Thread fixtures through projectThread ---
+
+  describe("R3: real malformed/incomplete Thread fixtures through projectThread", () => {
+    it("malformed completed ask_user in raw Thread: conservative activity rows, no question rows, askPending false", async () => {
+      // A real raw Thread with a completed ask_user whose argumentsJson is
+      // malformed must produce conservative activity rows (not question
+      // rows), askPending false, and exactly one bounded reread.
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      // Initial: empty.
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // The reread returns a Thread with a malformed completed ask_user.
+      const malformedThread = makeThread({
+        turns: [
+          makeTurn({
+            id: "t1",
+            items: [askUserItem("ask-malformed", "{{not valid json")],
+            status: "completed",
+          }),
+        ],
+      });
+      service.readProjectionResult = makeReadProjectionResult(malformedThread);
+      const initialReads = service.readProjectionCalls.length;
+      // Trigger the reread via the ask_user completed notification.
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: askUserItem("ask-malformed", "{{not valid json"),
+        },
+      } as AnyNotification);
+      const ctrl = makeControlledRead(service);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      // Exactly one bounded reread.
+      expect(service.readProjectionCalls.length).toBe(initialReads + 1);
+      const conv = store.getState().conversation;
+      expect(conv).not.toBeNull();
+      // No question rows — malformed ask_user is conservative.
+      const questionItem = conv?.items.find((i) => i.kind === "question");
+      expect(questionItem).toBeUndefined();
+      // askPending is false — malformed ask does not set pending.
+      expect(conv?.askPending).toBe(false);
+      // The ask_user is projected as a completed activity row (not a
+      // question), since projectThread's parseAskUserQuestions returns
+      // undefined for malformed argumentsJson.
+      const activityItem = conv?.items.find(
+        (i) => i.kind === "activity" && i.id === "ask-malformed",
+      );
+      expect(activityItem).toBeDefined();
+    });
+
+    it("incomplete inProgress ask_user in raw Thread: conservative, no question rows, askPending false", async () => {
+      // A real raw Thread with an inProgress ask_user must not produce
+      // question rows or set askPending. The inProgress ask_user is
+      // projected as a running activity row.
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = makeReadProjectionResult(makeThread());
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // The reread returns a Thread with an inProgress ask_user.
+      const incompleteThread = makeThread({
+        turns: [
+          makeTurn({
+            id: "t1",
+            items: [
+              askUserItem("ask-incomplete", VALID_ASK_ARGS, "inProgress"),
+            ],
+            status: "running",
+          }),
+        ],
+      });
+      service.readProjectionResult = makeReadProjectionResult(incompleteThread);
+      const initialReads = service.readProjectionCalls.length;
+      // Trigger the reread via the ask_user started notification.
+      store.getState().applyNotification({
+        method: "item/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: askUserItem("ask-incomplete", VALID_ASK_ARGS, "inProgress"),
+        },
+      } as AnyNotification);
+      const ctrl = makeControlledRead(service);
+      await ctrl.started(1);
+      await yieldMicrotask();
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      // Exactly one bounded reread.
+      expect(service.readProjectionCalls.length).toBe(initialReads + 1);
+      const conv = store.getState().conversation;
+      expect(conv).not.toBeNull();
+      // No question rows — inProgress ask is not pending.
+      const questionItem = conv?.items.find((i) => i.kind === "question");
+      expect(questionItem).toBeUndefined();
+      // askPending is false — inProgress ask_user is not answerable.
+      expect(conv?.askPending).toBe(false);
+      // The inProgress ask_user is projected as a running activity row.
+      const activityItem = conv?.items.find(
+        (i) => i.kind === "activity" && i.id === "ask-incomplete",
+      );
+      expect(activityItem).toBeDefined();
+      if (activityItem?.kind === "activity") {
+        expect(activityItem.state).toBe("running");
+      }
     });
   });
 });
