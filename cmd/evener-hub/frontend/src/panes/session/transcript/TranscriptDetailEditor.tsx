@@ -1,4 +1,4 @@
-import { useId, useState } from "react";
+import { useEffect, useId, useRef, useState } from "react";
 import {
   advancedEnabledCount,
   type ContentLevel,
@@ -9,9 +9,16 @@ import {
   type TranscriptDisplayAdvanced,
   type TranscriptDisplayConfigV1,
 } from "../../../transcriptDisplay/config";
+import {
+  Disclosure,
+  FormRow,
+  SegmentedControl,
+  type SegmentedControlOption,
+  Select,
+  type SelectOption,
+  Switch,
+} from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
-import { RadioGroup, type RadioGroupOption } from "../../../widgets/radiogroup";
-import { Switch } from "../../../widgets/switch";
 import styles from "./transcriptDisplay.module.css";
 
 export interface TranscriptDetailEditorProps {
@@ -24,28 +31,24 @@ export interface TranscriptDetailEditorProps {
 const CLASS = {
   root: requireClass(styles.root, "transcriptDisplay.module.css", "root"),
   compact: requireClass(styles.compact, "transcriptDisplay.module.css", "compact"),
-  track: requireClass(styles.track, "transcriptDisplay.module.css", "track"),
-  readout: requireClass(styles.readout, "transcriptDisplay.module.css", "readout"),
-  custom: requireClass(styles.custom, "transcriptDisplay.module.css", "custom"),
-  advancedToggle: requireClass(styles.advancedToggle, "transcriptDisplay.module.css", "advancedToggle"),
   advancedPanel: requireClass(styles.advancedPanel, "transcriptDisplay.module.css", "advancedPanel"),
   fieldsets: requireClass(styles.fieldsets, "transcriptDisplay.module.css", "fieldsets"),
   fieldset: requireClass(styles.fieldset, "transcriptDisplay.module.css", "fieldset"),
   controls: requireClass(styles.controls, "transcriptDisplay.module.css", "controls"),
-  selectLabel: requireClass(styles.selectLabel, "transcriptDisplay.module.css", "selectLabel"),
-  select: requireClass(styles.select, "transcriptDisplay.module.css", "select"),
-  critical: requireClass(styles.critical, "transcriptDisplay.module.css", "critical"),
 };
 
-const LEVEL_OPTIONS: RadioGroupOption[] = [
+type ContentChoice = ContentLevel | "custom";
+
+const LEVEL_OPTIONS: SegmentedControlOption<ContentChoice>[] = [
   { value: "chat", label: "Chat" },
   { value: "intent", label: "Intent" },
   { value: "tools", label: "Tools" },
   { value: "activity", label: "Activity" },
   { value: "full", label: "Full", accessibleLabel: "Full detail" },
+  { value: "custom", label: "Custom" },
 ];
 
-const HOOK_EXIT_OPTIONS: ReadonlyArray<{ value: HookExitDetail; label: string }> = [
+const HOOK_EXIT_OPTIONS: SelectOption[] = [
   { value: "none", label: "None" },
   { value: "successful", label: "Successful" },
   { value: "all", label: "All" },
@@ -66,19 +69,27 @@ export function TranscriptDetailEditor({
   compact = false,
 }: TranscriptDetailEditorProps) {
   const [advancedOpen, setAdvancedOpen] = useState(false);
-  const advancedPanelId = useId();
+  const hookExitId = useId();
+  const lastCustom = useRef<ContentVector | undefined>(undefined);
   const config = normalizeConfig(value);
-  const selectedLevel = config.content.kind === "preset" ? config.content.level : undefined;
+  useEffect(() => {
+    if (config.content.kind === "custom") lastCustom.current = contentVector(config.content);
+  }, [config.content]);
   const vector = contentVector(config.content);
 
   function emit(next: TranscriptDisplayConfigV1) {
     onChange(normalizeConfig(next));
   }
 
-  function selectLevel(level: string) {
-    if (level === "chat" || level === "intent" || level === "tools" || level === "activity" || level === "full") {
-      emit({ ...config, content: { kind: "preset", level: level as ContentLevel } });
+  function selectContent(choice: ContentChoice) {
+    if (choice === "custom") {
+      const customVector = lastCustom.current ?? contentVector(config.content);
+      const next = { kind: "custom" as const, ...customVector };
+      lastCustom.current = customVector;
+      emit({ ...config, content: next });
+      return;
     }
+    emit({ ...config, content: { kind: "preset", level: choice } });
   }
 
   function updateContent(field: keyof ContentVector, checked: boolean) {
@@ -89,6 +100,7 @@ export function TranscriptDetailEditor({
       reasoning: field === "reasoning" ? checked : vector.reasoning,
       expandByDefault: field === "expandByDefault" ? checked : vector.expandByDefault,
     };
+    lastCustom.current = nextContent;
     emit({ ...config, content: nextContent });
   }
 
@@ -109,46 +121,25 @@ export function TranscriptDetailEditor({
     emit({ ...config, advanced: { ...config.advanced, hookExits: next } });
   }
 
-  const readout =
-    selectedLevel === undefined
-      ? "Custom"
-      : selectedLevel === "full"
-        ? "Full detail"
-        : LEVEL_OPTIONS.find((option) => option.value === selectedLevel)?.label;
   const advancedCount = advancedEnabledCount(config);
-  const advancedSummary =
-    selectedLevel === undefined ? `Custom content · ${advancedCount} extras` : `${advancedCount} enabled`;
+  const disclosureSummary =
+    config.content.kind === "custom"
+      ? `Customize & advanced · Custom content · ${advancedCount} extras`
+      : `Customize & advanced · ${advancedCount} extras`;
   const rootClassName = compact ? `${CLASS.root} ${CLASS.compact}` : CLASS.root;
 
   return (
     <section className={rootClassName} aria-label="Transcript detail editor">
-      <div className={CLASS.track}>
-        <RadioGroup
-          label="Transcript detail"
-          value={selectedLevel ?? "custom"}
-          options={LEVEL_OPTIONS}
-          disabled={disabled}
-          onChange={selectLevel}
-        />
-      </div>
-      <p className={CLASS.readout}>
-        Current detail: <strong className={selectedLevel === undefined ? CLASS.custom : undefined}>{readout}</strong>
-      </p>
-
-      <button
-        type="button"
-        className={CLASS.advancedToggle}
-        aria-expanded={advancedOpen}
-        aria-controls={advancedPanelId}
+      <SegmentedControl
+        label="Transcript detail"
+        value={config.content.kind === "preset" ? config.content.level : "custom"}
+        options={LEVEL_OPTIONS}
         disabled={disabled}
-        onClick={() => setAdvancedOpen((open) => !open)}
-      >
-        <span>Advanced · {advancedSummary}</span>
-        <span aria-hidden="true"> {advancedOpen ? "▴" : "▾"}</span>
-      </button>
-
-      {advancedOpen && (
-        <div id={advancedPanelId} className={CLASS.advancedPanel}>
+        fullWidth
+        onChange={selectContent}
+      />
+      <Disclosure open={advancedOpen} onOpenChange={setAdvancedOpen} disabled={disabled} summary={disclosureSummary}>
+        <div className={CLASS.advancedPanel}>
           <div className={CLASS.fieldsets}>
             <fieldset className={CLASS.fieldset}>
               <legend>Content</legend>
@@ -219,32 +210,20 @@ export function TranscriptDetailEditor({
                   disabled={disabled}
                   onChange={(checked) => updateAdvanced("promptEvents", checked)}
                 />
-                <label className={CLASS.selectLabel}>
-                  Hook exit messages
-                  <select
-                    className={CLASS.select}
-                    aria-label="Hook exit messages"
+                <FormRow label="Hook exit messages" htmlFor={hookExitId}>
+                  <Select
+                    id={hookExitId}
                     value={config.advanced.hookExits}
+                    options={HOOK_EXIT_OPTIONS}
                     disabled={disabled}
                     onChange={(event) => updateHookExits(event.target.value)}
-                  >
-                    {HOOK_EXIT_OPTIONS.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
+                  />
+                </FormRow>
               </div>
             </fieldset>
           </div>
         </div>
-      )}
-
-      <p className={CLASS.critical}>
-        Critical rows remain visible at every detail level: questions, requests, active work, steering, warnings,
-        failures, interruptions, and recovery actions. These rows are locked explanatory content, not editor controls.
-      </p>
+      </Disclosure>
     </section>
   );
 }
