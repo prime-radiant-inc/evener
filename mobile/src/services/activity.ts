@@ -108,16 +108,10 @@ export type ActivityProjectionErrorCode =
 
 export class ActivityProjectionError extends Error {
   readonly code: ActivityProjectionErrorCode;
-  readonly rawId: string;
-  constructor(
-    code: ActivityProjectionErrorCode,
-    rawId: string,
-    message?: string,
-  ) {
-    super(message ?? `activity projection error: ${code} (${rawId})`);
+  constructor(code: ActivityProjectionErrorCode) {
+    super(`activity projection error: ${code}`);
     this.name = "ActivityProjectionError";
     this.code = code;
-    this.rawId = rawId;
   }
 }
 
@@ -224,7 +218,7 @@ function validateHierarchy(
   const delegateIds = new Set<string>();
   for (const dlg of delegates) {
     if (delegateIds.has(dlg.delegateId)) {
-      throw new ActivityProjectionError("duplicate-delegate", dlg.delegateId);
+      throw new ActivityProjectionError("duplicate-delegate");
     }
     delegateIds.add(dlg.delegateId);
   }
@@ -232,7 +226,7 @@ function validateHierarchy(
   const jobIds = new Set<string>();
   for (const j of jobs) {
     if (jobIds.has(j.jobId)) {
-      throw new ActivityProjectionError("duplicate-job", j.jobId);
+      throw new ActivityProjectionError("duplicate-job");
     }
     jobIds.add(j.jobId);
   }
@@ -240,7 +234,7 @@ function validateHierarchy(
   // --- no cross-kind collision ---
   for (const dlg of delegates) {
     if (jobIds.has(dlg.delegateId)) {
-      throw new ActivityProjectionError("cross-kind-collision", dlg.delegateId);
+      throw new ActivityProjectionError("cross-kind-collision");
     }
   }
 
@@ -251,7 +245,7 @@ function validateHierarchy(
       dlg.parentDelegateId !== "" &&
       dlg.parentDelegateId === dlg.delegateId
     ) {
-      throw new ActivityProjectionError("self-parent", dlg.delegateId);
+      throw new ActivityProjectionError("self-parent");
     }
   }
 
@@ -268,7 +262,7 @@ function validateHierarchy(
       const id = cursor.delegateId;
       if (visiting.has(id)) {
         // Cycle detected — the cursor's id is on the current path.
-        throw new ActivityProjectionError("delegate-cycle", id);
+        throw new ActivityProjectionError("delegate-cycle");
       }
       visiting.add(id);
       const parent: string | undefined =
@@ -285,7 +279,7 @@ function validateHierarchy(
   for (const dlg of delegates) {
     const parent = dlg.parentDelegateId;
     if (parent !== undefined && parent !== "" && !delegateIds.has(parent)) {
-      throw new ActivityProjectionError("missing-parent", parent);
+      throw new ActivityProjectionError("missing-parent");
     }
   }
 
@@ -293,7 +287,7 @@ function validateHierarchy(
   for (const j of jobs) {
     const parent = j.parentDelegateId;
     if (parent !== undefined && parent !== "" && !delegateIds.has(parent)) {
-      throw new ActivityProjectionError("missing-parent", parent);
+      throw new ActivityProjectionError("missing-parent");
     }
   }
 }
