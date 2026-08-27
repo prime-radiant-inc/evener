@@ -280,12 +280,8 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
         <div className="co-older-available" data-older-available="true">
           <button
             type="button"
-            onClick={() =>
-              dispatch({
-                type: "openConversation",
-                key: conversation.threadKey,
-              })
-            }
+            disabled={pending}
+            onClick={() => dispatch({ type: "loadOlder" })}
           >
             Load older messages
           </button>
