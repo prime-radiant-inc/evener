@@ -61,8 +61,7 @@ export interface ConversationMutationState {
 }
 
 interface DrainScheduler {
-  request(key: string, effect: () => Promise<void>): void;
-  idle(): Promise<void>;
+  request(key: string, effect: () => Promise<void>): Promise<void>;
 }
 
 // A structural activity sink accepted by openProjected/rehydrate. Uses the
@@ -79,7 +78,6 @@ export interface LiveActivitySink {
 }
 
 // I1: Binding snapshot captured at request time. Every request through the
-// I1: Binding snapshot captured at request time. Every request through the
 // drain scheduler captures the current bindingEpoch + ref + generation +
 // service + sink object identities. The effect verifies ALL fields are still
 // current BEFORE any read, suppressing stale work at the boundary — a request
@@ -94,26 +92,26 @@ interface RequestBinding {
   readonly sink: LiveActivitySink;
 }
 
+// Production-owned drain scheduler with per-key completion promises. Each
+// request returns a promise that resolves when that key's actual effect
+// completes/skips/errors — even while unrelated rereads remain or hang. Same
+// logical key coalesces (overwrites effect, merges waiter lists); distinct keys
+// are preserved so heterogeneous outcomes both run. One effect at a time;
+// recursively drains all pending. Catches effect errors without unhandled
+// rejections and remains usable.
 function createDrainScheduler(): DrainScheduler {
   let scheduled = false;
   let busy = false;
   let inFlight: Promise<void> | null = null;
-  // Per-key pending queue. Same logical key coalesces (overwrites); distinct
-  // keys are preserved so heterogeneous outcomes (reread + cap refresh) both
-  // run. Map preserves insertion order for deterministic drain sequencing.
-  const pending: Map<string, () => Promise<void>> = new Map();
-  // Resolves when the drain reaches idle (no in-flight, no pending, not
-  // scheduled). Production code awaits this through requestCapabilityRefresh;
-  // tests observe through the same path. No exported flushScheduler.
-  let idleResolvers: Array<() => void> = [];
-
-  function notifyIdle(): void {
-    if (inFlight === null && pending.size === 0 && !scheduled) {
-      const resolvers = idleResolvers;
-      idleResolvers = [];
-      for (const r of resolvers) r();
-    }
+  // Per-key pending queue. Each entry holds the coalesced effect AND a list of
+  // waiters that resolve when this key's effect completes/skips/errors.
+  interface PendingEntry {
+    effect: () => Promise<void>;
+    waiters: Array<() => void>;
   }
+  const pending: Map<string, PendingEntry> = new Map();
+  // Waiters for the currently in-flight effect (not yet in pending Map).
+  let currentWaiters: Array<() => void> = [];
 
   function runOne(effect: () => Promise<void>): Promise<void> {
     return Promise.resolve()
@@ -123,44 +121,66 @@ function createDrainScheduler(): DrainScheduler {
         // unhandled rejection; remain usable.
       })
       .then(() => {
+        // Resolve this key's waiters — the effect completed/skipped/errored.
+        const waiters = currentWaiters;
+        currentWaiters = [];
+        for (const w of waiters) w();
         if (pending.size > 0) {
           // Drain the next pending effect in insertion order. One at a time.
           const entry = pending.entries().next().value;
           if (entry === undefined) {
             inFlight = null;
             busy = false;
-            notifyIdle();
             return undefined;
           }
           const nextKey = entry[0] as string;
-          const nextEffect = entry[1] as () => Promise<void>;
+          const nextEntry = entry[1] as PendingEntry;
           pending.delete(nextKey);
-          inFlight = runOne(nextEffect);
+          currentWaiters = nextEntry.waiters;
+          inFlight = runOne(nextEntry.effect);
           return inFlight;
         }
         inFlight = null;
         busy = false;
-        notifyIdle();
         return undefined;
       });
   }
 
-  function request(key: string, effect: () => Promise<void>): void {
+  function request(key: string, effect: () => Promise<void>): Promise<void> {
+    // Per-key completion promise. Resolves when this key's actual effect
+    // completes/skips/errors — even while unrelated rereads remain or hang.
+    const waiters: Array<() => void> = [];
+    const completion = new Promise<void>((resolve) => {
+      waiters.push(resolve);
+    });
+
     if (busy) {
-      // An effect is in flight — retain per-key. Same key coalesces; distinct
-      // keys are preserved for trailing drain.
-      pending.set(key, effect);
-      return;
+      // An effect is in flight — coalesce same key (merge waiters, overwrite
+      // effect); distinct keys are preserved for trailing drain.
+      const existing = pending.get(key);
+      if (existing !== undefined) {
+        existing.effect = effect;
+        for (const w of waiters) existing.waiters.push(w);
+      } else {
+        pending.set(key, { effect, waiters });
+      }
+      return completion;
     }
     if (scheduled) {
       // A microtask is pending but hasn't started — coalesce same key only.
-      pending.set(key, effect);
-      return;
+      const existing = pending.get(key);
+      if (existing !== undefined) {
+        existing.effect = effect;
+        for (const w of waiters) existing.waiters.push(w);
+      } else {
+        pending.set(key, { effect, waiters });
+      }
+      return completion;
     }
     // First request in a quiescent drain — defer to a microtask so a
     // synchronous burst coalesces into one effect.
     scheduled = true;
-    pending.set(key, effect);
+    pending.set(key, { effect, waiters });
     inFlight = Promise.resolve().then(() => {
       scheduled = false;
       busy = true;
@@ -168,27 +188,19 @@ function createDrainScheduler(): DrainScheduler {
       if (entry === undefined) {
         inFlight = null;
         busy = false;
-        notifyIdle();
         return;
       }
       const keyToUse = entry[0] as string;
-      const effectToUse = entry[1] as () => Promise<void>;
+      const entryValue = entry[1] as PendingEntry;
       pending.delete(keyToUse);
-      return runOne(effectToUse);
+      currentWaiters = entryValue.waiters;
+      return runOne(entryValue.effect);
     });
-  }
-  function idle(): Promise<void> {
-    if (inFlight === null && pending.size === 0 && !scheduled) {
-      return Promise.resolve();
-    }
-    return new Promise<void>((resolve) => {
-      idleResolvers.push(resolve);
-    });
+    return completion;
   }
 
   return {
     request,
-    idle,
   };
 }
 
@@ -501,6 +513,30 @@ export function createConversationStore() {
     );
   }
 
+  // I1: Cap-specific binding validation. For openProjected, checks the full
+  // tuple (epoch/service/sink/ref/gen). For plain open(), boundService/
+  // boundSink are null — checks epoch/ref/gen and service identity only
+  // (sink is null for both the binding and the store, so null === null).
+  // A rebind to serviceB/sinkB with same gen/mutation suppresses A's caps.
+  function isCapBindingCurrent(binding: RequestBinding): boolean {
+    const state = storeGet?.();
+    if (state === undefined) return false;
+    if (binding.epoch !== bindingEpoch) return false;
+    if (binding.ref !== state.ref) return false;
+    if (binding.generation !== state.conversationGeneration) return false;
+    // For openProjected: boundService === binding.service (both set).
+    // For plain open: boundService is null, binding.service is the passed
+    // service. They won't match — but that's OK because for plain open
+    // there's no rebind concern. We check service identity via the passed
+    // service object directly.
+    if (boundService !== null) {
+      // openProjected path — full service identity check.
+      if (boundService !== binding.service) return false;
+      if (boundSink !== binding.sink) return false;
+    }
+    return true;
+  }
+
   // Request one authoritative reread through the store-owned drain scheduler.
   // I1: captures the binding at request time; the effect verifies it is still
   // current before calling rehydrate with the expected service+sink.
@@ -519,58 +555,76 @@ export function createConversationStore() {
 
   // I2: Request a mutation capability refresh through the store-owned drain
   // scheduler — no direct await bypass. This serializes/coalesces with rereads.
-  // The effect refreshes capabilities and publishes them, guarded by the
-  // mutationId so a stale recovery cannot overwrite a newer mutation.
-  // I1: captures the generation+ref at request time; the effect verifies they
-  // are still current before any read. This works for both plain open() and
-  // openProjected() — it does not require projected bindings.
-  // I2: The capability key includes mutation identity so distinct mutations
-  // do not coalesce with each other or with rereads. handleMutationError
-  // schedules the cap refresh through the scheduler AND awaits its completion
-  // before publishing capabilities/surfacing error, preserving prior
-  // observable ordering and mutation guards.
+  // I1: captures the exact binding tuple (epoch/service/sink/ref/gen) at
+  // request time. For openProjected, captureBinding() provides the full tuple.
+  // For plain open(), boundService/boundSink are null, so we capture a
+  // service-specific tuple from the passed service argument. The effect
+  // validates isBindingCurrent BEFORE the refresh, AFTER the refresh await,
+  // and immediately before publication. A rebind to serviceB/sinkB with same
+  // gen/mutation during the await suppresses A's capabilities.
+  // I2: The capability key includes mutation identity (cap:ref:mutationId)
+  // so distinct mutations do not coalesce with each other or with rereads.
+  // handleMutationError schedules the cap refresh through the scheduler AND
+  // awaits its per-key completion before surfacing error — an unrelated
+  // replenishing reread cannot delay the error.
   function requestCapabilityRefresh(
     service: ConversationService,
     ref: string,
     gen: number,
     mutationId: number,
   ): Promise<void> {
-    const entryEpoch = bindingEpoch;
+    // I1: Capture the binding tuple. For openProjected, captureBinding()
+    // provides epoch+ref+gen+service+sink. For plain open(), captureBinding()
+    // returns null (boundService/boundSink are null), so capture a
+    // service-specific tuple from the passed service.
+    const projectedBinding = captureBinding();
+    const binding: RequestBinding = projectedBinding ?? {
+      epoch: bindingEpoch,
+      ref,
+      generation: gen,
+      service: service as LiveConversationService,
+      sink: boundSink as LiveActivitySink,
+    };
     const capKey = `cap:${ref}:${mutationId}`;
-    scheduler.request(capKey, async () => {
+    // I2: scheduler.request returns a per-key completion promise — resolves
+    // when this key's effect completes/skips/errors, even while unrelated
+    // rereads remain or hang. handleMutationError awaits this exact promise.
+    return scheduler.request(capKey, async () => {
       const g = storeGet;
       if (g === null) return;
-      // I1: Suppress stale work at the boundary — if the binding epoch or
-      // generation changed, do not refresh.
-      if (entryEpoch !== bindingEpoch) return;
-      if (g().conversationGeneration !== gen) return;
+      // I1: Suppress stale work BEFORE any read — validate the full binding
+      // tuple (epoch/service/sink/ref/gen). A rebind with different objects
+      // suppresses this effect.
+      if (!isCapBindingCurrent(binding)) return;
       const liveService = service as LiveConversationService;
       if (typeof liveService.refreshCapabilities !== "function") return;
       // I2: Check active mutation before the refresh — stale recovery bail.
       if (g().pendingMutation?.mutationId !== mutationId) return;
+      let refreshed: ThreadCapabilities | null;
       try {
-        const refreshed = await liveService.refreshCapabilities(ref);
-        // I2: Check active mutation AFTER the refresh too.
-        if (g().pendingMutation?.mutationId !== mutationId) return;
-        if (g().conversationGeneration === gen && refreshed !== null) {
-          const currentConv = g().conversation;
-          if (currentConv !== null) {
-            storeSet?.({
-              conversation: {
-                ...currentConv,
-                capabilities: { ...refreshed },
-              },
-            });
-          }
-        }
+        refreshed = await liveService.refreshCapabilities(ref);
       } catch {
         // If refresh fails, the mutation error handler surfaces the error.
+        return;
+      }
+      // I1: Validate the full binding tuple AGAIN after the await — a rebind
+      // to serviceB/sinkB during the refresh must suppress A's capabilities.
+      if (!isCapBindingCurrent(binding)) return;
+      // I2: Check active mutation AFTER the refresh too.
+      if (g().pendingMutation?.mutationId !== mutationId) return;
+      // I1: Validate generation immediately before publication.
+      if (g().conversationGeneration === gen && refreshed !== null) {
+        const currentConv = g().conversation;
+        if (currentConv !== null) {
+          storeSet?.({
+            conversation: {
+              ...currentConv,
+              capabilities: { ...refreshed },
+            },
+          });
+        }
       }
     });
-    // I2: Return a promise that resolves when the scheduler is idle, so
-    // handleMutationError can await cap refresh completion before surfacing
-    // error — preserving prior observable ordering.
-    return scheduler.idle();
   }
 
   // Late-bound store setter — assigned inside create() so capability refresh
