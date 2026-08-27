@@ -163,13 +163,8 @@ func (s *Session) DetailedStatus() DetailedStatus {
 		ds.Tools = append(ds.Tools, ToolInfo{Name: name, Source: source})
 	}
 
-	// Skills (sorted by name).
-	for _, meta := range s.skills {
-		ds.Skills = append(ds.Skills, meta)
-	}
-	sort.Slice(ds.Skills, func(i, j int) bool {
-		return ds.Skills[i].Name < ds.Skills[j].Name
-	})
+	// Skills are projected through the canonical, path-free catalog helper.
+	ds.Skills = skill.CatalogEntries(s.skills)
 
 	// Plugins.
 	for _, p := range s.plugins {

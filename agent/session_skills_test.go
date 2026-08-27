@@ -85,6 +85,31 @@ func TestUseSkill_ReturnsBody(t *testing.T) {
 	}
 }
 
+func TestStandaloneSkillActivationUsesCanonicalPluginName(t *testing.T) {
+	s := newTestSession(t)
+	s.skills = map[string]skill.SkillMeta{
+		"plugin:simplify": {Name: "simplify", SkillFile: writeSkillBodyFile(t, "plugin steps")},
+	}
+	_ = drainSlashEvents(s)
+
+	got, ok := s.expandSlashCommand(context.Background(), "/plugin:simplify")
+	if !ok || got != "plugin steps" {
+		t.Fatalf("expanded = %q, %v; want plugin skill body", got, ok)
+	}
+	var activated []string
+	for _, ev := range drainSlashEvents(s) {
+		if ev.Kind != events.EventSkillActivated {
+			continue
+		}
+		if data, ok := ev.Data.(events.SkillActivatedData); ok {
+			activated = append(activated, data.Name)
+		}
+	}
+	if len(activated) != 1 || activated[0] != "plugin:simplify" {
+		t.Fatalf("activation names = %v, want [plugin:simplify]", activated)
+	}
+}
+
 func TestUseSkill_NotFound_ReturnsError(t *testing.T) {
 	t.Parallel()
 	root := t.TempDir()
