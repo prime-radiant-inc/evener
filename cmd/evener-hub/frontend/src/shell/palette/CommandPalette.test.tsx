@@ -260,12 +260,49 @@ test("an async catalog refresh rerenders the open session palette - a newly-load
     return { commands: [{ name: "review", pluginName: "p", source: "plugin" }] };
   });
   connectionStore.setState({ client: fake as never });
-  focusSession("ref_a");
+  focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }] } });
   render(<CommandPalette />);
 
   act(() => openPalette("/review"));
 
   await waitFor(() => expect(screen.getByRole("option", { name: /Continue in the composer/ })).toBeTruthy());
+});
+
+test("the palette scopes catalog commands to active diagnostics without mutating the global catalog", async () => {
+  const user = userEvent.setup();
+  useCommandCatalog.setState({
+    commands: [
+      { name: "review", pluginName: "enabled", source: "plugin" },
+      { name: "secret", pluginName: "excluded", source: "plugin" },
+      { name: "whoami", source: "user" },
+    ],
+    loaded: true,
+  });
+  focusSession("ref_a", { diagnostics: { plugins: [{ name: "enabled" }] } });
+  render(<CommandPalette />);
+
+  act(() => openPalette("/review"));
+  expect(screen.getByRole("option", { name: /Continue in the composer/ })).toBeTruthy();
+
+  await user.clear(screen.getByRole("combobox"));
+  await user.type(screen.getByRole("combobox"), "/secret");
+  expect(screen.queryByRole("option", { name: /Continue in the composer/ })).toBeNull();
+
+  await user.clear(screen.getByRole("combobox"));
+  await user.type(screen.getByRole("combobox"), "/whoami");
+  expect(screen.getByRole("option", { name: /Continue in the composer/ })).toBeTruthy();
+
+  threadsStore.setState({
+    threads: new Map([["ref_a", testModel({ ref: "ref_a" })]]),
+  });
+  await waitFor(() => expect(screen.getByRole("option", { name: /Continue in the composer/ })).toBeTruthy());
+  await user.clear(screen.getByRole("combobox"));
+  await user.type(screen.getByRole("combobox"), "/review");
+  expect(screen.queryByRole("option", { name: /Continue in the composer/ })).toBeNull();
+  await user.clear(screen.getByRole("combobox"));
+  await user.type(screen.getByRole("combobox"), "/whoami");
+  expect(screen.getByRole("option", { name: /Continue in the composer/ })).toBeTruthy();
+  expect(useCommandCatalog.getState().commands.map((command) => command.name)).toEqual(["review", "secret", "whoami"]);
 });
 
 test("selecting a free-arg APP-GLOBAL command enters args mode with a pill and placeholder, and Esc backs out (does not close)", async () => {
@@ -320,7 +357,7 @@ test("a session-scoped built-in (/interrupt) is never listed as a runnable comma
 
 test("with a focused session, activating the handoff row inserts the typed text into that session's composer and closes", async () => {
   const user = userEvent.setup();
-  focusSession("ref_a");
+  focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }] } });
   render(<CommandPalette />);
   act(() => openPalette("/interrupt"));
 
@@ -643,7 +680,7 @@ test("Enter on an exact app-global command name runs it", async () => {
 test("Enter on an exact session-scoped command name (/status) hands off to the composer instead of running it", async () => {
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
-  focusSession("ref_a");
+  focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }] } });
   render(<CommandPalette />);
   act(() => openPalette("/status"));
 
@@ -661,7 +698,7 @@ test("Enter on an exact session-scoped command name (/status) hands off to the c
 test("Enter on a fuzzy near-miss of a session-scoped command name (/stat) still hands off, not a raw send", async () => {
   const user = userEvent.setup();
   const send = vi.spyOn(threadsStore.getState(), "send").mockResolvedValue();
-  focusSession("ref_a");
+  focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }, { name: "q" }] } });
   render(<CommandPalette />);
   act(() => openPalette("/stat"));
 
@@ -705,7 +742,7 @@ test("selecting a plugin catalog entry's handoff row inserts the raw typed text 
     commands: [{ name: "review", pluginName: "p", source: "plugin" }],
     loaded: true,
   });
-  focusSession("ref_a");
+  focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }] } });
   render(<CommandPalette />);
   act(() => openPalette("/review"));
 
@@ -731,7 +768,7 @@ test("Enter on a plugin command with arguments hands off the FULL typed text, ar
     commands: [{ name: "review", pluginName: "p", source: "plugin" }],
     loaded: true,
   });
-  focusSession("ref_a");
+  focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }] } });
   render(<CommandPalette />);
   act(() => openPalette("/review main"));
 
@@ -751,7 +788,7 @@ test("two catalog entries sharing a name still collapse to ONE handoff row, not 
     ],
     loaded: true,
   });
-  focusSession("ref_a");
+  focusSession("ref_a", { diagnostics: { plugins: [{ name: "p" }, { name: "q" }] } });
   render(<CommandPalette />);
   act(() => openPalette("/review"));
 

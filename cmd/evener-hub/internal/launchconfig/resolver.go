@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 
+	"github.com/BurntSushi/toml"
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/identifier"
 )
@@ -17,11 +18,23 @@ func Resolve(stateRoot, cwd string, overrides Layer) (Resolved, error) {
 	return resolveFS(afero.NewOsFs(), stateRoot, cwd, overrides)
 }
 
+// ResolveWithProject resolves filesystem layers from cwd while using project
+// for project-scoped legacy state and metadata. It is used when cwd is a
+// disposable existing probe directory for a path that has not been created.
+func ResolveWithProject(stateRoot, cwd string, project identifier.Project, overrides Layer) (Resolved, error) {
+	return resolveFSWithProject(afero.NewOsFs(), stateRoot, cwd, project, overrides)
+}
+
 func resolveFS(fs afero.Fs, stateRoot, cwd string, overrides Layer) (Resolved, error) {
-	paths, err := PathsFor(stateRoot, cwd)
+	project, err := identifier.ResolveProject(cwd)
 	if err != nil {
 		return Resolved{}, fmt.Errorf("resolve project: %w", err)
 	}
+	return resolveFSWithProject(fs, stateRoot, cwd, project, overrides)
+}
+
+func resolveFSWithProject(fs afero.Fs, stateRoot, cwd string, project identifier.Project, overrides Layer) (Resolved, error) {
+	paths := pathsForProject(stateRoot, cwd, project)
 	layers := map[LayerName]Layer{}
 	var pathDiags []Diagnostic
 
@@ -127,21 +140,29 @@ func loadRepoLayerFS(fs afero.Fs, cwd, stateRoot string, project identifier.Proj
 	var layer Layer
 	var diags []Diagnostic
 	if state == TrustTrusted {
-		returnLayer, returnDiags := decodeTrustedRepoLayer(cwd, data, func(data []byte, out any) error {
-			_, err := tomlDecode(data, out)
-			return err
-		})
+		returnLayer, returnDiags := decodeTrustedRepoLayer(cwd, data, tomlDecode)
 		layer, diags = returnLayer, returnDiags
 	}
 	return status, layer, diags
 }
 
-func decodeTrustedRepoLayer(repoRoot string, data []byte, decode func([]byte, any) error) (Layer, []Diagnostic) {
+func decodeTrustedRepoLayer(repoRoot string, data []byte, decode func([]byte, any) (toml.MetaData, error)) (Layer, []Diagnostic) {
 	var layer Layer
-	if err := decode(data, &layer); err != nil {
+	metadata, err := decode(data, &layer)
+	if err != nil {
 		return Layer{}, []Diagnostic{{Layer: LayerRepo, Field: ".evener/launch.toml", Message: err.Error()}}
 	}
-	return validateAndExpandRepoLayer(repoRoot, layer)
+	var diags []Diagnostic
+	for _, key := range metadata.Undecoded() {
+		if key.String() == "enabled_plugins" {
+			diags = append(diags, Diagnostic{Layer: LayerRepo, Field: "enabled_plugins", Message: "enabled_plugins is per-launch only"})
+			break
+		}
+	}
+	// The field is intentionally not persisted even if a custom decoder supplies it.
+	layer.EnabledPlugins = nil
+	validated, pathDiags := validateAndExpandRepoLayer(repoRoot, layer)
+	return validated, append(diags, pathDiags...)
 }
 
 // validateAndExpandRepoLayer rejects path entries that escape the repo

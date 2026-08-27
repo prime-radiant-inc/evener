@@ -22,7 +22,7 @@ export interface AppwireClientOptions {
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
-export const APPWIRE_PROTOCOL_VERSION = "evener-appwire-v3";
+export const APPWIRE_PROTOCOL_VERSION = "evener-appwire-v4";
 const DEFAULT_CLIENT_INFO = { name: "evener-web", version: "0.1.0" };
 const DEFAULT_CAPABILITIES = { experimentalApi: false };
 

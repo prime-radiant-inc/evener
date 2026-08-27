@@ -113,6 +113,7 @@ type serveDeps struct {
 	getwd            func() (string, error)
 	ensureConfigDirs func() error
 	seedMarketplaces func() error
+	resolvePlugins   func([]string, *[]string) (plugins.LaunchPluginResolution, error)
 	resolveMeta      func(string, string, bool) (schema.SessionMeta, error)
 	newClient        func(string, io.Writer) (*llm.Client, providercfg.Config, bool, func() error, error)
 	attachAPILogger  func(*llm.Client, string, io.Writer) (func(string) error, func() error, error)
@@ -173,8 +174,7 @@ func defaultServeDeps() serveDeps {
 	return serveDeps{
 		newFlagSet: flag.NewFlagSet,
 		getwd:      os.Getwd, ensureConfigDirs: cmdutil.EnsureUserConfigDirs,
-		seedMarketplaces: func() error { _, err := plugins.NewManager("").SeedDefaultMarketplaces(); return err },
-		resolveMeta:      cmdutil.ResolveSessionMeta, newClient: newUnloggedServeLLMClient,
+		resolveMeta: cmdutil.ResolveSessionMeta, newClient: newUnloggedServeLLMClient,
 		attachAPILogger: serveAttachSessionAPILogger,
 		buildProfile:    buildInitialProfile, applyCheap: applyFastCheapModel,
 		newSession: agent.NewSession, restoreSession: agent.RestoreSessionFromMetaWithConfig,
@@ -276,6 +276,9 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	fs.Var(&mcpConfigs, "mcp-config", "path to .mcp.json file (repeatable)")
 	var pluginDirs cmdutil.StringSliceFlag
 	fs.Var(&pluginDirs, "plugin-dir", "plugin directory (repeatable)")
+	pluginRoot := fs.String("plugin-root", "", "internal plugin registry root override")
+	var enabledPlugins pluginSelectionFlag
+	fs.Var(&enabledPlugins, "enabled-plugins", "comma-separated plugin names to enable (empty selects none)")
 	var modelFallbacks cmdutil.StringSliceFlag
 	fs.Var(&modelFallbacks, "model-fallback", "fallback model (provider/model) tried on permanent provider errors (repeatable)")
 	openAIResponsesContinuation := fs.String("openai-responses-continuation", "", "OpenAI Responses continuation mode: off|auto (default: off)")
@@ -292,6 +295,27 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		printServeEnvVars(os.Stderr)
 	}
 	if err := fs.Parse(args); err != nil {
+		return err
+	}
+	pluginManager := plugins.NewManager(*pluginRoot)
+	if err := rejectPluginSelectionWithResume(enabledPlugins.Value(), *resume, *resumeLast); err != nil {
+		return err
+	}
+	resolvePlugins := deps.resolvePlugins
+	if resolvePlugins == nil {
+		resolvePlugins = func(explicit []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
+			return pluginManager.ResolveForLaunch(explicit, enabled)
+		}
+	}
+	resolvedPlugins, resolveErr := resolvePlugins([]string(pluginDirs), enabledPlugins.Value())
+	if resolveErr != nil && enabledPlugins.Value() != nil {
+		return fmt.Errorf("resolve plugins: %w", resolveErr)
+	}
+	if resolveErr != nil {
+		fmt.Fprintf(os.Stderr, "warning: listing installed plugins: %v\n", resolveErr)
+	}
+	renderLaunchPluginDiagnostics(os.Stderr, resolvedPlugins.Diagnostics)
+	if err := resolvedPlugins.ValidateSelection(); err != nil {
 		return err
 	}
 	resolvedOpenAIResponsesContinuation := resolveOpenAIResponsesContinuation(*openAIResponsesContinuation, nil)
@@ -323,7 +347,14 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err := deps.ensureConfigDirs(); err != nil {
 		return err
 	}
-	if err := deps.seedMarketplaces(); err != nil {
+	seedMarketplaces := deps.seedMarketplaces
+	if seedMarketplaces == nil {
+		seedMarketplaces = func() error {
+			_, err := pluginManager.SeedDefaultMarketplaces()
+			return err
+		}
+	}
+	if err := seedMarketplaces(); err != nil {
 		fmt.Fprintf(os.Stderr, "warning: seeding default marketplaces: %v\n", err)
 	}
 
@@ -341,7 +372,6 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			return fmt.Errorf("resolve project state: %w", err)
 		}
 	}
-
 	resuming := *resume != "" || *resumeLast
 	var resumedMeta schema.SessionMeta
 	if resuming {
@@ -419,7 +449,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		SkillsDirs:                  []string(skillsDirs),
 		MCPConfigFiles:              []string(mcpConfigs),
 		MCPInline:                   []string(mcpServers),
-		PluginDirs:                  plugins.NewManager("").EnabledPluginDirs([]string(pluginDirs)),
+		PluginDirs:                  resolvedPlugins.SelectedDirs,
 		ContextStrategy:             *contextStrategy,
 		ExportATIFPath:              *exportATIF,
 		ExportATIFProviderHandles:   *exportATIFProviderHandles,
@@ -461,6 +491,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 			Project:                     project,
 			ResolveProfile:              sessionCfg.ResolveProfile,
 			AcquireSessionOwnership:     reserveSession,
+			OwnershipAlreadyAcquired:    true,
 			ModelFallbacks:              sessionCfg.ModelFallbacks,
 			OpenAIResponsesContinuation: resolvedOpenAIResponsesContinuation,
 		})
@@ -1282,6 +1313,9 @@ func evenerUsageFromLLM(u llm.Usage) *appwire.EvenerUsage {
 
 func agentToServerDetailedStatus(ds agent.DetailedStatus) server.DetailedStatus {
 	var out server.DetailedStatus
+	if ds.Plugins != nil {
+		out.Plugins = make([]server.PluginStatusInfo, 0, len(ds.Plugins))
+	}
 
 	for _, t := range ds.Tools {
 		out.Tools = append(out.Tools, server.ToolInfo{Name: t.Name, Source: t.Source})

@@ -55,6 +55,13 @@ func ResolveProject(path string) (Project, error) {
 	return ResolveProjectWith(path, localResolver{})
 }
 
+// ProjectFromCanonicalPath returns the identity for a canonical path, even
+// when the directory has not been created yet.
+func ProjectFromCanonicalPath(path string) Project {
+	canonical := filepath.Clean(path)
+	return Project{ID: projectID(canonical), CanonicalPath: canonical}
+}
+
 // ResolveProjectWith resolves path through resolver, canonicalizing both the
 // active path and (for Git projects) the selected main checkout.
 func ResolveProjectWith(path string, resolver Resolver) (Project, error) {
@@ -91,7 +98,7 @@ func ResolveProjectWith(path string, resolver Resolver) (Project, error) {
 		return Project{}, fmt.Errorf("resolve project identity symlinks: %w", err)
 	}
 	canonical = filepath.Clean(canonical)
-	return Project{ID: projectID(canonical), CanonicalPath: canonical}, nil
+	return ProjectFromCanonicalPath(canonical), nil
 }
 
 func isNilResolver(resolver Resolver) bool {

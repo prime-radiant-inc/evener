@@ -26,13 +26,14 @@ import {
   useCallback,
   useEffect,
   useLayoutEffect,
+  useMemo,
   useRef,
   useState,
 } from "react";
 import { sessionActionError } from "../../../protocol/errors";
 import { deriveSendQueueAvailability } from "../../../protocol/sendQueueAvailability";
 import type { PaletteRunContext } from "../../../shell/palette/commands";
-import { sessionBuiltinCommands } from "../../../shell/palette/commands";
+import { sessionBuiltinCommands, visibleCatalogCommands } from "../../../shell/palette/commands";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
 import type { MutationRecoveryRecord } from "../../../stores/mutationOutbox";
 import { prefsStore, usePrefsStore } from "../../../stores/prefs";
@@ -206,8 +207,16 @@ export function Composer({ ref }: ComposerProps) {
   // resolved against THIS ref) merged with the plugin catalog
   // (slashCompletion.ts's mergeSlashCommands) - one list, one menu, whether a
   // row's provenance is a built-in or a plugin.
+  const activePluginNames = useMemo<ReadonlySet<string> | null>(() => {
+    if (!model?.diagnostics?.plugins) return null;
+    return new Set(model.diagnostics.plugins.map((plugin) => plugin.name));
+  }, [model?.diagnostics]);
+  const visibleSlashCatalog = useMemo(
+    () => visibleCatalogCommands(slashCatalog, activePluginNames),
+    [activePluginNames, slashCatalog],
+  );
   const sessionBuiltins = sessionBuiltinCommands({ sessionRef: ref, onPage: "session" });
-  const slashMenuCatalog = mergeSlashCommands(sessionBuiltins, slashCatalog);
+  const slashMenuCatalog = mergeSlashCommands(sessionBuiltins, visibleSlashCatalog);
   // The menu is only ever open when a token matched AND the merged catalog
   // has at least one startsWith hit for it - a matched-but-empty token (e.g.
   // "/zzz" against a real catalog) shows no menu at all, same as no token

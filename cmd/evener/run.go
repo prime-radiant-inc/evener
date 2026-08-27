@@ -62,6 +62,7 @@ type runConfig struct {
 	mcpServers                  []string      // --mcp inline specs
 	mcpConfigs                  []string      // --mcp-config file paths
 	pluginDirs                  []string      // --plugin-dir directories
+	enabledPlugins              *[]string     // --enabled-plugins selection; nil means omitted
 	noDefaultMarketplaces       bool          // --no-default-marketplaces
 	systemPromptAsUser          bool          // --system-prompt-as-user
 	openAIResponsesContinuation string        // --openai-responses-continuation
@@ -99,9 +100,15 @@ var (
 	runDrainJobTree = func(sess *agent.Session, ctx context.Context) (string, error) {
 		return sess.DrainJobTree(ctx)
 	}
+	runResolvePlugins = func(explicit []string, enabled *[]string) (plugins.LaunchPluginResolution, error) {
+		return plugins.NewManager("").ResolveForLaunch(explicit, enabled)
+	}
 )
 
 func run(ctx context.Context, cfg runConfig) error {
+	if err := rejectPluginSelectionWithResume(cfg.enabledPlugins, cfg.resume, cfg.resumeLast); err != nil {
+		return err
+	}
 	if cfg.runTimeout > 0 {
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, cfg.runTimeout)
@@ -120,6 +127,17 @@ func run(ctx context.Context, cfg runConfig) error {
 			return fmt.Errorf("cannot determine working directory: %w", err)
 		}
 		cfg.workDir = wd
+	}
+	resolvedPlugins, err := runResolvePlugins(cfg.pluginDirs, cfg.enabledPlugins)
+	if err != nil && cfg.enabledPlugins != nil {
+		return fmt.Errorf("resolve plugins: %w", err)
+	}
+	if err != nil {
+		fmt.Fprintf(cfg.stderr, "warning: listing installed plugins: %v\n", err) //nolint:errcheck
+	}
+	renderLaunchPluginDiagnostics(cfg.stderr, resolvedPlugins.Diagnostics)
+	if err := resolvedPlugins.ValidateSelection(); err != nil {
+		return err
 	}
 	if err := runEnsureUserConfigDirs(); err != nil {
 		return err
@@ -147,7 +165,6 @@ func run(ctx context.Context, cfg runConfig) error {
 			return fmt.Errorf("resolve project state: %w", err)
 		}
 	}
-
 	// --list-sessions: print and exit.
 	if cfg.listSessions {
 		return listSessions(cfg, stateDir)
@@ -210,7 +227,39 @@ func run(ctx context.Context, cfg runConfig) error {
 		return err
 	}
 	defer closeAPILog() //nolint:errcheck
-	if meta != nil {
+	var resumeWithChildID string
+	resumeWithRollbackAllowed := false
+	resumeWithCommitted := false
+	if meta != nil && cfg.resumeWith != "" {
+		childConfig := meta.Config.Clone()
+		childConfig.PluginDirs = append([]string(nil), resolvedPlugins.SelectedDirs...)
+		childID, err := agent.AsideSessionWithConfig(stateDir, meta.ID, childConfig)
+		if err != nil {
+			return fmt.Errorf("create resume-with session: %w", err)
+		}
+		resumeWithChildID = childID
+		resumeWithRollbackAllowed = true
+		defer func() {
+			if resumeWithCommitted || !resumeWithRollbackAllowed {
+				return
+			}
+			if err := agent.RemoveSessionArtifacts(stateDir, resumeWithChildID); err != nil {
+				fmt.Fprintf(cfg.stderr, "warning: could not roll back resume-with session %s: %v\n", resumeWithChildID, err) //nolint:errcheck
+			}
+		}()
+		if err := reserveSession(resumeWithChildID); err != nil {
+			if errors.Is(err, llm.ErrAPILogTargetLocked) {
+				resumeWithRollbackAllowed = false
+			}
+			return err
+		}
+		childMeta, err := schema.LoadSessionMeta(stateDir, childID)
+		if err != nil {
+			return fmt.Errorf("load resume-with session: %w", err)
+		}
+		meta = &childMeta
+	}
+	if meta != nil && resumeWithChildID == "" {
 		if err := reserveSession(meta.ID); err != nil {
 			return err
 		}
@@ -249,7 +298,7 @@ func run(ctx context.Context, cfg runConfig) error {
 		SkillsDirs:                  cfg.skillsDirs,
 		MCPConfigFiles:              cfg.mcpConfigs,
 		MCPInline:                   cfg.mcpServers,
-		PluginDirs:                  plugins.NewManager("").EnabledPluginDirs(cfg.pluginDirs),
+		PluginDirs:                  resolvedPlugins.SelectedDirs,
 		ContextStrategy:             cfg.contextStrategy,
 		ExportATIFPath:              cfg.exportATIF,
 		ExportATIFProviderHandles:   cfg.exportATIFProviderHandles,
@@ -290,11 +339,15 @@ func run(ctx context.Context, cfg runConfig) error {
 			Project:                     project,
 			ResolveProfile:              baseSessionCfg.ResolveProfile,
 			AcquireSessionOwnership:     reserveSession,
+			OwnershipAlreadyAcquired:    true,
 			OpenAIResponsesContinuation: openAIResponsesContinuation,
 			TurnEndsProcess:             baseSessionCfg.TurnEndsProcess,
 		})
 		if err != nil {
 			return fmt.Errorf("restore session: %w", err)
+		}
+		if resumeWithChildID != "" {
+			resumeWithCommitted = true
 		}
 		if effort.Set {
 			sess.SetReasoningEffort(effort.Value)

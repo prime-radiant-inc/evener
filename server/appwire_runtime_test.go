@@ -181,6 +181,40 @@ func TestAppDiagnosticsFromDetailedStatus_MCPStatusError(t *testing.T) {
 	}
 }
 
+func TestAppDiagnosticsFromDetailedStatus_PreservesPluginPresence(t *testing.T) {
+	empty := appDiagnosticsFromDetailedStatus(DetailedStatus{Plugins: []PluginStatusInfo{}})
+	if empty.Plugins == nil {
+		t.Fatal("explicit empty Plugins became nil")
+	}
+	raw, err := json.Marshal(empty)
+	if err != nil {
+		t.Fatalf("marshal empty diagnostics: %v", err)
+	}
+	var wire map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("decode empty diagnostics: %v", err)
+	}
+	if got := string(wire["plugins"]); got != "[]" {
+		t.Fatalf("serialized empty plugins = %s, want []", got)
+	}
+
+	legacy := appDiagnosticsFromDetailedStatus(DetailedStatus{})
+	if legacy.Plugins != nil {
+		t.Fatalf("nil Plugins became non-nil: %#v", legacy.Plugins)
+	}
+	raw, err = json.Marshal(legacy)
+	if err != nil {
+		t.Fatalf("marshal legacy diagnostics: %v", err)
+	}
+	wire = nil
+	if err := json.Unmarshal(raw, &wire); err != nil {
+		t.Fatalf("decode legacy diagnostics: %v", err)
+	}
+	if _, ok := wire["plugins"]; ok {
+		t.Fatalf("nil plugins must remain absent: %s", raw)
+	}
+}
+
 func TestAppDiagnosticsFromDetailedStatus_Exhaustion(t *testing.T) {
 	resumable := true
 	got := appDiagnosticsFromDetailedStatus(DetailedStatus{Jobs: []JobStatusInfo{{

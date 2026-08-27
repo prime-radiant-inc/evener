@@ -143,6 +143,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerInstanceRemove, InstanceRemoveParams{}, InstanceListResponse{}, ScopeHub, "Removes a provider instance; returns the updated list."},
 	{MethodEvenerInstanceSetDefault, InstanceSetDefaultParams{}, InstanceListResponse{}, ScopeHub, "Sets the default provider instance; returns the updated list."},
 	{MethodEvenerPluginCheckNow, EmptyParams{}, PluginCheckNowResponse{}, ScopeHub, "Runs one auto-upgrade daemon pass on demand; broadcasts evener/plugin/updated per plugin actually upgraded."},
+	{MethodEvenerPluginPreview, PluginPreviewParams{}, PluginPreviewResponse{}, ScopeHub, "Previews the plugins selected for a launch without starting a session or executing plugin commands."},
 	{MethodEvenerMarketplaceList, EmptyParams{}, MarketplaceListResponse{}, ScopeHub, "Lists registered plugin marketplaces."},
 	{MethodEvenerMarketplaceAdd, MarketplaceAddParams{}, MarketplaceListResponse{}, ScopeHub, "Registers a plugin marketplace; returns the updated list."},
 	{MethodEvenerMarketplaceRemove, MarketplaceNameParams{}, MarketplaceListResponse{}, ScopeHub, "Unregisters a plugin marketplace; returns the updated list."},

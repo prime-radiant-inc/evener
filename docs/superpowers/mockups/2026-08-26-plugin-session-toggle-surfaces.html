@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Plugin Session Toggle — Approved Surfaces</title>
+<style>
+:root { color-scheme: light dark; --border:#d0d5dd; --card-bg:#fff; --text-muted:#667085; }
+* { box-sizing:border-box; }
+body { margin:0; padding:32px; background:#f4f6f8; color:#182230; font:15px Inter,ui-sans-serif,system-ui,sans-serif; }
+main { max-width:1440px; margin:0 auto; }
+h2 { margin:0 0 8px; font-size:28px; }
+.subtitle { margin:0; color:var(--text-muted); line-height:1.5; }
+code { font-family:ui-monospace,SFMono-Regular,Menlo,monospace; }
+@media (prefers-color-scheme:dark) {
+  :root { --border:#3b4149; --card-bg:#202329; --text-muted:#aab0b9; }
+  body { background:#15171a; color:#eff1f4; }
+}
+</style>
+<script>function toggleSelect(el){document.querySelectorAll('[data-choice]').forEach(x=>x.classList.remove('selected'));el.classList.add('selected')}</script>
+</head>
+<body><main>
+<style>
+:root{--ev-bg:#1f2125;--ev-surface:#24272b;--ev-surface2:#2a2d32;--ev-edge:#3a3e45;--ev-hi:#f2f3f5;--ev-mid:#b2b6bd;--ev-low:#858a93;--ev-blue:#4098ff;--ev-warn:#efb44b}.surface-grid{display:grid;grid-template-columns:minmax(0,1.5fr) minmax(300px,.75fr);gap:20px;margin-top:22px}.ev{background:var(--ev-bg);color:var(--ev-hi);font:12px Inter,system-ui,sans-serif;border-radius:12px;overflow:hidden;border:1px solid #34373d;box-shadow:0 14px 35px rgba(15,23,42,.15)}.ev-title{padding:12px 15px;border-bottom:1px solid #34373d;color:#aeb2b9;font-size:10px;font-weight:700;letter-spacing:.12em}.ev-body{padding:14px}.prompt{height:96px;border:1px solid var(--ev-edge);border-radius:7px;padding:10px;color:var(--ev-low);position:relative}.start{position:absolute;right:8px;bottom:8px;background:var(--ev-blue);color:#071523;border-radius:6px;padding:6px 10px;font-weight:700}.fields{display:grid;grid-template-columns:1.6fr 1fr .65fr;gap:10px;margin:11px 0}.field label{display:block;font-weight:700;margin-bottom:5px}.control{height:31px;border:1px solid #34373d;background:#25282d;border-radius:6px;padding:7px;color:#c3c6cc;box-sizing:border-box}.summary{display:flex;align-items:center;justify-content:space-between;padding:11px 2px;border-top:1px solid #34373d;border-bottom:1px solid #34373d}.summary-title{font-size:13px;font-weight:700}.summary-sub{margin-top:2px;color:var(--ev-low)}.plugin-panel{margin-top:8px;padding:10px;background:var(--ev-surface);border:1px solid var(--ev-edge);border-radius:8px}.panel-tools{display:flex;align-items:center;gap:7px}.search{flex:1;height:30px;background:#202327;border:1px solid #3a3e45;border-radius:6px;padding:7px;color:#8e939b}.small-action{color:#8fc1ff;font-weight:700;padding:4px}.plugin-row{display:grid;grid-template-columns:auto minmax(0,1fr) auto;gap:9px;align-items:center;padding:10px 2px;border-top:1px solid #34373d}.plugin-row:first-of-type{margin-top:8px}.toggle{width:29px;height:17px;border-radius:99px;background:var(--ev-blue);position:relative}.toggle:after{content:'';position:absolute;width:13px;height:13px;background:#fff;border-radius:50%;right:2px;top:2px}.toggle.off{background:#4c5159}.toggle.off:after{left:2px;right:auto}.plugin-name{font-weight:700}.meta{color:var(--ev-low);font-size:11px;margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.tag{border:1px solid #4a4f57;border-radius:99px;padding:2px 6px;color:#adb2ba;font-size:10px}.diagnostic{margin-top:8px;padding:8px;border-left:2px solid var(--ev-warn);background:#2b2923;color:#d8c49c}.advanced{margin-top:11px;color:#aeb2b9}.mobile{max-width:365px;margin:auto}.phone-body{min-height:665px;padding:14px}.phone-top{display:flex;justify-content:space-between;align-items:center;font-weight:700;font-size:15px;padding-bottom:14px}.phone-prompt{height:155px;border:2px solid var(--ev-blue);border-radius:8px;padding:10px;color:var(--ev-low);position:relative}.phone-send{position:absolute;right:8px;bottom:8px;background:var(--ev-blue);border-radius:8px;padding:9px;color:#071523}.setting{display:flex;justify-content:space-between;gap:12px;padding:14px 2px;border-bottom:1px solid #34373d}.setting strong{font-size:13px}.setting span{color:#b5b9c0}.sheet{margin-top:12px;background:#272a2f;border:1px solid #454a52;border-radius:14px 14px 6px 6px;padding:12px;box-shadow:0 -14px 35px rgba(0,0,0,.3)}.sheet-title{display:flex;justify-content:space-between;font-weight:700;font-size:14px;margin-bottom:4px}.sheet-copy{color:var(--ev-low);font-size:11px;margin-bottom:9px}.tui{grid-column:1/-1;background:#22252a;color:#edf0f4;font:13px 'JetBrains Mono',ui-monospace,monospace;border:1px solid #393e46;border-radius:10px;padding:14px;min-height:390px}.tui-top{font-weight:700;background:#252c3b;padding:5px 7px;margin:-6px -6px 14px}.tui-grid{display:grid;grid-template-columns:minmax(280px,.8fr) minmax(430px,1.2fr);gap:22px}.tui-line{margin:7px 0}.cursor{color:#74b3ef}.tui-modal{border:1px solid #74b3ef;border-radius:8px;padding:12px}.tui-modal h4{color:#74b3ef;margin:0 0 8px}.tui-row{padding:5px 0}.tui-detail{color:#8f97a2;font-size:11px;margin-left:28px}.tui-footer{margin-top:12px;color:#8f97a2;font-size:11px}.kbd{color:#74b3ef;font-weight:700}.design-notes{margin-top:22px;display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px}.note{padding:14px;border:1px solid var(--border,#ddd);border-radius:10px}.note h3{margin:0 0 6px;font-size:15px}.note p{margin:0;color:var(--text-muted,#667085);font-size:13px;line-height:1.45}@media(max-width:980px){.surface-grid{grid-template-columns:1fr}.tui{grid-column:auto}.tui-grid{grid-template-columns:1fr}.design-notes{grid-template-columns:1fr}}
+</style>
+
+<h2>Detailed mockups: one-session plugin allow-list</h2>
+<p class="subtitle">The selected set is explicit only after the user changes it. Until then, the launcher inherits every currently loadable plugin. The next new-session form resets to that default.</p>
+
+<div class="surface-grid">
+  <div class="ev">
+    <div class="ev-title">DESKTOP · START AN AGENT</div>
+    <div class="ev-body">
+      <div class="prompt">What should the agent work on? Leave blank to start it dormant.<span class="start">Start</span></div>
+      <div class="fields"><div class="field"><label>Working directory</label><div class="control">~/code/evener · main</div></div><div class="field"><label>Model</label><div class="control">openai/gpt-5.6</div></div><div class="field"><label>Effort</label><div class="control">high</div></div></div>
+      <div class="summary"><div><div class="summary-title">Plugins for this session</div><div class="summary-sub">5 of 6 will load · session only</div></div><span>⌃</span></div>
+      <div class="plugin-panel">
+        <div class="panel-tools"><div class="search">Filter plugins…</div><span class="small-action">All</span><span class="small-action">None</span></div>
+        <div class="plugin-row"><span class="toggle"></span><div><div class="plugin-name">superpowers</div><div class="meta">@ superpowers-marketplace · 14 skills · 4 agents · commands</div></div><span class="tag">installed</span></div>
+        <div class="plugin-row"><span class="toggle"></span><div><div class="plugin-name">doctoring-evener</div><div class="meta">/Users/jesse/.config/evener/plugins/doctoring-evener · skill · agent</div></div><span class="tag">directory</span></div>
+        <div class="plugin-row"><span class="toggle off"></span><div><div class="plugin-name">frontend-design</div><div class="meta">@ claude-plugins-official · skill</div></div><span class="tag">off for session</span></div>
+        <div class="plugin-row"><span class="toggle"></span><div><div class="plugin-name">code-simplifier</div><div class="meta">@ claude-plugins-official · agent</div></div><span class="tag">installed</span></div>
+        <div class="meta" style="padding:8px 2px">Showing 4 of 6 · 2 more below</div>
+        <div class="diagnostic">1 configured plugin directory could not be loaded. Show details</div>
+      </div>
+      <div class="advanced">Advanced options</div>
+    </div>
+  </div>
+
+  <div class="ev mobile">
+    <div class="phone-body">
+      <div class="phone-top"><span>‹</span><span>new</span><span>☰</span></div>
+      <strong style="font-size:15px">What should the agent do?</strong><div style="color:#aeb2b9;margin:5px 0 10px">Leave blank to start a dormant session.</div>
+      <div class="phone-prompt">What should the agent work on?<span class="phone-send">➤</span></div>
+      <div class="setting"><strong>Harness</strong><span>evener ›</span></div><div class="setting"><strong>Working directory</strong><span>(default) ›</span></div><div class="setting"><strong>Reasoning effort</strong><span>high ›</span></div><div class="setting"><strong>Access mode</strong><span>(default) ›</span></div><div class="setting"><strong>Plugins</strong><span>5 of 6 ›</span></div>
+      <div class="sheet"><div class="sheet-title"><span>Plugins for this session</span><span>Done</span></div><div class="sheet-copy">Load only selected plugins. This choice applies to this session.</div><div class="panel-tools"><div class="search">Filter plugins…</div><span class="small-action">All</span><span class="small-action">None</span></div><div class="plugin-row"><span class="toggle"></span><div><div class="plugin-name">superpowers</div><div class="meta">skills · agents · commands</div></div></div><div class="plugin-row"><span class="toggle off"></span><div><div class="plugin-name">frontend-design</div><div class="meta">off for this session</div></div></div><div class="meta" style="padding:8px 2px">4 more plugins below</div></div>
+    </div>
+  </div>
+
+  <div class="tui">
+    <div class="tui-top">evener / new session</div>
+    <div class="tui-grid">
+      <div><div class="tui-line">  Harness:  evener</div><div class="tui-line">  Model:    openai/gpt-5.6</div><div class="tui-line">  Dir:      ~/code/evener</div><div class="tui-line"><span class="cursor">&gt;</span> Plugins:  5/6 enabled</div><div class="tui-line">  Prompt (optional):</div><div class="tui-line">    Fix the flaky launch test_</div><div class="tui-footer"><span class="kbd">tab</span> next field · <span class="kbd">enter</span> choose plugins · <span class="kbd">esc</span> cancel</div></div>
+      <div class="tui-modal"><h4>Plugins for this session</h4><div>Load only selected plugins. 5 of 6 selected.</div><div class="tui-row"><span class="cursor">&gt;</span> [x] superpowers</div><div class="tui-detail">@ superpowers-marketplace · skills, agents, commands</div><div class="tui-row">  [x] doctoring-evener</div><div class="tui-detail">directory · skill, agent</div><div class="tui-row">  [ ] frontend-design</div><div class="tui-detail">@ claude-plugins-official · off for this session</div><div class="tui-row">  [x] code-simplifier</div><div class="tui-detail">@ claude-plugins-official · agent</div><div class="tui-detail">… 2 more plugins</div><div class="tui-footer"><span class="kbd">↑↓</span> select · <span class="kbd">space</span> toggle · <span class="kbd">a</span> all · <span class="kbd">n</span> none · <span class="kbd">enter</span> apply · <span class="kbd">esc</span> cancel</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="design-notes"><div class="note"><h3>Exact-set semantics</h3><p>Untouched means “inherit current defaults.” Any edit creates an explicit allow-list. Choosing None is a real empty list, not an omitted field.</p></div><div class="note"><h3>Source clarity</h3><p>Rows show marketplace refs or directory origins, while manifest name remains the runtime selection key and uniqueness boundary.</p></div><div class="note"><h3>Honest failures</h3><p>Preview diagnostics remain visible. If a selected plugin disappears before Start, startup stops and asks the user to refresh instead of silently dropping it.</p></div></div>
+
+</main></body>
+</html>

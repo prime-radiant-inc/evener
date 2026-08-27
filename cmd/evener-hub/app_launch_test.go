@@ -69,6 +69,27 @@ func TestLaunchController_SetLayer_GlobalRoundtrip(t *testing.T) {
 	}
 }
 
+func TestLaunchController_SetLayer_RejectsEnabledPlugins(t *testing.T) {
+	stateRoot := t.TempDir()
+	cwd := canonicalTempDir(t)
+	empty := []string{}
+	c := newHubLaunchController(stateRoot)
+	_, err := c.SetLayer(context.Background(), appwire.LaunchConfigSetLayerParams{
+		CWD: cwd, Layer: "global",
+		Config: appwire.LaunchConfigLayer{EnabledPlugins: &empty},
+	})
+	if err == nil || err.Error() != "enabledPlugins is per-launch only" {
+		t.Fatalf("SetLayer error = %v, want persistence rejection", err)
+	}
+	paths, pathErr := launchconfig.PathsFor(stateRoot, cwd)
+	if pathErr != nil {
+		t.Fatal(pathErr)
+	}
+	if _, statErr := os.Stat(paths.Global); !os.IsNotExist(statErr) {
+		t.Fatalf("global layer was persisted, stat error = %v", statErr)
+	}
+}
+
 func TestLaunchController_SetLayer_ProjectWritesLocalFile(t *testing.T) {
 	stateRoot := t.TempDir()
 	cwd := canonicalTempDir(t)

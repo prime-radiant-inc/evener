@@ -9,6 +9,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"regexp"
 	"strconv"
 	"strings"
@@ -121,7 +122,7 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.SendKeys("Tab", "Tab", "Tab", "C-u")
 	app.TypeText("/tmp/evener-e2e/custom")
 	app.WaitFor("Dir:      /tmp/evener-e2e/custom")
-	app.SendKeys("Enter")
+	app.SendKeys("Enter", "Tab")
 	app.TypeLine("spawn from dashboard")
 	app.WaitFor("evener / session / spawned session 1")
 	spawns := hub.WaitForSpawns(t, 1)
@@ -138,7 +139,12 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	app.SendKeys("C-o")
 	app.WaitFor("EVENER LIVE", "live task")
 	app.SendKeys("n")
-	app.WaitFor("evener / new session", "Dir:      "+tuiE2EProjectDir, "Prompt (optional):")
+	app.WaitFor("evener / new session", "Dir:      "+tuiE2EProjectDir, "Plugins:  2/2 enabled", "Prompt (optional):")
+	app.SendKeys("Tab", "Tab", "Tab", "Enter", "Enter")
+	app.WaitFor("Plugins for this session", "[x] alpha", "[x] beta")
+	app.SendKeys("Space", "Enter")
+	app.WaitFor("Plugins:  1/2 enabled")
+	app.SendKeys("Tab")
 	app.TypeLine("spawn from project")
 	app.WaitFor("evener / session / spawned session 2")
 	spawns = hub.WaitForSpawns(t, 2)
@@ -147,6 +153,9 @@ func TestTUITmuxE2E_DashboardProjectAndSpawn(t *testing.T) {
 	}
 	if testInputText(spawns[1].Input) != "spawn from project" {
 		t.Fatalf("project spawn prompt=%q, want spawn from project", testInputText(spawns[1].Input))
+	}
+	if spawns[1].LaunchOverrides == nil || spawns[1].LaunchOverrides.EnabledPlugins == nil || !reflect.DeepEqual(*spawns[1].LaunchOverrides.EnabledPlugins, []string{"beta"}) {
+		t.Fatalf("project spawn enabled plugins=%+v, want [beta]", spawns[1].LaunchOverrides)
 	}
 	if spawns[1].ModelProvider != "" || spawns[1].Model != "openai/gpt-5" {
 		t.Fatalf("project spawn model=%s/%s, want openai/gpt-5", spawns[1].ModelProvider, spawns[1].Model)
@@ -1935,6 +1944,7 @@ func (h *tuiE2EHub) registerHandlers(app *appserver.Server) {
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadList, h.handleThreadList)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, h.handleThreadRead)
 	appserver.HandleTyped(app.Router(), appwire.MethodModelList, h.handleModelList)
+	appserver.HandleTyped(app.Router(), appwire.MethodEvenerPluginPreview, h.handlePluginPreview)
 	appserver.HandleTyped(app.Router(), appwire.MethodEvenerHarnessesList, h.handleHarnessList)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadStart, h.handleThreadStart)
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadResume, h.handleThreadResume)
@@ -1959,6 +1969,13 @@ func (h *tuiE2EHub) handleHarnessList(context.Context, appwire.HarnessListParams
 	h.mu.Lock()
 	defer h.mu.Unlock()
 	return appwire.HarnessListResponse{Data: append([]appwire.HarnessDescriptor(nil), h.harnesses...)}, nil
+}
+
+func (h *tuiE2EHub) handlePluginPreview(context.Context, appwire.PluginPreviewParams) (appwire.PluginPreviewResponse, error) {
+	return appwire.PluginPreviewResponse{Plugins: []appwire.PluginLaunchCandidate{
+		{Name: "alpha", Source: "project", Selected: true},
+		{Name: "beta", Source: "marketplace", Selected: true},
+	}}, nil
 }
 
 func (h *tuiE2EHub) URL() string {

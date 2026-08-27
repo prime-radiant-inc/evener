@@ -161,6 +161,41 @@ function testHydrate(overrides: TestThreadOverrides = {}): ThreadModel {
   return hydrateThread({ thread }, thread.evener.ref, 1000);
 }
 
+test("hydrateThread carries the snapshot plugin diagnostics into ThreadModel", () => {
+  const model = testHydrate({
+    evener: {
+      ref: "ref_t",
+      capabilities: CAPABILITIES,
+      queue: {},
+      diagnostics: {
+        plugins: [
+          { name: "enabled", skillCount: 1, agentCount: 0, hookCount: 0, mcpCount: 0 },
+          { name: "another", skillCount: 0, agentCount: 1, hookCount: 0, mcpCount: 0 },
+        ],
+      },
+    },
+  });
+
+  expect(model.diagnostics?.plugins?.map((plugin) => plugin.name)).toEqual(["enabled", "another"]);
+});
+
+test("hydrateThread preserves an explicit empty plugin inventory", () => {
+  const model = testHydrate({
+    evener: {
+      ref: "ref_t",
+      capabilities: CAPABILITIES,
+      queue: {},
+      diagnostics: { plugins: [] },
+    },
+  });
+
+  expect(model.diagnostics?.plugins).toEqual([]);
+});
+
+test("hydrateThread leaves diagnostics unavailable when the wire omits them", () => {
+  expect(testHydrate().diagnostics).toBeUndefined();
+});
+
 function testEscalation(overrides: Partial<SandboxEscalationRequested> = {}): SandboxEscalationRequested {
   return {
     threadId: "thr_t",

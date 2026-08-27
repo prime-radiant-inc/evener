@@ -132,6 +132,9 @@ func (c *hubLaunchController) SetLayer(ctx context.Context, params appwire.Launc
 	default:
 		return appwire.LaunchConfigResolved{}, appwire.InvalidParams(fmt.Sprintf("layer %q is not writable", params.Layer))
 	}
+	if params.Config.EnabledPlugins != nil {
+		return appwire.LaunchConfigResolved{}, appwire.InvalidParams("enabledPlugins is per-launch only")
+	}
 	layer := launchconfig.FromWire(params.Config)
 	// Refuse credential keys in env before persisting.
 	for k := range layer.Env {

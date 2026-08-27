@@ -29,6 +29,12 @@ func launchSchemaRows(schema []appwire.LaunchOption, layer appwire.LaunchConfigL
 	}
 	rows := make([]layerRow, 0, len(schema))
 	for _, opt := range schema {
+		// Plugin selection is owned by the dedicated New Session control;
+		// keeping it out of generic settings/override rows avoids exposing two
+		// competing editors for the same presence-aware field.
+		if opt.Kind == "pluginSelection" {
+			continue
+		}
 		switch mode {
 		case launchSchemaRowsSettings:
 			if !launchOptionDefaultableInLayer(opt, layerName) {
