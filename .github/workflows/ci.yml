@@ -49,16 +49,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/setup-toolchain
-
-      - name: Read tool versions
-        id: tool-versions
-        run: |
-          echo "golangci=$(awk '$1=="golangci-lint" {print $2}' .tool-versions)" >> "$GITHUB_OUTPUT"
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
 
       - name: Install golangci-lint
-        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" "v${{ steps.tool-versions.outputs.golangci }}"
+        run: |
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          make tools-golangci
 
       - name: Lint (golangci-lint across all go.work modules)
         run: make lint-golangci
@@ -68,16 +66,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/setup-toolchain
-
-      - name: Read golangci-lint version
-        id: golangci-version
-        run: |
-          echo "version=$(awk '$1=="golangci-lint" {print $2}' .tool-versions)" >> "$GITHUB_OUTPUT"
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
 
       - name: Install golangci-lint
-        run: curl -sSfL https://raw.githubusercontent.com/golangci/golangci-lint/HEAD/install.sh | sh -s -- -b "$(go env GOPATH)/bin" "v${{ steps.golangci-version.outputs.version }}"
+        run: |
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          make tools-golangci
 
       - name: Lint tagged compile floors (evenerfuzz and eval)
         run: make lint-evenerfuzz lint-eval
@@ -87,16 +83,14 @@ jobs:
     steps:
       - uses: actions/checkout@v7
 
-      - uses: ./.github/actions/setup-toolchain
-
-      - name: Read gitleaks version
-        id: gitleaks-version
-        run: |
-          echo "version=$(awk '$1=="gitleaks" {print $2}' .tool-versions)" >> "$GITHUB_OUTPUT"
-          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+      - uses: actions/setup-go@v6
+        with:
+          go-version-file: go.work
 
       - name: Install gitleaks
-        run: go install github.com/zricethezav/gitleaks/v8@v${{ steps.gitleaks-version.outputs.version }}
+        run: |
+          echo "$(go env GOPATH)/bin" >> "$GITHUB_PATH"
+          make tools-gitleaks
 
       - name: Lint repository structure, generated output, formatting, and secrets
         env:
