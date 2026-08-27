@@ -23,7 +23,6 @@ import type { ActivityIdentity } from "./activity";
 import { createActivityStore } from "./activity";
 import {
   createConversationStore,
-  createDrainScheduler,
   type LiveActivitySink,
   MAX_ITEM_BYTES,
   truncateText,
@@ -566,7 +565,7 @@ describe("ConversationStore", () => {
   });
 
   describe("actionUnavailable publishes refreshed capabilities before error", () => {
-    it("store updates capabilities before surfacing the command error", async () => {
+    it("store surfaces error immediately, publishes refreshed caps via scheduler", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       // Initial: all caps true, send enabled
@@ -590,13 +589,12 @@ describe("ConversationStore", () => {
       // Send will fail with actionUnavailable
       await store.getState().send(service, textInput("x"));
 
-      // After actionUnavailable, the store should have published the
-      // refreshed capabilities (send=false) BEFORE surfacing the error.
-      expect(store.getState().conversation?.capabilities.send).toBe(false);
-      // And the error should also be set
+      // I2: The error is surfaced immediately.
       expect(store.getState().error).not.toBeNull();
-      // refreshCapabilities should have been called (NOT open())
+      // I2: Flush the scheduler — the refresh runs and publishes caps.
+      await store.getState().flushScheduler();
       expect(service.refreshCapsCallCount).toBe(1);
+      expect(store.getState().conversation?.capabilities.send).toBe(false);
     });
   });
 
@@ -1700,8 +1698,8 @@ describe("ConversationStore", () => {
         params: { threadId: "thread-1", ref: "ref-1" },
       } as AnyNotification);
 
-      // Allow the scheduler's async effect to flush.
-      await new Promise((r) => setTimeout(r, 50));
+      // M1: deterministic barrier — flush the store-owned scheduler.
+      await store.getState().flushScheduler();
 
       // Multiple signals should result in only 1 readProjection call.
       expect(service.readProjectionCalls.length).toBe(1);
@@ -2328,214 +2326,320 @@ describe("ConversationStore", () => {
     });
   });
 
-  // --- Task 2A-Scheduler reslice: drain scheduler + strict sink tests ---------
+  // --- Fix round 1: I1/I2/M1/M2 tests ----------------------------------------
 
-  // Helper: create a deferred (hanging) effect. `effect` hangs until `resolve()`
-  // is called. Uses a shared-state object so `getStarted`/`getDone` are live and
-  // `resolve` avoids TS narrowing of null resolvers after awaits.
-  function makeHangEffect(): {
-    effect: () => Promise<void>;
-    resolve: () => void;
+  // M1: Deterministic deferred-effect helper. Replaces fixed setTimeout sleeps
+  // with started/release/drained barriers so test timing is deterministic.
+  // Only the FIRST call to readProjection hangs; subsequent calls pass through
+  // so trailing drains can complete.
+  function makeDeferredRead(service: FakeConversationService): {
+    release: () => void;
     getStarted: () => boolean;
     getDone: () => boolean;
   } {
-    const state = { started: false, done: false, resolve: () => {} };
-    const effect = async () => {
+    const state = {
+      started: false,
+      done: false,
+      release: () => {},
+      firstCall: true,
+    };
+    const orig = service.readProjection.bind(service);
+    service.readProjection = async (ref: string) => {
+      if (!state.firstCall) {
+        return orig(ref);
+      }
+      state.firstCall = false;
       state.started = true;
+      const result = await orig(ref);
       await new Promise<void>((resolve) => {
-        state.resolve = resolve;
+        state.release = resolve;
       });
       state.done = true;
+      return result;
     };
     return {
-      effect,
-      resolve: () => state.resolve(),
+      release: () => state.release(),
       getStarted: () => state.started,
       getDone: () => state.done,
     };
   }
 
-  describe("DrainScheduler: request(key, effect) invariants", () => {
-    it("coalesces a synchronous pre-effect burst to one effect", async () => {
-      const scheduler = createDrainScheduler();
-      let runs = 0;
-      const effect = async () => {
-        runs += 1;
+  describe("I1: projected binding epoch — stale work suppressed before effect", () => {
+    it("queued rehydrate for A is suppressed after switch to B (zero serviceA reads/sinkA writes)", async () => {
+      const serviceA = new FakeConversationService();
+      serviceA.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-A" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
       };
-      // Synchronous burst — 5 requests before any microtask fires.
-      scheduler.request("k", effect);
-      scheduler.request("k", effect);
-      scheduler.request("k", effect);
-      scheduler.request("k", effect);
-      scheduler.request("k", effect);
-      await scheduler.flush();
-      expect(runs).toBe(1);
+      const sinkA = createFakeSink();
+      const store = createConversationStore();
+
+      // Open A (completes).
+      await store.getState().openProjected(serviceA, sinkA, "ref-A");
+      // Queue a rehydrate for A via resync — the scheduler captures the
+      // binding (serviceA+refA+epoch) but defers to a microtask.
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-A", ref: "ref-A" },
+      } as AnyNotification);
+      // Now set up serviceB and switch to B before the scheduler fires.
+      const serviceB = new FakeConversationService();
+      serviceB.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-B" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      const sinkB = createFakeSink();
+      await store.getState().openProjected(serviceB, sinkB, "ref-B");
+      const readsA = serviceA.readProjectionCalls.length;
+      const writesA = sinkA.setLiveViewCalls.length;
+      // Flush the scheduler — the queued rehydrate for A must be suppressed.
+      await store.getState().flushScheduler();
+      // I1: zero serviceA reads and zero sinkA writes after the switch.
+      expect(serviceA.readProjectionCalls.length).toBe(readsA);
+      expect(sinkA.setLiveViewCalls.length).toBe(writesA);
+      // B should be the current conversation.
+      expect(store.getState().conversation?.id).toBe("thread-B");
     });
 
-    it("retains a request arriving during the first effect and drains it", async () => {
-      const scheduler = createDrainScheduler();
-      const first = makeHangEffect();
-      let trailingRan = false;
-      const trailingEffect = async () => {
-        trailingRan = true;
+    it("queued rehydrate for A is suppressed after close (no serviceA reads)", async () => {
+      const serviceA = new FakeConversationService();
+      serviceA.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-A" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
       };
-      scheduler.request("k", first.effect);
-      // Wait for the first effect to actually start.
-      await new Promise((r) => setTimeout(r, 10));
-      expect(first.getStarted()).toBe(true);
-      // While the first effect is in flight, request a trailing effect.
-      scheduler.request("k", trailingEffect);
-      // Resolve the first effect — the trailing must drain.
-      first.resolve();
-      await scheduler.flush();
-      expect(trailingRan).toBe(true);
+      const sinkA = createFakeSink();
+      const store = createConversationStore();
+      await store.getState().openProjected(serviceA, sinkA, "ref-A");
+      // Trigger a rehydrate then immediately close.
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-A", ref: "ref-A" },
+      } as AnyNotification);
+      store.getState().close();
+      const readsA = serviceA.readProjectionCalls.length;
+      await store.getState().flushScheduler();
+      // I1: zero additional serviceA reads after close.
+      expect(serviceA.readProjectionCalls.length).toBe(readsA);
     });
 
-    it("retains a request arriving during a trailing effect and drains it", async () => {
-      const scheduler = createDrainScheduler();
-      const e1 = makeHangEffect();
-      const e2 = makeHangEffect();
-      let e3ran = false;
-      const e3 = async () => {
-        e3ran = true;
+    it("queued rehydrate for A is suppressed after reset (no serviceA reads)", async () => {
+      const serviceA = new FakeConversationService();
+      serviceA.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-A" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
       };
-      scheduler.request("k", e1.effect);
-      // Wait for e1 to start.
-      await new Promise((r) => setTimeout(r, 10));
-      expect(e1.getStarted()).toBe(true);
-      // e1 is in flight. Request e2 (trailing).
-      scheduler.request("k", e2.effect);
-      e1.resolve(); // resolve e1 — e2 starts
-      // Wait for e2 to start.
-      await new Promise((r) => setTimeout(r, 10));
-      expect(e2.getStarted()).toBe(true);
-      // e2 is now in flight. Request e3 (second trailing).
-      scheduler.request("k", e3);
-      e2.resolve(); // resolve e2 — e3 must drain
-      await scheduler.flush();
-      expect(e3ran).toBe(true);
+      const sinkA = createFakeSink();
+      const store = createConversationStore();
+      await store.getState().openProjected(serviceA, sinkA, "ref-A");
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-A", ref: "ref-A" },
+      } as AnyNotification);
+      store.getState().reset();
+      const readsA = serviceA.readProjectionCalls.length;
+      await store.getState().flushScheduler();
+      expect(serviceA.readProjectionCalls.length).toBe(readsA);
     });
 
-    it("flush waits until the complete drain is idle including trailing work", async () => {
-      const scheduler = createDrainScheduler();
-      const e1 = makeHangEffect();
-      let trailingRan = false;
-      const trailing = async () => {
-        trailingRan = true;
+    it("plain open clears projected bindings (no projected rehydrate after open)", async () => {
+      const serviceA = new FakeConversationService();
+      serviceA.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-A" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
       };
-      scheduler.request("k", e1.effect);
-      await new Promise((r) => setTimeout(r, 10));
-      scheduler.request("k", trailing);
-      // Don't resolve e1 yet — flush should NOT resolve.
-      const flushP = scheduler.flush();
-      let flushResolved = false;
-      flushP.then(() => {
-        flushResolved = true;
-      });
-      await new Promise((r) => setTimeout(r, 10));
-      expect(flushResolved).toBe(false);
-      e1.resolve();
-      await flushP;
-      expect(trailingRan).toBe(true);
-      expect(flushResolved).toBe(true);
+      const sinkA = createFakeSink();
+      const store = createConversationStore();
+      await store.getState().openProjected(serviceA, sinkA, "ref-A");
+      // Queue a rehydrate via resync.
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-A", ref: "ref-A" },
+      } as AnyNotification);
+      // Plain open clears projected bindings.
+      const serviceB = new FakeConversationService();
+      serviceB.openConv = makeConversation({ id: "thread-B" });
+      await store.getState().open(serviceB, "ref-B");
+      const readsA = serviceA.readProjectionCalls.length;
+      const writesA = sinkA.setLiveViewCalls.length;
+      await store.getState().flushScheduler();
+      // I1: plain open cleared bindings — no projected rehydrate for A.
+      expect(serviceA.readProjectionCalls.length).toBe(readsA);
+      expect(sinkA.setLiveViewCalls.length).toBe(writesA);
+      expect(store.getState().conversation?.id).toBe("thread-B");
     });
 
-    it("catches effect errors without unhandled rejections and remains usable", async () => {
-      const scheduler = createDrainScheduler();
-      const failingEffect = async () => {
-        throw new Error("effect boom");
+    it("rehydrate can never call serviceA with refB", async () => {
+      const serviceA = new FakeConversationService();
+      serviceA.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-1" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
       };
-      let recovered = false;
-      const recoveryEffect = async () => {
-        recovered = true;
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      await store.getState().openProjected(serviceA, sink, "ref-1");
+      // Queue a rehydrate for ref-1.
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      // Before the scheduler fires, openProjected with a different service+ref.
+      const serviceB = new FakeConversationService();
+      serviceB.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-2" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
       };
-      scheduler.request("k", failingEffect);
-      await scheduler.flush();
-      // After the error, the scheduler must still accept and run new requests.
-      scheduler.request("k", recoveryEffect);
-      await scheduler.flush();
-      expect(recovered).toBe(true);
-    });
-
-    it("runs at most one effect at a time", async () => {
-      const scheduler = createDrainScheduler();
-      let active = 0;
-      let maxActive = 0;
-      const e1 = makeHangEffect();
-      const e1Wrap = async () => {
-        active += 1;
-        maxActive = Math.max(maxActive, active);
-        await e1.effect();
-        active -= 1;
-      };
-      const e2 = makeHangEffect();
-      const e2Wrap = async () => {
-        active += 1;
-        maxActive = Math.max(maxActive, active);
-        await e2.effect();
-        active -= 1;
-      };
-      scheduler.request("k", e1Wrap);
-      await new Promise((r) => setTimeout(r, 10));
-      // e1 is running. Request e2 — it should NOT start until e1 finishes.
-      scheduler.request("k", e2Wrap);
-      await new Promise((r) => setTimeout(r, 10));
-      expect(maxActive).toBe(1);
-      // Resolve e1, then wait for e2 to start, then resolve e2.
-      e1.resolve();
-      await new Promise((r) => setTimeout(r, 10));
-      expect(e2.getStarted()).toBe(true);
-      e2.resolve();
-      await scheduler.flush();
-      expect(maxActive).toBe(1);
-    });
-
-    it("never loses a signal due to unconditional cleanup", async () => {
-      // A signal arriving during the effect must be retained and drained,
-      // even if the effect errors — no unconditional cleanup drops it.
-      const scheduler = createDrainScheduler();
-      const rejectHolder: { reject: ((e: Error) => void) | null } = {
-        reject: null,
-      };
-      const hangingThenFailing = async () => {
-        await new Promise<void>((_resolve, reject) => {
-          rejectHolder.reject = reject;
-        });
-      };
-      let signalRan = false;
-      const signalEffect = async () => {
-        signalRan = true;
-      };
-      scheduler.request("k", hangingThenFailing);
-      await new Promise((r) => setTimeout(r, 10));
-      // Signal arrives while the first effect is in flight.
-      scheduler.request("k", signalEffect);
-      // The first effect errors — the signal must still drain.
-      if (rejectHolder.reject !== null)
-        rejectHolder.reject(new Error("cleanup boom"));
-      await scheduler.flush();
-      expect(signalRan).toBe(true);
-    });
-
-    it("distinct stale key does not suppress a later key", async () => {
-      const scheduler = createDrainScheduler();
-      const e1 = makeHangEffect();
-      let e2ran = false;
-      const e2 = async () => {
-        e2ran = true;
-      };
-      scheduler.request("stale-key", e1.effect);
-      await new Promise((r) => setTimeout(r, 10));
-      // A different key arrives during the first effect.
-      scheduler.request("fresh-key", e2);
-      e1.resolve();
-      await scheduler.flush();
-      expect(e2ran).toBe(true);
+      await store.getState().openProjected(serviceB, sink, "ref-2");
+      const readsA = serviceA.readProjectionCalls.length;
+      await store.getState().flushScheduler();
+      // I1: the queued rehydrate (captured with serviceA+ref-1) must NOT
+      // have called serviceA.readProjection after the switch.
+      expect(serviceA.readProjectionCalls.length).toBe(readsA);
     });
   });
 
-  describe("Strict activity sink: setLiveView before commit, atomic rejection", () => {
-    it("openProjected calls setLiveView BEFORE committing the conversation projection", async () => {
+  describe("I2: actionUnavailable capability refresh through store-owned scheduler", () => {
+    it("capability refresh is requested through the scheduler, not direct await", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({
+        capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+      });
+      await store.getState().open(service, "ref-1");
+
+      // Script send to reject with actionUnavailable (F11: real WireError).
+      const rejectErr = new WireError("action unavailable", -32000, {
+        evenerErrorInfo: "actionUnavailable",
+      });
+      service.sendShouldReject = rejectErr as Error;
+      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
+
+      expect(store.getState().conversation?.capabilities.send).toBe(true);
+      await store.getState().send(service, textInput("x"));
+      // I2: The error is surfaced immediately.
+      expect(store.getState().error).not.toBeNull();
+      // I2: Flush the scheduler — the refresh runs and publishes caps.
+      await store.getState().flushScheduler();
+      expect(service.refreshCapsCallCount).toBe(1);
+      expect(store.getState().conversation?.capabilities.send).toBe(false);
+    });
+
+    it("capability refresh serializes/coalesces with rereads", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+        }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // Trigger a resync (rehydrate request) and a capability refresh
+      // simultaneously — both go through the same scheduler.
+      const rejectErr = new WireError("action unavailable", -32000, {
+        evenerErrorInfo: "actionUnavailable",
+      });
+      service.sendShouldReject = rejectErr as Error;
+      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
+      const readsBefore = service.readProjectionCalls.length;
+      // Queue a resync rehydrate.
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      // Start a send that fails with actionUnavailable (queues cap refresh).
+      await store.getState().send(service, textInput("x"));
+      await store.getState().flushScheduler();
+      // Both the rehydrate (readProjection) and cap refresh should have run.
+      expect(service.readProjectionCalls.length).toBeGreaterThan(readsBefore);
+      expect(service.refreshCapsCallCount).toBe(1);
+    });
+
+    it("stale mutation recovery is suppressed by mutationId guard", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({
+        capabilities: { ...ALL_TRUE_CAPS } as MobileCapabilities,
+      });
+      await store.getState().open(service, "ref-1");
+      // Script send to reject with actionUnavailable.
+      const rejectErr = new WireError("action unavailable", -32000, {
+        evenerErrorInfo: "actionUnavailable",
+      });
+      service.sendShouldReject = rejectErr as Error;
+      // M1: deterministic barrier — hang refreshCapabilities so the cap refresh
+      // effect starts but doesn't complete before the second send.
+      const refreshHolder: { release: () => void } = { release: () => {} };
+      service.refreshCapabilities = async () => {
+        await new Promise<void>((resolve) => {
+          refreshHolder.release = resolve;
+        });
+        return { ...ALL_TRUE_CAPS, send: false };
+      };
+      // Start a send that fails — queues a cap refresh for mutationId 1.
+      await store.getState().send(service, textInput("first"));
+      // The cap refresh effect is now in-flight (hanging). Before it completes,
+      // start a second send (mutationId 2).
+      service.sendShouldReject = null;
+      await store.getState().send(service, textInput("second"));
+      // Release the hanging refresh — the mutationId guard must suppress
+      // publication because mutationId 2 is now active.
+      refreshHolder.release();
+      await store.getState().flushScheduler();
+      // The refresh was called but did NOT publish caps (stale mutation guard).
+      expect(store.getState().conversation?.capabilities.send).toBe(true);
+    });
+  });
+
+  describe("M1: setLiveView before conversation state commit (directly observed)", () => {
+    it("directly observes setLiveView fires before the store state changes", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       const sink = createFakeSink();
@@ -2550,46 +2654,199 @@ describe("ConversationStore", () => {
         activity: activityView,
         olderCursor: null,
       };
-      // Track the order: setLiveView must happen before the conversation
-      // projection is committed (status "open").
+      // Subscribe to store state changes to record when the conversation
+      // projection lands.
       const order: string[] = [];
-      sink.setLiveViewResult = (_identity, _view) => {
+      let committed = false;
+      store.subscribe((state) => {
+        if (!committed && state.conversation !== null) {
+          committed = true;
+          order.push("conversationCommitted");
+        }
+      });
+      // Record when setLiveView is called.
+      sink.setLiveViewResult = () => {
         order.push("setLiveView");
         return true;
       };
-      // Wrap the store to observe when the conversation projection lands.
-      const originalSubscribe = service.subscribeNotifications.bind(service);
-      service.subscribeNotifications = (handler) => {
-        order.push("subscribed");
-        return originalSubscribe(handler);
-      };
       await store.getState().openProjected(service, sink, "ref-1");
-      // setLiveView must have been called before the subscription (which
-      // happens after the conversation projection is committed).
+      // setLiveView must appear before conversationCommitted in the order.
       expect(order.indexOf("setLiveView")).toBeLessThan(
-        order.indexOf("subscribed"),
+        order.indexOf("conversationCommitted"),
       );
     });
+  });
 
+  describe("DrainScheduler: store-level invariants (M2 — tested through store)", () => {
+    it("coalesces a synchronous pre-effect burst to one rehydrate", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-1" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      const initialReads = service.readProjectionCalls.length;
+      // Synchronous burst — 3 resync notifications coalesce to one rehydrate.
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await store.getState().flushScheduler();
+      expect(service.readProjectionCalls.length).toBe(initialReads + 1);
+    });
+
+    it("retains a request during an in-flight rehydrate and drains it", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-1" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // Hang the first readProjection so the rehydrate is in-flight.
+      const deferred = makeDeferredRead(service);
+      const readsAfterOpen = service.readProjectionCalls.length;
+      // Trigger a rehydrate (hangs on first readProjection).
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      // M1: deterministic barrier — yield to let the in-flight rehydrate start.
+      // Use setTimeout(0) (a macrotask yield, not a fixed sleep) so all pending
+      // microtasks drain before we check.
+      await new Promise<void>((r) => setTimeout(r, 0));
+      expect(deferred.getStarted()).toBe(true);
+      // While in-flight, trigger another resync (trailing).
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      // Release the first — the trailing must drain (second call passes through).
+      deferred.release();
+      await store.getState().flushScheduler();
+      // One initial openProjected + one first rehydrate + one trailing = 3.
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 2);
+    });
+
+    it("flushScheduler waits until the complete drain is idle including trailing work", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-1" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      const deferred = makeDeferredRead(service);
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      // M1: deterministic barrier — yield to let the rehydrate start.
+      await new Promise<void>((r) => setTimeout(r, 0));
+      // The rehydrate is hanging — flush should not resolve.
+      let flushResolved = false;
+      const flushP = store.getState().flushScheduler();
+      flushP.then(() => {
+        flushResolved = true;
+      });
+      await Promise.resolve();
+      await Promise.resolve();
+      expect(flushResolved).toBe(false);
+      // Queue a trailing request.
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      // Release the first — flush should wait for the trailing too.
+      deferred.release();
+      await flushP;
+      expect(flushResolved).toBe(true);
+    });
+
+    it("catches rehydrate errors without unhandled rejections and remains usable", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-1" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      // Make readProjection throw.
+      const origRead = service.readProjection.bind(service);
+      let throwOnce = true;
+      service.readProjection = async (ref: string) => {
+        if (throwOnce) {
+          throwOnce = false;
+          throw new Error("rehydrate boom");
+        }
+        return origRead(ref);
+      };
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await store.getState().flushScheduler();
+      // The scheduler must remain usable — retrigger.
+      const readsBefore = service.readProjectionCalls.length;
+      store.getState().applyNotification({
+        method: "evener/thread/resync",
+        params: { threadId: "thread-1", ref: "ref-1" },
+      } as AnyNotification);
+      await store.getState().flushScheduler();
+      expect(service.readProjectionCalls.length).toBeGreaterThan(readsBefore);
+    });
+  });
+
+  describe("Strict activity sink: setLiveView before commit, atomic rejection", () => {
     it("openProjected does NOT commit conversation projection when setLiveView returns false", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       const sink = createFakeSink();
-      const activityView: ActivityView = {
-        tasks: [],
-        work: [],
-        usage: {},
-        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
-      };
       service.readProjectionResult = {
         conversation: makeConversation({ id: "thread-1" }),
-        activity: activityView,
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
         olderCursor: "cursor-1",
       };
-      // setLiveView returns false (stale/invalid identity).
       sink.setLiveViewResult = () => false;
       await store.getState().openProjected(service, sink, "ref-1");
-      // The conversation projection must NOT have been committed.
       expect(store.getState().conversation).toBeNull();
       expect(store.getState().status).toBe("opening");
       expect(store.getState().olderCursor).toBeNull();
@@ -2611,12 +2868,10 @@ describe("ConversationStore", () => {
       };
       await store.getState().openProjected(service, openSink, "ref-1");
       expect(store.getState().conversation).not.toBeNull();
-      // Now rehydrate with a sink that rejects setLiveView.
       const rejectSink = createFakeSink();
       rejectSink.setLiveViewResult = () => false;
       const beforeConv = store.getState().conversation;
       await store.getState().rehydrate(service, rejectSink);
-      // The conversation projection must NOT have been overwritten.
       expect(store.getState().conversation).toBe(beforeConv);
     });
 
@@ -2635,8 +2890,6 @@ describe("ConversationStore", () => {
         olderCursor: null,
       };
       await store.getState().openProjected(service, sink, "ref-1");
-      // The identity passed to setLiveView must match the conversation's
-      // threadId/ref and the store's conversationGeneration.
       const identity = sink.setLiveViewCalls[0]?.identity;
       expect(identity?.threadId).toBe("thread-1");
       expect(identity?.ref).toBe("ref-1");
@@ -2660,21 +2913,18 @@ describe("ConversationStore", () => {
         olderCursor: null,
       };
       await store.getState().openProjected(service, sink, "ref-1");
-      // Make applyLiveNotification return "rehydrate" for the next notification.
       sink.notificationOutcome = () => "rehydrate";
       const initialReads = service.readProjectionCalls.length;
       service.notificationHandler?.({
         method: "evener/jobs/treeUpdated",
         params: { threadId: "thread-1", ref: "ref-1" },
       } as AnyNotification);
-      // The drain scheduler must fire a rehydrate.
-      await new Promise((r) => setTimeout(r, 50));
+      await store.getState().flushScheduler();
       expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
     });
   });
 
   describe("Real activity store integration", () => {
-    // Integration test using the real createActivityStore (not a fake sink).
     it("openProjected with real createActivityStore installs the activity view", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
@@ -2690,7 +2940,6 @@ describe("ConversationStore", () => {
         activity: activityView,
         olderCursor: null,
       };
-      // The real activity store implements LiveActivitySink directly.
       await store
         .getState()
         .openProjected(service, activityStore.getState(), "ref-1");
@@ -2716,7 +2965,6 @@ describe("ConversationStore", () => {
         .getState()
         .openProjected(service, activityStore.getState(), "ref-1");
       const initialReads = service.readProjectionCalls.length;
-      // turn/completed returns "rehydrate" from the real activity store.
       service.notificationHandler?.({
         method: "turn/completed",
         params: {
@@ -2731,7 +2979,7 @@ describe("ConversationStore", () => {
           },
         },
       } as AnyNotification);
-      await new Promise((r) => setTimeout(r, 50));
+      await store.getState().flushScheduler();
       expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
     });
 
@@ -2749,15 +2997,9 @@ describe("ConversationStore", () => {
         },
         olderCursor: "cursor-1",
       };
-      // The real activity store's setLiveView returns false for a stale
-      // generation. Pass generation 0 (the store starts at generation 0 but
-      // increments on openProjected to 1 — a stale gen-0 identity is rejected).
-      // We use a wrapper sink that delegates to the real store but passes
-      // a stale generation to force the false return.
       const realState = activityStore.getState();
       const staleSink: LiveActivitySink = {
         setLiveView(view, identity) {
-          // Pass a stale generation (0) to the real store so it rejects.
           return realState.setLiveView(view, {
             threadId: identity.threadId,
             ref: identity.ref,
@@ -2772,7 +3014,6 @@ describe("ConversationStore", () => {
         },
       };
       await store.getState().openProjected(service, staleSink, "ref-1");
-      // The conversation projection must NOT have been committed.
       expect(store.getState().conversation).toBeNull();
       expect(activityStore.getState().view).toBeNull();
     });
