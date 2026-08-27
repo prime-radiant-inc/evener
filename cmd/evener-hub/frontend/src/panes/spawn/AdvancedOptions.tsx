@@ -222,6 +222,37 @@ function inputDefaultPlaceholder(option: LaunchOption, resolvedDefaults: LaunchC
   return "";
 }
 
+/** The entries a collection control shows as grayed "(default)" ghost rows:
+ * the effective layer's value minus the user's own local entries. The
+ * resolved layer already contains the local overrides (Spawn resolves with
+ * them), so subtracting the local keys yields exactly the inherited entries
+ * under each kind's merge semantics - append lists (pathList, mcpServerList)
+ * keep inherited entries alongside local ones, env keeps inherited keys the
+ * user has not overridden, and replace-merge modelFallbacks yields nothing
+ * once a local entry exists. [] when no layer sets the field (or the resolve
+ * hasn't landed): the control then looks exactly as it did before. */
+function inheritedItems<T>(
+  effective: unknown,
+  local: readonly T[],
+  key: (item: T) => string,
+  fromEffective: (value: unknown) => T[],
+): T[] {
+  const localKeys = new Set(local.map(key));
+  return fromEffective(effective).filter((item) => !localKeys.has(key(item)));
+}
+
+function asStringList(value: unknown): string[] {
+  return Array.isArray(value) ? (value as string[]) : [];
+}
+
+function asEnvEntries(value: unknown): [string, string][] {
+  return isRecord(value) ? Object.entries(value) : [];
+}
+
+function asMcpList(value: unknown): MCPServerSpec[] {
+  return isMcpList(value) ? value : [];
+}
+
 /** The schema's browsable path kinds, mapped onto the widget's. A "command"
  * pathKind names an executable to resolve on PATH and "" names no path at all,
  * so neither is browsable - those stay plain text boxes. */
@@ -371,6 +402,7 @@ function Control({
             option={option}
             items={Array.isArray(value?.value) ? (value.value as string[]) : []}
             loadCatalog={loadCatalog}
+            resolvedDefaults={resolvedDefaults}
             onValue={onValue}
           />
         </CollectionSection>
@@ -383,6 +415,7 @@ function Control({
             items={Array.isArray(value?.value) ? (value.value as string[]) : []}
             complete={complete}
             validatePath={validatePath}
+            resolvedDefaults={resolvedDefaults}
             onValue={onValue}
           />
         </CollectionSection>
@@ -390,13 +423,23 @@ function Control({
     case "envMap":
       return (
         <CollectionSection option={option}>
-          <EnvControl option={option} value={isRecord(value?.value) ? value.value : {}} onValue={onValue} />
+          <EnvControl
+            option={option}
+            value={isRecord(value?.value) ? value.value : {}}
+            resolvedDefaults={resolvedDefaults}
+            onValue={onValue}
+          />
         </CollectionSection>
       );
     case "mcpServerList":
       return (
         <CollectionSection option={option}>
-          <McpControl option={option} value={isMcpList(value?.value) ? value.value : []} onValue={onValue} />
+          <McpControl
+            option={option}
+            value={isMcpList(value?.value) ? value.value : []}
+            resolvedDefaults={resolvedDefaults}
+            onValue={onValue}
+          />
         </CollectionSection>
       );
     default:
@@ -439,12 +482,14 @@ function PathListControl({
   items,
   complete,
   validatePath,
+  resolvedDefaults,
   onValue,
 }: {
   option: LaunchOption;
   items: string[];
   complete: (prefix: string, includeFiles: boolean) => Promise<string[]>;
   validatePath: (path: string, kind: string) => Promise<PathValidation>;
+  resolvedDefaults: LaunchConfigLayer | undefined;
   onValue: (field: AdvancedFieldValue) => void;
 }) {
   const pathKind = pathFieldKind(option.pathKind);
@@ -452,6 +497,7 @@ function PathListControl({
     <CollectionEditor<string>
       label={option.label}
       items={items}
+      inheritedItems={inheritedItems(resolvedValue(option, resolvedDefaults), items, (item) => item, asStringList)}
       getKey={(item) => item}
       renderItem={(item) => item}
       removeLabel={(item) => `Remove ${item}`}
@@ -508,17 +554,20 @@ function ModelListControl({
   option,
   items,
   loadCatalog,
+  resolvedDefaults,
   onValue,
 }: {
   option: LaunchOption;
   items: string[];
   loadCatalog: () => Promise<ModelCatalogEnvelope>;
+  resolvedDefaults: LaunchConfigLayer | undefined;
   onValue: (field: AdvancedFieldValue) => void;
 }) {
   return (
     <CollectionEditor<string>
       label={option.label}
       items={items}
+      inheritedItems={inheritedItems(resolvedValue(option, resolvedDefaults), items, (item) => item, asStringList)}
       getKey={(item) => item}
       renderItem={(item) => item}
       removeLabel={(item) => `Remove ${item}`}
@@ -546,10 +595,12 @@ function ModelListControl({
 function EnvControl({
   option,
   value,
+  resolvedDefaults,
   onValue,
 }: {
   option: LaunchOption;
   value: Record<string, string>;
+  resolvedDefaults: LaunchConfigLayer | undefined;
   onValue: (field: AdvancedFieldValue) => void;
 }) {
   const entries = Object.entries(value);
@@ -557,6 +608,7 @@ function EnvControl({
     <CollectionEditor<[string, string]>
       label={option.label}
       items={entries}
+      inheritedItems={inheritedItems(resolvedValue(option, resolvedDefaults), entries, ([name]) => name, asEnvEntries)}
       getKey={([name]) => name}
       renderItem={([name, val]) => `${name}=${val}`}
       removeLabel={([name]) => `Remove ${name}`}
@@ -581,16 +633,19 @@ function EnvControl({
 function McpControl({
   option,
   value,
+  resolvedDefaults,
   onValue,
 }: {
   option: LaunchOption;
   value: MCPServerSpec[];
+  resolvedDefaults: LaunchConfigLayer | undefined;
   onValue: (field: AdvancedFieldValue) => void;
 }) {
   return (
     <CollectionEditor<MCPServerSpec>
       label={option.label}
       items={value}
+      inheritedItems={inheritedItems(resolvedValue(option, resolvedDefaults), value, (spec) => spec.name, asMcpList)}
       getKey={(spec) => spec.name}
       renderItem={(spec) => `${spec.name}: ${spec.command} ${(spec.args ?? []).join(" ")}`.trim()}
       removeLabel={(spec) => `Remove ${spec.name}`}
