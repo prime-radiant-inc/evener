@@ -138,6 +138,11 @@ test("off renders an Off trigger label", () => {
   expect(screen.getByTestId("vision-model-switch-value").textContent).toBe("Off");
 });
 
+test("case-insensitive off sentinel renders an Off trigger label", () => {
+  render(<VisionModelSwitch sessionRef="ref_a" model={testModel({ visionModel: "OfF" })} />);
+  expect(screen.getByTestId("vision-model-switch-value").textContent).toBe("Off");
+});
+
 test("a pinned vision ref renders unchanged", () => {
   render(<VisionModelSwitch sessionRef="ref_a" model={testModel({ visionModel: "openai/gpt-5.5" })} />);
   expect(screen.getByTestId("vision-model-switch-value").textContent).toBe("openai/gpt-5.5");
