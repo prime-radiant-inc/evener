@@ -205,8 +205,7 @@ func TestAPISessionDetailCarriesWorkMetricsForEndedSession(t *testing.T) {
 	}
 }
 
-func TestOrphanLiveGroupingUsesCanonicalProjectID(t *testing.T) {
-	t.Skip("orphan-live project grouping is covered by navigation projection tests; this unit test's project discovery depends on a seeded past index that the /api/tree retirement removed")
+func TestLiveSessionGroupsBeforePastIndex(t *testing.T) {
 	projectDir := filepath.Join(t.TempDir(), "foo")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
 		t.Fatal(err)
@@ -221,15 +220,21 @@ func TestOrphanLiveGroupingUsesCanonicalProjectID(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex(""), Roster: roster})
 	_, live, projects := web.navigationTreeInputs(context.Background())
 	tree := hubBuildNavigationTree(nil, live, map[hubcore.ArchiveKey]bool{}, projects)
-	// The orphan-live session must group under the canonical project ID.
-	found := false
-	for _, p := range tree.Projects {
-		if p.Key == project.ID {
-			found = true
-		}
+	if len(tree.Projects) != 1 {
+		t.Fatalf("projects = %d, want 1: %+v", len(tree.Projects), tree.Projects)
 	}
-	if !found {
-		t.Fatalf("orphan-live must use the canonical project ID; got %+v", tree.Projects)
+	if tree.Projects[0].Key != project.ID {
+		t.Fatalf("project key = %q, want canonical ID %q", tree.Projects[0].Key, project.ID)
+	}
+	if sessions := tree.Projects[0].Current; len(sessions) != 1 || sessions[0].ID != "01L" {
+		t.Fatalf("current sessions = %+v, want the live session", sessions)
+	}
+	lazy, ok := hubcore.BuildProjectTreeAt(nil, live, map[hubcore.ArchiveKey]bool{}, time.Now(), project.ID)
+	if !ok {
+		t.Fatalf("lazy project lookup did not find live project %q", project.ID)
+	}
+	if sessions := lazy.Current; len(sessions) != 1 || sessions[0].ID != "01L" {
+		t.Fatalf("lazy current sessions = %+v, want the live session", sessions)
 	}
 }
 

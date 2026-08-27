@@ -2,6 +2,7 @@ import { type ChangeEvent, type CSSProperties, useCallback, useEffect, useId, us
 import { sessionPanelPaneType } from "../../panes/sessionPanels";
 import { errorText } from "../../protocol/errors";
 import type {
+  NavigationCatalogs,
   NavigationProjectPage,
   NavigationProjectResource,
   NavigationProjectSummary,
@@ -91,8 +92,7 @@ const CLASS = {
 };
 
 const ARCHIVED_SECTION_KEY = "section:archived";
-const catalogKinds = ["projects", "archived_projects", "test_runs"] as const;
-type CatalogKind = (typeof catalogKinds)[number];
+type CatalogKind = keyof NavigationCatalogs;
 
 interface RailSectionProps {
   title: string;

@@ -1,6 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
 import { WireError } from "../../protocol/errors";
 import { FakeClient } from "../../protocol/testing/fakeClient";
+import { navigationInvalidatedNotification } from "../../protocol/testing/notifications";
 import type { NavigationReadParams, NavigationReadResponse } from "../../protocol/types.gen";
 import { EXPANSION_STORAGE_KEY } from "../../shell/rail/railExpansion";
 import {
@@ -153,6 +154,45 @@ test("manifest is read first, count-zero resources are skipped, and defaults are
   expect(
     calls.some((x) => x.section === "needs_you" || x.catalog === "archived_projects" || x.catalog === "test_runs"),
   ).toBe(false);
+});
+
+test("manifest invalidation hydrates resources that become nonempty", async () => {
+  const calls: NavigationReadParams[] = [];
+  const sectionRequested = deferred<void>();
+  const catalogRequested = deferred<void>();
+  let populated = false;
+  const nextManifest = emptyManifest({
+    sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
+    catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
+  });
+  const client = await init((params) => {
+    calls.push(params);
+    if (params.resource === "manifest")
+      return wire(populated ? nextManifest : emptyManifest(), "ok", populated ? '"two"' : '"one"', populated ? 2 : 1);
+    if (params.resource === "section") {
+      sectionRequested.resolve();
+      return wire({ sessions: [], remaining: 0, truncated: false });
+    }
+    if (params.resource === "catalog") {
+      catalogRequested.resolve();
+      return wire({ projects: [{ key: "project", default_expanded: false }], remaining: 0 });
+    }
+    return wire({ sessions: [], remaining: 0 });
+  });
+
+  expect(calls).toEqual([{ resource: "manifest" }]);
+  populated = true;
+  client.emitNotification(
+    navigationInvalidatedNotification({
+      generationId: generation,
+      sequence: 1,
+      targets: [{ kind: "manifest", revision: 2 }],
+    }),
+  );
+  await Promise.all([sectionRequested.promise, catalogRequested.promise]);
+
+  expect(calls).toContainEqual({ resource: "section", section: "live", offset: 0, limit: 50 });
+  expect(calls).toContainEqual({ resource: "catalog", catalog: "projects", offset: 0, limit: 100 });
 });
 
 test("validated manifest attention seeds the v1 summary before notifications", async () => {

@@ -704,11 +704,62 @@ func resolveProjectMap(metas []schema.SessionMeta, live []LiveEntry, strict bool
 	return projects, nil
 }
 
+// treeMetasWithLive combines indexed metadata with live-only project sessions.
+func treeMetasWithLive(metas []schema.SessionMeta, live []LiveEntry, now time.Time, resolvedProjects map[string]identifier.Project) ([]schema.SessionMeta, map[string]bool) {
+	effectiveMetas := append([]schema.SessionMeta(nil), metas...)
+	sessionIsIndexed := make(map[string]bool, len(metas))
+	for _, m := range effectiveMetas {
+		if m.ID == "" {
+			continue
+		}
+		sessionIsIndexed[m.ID] = true
+	}
+	// A newly-created daemon can appear in the roster before the past index's
+	// next rebuild. Give live sessions with a resolved project identity a
+	// temporary metadata record so they still populate that project's catalog.
+	// Pathless and unresolved live sessions remain in the flat Live tier until
+	// they acquire metadata or a project identity.
+	for _, le := range live {
+		if le.SessionID == "" || le.WorkingDir == "" {
+			continue
+		}
+		if _, resolved := resolvedProjects[le.WorkingDir]; !resolved {
+			continue
+		}
+		if _, exists := sessionIsIndexed[le.SessionID]; exists {
+			continue
+		}
+		startedAt := le.StartedAt
+		if startedAt.IsZero() {
+			startedAt = now
+		}
+		effectiveMetas = append(effectiveMetas, schema.SessionMeta{
+			ID:        le.SessionID,
+			CreatedAt: startedAt,
+			UpdatedAt: startedAt,
+			EnvInfo:   schema.EnvironmentInfo{WorkingDir: le.WorkingDir},
+		})
+		sessionIsIndexed[le.SessionID] = false
+	}
+	return effectiveMetas, sessionIsIndexed
+}
+
+func projectKeyForPath(path string, resolvedProjects map[string]identifier.Project) string {
+	if project := resolvedProjects[path]; project.ID != "" {
+		return project.ID
+	}
+	return "no-project"
+}
+
 // BuildTreeAtWithProjects assembles a tree using projects resolved by the
 // caller. The map is keyed by EffectiveWorkingDir; it prevents resolver calls
 // from leaking into grouping/sorting helpers.
 func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, now time.Time, resolvedProjects map[string]identifier.Project) Tree {
-	metas = append([]schema.SessionMeta(nil), metas...)
+	effectiveMetas, sessionIsIndexed := treeMetasWithLive(metas, live, now, resolvedProjects)
+	return buildTreeAtWithProjects(effectiveMetas, live, decisions, now, resolvedProjects, sessionIsIndexed)
+}
+
+func buildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, now time.Time, resolvedProjects map[string]identifier.Project, sessionIsIndexed map[string]bool) Tree {
 	sort.SliceStable(metas, func(i, j int) bool {
 		return sessionMetaLess(metas[i], metas[j])
 	})
@@ -795,12 +846,19 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 	// AcceptedInputTurns was persisted still carries a TurnCount, so it is
 	// never mislabelled; and a session whose first turn is in flight, or which
 	// failed before any response, carries an accepted input, so the row never
-	// denies that the user asked it something. A session with no meta at all
-	// (a live entry the past index has not caught up with) reports false: the
-	// claim is only ever made from evidence.
+	// denies that the user asked it something. A synthetic live-only meta (or a
+	// live entry the past index has not caught up with) reports false: the claim
+	// is only ever made from indexed evidence.
 	dormantFor := func(id string) bool {
 		m, ok := metaMap[id]
-		return ok && m.TurnCount == 0 && m.AcceptedInputTurns == 0
+		if !ok {
+			return false
+		}
+		indexed, known := sessionIsIndexed[id]
+		if !known || !indexed {
+			return false
+		}
+		return m.TurnCount == 0 && m.AcceptedInputTurns == 0
 	}
 
 	// Group metas by canonical project identity while preserving each record's
@@ -1143,14 +1201,7 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		if le.SessionID == "" {
 			continue
 		}
-		// Find the meta for this live entry.
-		var meta *schema.SessionMeta
-		for i := range metas {
-			if metas[i].ID == le.SessionID {
-				meta = &metas[i]
-				break
-			}
-		}
+		metaValue, hasMeta := metaMap[le.SessionID]
 		state := stateFor(le.SessionID)
 		node := TreeNode{
 			ID:         le.SessionID,
@@ -1159,13 +1210,13 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 			Dormant:    dormantFor(le.SessionID),
 			Kind:       "session",
 		}
-		if meta != nil {
-			kind := nodeKind(*meta)
+		if hasMeta {
+			kind := nodeKind(metaValue)
 			node.Kind = kind
-			node.Title = nodeTitle(*meta, kind)
-			node.Project = projectName(*meta)
-			node.CreatedAt = OrderCreatedAt(meta.CreatedAt, meta.UpdatedAt)
-			node.UpdatedAt = OrderUpdatedAt(meta.UpdatedAt, meta.CreatedAt)
+			node.Title = nodeTitle(metaValue, kind)
+			node.Project = projectName(metaValue)
+			node.CreatedAt = OrderCreatedAt(metaValue.CreatedAt, metaValue.UpdatedAt)
+			node.UpdatedAt = OrderUpdatedAt(metaValue.UpdatedAt, metaValue.CreatedAt)
 			node.Age = AgeString(node.UpdatedAt)
 		} else {
 			node.Title = ShortID(le.SessionID)
@@ -1234,12 +1285,10 @@ func BuildTreeAtWithProjects(metas []schema.SessionMeta, live []LiveEntry, decis
 		if lvl := promotedAttentionLevel(st, le.PendingEscalation); lvl != "needs_you" && lvl != "error" {
 			continue
 		}
+		metaValue, hasMeta := metaMap[le.SessionID]
 		var meta *schema.SessionMeta
-		for i := range metas {
-			if metas[i].ID == le.SessionID {
-				meta = &metas[i]
-				break
-			}
+		if hasMeta {
+			meta = &metaValue
 		}
 		// Same tierEligible call attention.go's AttentionSummary uses for its
 		// own inclusion check: only top-level (not a subagent, not a
@@ -1305,15 +1354,17 @@ func BuildProjectTree(metas []schema.SessionMeta, live []LiveEntry, decisions ma
 }
 
 // BuildProjectTreeAt is BuildProjectTree with an injected clock. It filters the
-// metas to the requested canonical project ID, runs the normal tree build on
-// that subset, and returns the resulting TreeProject (searching both the active
-// and archived lists). Explicit parent lineage determines a subagent's project,
-// even when the subagent runs from another effective directory. ok is false
-// when no project with that ID exists.
+// effective metadata to the requested canonical project ID, runs the normal
+// tree build on that subset, and returns the resulting TreeProject (searching
+// both the active and archived lists). Explicit parent lineage determines a
+// subagent's project, even when the subagent runs from another effective
+// directory. A project with only a live session is also eligible before its
+// metadata reaches the index. ok is false when no project with that ID exists.
 func BuildProjectTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions map[ArchiveKey]bool, now time.Time, projectID string) (TreeProject, bool) {
 	resolvedProjects := ResolveProjectMap(metas, live)
-	metaByID := make(map[string]schema.SessionMeta, len(metas))
-	for _, m := range metas {
+	effectiveMetas, sessionIsIndexed := treeMetasWithLive(metas, live, now, resolvedProjects)
+	metaByID := make(map[string]schema.SessionMeta, len(effectiveMetas))
+	for _, m := range effectiveMetas {
 		if m.ID != "" {
 			metaByID[m.ID] = m
 		}
@@ -1328,14 +1379,10 @@ func BuildProjectTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions 
 			seen[parent.ID] = true
 			m = parent
 		}
-		key := "no-project"
-		if project := resolvedProjects[EffectiveWorkingDir(m)]; project.ID != "" {
-			key = project.ID
-		}
-		return key == projectID
+		return projectKeyForPath(EffectiveWorkingDir(m), resolvedProjects) == projectID
 	}
-	subset := make([]schema.SessionMeta, 0, len(metas))
-	for _, m := range metas {
+	subset := make([]schema.SessionMeta, 0, len(effectiveMetas))
+	for _, m := range effectiveMetas {
 		if belongsToProject(m) {
 			subset = append(subset, m)
 		}
@@ -1343,7 +1390,7 @@ func BuildProjectTreeAt(metas []schema.SessionMeta, live []LiveEntry, decisions 
 	if len(subset) == 0 {
 		return TreeProject{}, false
 	}
-	tree := BuildTreeAtWithProjects(subset, live, decisions, now, resolvedProjects)
+	tree := buildTreeAtWithProjects(subset, live, decisions, now, resolvedProjects, sessionIsIndexed)
 	for _, p := range tree.Projects {
 		if p.Key == projectID {
 			return p, true
