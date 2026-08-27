@@ -1168,20 +1168,18 @@ func (s *Server) handleAppJobsOutput(_ context.Context, params appwire.JobsOutpu
 func (s *Server) handleAppModelList(ctx context.Context, _ appwire.ModelListParams) (appwire.ModelListResponse, error) {
 	s.mu.RLock()
 	fn := s.listModelsFunc
-	provider := s.status.Profile
 	s.mu.RUnlock()
 	if fn == nil {
-		return appwire.ModelListResponse{}, nil
+		return appwire.ModelListResponse{Data: []appwire.ModelDescriptor{}}, nil
 	}
 	models, err := fn(ctx)
 	if err != nil {
 		return appwire.ModelListResponse{}, err
 	}
-	out := make([]appwire.ModelDescriptor, 0, len(models))
-	for _, model := range models {
-		out = append(out, appwire.ModelDescriptor{Provider: provider, Model: model.ID})
+	if models == nil {
+		models = []appwire.ModelDescriptor{}
 	}
-	return appwire.ModelListResponse{Data: out}, nil
+	return appwire.ModelListResponse{Data: models}, nil
 }
 
 // appThread assembles the thread snapshot. It is a struct copy plus identity:

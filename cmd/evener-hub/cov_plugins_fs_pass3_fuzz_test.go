@@ -112,10 +112,10 @@ func fuzzExerciseModels(data []byte) {
 	_ = sanitizeModelDiagnostics(diags)
 	_ = providerHasLaunchDiagnostic(diags, "P")
 	_ = providerHasLaunchDiagnostic(nil, "P")
-	_ = behaviorTagFromConfig("openrouter-anthropic", nil)
+	_ = behaviorTagFor(nil, "openrouter-anthropic")
 	pcfg := &providercfg.Config{Instances: []providercfg.InstanceConfig{{Name: "router", Type: providercfg.Type("openrouter-anthropic")}}}
-	_ = behaviorTagFromConfig("router", pcfg)
-	_ = behaviorTagFromConfig("missing", pcfg)
+	_ = behaviorTagFor(pcfg, "router")
+	_ = behaviorTagFor(pcfg, "missing")
 	_ = launchProviderAllowsUnreportedModels("openrouter-anthropic", nil)
 	_ = launchProviderAllowsUnreportedModels("openai", nil)
 	_ = launchHarnessDescriptors(hubcore.WebConfig{})

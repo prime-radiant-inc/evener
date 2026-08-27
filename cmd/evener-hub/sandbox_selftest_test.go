@@ -108,13 +108,7 @@ func TestSandboxContainsMutatingHandlers(t *testing.T) {
 		t.Fatalf("git/head did not use the seam: branch=%q want %q", gh.Branch, sandboxGitBranch)
 	}
 
-	// 3. models: the response is the seam's fixed list, proving no provider call.
-	rec = do(http.MethodGet, "/api/models", nil)
-	if !bytes.Contains(rec.Body.Bytes(), []byte("fake-model")) {
-		t.Fatalf("models did not use the seam: body=%s", rec.Body.String())
-	}
-
-	// 4. dir-create: a path OUTSIDE the sandbox root is recorded but never made.
+	// 3. dir-create: a path OUTSIDE the sandbox root is recorded but never made.
 	forbiddenRoot := t.TempDir() // outside s.Root
 	forbidden := filepath.Join(forbiddenRoot, "should-not-be-created", "deep")
 	rec = do(http.MethodPost, "/api/dirs/create", map[string]any{"path": forbidden})

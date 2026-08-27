@@ -9,7 +9,7 @@ import * as catalogClientModule from "../../../../widgets/modelCatalog/catalogCl
 import { PromptCompositeField, ScalarField } from "./fields";
 
 // The modelPicker kind renders the rich ModelCatalog widget, which calls the
-// REST /api/models loader on open; mock it so these render tests stay hermetic.
+// typed model/list loader on open; mock it so these render tests stay hermetic.
 //
 // vi.spyOn, not vi.mock: see ModelField.test.tsx's own comment on this exact
 // pattern - under a shared module registry (isolate:false), a vi.mock()

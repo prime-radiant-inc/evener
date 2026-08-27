@@ -163,7 +163,7 @@ func formatModelAlternatives(models []llm.ModelInfo, tag string, cat *llm.ModelC
 
 // modelSwitchVisible delegates to the shared llm.ModelCatalog.VisibleLiveModel
 // rule so the in-session model-switch path, the launch-check path, and the hub
-// /api/models path share one visibility rule and cannot drift. See
+// model-list path share one visibility rule and cannot drift. See
 // VisibleLiveModel for the live-API-first tool-support resolution this
 // implements.
 func modelSwitchVisible(behaviorTag string, live llm.ModelInfo, cat *llm.ModelCatalog) bool {

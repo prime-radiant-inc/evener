@@ -241,46 +241,6 @@ func TestClientSpawn_Error(t *testing.T) {
 	}
 }
 
-func TestClientModels(t *testing.T) {
-	want := []hubapi.ModelOption{
-		{Provider: "openai", Model: "gpt-4o"},
-	}
-	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.Method != http.MethodGet {
-			t.Errorf("method: got %s, want GET", r.Method)
-		}
-		if r.URL.Path != "/api/models" {
-			t.Errorf("path: got %s, want /api/models", r.URL.Path)
-		}
-		_ = json.NewEncoder(w).Encode(want)
-	})
-	defer srv.Close()
-
-	got, err := client.Models(context.Background())
-	if err != nil {
-		t.Fatalf("Models: %v", err)
-	}
-	if len(got) != 1 || got[0].Model != "gpt-4o" {
-		t.Errorf("models: got %+v", got)
-	}
-}
-
-func TestClientModels_Error(t *testing.T) {
-	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {
-		w.WriteHeader(http.StatusBadGateway)
-		_ = json.NewEncoder(w).Encode([]hubapi.ModelOption{})
-	})
-	defer srv.Close()
-
-	_, err := client.Models(context.Background())
-	if err == nil {
-		t.Fatal("expected error for 502 response")
-	}
-	if !strings.Contains(err.Error(), "502") {
-		t.Errorf("error should report status code 502, got %v", err)
-	}
-}
-
 func TestClientSend(t *testing.T) {
 	ref := hubapi.Ref{HostID: "local", SessionID: "test"}
 	client, srv := newTestClient(t, func(w http.ResponseWriter, r *http.Request) {

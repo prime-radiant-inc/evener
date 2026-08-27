@@ -145,17 +145,6 @@ type SessionCapabilities struct {
 	ReadOnlyReason string `json:"read_only_reason,omitempty"`
 }
 
-type ModelOption struct {
-	Provider             string  `json:"provider"`
-	Model                string  `json:"model"`
-	DisplayName          string  `json:"display_name,omitempty"`
-	ContextWindow        int     `json:"context_window,omitempty"`
-	SupportsTools        bool    `json:"supports_tools,omitempty"`
-	SupportsReasoning    bool    `json:"supports_reasoning,omitempty"`
-	InputCostPerMillion  float64 `json:"input_cost_per_million,omitempty"`
-	OutputCostPerMillion float64 `json:"output_cost_per_million,omitempty"`
-}
-
 // SpawnRequest is the JSON body for POST /api/spawn.
 // Prompt is the current field; Task is accepted for legacy callers only.
 type SpawnRequest struct {

@@ -50,7 +50,7 @@ export function rowMeta(entry: ModelCatalogEntry, withProvider: boolean): string
  * back to the diagnostic's own title/source before a generic word - a launch
  * check that names neither still reads as a sentence.
  *
- * The diagnostic's `hint` is deliberately NOT shown here. Live /api/models
+ * The diagnostic's `hint` is deliberately NOT shown here. Live model-list
  * hints are a fixed multi-sentence essay about provider errors in general
  * (identical text for every provider, ~300 characters); rendering it made
  * each unavailable line dwarf the whole model list while the `message`

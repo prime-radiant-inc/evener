@@ -19,8 +19,7 @@ import { navigationStore } from "../../stores/navigation/store";
 import { prefsStore } from "../../stores/prefs";
 import { threadsStore } from "../../stores/threads";
 import type { ToastKind } from "../../widgets";
-import { fetchModelCatalog } from "../../widgets/modelCatalog/catalogClient";
-import { mergeScopedCatalog } from "../../widgets/modelCatalog/scopedCatalog";
+import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
 import { needsYouRefs, nextNeedsYouRef, openNeedsYouSession } from "../rail/needsYouCycle";
 import { revealSessionInRail } from "../rail/railController";
 import { navigate } from "../routing";
@@ -418,23 +417,13 @@ export function buildCommands(): Command[] {
       args: {
         kind: "enum",
         placeholder: "choose a model…",
-        // The launchable SET still comes from model/list (session-scoped -
-        // what's actually valid to switch THIS session to), enriched with the
-        // unscoped rich /api/models catalog's display names via
-        // mergeScopedCatalog - the SAME merge ModelSwitch.tsx's own
-        // mid-session picker uses (chrome/ModelSwitch.tsx's openPicker). A
-        // failed enrichment fetch degrades to label-only entries
-        // (mergeScopedCatalog's own null-enrichment fallback), never a load
-        // failure - the scoped list alone is still a usable enum.
+        // The launchable SET and metadata come from the session-cached
+        // model/list response, which is the same catalog ModelSwitch uses.
         source: async () => {
-          const [scoped, enrichment] = await Promise.all([
-            threadsStore.getState().listModels(),
-            fetchModelCatalog().catch(() => null),
-          ]);
-          const catalog = mergeScopedCatalog(scoped.data, enrichment);
+          const catalog = modelListToCatalog(await threadsStore.getState().listModels());
           return catalog.models.map((m) => ({
             id: `${m.provider}/${m.model}`,
-            label: m.displayName || m.model,
+            label: m.displayName,
             hint: m.provider,
           }));
         },
@@ -473,8 +462,8 @@ export function buildCommands(): Command[] {
         kind: "enum",
         placeholder: "choose effort…",
         // Snapshot-based (the focused model's own reasoningEffortLevels /
-        // supportsReasoning), NOT /api/models - the live surface shouldn't
-        // need it (floor §2.5). A non-reasoning model yields ZERO options, not
+        // supportsReasoning), not a separate catalog request - the live
+        // surface shouldn't need it (floor §2.5). A non-reasoning model yields ZERO options, not
         // just "(default)". "none" is omitted from a non-empty ladder: it
         // normalizes to "" (same as default), so it isn't a distinct option.
         source: (ctx) => {

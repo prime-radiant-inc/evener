@@ -3,6 +3,7 @@ package appwire
 import (
 	"bytes"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 )
@@ -586,7 +587,7 @@ func TestEvenerThreadCostJSONRoundTrip(t *testing.T) {
 
 // TestModelListResponseRecentJSONRoundTrip verifies the model picker's
 // Recent group rides ModelListResponse as an ordinary struct field (no new
-// appwire method), snake_case on the wire, and round-trips.
+// appwire method), uses the protocol's camelCase keys, and round-trips.
 func TestModelListResponseRecentJSONRoundTrip(t *testing.T) {
 	in := ModelListResponse{
 		Data:   []ModelDescriptor{{Provider: "anthropic", Model: "claude-opus-4-6"}},
@@ -604,7 +605,7 @@ func TestModelListResponseRecentJSONRoundTrip(t *testing.T) {
 	if err := json.Unmarshal(raw, &out); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if len(out.Recent) != 1 || out.Recent[0] != in.Recent[0] {
+	if len(out.Recent) != 1 || !reflect.DeepEqual(out.Recent[0], in.Recent[0]) {
 		t.Fatalf("roundtrip recent=%+v, want %+v", out.Recent, in.Recent)
 	}
 }
@@ -619,6 +620,62 @@ func TestModelListResponseRecentOmitEmpty(t *testing.T) {
 	}
 	if strings.Contains(string(raw), `"recent"`) {
 		t.Fatalf("marshal=%s should have omitted recent", raw)
+	}
+}
+
+func TestModelDescriptorRichMetadataJSONRoundTrip(t *testing.T) {
+	contextWindow := 200_000
+	maxOutputTokens := 8_192
+	supportsTools := true
+	supportsVision := false
+	supportsWebSearch := false
+	supportsReasoning := true
+	inputCost := 3.0
+	outputCost := 15.0
+	in := ModelDescriptor{
+		Provider:              "anthropic",
+		Model:                 "claude-sonnet-4-5",
+		DisplayName:           "Claude Sonnet 4.5",
+		ContextWindow:         &contextWindow,
+		SupportsTools:         &supportsTools,
+		SupportsVision:        &supportsVision,
+		MaxOutputTokens:       &maxOutputTokens,
+		SupportsWebSearch:     &supportsWebSearch,
+		SupportsReasoning:     &supportsReasoning,
+		InputCostPerMillion:   &inputCost,
+		OutputCostPerMillion:  &outputCost,
+		ReasoningEffortLevels: []string{"low", "medium", "high"},
+	}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, field := range []string{
+		`"displayName":"Claude Sonnet 4.5"`,
+		`"contextWindow":200000`,
+		`"supportsTools":true`,
+		`"supportsVision":false`,
+		`"supportsWebSearch":false`,
+		`"inputCostPerMillion":3`,
+	} {
+		if !strings.Contains(string(raw), field) {
+			t.Fatalf("marshal=%s missing %s", raw, field)
+		}
+	}
+	var out ModelDescriptor
+	if err := json.Unmarshal(raw, &out); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if !reflect.DeepEqual(out, in) {
+		t.Fatalf("roundtrip=%+v, want %+v", out, in)
+	}
+
+	unknownRaw, err := json.Marshal(ModelDescriptor{Provider: "custom", Model: "mystery"})
+	if err != nil {
+		t.Fatalf("marshal unknown: %v", err)
+	}
+	if strings.Contains(string(unknownRaw), "contextWindow") || strings.Contains(string(unknownRaw), "supportsTools") {
+		t.Fatalf("unknown descriptor emitted absent metadata: %s", unknownRaw)
 	}
 }
 

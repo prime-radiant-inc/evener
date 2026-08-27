@@ -87,7 +87,7 @@ type serveServer interface {
 	UpdateSessionInfo(sessionID, model, profile string)
 	SetNameFunc(func(string))
 	SetReasoningEffortFunc(func(string))
-	SetListModelsFunc(func(context.Context) ([]server.ModelsResponseItem, error))
+	SetListModelsFunc(func(context.Context) ([]appwire.ModelDescriptor, error))
 	SetTasksFunc(func() any)
 	SetJobsFunc(func(appwire.JobsListParams) (any, error))
 	SetJobOutputFunc(func(string, int64, int64) (any, bool, error))

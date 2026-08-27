@@ -14,12 +14,12 @@ import (
 
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/llm/providers/kimicoding"
-	"primeradiant.com/evener/server"
 )
 
 // GitOriginURLFromDir runs "git remote get-url origin" in dir and returns the
@@ -299,22 +299,66 @@ func ResolveSessionMeta(stateDir, sessionID string, resumeLast bool) (schema.Ses
 }
 
 // ListModelsFunc returns a function suitable for server.SetListModelsFunc that
-// fetches models from the given client and provider.
-func ListModelsFunc(client *llm.Client, providerID string) func(context.Context) ([]server.ModelsResponseItem, error) {
-	return func(ctx context.Context) ([]server.ModelsResponseItem, error) {
+// fetches model descriptors from the given client and provider.
+func ListModelsFunc(client *llm.Client, providerID string) func(context.Context) ([]appwire.ModelDescriptor, error) {
+	return func(ctx context.Context) ([]appwire.ModelDescriptor, error) {
 		models, err := client.ListModels(ctx, providerID)
 		if err != nil {
 			return nil, err
 		}
-		items := make([]server.ModelsResponseItem, len(models))
+		items := make([]appwire.ModelDescriptor, len(models))
 		for i, m := range models {
-			items[i] = server.ModelsResponseItem{
-				ID:          m.ID,
-				DisplayName: m.DisplayName,
-			}
+			items[i] = ModelDescriptorFromInfo(providerID, m)
 		}
 		return items, nil
 	}
+}
+
+// ModelDescriptorFromInfo converts normalized provider metadata to the typed
+// descriptor shared by the server and AppWire model/list response.
+func ModelDescriptorFromInfo(providerID string, model llm.ModelInfo) appwire.ModelDescriptor {
+	descriptor := appwire.ModelDescriptor{
+		Provider:              providerID,
+		Model:                 model.ID,
+		DisplayName:           model.DisplayName,
+		ReasoningEffortLevels: append([]string(nil), model.ReasoningEffortLevels...),
+	}
+	if model.ContextWindow > 0 {
+		value := model.ContextWindow
+		descriptor.ContextWindow = &value
+	}
+	if model.CapabilitiesAdvertised {
+		tools, vision, reasoning := model.SupportsTools, model.SupportsVision, model.SupportsReasoning
+		descriptor.SupportsTools = &tools
+		descriptor.SupportsVision = &vision
+		descriptor.SupportsReasoning = &reasoning
+	} else {
+		if model.SupportsTools {
+			value := true
+			descriptor.SupportsTools = &value
+		}
+		if model.SupportsReasoning {
+			value := true
+			descriptor.SupportsReasoning = &value
+		}
+	}
+	if model.MaxOutputTokens != nil {
+		value := *model.MaxOutputTokens
+		descriptor.MaxOutputTokens = &value
+	}
+	if model.SupportsWebSearch != nil {
+		value := *model.SupportsWebSearch
+		descriptor.SupportsWebSearch = &value
+	}
+	if model.InputCostPerMillion != nil {
+		value := *model.InputCostPerMillion
+		descriptor.InputCostPerMillion = &value
+	}
+	if model.OutputCostPerMillion != nil {
+		value := *model.OutputCostPerMillion
+		descriptor.OutputCostPerMillion = &value
+	}
+	return descriptor
 }
 
 // ParseAllowedDecisions parses the EVENER_ALLOWED_DECISIONS value into a slice

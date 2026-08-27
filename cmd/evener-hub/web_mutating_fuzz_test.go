@@ -20,17 +20,16 @@ type mutRoute struct {
 }
 
 // mutatingRoutes are exactly the routes the Phase-4 read-only handler fuzz
-// excluded: the spawn/dir-create POSTs, the live-git and live-models
+// excluded: the spawn/dir-create POSTs and the live-git
 // seam reads, and the session/turn action verbs (clear/model/effort/interrupt/
 // compact/shutdown/send/fork under /api/sessions, and steer/queue/drain-as-steer
 // under /s). Under the B0 sandbox every one of these is contained: spawn hits
-// the recording spawner, dir-create the recording mkdir, git-head/models their
+// the recording spawner, dir-create the recording mkdir, and git-head its
 // seams, and the action verbs resolve "not live" before any daemon dial.
 var mutatingRoutes = []mutRoute{
 	{http.MethodPost, "/api/spawn", true},
 	{http.MethodPost, "/api/dirs/create", true},
 	{http.MethodGet, "/api/git/head?cwd={id}", false},
-	{http.MethodGet, "/api/models?harness={id}", false},
 	{http.MethodPost, "/api/sessions/{id}/clear", false},
 	{http.MethodPost, "/api/sessions/{id}/model", true},
 	{http.MethodPost, "/api/sessions/{id}/reasoning-effort", true},
@@ -108,8 +107,6 @@ func FuzzWebMutatingHandler(f *testing.F) {
 		{"/api/spawn", "", `{"harness":"evener","working_dir":"` + s.CWD + `","items":[{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"}]}`},
 		{"/api/dirs/create", "", `{"path":"` + s.CWD + `/new"}`},
 		{"/api/git/head?cwd={id}", s.CWD, ""},
-		{"/api/models?harness={id}", "evener", ""},
-		{"/api/models?harness={id}", "codex", ""},
 		{"/api/sessions/{id}/clear", sandboxSessionID, ""},
 		{"/api/sessions/{id}/model", sandboxSessionID, `{"model":"openai/gpt-5.5"}`},
 		{"/api/sessions/{id}/reasoning-effort", sandboxSessionID, `{"reasoning_effort":"high"}`},

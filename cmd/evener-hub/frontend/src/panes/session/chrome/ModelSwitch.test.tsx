@@ -192,7 +192,7 @@ test("a failed turn's idle capabilities re-enable model switching without reload
   await waitFor(() => expect(screen.getAllByRole("option")).toHaveLength(3));
   await user.clear(combobox);
   await user.keyboard("gpt-5.5");
-  await user.click(await screen.findByRole("option", { name: /openai\/gpt-5\.5/i }));
+  await user.click(await screen.findByRole("option", { name: /gpt-5\.5/i }));
   await waitFor(() => expect(called).toEqual({ ref: "ref_a", modelProvider: "openai", model: "gpt-5.5" }));
 });
 

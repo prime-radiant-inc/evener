@@ -50,12 +50,10 @@ func FuzzCovWebViewsSpawn(f *testing.F) {
 			_ = isDatedSnapshotModelID(s)
 			_ = prettifyModelDisplayName(s)
 		}
-		models := []map[string]any{{"provider": "z", "model": "m-20250101"}, {"provider": "a", "model": "m"}, {"provider": "z", "model": "m"}}
-		sortModelEntriesDatedLast(models)
-		_ = recentModelEntriesFromDescriptors(models, nil)
-		_ = recentModelEntriesFromDescriptors(models, []appwire.ModelDescriptor{{Provider: "z", Model: "m"}, {Provider: "none", Model: "none"}})
-		_ = modelDescriptorsToAPIModels(nil, nil)
-		_ = modelDescriptorsToAPIModels([]appwire.ModelDescriptor{{}, {Provider: "openai", Model: "gpt-4o"}}, nil)
+		models := []appwire.ModelDescriptor{{Provider: "z", Model: "m-20250101"}, {Provider: "a", Model: "m"}, {Provider: "z", Model: "m"}}
+		sortModelDescriptors(models)
+		_ = enrichModelDescriptors(nil, nil)
+		_ = enrichModelDescriptors([]appwire.ModelDescriptor{{}, {Provider: "openai", Model: "gpt-4o"}}, nil)
 		_ = catalogModelInfo(nil, "", "")
 		no, yes := false, true
 		providerCfg := &providercfg.Config{Instances: []providercfg.InstanceConfig{
@@ -67,10 +65,10 @@ func FuzzCovWebViewsSpawn(f *testing.F) {
 			}},
 		}}
 		for _, model := range []string{"missing", "off", "levels", "on"} {
-			entry := map[string]any{}
-			applyInstanceModelOverride(entry, providerCfg, "custom", model)
+			entry := appwire.ModelDescriptor{}
+			applyInstanceModelOverride(&entry, providerCfg, "custom", model)
 		}
-		applyInstanceModelOverride(map[string]any{}, providerCfg, "absent", "x")
+		applyInstanceModelOverride(&appwire.ModelDescriptor{}, providerCfg, "absent", "x")
 		_ = behaviorTagFor(providerCfg, "plain")
 		_ = behaviorTagFor(providerCfg, "custom")
 		_ = behaviorTagFor(providerCfg, "absent")
@@ -89,9 +87,6 @@ func FuzzCovWebViewsSpawn(f *testing.F) {
 		for _, err := range []error{errors.New("x"), appwire.InvalidParams("bad"), appwire.Unavailable("down")} {
 			writeSpawnError(httptest.NewRecorder(), err)
 		}
-		writeModelsResponse(httptest.NewRecorder(), nil, nil, nil, true)
-		writeModelsResponse(httptest.NewRecorder(), models, nil, nil, false)
-
 		sb := newSandbox(t)
 		for _, target := range []string{"/settings/launch", "/settings/project?cwd=" + root, "/settings/general"} {
 			sb.Web.handleSettings(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, target, nil))

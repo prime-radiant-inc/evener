@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/llm/providercfg"
 	"primeradiant.com/evener/rendezvous"
@@ -36,7 +37,7 @@ const sandboxGitBranch = "sandbox-branch"
 //   - spawn (/api/spawn, thread/start) → Spawner records the request and returns
 //     a synthetic rendezvous entry with no address; no subprocess, no dial.
 //   - /api/git/head → GitHeadBranch seam returns sandboxGitBranch; no `git`.
-//   - /api/models   → LiveModels seam returns a fixed list; no provider network.
+//   - model/list → LiveModels seam returns a fixed list; no provider network.
 //   - /api/dirs/create → MkdirAll seam records the path and creates nothing.
 //   - the action verbs (send/steer/queue/clear/...) → an empty Roster and an
 //     empty live-source set, so every verb resolves "thread not found" before it
@@ -129,8 +130,8 @@ func newSandbox(tb testing.TB) *sandbox {
 		GitHeadBranch: func(context.Context, string) (string, error) {
 			return sandboxGitBranch, nil
 		},
-		LiveModels: func(context.Context) []map[string]any {
-			return []map[string]any{{"provider": "sandbox", "model": "fake-model"}}
+		LiveModels: func(context.Context) []appwire.ModelDescriptor {
+			return []appwire.ModelDescriptor{{Provider: "sandbox", Model: "fake-model"}}
 		},
 		MkdirAll: mkdir.MkdirAll,
 		// AuthToken empty: the auth guard is disabled, so a fuzzed request reaches

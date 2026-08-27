@@ -5,6 +5,7 @@ import (
 	"os"
 	"time"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/codexlaunch"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
@@ -44,7 +45,6 @@ type WebConfig struct {
 	Spawner             Spawner             // optional; nil disables spawn
 	ResumeLocks         *ResumeLocks        // per-session resume serialization shared by the REST and RPC paths; nil → each path falls back to its own lock
 	DeletionStore       *DeletionStore      // host-authoritative deletion fences; production persists this under HubStateRoot
-	Models              []ModelDescriptor   // available models for the spawn chip
 	PastPerPage         int                 // results per page for /past; defaults to 50 when zero
 	StateDir            string              // root of the projects/<sha> state directory; needed for ForkSession
 	CredsStore          *credentials.Store  // credentials store; passed to auth controller
@@ -80,10 +80,10 @@ type WebConfig struct {
 	// a fuzz/test sandbox sets them so the matching mutating handler runs without
 	// shelling out, hitting the network, or mutating the real filesystem. These
 	// are the escapes a read-only harness cannot drive: the live-git probe
-	// (/api/git/head), the live-provider model query (/api/models), and the
-	// directory creator (/api/dirs/create). See cmd/evener-hub's sandbox_test.go.
+	// (/api/git/head), the live-provider model query, and the directory creator
+	// (/api/dirs/create). See cmd/evener-hub's sandbox_test.go.
 	GitHeadBranch func(ctx context.Context, dir string) (string, error) // nil → real `git`
-	LiveModels    func(ctx context.Context) []map[string]any            // nil → real provider query
+	LiveModels    func(ctx context.Context) []appwire.ModelDescriptor   // nil → real provider query
 	MkdirAll      func(path string, perm os.FileMode) error             // nil → os.MkdirAll
 }
 

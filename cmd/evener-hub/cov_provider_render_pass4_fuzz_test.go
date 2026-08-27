@@ -68,11 +68,6 @@ func FuzzProviderRenderPass4(f *testing.F) {
 		web.handleManifest(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/manifest.webmanifest", nil))
 		web.handleCredentials(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/credentials", nil))
 
-		var modelOut httptest.ResponseRecorder
-		modelOut = *httptest.NewRecorder()
-		writeModelsResponse(&modelOut, nil, nil, nil, true)
-		modelOut = *httptest.NewRecorder()
-		writeModelsResponse(&modelOut, []map[string]any{{"id": raw}}, nil, nil, false)
 		writeSpawnError(httptest.NewRecorder(), appwire.InvalidParams(raw))
 		writeSpawnError(httptest.NewRecorder(), appwire.Unavailable(raw))
 		writeSpawnError(httptest.NewRecorder(), errors.New(raw))
