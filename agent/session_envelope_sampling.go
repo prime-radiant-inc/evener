@@ -68,6 +68,7 @@ type EnvelopeSampling interface {
 	HasPendingAsk() bool
 	PendingEscalations() []events.SandboxEscalationRequestedData
 	ReasoningEffort() string
+	VisionModel() string
 	Profile() *provider.Profile
 	Meta() schema.SessionMeta
 }

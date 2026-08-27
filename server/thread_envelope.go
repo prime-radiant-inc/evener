@@ -55,6 +55,9 @@ type threadEnvelope struct {
 	ReasoningEffort       string
 	ReasoningEffortLevels []string
 	SupportsReasoning     bool
+	// VisionModel is the session's vision side-channel setting ("", "off", or
+	// a model ref), sampled under its own facet beside reasoning's trio.
+	VisionModel string
 	// Name and Preview are the only two things appThread reads out of
 	// schema.SessionMeta. Storing the two strings rather than the whole struct is
 	// deliberate: SessionMeta has roughly a dozen other fields (turn counts,
@@ -93,6 +96,7 @@ type ThreadEnvelopeSource interface {
 	AskPending() bool
 	PendingEscalations() []appwire.SandboxEscalationRequested
 	ReasoningInfo() (effort string, levels []string, supportsReasoning bool)
+	VisionModel() string
 	SessionMeta() schema.SessionMeta
 }
 
@@ -115,6 +119,7 @@ const (
 	facetAsk
 	facetEscalations
 	facetReasoning
+	facetVision
 	facetMeta
 )
 
@@ -122,7 +127,7 @@ const (
 // one moment every value changes at once because the session itself changed.
 const facetAll = facetContext | facetDiagnostics | facetQueue | facetTasks |
 	facetGoal | facetWork | facetFailures | facetAsk | facetEscalations |
-	facetReasoning | facetMeta
+	facetReasoning | facetVision | facetMeta
 
 // facetsByEvent maps a session event to the envelope facets it can have moved.
 //
@@ -215,6 +220,7 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	events.EventSessionNameChanged:     facetMeta,
 	events.EventModelChanged:           facetReasoning | facetContext | facetDiagnostics,
 	events.EventReasoningEffortChanged: facetReasoning,
+	events.EventVisionModelChanged:     facetVision,
 
 	// Goal state. Neither SetGoal nor Clear emits anything -- the goal store has
 	// no event handle at all -- so goal/set refreshes facetGoal at the handler
@@ -344,6 +350,9 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	if facets&facetReasoning != 0 {
 		next.ReasoningEffort, next.ReasoningEffortLevels, next.SupportsReasoning = src.ReasoningInfo()
 	}
+	if facets&facetVision != 0 {
+		next.VisionModel = src.VisionModel()
+	}
 	if facets&facetMeta != 0 {
 		meta := src.SessionMeta()
 		next.Name = strings.TrimSpace(meta.Name)
@@ -411,6 +420,9 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope) {
 		e.ReasoningEffort = next.ReasoningEffort
 		e.ReasoningEffortLevels = next.ReasoningEffortLevels
 		e.SupportsReasoning = next.SupportsReasoning
+	}
+	if facets&facetVision != 0 {
+		e.VisionModel = next.VisionModel
 	}
 	if facets&facetMeta != 0 {
 		e.Name = next.Name

@@ -43,6 +43,7 @@ type residualServeServer struct {
 	envelopeSource server.ThreadEnvelopeSource
 	meta           func() schema.SessionMeta
 	model          func(string) error
+	visionModel    func(string) error
 	name           func(string)
 	effort         func(string)
 	tasks          func() any
@@ -83,11 +84,12 @@ func (s *residualServeServer) SetCancelQueuedFunc(f func(int, string) (string, i
 func (s *residualServeServer) SetThreadEnvelopeSource(src server.ThreadEnvelopeSource) {
 	s.envelopeSource = src
 }
-func (s *residualServeServer) RefreshThreadEnvelope()                {}
-func (s *residualServeServer) SetModelFunc(f func(string) error)     { s.model = f }
-func (s *residualServeServer) SetNameFunc(f func(string))            { s.name = f }
-func (s *residualServeServer) SetReasoningEffortFunc(f func(string)) { s.effort = f }
-func (s *residualServeServer) SetTasksFunc(f func() any)             { s.tasks = f }
+func (s *residualServeServer) RefreshThreadEnvelope()                  {}
+func (s *residualServeServer) SetModelFunc(f func(string) error)       { s.model = f }
+func (s *residualServeServer) SetVisionModelFunc(f func(string) error) { s.visionModel = f }
+func (s *residualServeServer) SetNameFunc(f func(string))              { s.name = f }
+func (s *residualServeServer) SetReasoningEffortFunc(f func(string))   { s.effort = f }
+func (s *residualServeServer) SetTasksFunc(f func() any)               { s.tasks = f }
 func (s *residualServeServer) SetJobsFunc(f func(appwire.JobsListParams) (any, error)) {
 	s.jobs = f
 }
@@ -123,8 +125,10 @@ func exerciseResidualCallbacks(s *residualServeServer, sessionID string) {
 	_ = s.envelopeSource.AskPending()
 	_ = s.envelopeSource.PendingEscalations()
 	_, _, _ = s.envelopeSource.ReasoningInfo()
+	_ = s.envelopeSource.VisionModel()
 	_ = s.envelopeSource.SessionMeta()
 	_ = s.model("test2")
+	_ = s.visionModel("off")
 	s.name("renamed")
 	s.effort("low")
 	_ = s.tasks()

@@ -98,6 +98,7 @@ no router (reserved).
 | `thread/model/set` | both | `ThreadModelSetParams` | `EmptyResponse` | Changes the session's model/provider. |
 | `evener/thread/name/set` | both | `ThreadNameSetParams` | `EmptyResponse` | Sets a user-chosen session title (rename). |
 | `thread/reasoning-effort/set` | both | `ThreadReasoningEffortSetParams` | `EmptyResponse` | Sets reasoning effort, normalizing and validating the value. |
+| `thread/vision-model/set` | daemon | `ThreadVisionModelSetParams` | `EmptyResponse` | Sets the vision side-channel routing ("", "off", or a model ref). Task 9 flips the scope to ScopeBoth when the hub registers its relay. |
 | `thread/compact/start` | both | `ThreadCompactStartParams` | `EmptyResponse` | Starts a context-compaction pass on the session. |
 | `thread/shutdown` | both | `ThreadShutdownParams` | `EmptyResponse` | Shuts the session down (the daemon runs it asynchronously). |
 | `turn/start` | both | `TurnStartParams` | `TurnStartResponse` | Starts a new user turn and reserves a turn ID. |
@@ -1506,6 +1507,14 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `data` | `[]appwire.Turn` |  |  |
 | `nextCursor` | `string` | yes |  |
+
+
+### `ThreadVisionModelSetParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+| `visionModel` | `string` |  |  |
 
 
 ### `ToolOutputDeltaParams`
