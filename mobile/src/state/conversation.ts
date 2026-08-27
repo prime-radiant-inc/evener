@@ -525,6 +525,15 @@ export function createConversationStore() {
   // to the oldest position where they'd be discarded by the 500-cap. Cleared
   // on every conversation transition (open/close/reset/openProjected).
   const pageOwnedIds = new Set<string>();
+  // Residual 2: Live-notification-owned item IDs — tracks which item IDs were
+  // inserted by actual accepted item lifecycle/live notifications (item/started,
+  // item/completed, and relevant deltas that create/update items). Separate
+  // from pageOwnedIds so the page merge can distinguish live-notification items
+  // (appended as the live tail) from old initial-projection items that were
+  // omitted from the reread (dropped as stale history). Marked only from actual
+  // accepted notifications; cleared/reconciled on open/transition and when the
+  // item is included in an authoritative rehydrate projection.
+  const liveOwnedIds = new Set<string>();
   // C1+I1: Deferred trailing-reread request. When a rehydrate detects the
   // mutation owner changed during its await, it stores a deferred trailing
   // request with the EXACT binding snapshot captured at schedule time (not
@@ -556,7 +565,13 @@ export function createConversationStore() {
   // mutation must be terminal (pendingMutation is null or "failed"). The
   // stored binding is validated — if stale (switch to B), the request is
   // dropped. Exactly one reread is scheduled through the store-owned scheduler.
-  // The effect validates the exact captured binding (NOT recapturing current).
+  // The effect validates the exact captured binding (NOT recapturing current),
+  // AND rechecks the captured/current monotonic mutation revision and true
+  // terminal status INSIDE the scheduler effect immediately before any read.
+  // If a newer mutation is pending after enqueue, do zero read; atomically
+  // restore one binding-owned deferred request for that mutation revision and
+  // let its settle hook drain exactly once. Keep separate queued/deferred
+  // identity so no duplicate effects/third reread.
   function drainTrailingReread(): void {
     if (trailingReread === null) return;
     // Only drain if the mutation has settled (no pending mutation, or a
@@ -568,17 +583,39 @@ export function createConversationStore() {
       return;
     }
     const { binding } = trailingReread;
+    // Capture the mutation revision at enqueue time — the effect will compare
+    // this against the current revision to detect a newer pending mutation
+    // that started after enqueue.
+    const enqueueMutationRev = mutationOwnerRev;
     trailingReread = null;
     // C1: Validate the EXACT captured binding — if stale (switch to B),
     // drop the request. Never recapture the current binding here.
     if (!isBindingCurrent(binding)) return;
     // Schedule one trailing reread through the store-owned scheduler. The
     // effect validates the exact captured binding again (double-check after
-    // the scheduler microtask) and calls rehydrate with the captured service
-    // and sink — never the closure's.
+    // the scheduler microtask), rechecks mutation revision and terminal status,
+    // and calls rehydrate with the captured service and sink — never the
+    // closure's. If a newer mutation is pending, the effect re-defers instead
+    // of reading.
     scheduler.request(binding.ref, async () => {
       // C1: Re-validate the exact captured binding after the microtask.
       if (!isBindingCurrent(binding)) return;
+      // Residual 1: Recheck mutation revision and true terminal status INSIDE
+      // the effect immediately before any read. If the mutation revision
+      // advanced since enqueue AND a mutation is currently pending, a newer
+      // mutation started after enqueue — do zero read. Atomically restore one
+      // binding-owned deferred request for the newer mutation revision and let
+      // its settle hook drain exactly once.
+      if (mutationOwnerRev !== enqueueMutationRev) {
+        const mut = storeGet?.().pendingMutation;
+        if (mut !== null && mut !== undefined && mut.status === "pending") {
+          // Newer mutation is pending — re-defer for this revision. The
+          // binding stays the same (already validated). The settle hook
+          // (called when M2 settles) will drainTrailingReread exactly once.
+          trailingReread = { binding, mutationRev: mutationOwnerRev };
+          return; // zero read
+        }
+      }
       await storeGet?.().rehydrate(binding.service, binding.sink);
     });
   }
@@ -843,6 +880,7 @@ export function createConversationStore() {
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
         pageOwnedIds.clear();
+        liveOwnedIds.clear();
         set({
           status: "opening",
           ref,
@@ -894,6 +932,7 @@ export function createConversationStore() {
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
         pageOwnedIds.clear();
+        liveOwnedIds.clear();
         // Reset thread-scoped state (draft, pending mutation) — presentation state
         // now lives outside the store (in live-ui-store).
         // F4: reset the activity sink on thread change.
@@ -1049,22 +1088,27 @@ export function createConversationStore() {
           if (pageOwnerChanged) {
             const currentConv = currentSnapshot.conversation;
             if (currentConv !== null) {
-              // I3: Track page-owned item IDs. On rehydrate page-race merge:
-              // 1. Prepend only missing page-owned history items (items in
+              // Residual 2: Exact live-notification-owned item IDs separate
+              // from pageOwned IDs. On rehydrate page-race merge:
+              // 1. Prepend only current-only pageOwned history (items in
               //    pageOwnedIds that are not in the reread projection).
-              // 2. Append current-only non-page items as the live tail
-              //    (items NOT in pageOwnedIds and NOT in the reread). These
-              //    are live notifications that arrived during the await and
-              //    must NOT be moved to the oldest position where the 500-cap
-              //    would discard them.
+              // 2. Commit the authoritative reread projection.
+              // 3. Append only current-only liveOwned tail (items in
+              //    liveOwnedIds that are not in the reread projection).
+              // 4. Drop current-only items owned by NEITHER (not pageOwned,
+              //    not liveOwned, not in reread) as omitted old history.
               const rereadIds = new Set(conversation.items.map((i) => i.id));
               const pageOnlyItems = currentConv.items.filter(
                 (i) => !rereadIds.has(i.id) && pageOwnedIds.has(i.id),
               );
               const liveTailItems = currentConv.items.filter(
-                (i) => !rereadIds.has(i.id) && !pageOwnedIds.has(i.id),
+                (i) =>
+                  !rereadIds.has(i.id) &&
+                  !pageOwnedIds.has(i.id) &&
+                  liveOwnedIds.has(i.id),
               );
               // Page history first (oldest), then reread items, then live tail.
+              // Items owned by neither are dropped (omitted old history).
               mergedItems = [
                 ...pageOnlyItems,
                 ...conversation.items,
@@ -1106,6 +1150,13 @@ export function createConversationStore() {
             items: capItems(truncateAndRecord(mergedItems)),
             ...(preservedCaps ? { capabilities: preservedCaps } : {}),
           };
+          // Residual 2: Reconcile liveOwnedIds — items in the authoritative
+          // reread projection are no longer "live-only"; remove them from
+          // liveOwnedIds so a future page merge won't treat them as live tail.
+          // Live-owned items NOT in the reread stay in the set (still live-only).
+          for (const item of conversation.items) {
+            liveOwnedIds.delete(item.id);
+          }
           // I2: If we're committing the projected capabilities (cap owner
           // unchanged), increment the capability-owner revision.
           if (!capOwnerChanged) {
@@ -1439,6 +1490,7 @@ export function createConversationStore() {
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
         pageOwnedIds.clear();
+        liveOwnedIds.clear();
         truncatedItemIds.clear();
         // F4: reset the activity sink on close.
         if (activitySink !== null) {
@@ -1593,6 +1645,9 @@ export function createConversationStore() {
                   },
                 });
               } else {
+                // Residual 2: Mark as live-owned — inserted by an actual
+                // accepted item lifecycle notification.
+                liveOwnedIds.add(params.item.id);
                 set({
                   conversation: {
                     ...conv,
@@ -1630,6 +1685,9 @@ export function createConversationStore() {
               } else {
                 // UPSERT: insert the authoritative completed item even if the
                 // start notification was missed.
+                // Residual 2: Mark as live-owned — inserted by an actual
+                // accepted item lifecycle notification.
+                liveOwnedIds.add(params.item.id);
                 set({
                   conversation: {
                     ...conv,
@@ -1796,6 +1854,9 @@ export function createConversationStore() {
               title: params.title ?? "Warning",
               detail: params.message ?? "",
             };
+            // Residual 2: Mark as live-owned — created by an actual live
+            // notification.
+            liveOwnedIds.add(id);
             set({
               conversation: {
                 ...conv,
@@ -1844,6 +1905,7 @@ export function createConversationStore() {
         // C1+I1: clear any stale deferred trailing-reread request.
         trailingReread = null;
         pageOwnedIds.clear();
+        liveOwnedIds.clear();
         truncatedItemIds.clear();
         // F4: reset the activity sink on thread change.
         if (activitySink !== null) {
