@@ -834,15 +834,14 @@ export function createConversationStore() {
 
   // Truncate items and record which item IDs were truncated (F12).
   // Called from open/openProjected/rehydrate to seed the truncation set.
-  // Task 2A-Items: also records activity item families (reasoning vs tool)
-  // from the mobile item's label, matching the projector's labeling.
-  // Task 2A-Truncation: truncateAndRecord is now PURE truncation + family
-  // recording — it no longer mutates truncatedItemIds. Authoritative paths
-  // call reconcileTruncationFrom (on the pre-truncation capped items) to
-  // rebuild the truncation set exactly: oversized originals are frozen,
-  // short originals unfreeze, omitted/capped IDs are removed, and already-
-  // frozen superseded live versions (truncated by a prior live delta) stay
-  // frozen.
+  // Task 2A-Truncation: truncateAndRecord is PURE truncation — it no longer
+  // mutates truncatedItemIds. Authoritative paths call reconcileTruncationFrom
+  // (on the pre-truncation capped items) to rebuild the truncation set exactly:
+  // oversized originals are frozen, short originals unfreeze, omitted/capped
+  // IDs are removed, and already-frozen superseded live versions (truncated by
+  // a prior live delta) stay frozen. Family is required carried data on
+  // item.family (set by the projector from the wire type); it is never
+  // label-derived and not recorded here.
   function truncateAndRecord(
     items: MobileTimelineItem[],
   ): MobileTimelineItem[] {
@@ -914,12 +913,13 @@ export function createConversationStore() {
     }
   }
 
-  // Task 2A-Items: truncate a single item and record its truncation/family
-  // state. Returns a non-undefined MobileTimelineItem (the input is known
-  // non-null). Used by item/started and item/completed for authoritative
-  // replacement — the caller removes any stale freeze entry first so the new
-  // content can accept future deltas; this re-freezes if the replacement is
-  // oversized and records the activity family.
+  // Task 2A-Items: truncate a single item and record its truncation state.
+  // Returns a non-undefined MobileTimelineItem (the input is known non-null).
+  // Used by item/started and item/completed for authoritative replacement —
+  // the caller removes any stale freeze entry first so the new content can
+  // accept future deltas; this re-freezes if the replacement is oversized.
+  // Family is required carried data on item.family (set by the projector from
+  // the wire type); it is never label-derived and not recorded here.
   function truncateAndRecordSingle(
     item: MobileTimelineItem,
   ): MobileTimelineItem {

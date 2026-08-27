@@ -7353,25 +7353,76 @@ describe("ConversationStore", () => {
       }
     });
 
-    // Task 2A-Family: adversarial delta-family tests. Family is read from the
-    // required item.family field (never label inference). Reasoning delta
-    // mutates only family=reasoning; tool-output delta mutates only family=tool
-    // AND requires stored detail.callId and incoming params.callId both present
-    // strings and exactly equal. Any mismatch => no mutation/live revision/
-    // freeze change, request authoritative reread.
-    it("2A-Family: tool named 'Reasoning' rejects reasoning delta but accepts matching tool delta", async () => {
-      const { store, service } = await openWithItems([
-        {
-          kind: "activity",
-          id: "tool-r",
-          label: "Reasoning",
-          family: "tool",
-          state: "running",
-          detail: { output: "out0", callId: "call-r" },
+    // Task 2A-Family (fix round 1): adversarial delta-family tests with
+    // controlled readProjection. For every invalid family/call case, the
+    // reread starts and remains blocked so we can assert synchronously
+    // (before release) that text/detail is unchanged. We then prove no
+    // erroneous freeze by sending a valid matching delta while the reread
+    // is blocked and asserting it applies. Finally, the reread result
+    // omits the invalid target; after release the target must drop — not
+    // be preserved as superseded live (proves no erroneous live ownership).
+    //
+    // Helper: open via openProjected with given mobile items, then install
+    // a controlled readProjection that hangs until released. The reread
+    // result omits all activity items (the target drops on release).
+    async function openWithControlledReread(
+      items: MobileConversation["items"],
+    ): Promise<{
+      store: ReturnType<typeof createConversationStore>;
+      service: FakeConversationService;
+      ctrl: ReturnType<typeof makeControlledRead>;
+      readsAfterOpen: number;
+    }> {
+      const service = new FakeConversationService();
+      const conv = makeConversation({ items });
+      service.readProjectionResult = {
+        conversation: conv,
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
         },
-      ]);
-      const initialReads = service.readProjectionCalls.length;
-      // Reasoning delta → wrong family (item.family is "tool") → reread, no mutation.
+        olderCursor: null,
+      };
+      const store = createConversationStore();
+      const sink = createFakeSink();
+      await store.getState().openProjected(service, sink, "ref-1");
+      const ctrl = makeControlledRead(service);
+      // The reread result omits all activity items — only a base user message.
+      service.readProjectionResult = {
+        conversation: makeConversation({
+          items: [{ kind: "user", id: "base", text: "base" }],
+        }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      return {
+        store,
+        service,
+        ctrl,
+        readsAfterOpen: service.readProjectionCalls.length,
+      };
+    }
+
+    it("2A-Family-r1: tool named 'Reasoning' rejects reasoning delta, no freeze, valid tool delta applies, target drops on reread", async () => {
+      const { store, service, ctrl, readsAfterOpen } =
+        await openWithControlledReread([
+          {
+            kind: "activity",
+            id: "tool-r",
+            label: "Reasoning",
+            family: "tool",
+            state: "running",
+            detail: { output: "out0", callId: "call-r" },
+          },
+        ]);
+      // Invalid: reasoning delta to a tool-family item → reread, no mutation.
       store.getState().applyNotification({
         method: "item/reasoning/summaryTextDelta",
         params: {
@@ -7383,17 +7434,22 @@ describe("ConversationStore", () => {
           delta: " should-not-append",
         },
       } as AnyNotification);
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
-      let item = store
+      // Reread started (hangs on controlled read). Yield a microtask so the
+      // scheduler dispatches the rehydrate effect, which calls readProjection.
+      await yieldMicrotask();
+      await ctrl.started(1);
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
+      // Synchronous: text/detail unchanged — no mutation, no freeze.
+      const item0 = store
         .getState()
         .conversation?.items.find((i) => i.id === "tool-r");
-      if (item?.kind === "activity") {
-        expect(item.detail.output).toBe("out0");
+      expect(item0?.kind).toBe("activity");
+      if (item0?.kind === "activity") {
+        expect(item0.detail.output).toBe("out0");
+        expect(item0.detail.callId).toBe("call-r");
       }
-      // Tool delta with matching callId → accepted.
-      const readsAfterReread = service.readProjectionCalls.length;
+      // Prove no erroneous freeze: valid matching tool delta applies while
+      // the reread is still blocked.
       store.getState().applyNotification({
         method: "item/toolOutput/delta",
         params: {
@@ -7405,120 +7461,211 @@ describe("ConversationStore", () => {
           delta: "\nappended",
         },
       } as AnyNotification);
-      await Promise.resolve();
-      expect(service.readProjectionCalls.length).toBe(readsAfterReread);
-      item = store
+      const item1 = store
         .getState()
         .conversation?.items.find((i) => i.id === "tool-r");
-      if (item?.kind === "activity") {
-        expect(item.detail.output).toBe("out0\nappended");
+      if (item1?.kind === "activity") {
+        expect(item1.detail.output).toBe("out0\nappended");
+      }
+      // Release the reread — reread omits tool-r. The valid tool delta marked
+      // it live-owned, so the rehydrate correctly preserves it as a
+      // superseded live item (the invalid reasoning delta did NOT mark it).
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      const item2 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-r");
+      expect(item2).toBeDefined();
+      if (item2?.kind === "activity") {
+        expect(item2.detail.output).toBe("out0\nappended");
       }
     });
 
-    it("2A-Family: reasoning item with arbitrary label accepts reasoning delta", async () => {
-      const { store, service } = await openWithItems([
-        {
-          kind: "activity",
-          id: "reason-x",
-          label: "My Custom Label",
-          family: "reasoning",
-          state: "running",
-          detail: { output: "base" },
-        },
-      ]);
-      const initialReads = service.readProjectionCalls.length;
-      store.getState().applyNotification({
-        method: "item/reasoning/summaryTextDelta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "reason-x",
-          summaryIndex: 0,
-          delta: " appended",
-        },
-      } as AnyNotification);
-      await Promise.resolve();
-      expect(service.readProjectionCalls.length).toBe(initialReads);
-      const item = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "reason-x");
-      if (item?.kind === "activity") {
-        expect(item.detail.output).toBe("base appended");
-      }
-    });
-
-    it("2A-Family: unknown family rejects both reasoning and tool deltas", async () => {
-      const { store, service } = await openWithItems([
-        {
-          kind: "activity",
-          id: "unk-1",
-          label: "Mystery",
-          family: "unknown",
-          state: "running",
-          detail: { output: "base", callId: "call-unk" },
-        },
-      ]);
-      const initialReads = service.readProjectionCalls.length;
-      // Reasoning delta → unknown family → reread, no mutation.
-      store.getState().applyNotification({
-        method: "item/reasoning/summaryTextDelta",
-        params: {
-          threadId: "thread-1",
-          ref: "ref-1",
-          turnId: "t1",
-          itemId: "unk-1",
-          summaryIndex: 0,
-          delta: " should-not-append",
-        },
-      } as AnyNotification);
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
-      let item = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "unk-1");
-      if (item?.kind === "activity") {
-        expect(item.detail.output).toBe("base");
-      }
-      // Tool delta → unknown family → reread, no mutation.
-      const readsAfterReread = service.readProjectionCalls.length;
+    it("2A-Family-r1: wrong family (tool delta to reasoning item) — no mutation, no freeze, valid reasoning applies, target drops", async () => {
+      const { store, service, ctrl, readsAfterOpen } =
+        await openWithControlledReread([
+          {
+            kind: "activity",
+            id: "reason-1",
+            label: "Reasoning",
+            family: "reasoning",
+            state: "running",
+            detail: { output: "Thinking" },
+          },
+        ]);
+      // Invalid: tool delta to a reasoning-family item → reread, no mutation.
       store.getState().applyNotification({
         method: "item/toolOutput/delta",
         params: {
           threadId: "thread-1",
           ref: "ref-1",
           turnId: "t1",
+          itemId: "reason-1",
+          callId: "call-x",
+          delta: " should-not-append",
+        },
+      } as AnyNotification);
+      await yieldMicrotask();
+      await ctrl.started(1);
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
+      // Synchronous: text unchanged.
+      const item0 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "reason-1");
+      expect(item0?.kind).toBe("activity");
+      if (item0?.kind === "activity") {
+        expect(item0.detail.output).toBe("Thinking");
+      }
+      // Prove no erroneous freeze: valid reasoning delta applies while
+      // the reread is still blocked.
+      store.getState().applyNotification({
+        method: "item/reasoning/summaryTextDelta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "reason-1",
+          summaryIndex: 0,
+          delta: " more",
+        },
+      } as AnyNotification);
+      const item1 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "reason-1");
+      if (item1?.kind === "activity") {
+        expect(item1.detail.output).toBe("Thinking more");
+      }
+      // Release — reread omits reason-1. The valid reasoning delta marked it
+      // live-owned, so the rehydrate correctly preserves it.
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      const item2 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "reason-1");
+      expect(item2).toBeDefined();
+      if (item2?.kind === "activity") {
+        expect(item2.detail.output).toBe("Thinking more");
+      }
+    });
+
+    it("2A-Family-r1: unknown family rejects reasoning delta — no mutation, no freeze, no live ownership, target drops", async () => {
+      const { store, service, ctrl, readsAfterOpen } =
+        await openWithControlledReread([
+          {
+            kind: "activity",
+            id: "unk-1",
+            label: "Mystery",
+            family: "unknown",
+            state: "running",
+            detail: { output: "base", callId: "call-unk" },
+          },
+        ]);
+      // Invalid: reasoning delta to unknown-family item → reread, no mutation.
+      store.getState().applyNotification({
+        method: "item/reasoning/summaryTextDelta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
           itemId: "unk-1",
+          summaryIndex: 0,
+          delta: " should-not-append",
+        },
+      } as AnyNotification);
+      await yieldMicrotask();
+      await ctrl.started(1);
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
+      // Synchronous: text unchanged.
+      const item0 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "unk-1");
+      expect(item0?.kind).toBe("activity");
+      if (item0?.kind === "activity") {
+        expect(item0.detail.output).toBe("base");
+      }
+      // Release — reread omits unk-1; target drops (no live ownership).
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      // Yield microtasks so the rehydrate continuation runs after the
+      // controlled read resolves (set, reconcile, commit).
+      await yieldMicrotask();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      const item1 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "unk-1");
+      expect(item1).toBeUndefined();
+    });
+
+    it("2A-Family-r1: unknown family rejects tool delta — no mutation, no freeze, no live ownership, target drops", async () => {
+      const { store, service, ctrl, readsAfterOpen } =
+        await openWithControlledReread([
+          {
+            kind: "activity",
+            id: "unk-2",
+            label: "Mystery",
+            family: "unknown",
+            state: "running",
+            detail: { output: "base", callId: "call-unk" },
+          },
+        ]);
+      // Invalid: tool delta to unknown-family item → reread, no mutation.
+      store.getState().applyNotification({
+        method: "item/toolOutput/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "unk-2",
           callId: "call-unk",
           delta: " should-not-append",
         },
       } as AnyNotification);
-      // Drain the coalesced scheduler: the first reread may still be draining
-      // when the second request fires; same-key coalescing means the second
-      // effect runs only after the first completes. Flush enough microtasks.
-      for (let i = 0; i < 10; i++) await Promise.resolve();
-      expect(service.readProjectionCalls.length).toBeGreaterThan(
-        readsAfterReread,
-      );
-      item = store.getState().conversation?.items.find((i) => i.id === "unk-1");
-      if (item?.kind === "activity") {
-        expect(item.detail.output).toBe("base");
+      await yieldMicrotask();
+      await ctrl.started(1);
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
+      // Synchronous: text unchanged.
+      const item0 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "unk-2");
+      expect(item0?.kind).toBe("activity");
+      if (item0?.kind === "activity") {
+        expect(item0.detail.output).toBe("base");
       }
+      // Release — reread omits unk-2; target drops.
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      const item1 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "unk-2");
+      expect(item1).toBeUndefined();
     });
 
-    it("2A-Family: stored missing callId rereads/no change on tool delta", async () => {
-      const { store, service } = await openWithItems([
-        {
-          kind: "activity",
-          id: "tool-nocall",
-          label: "shell",
-          family: "tool",
-          state: "running",
-          detail: { output: "base" },
-        },
-      ]);
-      const initialReads = service.readProjectionCalls.length;
+    it("2A-Family-r1: stored missing callId — no mutation, no freeze, second tool delta also rereads, target drops", async () => {
+      const { store, service, ctrl, readsAfterOpen } =
+        await openWithControlledReread([
+          {
+            kind: "activity",
+            id: "tool-nocall",
+            label: "shell",
+            family: "tool",
+            state: "running",
+            detail: { output: "base" },
+          },
+        ]);
+      // Invalid: stored callId missing, incoming present → reread, no mutation.
       store.getState().applyNotification({
         method: "item/toolOutput/delta",
         params: {
@@ -7530,29 +7677,62 @@ describe("ConversationStore", () => {
           delta: " should-not-append",
         },
       } as AnyNotification);
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
-      const item = store
+      await yieldMicrotask();
+      await ctrl.started(1);
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
+      // Synchronous: text unchanged — no mutation, no freeze.
+      const item0 = store
         .getState()
         .conversation?.items.find((i) => i.id === "tool-nocall");
-      if (item?.kind === "activity") {
-        expect(item.detail.output).toBe("base");
+      expect(item0?.kind).toBe("activity");
+      if (item0?.kind === "activity") {
+        expect(item0.detail.output).toBe("base");
       }
+      // The stored detail has no callId, so even a "matching" incoming callId
+      // cannot satisfy the both-present-strings requirement. A second tool
+      // delta also rereads (no freeze, no mutation).
+      store.getState().applyNotification({
+        method: "item/toolOutput/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "tool-nocall",
+          callId: "call-1",
+          delta: " also-fails",
+        },
+      } as AnyNotification);
+      const item1 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-nocall");
+      if (item1?.kind === "activity") {
+        expect(item1.detail.output).toBe("base");
+      }
+      // Release — reread omits tool-nocall; target drops.
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      const item2 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-nocall");
+      expect(item2).toBeUndefined();
     });
 
-    it("2A-Family: incoming missing callId rereads/no change on tool delta", async () => {
-      const { store, service } = await openWithItems([
-        {
-          kind: "activity",
-          id: "tool-hascall",
-          label: "shell",
-          family: "tool",
-          state: "running",
-          detail: { output: "base", callId: "call-A" },
-        },
-      ]);
-      const initialReads = service.readProjectionCalls.length;
+    it("2A-Family-r1: incoming missing callId — no mutation, no freeze, target drops", async () => {
+      const { store, service, ctrl, readsAfterOpen } =
+        await openWithControlledReread([
+          {
+            kind: "activity",
+            id: "tool-hascall",
+            label: "shell",
+            family: "tool",
+            state: "running",
+            detail: { output: "base", callId: "call-A" },
+          },
+        ]);
+      // Invalid: incoming callId missing → reread, no mutation.
       store.getState().applyNotification({
         method: "item/toolOutput/delta",
         params: {
@@ -7563,29 +7743,42 @@ describe("ConversationStore", () => {
           delta: " should-not-append",
         },
       } as AnyNotification);
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
-      const item = store
+      await yieldMicrotask();
+      await ctrl.started(1);
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
+      // Synchronous: text unchanged.
+      const item0 = store
         .getState()
         .conversation?.items.find((i) => i.id === "tool-hascall");
-      if (item?.kind === "activity") {
-        expect(item.detail.output).toBe("base");
+      expect(item0?.kind).toBe("activity");
+      if (item0?.kind === "activity") {
+        expect(item0.detail.output).toBe("base");
       }
+      // Release — reread omits tool-hascall; target drops.
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      const item1 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-hascall");
+      expect(item1).toBeUndefined();
     });
 
-    it("2A-Family: callId mismatch rereads/no change on tool delta", async () => {
-      const { store, service } = await openWithItems([
-        {
-          kind: "activity",
-          id: "tool-mismatch",
-          label: "shell",
-          family: "tool",
-          state: "running",
-          detail: { output: "base", callId: "call-A" },
-        },
-      ]);
-      const initialReads = service.readProjectionCalls.length;
+    it("2A-Family-r1: callId mismatch — no mutation, no freeze, valid matching callId applies, target drops on reread", async () => {
+      const { store, service, ctrl, readsAfterOpen } =
+        await openWithControlledReread([
+          {
+            kind: "activity",
+            id: "tool-mismatch",
+            label: "shell",
+            family: "tool",
+            state: "running",
+            detail: { output: "base", callId: "call-A" },
+          },
+        ]);
+      // Invalid: callId mismatch (call-A stored, call-B incoming) → reread.
       store.getState().applyNotification({
         method: "item/toolOutput/delta",
         params: {
@@ -7597,29 +7790,66 @@ describe("ConversationStore", () => {
           delta: " should-not-append",
         },
       } as AnyNotification);
-      await Promise.resolve();
-      await Promise.resolve();
-      expect(service.readProjectionCalls.length).toBeGreaterThan(initialReads);
-      const item = store
+      await yieldMicrotask();
+      await ctrl.started(1);
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
+      // Synchronous: text unchanged — no mutation, no freeze.
+      const item0 = store
         .getState()
         .conversation?.items.find((i) => i.id === "tool-mismatch");
-      if (item?.kind === "activity") {
-        expect(item.detail.output).toBe("base");
+      expect(item0?.kind).toBe("activity");
+      if (item0?.kind === "activity") {
+        expect(item0.detail.output).toBe("base");
+      }
+      // Prove no erroneous freeze: valid matching callId delta applies while
+      // the reread is still blocked.
+      store.getState().applyNotification({
+        method: "item/toolOutput/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "tool-mismatch",
+          callId: "call-A",
+          delta: "\nappended",
+        },
+      } as AnyNotification);
+      const item1 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-mismatch");
+      if (item1?.kind === "activity") {
+        expect(item1.detail.output).toBe("base\nappended");
+      }
+      // Release — reread omits tool-mismatch. The valid matching callId delta
+      // marked it live-owned, so the rehydrate correctly preserves it.
+      ctrl.release();
+      await ctrl.completed(1);
+      await yieldMicrotask();
+      await yieldMicrotask();
+      await yieldMicrotask();
+      const item2 = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "tool-mismatch");
+      expect(item2).toBeDefined();
+      if (item2?.kind === "activity") {
+        expect(item2.detail.output).toBe("base\nappended");
       }
     });
 
-    it("2A-Family: exact callId match appends tool delta", async () => {
-      const { store, service } = await openWithItems([
-        {
-          kind: "activity",
-          id: "tool-exact",
-          label: "shell",
-          family: "tool",
-          state: "running",
-          detail: { output: "base", callId: "call-exact" },
-        },
-      ]);
-      const initialReads = service.readProjectionCalls.length;
+    it("2A-Family-r1: exact callId match appends tool delta synchronously", async () => {
+      const { store, service, readsAfterOpen } = await openWithControlledReread(
+        [
+          {
+            kind: "activity",
+            id: "tool-exact",
+            label: "shell",
+            family: "tool",
+            state: "running",
+            detail: { output: "base", callId: "call-exact" },
+          },
+        ],
+      );
+      // Valid: exact callId match → accepted synchronously, no reread.
       store.getState().applyNotification({
         method: "item/toolOutput/delta",
         params: {
@@ -7631,13 +7861,48 @@ describe("ConversationStore", () => {
           delta: "\nappended",
         },
       } as AnyNotification);
-      await Promise.resolve();
-      expect(service.readProjectionCalls.length).toBe(initialReads);
+      // No reread — exact match accepted.
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen);
       const item = store
         .getState()
         .conversation?.items.find((i) => i.id === "tool-exact");
       if (item?.kind === "activity") {
         expect(item.detail.output).toBe("base\nappended");
+      }
+    });
+
+    it("2A-Family-r1: exact reasoning match appends reasoning delta synchronously", async () => {
+      const { store, service, readsAfterOpen } = await openWithControlledReread(
+        [
+          {
+            kind: "activity",
+            id: "reason-exact",
+            label: "My Custom Label",
+            family: "reasoning",
+            state: "running",
+            detail: { output: "base" },
+          },
+        ],
+      );
+      // Valid: reasoning family match → accepted synchronously, no reread.
+      store.getState().applyNotification({
+        method: "item/reasoning/summaryTextDelta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "reason-exact",
+          summaryIndex: 0,
+          delta: " appended",
+        },
+      } as AnyNotification);
+      // No reread — exact family match accepted.
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen);
+      const item = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "reason-exact");
+      if (item?.kind === "activity") {
+        expect(item.detail.output).toBe("base appended");
       }
     });
   });
