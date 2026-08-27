@@ -43,7 +43,7 @@ func TestSchemaRows_ExcludesDedicatedPluginSelection(t *testing.T) {
 	rows := launchSchemaRows([]appwire.LaunchOption{
 		{Field: "agent", Label: "Agent", DefaultableLayers: []string{"global"}, PerLaunch: true},
 		{Field: "enabled_plugins", Label: "Plugins", Kind: "pluginSelection", DefaultableLayers: []string{"global"}, PerLaunch: true},
-	}, appwire.LaunchConfigLayer{}, launchLayerLaunch, launchSchemaRowsOverride)
+	}, appwire.LaunchConfigLayer{}, launchLayerLaunch, launchSchemaRowsOverride, appwire.LaunchConfigLayer{})
 	if fields := rowFields(rows); !reflect.DeepEqual(fields, []string{"agent"}) {
 		t.Fatalf("fields=%v, want only generic agent row", fields)
 	}
