@@ -50,10 +50,11 @@ function leadItem(items: ItemModel[]): ItemModel {
 function clusterHeader(
   items: ItemModel[],
   cwd: string | undefined,
-): { summary: string; summaryLink: string | undefined } {
+): { id: string; summary: string; summaryLink: string | undefined } {
   const lead = leadItem(items);
   const descriptor = toolRendererFor(lead.toolName ?? "");
   return {
+    id: lead.id,
     summary: `${items.length} steps · ${descriptor.summary(lead, { cwd })}`,
     summaryLink: descriptor.summaryLink?.(lead),
   };
@@ -84,7 +85,7 @@ function ToolCallClusterBody({
   // prefix exactly like the per-call row does.
   const cwd = thread?.cwd ?? context.thread?.cwd ?? legacyCwd;
   const header = clusterHeader(items, cwd);
-  const clusterId = leadItem(items).id;
+  const clusterId = header.id;
   const disclosureKey = scopedDisclosureId(disclosureScope, clusterId);
   const disclosureFallback = expandDetailsByDefault(config) || disclosureDefault(disclosureScope, clusterId, false);
   const open = isDisclosureOpen(disclosureKey, disclosureFallback);

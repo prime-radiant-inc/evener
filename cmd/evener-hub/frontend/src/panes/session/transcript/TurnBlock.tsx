@@ -151,12 +151,11 @@ export function ProjectedIntentGroup({
 }
 
 function projectedForDirectTurn(turn: TurnModel): ProjectedTurn {
-  let sourceIndex = 0;
-  const entries = turn.items.map((item) => ({
+  const entries = turn.items.map((item, sourceIndex) => ({
     kind: "item" as const,
     id: item.id,
     turnId: turn.id,
-    sourceIndex: sourceIndex++,
+    sourceIndex,
     item,
     isMessage: item.type === "userMessage" || item.type === "agentMessage",
   }));
@@ -237,46 +236,34 @@ export function TurnBlock({
       continue;
     }
     const ItemRenderer = itemRendererFor(item.type);
+    const renderedItem = (
+      <ItemRenderer
+        item={item}
+        turn={shownTurn}
+        live={isItemLive(item)}
+        sessionRef={sessionRef}
+        opensExchange={exchangeOpeners?.has(item.id)}
+        agentLabel={agentLabel}
+        projectedSummary={entry.kind === "critical" ? entry.summary : undefined}
+        renderContext={itemRenderContext}
+        thread={thread}
+        threadFingerprint={threadFingerprintForItem(
+          item,
+          thread,
+          toolRendererFor(item.toolName ?? "").summarySuffix?.(item, thread),
+        )}
+      />
+    );
     if (rowRoleFor(item, { opensExchange: exchangeOpeners?.has(item.id) }) === "speaker") {
       renderedEntries.push(
         <div key={entry.id} {...viewAnchorFor(entry)}>
-          <ItemRenderer
-            item={item}
-            turn={shownTurn}
-            live={isItemLive(item)}
-            sessionRef={sessionRef}
-            opensExchange={exchangeOpeners?.has(item.id)}
-            agentLabel={agentLabel}
-            projectedSummary={entry.kind === "critical" ? entry.summary : undefined}
-            renderContext={itemRenderContext}
-            thread={thread}
-            threadFingerprint={threadFingerprintForItem(
-              item,
-              thread,
-              toolRendererFor(item.toolName ?? "").summarySuffix?.(item, thread),
-            )}
-          />
+          {renderedItem}
         </div>,
       );
     } else {
       renderedEntries.push(
         <div key={entry.id} className={CLASS.runContent} data-testid="run-content" {...viewAnchorFor(entry)}>
-          <ItemRenderer
-            item={item}
-            turn={shownTurn}
-            live={isItemLive(item)}
-            sessionRef={sessionRef}
-            opensExchange={exchangeOpeners?.has(item.id)}
-            agentLabel={agentLabel}
-            projectedSummary={entry.kind === "critical" ? entry.summary : undefined}
-            renderContext={itemRenderContext}
-            thread={thread}
-            threadFingerprint={threadFingerprintForItem(
-              item,
-              thread,
-              toolRendererFor(item.toolName ?? "").summarySuffix?.(item, thread),
-            )}
-          />
+          {renderedItem}
         </div>,
       );
     }

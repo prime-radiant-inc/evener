@@ -95,24 +95,15 @@ export function TranscriptDetailEditor({
   function updateContent(field: keyof ContentVector, checked: boolean) {
     const nextContent = {
       kind: "custom" as const,
-      toolIntent: field === "toolIntent" ? checked : vector.toolIntent,
-      toolCalls: field === "toolCalls" ? checked : vector.toolCalls,
-      reasoning: field === "reasoning" ? checked : vector.reasoning,
-      expandByDefault: field === "expandByDefault" ? checked : vector.expandByDefault,
+      ...vector,
+      [field]: checked,
     };
     lastCustom.current = nextContent;
     emit({ ...config, content: nextContent });
   }
 
   function updateAdvanced(field: keyof Omit<TranscriptDisplayAdvanced, "hookExits">, checked: boolean) {
-    const nextAdvanced: TranscriptDisplayAdvanced = {
-      roundTimings: field === "roundTimings" ? checked : config.advanced.roundTimings,
-      tokenCounts: field === "tokenCounts" ? checked : config.advanced.tokenCounts,
-      estimatedCost: field === "estimatedCost" ? checked : config.advanced.estimatedCost,
-      systemEvents: field === "systemEvents" ? checked : config.advanced.systemEvents,
-      promptEvents: field === "promptEvents" ? checked : config.advanced.promptEvents,
-      hookExits: config.advanced.hookExits,
-    };
+    const nextAdvanced: TranscriptDisplayAdvanced = { ...config.advanced, [field]: checked };
     emit({ ...config, advanced: nextAdvanced });
   }
 

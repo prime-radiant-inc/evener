@@ -354,35 +354,41 @@ export function TranscriptBody({
     </div>
   );
 
-  const content =
-    surface === "preview" ? (
+  let content: ReactNode;
+  if (surface === "preview") {
+    content = (
       <div data-testid="transcript-preview-flow">
         {rows.map((row, index) => (
           <div key={row.id}>{renderRow(row, index)}</div>
         ))}
       </div>
-    ) : (
-      <div className={styles.transcript}>
-        {surface === "live" ? (
-          <FlowOverlay top={loadOlderRow} pill={liveOverlay}>
-            <div className={styles.transcriptContent}>
-              {toolbar}
-              {list}
-              {trailingContent}
-            </div>
-          </FlowOverlay>
-        ) : (
-          <>
-            {loadOlderRow}
-            <div className={styles.transcriptContent}>
-              {toolbar}
-              {list}
-              {trailingContent}
-            </div>
-          </>
-        )}
-      </div>
     );
+  } else {
+    let transcriptContent: ReactNode;
+    if (surface === "live") {
+      transcriptContent = (
+        <FlowOverlay top={loadOlderRow} pill={liveOverlay}>
+          <div className={styles.transcriptContent}>
+            {toolbar}
+            {list}
+            {trailingContent}
+          </div>
+        </FlowOverlay>
+      );
+    } else {
+      transcriptContent = (
+        <>
+          {loadOlderRow}
+          <div className={styles.transcriptContent}>
+            {toolbar}
+            {list}
+            {trailingContent}
+          </div>
+        </>
+      );
+    }
+    content = <div className={styles.transcript}>{transcriptContent}</div>;
+  }
 
   return (
     <TranscriptRenderProvider

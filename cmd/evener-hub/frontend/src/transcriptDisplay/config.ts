@@ -267,12 +267,14 @@ export function resolveEffectiveConfig(
   const selected = candidateConfig(local) ?? candidateConfig(hubValue);
   if (selected !== undefined) return normalizeConfig(selected);
 
-  const fallback =
-    shippedValue === "desktop" || shippedValue === "mobile"
-      ? shippedConfig(shippedValue)
-      : shippedValue === null || shippedValue === undefined
-        ? shippedConfig("desktop")
-        : shippedValue;
+  let fallback: TranscriptDisplayConfigV1;
+  if (shippedValue === "desktop" || shippedValue === "mobile") {
+    fallback = shippedConfig(shippedValue);
+  } else if (shippedValue === null || shippedValue === undefined) {
+    fallback = shippedConfig("desktop");
+  } else {
+    fallback = shippedValue;
+  }
   return normalizeConfig(fallback);
 }
 
@@ -397,51 +399,14 @@ export const defaultToWire = toWireDefault;
 export const wireToDefaults = fromWireDefaults;
 export const defaultsToWire = toWireDefaults;
 
-function plainConfig(config: TranscriptDisplayConfigV1): Record<string, unknown> {
-  const normalized = normalizeConfig(config);
-  const content =
-    normalized.content.kind === "preset"
-      ? { kind: "preset", level: normalized.content.level }
-      : {
-          kind: "custom",
-          custom: {
-            toolIntent: normalized.content.toolIntent,
-            toolCalls: normalized.content.toolCalls,
-            reasoning: normalized.content.reasoning,
-            expandByDefault: normalized.content.expandByDefault,
-          },
-        };
-  return {
-    version: 1,
-    content,
-    advanced: {
-      roundTimings: normalized.advanced.roundTimings,
-      tokenCounts: normalized.advanced.tokenCounts,
-      estimatedCost: normalized.advanced.estimatedCost,
-      systemEvents: normalized.advanced.systemEvents,
-      promptEvents: normalized.advanced.promptEvents,
-      hookExits: normalized.advanced.hookExits,
-    },
-  };
-}
-
 export function encodeLocalConfig(config: TranscriptDisplayConfigV1): string {
-  return JSON.stringify(plainConfig(config));
-}
-
-function decodeStrictConfig(value: unknown): TranscriptDisplayConfigV1 | undefined {
-  if (!isRecord(value) || !hasExactKeys(value, ["version", "content", "advanced"]) || value.version !== 1)
-    return undefined;
-  const content = readWireContent(value.content);
-  const advanced = readWireAdvanced(value.advanced);
-  if (content === undefined || advanced === undefined) return undefined;
-  return normalizeConfig({ version: 1, content, advanced });
+  return JSON.stringify(toWireConfig(config));
 }
 
 export function decodeLocalConfig(raw: unknown): TranscriptDisplayConfigV1 | undefined {
   if (typeof raw !== "string") return undefined;
   try {
-    return decodeStrictConfig(JSON.parse(raw));
+    return fromWireConfig(JSON.parse(raw));
   } catch {
     return undefined;
   }
@@ -492,12 +457,14 @@ export function configSummary(config: TranscriptDisplayConfigV1): string {
 /** Concise status text for assistive announcements, not the narrow visual track. */
 export function accessibleConfigSummary(config: TranscriptDisplayConfigV1): string {
   const normalized = normalizeConfig(config);
-  const content =
-    normalized.content.kind === "preset" && normalized.content.level === "full"
-      ? "Full detail"
-      : normalized.content.kind === "custom"
-        ? "Custom content"
-        : contentSummary(normalized.content);
+  let content: string;
+  if (normalized.content.kind === "preset" && normalized.content.level === "full") {
+    content = "Full detail";
+  } else if (normalized.content.kind === "custom") {
+    content = "Custom content";
+  } else {
+    content = contentSummary(normalized.content);
+  }
   const count = advancedEnabledCount(normalized);
   return count === 0 ? content : `${content} · ${count} advanced`;
 }
@@ -575,16 +542,19 @@ function hasLegacyValue(values: LegacyPreferenceValues, key: LegacyPreferenceKey
 
 function legacyBool(values: LegacyPreferenceValues, key: LegacyPreferenceKey, fallback: boolean): boolean {
   const value = values[key];
-  return value === "1" ? true : value === "0" ? false : fallback;
+  if (value === "1") return true;
+  if (value === "0") return false;
+  return fallback;
 }
 
 export function legacyConfigFromValues(values: LegacyPreferenceValues): TranscriptDisplayConfigV1 | undefined {
   if (!LEGACY_PREF_KEYS.some((key) => hasLegacyValue(values, key))) return undefined;
-  const hookExits = legacyBool(values, "transcriptHookExitsAll", false)
-    ? "all"
-    : legacyBool(values, "transcriptHookExitsNormal", false)
-      ? "successful"
-      : "none";
+  let hookExits: HookExitDetail = "none";
+  if (legacyBool(values, "transcriptHookExitsAll", false)) {
+    hookExits = "all";
+  } else if (legacyBool(values, "transcriptHookExitsNormal", false)) {
+    hookExits = "successful";
+  }
   return makeTranscriptDisplayConfig(
     { kind: "preset", level: "activity" },
     {

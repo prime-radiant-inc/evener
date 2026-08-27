@@ -429,16 +429,18 @@ describe("TranscriptBody", () => {
     );
     expect(screen.getByTestId("tool-row-summary").textContent).toContain("Asked: [Mode]");
     const askDetails = screen.getByTestId("tool-call-item");
-    const askSummary = screen.getByTestId("tool-row");
-    askSummary.focus();
-    expect(document.activeElement).toBe(askSummary);
+    const askRow = screen.getByTestId("tool-row");
+    const askTrigger = screen.getByTestId("tool-row-trigger");
+    askTrigger.focus();
+    expect(document.activeElement).toBe(askTrigger);
     rerender(
       <TranscriptBody model={askAfter} config={preset("tools")} surface="preview" disclosureScope="ordinary:ask" />,
     );
     expect(screen.getByTestId("tool-row-summary").textContent).toContain("answered: Fast");
     expect(screen.getByTestId("tool-call-item")).toBe(askDetails);
-    expect(screen.getByTestId("tool-row")).toBe(askSummary);
-    expect(document.activeElement).toBe(askSummary);
+    expect(screen.getByTestId("tool-row")).toBe(askRow);
+    expect(screen.getByTestId("tool-row-trigger")).toBe(askTrigger);
+    expect(document.activeElement).toBe(askTrigger);
 
     const delegateItem = {
       id: "ordinary_delegate",
@@ -510,6 +512,11 @@ describe("TranscriptBody", () => {
       ...supersedeBefore,
       turns: [{ id: "supersede_turn", status: "completed", items: [failed, corrected] }],
     } as unknown as ThreadModel;
+    const firstToolExpanded = () =>
+      screen
+        .getAllByTestId("tool-call-item")[0]
+        ?.querySelector('[data-testid="tool-row-trigger"]')
+        ?.getAttribute("aria-expanded");
     rerender(
       <TranscriptBody
         model={supersedeBefore}
@@ -518,7 +525,7 @@ describe("TranscriptBody", () => {
         disclosureScope="ordinary:supersede"
       />,
     );
-    expect((screen.getAllByTestId("tool-call-item")[0] as HTMLDetailsElement).open).toBe(true);
+    expect(firstToolExpanded()).toBe("true");
     rerender(
       <TranscriptBody
         model={supersedeAfter}
@@ -527,7 +534,7 @@ describe("TranscriptBody", () => {
         disclosureScope="ordinary:supersede"
       />,
     );
-    expect((screen.getAllByTestId("tool-call-item")[0] as HTMLDetailsElement).open).toBe(false);
+    expect(firstToolExpanded()).toBe("false");
   });
 
   test.each(["live", "readOnly"] as const)("places the detail toolbar above the %s scroller", (surface) => {
