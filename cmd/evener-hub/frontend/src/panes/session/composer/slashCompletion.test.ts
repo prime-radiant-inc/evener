@@ -1,7 +1,13 @@
 import { expect, test } from "vitest";
 import type { CommandDescriptor } from "../../../protocol/types.gen";
 import type { ScopedCommand } from "../../../shell/palette/commands";
-import { filterSlashMenuItems, mergeSlashCommands, parseSlashToken, spliceSlashCommand } from "./slashCompletion";
+import {
+  filterSlashMenuItems,
+  mergeSlashCommands,
+  parseSlashToken,
+  type SlashMenuItem,
+  spliceSlashCommand,
+} from "./slashCompletion";
 
 // --- parseSlashToken ---------------------------------------------------
 //
@@ -123,9 +129,88 @@ test("filterSlashMenuItems filters the merged list to labels starting with the q
   expect(filterSlashMenuItems(items, "RE").map((i) => i.label)).toEqual(["review", "release"]);
 });
 
+test("fuzzy matching finds simplify from a non-prefix query", () => {
+  const items = mergeSlashCommands([], [], [{ name: "simplify", description: "rewrite" }]);
+  expect(filterSlashMenuItems(items, "smp").map((item) => item.invocation)).toEqual(["/simplify"]);
+});
+
+test("skills merge after commands with canonical labels, invocations, and descriptions", () => {
+  const items = mergeSlashCommands(
+    [builtin("goal", "sets the session goal")],
+    [{ name: "review", description: "review the diff" }],
+    [{ name: "plugin:review", description: "review with the skill" }],
+  );
+  expect(items).toEqual([
+    { key: "builtin:goal", invocation: "/goal", label: "goal", hint: "sets the session goal", kind: "builtin" },
+    { key: "plugin::review", invocation: "/review", label: "review", hint: "review the diff", kind: "plugin" },
+    {
+      key: "skill:plugin:review",
+      invocation: "/plugin:review",
+      label: "plugin:review",
+      hint: "review with the skill",
+      kind: "skill",
+    },
+  ]);
+});
+
+test("fuzzy matching is case-insensitive and label-only", () => {
+  const items = mergeSlashCommands(
+    [],
+    [
+      { name: "review", description: "SMP appears only in the description" },
+      { name: "Simplify", description: "rewrite" },
+    ],
+  );
+  expect(filterSlashMenuItems(items, "SMP").map((item) => item.label)).toEqual(["Simplify"]);
+});
+
+test("fuzzy matching excludes labels that are not subsequences", () => {
+  const items = mergeSlashCommands([], [{ name: "simplify" }, { name: "sample" }, { name: "support" }]);
+  expect(filterSlashMenuItems(items, "smp").map((item) => item.label)).toEqual(["simplify", "sample"]);
+});
+
+test("ranking prefers exact, then beginning and contiguousness", () => {
+  const items: SlashMenuItem[] = [
+    { key: "scattered", invocation: "/axbyc", label: "axbyc", hint: "", kind: "skill" },
+    { key: "notBeginning", invocation: "/zabc", label: "zabc", hint: "", kind: "skill" },
+    { key: "exact", invocation: "/abc", label: "abc", hint: "", kind: "skill" },
+    { key: "contiguous", invocation: "/abcde", label: "abcde", hint: "", kind: "skill" },
+  ];
+  expect(filterSlashMenuItems(items, "abc").map((item) => item.key)).toEqual([
+    "exact",
+    "contiguous",
+    "scattered",
+    "notBeginning",
+  ]);
+});
+
+test("ranking prefers the narrowest span, then earliest match start", () => {
+  const items: SlashMenuItem[] = [
+    { key: "wide", invocation: "/a12e", label: "a12e", hint: "", kind: "skill" },
+    { key: "narrow", invocation: "/a1e", label: "a1e", hint: "", kind: "skill" },
+    { key: "late", invocation: "/xxae", label: "xxae", hint: "", kind: "skill" },
+    { key: "early", invocation: "/zae", label: "zae", hint: "", kind: "skill" },
+  ];
+  expect(filterSlashMenuItems(items, "ae").map((item) => item.key)).toEqual(["narrow", "wide", "early", "late"]);
+});
+
+test("ranking keeps original merge order for complete ties", () => {
+  const items: SlashMenuItem[] = [
+    { key: "first", invocation: "/ab", label: "ab", hint: "", kind: "skill" },
+    { key: "second", invocation: "/AB", label: "AB", hint: "", kind: "skill" },
+  ];
+  expect(filterSlashMenuItems(items, "a").map((item) => item.key)).toEqual(["first", "second"]);
+});
+
 test("filterSlashMenuItems with an empty query returns the whole merged list, in order", () => {
-  const items = mergeSlashCommands([builtin("goal", "sets the session goal")], CATALOG);
-  expect(filterSlashMenuItems(items, "").map((i) => i.label)).toEqual(["goal", "review", "release", "standup"]);
+  const items = mergeSlashCommands([builtin("goal", "sets the session goal")], CATALOG, [{ name: "simplify" }]);
+  expect(filterSlashMenuItems(items, "").map((i) => i.label)).toEqual([
+    "goal",
+    "review",
+    "release",
+    "standup",
+    "simplify",
+  ]);
 });
 
 test("filterSlashMenuItems matching nothing returns an empty list", () => {
@@ -137,12 +222,34 @@ test("a colon is a valid token character (a typed qualified prefix keeps the men
   expect(parseSlashToken("/plugin:re", 10)).toEqual({ start: 0, end: 10, query: "plugin:re" });
 });
 
+test("the slash token follows the documented bare or singly-qualified name grammar", () => {
+  expect(parseSlashToken("/-bad", 5)).toBeNull();
+  expect(parseSlashToken("/plugin:", 8)).toBeNull();
+  expect(parseSlashToken("/plugin:one:two", 16)).toBeNull();
+  expect(parseSlashToken(`/${"a".repeat(129)}`, 130)).toBeNull();
+});
+
 // --- spliceSlashCommand ---------------------------------------------------
 
 test("splices the chosen command in at the token start, with a trailing space, caret after the space", () => {
   const token = { start: 0, end: 2, query: "x" };
   const result = spliceSlashCommand("/x", token, "/review");
   expect(result).toEqual({ text: "/review ", caret: "/review ".length });
+});
+
+test("completion does not double a suffix space", () => {
+  const token = parseSlashToken("Use /sim on this", 8)!;
+  expect(spliceSlashCommand("Use /sim on this", token, "/simplify").text).toBe("Use /simplify on this");
+});
+
+test("completion does not double a suffix tab or newline", () => {
+  const tabText = "Use /sim\ton this";
+  const tabToken = parseSlashToken(tabText, "Use /sim".length)!;
+  expect(spliceSlashCommand(tabText, tabToken, "/simplify").text).toBe("Use /simplify\ton this");
+
+  const newlineText = "Use /sim\non this";
+  const newlineToken = parseSlashToken(newlineText, "Use /sim".length)!;
+  expect(spliceSlashCommand(newlineText, newlineToken, "/simplify").text).toBe("Use /simplify\non this");
 });
 
 test("splices a qualified plugin invocation in whole, not just the bare name", () => {
@@ -157,8 +264,8 @@ test("preserves text before the token", () => {
   expect(result).toEqual({ text: "hello /review ", caret: "hello /review ".length });
 });
 
-test("preserves text after the token (caret was mid-draft)", () => {
+test("preserves text after the token without adding a duplicate suffix space", () => {
   const token = { start: 0, end: 4, query: "rev" };
   const result = spliceSlashCommand("/rev and more", token, "/review");
-  expect(result).toEqual({ text: "/review  and more", caret: "/review ".length });
+  expect(result).toEqual({ text: "/review and more", caret: "/review".length });
 });

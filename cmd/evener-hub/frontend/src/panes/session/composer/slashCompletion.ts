@@ -9,7 +9,7 @@
 // text/caret state and the plugin slash-command catalog (stores/
 // commandCatalog.ts), the same catalog the modal command palette reads.
 
-import type { CommandDescriptor } from "../../../protocol/types.gen";
+import type { CommandDescriptor, EvenerSkillInfo } from "../../../protocol/types.gen";
 import { type ScopedCommand, slashCommandInvocation } from "../../../shell/palette/commands";
 
 export interface SlashToken {
@@ -21,16 +21,11 @@ export interface SlashToken {
   query: string;
 }
 
-// Beautiful UI's own trailing-token regex, slash-only: a "/" preceded by
-// start-of-string or whitespace, followed by zero or more word/hyphen/colon
-// characters, anchored at the END of whatever string it's run against. The
-// colon is this fork's own addition (Beautiful UI has no qualified-command
-// concept): a typed "/plugin:rev" must keep matching as ONE token through
-// the colon, or the menu closes the instant the user types past "/plugin"
-// into the qualifier - see filterSlashCommands' own note on matching
-// against `name` only, and Composer.tsx's commitSlashCompletion for the
-// qualified invocation this makes it possible to type manually.
-const TRAILING_SLASH_TOKEN_RE = /(^|\s)(\/)([\w:-]*)$/;
+// A slash token is a documented bare or singly-qualified catalog name. The
+// final negative lookahead is a strict end-of-input anchor: unlike `$`, it
+// does not match before a trailing newline. The catalog grammar is ASCII and
+// therefore its maximum 128 UTF-8 bytes is also 128 JavaScript characters.
+const TRAILING_SLASH_TOKEN_RE = /(^|\s)(\/)((?:[A-Za-z0-9_][A-Za-z0-9_-]*(?::[A-Za-z0-9_][A-Za-z0-9_-]*)?)?)(?![\s\S])/;
 
 // parseSlashToken looks for a slash token the caret trails, by running the
 // trailing-token regex against the text BEFORE the caret only - text after
@@ -47,6 +42,7 @@ export function parseSlashToken(text: string, caret: number): SlashToken | null 
   if (!match) return null;
   const leadIn = match[1] ?? "";
   const query = match[3] ?? "";
+  if (query.length > 128) return null;
   const start = match.index + leadIn.length;
   return { start, end: caret, query };
 }
@@ -77,7 +73,7 @@ export interface SlashMenuItem {
   // it no description at all (2026-08-14 decision: "the hint states what it
   // does, or its plugin provenance").
   hint: string;
-  kind: "builtin" | "plugin";
+  kind: "builtin" | "plugin" | "skill";
 }
 
 // mergeSlashCommands is the composer's own single merge point (2026-08-14,
@@ -92,7 +88,11 @@ export interface SlashMenuItem {
 // it from the FULL unfiltered list at submit time, so a typed invocation for
 // a momentarily-unavailable command still gets an honest "not available
 // right now" instead of silently being sent as a chat message.
-export function mergeSlashCommands(builtins: ScopedCommand[], catalog: CommandDescriptor[]): SlashMenuItem[] {
+export function mergeSlashCommands(
+  builtins: ScopedCommand[],
+  catalog: CommandDescriptor[],
+  skills: EvenerSkillInfo[] = [],
+): SlashMenuItem[] {
   const builtinItems: SlashMenuItem[] = builtins
     .filter((c) => c.unavailableReason === undefined)
     .map((c) => ({ key: `builtin:${c.id}`, invocation: `/${c.id}`, label: c.id, hint: c.hint, kind: "builtin" }));
@@ -103,16 +103,83 @@ export function mergeSlashCommands(builtins: ScopedCommand[], catalog: CommandDe
     hint: c.description || c.argumentHint || `plugin: ${c.pluginName ?? c.source ?? "unknown"}`,
     kind: "plugin",
   }));
-  return [...builtinItems, ...pluginItems];
+  const skillItems: SlashMenuItem[] = skills.map((skill) => ({
+    key: `skill:${skill.name}`,
+    invocation: `/${skill.name}`,
+    label: skill.name,
+    hint: skill.description ?? "",
+    kind: "skill",
+  }));
+  return [...builtinItems, ...pluginItems, ...skillItems];
 }
 
-// filterSlashMenuItems: startsWith on the item's own label, case-insensitive
-// (the same normalization shell/palette/commands.ts's own filterCommands
-// uses for its query). An empty query matches every item, in merge order
-// (built-ins first, then the catalog).
+interface SlashMatch {
+  item: SlashMenuItem;
+  index: number;
+  exact: boolean;
+  begins: boolean;
+  contiguousness: number;
+  span: number;
+  start: number;
+}
+
+function scoreSlashMatch(item: SlashMenuItem, query: string, index: number): SlashMatch | null {
+  const label = item.label.toLowerCase();
+  const positions: number[] = [];
+  let labelIndex = 0;
+  for (const queryCharacter of query) {
+    const matchIndex = label.indexOf(queryCharacter, labelIndex);
+    if (matchIndex < 0) return null;
+    positions.push(matchIndex);
+    labelIndex = matchIndex + 1;
+  }
+
+  let longestRun = 1;
+  let currentRun = 1;
+  for (let positionIndex = 1; positionIndex < positions.length; positionIndex += 1) {
+    const position = positions[positionIndex];
+    const previousPosition = positions[positionIndex - 1];
+    if (position !== undefined && previousPosition !== undefined && position === previousPosition + 1) {
+      currentRun += 1;
+      longestRun = Math.max(longestRun, currentRun);
+    } else {
+      currentRun = 1;
+    }
+  }
+
+  const start = positions[0] ?? 0;
+  const end = positions[positions.length - 1] ?? 0;
+  return {
+    item,
+    index,
+    exact: label === query,
+    begins: start === 0,
+    contiguousness: longestRun,
+    span: end - start,
+    start,
+  };
+}
+
+function compareSlashMatches(a: SlashMatch, b: SlashMatch): number {
+  if (a.exact !== b.exact) return a.exact ? -1 : 1;
+  if (a.begins !== b.begins) return a.begins ? -1 : 1;
+  if (a.contiguousness !== b.contiguousness) return b.contiguousness - a.contiguousness;
+  if (a.span !== b.span) return a.span - b.span;
+  if (a.start !== b.start) return a.start - b.start;
+  return a.index - b.index;
+}
+
+// filterSlashMenuItems matches only the item's own label, case-insensitively.
+// Empty queries preserve merge order; non-empty queries are ranked by the
+// documented exact/beginning/contiguousness/span/earliest/index tuple.
 export function filterSlashMenuItems(items: SlashMenuItem[], query: string): SlashMenuItem[] {
   const q = query.toLowerCase();
-  return items.filter((item) => item.label.toLowerCase().startsWith(q));
+  if (!q) return items;
+  return items
+    .map((item, index) => scoreSlashMatch(item, q, index))
+    .filter((match): match is SlashMatch => match !== null)
+    .sort(compareSlashMatches)
+    .map((match) => match.item);
 }
 
 export interface SlashSpliceResult {
@@ -129,7 +196,7 @@ export interface SlashSpliceResult {
 // inserted trailing space, ahead of any surviving trailing text.
 export function spliceSlashCommand(text: string, token: SlashToken, invocation: string): SlashSpliceResult {
   const before = text.slice(0, token.start);
-  const after = text.slice(token.end);
-  const inserted = `${invocation} `;
-  return { text: before + inserted + after, caret: before.length + inserted.length };
+  const suffix = text.slice(token.end);
+  const inserted = /^\s/.test(suffix) ? invocation : `${invocation} `;
+  return { text: before + inserted + suffix, caret: before.length + inserted.length };
 }
