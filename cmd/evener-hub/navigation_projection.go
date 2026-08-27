@@ -369,9 +369,6 @@ func validateNavigationInputsContext(ctx context.Context, inputs navigationBuild
 		if err := validateNavigationIdentity("source kind", source.Kind, false); err != nil {
 			return err
 		}
-		if err := validateNavigationString("source label", source.Label, maxNavigationLabelRunes); err != nil {
-			return err
-		}
 	}
 	for _, section := range inputs.PinSections {
 		if err := ctx.Err(); err != nil {
@@ -380,21 +377,12 @@ func validateNavigationInputsContext(ctx context.Context, inputs navigationBuild
 		if err := validateNavigationIdentity("pin section ID", section.ID, false); err != nil {
 			return err
 		}
-		if err := validateNavigationString("pin section name", section.Name, maxNavigationLabelRunes); err != nil {
-			return err
-		}
 	}
 	for _, project := range append(append([]hubcore.TreeProject(nil), inputs.Tree.Projects...), inputs.Tree.ArchivedProjects...) {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
 		if err := validateNavigationIdentity("project key", project.Key, false); err != nil {
-			return err
-		}
-		if err := validateNavigationString("project name", project.Name, maxNavigationLabelRunes); err != nil {
-			return err
-		}
-		if err := validateNavigationString("working directory", project.WorkingDir, maxNavigationWorkingDirBytes); err != nil {
 			return err
 		}
 		for _, tier := range []string{"current", "recent", "archived"} {
@@ -430,15 +418,6 @@ func validateNavigationNodesContext(ctx context.Context, rows []hubcore.TreeNode
 		if _, err := navigationRef(node.ID); err != nil {
 			return err
 		}
-		if err := validateNavigationString("title", node.Title, maxNavigationTitleRunes); err != nil {
-			return err
-		}
-		if err := validateNavigationString("project label", node.Project, maxNavigationLabelRunes); err != nil {
-			return err
-		}
-		if err := validateNavigationString("branch", node.Branch, maxNavigationLabelRunes); err != nil {
-			return err
-		}
 		if err := validateNavigationNodesContext(ctx, node.Children); err != nil {
 			return err
 		}
@@ -461,16 +440,6 @@ func validateNavigationIdentity(kind, value string, allowEmpty bool) error {
 	}
 	return nil
 }
-func validateNavigationString(kind, value string, limit int) error {
-	if !utf8.ValidString(value) {
-		return fmt.Errorf("navigation %s is not valid UTF-8", kind)
-	}
-	if len(value) > limit {
-		return fmt.Errorf("navigation %s exceeds %d-byte limit", kind, limit)
-	}
-	return nil
-}
-
 func navigationRef(id string) (hubapi.Ref, error) {
 	if err := validateNavigationIdentity("session ID", id, false); err != nil {
 		return hubapi.Ref{}, err
@@ -1149,15 +1118,18 @@ func countTreeNodes(rows []hubcore.TreeNode) int {
 	return count
 }
 func truncateNavigationRunes(value string, limit int) string {
-	if len([]rune(value)) <= limit {
-		return value
-	}
+	value = strings.ToValidUTF8(value, "\uFFFD")
 	if limit <= 0 {
 		return ""
 	}
-	return string([]rune(value)[:limit-1]) + "…"
+	runes := []rune(value)
+	if len(runes) <= limit {
+		return value
+	}
+	return string(runes[:limit-1]) + "…"
 }
 func truncateNavigationBytes(value string, limit int) string {
+	value = strings.ToValidUTF8(value, "\uFFFD")
 	if len(value) <= limit {
 		return value
 	}

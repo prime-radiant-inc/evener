@@ -516,7 +516,7 @@ func truncateTitle(s string) string {
 	if len(r) <= maxTitleRunes {
 		return s
 	}
-	return string(r[:maxTitleRunes]) + "…"
+	return string(r[:maxTitleRunes-1]) + "…"
 }
 
 // ShortID renders an unnamed session ID compactly.
