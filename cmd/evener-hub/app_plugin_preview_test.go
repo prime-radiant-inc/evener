@@ -28,6 +28,56 @@ func TestPluginPreviewControllerMapsCandidates(t *testing.T) {
 	}
 }
 
+// Before a launch directory is chosen there is no project context, but the
+// user-level inventory (global layer) already exists — the spawn pane previews
+// with an empty cwd on mount and must not fail for it.
+func TestPluginPreviewEmptyCWDResolvesUserLayers(t *testing.T) {
+	firstDir := t.TempDir()
+	writePreviewFixturePlugin(t, firstDir, "global-fixture", filepath.Join(t.TempDir(), "marker"))
+	secondDir := t.TempDir()
+	writePreviewFixturePlugin(t, secondDir, "other-fixture", filepath.Join(t.TempDir(), "marker"))
+	launchRoot := t.TempDir()
+	globalLayer := "plugin_dirs = [\"" + firstDir + "\", \"" + secondDir + "\"]\n"
+	if err := os.WriteFile(filepath.Join(launchRoot, "launch.toml"), []byte(globalLayer), 0o644); err != nil {
+		t.Fatalf("write global layer: %v", err)
+	}
+	ctl := newHubPluginsController(t.TempDir(), launchRoot)
+
+	// With no per-launch selection every loadable candidate is selected — the
+	// same default a picked directory with no overrides would give.
+	for _, cwd := range []string{"", "   "} {
+		preview, err := ctl.Preview(context.Background(), appwire.PluginPreviewParams{CWD: cwd})
+		if err != nil {
+			t.Fatalf("Preview for cwd %q: %v", cwd, err)
+		}
+		if len(preview.Plugins) != 2 {
+			t.Fatalf("Preview for cwd %q plugins = %+v, want both global directory candidates", cwd, preview.Plugins)
+		}
+		for _, candidate := range preview.Plugins {
+			if !candidate.Selected {
+				t.Fatalf("Preview for cwd %q candidate not selected by default: %+v", cwd, candidate)
+			}
+		}
+	}
+
+	// Per-launch overrides merge without a directory, too.
+	override := []string{"other-fixture"}
+	preview, err := ctl.Preview(context.Background(), appwire.PluginPreviewParams{
+		CWD:             "",
+		LaunchOverrides: &appwire.LaunchConfigLayer{EnabledPlugins: &override},
+	})
+	if err != nil {
+		t.Fatalf("Preview with overrides for empty cwd: %v", err)
+	}
+	byName := make(map[string]appwire.PluginLaunchCandidate, len(preview.Plugins))
+	for _, candidate := range preview.Plugins {
+		byName[candidate.Name] = candidate
+	}
+	if byName["global-fixture"].Selected || !byName["other-fixture"].Selected {
+		t.Fatalf("Preview with overrides selection = %+v, want only other-fixture selected", preview.Plugins)
+	}
+}
+
 func TestPluginPreviewMissingCWDMatchesStartAfterCreation(t *testing.T) {
 	pluginDir := t.TempDir()
 	writePreviewFixturePlugin(t, pluginDir, "preview-fixture", filepath.Join(t.TempDir(), "marker"))

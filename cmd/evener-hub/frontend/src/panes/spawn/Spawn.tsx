@@ -67,6 +67,7 @@ import {
   type PluginSelectionState,
   pluginSelectionIssues,
   reconcilePluginSelection,
+  selectedPluginNames,
   withPluginSelection,
 } from "./pluginSelectionState";
 import { createDir, preflightDir } from "./preflight";
@@ -326,14 +327,11 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // Re-running this effect for that selection change would restore old issues.
   }, [pluginPreview.state, pluginSelectionSupported]);
 
-  const previewResponse =
-    pluginSelectionSupported && (pluginPreview.state.status === "ready" || pluginPreview.state.status === "error")
-      ? (pluginPreview.state.response ?? null)
-      : null;
-  const selectedPluginCount =
-    previewResponse?.plugins.filter((plugin) =>
-      pluginSelection.mode === "explicit" ? pluginSelection.names.includes(plugin.name) : plugin.selected,
-    ).length ?? 0;
+  // A refresh triggered by a selection toggle keeps the previous response on
+  // the loading state (see usePluginPreview), so the disclosure and its list
+  // stay mounted instead of flashing an empty "Inspecting plugins…" panel.
+  const previewResponse = pluginSelectionSupported ? (pluginPreview.state.response ?? null) : null;
+  const configuredPluginNames = previewResponse ? selectedPluginNames(pluginSelection, previewResponse) : [];
   const currentSelectionIssues =
     pluginPreview.state.status === "ready" ? pluginSelectionIssues(pluginSelection, pluginPreview.state.response) : [];
   const explicitSelectionLoading =
@@ -1004,13 +1002,16 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             {previewResponse === null && (
               <div className={CLASS.pluginSummary} data-testid="spawn-plugin-summary" role="status">
                 <strong>Plugins for this session</strong>
-                <span>
-                  {pluginPreview.state.status === "loading" ? "Inspecting plugins…" : "Couldn't inspect plugins"}
-                </span>
+                {pluginPreview.state.status === "loading" && <span>Inspecting plugins…</span>}
                 {pluginPreview.state.status === "error" && (
-                  <Button variant="secondary" size="xs" type="button" onClick={pluginPreview.retry}>
-                    Retry
-                  </Button>
+                  <>
+                    <span title={pluginPreview.state.message}>
+                      Couldn't inspect plugins: {pluginPreview.state.message}
+                    </span>
+                    <Button variant="quiet" size="xs" type="button" onClick={pluginPreview.retry}>
+                      Retry
+                    </Button>
+                  </>
                 )}
               </div>
             )}
@@ -1022,7 +1023,9 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
                   <div className={CLASS.pluginSummary} data-testid="spawn-plugin-summary">
                     <strong>Plugins for this session</strong>
                     <span>
-                      {selectedPluginCount} of {previewResponse.plugins.length} will load · session only
+                      {configuredPluginNames.length > 0
+                        ? `Configured plugins: ${configuredPluginNames.join(", ")}`
+                        : "Configured plugins: none"}
                     </span>
                   </div>
                 }

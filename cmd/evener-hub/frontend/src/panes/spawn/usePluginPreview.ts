@@ -6,7 +6,7 @@ import type { LaunchConfigLayer, PluginPreviewResponse } from "../../protocol/ty
 export const PLUGIN_PREVIEW_DEBOUNCE_MS = 250;
 
 export type PluginPreviewLoadState =
-  | { status: "loading" }
+  | { status: "loading"; response?: PluginPreviewResponse }
   | { status: "ready"; response: PluginPreviewResponse }
   | { status: "error"; message: string; response?: PluginPreviewResponse };
 
@@ -26,7 +26,7 @@ export function usePluginPreview(args: UsePluginPreviewArgs): {
   const [retryRevision, setRetryRevision] = useState(0);
   const [state, setState] = useState<PluginPreviewLoadState>({ status: "loading" });
   const latestKey = useRef("");
-  const lastResponse = useRef<{ logicalKey: string; response: PluginPreviewResponse } | null>(null);
+  const lastResponse = useRef<{ cwd: string; logicalKey: string; response: PluginPreviewResponse } | null>(null);
   const launchOverridesRef = useRef(launchOverrides);
   launchOverridesRef.current = launchOverrides;
   const serializedOverrides = JSON.stringify(launchOverrides);
@@ -45,7 +45,14 @@ export function usePluginPreview(args: UsePluginPreviewArgs): {
     const logicalKey = `${baseKey}\u0000${pluginRevision}`;
     const requestKey = `${logicalKey}\u0000${retryRevision}`;
     latestKey.current = requestKey;
-    setState({ status: "loading" });
+    // Keep the previous response mounted while a same-cwd refresh (a selection
+    // toggle, a revision bump, a retry) is in flight, so the panel doesn't
+    // collapse to an empty loading state and back. A cwd change drops it: the
+    // stale list belongs to another directory.
+    const cached = lastResponse.current;
+    setState(
+      cached !== null && cached.cwd === cwd ? { status: "loading", response: cached.response } : { status: "loading" },
+    );
 
     const timer = setTimeout(() => {
       const currentOverrides = launchOverridesRef.current;
@@ -53,7 +60,7 @@ export function usePluginPreview(args: UsePluginPreviewArgs): {
       void client.request("evener/plugin/preview", params).then(
         (response) => {
           if (latestKey.current === requestKey) {
-            lastResponse.current = { logicalKey, response };
+            lastResponse.current = { cwd, logicalKey, response };
             setState({ status: "ready", response });
           }
         },

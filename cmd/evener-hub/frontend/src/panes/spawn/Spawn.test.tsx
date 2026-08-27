@@ -513,7 +513,10 @@ test("desktop plugin summary remains mounted with exact loading and error status
   await waitFor(() =>
     expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("Couldn't inspect plugins"),
   );
+  // The failure says WHY, and the retry is a small inline action.
+  expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("preview unavailable");
   expect(screen.getByTestId("spawn-plugin-summary").textContent).not.toContain("0 of 0");
+  expect(within(screen.getByTestId("spawn-plugin-summary")).getByRole("button", { name: "Retry" })).toBeTruthy();
 });
 
 const SPAWN_PLUGIN_PREVIEW: PluginPreviewResponse = {
@@ -541,6 +544,28 @@ const SPAWN_PLUGIN_PREVIEW: PluginPreviewResponse = {
     },
   ],
 };
+
+test("desktop plugin summary lists the configured plugin names", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", () => SPAWN_PLUGIN_PREVIEW);
+  });
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+
+  await waitFor(() =>
+    expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("Configured plugins: alpha, beta"),
+  );
+  expect(screen.getByTestId("spawn-plugin-summary").textContent).not.toContain("session only");
+
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await waitFor(() =>
+    expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("Configured plugins: alpha"),
+  );
+  expect(screen.getByTestId("spawn-plugin-summary").textContent).not.toContain("beta");
+});
 
 async function openDesktopPluginSelection(user: ReturnType<typeof userEvent.setup>): Promise<void> {
   await waitFor(() => expect(screen.getByTestId("spawn-plugin-disclosure")).toBeTruthy());
@@ -658,6 +683,10 @@ test("explicit selection blocks while refresh is pending but preview failure sti
   expect(extensionsStore.getState().pluginRevision).toBe(1);
   await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true));
   await waitFor(() => expect(explicitPreviewCalls).toBe(2));
+  // The refresh must not unmount the list: the previous plugins stay visible
+  // (and toggleable) while the new inspection is in flight.
+  expect(screen.getByRole("switch", { name: "alpha" })).toBeTruthy();
+  expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("Configured plugins: alpha");
 
   rejectRefresh(new Error("preview unavailable"));
   await waitFor(() => expect(screen.getAllByText("Couldn't inspect plugins").length).toBeGreaterThan(0));

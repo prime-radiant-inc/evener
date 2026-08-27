@@ -15,6 +15,15 @@ function orderedNames(names: Iterable<string>, preview: PluginPreviewResponse): 
   return ordered;
 }
 
+// The one place the effective selection is derived: an explicit allow-list
+// wins over the preview's own selected flags, so the UI reflects a toggle the
+// moment it happens rather than after the re-preview it triggers settles.
+export function selectedPluginNames(selection: PluginSelectionState, preview: PluginPreviewResponse): string[] {
+  return preview.plugins
+    .filter((plugin) => (selection.mode === "explicit" ? selection.names.includes(plugin.name) : plugin.selected))
+    .map((plugin) => plugin.name);
+}
+
 export function withPluginSelection(overrides: LaunchConfigLayer, selection: PluginSelectionState): LaunchConfigLayer {
   const { enabledPlugins: _ignored, ...withoutSelection } = overrides;
   return selection.mode === "explicit"

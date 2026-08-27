@@ -12,7 +12,7 @@ import { Button, PathFieldPanel, Sheet } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./MobileSettingRows.module.css";
 import { PluginSelectionPanel } from "./PluginSelectionPanel";
-import type { PluginSelectionState } from "./pluginSelectionState";
+import { type PluginSelectionState, selectedPluginNames } from "./pluginSelectionState";
 import type { PluginPreviewLoadState } from "./usePluginPreview";
 
 export interface MobilePickerOption {
@@ -214,11 +214,9 @@ export function MobileSettingRows({
       ? "Inspecting plugins…"
       : pluginPreview.status === "error"
         ? "Couldn't inspect plugins"
-        : `${
-            pluginPreview.response.plugins.filter((plugin) =>
-              pluginSelection.mode === "explicit" ? pluginSelection.names.includes(plugin.name) : plugin.selected,
-            ).length
-          } of ${pluginPreview.response.plugins.length}`;
+        : `${selectedPluginNames(pluginSelection, pluginPreview.response).length} of ${
+            pluginPreview.response.plugins.length
+          }`;
 
   return (
     <>

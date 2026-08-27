@@ -1,7 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { PluginPreviewResponse } from "../../protocol/types.gen";
+import type { LaunchConfigLayer, PluginPreviewResponse } from "../../protocol/types.gen";
 import { usePluginPreview } from "./usePluginPreview";
 
 const RESPONSE: PluginPreviewResponse = { plugins: [] };
@@ -97,6 +97,56 @@ describe("usePluginPreview", () => {
     expect(result.current.state).toEqual({ status: "loading" });
     await act(async () => {
       responses[1]!(RESPONSE);
+      await flush();
+    });
+    expect(result.current.state).toEqual({ status: "ready", response: RESPONSE });
+  });
+
+  test("keeps the previous response mounted while a same-cwd refresh loads", async () => {
+    vi.useFakeTimers();
+    const client = new FakeClient();
+    const responseA: PluginPreviewResponse = {
+      plugins: [
+        {
+          name: "a",
+          source: "test",
+          selected: true,
+          skillCount: 1,
+          agentCount: 0,
+          commandCount: 0,
+          hookCount: 0,
+          mcpCount: 0,
+        },
+      ],
+    };
+    let resolveRefresh!: (response: PluginPreviewResponse) => void;
+    let requests = 0;
+    client.on("evener/plugin/preview", () => {
+      requests += 1;
+      if (requests === 1) return responseA;
+      return new Promise<PluginPreviewResponse>((done) => (resolveRefresh = done));
+    });
+    const { result, rerender } = renderHook(
+      ({ overrides }: { overrides: LaunchConfigLayer }) =>
+        usePluginPreview({ client, cwd: "/repo", launchOverrides: overrides, pluginRevision: 0 }),
+      { initialProps: { overrides: {} } },
+    );
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+      await flush();
+    });
+    expect(result.current.state).toEqual({ status: "ready", response: responseA });
+
+    // A selection toggle changes only the overrides: the panel keeps showing
+    // the previous plugins instead of collapsing to an empty loading state.
+    rerender({ overrides: { enabledPlugins: ["a"] } });
+    expect(result.current.state).toEqual({ status: "loading", response: responseA });
+
+    await act(async () => {
+      await vi.advanceTimersByTimeAsync(250);
+    });
+    await act(async () => {
+      resolveRefresh(RESPONSE);
       await flush();
     });
     expect(result.current.state).toEqual({ status: "ready", response: RESPONSE });

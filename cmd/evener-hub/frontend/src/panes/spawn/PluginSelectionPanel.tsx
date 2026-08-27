@@ -1,12 +1,13 @@
-import { type ReactElement, useId, useMemo, useState } from "react";
+import type { ReactElement } from "react";
 import type { PluginLaunchCandidate, PluginPreviewResponse } from "../../protocol/types.gen";
-import { Button, Input, Switch } from "../../widgets";
+import { Button, Switch } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./pluginSelection.module.css";
 import {
   type PluginSelectionState,
   pluginSelectionIssues,
   selectAllPlugins,
+  selectedPluginNames,
   selectNoPlugins,
   setPluginSelected,
 } from "./pluginSelectionState";
@@ -22,15 +23,13 @@ export interface PluginSelectionPanelProps {
 const CLASS = {
   panel: requireClass(styles.panel, "pluginSelection.module.css", "panel"),
   tools: requireClass(styles.tools, "pluginSelection.module.css", "tools"),
-  filter: requireClass(styles.filter, "pluginSelection.module.css", "filter"),
   actions: requireClass(styles.actions, "pluginSelection.module.css", "actions"),
   list: requireClass(styles.list, "pluginSelection.module.css", "list"),
   row: requireClass(styles.row, "pluginSelection.module.css", "row"),
   metadata: requireClass(styles.metadata, "pluginSelection.module.css", "metadata"),
   source: requireClass(styles.source, "pluginSelection.module.css", "source"),
-  kind: requireClass(styles.kind, "pluginSelection.module.css", "kind"),
-  state: requireClass(styles.state, "pluginSelection.module.css", "state"),
   counts: requireClass(styles.counts, "pluginSelection.module.css", "counts"),
+  description: requireClass(styles.description, "pluginSelection.module.css", "description"),
   resultCount: requireClass(styles.resultCount, "pluginSelection.module.css", "resultCount"),
   diagnostics: requireClass(styles.diagnostics, "pluginSelection.module.css", "diagnostics"),
   errors: requireClass(styles.errors, "pluginSelection.module.css", "errors"),
@@ -38,8 +37,9 @@ const CLASS = {
 };
 
 function sourceLabel(plugin: PluginLaunchCandidate): string {
-  if (plugin.source === "installed" && plugin.marketplace) return `@ ${plugin.marketplace}`;
-  return plugin.path || plugin.source;
+  if (plugin.source === "installed" && plugin.marketplace) return `installed from ${plugin.marketplace}`;
+  if (plugin.path) return `${plugin.source}: ${plugin.path}`;
+  return plugin.source;
 }
 
 function componentCounts(plugin: PluginLaunchCandidate): string {
@@ -52,14 +52,6 @@ function componentCounts(plugin: PluginLaunchCandidate): string {
   return counts.length > 0 ? counts.join(" · ") : "No components";
 }
 
-function matchesFilter(plugin: PluginLaunchCandidate, query: string): boolean {
-  const haystack = [plugin.name, plugin.description, plugin.source, plugin.marketplace, plugin.path]
-    .filter(Boolean)
-    .join(" ")
-    .toLocaleLowerCase();
-  return haystack.includes(query);
-}
-
 export function PluginSelectionPanel({
   preview,
   selection,
@@ -67,17 +59,10 @@ export function PluginSelectionPanel({
   onSelectionChange,
   onRetry,
 }: PluginSelectionPanelProps): ReactElement {
-  const filterId = useId();
-  const [filter, setFilter] = useState("");
-  const query = filter.trim().toLocaleLowerCase();
-  const visiblePlugins = useMemo(
-    () => preview.plugins.filter((plugin) => matchesFilter(plugin, query)),
-    [preview.plugins, query],
-  );
   const selectedNames = selection.mode === "explicit" ? new Set(selection.names) : null;
   const issueNames =
     selectedNames ?? new Set(preview.plugins.filter((plugin) => plugin.selected).map((plugin) => plugin.name));
-  const selectedCount = preview.plugins.filter((plugin) => selectedNames?.has(plugin.name) ?? plugin.selected).length;
+  const selectedCount = selectedPluginNames(selection, preview).length;
   const selectionIssues = pluginSelectionIssues(selection, preview).filter(
     (issue) => !removeOnly || issueNames.has(issue.name),
   );
@@ -86,15 +71,8 @@ export function PluginSelectionPanel({
   return (
     <section className={CLASS.panel} data-testid="plugin-selection-panel" aria-label="Plugins for this session">
       <div className={CLASS.tools}>
-        <div className={CLASS.filter}>
-          <label htmlFor={filterId}>Filter plugins</label>
-          <Input
-            id={filterId}
-            type="search"
-            value={filter}
-            onChange={(event) => setFilter(event.target.value)}
-            placeholder="Filter plugins…"
-          />
+        <div className={CLASS.resultCount} role="status">
+          {selectedCount} of {preview.plugins.length} selected
         </div>
         <div className={CLASS.actions}>
           <Button
@@ -119,11 +97,8 @@ export function PluginSelectionPanel({
         </div>
       </div>
 
-      <div className={CLASS.resultCount} role="status">
-        {selectedCount} of {preview.plugins.length} selected
-      </div>
-      <div className={CLASS.list}>
-        {visiblePlugins.map((plugin) => {
+      <div className={CLASS.list} data-testid="plugin-selection-list">
+        {preview.plugins.map((plugin) => {
           const selected = selectedNames?.has(plugin.name) ?? plugin.selected;
           return (
             <div className={CLASS.row} key={plugin.name}>
@@ -135,22 +110,15 @@ export function PluginSelectionPanel({
                   if (!removeOnly || !next) onSelectionChange(setPluginSelected(selection, preview, plugin.name, next));
                 }}
               />
-              <div className={CLASS.metadata}>
+              <div className={CLASS.metadata} data-testid="plugin-row-metadata">
                 <span className={CLASS.source}>{sourceLabel(plugin)}</span>
                 <span className={CLASS.counts}>{componentCounts(plugin)}</span>
-                <span className={CLASS.state}>{selected ? "selected for session" : "off for session"}</span>
+                {plugin.description && <span className={CLASS.description}>{plugin.description}</span>}
               </div>
-              <span className={CLASS.kind}>{plugin.source === "installed" ? "installed" : plugin.source}</span>
             </div>
           );
         })}
       </div>
-      {preview.plugins.length > 0 && (
-        <div className={CLASS.resultCount}>
-          Showing {visiblePlugins.length} of {preview.plugins.length}
-          {visiblePlugins.length < preview.plugins.length ? " matching plugins" : " plugins"}
-        </div>
-      )}
       {preview.plugins.length === 0 && <p className={CLASS.empty}>No plugins are available for this session.</p>}
 
       {removeOnly && (

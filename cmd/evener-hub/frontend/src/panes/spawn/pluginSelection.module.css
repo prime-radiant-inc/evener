@@ -37,28 +37,25 @@
 }
 
 .summary span {
+  overflow: hidden;
   color: var(--ink-low);
   font-size: var(--font-size-caption);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* The summary column stretches its children; the error state's Retry stays a
+ * small inline action instead of growing into a full-width band. */
+.summary button {
+  align-self: flex-start;
 }
 
 .tools {
   display: flex;
-  align-items: flex-end;
+  align-items: center;
+  justify-content: space-between;
   gap: var(--space-2);
   min-width: 0;
-}
-
-.filter {
-  display: flex;
-  flex: 1 1 auto;
-  flex-direction: column;
-  gap: var(--space-1);
-  min-width: 0;
-}
-
-.filter label {
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
 }
 
 .actions {
@@ -69,31 +66,30 @@
 
 .list {
   min-width: 0;
-  max-height: 360px;
-  overflow-y: auto;
-  overscroll-behavior: contain;
 }
 
 .row {
-  display: grid;
-  grid-template-columns: minmax(0, 1fr) auto;
-  gap: var(--space-2);
-  align-items: center;
+  display: flex;
+  flex-direction: column;
+  gap: var(--space-1);
   min-width: 0;
   padding: var(--space-2) 0;
   border-top: 1px solid var(--edge);
 }
 
+/* Indented to line up under the switch label: the 32px track plus the
+ * wrapper's --space-2 gap (the 899px media query below widens the hit target
+ * to 44px and adjusts this to match). */
 .metadata {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 2px;
+  padding-left: calc(32px + var(--space-2));
 }
 
 .source,
 .counts,
-.state,
 .resultCount {
   min-width: 0;
   overflow: hidden;
@@ -107,22 +103,10 @@
   color: var(--ink-mid);
 }
 
-.state {
-  color: var(--ink-mid);
-}
-
-.kind {
-  flex: none;
-  padding: 2px var(--space-1);
-  border: 1px solid var(--edge);
-  border-radius: var(--radius-pill);
-  color: var(--ink-mid);
-  font-size: var(--font-size-caption);
-  white-space: nowrap;
-}
-
-.resultCount {
+.description {
+  min-width: 0;
   color: var(--ink-low);
+  font-size: var(--font-size-caption);
 }
 
 .diagnostics,
@@ -167,34 +151,19 @@
   font-size: var(--font-size-ui);
 }
 
-@media (max-width: 559px) {
-  .tools {
-    align-items: stretch;
-    flex-direction: column;
-  }
-
-  .actions {
-    justify-content: flex-start;
-  }
-
-  .row {
-    grid-template-columns: minmax(0, 1fr) auto;
-  }
-}
-
 @media (max-width: 899px) {
   .desktopSurface {
     display: none;
   }
 
-  /* The shared Switch and Input keep their compact desktop geometry. On a
-   * phone this surface owns a larger hit target without changing the primitive
-   * used by the other desktop controls. The switch's pseudo track preserves
-   * the compact visual while the actual role=switch button is 44px square. */
-  .panel .filter input {
-    min-height: 44px;
+  .metadata {
+    padding-left: calc(44px + var(--space-2));
   }
 
+  /* The shared Switch keeps its compact desktop geometry. On a phone this
+   * surface owns a larger hit target without changing the primitive used by
+   * the other desktop controls. The switch's pseudo track preserves the
+   * compact visual while the actual role=switch button is 44px square. */
   .panel .row [role="switch"] {
     width: 44px;
     height: 44px;
