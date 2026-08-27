@@ -123,38 +123,71 @@ interface SlashMatch {
   start: number;
 }
 
+interface SlashEmbedding {
+  end: number;
+  start: number;
+  currentRun: number;
+  longestRun: number;
+}
+
+function compareEmbeddings(a: SlashEmbedding, b: SlashEmbedding): number {
+  const aBegins = a.start === 0;
+  const bBegins = b.start === 0;
+  if (a.longestRun !== b.longestRun) return b.longestRun - a.longestRun;
+  if (aBegins !== bBegins) return aBegins ? -1 : 1;
+  const aSpan = a.end - a.start;
+  const bSpan = b.end - b.start;
+  if (aSpan !== bSpan) return aSpan - bSpan;
+  return a.start - b.start;
+}
+
 function scoreSlashMatch(item: SlashMenuItem, query: string, index: number): SlashMatch | null {
   const label = item.label.toLowerCase();
-  const positions: number[] = [];
-  let labelIndex = 0;
-  for (const queryCharacter of query) {
-    const matchIndex = label.indexOf(queryCharacter, labelIndex);
-    if (matchIndex < 0) return null;
-    positions.push(matchIndex);
-    labelIndex = matchIndex + 1;
-  }
+  const firstCharacter = query[0];
+  if (firstCharacter === undefined) return null;
 
-  let longestRun = 1;
-  let currentRun = 1;
-  for (let positionIndex = 1; positionIndex < positions.length; positionIndex += 1) {
-    const position = positions[positionIndex];
-    const previousPosition = positions[positionIndex - 1];
-    if (position !== undefined && previousPosition !== undefined && position === previousPosition + 1) {
-      currentRun += 1;
-      longestRun = Math.max(longestRun, currentRun);
-    } else {
-      currentRun = 1;
+  let embeddings: SlashEmbedding[] = [];
+  for (let labelIndex = 0; labelIndex < label.length; labelIndex += 1) {
+    if (label[labelIndex] === firstCharacter) {
+      embeddings.push({ end: labelIndex, start: labelIndex, currentRun: 1, longestRun: 1 });
     }
   }
 
-  const start = positions[0] ?? 0;
-  const end = positions[positions.length - 1] ?? 0;
+  for (let queryIndex = 1; queryIndex < query.length; queryIndex += 1) {
+    const queryCharacter = query[queryIndex];
+    if (queryCharacter === undefined) return null;
+    const bestByState = new Map<string, SlashEmbedding>();
+    for (let labelIndex = 0; labelIndex < label.length; labelIndex += 1) {
+      if (label[labelIndex] !== queryCharacter) continue;
+      for (const previous of embeddings) {
+        if (previous.end >= labelIndex) continue;
+        const currentRun = labelIndex === previous.end + 1 ? previous.currentRun + 1 : 1;
+        const candidate: SlashEmbedding = {
+          end: labelIndex,
+          start: previous.start,
+          currentRun,
+          longestRun: Math.max(previous.longestRun, currentRun),
+        };
+        const stateKey = `${labelIndex}:${currentRun}`;
+        const existing = bestByState.get(stateKey);
+        if (!existing || compareEmbeddings(candidate, existing) < 0) {
+          bestByState.set(stateKey, candidate);
+        }
+      }
+    }
+    embeddings = [...bestByState.values()];
+  }
+
+  if (embeddings.length === 0) return null;
+  const embedding = embeddings.reduce((best, candidate) => (compareEmbeddings(candidate, best) < 0 ? candidate : best));
+  const start = embedding.start;
+  const end = embedding.end;
   return {
     item,
     index,
     exact: label === query,
     begins: start === 0,
-    contiguousness: longestRun,
+    contiguousness: embedding.longestRun,
     span: end - start,
     start,
   };
@@ -162,8 +195,8 @@ function scoreSlashMatch(item: SlashMenuItem, query: string, index: number): Sla
 
 function compareSlashMatches(a: SlashMatch, b: SlashMatch): number {
   if (a.exact !== b.exact) return a.exact ? -1 : 1;
-  if (a.begins !== b.begins) return a.begins ? -1 : 1;
   if (a.contiguousness !== b.contiguousness) return b.contiguousness - a.contiguousness;
+  if (a.begins !== b.begins) return a.begins ? -1 : 1;
   if (a.span !== b.span) return a.span - b.span;
   if (a.start !== b.start) return a.start - b.start;
   return a.index - b.index;
