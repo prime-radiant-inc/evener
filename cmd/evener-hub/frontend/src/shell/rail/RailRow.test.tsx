@@ -1239,8 +1239,8 @@ describe("session row", () => {
 
   // A live-tier row's own Tier/PinSectionID/Rename fields must all survive the
   // duplicate projection. RailRow reads pin_section_id/rename directly,
-  // regardless of the session's real decisions, since handleAPITree's Live
-  // loop bypassed the tier-stamping helper entirely. RailRow never gated
+  // regardless of the session's real decisions, since the navigation
+  // projection stamps the live tier separately. RailRow never gated
   // these on tier itself - it just reads session.favorite/session.rename
   // directly, same as every other row - so once the hub fix landed, this
   // was already correct with no rail-side code change; pinned explicitly

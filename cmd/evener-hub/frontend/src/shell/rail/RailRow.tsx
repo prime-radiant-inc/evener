@@ -366,9 +366,9 @@ function ActionsMenu({ label, items }: { label: string; items: MenuItem[] }) {
   );
 }
 
-// "no-project" is a synthetic bucket handleAPITree synthesizes for orphan
-// live sessions with no resolvable project (cmd/evener-hub/web_api_tree.go) -
-// it can appear in the wire's `projects` array like any other TreeProject,
+// "no-project" is a synthetic project bucket for orphan live sessions whose
+// project cannot be resolved (cmd/evener-hub/navigation_projection.go). It can
+// appear in the wire's `projects` array like any other TreeProject,
 // but the server rejects both archive and delete for this exact key
 // ("no-project is not a local project" - web_api_archive.go/
 // web_api_project_delete.go). Offering menu items that are guaranteed to

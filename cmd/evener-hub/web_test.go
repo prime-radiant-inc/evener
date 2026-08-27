@@ -536,11 +536,6 @@ func TestWeb_LocalSendUnavailableCapabilityDoesNotStartTurn(t *testing.T) {
 	}
 }
 
-// TestWeb_APITreeProjectUnknownKeyErrors is the /api/tree/project counterpart
-// of the deleted sidebar-project HTML-partial test: an empty key is a client
-// error (400, the handler's early-return validation) and an unrecognized key
-// is a 404 (the "not found in the memoized tree" branch) — distinct from the
-// old route, which 404'd on both.
 // TestStateLabel_ErroredAndNeedsYou pins the two label changes the errored
 // render lane requires: "awaiting" reads as "Your move" (not the flat,
 // unlabeled "Awaiting"), and "errored" gets its own human label rather than

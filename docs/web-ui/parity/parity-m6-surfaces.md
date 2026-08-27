@@ -332,15 +332,15 @@ All from `search.js:326-517` unless noted:
 
 ### 3.6 Baseline fetch & edge-fire gating
 
-- [ ] Baseline comes from `GET /api/tree?summary=1` — deliberately summary-only, never the full tree, since this client only needs the badge counts (`notifications.js:222-227`, code comment at 220-221)
-- [ ] Baseline is (re-)fetched on init AND on every appwire reconnect (a dropped connection can miss broadcasts, so reconnect re-syncs rather than trusting the gap stayed empty) (`notifications.js:222-227, 288-289`)
-- [ ] `summary` stays `null` until that first baseline resolves; ALL edge-firing (OS + sound) is suppressed until a baseline exists — specifically so reloading the hub can never re-alert on attention that was ALREADY true before the page opened (`notifications.js:46-50, 217-221, 258, 261`)
-- [ ] Title/favicon counts (`applyCounts`) update UNCONDITIONALLY on every `evener/attention/changed` broadcast — even before a baseline exists, even while unfocused, even on a non-leader tab. Only the OS/sound edge-fire is gated on those conditions (`notifications.js:256-260`)
-- [ ] Edge-fire additionally requires the document be unfocused (checked AGAIN here, on top of the per-channel checks in §3.4/§3.5) and this tab be the elected leader (`notifications.js:261-263`)
-- [ ] Only entries that just transitioned INTO `needs_you`/`error` FROM something else fire at all — a level that was already alarming before the broadcast stays silent (`notifications.js:264-267`)
-- [ ] Within a qualifying transition, `loudScope` narrows further: `"asks"` (default) fires ONLY for an `askPending` transition or an `error`; `"all"` fires for every qualifying transition (`notifications.js:268-269`)
-- [ ] `os` and `sound` prefs are checked independently of each other even after the transition/loudScope gate passes — either, both, or neither can fire per event (`notifications.js:270-271`)
-- [ ] `renderer.js` dispatches a `evener hub:thread-status` DOM event on a live `THREAD_STATUS_CHANGED` frame for the currently-open thread; this module listens and re-fetches the baseline immediately, ahead of the next hub-side attention tick (`notifications.js:291-294`, out-of-scope caller)
+- [ ] Baseline comes from the AppWire `evener/navigation/read` `manifest` resource — the bounded navigation response carries `attentionSummary`, so this client never needs to fetch the full tree just for badge counts (`cmd/evener-hub/frontend/src/stores/navigation/store.ts:471-483`, `cmd/evener-hub/frontend/src/stores/navigation/store.ts:593-598`)
+- [ ] Baseline is (re-)fetched on init AND on every AppWire reconnect (a dropped connection can miss broadcasts, so reconnect re-syncs rather than trusting the gap stayed empty) (`cmd/evener-hub/frontend/src/notifications/index.ts:104-108,129-147`, `cmd/evener-hub/frontend/src/stores/navigation/store.ts:471-483`)
+- [ ] `summary` stays `null` until that first baseline resolves; ALL edge-firing (OS + sound) is suppressed until a baseline exists — specifically so reloading the hub can never re-alert on attention that was ALREADY true before the page opened (`cmd/evener-hub/frontend/src/notifications/index.ts:33,40-67`)
+- [ ] Title/favicon counts (`applyCounts`) update UNCONDITIONALLY on every `evener/attention/changed` broadcast — even before a baseline exists, even while unfocused, even on a non-leader tab. Only the OS/sound edge-fire is gated on those conditions (`cmd/evener-hub/frontend/src/notifications/index.ts:40-43,84-88`)
+- [ ] Edge-fire additionally requires the document be unfocused (checked AGAIN here, on top of the per-channel checks in §3.4/§3.5) and this tab be the elected leader (`cmd/evener-hub/frontend/src/notifications/index.ts:68-75`)
+- [ ] Only entries that just transitioned INTO `needs_you`/`error` FROM something else fire at all — a level that was already alarming before the broadcast stays silent (`cmd/evener-hub/frontend/src/notifications/attention.ts:48-58`)
+- [ ] Within a qualifying transition, `loudScope` narrows further: `"asks"` (default) fires ONLY for an `askPending` transition or an `error`; `"all"` fires for every qualifying transition (`cmd/evener-hub/frontend/src/notifications/attention.ts:48-58`)
+- [ ] `os` and `sound` prefs are checked independently of each other even after the transition/loudScope gate passes — either, both, or neither can fire per event (`cmd/evener-hub/frontend/src/notifications/index.ts:68-75`)
+- [ ] `evener/attention/changed` notifications update the navigation store's attention summary and changed entries, and the notifications engine consumes that store for counts and edge detection (`cmd/evener-hub/frontend/src/stores/navigation/store.ts:593-598`, `cmd/evener-hub/frontend/src/notifications/index.ts:110-114`)
 
 ### 3.7 Single-tab election
 

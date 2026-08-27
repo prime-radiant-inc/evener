@@ -26,7 +26,7 @@ import (
 //     project's sessions are split into Current / Recent / Archived tiers.
 //   - ArchivedProjects is the collapsed group at the bottom: projects that are
 //     manually archived or whose every session is archived.
-//   - Live is the flat live list consumed by the /api/tree JSON endpoint and
+//   - Live is the flat live list consumed by the navigation projection and
 //     rendered as the rail's "Live" section. Archived sessions are excluded:
 //     an archived-but-still-running session is reachable under its project's
 //     Archived tier instead, because archive is a clearing verb.
@@ -504,9 +504,9 @@ func nodeTitle(m schema.SessionMeta, kind string) string {
 // maxTitleRunes caps sidebar node titles. Titles fall back to the session's
 // full OriginalPrompt, which can run to tens of kilobytes; a one-line sidebar
 // row only ever shows the first couple hundred characters, and shipping the
-// full prompt for every archived session made /api/tree megabytes heavier
-// than it needed to be. The full prompt remains available from the session
-// detail endpoints.
+// full prompt for every archived session made the navigation payload
+// megabytes heavier than it needed to be. The full prompt remains available
+// from the session detail endpoints.
 const maxTitleRunes = 200
 
 // truncateTitle caps s at maxTitleRunes runes, appending an ellipsis when it

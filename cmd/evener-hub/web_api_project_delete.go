@@ -439,7 +439,7 @@ func (s *WebServer) cleanupProjectDeletion(
 	}
 	if len(result.Deleted) > 0 {
 		// Refresh the roster before the bump and broadcast below, so the
-		// UI's immediate follow-up GET /api/tree is built from a roster that
+		// UI's immediate follow-up navigation read is built from a roster that
 		// already dropped the deleted sessions (their rendezvous files were
 		// just unlinked) instead of showing ghost rows until the 5s tick.
 		if s.cfg.Roster != nil {

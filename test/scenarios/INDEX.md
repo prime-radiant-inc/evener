@@ -456,7 +456,7 @@ cards read is produced by the `job-watch-*` cards above.
 ## Sidebar (rebuilt)
 
 Live end-to-end coverage for the rebuilt client-rendered sidebar
-(`cmd/evener-hub/assets/sidebar.js` + `/api/tree`): needs-you, favorites/Pinned,
+(`cmd/evener-hub/frontend/src/shell/rail/Rail.tsx` + `evener/navigation/read`): needs-you, favorites/Pinned,
 top-level active-project session rows, and the row menu. Each card was
 verified against a real hub + a real model turn (`openai/gpt-5.4-mini`).
 
@@ -464,8 +464,9 @@ verified against a real hub + a real model turn (`openai/gpt-5.4-mini`).
   project's session rows survive a `doResync()` triggered by live activity in
   a different project; surfaced a real (non-blocking) bug where a collapsed
   project's `aria-expanded` renders the literal string `"undefined"`.
-- `sidebar-favorite-pinned-across-reload.md` — `POST /api/favorite` is
-  reflected in `/api/tree`'s `favorites[]` and renders as a Pinned row that
+- `sidebar-favorite-pinned-across-reload.md` — the persisted pin mutation is
+  reflected in the AppWire navigation manifest/pin-section resources and
+  renders as a Pinned row that
   survives a hard reload; confirms no `localStorage` favorite cache exists.
 - `sidebar-project-delete-full-cycle.md` — `POST /api/project/delete`'s full
   state machine: path-mismatch 400, live-session 409 (files intact),
@@ -477,7 +478,7 @@ verified against a real hub + a real model turn (`openai/gpt-5.4-mini`).
   (namer suppression via `name_source:"user"`); rename on an ended session
   edits the meta file directly with no rollback toast. Notes a possible
   follow-up bug: `/api/sessions/<id>`'s detail `title` field doesn't reflect
-  a live session's rename the way `/api/tree` and the meta file do.
+  a live session's rename the way the navigation projection and the meta file do.
 - `sidebar-archived-testruns-reachability.md` — the collapsed-by-default
   `Archived (N)` and `Test runs (N)` sections end to end: a project's full
   archive→unarchive round-trip via the row menu, and a
@@ -500,8 +501,8 @@ verified against a real hub + a real model turn (`openai/gpt-5.4-mini`).
 - `sidebar-project-order-lastactivity-feel.md` — a just-touched project
   surfaces at the top, promptly. The `LastActivity` comparator is
   already pinned by hubcore fuzz scenarios, so this card covers the
-  layer they cannot see: a completed turn propagating into `/api/tree`'s
-  memoized `Past.AllMetas()` input.
+  layer they cannot see: a completed turn propagating into the navigation
+  projection's memoized `Past.AllMetas()` input.
 
 ## Cost display & Display settings (Track C)
 

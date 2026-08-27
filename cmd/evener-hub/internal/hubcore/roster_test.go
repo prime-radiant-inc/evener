@@ -822,7 +822,7 @@ func fuzzScenarioRoster_OnStatusChangeNotFiredWhenStatusUnchanged(t *testing.T) 
 // wires the pieces together: a session's status transition (as detected by
 // Roster.Refresh) drives PastIndex.RefreshOne, which re-reads the session's
 // on-disk meta and, on a genuine content delta, bumps the shared
-// InputsVersion counter the /api/tree memo keys on. Before this fix, that
+// InputsVersion counter the navigation memo keys on. Before this fix, that
 // bump only happened on PastIndex's own 60s Rebuild ticker.
 func fuzzScenarioRoster_StatusChangeDrivesPastIndexRefreshAndVersionBump(t *testing.T) {
 	stateRoot := t.TempDir()
