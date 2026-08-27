@@ -2614,11 +2614,14 @@ test("a trailing slash token opens a completion menu merging session-scoped buil
   await user.type(textarea(), "hi /re");
 
   // "re" matches the built-in /reasoning-effort too (mergeSlashCommands puts
-  // built-ins first), not just the two catalog entries.
+  // built-ins first), not just the two catalog entries. Fuzzy matching also
+  // finds the command labels whose "r" and "e" are separated.
   expect(slashOptions().map((el) => el.textContent)).toEqual([
     expect.stringContaining("/reasoning-effort"),
     expect.stringContaining("/review"),
     expect.stringContaining("/release"),
+    expect.stringContaining("/project"),
+    expect.stringContaining("/drain-as-steer"),
   ]);
 });
 
@@ -2674,6 +2677,45 @@ test("slash completion keeps built-ins while hiding plugin commands for an expli
   expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/reasoning-effort")]);
 });
 
+test("a focused thread skill completes inline text and submits the unchanged prose", async () => {
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_slash_skill", {
+    evener: {
+      ref: "ref_slash_skill",
+      capabilities: FULL_CAPABILITIES,
+      queue: { revision: 0 },
+      diagnostics: { skills: [{ name: "simplify", description: "rewrite" }] },
+    },
+  });
+  fake.on("turn/start", (params) => ({
+    receipt: {
+      clientMutationId: params.clientMutationId,
+      disposition: "applied",
+      threadId: "thread_a",
+      projectionState: "reflected",
+    },
+    turn: { id: "turn_1", status: "inProgress", itemsView: "" },
+  }));
+
+  await user.type(textarea(), "Use /smp");
+  expect(slashOptions()).toHaveLength(1);
+  expect(slashOptions()[0]?.textContent).toContain("/simplify");
+
+  await user.click(slashOptions()[0]!);
+  expect(textarea().value).toBe("Use /simplify ");
+
+  await user.type(textarea(), "on this");
+  expect(textarea().value).toBe("Use /simplify on this");
+  await user.click(submitButton());
+
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "turn/start")).toBe(true));
+  const call = fake.calls.find((candidate) => candidate.method === "turn/start");
+  expect(call?.params).toMatchObject({
+    ref: "ref_slash_skill",
+    input: [{ type: "text", text: "Use /simplify on this" }],
+  });
+});
+
 test("a mid-word slash never opens the menu", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
   const user = userEvent.setup();
@@ -2699,17 +2741,21 @@ test("ArrowDown/ArrowUp move the highlighted option and wrap at both ends", asyn
   const user = userEvent.setup();
   await mountComposer("ref_slash7");
   await user.type(textarea(), "hi /re");
-  // Three matches: the built-in /reasoning-effort, then /review, /release.
+  // Five matches: three contiguous beginnings, then two fuzzy matches.
 
   expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
   await user.keyboard("{ArrowDown}");
   expect(slashOptions()[1]?.getAttribute("aria-selected")).toBe("true");
   await user.keyboard("{ArrowDown}");
   expect(slashOptions()[2]?.getAttribute("aria-selected")).toBe("true");
+  await user.keyboard("{ArrowDown}");
+  expect(slashOptions()[3]?.getAttribute("aria-selected")).toBe("true");
+  await user.keyboard("{ArrowDown}");
+  expect(slashOptions()[4]?.getAttribute("aria-selected")).toBe("true");
   await user.keyboard("{ArrowDown}"); // wraps past the last option back to the first
   expect(slashOptions()[0]?.getAttribute("aria-selected")).toBe("true");
   await user.keyboard("{ArrowUp}"); // wraps the other way, back to the last
-  expect(slashOptions()[2]?.getAttribute("aria-selected")).toBe("true");
+  expect(slashOptions()[4]?.getAttribute("aria-selected")).toBe("true");
 });
 
 test("Tab commits the highlighted option: splices /name<space> at the token start, caret after the space", async () => {

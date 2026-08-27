@@ -216,9 +216,9 @@ export function Composer({ ref }: ComposerProps) {
     [activePluginNames, slashCatalog],
   );
   const sessionBuiltins = sessionBuiltinCommands({ sessionRef: ref, onPage: "session" });
-  const slashMenuCatalog = mergeSlashCommands(sessionBuiltins, visibleSlashCatalog);
+  const slashMenuCatalog = mergeSlashCommands(sessionBuiltins, visibleSlashCatalog, model?.skills ?? []);
   // The menu is only ever open when a token matched AND the merged catalog
-  // has at least one startsWith hit for it - a matched-but-empty token (e.g.
+  // has at least one fuzzy label hit for it - a matched-but-empty token (e.g.
   // "/zzz" against a real catalog) shows no menu at all, same as no token
   // matching.
   const slashItems = slashToken ? filterSlashMenuItems(slashMenuCatalog, slashToken.query) : [];
