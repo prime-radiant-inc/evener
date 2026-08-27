@@ -28,16 +28,49 @@ func useSkillCall(id, skillName string) llm.ToolCallData {
 
 func TestBuildPromptDataHasUseSkillTracksCallableDefinitions(t *testing.T) {
 	t.Parallel()
-	s := newTestSession(t)
-	s.cachedToolDefs = []llm.ToolDefinition{{Name: "read_file"}}
-	if s.buildPromptData(s.currentEnv()).HasUseSkill {
-		t.Fatal("unavailable use_skill was advertised")
+	for _, tc := range []struct {
+		name   string
+		keep   []string
+		legacy bool
+		want   bool
+	}{
+		{name: "legacy uninitialized cache", legacy: true},
+		{name: "empty final cache"},
+		{name: "restricted final cache", keep: []string{"read_file"}},
+		{name: "callable final cache", keep: []string{"use_skill"}, want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			s := newTestSession(t)
+			if tc.legacy {
+				// A pre-cache/legacy session has no final definitions. This is the
+				// only direct assignment here; the other cases exercise the real
+				// registry restriction and rebuildToolDefsCache lifecycle below.
+				s.cachedToolDefs = nil
+			} else {
+				rebuildPromptToolCacheForTest(s, tc.keep...)
+			}
+			if got := s.buildPromptData(s.currentEnv()).HasUseSkill; got != tc.want {
+				t.Fatalf("HasUseSkill = %v, want %v", got, tc.want)
+			}
+		})
 	}
+}
 
-	s.cachedToolDefs = []llm.ToolDefinition{{Name: "read_file"}, {Name: "use_skill"}}
-	if !s.buildPromptData(s.currentEnv()).HasUseSkill {
-		t.Fatal("callable use_skill was not advertised")
+// rebuildPromptToolCacheForTest models the production final-tool restriction
+// boundary: restrict the initialized registry, then rebuild the cached provider
+// definitions that are sent to the model. HasUseSkill must follow this cache,
+// not the profile's larger initial definition set.
+func rebuildPromptToolCacheForTest(s *Session, keep ...string) {
+	allowed := make(map[string]bool, len(keep))
+	for _, name := range keep {
+		allowed[name] = true
 	}
+	for name := range s.reg.RegisteredNames() {
+		if !allowed[name] {
+			s.reg.Remove(name)
+		}
+	}
+	s.rebuildToolDefsCache()
 }
 
 // use_skill tests exercise provider profiles that expose the use_skill tool.
@@ -105,6 +138,8 @@ func TestUseSkill_InlineMentionPreservesUserInput(t *testing.T) {
 	markGitRoot(t, root)
 	writeSkillMD(t, root, "greet", "---\nname: greet\ndescription: \"Greeting skill\"\n---\nGreet people warmly.\n")
 
+	input := "Please use /greet for Jesse"
+	skillBody := "Greet people warmly."
 	c := llm.NewClient()
 	skillCall := useSkillCall("s1", "greet")
 	comm := communicateCall("c1", "done")
@@ -131,7 +166,6 @@ func TestUseSkill_InlineMentionPreservesUserInput(t *testing.T) {
 		}
 	}()
 
-	input := "Please use /greet for Jesse"
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second) // TRIPWIRE: scripted in-process adapter, no real I/O; only fires on a genuine hang.
 	defer cancel()
 	if _, err := sess.ProcessInput(ctx, input, nil); err != nil {
@@ -161,6 +195,19 @@ func TestUseSkill_InlineMentionPreservesUserInput(t *testing.T) {
 	if len(requests) < 2 {
 		t.Fatalf("expected tool follow-up request, got %d requests", len(requests))
 	}
+	var requestUserTexts []string
+	for _, msg := range requests[0].Messages {
+		if msg.Role == llm.RoleUser {
+			requestUserTexts = append(requestUserTexts, msg.Text())
+		}
+	}
+	if len(requestUserTexts) == 0 || requestUserTexts[len(requestUserTexts)-1] != input {
+		t.Fatalf("provider user messages = %q, want final message exactly %q", requestUserTexts, input)
+	}
+	if strings.Contains(requestUserTexts[len(requestUserTexts)-1], skillBody) {
+		t.Fatal("provider request expanded the inline skill body before the model turn")
+	}
+
 	foundSkillBody := false
 	for _, msg := range requests[1].Messages {
 		for _, part := range msg.Content {
