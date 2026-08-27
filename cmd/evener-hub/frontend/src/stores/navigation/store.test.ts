@@ -1,5 +1,7 @@
 import { afterEach, expect, test, vi } from "vitest";
+import { WireError } from "../../protocol/errors";
 import { FakeClient } from "../../protocol/testing/fakeClient";
+import type { NavigationReadParams, NavigationReadResponse } from "../../protocol/types.gen";
 import { EXPANSION_STORAGE_KEY } from "../../shell/rail/railExpansion";
 import {
   findSessionNode,
@@ -16,7 +18,7 @@ import {
 } from "./selectors";
 import { initNavigation, navigationStore, resetNavigationStoreForTests } from "./store";
 import { capability, manifest } from "./testing";
-import { keyID } from "./types";
+import { isNavigationUnavailable, keyID } from "./types";
 
 const generation = "generation_test";
 const completeSession = (value: Record<string, unknown>): Record<string, unknown> => ({
@@ -63,16 +65,19 @@ const completeBody = (data: unknown, revision: number, gen: string): unknown => 
   }
   return body;
 };
-const json = (data: unknown, status = 200, etag = '"one"', revision = 1, gen = generation) =>
-  new Response(status === 304 ? null : JSON.stringify(status === 200 ? completeBody(data, revision, gen) : data), {
-    status,
-    headers: {
-      "content-type": "application/json",
-      "X-Evener-Navigation-Generation": gen,
-      "X-Evener-Navigation-Revision": String(revision),
-      etag,
-    },
-  });
+const wire = (
+  data: unknown,
+  status: "ok" | "not_modified" = "ok",
+  etag = '"one"',
+  revision = 1,
+  gen = generation,
+): NavigationReadResponse => ({
+  status,
+  generationId: gen,
+  revision,
+  etag,
+  ...(status === "ok" ? { data: completeBody(data, revision, gen) } : {}),
+});
 const flush = async () => {
   for (let i = 0; i < 64; i++) await Promise.resolve();
 };
@@ -86,13 +91,34 @@ const deferred = <T>() => {
   return { promise, resolve, reject };
 };
 const emptyManifest = (overrides = {}) => manifest(overrides);
-const init = async (fetcher: (url: string, init?: RequestInit) => Promise<Response> | Response) => {
-  vi.stubGlobal("fetch", vi.fn(fetcher));
+type NavigationScript = (params: NavigationReadParams) => NavigationReadResponse | Promise<NavigationReadResponse>;
+const init = async (script: NavigationScript) => {
   const client = new FakeClient("ready");
+  client.on("evener/navigation/read", script);
   initNavigation(client, capability());
   await flush();
   return client;
 };
+
+test("navigation reads use the typed AppWire method and structured resource params", async () => {
+  const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params) => {
+    expect(params).toEqual({ resource: "manifest" });
+    return wire(emptyManifest());
+  });
+  vi.stubGlobal(
+    "fetch",
+    vi.fn(() => {
+      throw new Error("navigation must not use fetch");
+    }),
+  );
+
+  initNavigation(client, capability());
+  await flush();
+
+  expect(client.calls).toEqual([{ method: "evener/navigation/read", params: { resource: "manifest" } }]);
+  expect(navigationStore.getState().manifest?.data).toMatchObject(emptyManifest());
+});
 
 afterEach(() => {
   resetNavigationStoreForTests();
@@ -104,40 +130,36 @@ test.each([
   ["v1", capability(), "v1"],
   ["unsupported", capability(generation, 2), "error"],
 ] as const)("capability %s selects mode", async (_name, cap, mode) => {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(() => json(emptyManifest())),
-  );
   initNavigation(new FakeClient("ready"), cap);
   await flush();
   expect(navigationStore.getState().mode).toBe(mode);
 });
 
-test("manifest is fetched first, count-zero resources are skipped, and defaults are exact", async () => {
-  const calls: string[] = [];
+test("manifest is read first, count-zero resources are skipped, and defaults are exact", async () => {
+  const calls: NavigationReadParams[] = [];
   const m = emptyManifest({
     sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
     catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
   });
-  await init((url) => {
-    calls.push(url);
-    if (url === "/api/navigation") return json(m);
-    if (url.includes("/sections/live")) return json({ sessions: [], remaining: 0, truncated: false });
-    return json({ projects: [], remaining: 0 });
+  await init((params) => {
+    calls.push(params);
+    if (params.resource === "manifest") return wire(m);
+    if (params.resource === "section") return wire({ sessions: [], remaining: 0, truncated: false });
+    return wire({ projects: [], remaining: 0 });
   });
-  expect(calls[0]).toBe("/api/navigation");
-  expect(calls).toContain("/api/navigation/sections/live?offset=0&limit=50");
-  expect(calls).toContain("/api/navigation/catalogs/projects?offset=0&limit=100");
-  expect(calls.some((x) => x.includes("needs-you") || x.includes("archived-projects") || x.includes("test-runs"))).toBe(
-    false,
-  );
+  expect(calls[0]).toEqual({ resource: "manifest" });
+  expect(calls).toContainEqual({ resource: "section", section: "live", offset: 0, limit: 50 });
+  expect(calls).toContainEqual({ resource: "catalog", catalog: "projects", offset: 0, limit: 100 });
+  expect(
+    calls.some((x) => x.section === "needs_you" || x.catalog === "archived_projects" || x.catalog === "test_runs"),
+  ).toBe(false);
 });
 
 test("validated manifest attention seeds the v1 summary before notifications", async () => {
-  await init((url) =>
-    url === "/api/navigation"
-      ? json(emptyManifest({ attentionSummary: { needsYou: 2, error: 1, working: 3 } }))
-      : json({ sessions: [], remaining: 0 }),
+  await init((params) =>
+    params.resource === "manifest"
+      ? wire(emptyManifest({ attentionSummary: { needsYou: 2, error: 1, working: 3 } }))
+      : wire({ sessions: [], remaining: 0 }),
   );
   expect(navigationStore.getState().attention.summary).toEqual({ needsYou: 2, error: 1, working: 3 });
 });
@@ -283,26 +305,24 @@ test("needs-you cursor uses limit as the same-offset canonical tie-break", () =>
   expect(selectNextSectionOffset("needs_you", state)).toBe(30);
 });
 
-test("routes encode identifiers, enforce limits, credentials and conditional ETag", async () => {
-  const calls: Array<{ url: string; init?: RequestInit }> = [];
-  await init((url, request) => {
-    calls.push({ url, init: request });
-    if (url === "/api/navigation") return json(emptyManifest());
-    if (url.includes("/sections/")) return json({ sessions: [], remaining: 0, truncated: false });
-    if (url.includes("pin-sections?") && !url.includes("a%2Fb")) return json({ pin_sections: [], remaining: 0 });
-    if (url.includes("pin-sections/a%2Fb")) return json({ sessions: [], remaining: 0, truncated: false });
-    if (url.includes("/catalogs/")) return json({ projects: [], remaining: 0 });
-    if (url.includes("?tier="))
-      return json({ key: "p/a ?", tier: "recent", offset: 6, sessions: [], remaining: 0, truncated: false });
-    if (url.includes("/projects/"))
-      return json({
+test("resource keys map to exact AppWire params and preserve decoded identifiers", async () => {
+  const client = await init((params) => {
+    if (params.resource === "manifest") return wire(emptyManifest());
+    if (params.resource === "section") return wire({ sessions: [], remaining: 0, truncated: false });
+    if (params.resource === "pin_catalog") return wire({ pin_sections: [], remaining: 0 });
+    if (params.resource === "pin_section") return wire({ sessions: [], remaining: 0, truncated: false });
+    if (params.resource === "catalog") return wire({ projects: [], remaining: 0 });
+    if (params.resource === "project_page")
+      return wire({ key: "p/a ?", tier: "recent", offset: 6, sessions: [], remaining: 0, truncated: false });
+    if (params.resource === "project")
+      return wire({
         key: "p/a ?",
         current: { sessions: [], remaining: 0 },
         recent: { sessions: [], remaining: 0 },
         archived: { sessions: [], remaining: 0 },
         truncated: false,
       });
-    return json({ ref: "r/a ?", top_level_ref: "r/a ?", top_level: true });
+    return wire({ ref: "r/a ?", top_level_ref: "r/a ?", top_level: true });
   });
   const s = navigationStore.getState();
   await s.loadSection("needs_you", 3, 7);
@@ -312,47 +332,53 @@ test("routes encode identifiers, enforce limits, credentials and conditional ETa
   await s.loadProject("p/a ?");
   await s.loadProjectPage("p/a ?", "recent", 6, 11);
   await s.lookupLocation("r/a ?");
-  expect(calls.map((x) => x.url)).toEqual([
-    "/api/navigation",
-    "/api/navigation/sections/needs-you?offset=3&limit=7",
-    "/api/navigation/pin-sections?offset=4&limit=8",
-    "/api/navigation/pin-sections/a%2Fb%20%3F?offset=2&limit=9",
-    "/api/navigation/catalogs/archived-projects?offset=5&limit=10",
-    "/api/navigation/projects/p%2Fa%20%3F",
-    "/api/navigation/projects/p%2Fa%20%3F?tier=recent&offset=6&limit=11",
-    "/api/navigation/sessions/r%2Fa%20%3F",
+  expect(client.calls.map((call) => call.params)).toEqual([
+    { resource: "manifest" },
+    { resource: "section", section: "needs_you", offset: 3, limit: 7 },
+    { resource: "pin_catalog", offset: 4, limit: 8 },
+    { resource: "pin_section", sectionId: "a/b ?", offset: 2, limit: 9 },
+    { resource: "catalog", catalog: "archived_projects", offset: 5, limit: 10 },
+    { resource: "project", projectKey: "p/a ?" },
+    { resource: "project_page", projectKey: "p/a ?", tier: "recent", offset: 6, limit: 11 },
+    { resource: "location", ref: "r/a ?" },
   ]);
-  expect(calls.at(1)?.init).toMatchObject({ credentials: "same-origin" });
-  expect(calls.at(1)?.init?.headers).toEqual({});
+  const callCount = client.calls.length;
   await s.loadSection("needs_you", 3, 7);
-  expect(calls.at(-1)?.init?.headers).toEqual({});
+  expect(client.calls).toHaveLength(callCount);
   s.setExpanded("p", false);
 });
 
-test("HTTP status, content type, server headers and 304 are validated", async () => {
+test("AppWire envelope status and conditional reads preserve cached navigation", async () => {
   let manifestCalls = 0;
-  const fetcher = vi.fn((url: string, _request?: RequestInit) => {
-    if (url === "/api/navigation") {
+  const client = await init((params) => {
+    if (params.resource === "manifest") {
       manifestCalls++;
-      return json(emptyManifest(), 200, '"a"', 3);
+      return wire(emptyManifest(), "ok", '"a"', 3);
     }
-    return json({ sessions: [], remaining: 0 }, 200, '"section"', 3);
+    return wire({ sessions: [], remaining: 0 }, "ok", '"section"', 3);
   });
-  const client = await init(fetcher);
   expect(navigationStore.getState().manifest?.etag).toBe('"a"');
   await navigationStore.getState().loadSection("live");
-  fetcher.mockImplementation((url: string) =>
-    url === "/api/navigation/sections/live?offset=0&limit=50"
-      ? json(undefined, 304, '"section"', 4)
-      : json(emptyManifest(), 200, '"a"', 3),
+  client.on("evener/navigation/read", (params) =>
+    params.resource === "section"
+      ? wire(undefined, "not_modified", '"section"', 4)
+      : wire(emptyManifest(), "ok", '"a"', 3),
   );
   client.emitNotification({
     method: "evener/navigation/invalidated",
     params: { generationId: generation, sequence: 1, targets: [{ kind: "section", section: "live", revision: 4 }] },
   } as never);
   await flush();
-  const sectionCall = fetcher.mock.calls.filter(([url]) => url.includes("sections/live")).at(-1);
-  expect(sectionCall?.[1]).toMatchObject({ credentials: "same-origin", headers: { "If-None-Match": '"section"' } });
+  const sectionCall = client.calls
+    .filter(({ params }) => (params as NavigationReadParams).resource === "section")
+    .at(-1);
+  expect(sectionCall?.params).toEqual({
+    resource: "section",
+    section: "live",
+    offset: 0,
+    limit: 50,
+    etag: '"section"',
+  });
   expect(
     [...navigationStore.getState().resources.values()].find(
       (resource) => resource.key.kind === "section" && resource.key.section === "live",
@@ -361,78 +387,66 @@ test("HTTP status, content type, server headers and 304 are validated", async ()
   expect(manifestCalls).toBeGreaterThan(0);
 });
 
-test("non-200, non-JSON, and missing server headers become resource errors", async () => {
+test("invalid AppWire envelopes and resource bodies become resource errors", async () => {
   let mode = "status";
-  await init((url) => {
-    if (url === "/api/navigation") return json(emptyManifest());
-    if (mode === "status") return json({}, 206);
-    if (mode === "type")
-      return new Response("{}", { status: 200, headers: { "content-type": "text/plain", etag: '"x"' } });
-    return new Response("{}", { status: 200, headers: { "content-type": "application/json" } });
+  const client = await init((params) => {
+    if (params.resource === "manifest") return wire(emptyManifest());
+    const response = wire({ sessions: [], remaining: 0, truncated: false }, "ok", '"x"');
+    if (mode === "status") return { ...response, status: "partial" } as NavigationReadResponse;
+    if (mode === "generation") return { ...response, generationId: "" };
+    if (mode === "etag") return { ...response, etag: "" };
+    if (mode === "not_modified") return { ...response, status: "not_modified" };
+    return wire({});
   });
   const status = await navigationStore.getState().loadSection("live");
   expect(status.error).toBeTruthy();
-  mode = "type";
+  mode = "generation";
   const type = await navigationStore.getState().loadSection("needs_you");
   expect(type.error).toBeTruthy();
   mode = "etag";
   const etag = await navigationStore.getState().loadCatalog("projects");
   expect(etag.error).toBeTruthy();
-
-  const missingRevision = new Response(
-    JSON.stringify(completeBody({ sessions: [], remaining: 0, truncated: false }, 0, generation)),
-    {
-      status: 200,
-      headers: {
-        "content-type": "application/json",
-        "X-Evener-Navigation-Generation": generation,
-        etag: '"missing-revision"',
-      },
-    },
-  );
-  vi.mocked(fetch).mockResolvedValueOnce(missingRevision);
-  expect((await navigationStore.getState().loadPinSection("missing-revision")).error).toBeTruthy();
+  mode = "not_modified";
+  expect((await navigationStore.getState().loadPinSection("invalid-envelope")).error).toBeTruthy();
+  mode = "body";
+  expect((await navigationStore.getState().loadPinSection("invalid-body")).error).toBeTruthy();
+  expect(client.calls.every(({ method }) => method === "evener/navigation/read")).toBe(true);
 });
 
 test("stale client completion cannot overwrite newer client", async () => {
-  const old = deferred<Response>();
-  vi.stubGlobal(
-    "fetch",
-    vi.fn((url: string) => (url === "/api/navigation" ? old.promise : json(emptyManifest()))),
-  );
+  const old = deferred<NavigationReadResponse>();
   const first = new FakeClient("ready");
+  first.on("evener/navigation/read", () => old.promise);
   initNavigation(first, capability("old"));
   await flush();
   const second = new FakeClient("ready");
+  second.on("evener/navigation/read", () => wire(emptyManifest({}), "ok", '"new"', 1, "new"));
   initNavigation(second, capability("new"));
   await flush();
-  old.resolve(json(emptyManifest({}), 200, '"old"', 1, "old"));
+  old.resolve(wire(emptyManifest(), "ok", '"old"', 1, "old"));
   await flush();
   expect(navigationStore.getState().clientGenerationID).toBe("new");
   expect(navigationStore.getState().manifest?.generationID).not.toBe("old");
 });
 
 test("same-generation reconnect during manifest load continues booting resources", async () => {
-  const firstManifest = deferred<Response>();
-  const calls: string[] = [];
+  const firstManifest = deferred<NavigationReadResponse>();
+  const calls: NavigationReadParams[] = [];
   let manifestCalls = 0;
   const m = emptyManifest({
     sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
     catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
   });
-  vi.stubGlobal(
-    "fetch",
-    vi.fn((url: string) => {
-      calls.push(url);
-      if (url === "/api/navigation") {
-        manifestCalls++;
-        return manifestCalls === 1 ? firstManifest.promise : json(m);
-      }
-      if (url.includes("/sections/live")) return json({ sessions: [], remaining: 0, truncated: false });
-      return json({ projects: [], remaining: 0 });
-    }),
-  );
   const client = new FakeClient("ready");
+  client.on("evener/navigation/read", (params) => {
+    calls.push(params);
+    if (params.resource === "manifest") {
+      manifestCalls++;
+      return manifestCalls === 1 ? firstManifest.promise : wire(m);
+    }
+    if (params.resource === "section") return wire({ sessions: [], remaining: 0, truncated: false });
+    return wire({ projects: [], remaining: 0 });
+  });
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
     protocolVersion: "evener-appwire-v3",
@@ -446,39 +460,34 @@ test("same-generation reconnect during manifest load continues booting resources
   client.emitStateChange("reconnecting");
   client.emitReady();
   await flush();
-  firstManifest.resolve(json(m));
+  firstManifest.resolve(wire(m));
   await flush();
 
-  expect(calls).toContain("/api/navigation/sections/live?offset=0&limit=50");
-  expect(calls).toContain("/api/navigation/catalogs/projects?offset=0&limit=100");
+  expect(calls).toContainEqual({ resource: "section", section: "live", offset: 0, limit: 50 });
+  expect(calls).toContainEqual({ resource: "catalog", catalog: "projects", offset: 0, limit: 100 });
 });
 
 test("a stale malformed response cannot poison or force the active client", async () => {
-  const old = deferred<Response>();
-  let activeManifestCalls = 0;
-  vi.stubGlobal(
-    "fetch",
-    vi.fn((_url: string) => {
-      if (activeManifestCalls++ === 0) return old.promise;
-      return json(emptyManifest({ generation_id: "new" }), 200, '"new"', 1, "new");
-    }),
-  );
-  initNavigation(new FakeClient("ready"), capability("old"));
+  const old = deferred<NavigationReadResponse>();
+  const oldClient = new FakeClient("ready");
+  oldClient.on("evener/navigation/read", () => old.promise);
+  initNavigation(oldClient, capability("old"));
   await flush();
-  initNavigation(new FakeClient("ready"), capability("new"));
+  const newClient = new FakeClient("ready");
+  newClient.on("evener/navigation/read", () => wire(emptyManifest(), "ok", '"new"', 1, "new"));
+  initNavigation(newClient, capability("new"));
   await flush();
-  expect(activeManifestCalls).toBe(2);
 
-  old.resolve(json({}, 200, '"old"', 1, "old"));
+  old.resolve(wire({}, "ok", '"old"', 1, "old"));
   await flush();
 
   expect(navigationStore.getState().protocolError).toBeNull();
-  expect(activeManifestCalls).toBe(2);
+  expect(newClient.calls).toHaveLength(1);
   expect(navigationStore.getState().clientGenerationID).toBe("new");
 });
 
 test("expanded and default projects hydrate complete tiers and post-action expansion", async () => {
-  const calls: string[] = [];
+  const calls: NavigationReadParams[] = [];
   const project = (key: string) => ({
     key,
     default_expanded: key === "default",
@@ -489,33 +498,36 @@ test("expanded and default projects hydrate complete tiers and post-action expan
   const m = emptyManifest({
     catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
   });
-  await init((url) => {
-    calls.push(url);
-    if (url === "/api/navigation") return json(m);
-    if (url.includes("catalogs/projects"))
-      return json({ projects: [project("default"), project("closed")], remaining: 0 });
-    if (url.includes("/projects/default?") && url.includes("tier=")) return json({ sessions: [], remaining: 0 });
-    if (url.includes("/projects/default")) return json(project("default"));
-    return json({ sessions: [], remaining: 0 });
+  await init((params) => {
+    calls.push(params);
+    if (params.resource === "manifest") return wire(m);
+    if (params.resource === "catalog" && params.catalog === "projects")
+      return wire({ projects: [project("default"), project("closed")], remaining: 0 });
+    if (params.resource === "project_page" && params.projectKey === "default")
+      return wire({ sessions: [], remaining: 0, truncated: false });
+    if (params.resource === "project" && params.projectKey === "default") return wire(project("default"));
+    return wire({ sessions: [], remaining: 0 });
   });
-  expect(calls.some((x) => x.includes("projects/default?tier="))).toBe(false);
-  expect(calls.some((x) => x.includes("projects/closed"))).toBe(false);
+  expect(calls.some((params) => params.resource === "project_page")).toBe(false);
+  expect(calls.some((params) => params.resource === "project" && params.projectKey === "closed")).toBe(false);
   navigationStore.getState().setExpanded("closed", true);
   await flush();
-  expect(calls.some((x) => x.includes("projects/closed"))).toBe(true);
-  expect(calls.some((x) => x.includes("projects/closed?tier="))).toBe(false);
+  expect(calls.some((params) => params.resource === "project" && params.projectKey === "closed")).toBe(true);
+  expect(calls.some((params) => params.resource === "project_page" && params.projectKey === "closed")).toBe(false);
   await navigationStore.getState().loadProjectPage("default", "current", 0, 50);
-  expect(calls.some((x) => x.includes("projects/default?tier=current"))).toBe(true);
+  expect(calls).toContainEqual({
+    resource: "project_page",
+    projectKey: "default",
+    tier: "current",
+    offset: 0,
+    limit: 50,
+  });
 });
 
 test("notification fencing rejects duplicate, wrong generation, and gaps while locations stay retained", async () => {
   const client = new FakeClient("ready");
-  await init(() => json(emptyManifest()));
-  // init() owns a different client; replace with the client under test.
-  resetNavigationStoreForTests();
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(() => json({ session: { ref: "x", children: [] } })),
+  client.on("evener/navigation/read", (params) =>
+    params.resource === "manifest" ? wire(emptyManifest()) : wire({ session: { ref: "x", children: [] } }),
   );
   initNavigation(client, capability());
   await flush();
@@ -537,17 +549,16 @@ test("notification fencing rejects duplicate, wrong generation, and gaps while l
 test("terminal location failures are retained without an automatic retry or project expansion", async () => {
   const client = new FakeClient("ready");
   let locationCalls = 0;
-  const fetchMock = vi.fn((url: string) => {
-    if (url === "/api/navigation") return json(emptyManifest());
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") return wire(emptyManifest());
     locationCalls++;
-    return json({}, 404);
+    throw new WireError("location unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
   });
-  vi.stubGlobal("fetch", fetchMock);
   initNavigation(client, capability());
   await flush();
   const first = await navigationStore.getState().lookupLocation("missing");
   await flush();
-  expect(first.error).toMatchObject({ status: 404 });
+  expect(first.error).toMatchObject({ code: -32014 });
   expect(locationCalls).toBe(1);
   expect([...navigationStore.getState().resources.values()].some((resource) => resource.key.kind === "project")).toBe(
     false,
@@ -556,6 +567,13 @@ test("terminal location failures are retained without an automatic retry or proj
   expect(locationCalls).toBe(1);
   await navigationStore.getState().lookupLocation("missing");
   expect(locationCalls).toBe(2);
+});
+
+test("navigation unavailable uses the AppWire action-unavailable discriminator", () => {
+  expect(
+    isNavigationUnavailable(new WireError("location unavailable", -32014, { evenerErrorInfo: "actionUnavailable" })),
+  ).toBe(true);
+  expect(isNavigationUnavailable(new WireError("launch failed", -32014, { evenerErrorInfo: "hubLaunch" }))).toBe(false);
 });
 
 test("same-generation reconnect and sequence gaps revalidate demanded locations", async () => {
@@ -568,14 +586,11 @@ test("same-generation reconnect and sequence gaps revalidate demanded locations"
     navigation: capability(),
   }));
   let locationCalls = 0;
-  vi.stubGlobal(
-    "fetch",
-    vi.fn((url: string) => {
-      if (url === "/api/navigation") return json(emptyManifest());
-      locationCalls++;
-      return json({ ref: "x", top_level_ref: "x", top_level: true });
-    }),
-  );
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource === "manifest") return wire(emptyManifest());
+    locationCalls++;
+    return wire({ ref: "x", top_level_ref: "x", top_level: true });
+  });
   initNavigation(client);
   await flush();
   await navigationStore.getState().lookupLocation("x");
@@ -595,16 +610,19 @@ test("same-generation reconnect and sequence gaps revalidate demanded locations"
 });
 
 test("selectors expose every loaded global/pin page, location, project/page resources and expansion", async () => {
-  await init((url) => {
-    if (url === "/api/navigation") return json(emptyManifest());
-    if (url.includes("sections/live"))
-      return json({ sessions: [{ ref: url.includes("offset=50") ? "s2" : "s", children: [] }], remaining: 0 });
-    if (url.includes("pin-sections?"))
-      return json({ pin_sections: [{ id: "pin", name: "Pinned", count: 2 }], remaining: 0 });
-    if (url.includes("pin-sections/pin"))
-      return json({ sessions: [{ ref: url.includes("offset=50") ? "p2" : "p1", children: [] }], remaining: 0 });
-    if (url.includes("sessions/loc")) return json({ session: { ref: "loc", children: [] } });
-    return json({ sessions: [], remaining: 0 });
+  await init((params) => {
+    if (params.resource === "manifest") return wire(emptyManifest());
+    if (params.resource === "section")
+      return wire({
+        sessions: [{ ref: params.offset === 50 ? "s2" : "s", children: [] }],
+        remaining: 0,
+      });
+    if (params.resource === "pin_catalog")
+      return wire({ pin_sections: [{ id: "pin", name: "Pinned", count: 2 }], remaining: 0 });
+    if (params.resource === "pin_section")
+      return wire({ sessions: [{ ref: params.offset === 50 ? "p2" : "p1", children: [] }], remaining: 0 });
+    if (params.resource === "location") return wire({ session: { ref: "loc", children: [] } });
+    return wire({ sessions: [], remaining: 0 });
   });
   await navigationStore.getState().loadSection("live");
   await navigationStore.getState().loadSection("live", 50, 50);
@@ -637,8 +655,8 @@ test("boot keeps one global four-request budget through first resources, pin sec
     sections: { live: { count: 1 }, needs_you: { count: 1 }, pin_sections: { count: 1 } },
     catalogs: { projects: { count: 1 }, archived_projects: { count: 1 }, test_runs: { count: 1 } },
   });
-  const calls: string[] = [];
-  const pending: Array<{ url: string; resolve: (value: Response) => void }> = [];
+  const calls: NavigationReadParams[] = [];
+  const pending: Array<{ params: NavigationReadParams; resolve: (value: NavigationReadResponse) => void }> = [];
   let active = 0;
   let maximum = 0;
   const release = () => {
@@ -646,31 +664,31 @@ test("boot keeps one global four-request budget through first resources, pin sec
     for (const request of batch) {
       active--;
       request.resolve(
-        request.url.includes("catalogs/projects")
-          ? json({ projects, remaining: 0 })
-          : request.url.includes("catalogs/")
-            ? json({ projects: [], remaining: 0 })
-            : request.url.includes("pin-sections?")
-              ? json({ pin_sections: pinSections, remaining: 0 })
-              : request.url.includes("/projects/") && !request.url.includes("?tier=")
-                ? json({
-                    key: request.url.split("/projects/")[1],
+        request.params.resource === "catalog" && request.params.catalog === "projects"
+          ? wire({ projects, remaining: 0 })
+          : request.params.resource === "catalog"
+            ? wire({ projects: [], remaining: 0 })
+            : request.params.resource === "pin_catalog"
+              ? wire({ pin_sections: pinSections, remaining: 0 })
+              : request.params.resource === "project"
+                ? wire({
+                    key: request.params.projectKey,
                     current: { sessions: [], remaining: 1 },
                     recent: { sessions: [], remaining: 1 },
                     archived: { sessions: [], remaining: 1 },
                   })
-                : json({ sessions: [], remaining: 0 }),
+                : wire({ sessions: [], remaining: 0 }),
       );
     }
   };
-  await init((url) => {
-    calls.push(url);
-    if (url === "/api/navigation") return json(m);
-    let resolve!: (value: Response) => void;
-    const promise = new Promise<Response>((r) => {
+  await init((params) => {
+    calls.push(params);
+    if (params.resource === "manifest") return wire(m);
+    let resolve!: (value: NavigationReadResponse) => void;
+    const promise = new Promise<NavigationReadResponse>((r) => {
       resolve = r;
     });
-    pending.push({ url, resolve });
+    pending.push({ params, resolve });
     active++;
     maximum = Math.max(maximum, active);
     if (pending.length === 4) release();
@@ -680,12 +698,17 @@ test("boot keeps one global four-request budget through first resources, pin sec
   for (let i = 0; i < 128; i++) {
     if (pending.length > 0) release();
     await flush();
-    if (pending.length === 0 && active === 0 && calls.some((url) => url.endsWith("projects/p4"))) break;
+    if (
+      pending.length === 0 &&
+      active === 0 &&
+      calls.some((params) => params.resource === "project" && params.projectKey === "p4")
+    )
+      break;
   }
   expect(maximum).toBeLessThanOrEqual(4);
-  expect(calls.filter((url) => url.includes("pin-sections/pin-")).length).toBe(6);
-  expect(calls.filter((url) => url.includes("/projects/p") && !url.includes("?tier=")).length).toBe(4);
-  expect(calls.filter((url) => url.includes("?tier=")).length).toBe(0);
+  expect(calls.filter((params) => params.resource === "pin_section").length).toBe(6);
+  expect(calls.filter((params) => params.resource === "project").length).toBe(4);
+  expect(calls.filter((params) => params.resource === "project_page").length).toBe(0);
   expect(active).toBe(0);
 });
 
@@ -694,18 +717,18 @@ test("zero-count pin descriptors and collapsed projects do not issue requests", 
     sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 1 } },
     catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
   });
-  const calls: string[] = [];
-  await init((url) => {
-    calls.push(url);
-    if (url === "/api/navigation") return json(m);
-    if (url.includes("pin-sections?")) return json({ pin_sections: [{ id: "empty", count: 0 }], remaining: 0 });
-    return json({ projects: [{ key: "collapsed", default_expanded: false }], remaining: 0 });
+  const calls: NavigationReadParams[] = [];
+  await init((params) => {
+    calls.push(params);
+    if (params.resource === "manifest") return wire(m);
+    if (params.resource === "pin_catalog") return wire({ pin_sections: [{ id: "empty", count: 0 }], remaining: 0 });
+    return wire({ projects: [{ key: "collapsed", default_expanded: false }], remaining: 0 });
   });
-  expect(calls.some((url) => url.includes("pin-sections/empty"))).toBe(false);
-  expect(calls.some((url) => url.includes("/projects/collapsed"))).toBe(false);
+  expect(calls.some((params) => params.resource === "pin_section")).toBe(false);
+  expect(calls.some((params) => params.resource === "project" && params.projectKey === "collapsed")).toBe(false);
 });
 
-test("404 project recovery refreshes its owning loaded catalog once and retries once", async () => {
+test("unavailable project recovery refreshes its owning loaded catalog once and retries once", async () => {
   let projectCalls = 0;
   let catalogCalls = 0;
   const project = {
@@ -715,31 +738,42 @@ test("404 project recovery refreshes its owning loaded catalog once and retries 
     archived: { sessions: [], remaining: 0 },
   };
   const catalog = { projects: [project], remaining: 0 };
-  await init((url) => {
-    if (url === "/api/navigation")
-      return json(
+  const client = await init((params) => {
+    if (params.resource === "manifest")
+      return wire(
         emptyManifest({
           catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
         }),
       );
-    if (url.includes("catalogs/projects")) {
+    if (params.resource === "catalog" && params.catalog === "projects") {
       catalogCalls++;
-      return json(catalog, 200, catalogCalls === 1 ? '"catalog-1"' : '"catalog-2"', catalogCalls);
+      return wire(catalog, "ok", catalogCalls === 1 ? '"catalog-1"' : '"catalog-2"', catalogCalls);
     }
-    if (url.includes("/projects/p") && !url.includes("?tier=")) {
+    if (params.resource === "project" && params.projectKey === "p") {
       projectCalls++;
-      return projectCalls === 1 ? json({}, 404) : json(project);
+      if (projectCalls === 1)
+        throw new WireError("project unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
+      return wire(project);
     }
-    return json({ sessions: [], remaining: 0 });
+    return wire({ sessions: [], remaining: 0 });
   });
   const result = await navigationStore.getState().loadProject("p");
   expect(result.data).toMatchObject(project);
   expect(projectCalls).toBe(2);
   expect(catalogCalls).toBe(2);
-  const catalogRequest = (fetch as ReturnType<typeof vi.fn>).mock.calls
-    .filter(([url]) => String(url).includes("catalogs/projects"))
+  const catalogRequest = client.calls
+    .filter(({ params }) => {
+      const value = params as NavigationReadParams;
+      return value.resource === "catalog" && value.catalog === "projects";
+    })
     .at(-1);
-  expect(catalogRequest?.[1]?.headers).toEqual({ "If-None-Match": '"catalog-1"' });
+  expect(catalogRequest?.params).toEqual({
+    resource: "catalog",
+    catalog: "projects",
+    offset: 0,
+    limit: 100,
+    etag: '"catalog-1"',
+  });
 });
 
 test("uncertain project membership refreshes every loaded catalog before retry", async () => {
@@ -754,26 +788,28 @@ test("uncertain project membership refreshes every loaded catalog before retry",
     recent: { sessions: [], remaining: 0 },
     archived: { sessions: [], remaining: 0 },
   };
-  await init((url) => {
-    if (url === "/api/navigation")
-      return json(
+  await init((params) => {
+    if (params.resource === "manifest")
+      return wire(
         emptyManifest({
           catalogs: { projects: { count: 1 }, archived_projects: { count: 1 }, test_runs: { count: 0 } },
         }),
       );
-    if (url.includes("catalogs/projects")) {
+    if (params.resource === "catalog" && params.catalog === "projects") {
       catalogs.set("projects", catalogs.get("projects")! + 1);
-      return json({ projects: catalogs.get("projects") === 1 ? [] : [project], remaining: 0 });
+      return wire({ projects: catalogs.get("projects") === 1 ? [] : [project], remaining: 0 });
     }
-    if (url.includes("catalogs/archived-projects")) {
+    if (params.resource === "catalog" && params.catalog === "archived_projects") {
       catalogs.set("archived-projects", catalogs.get("archived-projects")! + 1);
-      return json({ projects: [], remaining: 0 });
+      return wire({ projects: [], remaining: 0 });
     }
-    if (url.includes("/projects/p") && !url.includes("?tier=")) {
+    if (params.resource === "project" && params.projectKey === "p") {
       projectCalls++;
-      return projectCalls === 1 ? json({}, 404) : json(project);
+      if (projectCalls === 1)
+        throw new WireError("project unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
+      return wire(project);
     }
-    return json({ sessions: [], remaining: 0 });
+    return wire({ sessions: [], remaining: 0 });
   });
   expect((await navigationStore.getState().loadProject("p")).data).toMatchObject(project);
   expect(projectCalls).toBe(2);
@@ -781,7 +817,7 @@ test("uncertain project membership refreshes every loaded catalog before retry",
   expect(catalogs.get("archived-projects")).toBe(2);
 });
 
-test("404 project recovery discovers nonempty catalogs after a forced manifest refresh", async () => {
+test("unavailable project recovery discovers nonempty catalogs after a forced manifest refresh", async () => {
   let manifestCalls = 0;
   let projectCalls = 0;
   let catalogCalls = 0;
@@ -791,10 +827,10 @@ test("404 project recovery discovers nonempty catalogs after a forced manifest r
     recent: { sessions: [], remaining: 0 },
     archived: { sessions: [], remaining: 0 },
   };
-  await init((url) => {
-    if (url === "/api/navigation") {
+  await init((params) => {
+    if (params.resource === "manifest") {
       manifestCalls++;
-      return json(
+      return wire(
         emptyManifest({
           catalogs: {
             projects: { count: manifestCalls === 1 ? 0 : 1 },
@@ -802,20 +838,22 @@ test("404 project recovery discovers nonempty catalogs after a forced manifest r
             test_runs: { count: 0 },
           },
         }),
-        200,
+        "ok",
         `"manifest-${manifestCalls}"`,
         manifestCalls,
       );
     }
-    if (url.includes("catalogs/projects")) {
+    if (params.resource === "catalog" && params.catalog === "projects") {
       catalogCalls++;
-      return json({ projects: [project], remaining: 0 });
+      return wire({ projects: [project], remaining: 0 });
     }
-    if (url.endsWith("/projects/late")) {
+    if (params.resource === "project" && params.projectKey === "late") {
       projectCalls++;
-      return projectCalls === 1 ? json({}, 404) : json(project);
+      if (projectCalls === 1)
+        throw new WireError("project unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
+      return wire(project);
     }
-    return json({ projects: [], remaining: 0 });
+    return wire({ projects: [], remaining: 0 });
   });
 
   expect((await navigationStore.getState().loadProject("late")).data).toMatchObject(project);
@@ -833,7 +871,7 @@ test.each([
   ["project page", () => navigationStore.getState().loadProjectPage("p", "current")],
   ["location", () => navigationStore.getState().lookupLocation("p")],
 ] as const)("malformed %s bodies fail closed without selecting legacy mode", async (_name, operation) => {
-  await init((url) => (url === "/api/navigation" ? json(emptyManifest()) : json({})));
+  await init((params) => (params.resource === "manifest" ? wire(emptyManifest()) : wire({})));
   const result = await operation();
   expect(result.error).toBeInstanceOf(Error);
   expect(result.data).toBeNull();
@@ -842,13 +880,13 @@ test.each([
 });
 
 test("a malformed manifest body is never committed", async () => {
-  await init(() => json({}));
+  await init(() => wire({}));
   expect(navigationStore.getState().manifest?.data).toBeNull();
   expect(navigationStore.getState().manifest?.error).toBeInstanceOf(Error);
   expect(navigationStore.getState().mode).toBe("v1");
 });
 
-test("authoritative project absence preserves last-good project state without retry loops", async () => {
+test("authoritative project unavailability preserves last-good state without retry loops", async () => {
   let projectCalls = 0;
   let catalogCalls = 0;
   const project = {
@@ -857,22 +895,24 @@ test("authoritative project absence preserves last-good project state without re
     recent: { sessions: [], remaining: 0 },
     archived: { sessions: [], remaining: 0 },
   };
-  const client = await init((url) => {
-    if (url === "/api/navigation")
-      return json(
+  const client = await init((params) => {
+    if (params.resource === "manifest")
+      return wire(
         emptyManifest({
           catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
         }),
       );
-    if (url.includes("catalogs/projects")) {
+    if (params.resource === "catalog" && params.catalog === "projects") {
       catalogCalls++;
-      return catalogCalls === 1 ? json({ projects: [project], remaining: 0 }) : json({}, 503);
+      if (catalogCalls === 1) return wire({ projects: [project], remaining: 0 });
+      throw new WireError("catalog unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
     }
-    if (url.includes("/projects/p") && !url.includes("?tier=")) {
+    if (params.resource === "project" && params.projectKey === "p") {
       projectCalls++;
-      return projectCalls === 1 ? json(project) : json({}, 404);
+      if (projectCalls === 1) return wire(project);
+      throw new WireError("project unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
     }
-    return json({ sessions: [], remaining: 0 });
+    return wire({ sessions: [], remaining: 0 });
   });
   expect((await navigationStore.getState().loadProject("p")).data).toMatchObject(project);
   client.emitNotification({
@@ -880,7 +920,7 @@ test("authoritative project absence preserves last-good project state without re
     params: { generationId: generation, sequence: 1, targets: [{ kind: "project", projectKey: "p", revision: 2 }] },
   } as never);
   const result = await navigationStore.getState().loadProject("p");
-  expect(result.error).toMatchObject({ status: 404 });
+  expect(result.error).toMatchObject({ code: -32014 });
   expect(result.data).toMatchObject(project);
   expect(projectCalls).toBe(2);
   expect(catalogCalls).toBe(2);
@@ -895,22 +935,24 @@ test("catalog refresh failure preserves stale catalog and project data", async (
     recent: { sessions: [], remaining: 0 },
     archived: { sessions: [], remaining: 0 },
   };
-  const client = await init((url) => {
-    if (url === "/api/navigation")
-      return json(
+  const client = await init((params) => {
+    if (params.resource === "manifest")
+      return wire(
         emptyManifest({
           catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
         }),
       );
-    if (url.includes("catalogs/projects")) {
+    if (params.resource === "catalog" && params.catalog === "projects") {
       catalogCalls++;
-      return catalogCalls === 1 ? json({ projects: [project], remaining: 0 }) : json({}, 503);
+      if (catalogCalls === 1) return wire({ projects: [project], remaining: 0 });
+      throw new WireError("catalog unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
     }
-    if (url.includes("/projects/p") && !url.includes("?tier=")) {
+    if (params.resource === "project" && params.projectKey === "p") {
       projectCalls++;
-      return projectCalls === 1 ? json(project) : json({}, 404);
+      if (projectCalls === 1) return wire(project);
+      throw new WireError("project unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
     }
-    return json({ sessions: [], remaining: 0 });
+    return wire({ sessions: [], remaining: 0 });
   });
   const first = await navigationStore.getState().loadProject("p");
   expect(first.data).toMatchObject(project);
@@ -931,25 +973,25 @@ test("rail expansion persists through store reset, overrides defaults, and hydra
   localStorage.setItem(EXPANSION_STORAGE_KEY, JSON.stringify({ p: false }));
   resetNavigationStoreForTests();
   let projectCalls = 0;
-  await init((url) => {
-    if (url === "/api/navigation")
-      return json(
+  await init((params) => {
+    if (params.resource === "manifest")
+      return wire(
         emptyManifest({
           catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
         }),
       );
-    if (url.includes("catalogs/projects"))
-      return json({ projects: [{ key: "p", default_expanded: true }], remaining: 0 });
-    if (url.includes("/projects/p") && !url.includes("?tier=")) {
+    if (params.resource === "catalog" && params.catalog === "projects")
+      return wire({ projects: [{ key: "p", default_expanded: true }], remaining: 0 });
+    if (params.resource === "project" && params.projectKey === "p") {
       projectCalls++;
-      return json({
+      return wire({
         key: "p",
         current: { sessions: [], remaining: 0 },
         recent: { sessions: [], remaining: 0 },
         archived: { sessions: [], remaining: 0 },
       });
     }
-    return json({ sessions: [], remaining: 0 });
+    return wire({ sessions: [], remaining: 0 });
   });
   expect(selectExpanded("p")(navigationStore.getState())).toBe(false);
   navigationStore.getState().setExpanded("p", true);
@@ -963,23 +1005,23 @@ test("rail expansion persists through store reset, overrides defaults, and hydra
 
 test("targeted updates are immutable and preserve unrelated resource identity", async () => {
   let sectionRevision = 1;
-  const client = await init((url) => {
-    if (url === "/api/navigation")
-      return json(
+  const client = await init((params) => {
+    if (params.resource === "manifest")
+      return wire(
         emptyManifest({
           sections: { live: { count: 1 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
           catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
         }),
       );
-    if (url.includes("sections/live"))
-      return json(
+    if (params.resource === "section" && params.section === "live")
+      return wire(
         { sessions: [{ ref: `s${sectionRevision}`, children: [] }], remaining: 0 },
-        200,
+        "ok",
         `"section-${sectionRevision}"`,
         sectionRevision,
       );
-    if (url.includes("catalogs/projects")) return json({ projects: [], remaining: 0 });
-    return json({ sessions: [], remaining: 0 });
+    if (params.resource === "catalog" && params.catalog === "projects") return wire({ projects: [], remaining: 0 });
+    return wire({ sessions: [], remaining: 0 });
   });
   await navigationStore.getState().loadSection("live");
   await navigationStore.getState().loadCatalog("projects");

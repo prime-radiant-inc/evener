@@ -72,7 +72,7 @@ afterEach(() => {
   // each connect a FRESH client straight to "ready", the exact transition
   // that detector watches for. Left unreset, the first such test here arms
   // sawReady and every later one in this file reads as a spurious reconnect,
-  // firing an extra, unscripted navigationStore.loadManifest() -> fetch("/api/navigation")
+  // firing an extra, unscripted navigationStore.loadManifest() request
   // that can consume one of a later test's own scripted fetchMock slots (the
   // "clicking Retry > a retry re-probes..." flake this reset fixes - see
   // AppShell.test.tsx's identical reset for the fuller writeup). Reset+reinit
@@ -318,7 +318,7 @@ describe("clicking Retry", () => {
     vi.stubGlobal("fetch", fetchMock);
     // This component test isolates its closed-reason probes from the global
     // notification engine, whose capability-absence path legitimately starts
-    // the migration-only legacy tree after a ready client is published.
+    // a navigation refresh after a ready client is published.
     resetNotificationsForTests();
     const fresh = new FakeClient("ready");
 

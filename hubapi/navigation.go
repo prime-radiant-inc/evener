@@ -19,7 +19,7 @@ func (array NavigationArray[T]) MarshalJSON() ([]byte, error) {
 	return json.Marshal([]T(array))
 }
 
-// NavigationManifest is returned by GET /api/navigation.
+// NavigationManifest is the hub's top-level navigation resource.
 type NavigationManifest struct {
 	GenerationID     string                  `json:"generation_id"`
 	Revision         uint64                  `json:"revision"`

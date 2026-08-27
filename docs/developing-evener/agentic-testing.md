@@ -408,6 +408,24 @@ malformed request. Send:
 Notifications for other threads arrive interleaved with your responses,
 so match on `id` rather than reading the next frame and hoping.
 
+Navigation reads use the same socket and method catalog. Send
+`evener/navigation/read` with one of these parameter shapes, then inspect the
+response envelope's `data` field:
+
+```json
+{"resource":"manifest"}
+{"resource":"section","section":"live","offset":0,"limit":50}
+{"resource":"pin_catalog","offset":0,"limit":100}
+{"resource":"pin_section","sectionId":"<id>","offset":0,"limit":50}
+{"resource":"catalog","catalog":"projects","offset":0,"limit":100}
+{"resource":"project","projectKey":"<key>"}
+{"resource":"project_page","projectKey":"<key>","tier":"current","offset":0,"limit":50}
+{"resource":"location","ref":"local:<session-id>"}
+```
+
+The response has `status`, `generationId`, `revision`, and `etag`; `status`
+`not_modified` omits `data`. There is no HTTP `/api/navigation` equivalent.
+
 A session to aim a gating assertion at costs nothing and needs no
 provider credential: spawn with an empty `prompt` and the daemon launches
 without running a turn — a *dormant* session, which reports `state:"idle"`

@@ -7,8 +7,15 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { initNotifications, resetNotificationsForTests } from "../notifications";
 import * as composerFocus from "../panes/session/composer/composerFocus";
 import { AppwireClient, type ConnectionState } from "../protocol/client";
+import { WireError } from "../protocol/errors";
 import { FakeClient } from "../protocol/testing/fakeClient";
-import type { InitializeResponse, NavigationSessionLocation, ThreadStartResponse } from "../protocol/types.gen";
+import type {
+  InitializeResponse,
+  NavigationReadParams,
+  NavigationReadResponse,
+  NavigationSessionLocation,
+  ThreadStartResponse,
+} from "../protocol/types.gen";
 import { connectionStore } from "../stores/connection";
 import { type NavigationStoreState, navigationStore, resetNavigationStoreForTests } from "../stores/navigation/store";
 import { keyID } from "../stores/navigation/types";
@@ -22,7 +29,6 @@ import { getDockviewApi, resetWorkspaceStoreForTests, workspaceStore } from "./w
 // deliberately internal implementation detail; duplicated here the same
 // way DockHost.test.tsx's own LAYOUT_KEY is).
 const LAYOUT_KEY = "evener.workspace.layout.v2";
-const NAV_URL = "/api/navigation";
 
 const ALL_FEATURES_OFF = {
   threadList: false,
@@ -46,96 +52,6 @@ function jsonResponse(body: unknown, status = 200): Response {
     statusText: status === 200 ? "OK" : "Error",
     json: () => (body === undefined ? Promise.reject(new Error("no body")) : Promise.resolve(body)),
   } as Response;
-}
-
-// A navigation manifest Response with the headers the store's requestFor
-// requires (X-Evener-Navigation-Generation/Revision/etag). The plain
-// jsonResponse() omits these, so any test that lets initNavigation actually
-// fetch the manifest would fail with a "missing generation" protocol error.
-function navResponse(body: unknown = EMPTY_NAV_RESPONSE): Response {
-  return new Response(JSON.stringify(body), {
-    headers: {
-      "Content-Type": "application/json",
-      etag: '"test"',
-      "X-Evener-Navigation-Generation": "generation_test",
-      "X-Evener-Navigation-Revision": "1",
-    },
-  });
-}
-
-// A fetch handler that serves proper navigation Responses for every
-// /api/navigation URL the store's boot() or Rail might request: the manifest,
-// sections, catalogs, and projects. Each returns valid JSON with the required
-// headers so the revalidator's requestFor validation passes. The live section
-// includes TREE_SESSION so the rail can render "Session one".
-function navFetchHandler(url: string): Promise<Response> {
-  const u = String(url);
-  const headers = {
-    "Content-Type": "application/json",
-    etag: '"test"',
-    "X-Evener-Navigation-Generation": "generation_test",
-    "X-Evener-Navigation-Revision": "1",
-  };
-  if (u === NAV_URL) return Promise.resolve(navResponse());
-  if (u.includes("/api/navigation/sections/live")) {
-    return Promise.resolve(
-      new Response(
-        JSON.stringify({
-          generation_id: "generation_test",
-          revision: 1,
-          sessions: [TREE_SESSION],
-          remaining: 0,
-          truncated: false,
-        }),
-        { headers },
-      ),
-    );
-  }
-  if (u.includes("/api/navigation/sections/needs-you")) {
-    return Promise.resolve(
-      new Response(
-        JSON.stringify({ generation_id: "generation_test", revision: 1, sessions: [], remaining: 0, truncated: false }),
-        { headers },
-      ),
-    );
-  }
-  if (u.includes("/api/navigation/catalogs/projects")) {
-    return Promise.resolve(
-      new Response(
-        JSON.stringify({
-          generation_id: "generation_test",
-          revision: 1,
-          projects: [{ key: "proj1", name: "Project one", session_count: 1, working_dir: "" }],
-          remaining: 0,
-        }),
-        { headers },
-      ),
-    );
-  }
-  if (u.includes("/api/navigation/catalogs/")) {
-    return Promise.resolve(
-      new Response(JSON.stringify({ generation_id: "generation_test", revision: 1, projects: [], remaining: 0 }), {
-        headers,
-      }),
-    );
-  }
-  if (u.includes("/api/navigation/projects/")) {
-    return Promise.resolve(
-      new Response(
-        JSON.stringify({
-          generation_id: "generation_test",
-          revision: 1,
-          key: "proj1",
-          current: { sessions: [TREE_SESSION], remaining: 0 },
-          recent: { sessions: [], remaining: 0 },
-          archived: { sessions: [], remaining: 0 },
-          truncated: false,
-        }),
-        { headers },
-      ),
-    );
-  }
-  return Promise.resolve(new Response(JSON.stringify({}), { headers }));
 }
 
 const TREE_SESSION = {
@@ -172,6 +88,79 @@ const EMPTY_NAV_RESPONSE = {
   catalogs: { projects: { count: 1 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
 };
 
+function navigationRead(params: NavigationReadParams): NavigationReadResponse {
+  const envelope = (data: unknown): NavigationReadResponse => ({
+    status: "ok",
+    generationId: "generation_test",
+    revision: 1,
+    etag: '"test"',
+    data,
+  });
+  switch (params.resource) {
+    case "manifest":
+      return envelope(EMPTY_NAV_RESPONSE);
+    case "section":
+      return envelope({
+        generation_id: "generation_test",
+        revision: 1,
+        sessions: params.section === "live" ? [TREE_SESSION] : [],
+        remaining: 0,
+        truncated: false,
+      });
+    case "pin_catalog":
+      return envelope({ generation_id: "generation_test", revision: 1, pin_sections: [], remaining: 0 });
+    case "pin_section":
+      return envelope({
+        generation_id: "generation_test",
+        revision: 1,
+        sessions: [],
+        remaining: 0,
+        truncated: false,
+      });
+    case "catalog":
+      return envelope({
+        generation_id: "generation_test",
+        revision: 1,
+        projects:
+          params.catalog === "projects"
+            ? [{ key: "proj1", name: "Project one", session_count: 1, working_dir: "" }]
+            : [],
+        remaining: 0,
+      });
+    case "project":
+      return envelope({
+        generation_id: "generation_test",
+        revision: 1,
+        key: "proj1",
+        current: { sessions: [TREE_SESSION], remaining: 0 },
+        recent: { sessions: [], remaining: 0 },
+        archived: { sessions: [], remaining: 0 },
+        truncated: false,
+      });
+    case "project_page":
+      return envelope({
+        generation_id: "generation_test",
+        revision: 1,
+        key: params.projectKey,
+        tier: params.tier,
+        offset: params.offset,
+        sessions: [],
+        remaining: 0,
+        truncated: false,
+      });
+    case "location":
+      return envelope({
+        generation_id: "generation_test",
+        revision: 1,
+        ref: params.ref,
+        top_level_ref: params.ref,
+        top_level: true,
+        session: { ...TREE_SESSION, ref: params.ref, session_id: params.ref },
+      });
+  }
+  throw new Error(`unsupported navigation resource: ${params.resource}`);
+}
+
 // A FakeClient whose connect() advertises a v1 navigation capability with a
 // generation matching EMPTY_NAV_RESPONSE. Tests that render <AppShell/> and
 // depend on the navigation store being in mode "v1" (rather than "error")
@@ -179,6 +168,7 @@ const EMPTY_NAV_RESPONSE = {
 // InitializeResponse has no navigation capability.
 function navClient(initialState: ConnectionState = "ready"): FakeClient {
   const client = new FakeClient(initialState);
+  client.on("evener/navigation/read", navigationRead);
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
     protocolVersion: "evener-appwire-v3",
@@ -416,7 +406,6 @@ beforeAll(async () => {
   // methods DockHost.tsx actually calls (getItem/setItem/removeItem/clear),
   // not length/key() - see DockHost.test.tsx's own MemoryStorage comment.
   globalThis.localStorage = new MemoryStorage();
-  vi.stubGlobal("fetch", (url: string) => navFetchHandler(url));
   await import("../panes/welcome/Welcome");
   await import("../panes/session/Session");
   await import("../panes/settings/Settings");
@@ -445,7 +434,6 @@ beforeEach(() => {
   // @ts-expect-error MemoryStorage implements the subset used by DockHost.
   globalThis.localStorage = new MemoryStorage();
   localStorage.clear();
-  vi.stubGlobal("fetch", (url: string) => navFetchHandler(url));
 });
 
 afterEach(() => {
@@ -478,10 +466,7 @@ afterEach(() => {
   // hold AT THIS MOMENT, so both are forced back to their neutral
   // pre-render values FIRST - seeding from a still-"ready" connectionStore
   // (as this test's own render left it moments ago) would wrongly arm the
-  // "reconnect" detector this reset exists to neutralize. Run before
-  // vi.unstubAllGlobals() below so initNotifications()'s baseline
-  // ensureLoaded() fetch still hits this file's own beforeEach fetch stub
-  // instead of a real network call.
+  // "reconnect" detector this reset exists to neutralize.
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetNavigationStoreForTests();
   resetNotificationsForTests();
@@ -689,15 +674,7 @@ test("Mod+I is a no-op while a Dialog/Sheet ([aria-modal=true]) is open", async 
 test("Mod+J opens the first needs-you session when nothing is focused", async () => {
   const user = userEvent.setup();
   installNeedsYouRows();
-  const client = new FakeClient("ready");
-  client.scriptConnect(() => ({
-    serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "evener-appwire-v3",
-    sourceId: "fake",
-    features: {} as never,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0 },
-  }));
-  vi.stubGlobal("fetch", (_url: string) => Promise.resolve(jsonResponse({})));
+  const client = navClient();
   render(<AppShell client={client} />);
   await screen.findByText("No session open");
   await waitFor(() => expect(navigationStore.getState().resources).not.toBeNull());
@@ -711,7 +688,6 @@ test("Mod+J cycles from the focused needs-you session to the next one, wrapping"
   const user = userEvent.setup();
   installNeedsYouRows();
   const client = navClient();
-  vi.stubGlobal("fetch", (url: string) => navFetchHandler(url));
   window.history.pushState({}, "", "/s/local:ny2");
   installLocationForRoute("local:ny2");
   render(<AppShell client={client} />);
@@ -1010,8 +986,7 @@ test("deep-linking to /s/{ref} opens that session pane", async () => {
 
 test("a nested location opens its explicit owner without loading a project", async () => {
   const child = "local:collapsed-child";
-  const fetchMock = vi.fn((url: string) => navFetchHandler(url));
-  vi.stubGlobal("fetch", fetchMock);
+  const client = navClient();
   window.history.pushState({}, "", `/s/${encodeURIComponent(child)}`);
   installLocation({
     generation_id: "generation_test",
@@ -1033,7 +1008,7 @@ test("a nested location opens its explicit owner without loading a project", asy
       children: [],
     },
   });
-  render(<AppShell client={navClient()} />);
+  render(<AppShell client={client} />);
 
   await waitFor(() => expect(paneFor(child)?.slot).toBe("secondary"));
   expect(paneFor("local:owner")?.slot).toBe("main");
@@ -1041,22 +1016,16 @@ test("a nested location opens its explicit owner without loading a project", asy
     false,
   );
   expect(
-    fetchMock.mock.calls.some((call) => String((call as unknown[])[0]).includes("/api/navigation/projects/")),
+    client.calls.some(
+      ({ method, params }) =>
+        method === "evener/navigation/read" && (params as NavigationReadParams).resource === "project",
+    ),
   ).toBe(false);
 });
 
-test("retained non-404 location data does not retry or lose its owner", async () => {
+test("retained unavailable location data does not retry or lose its owner", async () => {
   const child = "local:retained-child";
-  const fetchMock = vi.fn(() => Promise.resolve(jsonResponse({})));
-  vi.stubGlobal("fetch", fetchMock);
-  const client = new FakeClient("ready");
-  client.scriptConnect(() => ({
-    serverInfo: { name: "fake", version: "1" },
-    protocolVersion: "1",
-    sourceId: "fake",
-    features: ALL_FEATURES_OFF,
-    navigation: { version: 1, generationId: "generation_test", sequence: 0 },
-  }));
+  const client = navClient();
   navigationStore.setState({ mode: "v1" });
   window.history.pushState({}, "", `/s/${encodeURIComponent(child)}`);
   installLocation({
@@ -1085,14 +1054,17 @@ test("retained non-404 location data does not retry or lose its owner", async ()
     const resource = navigationStore.getState().resources.get(key);
     if (!resource) throw new Error("location resource missing");
     const resources = new Map(navigationStore.getState().resources);
-    resources.set(key, { ...resource, stale: true, error: { status: 500 } });
+    resources.set(key, { ...resource, stale: true, error: new Error("temporary navigation failure") });
     navigationStore.setState({ resources });
   });
   await waitFor(() => expect(paneFor("local:retained-owner")?.slot).toBe("main"));
   expect(paneFor(child)?.slot).toBe("secondary");
   await Promise.resolve();
   expect(
-    fetchMock.mock.calls.filter((call) => String((call as unknown[])[0]).includes("/api/navigation/sessions/")).length,
+    client.calls.filter(
+      ({ method, params }) =>
+        method === "evener/navigation/read" && (params as NavigationReadParams).resource === "location",
+    ).length,
   ).toBe(0);
 });
 
@@ -1148,11 +1120,6 @@ test("kata 9r5y: a reload at the welcome route over a saved layout restores the 
 
 test("opening /s/{ref} replaces unrelated main session instead of opening a secondary", async () => {
   workspaceStore.getState().openPane("session", { ref: "local:existing" });
-  const fetchMock = vi.fn((url: string) => {
-    if (url === NAV_URL) return Promise.resolve(jsonResponse(EMPTY_NAV_RESPONSE));
-    return jsonResponse({});
-  });
-  vi.stubGlobal("fetch", fetchMock);
 
   window.history.pushState({}, "", "/s/local:new_session");
 
@@ -1327,17 +1294,18 @@ test("rail activation updates the URL and a later Settings activation returns Se
 // refetch) against the real AppShell + DockHost, because the re-open only
 // happens with the route effect and the dock host both live.
 test("deleting the session the address bar names lands on welcome instead of re-opening its pane", async () => {
+  const client = navClient();
   vi.stubGlobal("fetch", (url: string) => {
     if (url === "/api/sessions/local%3As1/delete") {
       return Promise.resolve(jsonResponse({ deleted: ["s1"], skipped: [] }));
     }
-    return navFetchHandler(url);
+    throw new Error(`unexpected fetch in AppShell test: ${url}`);
   });
 
   const user = userEvent.setup();
   window.history.pushState({}, "", "/s/local:s1");
   installLocationForRoute("local:s1");
-  render(<AppShell client={navClient()} />);
+  render(<AppShell client={client} />);
   await screen.findByText(/loading transcript/i);
   await waitFor(() => expect(workspaceStore.getState().mainPane()?.params).toMatchObject({ ref: "local:s1" }));
 
@@ -1513,13 +1481,8 @@ test("repairs a nested session restored as main when the root route's tree arriv
   await saveLegacyNestedMainLayout();
   navigationStore.setState({ mode: "v1" });
 
-  const fetchMock = vi.fn((url: string) => {
-    if (url === NAV_URL) return Promise.resolve(jsonResponse(EMPTY_NAV_RESPONSE));
-    return jsonResponse({});
-  });
-  vi.stubGlobal("fetch", fetchMock);
   window.history.pushState({}, "", "/");
-  render(<AppShell client={new FakeClient("ready")} />);
+  render(<AppShell client={navClient()} />);
   act(() => installLocationForRoute("local:child"));
 
   await waitFor(() => expect(navigationStore.getState().resources).toBeDefined());
@@ -1537,11 +1500,6 @@ test("repairs a nested session restored as main when the root route's tree arriv
 });
 
 test("a nested child route replaces unrelated panes, keeps its owner main, and focuses the child", async () => {
-  const fetchMock = vi.fn((url: string) => {
-    if (url === NAV_URL) return Promise.resolve(jsonResponse(EMPTY_NAV_RESPONSE));
-    return jsonResponse({});
-  });
-  vi.stubGlobal("fetch", fetchMock);
   workspaceStore.getState().openPane("session", { ref: "local:unrelated" });
   workspaceStore.getState().openPane("doc", {
     session: "local:unrelated",
@@ -1552,7 +1510,7 @@ test("a nested child route replaces unrelated panes, keeps its owner main, and f
   window.history.pushState({}, "", "/s/local:child");
 
   installLocationForRoute("local:child");
-  render(<AppShell client={new FakeClient("ready")} />);
+  render(<AppShell client={navClient()} />);
 
   await waitFor(() => {
     expect(workspaceStore.getState().mainPane()?.params).toEqual({ ref: "local:owner" });
@@ -1609,13 +1567,9 @@ test("a focused aside-ref session panel does not invalidate a top-level route", 
 });
 
 test("a focused session panel does not invalidate a settled nested route", async () => {
-  vi.stubGlobal("fetch", (url: string) => {
-    if (url === NAV_URL) return Promise.resolve(jsonResponse(EMPTY_NAV_RESPONSE));
-    return Promise.resolve(jsonResponse({}));
-  });
   window.history.pushState({}, "", "/s/local:child");
   installLocationForRoute("local:child");
-  render(<AppShell client={new FakeClient("ready")} />);
+  render(<AppShell client={navClient()} />);
   await waitFor(() => expect(paneFor("local:child")?.slot).toBe("secondary"));
 
   act(() => {
@@ -1720,13 +1674,9 @@ test("a focused non-panel pane is re-focused to the routed top-level session", a
 });
 
 test("a focused non-panel pane is re-focused to the routed nested session", async () => {
-  vi.stubGlobal("fetch", (url: string) => {
-    if (url === NAV_URL) return Promise.resolve(jsonResponse(EMPTY_NAV_RESPONSE));
-    return Promise.resolve(jsonResponse({}));
-  });
   window.history.pushState({}, "", "/s/local:child");
   installLocationForRoute("local:child");
-  render(<AppShell client={new FakeClient("ready")} />);
+  render(<AppShell client={navClient()} />);
   await waitFor(() => expect(paneFor("local:child")?.slot).toBe("secondary"));
   const childId = paneFor("local:child")?.id;
 
@@ -1835,14 +1785,16 @@ test("a saved welcome layout is replaced by a fresh routed primary, which lands 
 
 test("deep-linking to a nested /s/{ref} opens the top-level owner in main and nested in secondary after tree arrival", async () => {
   navigationStore.setState({ mode: "v1" });
-  vi.stubGlobal("fetch", (url: string) =>
-    url.includes("/api/navigation/sessions/")
-      ? Promise.resolve(jsonResponse({}, 404))
-      : Promise.resolve(jsonResponse({})),
-  );
+  const client = navClient();
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource === "location" && params.ref === "local:sub1") {
+      throw new WireError("location unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
+    }
+    return navigationRead(params);
+  });
 
   window.history.pushState({}, "", "/s/local:sub1");
-  render(<AppShell client={new FakeClient("ready")} />);
+  render(<AppShell client={client} />);
 
   act(() =>
     navigationStore.setState({
@@ -1887,14 +1839,16 @@ test("deep-linking to a nested /s/{ref} opens the top-level owner in main and ne
 
 test("nested deep-link remains closed for a missing location until a later location arrives", async () => {
   navigationStore.setState({ mode: "v1" });
-  vi.stubGlobal("fetch", (url: string) =>
-    url.includes("/api/navigation/sessions/")
-      ? Promise.resolve(jsonResponse({}, 404))
-      : Promise.resolve(jsonResponse({})),
-  );
+  const client = navClient();
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource === "location" && params.ref === "local:sub1") {
+      throw new WireError("location unavailable", -32014, { evenerErrorInfo: "actionUnavailable" });
+    }
+    return navigationRead(params);
+  });
 
   window.history.pushState({}, "", "/s/local:sub1");
-  render(<AppShell client={new FakeClient("ready")} />);
+  render(<AppShell client={client} />);
 
   act(() =>
     navigationStore.setState({
@@ -1915,11 +1869,6 @@ test("nested deep-link remains closed for a missing location until a later locat
 test("deep-linking to /settings replaces any existing main pane", async () => {
   workspaceStore.getState().openPane("session", { ref: "local:main_session" });
   workspaceStore.getState().openPane("settings", { section: "stale_credentials" }, { slot: "secondary" });
-  const fetchMock = vi.fn((url: string) => {
-    if (url === NAV_URL) return Promise.resolve(jsonResponse(EMPTY_NAV_RESPONSE));
-    return jsonResponse({});
-  });
-  vi.stubGlobal("fetch", fetchMock);
 
   window.history.pushState({}, "", "/settings");
   render(<AppShell client={new FakeClient("ready")} />);
@@ -1937,13 +1886,9 @@ test("deep-linking to /settings replaces any existing main pane", async () => {
 test("deep-linking to /thread/{ref} opens the session pane chrome-stripped (rail hidden, marker set)", async () => {
   window.history.pushState({}, "", "/thread/local:ref_shared");
   render(<AppShell client={new FakeClient("ready")} />);
-  // Single-pane mode never mounts RailHost (its own mount effect is the
-  // usual /api/navigation/legacy trigger - see the file-level comment on RailHost's
-  // rendering condition just above the JSX), so nothing here fetches the
-  // tree on its own; a real boot's baseline fetch (initNotifications()'s
-  // ensureLoaded(), module-scope, fires only once ever) already covers this
-  // path in production. Mirrors "nested deep-link waits for successful tree
-  // refresh..." above for the same reason.
+  // Single-pane mode never mounts RailHost, so this route has no rail-owned
+  // navigation read. The notification engine's baseline AppWire read is
+  // independent of the rail and already covers this path in production.
   await act(async () => {
     await Promise.resolve();
   });
@@ -2161,14 +2106,12 @@ function installSwitchableViewport(): (mobile: boolean) => void {
   };
 }
 
-// A /s/{ref} route cannot be placed until /api/navigation/legacy says whether the ref is
-// nested (openRouteAsPane defers it), and no fetch can resolve inside the
-// first commit - so on mobile the shell always spends a beat with the deep
-// link parsed but unplaced. StackHost fills an empty stack with welcome and
-// publishes the focused pane's URL, which used to overwrite the address bar
-// with "/" during exactly that beat: the deep link was gone before the tree
-// it was waiting for ever landed, and no later evener/tree/changed push could
-// name it again.
+// A /s/{ref} route can remain deferred until the AppWire location read says
+// whether the ref is nested, and no read can resolve inside the first commit.
+// StackHost fills an empty stack with welcome and publishes the focused pane's
+// URL, which used to overwrite the address bar with "/" during exactly that
+// beat: the deep link was gone before the location arrived, and no later
+// evener/changed push could name it again.
 test("mobile: a /s/{ref} deep link still opens once the tree lands, instead of being overwritten by welcome", async () => {
   navigationStore.setState({ mode: "v1" });
   installMobileViewport();
@@ -2240,11 +2183,9 @@ test("kata 098n: on mobile a /thread/{ref} share link keeps its URL and its sing
   installMobileViewport();
   window.history.pushState({}, "", "/thread/local:s1");
   render(<AppShell client={new FakeClient("ready")} />);
-  // Mobile never mounts RailHost (its own mount effect is the usual
-  // /api/navigation/legacy trigger - see the file-level comment on RailHost's rendering
-  // condition), so nothing here fetches the tree on its own; a real boot's
-  // baseline fetch (initNotifications()'s ensureLoaded(), module-scope,
-  // fires only once ever) already covers this path in production.
+  // Mobile never mounts RailHost, so there is no rail-owned navigation read;
+  // the notification engine's baseline AppWire read is independent of that
+  // chrome and already covers this path in production.
   await act(async () => {
     await Promise.resolve();
   });
@@ -2254,34 +2195,30 @@ test("kata 098n: on mobile a /thread/{ref} share link keeps its URL and its sing
   expect(document.querySelector("[data-single-pane]")).not.toBeNull();
 });
 
-// --- kata p5w9: one boot, one GET /api/navigation/legacy ------------------------------
+// --- kata p5w9: one boot, one baseline AppWire navigation read -------------------------
 
-// A desktop boot has TWO unconditional mount-time tree fetchers -
-// initNotifications()'s baseline (run at AppShell.tsx's module evaluation, so
-// it fires on every host, including the mobile one where no rail mounts) and
-// the rail's own mount effect - and used to issue a full GET /api/navigation/legacy from
-// each, milliseconds apart, for the same snapshot. Plus a third: AppShell
-// publishes serverInfo through connectionStore once its connect() resolves,
-// which the reconnect subscriber read as a new connection.
+// A desktop boot has two consumers of the same navigation snapshot:
+// initNotifications()'s baseline and the rail. Both must share the typed
+// AppWire read seam, while publishing serverInfo through connectionStore after
+// connect must not look like a new connection to the reconnect subscriber.
 //
 // The notifications engine is a module singleton already initialized by
 // AppShell.tsx's own import, so a REAL boot is modelled by resetting and
 // re-initializing it here - and it is deliberately left initialized
 // afterwards, exactly as module evaluation leaves it for every other test in
 // this file.
-test("desktop boot does not issue a legacy whole-tree request", async () => {
-  const fetchMock = vi.fn((url: string) => Promise.resolve(jsonResponse(url === NAV_URL ? EMPTY_NAV_RESPONSE : {})));
-  vi.stubGlobal("fetch", fetchMock);
-
+test("desktop boot uses the typed AppWire navigation read seam", async () => {
+  const client = navClient();
   resetNotificationsForTests();
   initNotifications();
-  render(<AppShell client={new FakeClient("ready")} />);
+  render(<AppShell client={client} />);
 
   await screen.findByText("No session open");
   await waitFor(() => expect(navigationStore.getState().resources).not.toBeNull());
   await waitFor(() => expect(connectionStore.getState().serverInfo).toBeDefined());
 
-  expect(fetchMock.mock.calls.filter(([url]) => url === NAV_URL)).toHaveLength(0);
+  expect(client.calls.every(({ method }) => method === "evener/navigation/read")).toBe(true);
+  expect(client.calls).toContainEqual({ method: "evener/navigation/read", params: { resource: "manifest" } });
 });
 
 // FIX 1 (real-browser bug): Settings' Escape/close used to call

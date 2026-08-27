@@ -8,13 +8,14 @@
 // the only honest reproduction is a real browser measuring real boxes.
 //
 // Renders the REAL AppShell (rail + DockRegion + chrome) against a FakeClient
-// advertising a navigation capability, with /api/navigation/* stubbed to a
-// tree far taller than any viewport. window.measureShell() returns the
+// advertising a navigation capability, with AppWire navigation reads scripted
+// to a tree far taller than any viewport. window.measureShell() returns the
 // document's scroll size beside the viewport, the rail body scroll metrics,
 // and the boxes (if any) whose bottoms escape the viewport - which is the
 // answer the fix has to be aimed at.
 import { createRoot } from "react-dom/client";
 import { FakeClient } from "../protocol/testing/fakeClient";
+import type { NavigationReadParams, NavigationReadResponse } from "../protocol/types.gen";
 import "../styles/tokens.css";
 import "../styles/global.css";
 
@@ -55,9 +56,6 @@ const navigationSessions = (projectKey: string, projectName: string) =>
     children: [],
   }));
 
-// The navigation store reads /api/navigation/* over plain fetch (not the
-// appwire socket), so the stubs live on window.fetch. Installed at module
-// evaluation, before the AppShell render below can fire its first load.
 const NAVIGATION_MANIFEST = {
   generation_id: "shellguard-generation",
   revision: 1,
@@ -85,6 +83,13 @@ const EMPTY_PROJECT_CATALOG = {
   projects: projectSummaries,
   remaining: 0,
 };
+const EMPTY_PIN_SECTION = {
+  generation_id: "shellguard-generation",
+  revision: 1,
+  sessions: [],
+  remaining: 0,
+  truncated: false,
+};
 
 function projectResource(key: string) {
   const summary = projectSummaries.find((p) => p.key === key);
@@ -101,86 +106,50 @@ function projectResource(key: string) {
   };
 }
 
-function navigationResponse(url: string): Response | null {
-  const projectMatch = url.match(/^\/api\/navigation\/projects\/([^?]+)/);
-  if (projectMatch?.[1]) {
-    return new Response(JSON.stringify(projectResource(decodeURIComponent(projectMatch[1]))), {
-      status: 200,
-      headers: {
-        "content-type": "application/json",
-        etag: '"shellguard-etag"',
-        "X-Evener-Navigation-Generation": "shellguard-generation",
-        "X-Evener-Navigation-Revision": "1",
-      },
-    });
+function navigationRead(params: NavigationReadParams): NavigationReadResponse {
+  const response = (data: unknown): NavigationReadResponse => ({
+    status: "ok",
+    generationId: "shellguard-generation",
+    revision: 1,
+    etag: '"shellguard-etag"',
+    data,
+  });
+  switch (params.resource) {
+    case "manifest":
+      return response(NAVIGATION_MANIFEST);
+    case "section":
+      return response(EMPTY_SECTION);
+    case "pin_catalog":
+      return response(EMPTY_PIN_CATALOG);
+    case "pin_section":
+      return response(EMPTY_PIN_SECTION);
+    case "catalog":
+      return response(EMPTY_PROJECT_CATALOG);
+    case "project":
+      if (params.projectKey === undefined) throw new Error("project navigation read requires projectKey");
+      return response(projectResource(params.projectKey));
+    case "project_page":
+      return response({
+        generation_id: "shellguard-generation",
+        revision: 1,
+        key: params.projectKey,
+        tier: params.tier,
+        offset: params.offset,
+        sessions: [],
+        remaining: 0,
+        truncated: false,
+      });
+    case "location":
+      return response({
+        generation_id: "shellguard-generation",
+        revision: 1,
+        ref: params.ref,
+        top_level_ref: params.ref,
+        top_level: true,
+      });
   }
-  if (url.startsWith("/api/navigation/catalogs/projects")) {
-    return new Response(JSON.stringify(EMPTY_PROJECT_CATALOG), {
-      status: 200,
-      headers: {
-        "content-type": "application/json",
-        etag: '"shellguard-etag"',
-        "X-Evener-Navigation-Generation": "shellguard-generation",
-        "X-Evener-Navigation-Revision": "1",
-      },
-    });
-  }
-  if (url.startsWith("/api/navigation/sections/live") || url.startsWith("/api/navigation/sections/needs-you")) {
-    return new Response(JSON.stringify(EMPTY_SECTION), {
-      status: 200,
-      headers: {
-        "content-type": "application/json",
-        etag: '"shellguard-etag"',
-        "X-Evener-Navigation-Generation": "shellguard-generation",
-        "X-Evener-Navigation-Revision": "1",
-      },
-    });
-  }
-  if (url.startsWith("/api/navigation/pin-sections")) {
-    return new Response(JSON.stringify(EMPTY_PIN_CATALOG), {
-      status: 200,
-      headers: {
-        "content-type": "application/json",
-        etag: '"shellguard-etag"',
-        "X-Evener-Navigation-Generation": "shellguard-generation",
-        "X-Evener-Navigation-Revision": "1",
-      },
-    });
-  }
-  if (url === "/api/navigation" || url === "/api/navigation/") {
-    return new Response(JSON.stringify(NAVIGATION_MANIFEST), {
-      status: 200,
-      headers: {
-        "content-type": "application/json",
-        etag: '"shellguard-etag"',
-        "X-Evener-Navigation-Generation": "shellguard-generation",
-        "X-Evener-Navigation-Revision": "1",
-      },
-    });
-  }
-  return null;
+  throw new Error(`unsupported navigation resource: ${params.resource}`);
 }
-
-const realFetch = window.fetch.bind(window);
-window.fetch = (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
-  const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
-  const nav = navigationResponse(url);
-  if (nav) return Promise.resolve(nav);
-  if (url.startsWith("/api/")) {
-    return Promise.resolve(
-      new Response(JSON.stringify({}), {
-        status: 200,
-        headers: {
-          "content-type": "application/json",
-          etag: '"shellguard-etag"',
-          "X-Evener-Navigation-Generation": "shellguard-generation",
-          "X-Evener-Navigation-Revision": "1",
-        },
-      }),
-    );
-  }
-  return realFetch(input, init);
-};
 
 const rootEl = document.getElementById("root");
 if (!rootEl) throw new Error("shellguard.html is missing #root");
@@ -194,6 +163,7 @@ window.history.replaceState({}, "", "/");
 async function boot(): Promise<void> {
   const { AppShell } = await import("../shell/AppShell");
   const fake = new FakeClient("ready");
+  fake.on("evener/navigation/read", navigationRead);
   fake.scriptConnect(() => ({
     serverInfo: { name: "fake-evener-hub", version: "0.0.0" },
     protocolVersion: "evener-appwire-v3",

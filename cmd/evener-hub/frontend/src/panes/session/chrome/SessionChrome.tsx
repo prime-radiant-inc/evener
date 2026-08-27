@@ -32,6 +32,7 @@ import { isPaneOpen, useWorkspaceStore, workspaceStore } from "../../../shell/wo
 import { useActivitySummaryStore } from "../../../stores/activitySummary";
 import { selectLocation } from "../../../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
+import { isNavigationUnavailable } from "../../../stores/navigation/types";
 import { threadsStore, useThreadsStore } from "../../../stores/threads";
 import { Cadence, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
@@ -77,9 +78,9 @@ export function SessionChrome({ ref: sessionRef, placement = "footer" }: Session
   // no project is expanded merely to decide menu eligibility.
   const navigation = useNavigationStore();
   const locationResource = selectLocation(sessionRef)(navigation);
-  const locationStatus = (locationResource?.error as { status?: unknown } | null)?.status;
-  const location =
-    locationStatus === 404 ? undefined : (locationResource?.data as NavigationSessionLocation | undefined);
+  const location = isNavigationUnavailable(locationResource?.error)
+    ? undefined
+    : (locationResource?.data as NavigationSessionLocation | undefined);
   const navigationSession = location?.session;
   const fallbackSession = navigationSession ?? navigationSummaryFor(sessionRef, navigation);
   const eligibleFallback = fallbackSession && !["subagent", "fork", "cluster"].includes(fallbackSession.kind);

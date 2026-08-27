@@ -2,6 +2,7 @@ import { useStore } from "zustand";
 import { createStore } from "zustand/vanilla";
 import type { AppwireClientLike } from "../../protocol/testing/fakeClient";
 import type {
+  NavigationReadResponse as AppwireNavigationReadResponse,
   AttentionChanged,
   AttentionSummary,
   InitializeResponse,
@@ -14,12 +15,13 @@ import type {
   NavigationProjectCatalog,
   NavigationProjectPage,
   NavigationProjectResource,
+  NavigationReadParams,
   NavigationSectionResource,
   NavigationSessionLocation,
 } from "../../protocol/types.gen";
 import { loadExpansion, saveExpansion } from "../../shell/rail/railExpansion";
 import { type NavigationInvalidationWaiter, NavigationRevalidator } from "./revalidator";
-import { keyID, type NavigationRequest, type ResourceKey, type ResourceState } from "./types";
+import { isNavigationUnavailable, keyID, type NavigationRequest, type ResourceKey, type ResourceState } from "./types";
 
 export type NavigationValue =
   | NavigationManifest
@@ -120,41 +122,6 @@ function setResource(state: ResourceState, client = activeClient, epoch = bootEp
     const resources = new Map(navigationStore.getState().resources);
     resources.set(keyID(state.key), state);
     navigationStore.setState({ resources });
-  }
-}
-function requestFor<T>(k: ResourceKey): NavigationRequest<T> {
-  return async (signal, etag) => {
-    const url = urlFor(k);
-    const headers: HeadersInit = etag ? { "If-None-Match": etag } : {};
-    const response = await fetch(url, { method: "GET", credentials: "same-origin", headers, signal });
-    if (response.status !== 200 && response.status !== 304)
-      throw new NavigationHTTPError(response.status, "unexpected status");
-    const contentType = response.headers.get("content-type") ?? "";
-    if (response.status === 200 && !/^application\/json(?:\s*;|$)/i.test(contentType))
-      throw new NavigationHTTPError(response.status, "missing JSON content type");
-    const generationID = response.headers.get("X-Evener-Navigation-Generation") ?? "";
-    const revisionText = response.headers.get("X-Evener-Navigation-Revision") ?? "";
-    const responseEtag = response.headers.get("etag") ?? "";
-    if (!generationID) throw new NavigationHTTPError(response.status, "missing generation");
-    if (!/^(0|[1-9]\d*)$/.test(revisionText)) throw new NavigationHTTPError(response.status, "invalid revision");
-    if (!responseEtag) throw new NavigationHTTPError(response.status, "missing ETag");
-    const revision = Number(revisionText);
-    if (!Number.isSafeInteger(revision)) throw new NavigationHTTPError(response.status, "invalid revision");
-    let data: unknown;
-    if (response.status === 200) {
-      data = await response.json();
-      if (!isNavigationValue(k, data, generationID, revision)) {
-        throw new NavigationProtocolError(`invalid ${k.kind} body`);
-      }
-    }
-    return { status: response.status, generationID, revision, etag: responseEtag, data: data as T };
-  };
-}
-export class NavigationHTTPError extends Error {
-  readonly status: number;
-  constructor(status: number, message: string) {
-    super(`navigation HTTP ${status}: ${message}`);
-    this.status = status;
   }
 }
 class NavigationProtocolError extends Error {
@@ -304,34 +271,65 @@ function isNavigationProjectResource(value: unknown): value is NavigationProject
     (tier) => !!tier && Array.isArray(tier.sessions) && Number.isSafeInteger(tier.remaining),
   );
 }
-function urlFor(k: ResourceKey): string {
-  const q = (offset: number, limit: number) => `?offset=${offset}&limit=${limit}`;
+function paramsFor(k: ResourceKey, etag: string | null): NavigationReadParams {
+  const conditional = etag === null ? {} : { etag };
   switch (k.kind) {
     case "manifest":
-      return "/api/navigation";
+      return { resource: "manifest", ...conditional };
     case "section":
-      return `/api/navigation/sections/${k.section === "needs_you" ? "needs-you" : "live"}${q(k.offset, k.limit)}`;
+      return { resource: "section", section: k.section, offset: k.offset, limit: k.limit, ...conditional };
     case "pin_catalog":
-      return `/api/navigation/pin-sections${q(k.offset, k.limit)}`;
+      return { resource: "pin_catalog", offset: k.offset, limit: k.limit, ...conditional };
     case "pin_section":
-      return `/api/navigation/pin-sections/${encodeURIComponent(k.sectionId)}${q(k.offset, k.limit)}`;
+      return { resource: "pin_section", sectionId: k.sectionId, offset: k.offset, limit: k.limit, ...conditional };
     case "catalog":
-      return `/api/navigation/catalogs/${k.catalog.replace("_", "-")}${q(k.offset, k.limit)}`;
+      return { resource: "catalog", catalog: k.catalog, offset: k.offset, limit: k.limit, ...conditional };
     case "project":
-      return `/api/navigation/projects/${encodeURIComponent(k.projectKey)}`;
+      return { resource: "project", projectKey: k.projectKey, ...conditional };
     case "project_page":
-      return `/api/navigation/projects/${encodeURIComponent(k.projectKey)}?tier=${k.tier}&offset=${k.offset}&limit=${k.limit}`;
+      return {
+        resource: "project_page",
+        projectKey: k.projectKey,
+        tier: k.tier,
+        offset: k.offset,
+        limit: k.limit,
+        ...conditional,
+      };
     case "location":
-      return `/api/navigation/sessions/${encodeURIComponent(k.ref)}`;
+      return { resource: "location", ref: k.ref, ...conditional };
   }
+}
+function requestFor<T>(k: ResourceKey, client: AppwireClientLike): NavigationRequest<T> {
+  return async (_signal, etag) => {
+    const response = await client.request("evener/navigation/read", paramsFor(k, etag));
+    if (!response || typeof response !== "object") throw new NavigationProtocolError("invalid response envelope");
+    const { status, generationId, revision, etag: responseEtag, data } = response as AppwireNavigationReadResponse;
+    if (status !== "ok" && status !== "not_modified")
+      throw new NavigationProtocolError("status must be exact ok or not_modified");
+    if (typeof generationId !== "string" || generationId.length === 0)
+      throw new NavigationProtocolError("missing generation");
+    if (!Number.isSafeInteger(revision) || revision < 0) throw new NavigationProtocolError("invalid revision");
+    if (typeof responseEtag !== "string" || responseEtag.length === 0)
+      throw new NavigationProtocolError("missing ETag");
+    if (status === "not_modified") {
+      if (data !== undefined) throw new NavigationProtocolError("not_modified must omit body");
+      return { status: 304, generationID: generationId, revision, etag: responseEtag };
+    }
+    if (data === undefined) throw new NavigationProtocolError("ok requires body");
+    if (!isNavigationValue(k, data, generationId, revision)) {
+      throw new NavigationProtocolError(`invalid ${k.kind} body`);
+    }
+    return { status: 200, generationID: generationId, revision, etag: responseEtag, data: data as T };
+  };
 }
 function load<T>(k: ResourceKey): Promise<ResourceState<T>> {
   if (!revalidator) return Promise.reject(new Error("navigation is not initialized"));
   const requestRevalidator = revalidator;
   const requestClient = activeClient;
+  if (!requestClient) return Promise.reject(new Error("navigation is not initialized"));
   const requestEpoch = bootEpoch;
   const requestGeneration = requestRevalidator.generationID;
-  return requestRevalidator.load<T>(key(k), requestFor<T>(k)).then((s) => {
+  return requestRevalidator.load<T>(key(k), requestFor<T>(k, requestClient)).then((s) => {
     if (
       requestClient !== activeClient ||
       requestEpoch !== bootEpoch ||
@@ -352,8 +350,7 @@ function load<T>(k: ResourceKey): Promise<ResourceState<T>> {
 }
 async function withProjectRecovery(projectKey: string): Promise<ResourceState<NavigationProjectResource>> {
   const first = await load<NavigationProjectResource>({ kind: "project", projectKey });
-  const error = first.error as { status?: number } | null;
-  if (error?.status !== 404) return first;
+  if (!isNavigationUnavailable(first.error)) return first;
   const state = navigationStore.getState();
   const catalogs = [...state.resources.values()].filter((r) => r.key.kind === "catalog");
   const known = catalogs.filter((r) => {

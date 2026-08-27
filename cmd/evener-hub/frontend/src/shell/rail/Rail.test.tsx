@@ -137,8 +137,7 @@ afterEach(() => {
 });
 
 describe("resource-backed Rail", () => {
-  test("renders loaded global and project resources without requesting /api/navigation", () => {
-    const fetchSpy = vi.spyOn(globalThis, "fetch");
+  test("renders loaded global and project resources without a transport read", () => {
     installState([
       sectionResource("live", [summary({ title: "Live resource" })]),
       catalogResource([{ key: "p", name: "Proj", session_count: 1 }]),
@@ -147,8 +146,6 @@ describe("resource-backed Rail", () => {
     render(<Rail />);
     expect(screen.getByText("Live resource")).toBeTruthy();
     expect(screen.getAllByText("Proj").length).toBeGreaterThan(0);
-    expect(fetchSpy).not.toHaveBeenCalledWith("/api/navigation", expect.anything());
-    fetchSpy.mockRestore();
   });
   test("shows bounded loading and empty states from manifest/resource state", () => {
     installState(

@@ -2,7 +2,7 @@
 
 **What this covers**: the rail's per-row expand bookkeeping surviving a whole-
 tree refetch fired by unrelated live activity. Regression class: a notification
-anywhere on the hub re-fetches `/api/navigation` and re-renders the tree — if the
+anywhere on the hub triggers an AppWire navigation read and re-renders the tree — if the
 expand bookkeeping doesn't carry across that render, a project you deliberately
 opened silently collapses the moment something happens somewhere else.
 
@@ -25,7 +25,7 @@ row has no testid at all: reach it by the `role="treeitem"` element containing
 its name, or by its `+` button's accessible name `New session in <project name>`
 (`RailRow.tsx:602-609`, `IconButton` puts `label` on `aria-label`).
 
-**Navigation resource request counts are bounded** (`docs/superpowers/specs/2026-08-25-tree-transport-optimization-design.md`): after initial hydration the idle rail issues zero navigation HTTP requests; a single semantic change fetches at most one request per affected loaded representation (manifest, section page, catalog page, project root); a mutation and its matching AppWire notification do not duplicate a resource request. Reconnection revalidates with conditional ETags (304 on no change, 200 on change).
+**Navigation resource request counts are bounded** (`docs/superpowers/specs/2026-08-25-tree-transport-optimization-design.md`): after initial hydration the idle rail issues zero navigation reads; a single semantic change issues at most one AppWire read per affected loaded representation (manifest, section page, catalog page, project root); a mutation and its matching AppWire notification do not duplicate a resource read. Reconnection revalidates with conditional ETags (`not_modified` on no change, `ok` on change).
 
 **The `aria-expanded="undefined"` bug this card used to document is gone, and
 structurally cannot return.** The old sidebar computed
@@ -60,7 +60,7 @@ entirely in the client bundle, so there is no REST-level counterpart to assert.
 
 1. Spawn a session in `$A` (`POST /api/spawn`), let its first turn finish, then
    `POST /api/sessions/local:$SID_A/shutdown`. Confirm over
-   `GET /api/navigation` that `$A`'s project entry has no `default_expanded` field
+   AppWire navigation manifest response that `$A`'s project entry has no `default_expanded` field
    (or `false`) and that you have its `key` and its server-canonical
    `working_dir` — read both back from the response, never from your shell
    variable (see Sharp edges).
@@ -81,20 +81,11 @@ entirely in the client bundle, so there is no REST-level counterpart to assert.
    `localStorage["evener.rail.expanded.v1"]` parses to an object with
    `"projectnode:<A key>": true` (`railExpansion.ts:19`, id scheme
    `railNodes.ts:209-211`).
-5. **Arm a refetch counter, then cause live activity elsewhere.** There is no
-   `seq` field to read any more, so count the store's own fetches
-   (`loadManifest` calls `fetch("/api/navigation", …)`, `stores/navigation/store.ts:186-190`):
-   ```javascript
-   (() => {
-     const orig = window.fetch;
-     window.__treeFetches = 0;
-     window.fetch = (...args) => {
-       if (String(args[0]).startsWith("/api/navigation")) window.__treeFetches++;
-       return orig.apply(window, args);
-     };
-     return { port: location.port, armed: true };
-   })()
-   ```
+5. **Watch the AppWire read, then cause live activity elsewhere.** There is no
+   `seq` field to read any more. Use the browser's WebSocket inspector for the
+   authenticated `/rpc` connection and count `evener/navigation/read` calls
+   whose params are `{"resource":"manifest"}`; do not patch `window.fetch`,
+   because navigation no longer uses HTTP.
    Then, from the shell, spawn a **live** session in the second working
    directory against a real model and let it run a real turn.
 6. Wait ~5s (the 250ms debounce plus the socket round trip and the turn's own
@@ -141,11 +132,11 @@ entirely in the client bundle, so there is no REST-level counterpart to assert.
 
 - **`mktemp -d` on macOS gives `/var/folders/…` but the server reports
   `/private/var/folders/…`.** Project working dirs are symlink-resolved
-  (`identifier.ResolveProject`) before they ever reach `/api/navigation`, so match
+  (`identifier.ResolveProject`) before they ever reach the navigation manifest, so match
   projects by the `working_dir` the server hands back, not by your shell
   variable, or the key lookup silently comes up empty.
 - **This is a client-state card; there is no browser-free half.** The expand
-  map never leaves the browser — `/api/navigation` carries only the server's
+  map never leaves the browser — the AppWire manifest carries only the server's
   `default_expanded` hint, and asserting on that would test a different thing
   entirely. A controller without Chrome can run step 1 and nothing else.
 - **A project with no children gets no `aria-expanded` attribute at all**

@@ -199,6 +199,7 @@ func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Reg
 	registerLaunchHandlers(server, launchController)
 	pluginsController := newHubPluginsController(cfg.PluginRoot, hubLaunchConfigRoot(cfg))
 	registerPluginHandlers(server, pluginsController)
+	registerNavigationReadHandler(server, navigation)
 	registerMiscHandlers(server, cfg, sources)
 	registerPluginAutoUpgradeHandlers(server, plugins.NewManager(cfg.PluginRoot))
 	return server

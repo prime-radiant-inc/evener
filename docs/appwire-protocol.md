@@ -116,6 +116,7 @@ no router (reserved).
 | `evener/paths/complete` | hub | `PathsCompleteParams` | `PathsCompleteResponse` | Path autocompletion for a prefix. |
 | `evener/projects/recent` | hub | `ProjectsRecentParams` | `ProjectsRecentResponse` | Lists the most recently used project working directories (session creation path-dropdown options; default cap 15). |
 | `evener/path/validate` | hub | `PathValidateParams` | `PathValidateResponse` | Validates a launch path. |
+| `evener/navigation/read` | hub | `NavigationReadParams` | `NavigationReadResponse` | Reads one bounded, revisioned hub navigation resource, optionally conditional on its ETag. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
 | `evener/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a evener binary upgrade. |
 | `evener/auth/status` | hub | `AuthStatusParams` | `AuthStatusResponse` | Reports auth/credential status for a provider. |
@@ -945,6 +946,33 @@ _(no fields)_
 | `generationId` | `string` |  |  |
 | `sequence` | `uint64` |  |  |
 | `targets` | `[]appwire.NavigationInvalidationTarget` |  |  |
+
+
+### `NavigationReadParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `resource` | `string` |  |  |
+| `section` | `string` | yes |  |
+| `sectionId` | `string` | yes |  |
+| `catalog` | `string` | yes |  |
+| `projectKey` | `string` | yes |  |
+| `tier` | `string` | yes |  |
+| `ref` | `string` | yes |  |
+| `offset` | `*uint32` | yes |  |
+| `limit` | `*uint32` | yes |  |
+| `etag` | `string` | yes |  |
+
+
+### `NavigationReadResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `status` | `string` |  |  |
+| `generationId` | `string` |  |  |
+| `revision` | `uint64` |  |  |
+| `etag` | `string` |  |  |
+| `data` | `jsontext.Value` | yes |  |
 
 
 ### `PathValidateParams`

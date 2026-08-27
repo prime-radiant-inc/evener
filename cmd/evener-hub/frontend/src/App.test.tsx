@@ -3,6 +3,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test, vi } from "vi
 import { initNotifications, resetNotificationsForTests } from "./notifications";
 import { AppwireClient } from "./protocol/client";
 import { FakeClient } from "./protocol/testing/fakeClient";
+import type { NavigationReadParams, NavigationReadResponse } from "./protocol/types.gen";
 import { AppShell } from "./shell/AppShell";
 import { resetWorkspaceStoreForTests } from "./shell/workspace";
 import { connectionStore } from "./stores/connection";
@@ -106,53 +107,34 @@ const EMPTY_NAV_RESPONSE = {
   catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
 };
 
-function stubNavigationFetch(): void {
-  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
-    if (input !== "/api/navigation" || (init?.method ?? "GET") !== "GET" || init?.credentials !== "same-origin") {
-      throw new Error(`unexpected fetch in App.test: ${String(input)}`);
-    }
-    return Promise.resolve(
-      new Response(JSON.stringify(EMPTY_NAV_RESPONSE), {
-        headers: {
-          "Content-Type": "application/json",
-          etag: '"test"',
-          "X-Evener-Navigation-Generation": "test-generation",
-          "X-Evener-Navigation-Revision": "1",
-        },
-      }),
-    );
-  });
+function navigationReadResponse(generationId: string): NavigationReadResponse {
+  return {
+    status: "ok",
+    generationId,
+    revision: 1,
+    etag: '"test"',
+    data: { ...EMPTY_NAV_RESPONSE, generation_id: generationId },
+  };
 }
 
-function stubDeferredNavigationFetch(): { requested: Promise<void>; release: () => void } {
+function stubDeferredNavigationRead(client: FakeClient): { requested: Promise<void>; release: () => void } {
   let signalRequest!: () => void;
-  let releaseResponse!: (response: Response) => void;
+  let releaseResponse!: () => void;
   const requested = new Promise<void>((resolve) => {
     signalRequest = resolve;
   });
-  const response = new Promise<Response>((resolve) => {
+  const response = new Promise<void>((resolve) => {
     releaseResponse = resolve;
   });
-  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
-    if (input !== "/api/navigation" || (init?.method ?? "GET") !== "GET" || init?.credentials !== "same-origin") {
-      throw new Error(`unexpected fetch in App.test: ${String(input)}`);
-    }
+  client.on("evener/navigation/read", (params) => {
+    if (params.resource !== "manifest") throw new Error(`unexpected navigation resource: ${params.resource}`);
     signalRequest();
-    return response;
+    return response.then(() => navigationReadResponse("test-generation"));
   });
   return {
     requested,
     release: () => {
-      releaseResponse(
-        new Response(JSON.stringify(EMPTY_NAV_RESPONSE), {
-          headers: {
-            "Content-Type": "application/json",
-            etag: '"test"',
-            "X-Evener-Navigation-Generation": "test-generation",
-            "X-Evener-Navigation-Revision": "1",
-          },
-        }),
-      );
+      releaseResponse();
     },
   };
 }
@@ -209,7 +191,6 @@ beforeAll(async () => {
   // welcome route renders.
   closeStaleClient();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
-  stubNavigationFetch();
   await import("./dev/WidgetGallery");
   await import("./dev/DevHarness");
   await import("./panes/welcome/Welcome");
@@ -234,7 +215,6 @@ beforeEach(() => {
   closeAllCreatedClients();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   localStorage.clear();
-  stubNavigationFetch();
 });
 
 afterEach(() => {
@@ -271,7 +251,7 @@ afterEach(() => {
   // Left un-reset, a LATER file's own client connecting straight to "ready"
   // (e.g. `new FakeClient("ready")`) reads as a "reconnect" against this
   // leftover `sawReady=true`, firing an extra, unexpected
-  // navigationStore.loadManifest() into that file's own fetch-call assertions.
+  // navigationStore.loadManifest() into that file's own navigation-call assertions.
   //
   // AppShell.tsx's module-scope initNotifications() call only ever fires
   // once per worker (its own "only once" guard), so leaving it reset would
@@ -315,17 +295,17 @@ test("initiates and settles the welcome navigation load without an error", async
     features: {} as never,
     navigation: { version: 1, generationId: "test-generation", sequence: 0 },
   }));
-  const navFetch = stubDeferredNavigationFetch();
+  const navRead = stubDeferredNavigationRead(client);
   render(<AppShell client={client} />);
-  await navFetch.requested;
-  navFetch.release();
+  await navRead.requested;
+  navRead.release();
   await navigationStore.getState().loadManifest();
   const manifest = navigationStore.getState().manifest;
   expect(manifest).not.toBeNull();
   expect(manifest?.error).toBeNull();
 });
 
-test("AppShell's injected v1 handshake selects navigation without a legacy tree request", async () => {
+test("AppShell's injected v1 handshake selects navigation through AppWire", async () => {
   const client = new FakeClient("ready");
   client.scriptConnect(() => ({
     serverInfo: { name: "fake", version: "1" },
@@ -334,31 +314,11 @@ test("AppShell's injected v1 handshake selects navigation without a legacy tree 
     features: {} as never,
     navigation: { version: 1, generationId: "app-generation", sequence: 0 },
   }));
-  const calls: string[] = [];
-  vi.stubGlobal("fetch", (input: RequestInfo | URL, init?: RequestInit) => {
-    calls.push(String(input));
-    if (input !== "/api/navigation" || (init?.method ?? "GET") !== "GET")
-      throw new Error(`unexpected AppShell fetch: ${String(input)}`);
-    return Promise.resolve(
-      new Response(
-        JSON.stringify({
-          generation_id: "app-generation",
-          revision: 1,
-          sources: [],
-          attentionSummary: { needsYou: 0, error: 0, working: 0 },
-          sections: { live: { count: 0 }, needs_you: { count: 0 }, pin_sections: { count: 0 } },
-          catalogs: { projects: { count: 0 }, archived_projects: { count: 0 }, test_runs: { count: 0 } },
-        }),
-        {
-          headers: {
-            "content-type": "application/json",
-            "X-Evener-Navigation-Generation": "app-generation",
-            "X-Evener-Navigation-Revision": "1",
-            etag: '"app-manifest"',
-          },
-        },
-      ),
-    );
+  const calls: NavigationReadParams[] = [];
+  client.on("evener/navigation/read", (params) => {
+    calls.push(params);
+    if (params.resource !== "manifest") throw new Error(`unexpected navigation resource: ${params.resource}`);
+    return { ...navigationReadResponse("app-generation"), etag: '"app-manifest"' };
   });
 
   render(<AppShell client={client} />);
@@ -367,10 +327,10 @@ test("AppShell's injected v1 handshake selects navigation without a legacy tree 
   await Promise.resolve();
 
   expect(navigationStore.getState().mode).toBe("v1");
-  expect(calls).toEqual(["/api/navigation"]);
+  expect(calls).toEqual([{ resource: "manifest" }]);
 });
 
-test("does not escape a tree fetch before the test fake is installed", () => {
+test("does not escape a navigation request before the test fake is installed", () => {
   expect(escapedFetches).toHaveLength(0);
 });
 

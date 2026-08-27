@@ -20,7 +20,7 @@ its bare-id fallback. Jesse's call was no back-compat for the old form.
 are `[data-session-ref="local:<SID>"]` (`shell/rail/RailRow.tsx:509`); there
 is no `.sb-row` class and no `data-ref` attribute.
 
-**Navigation resource request counts are bounded** (`docs/superpowers/specs/2026-08-25-tree-transport-optimization-design.md`): opening a session row fetches at most its project root resource; the idle rail issues zero navigation HTTP requests after initial hydration, and reconnect revalidates cached resources with conditional ETags rather than re-fetching unconditionally.
+**Navigation resource request counts are bounded** (`docs/superpowers/specs/2026-08-25-tree-transport-optimization-design.md`): opening a session row reads at most its project root resource over AppWire; the idle rail issues zero navigation reads after initial hydration, and reconnect revalidates cached resources with conditional ETags rather than re-reading unconditionally.
 
 ## Pre-state
 

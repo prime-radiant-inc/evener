@@ -1,4 +1,15 @@
+import { WireError } from "../../protocol/errors";
 import type { NavigationInvalidationTarget } from "../../protocol/types.gen";
+
+const NAVIGATION_UNAVAILABLE_CODE = -32014;
+
+export function isNavigationUnavailable(error: unknown): boolean {
+  return (
+    error instanceof WireError &&
+    error.code === NAVIGATION_UNAVAILABLE_CODE &&
+    error.evenerErrorInfo === "actionUnavailable"
+  );
+}
 
 export type ResourceKey =
   | { kind: "manifest" }

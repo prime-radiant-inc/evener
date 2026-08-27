@@ -9656,6 +9656,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerAuthApiKeySet,
 		appwire.MethodEvenerAuthDeviceStart,
 		appwire.MethodEvenerAuthDevicePoll,
+		appwire.MethodEvenerNavigationRead,
 		appwire.MethodEvenerInstanceList,
 		appwire.MethodEvenerInstanceCreate,
 		appwire.MethodEvenerInstanceEdit,
