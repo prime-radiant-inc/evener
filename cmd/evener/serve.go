@@ -244,6 +244,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	addr := fs.String("addr", "127.0.0.1:9131", "listen address")
 	model := fs.String("model", "", "LLM model identifier (provider/model)")
 	fastCheapModel := fs.String("fast-cheap-model", "", "auxiliary model for side calls (naming, summarization, web fetch); 'provider/model' may use a different provider than --model, or a bare 'model' for the active provider")
+	visionModel := fs.String("vision-model", "", "vision side-channel model: 'off' disables image description, 'provider/model' or bare 'model' routes it (default: the session model)")
 	workDir := fs.String("dir", "", "working directory")
 	stateDir := fs.String("state-dir", "", "override runtime state directory")
 	runDirFlag := fs.String("run-dir", "", "override rendezvous run directory")
@@ -428,6 +429,10 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 	if err != nil {
 		return err
 	}
+	visionModelVal, err := applyVisionModel(profile, *visionModel, client)
+	if err != nil {
+		return err
+	}
 	env := execenv.NewLocalExecutionEnvironment(wd)
 	// A daemon/session launched outside the developer's shell rc chain (macOS
 	// launchd, a GUI app, systemd) inherits a PATH lacking tool directories like
@@ -454,6 +459,7 @@ func runServeWithDeps(args []string, deps serveDeps) error {
 		ContextStrategy:             *contextStrategy,
 		ExportATIFPath:              *exportATIF,
 		ExportATIFProviderHandles:   *exportATIFProviderHandles,
+		VisionModel:                 visionModelVal,
 		NonInteractive:              *nonInteractive,
 		SystemPromptAsUser:          *systemPromptAsUser,
 		ModelFallbacks:              []string(modelFallbacks),
@@ -1292,6 +1298,32 @@ func applyFastCheapModel(profile *provider.Profile, raw string, client *llm.Clie
 		}
 	}
 	return provider.WithCheapModel(profile, raw), nil
+}
+
+// applyVisionModel validates the --vision-model ref against the registered
+// providers and returns the canonical SessionConfig.VisionModel value. "off"
+// (canonicalized to lowercase) disables the side-channel, a bare model keeps
+// the active provider, and "provider/model" pins a provider that must be
+// registered (configured AND credentialed) — the same rule --fast-cheap-model
+// enforces. The active profile is never touched.
+func applyVisionModel(profile *provider.Profile, raw string, client *llm.Client) (string, error) {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return "", nil
+	}
+	if strings.EqualFold(raw, "off") {
+		return "off", nil
+	}
+	if prov, model, ok := strings.Cut(raw, "/"); ok {
+		if prov == "" || model == "" {
+			return "", fmt.Errorf("--vision-model %q is malformed: want \"model\" or \"provider/model\"", raw)
+		}
+		if prov != profile.ID() && !clientHasProvider(client, prov) {
+			return "", fmt.Errorf("--vision-model provider %q is not configured or has no credential (active provider %q); available providers: %s",
+				prov, profile.ID(), strings.Join(client.ProviderNames(), ", "))
+		}
+	}
+	return raw, nil
 }
 
 func clientHasProvider(client *llm.Client, name string) bool {

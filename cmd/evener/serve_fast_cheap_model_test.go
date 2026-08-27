@@ -94,3 +94,50 @@ func TestApplyFastCheapModel_BlankKeepsDefault(t *testing.T) {
 		t.Fatalf("CheapModel() = %q, want gpt-4.1-nano", got.CheapModel())
 	}
 }
+
+func TestApplyVisionModel_PassthroughStates(t *testing.T) {
+	profile := provider.NewOpenAIProfile("gpt-5.2")
+	for _, raw := range []string{"", "off", "OFF", "gpt-4.1-mini", "openai/gpt-4.1-mini"} {
+		got, err := applyVisionModel(profile, raw, clientWithProviders("openai"))
+		if err != nil {
+			t.Fatalf("applyVisionModel(%q): %v", raw, err)
+		}
+		want := raw
+		if raw == "OFF" {
+			want = "off" // sentinel canonicalizes to lowercase
+		}
+		if got != want {
+			t.Fatalf("applyVisionModel(%q) = %q, want %q", raw, got, want)
+		}
+	}
+}
+
+func TestApplyVisionModel_CrossProviderWhenRegistered(t *testing.T) {
+	profile := provider.NewOpenAIProfile("gpt-5.2")
+	got, err := applyVisionModel(profile, "anthropic/claude-haiku-4-5", clientWithProviders("openai", "anthropic"))
+	if err != nil {
+		t.Fatalf("applyVisionModel: %v", err)
+	}
+	if got != "anthropic/claude-haiku-4-5" {
+		t.Fatalf("got %q", got)
+	}
+	if profile.Model() != "gpt-5.2" {
+		t.Fatal("applyVisionModel must not touch the active profile")
+	}
+}
+
+func TestApplyVisionModel_CrossProviderRejectedWhenNotRegistered(t *testing.T) {
+	profile := provider.NewOpenAIProfile("gpt-5.2")
+	if _, err := applyVisionModel(profile, "anthropic/claude-x", clientWithProviders("openai")); err == nil {
+		t.Fatal("unregistered cross-provider ref must fail")
+	}
+}
+
+func TestApplyVisionModel_MalformedRef(t *testing.T) {
+	profile := provider.NewOpenAIProfile("gpt-5.2")
+	for _, raw := range []string{"anthropic/", "/claude-x"} {
+		if _, err := applyVisionModel(profile, raw, clientWithProviders("openai", "anthropic")); err == nil {
+			t.Fatalf("malformed ref %q must fail", raw)
+		}
+	}
+}

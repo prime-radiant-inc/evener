@@ -30,6 +30,7 @@ type stringSliceFlag = cmdutil.StringSliceFlag
 type runCLIFlags struct {
 	model                       *string
 	fastCheapModel              *string
+	visionModel                 *string
 	workDir                     *string
 	systemPrompt                *string
 	stateDir                    *string
@@ -204,6 +205,7 @@ func mainWithDeps(deps mainDeps) {
 		prompt:                      prompt,
 		model:                       *flags.model,
 		fastCheapModel:              *flags.fastCheapModel,
+		visionModel:                 *flags.visionModel,
 		workDir:                     *flags.workDir,
 		stateDir:                    *flags.stateDir,
 		systemPrompt:                *flags.systemPrompt,
@@ -255,6 +257,7 @@ func newRunFlagSet(stderr io.Writer) (*flag.FlagSet, *runCLIFlags) {
 
 	flags.model = fs.String("model", "", "LLM model identifier (`provider/model`)")
 	flags.fastCheapModel = fs.String("fast-cheap-model", "", "auxiliary model for side calls (naming, summarization, web fetch); 'provider/model' may use a different provider than --model, or a bare 'model' for the active provider")
+	flags.visionModel = fs.String("vision-model", "", "vision side-channel model: 'off' disables image description, 'provider/model' or bare 'model' routes it (default: the session model)")
 	flags.workDir = fs.String("dir", "", "working `directory` (default: current directory)")
 	flags.systemPrompt = fs.String("system-prompt", "", "path to a custom system prompt `file`")
 	flags.stateDir = fs.String("state-dir", "", "override runtime state `directory` (default: XDG-computed)")
