@@ -69,11 +69,10 @@ func fillLiveModelMetadata(ctx context.Context, client *llm.Client, profile *pro
 // prior unvalidated behavior in that case.
 func resolveLiveModelProfileValidated(client *llm.Client, profile *provider.Profile) (*provider.Profile, liveModelEnumeration, error) {
 	filled, enumeration := resolveLiveModelProfileWithEnumerationTimeout(client, profile)
-	if enumeration.err != nil {
-		return filled, enumeration, nil
-	}
-	if err := validateModelSwitchMembership(client, filled, enumeration.models); err != nil {
-		return filled, enumeration, err
+	if enumeration.err == nil {
+		if err := validateModelSwitchMembership(client, filled, enumeration.models); err != nil {
+			return filled, enumeration, err
+		}
 	}
 	return filled, enumeration, nil
 }

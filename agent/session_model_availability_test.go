@@ -329,7 +329,7 @@ func TestNewSessionBoundedSnapshotRetainsSelectedProvider(t *testing.T) {
 	client := llm.NewClient()
 	client.Register(selected)
 	nameToTag := map[string]string{selectedName: "openai"}
-	for i := 0; i < 16; i++ {
+	for i := range 16 {
 		name := fmt.Sprintf("provider-%02d", i)
 		adapter := &modelAvailabilityAdapter{models: []llm.ModelInfo{{ID: "model"}}}
 		adapter.name = name
