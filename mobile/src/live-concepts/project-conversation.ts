@@ -18,10 +18,26 @@
 // rows prepend. `questionKey` links a transcript item to its LiveQuestionView
 // via an opaque key; null when the item is not a question-bearing turn.
 //
-// The projector exposes `reset(scope)` to clear entries for a specific
-// conversation ref and `dispose()` to clear everything. The registry is
-// bounded with safe overflow eviction. A deterministic key allocator can be
-// injected for tests.
+// The registry uses exact nested Maps keyed separately by raw scope,
+// namespace, and source ID — no delimiter-concatenated keys. `reset(scope)`
+// deletes the exact scope by Map key; no prefix matching, so a scope that is
+// a prefix of another is never confused. The registry is bounded by safe
+// rejection (not eviction): before projecting, the projector counts all
+// identities the projection would bring; if over max, it throws a generic
+// typed ProjectionCapacityError and leaves the prior registry unchanged — no
+// current identity loses its key.
+//
+// The default key allocator is process-unique via a module-level factory
+// counter, so two projector instances with default allocators never collide.
+// An injected allocator that returns a key already owned by another identity
+// throws a generic ProjectionCapacityError. `reset` and `dispose` free
+// allocated key state so it can be reused.
+//
+// Empty/missing question batches emit one explicit question transcript row
+// with questionKey:null and a safe generic body. Multi-question batches remain
+// one row/card per question. Option identity uses exact nested question scope
+// + unique label/detail; indistinguishable duplicates throw a generic safe
+// error whose message contains no raw q.key.
 
 import type {
   MobileConversation,
@@ -95,6 +111,18 @@ function conversationTone(status: string): DisplayTone {
   return "unknown";
 }
 
+// --- error -------------------------------------------------------------------
+
+// Generic typed projection-capacity error. Used for both capacity overflow
+// and allocator collision. The message is intentionally generic — it never
+// contains raw scope/namespace/source IDs or allocator-returned keys.
+export class ProjectionCapacityError extends Error {
+  constructor() {
+    super("projection capacity exceeded");
+    this.name = "ProjectionCapacityError";
+  }
+}
+
 // --- operational map (snapshot) ----------------------------------------------
 
 export interface ConversationOperationalMap {
@@ -123,16 +151,88 @@ export interface LiveConversationProjector {
   dispose(): void;
 }
 
-// --- key allocator ------------------------------------------------------------
+// --- key allocator -----------------------------------------------------------
 
 export type OpaqueKeyAllocator = () => string;
 
+// Module-level counter for process-unique default allocator prefixes.
+// Two projector instances with the default allocator never collide because
+// each gets a distinct prefix.
+let moduleAllocatorCounter = 0;
+
 function defaultAllocator(): OpaqueKeyAllocator {
+  const prefix = `p${moduleAllocatorCounter++}`;
   let n = 0;
-  return () => {
-    n += 1;
-    return `k${n}`;
-  };
+  return () => `${prefix}-${++n}`;
+}
+
+// --- nested registry ---------------------------------------------------------
+// scope → namespace → sourceId → allocated value
+// Exact Map-key lookup; no delimiter concatenation, no prefix matching.
+
+type NestedMap<V> = Map<string, Map<string, Map<string, V>>>;
+
+function nestedGet<V>(
+  reg: NestedMap<V>,
+  scope: string,
+  ns: string,
+  id: string,
+): V | undefined {
+  return reg.get(scope)?.get(ns)?.get(id);
+}
+
+function nestedSet<V>(
+  reg: NestedMap<V>,
+  scope: string,
+  ns: string,
+  id: string,
+  val: V,
+): void {
+  let nsMap = reg.get(scope);
+  if (!nsMap) {
+    nsMap = new Map();
+    reg.set(scope, nsMap);
+  }
+  let idMap = nsMap.get(ns);
+  if (!idMap) {
+    idMap = new Map();
+    nsMap.set(ns, idMap);
+  }
+  idMap.set(id, val);
+}
+
+function nestedHas<V>(
+  reg: NestedMap<V>,
+  scope: string,
+  ns: string,
+  id: string,
+): boolean {
+  return reg.get(scope)?.get(ns)?.has(id) ?? false;
+}
+
+// Remove a scope entirely and return all allocated values stored under it.
+function nestedDeleteScope<V>(reg: NestedMap<V>, scope: string): V[] {
+  const nsMap = reg.get(scope);
+  if (!nsMap) return [];
+  const values: V[] = [];
+  for (const [, idMap] of nsMap) {
+    for (const [, val] of idMap) {
+      values.push(val);
+    }
+  }
+  reg.delete(scope);
+  return values;
+}
+
+// Count total entries across all scopes (for one registry).
+function nestedCount<V>(reg: NestedMap<V>): number {
+  let count = 0;
+  for (const [, nsMap] of reg) {
+    for (const [, idMap] of nsMap) {
+      count += idMap.size;
+    }
+  }
+  return count;
 }
 
 // --- projector factory -------------------------------------------------------
@@ -146,21 +246,25 @@ export function createLiveConversationProjector(options?: {
   const alloc = options?.allocator ?? defaultAllocator();
   const maxReg = options?.maxRegistrySize ?? DEFAULT_MAX_REGISTRY;
 
-  // Private scoped registries: maps "scope:namespace:sourceId" → opaque key/seq.
-  const keyRegistry = new Map<string, string>();
-  const seqRegistry = new Map<string, string>();
+  // Private scoped registries: nested Maps keyed by scope → namespace → id.
+  const keyRegistry: NestedMap<string> = new Map();
+  const seqRegistry: NestedMap<string> = new Map();
 
-  function evictIfNeeded(): void {
-    while (keyRegistry.size >= maxReg) {
-      const first = keyRegistry.keys().next();
-      if (first.done) break;
-      keyRegistry.delete(first.value);
+  // All allocator-returned strings currently in use (for collision detection).
+  // Freed on reset/dispose so keys can be reused after their scope is cleared.
+  const allocatedKeys = new Set<string>();
+
+  // Total identity count (entries in keyRegistry only; seqRegistry tracks the
+  // same identity tuples for items but is not double-counted).
+  let totalIdentities = 0;
+
+  function allocate(): string {
+    const k = alloc();
+    if (allocatedKeys.has(k)) {
+      throw new ProjectionCapacityError();
     }
-    while (seqRegistry.size >= maxReg) {
-      const first = seqRegistry.keys().next();
-      if (first.done) break;
-      seqRegistry.delete(first.value);
-    }
+    allocatedKeys.add(k);
+    return k;
   }
 
   function stableKey(
@@ -168,12 +272,11 @@ export function createLiveConversationProjector(options?: {
     namespace: string,
     sourceId: string,
   ): string {
-    const regKey = `${scope}:${namespace}:${sourceId}`;
-    let k = keyRegistry.get(regKey);
+    let k = nestedGet(keyRegistry, scope, namespace, sourceId);
     if (k === undefined) {
-      evictIfNeeded();
-      k = alloc();
-      keyRegistry.set(regKey, k);
+      k = allocate();
+      nestedSet(keyRegistry, scope, namespace, sourceId, k);
+      totalIdentities += 1;
     }
     return k;
   }
@@ -183,14 +286,51 @@ export function createLiveConversationProjector(options?: {
     namespace: string,
     sourceId: string,
   ): string {
-    const regKey = `${scope}:${namespace}:${sourceId}`;
-    let s = seqRegistry.get(regKey);
+    let s = nestedGet(seqRegistry, scope, namespace, sourceId);
     if (s === undefined) {
-      evictIfNeeded();
-      s = alloc();
-      seqRegistry.set(regKey, s);
+      s = allocate();
+      nestedSet(seqRegistry, scope, namespace, sourceId, s);
     }
     return s;
+  }
+
+  // Pre-projection identity count: walk all items, collect unique identity
+  // tuples, count how many are NOT already registered. If the total would
+  // exceed max, the caller throws before touching the registry.
+  function countNewIdentities(
+    items: readonly MobileTimelineItem[],
+    scope: string,
+  ): number {
+    const seen = new Set<string>();
+    let newCount = 0;
+
+    function check(ns: string, id: string): void {
+      const tuple = `${ns}\u0000${id}`;
+      if (seen.has(tuple)) return;
+      seen.add(tuple);
+      if (!nestedHas(keyRegistry, scope, ns, id)) newCount += 1;
+    }
+
+    check("thread", scope);
+    for (const item of items) {
+      if (item.kind === "question") {
+        if (item.batch.questions.length === 0) {
+          check("item", item.id);
+        } else {
+          for (const q of item.batch.questions) {
+            if (q === undefined) continue;
+            check("item", `${item.id}:${q.key}`);
+            check("question", q.key);
+            for (const o of q.options) {
+              check("option", `${q.key}:${o.label}\u0000${o.detail}`);
+            }
+          }
+        }
+      } else {
+        check("item", item.id);
+      }
+    }
+    return newCount;
   }
 
   function projectItem(
@@ -273,6 +413,24 @@ export function createLiveConversationProjector(options?: {
         ];
 
       case "question": {
+        // Empty/missing question batch: one explicit row, questionKey:null,
+        // safe generic body. No LiveQuestionView card is created.
+        if (item.batch.questions.length === 0) {
+          return [
+            {
+              key: stableKey(scope, "item", item.id),
+              kind: "question",
+              label: "Question",
+              body: "No questions available.",
+              tone: "idle",
+              streaming: false,
+              truncated: false,
+              questionKey: null,
+              sequenceLabel: stableSeq(scope, "item", item.id),
+            },
+          ];
+        }
+
         // C4: Project one linked transcript question row per question in the
         // batch, never first-body/last-key mismatch. Each row links to its
         // own questionKey.
@@ -346,6 +504,7 @@ export function createLiveConversationProjector(options?: {
 
     for (const item of items) {
       if (item.kind !== "question") continue;
+      if (item.batch.questions.length === 0) continue; // empty batch: no card
       for (const q of item.batch.questions) {
         if (q === undefined) continue;
         const qKey = stableKey(scope, "question", q.key);
@@ -354,13 +513,14 @@ export function createLiveConversationProjector(options?: {
 
         // C3: Option identity uses stable content identity (label+detail),
         // not array index. Detect indistinguishable duplicates and safe-error.
+        // The error message is generic — no raw q.key in it.
         const seenOptions = new Set<string>();
         const options = q.options.map((o) => {
           const optIdentity = `${o.label}\u0000${o.detail}`;
           if (seenOptions.has(optIdentity)) {
-            throw new Error(
-              `Indistinguishable duplicate option (label="${o.label}", detail="${o.detail}") in question "${q.key}" — cannot assign distinct stable keys`,
-            );
+            // Generic safe error: says "duplicate option" but never leaks the
+            // raw q.key or any internal identifier.
+            throw new Error("Indistinguishable duplicate option");
           }
           seenOptions.add(optIdentity);
           const optKey = stableKey(scope, "option", `${q.key}:${optIdentity}`);
@@ -387,6 +547,13 @@ export function createLiveConversationProjector(options?: {
     ): { view: LiveConversationView; operational: ConversationOperationalMap } {
       const { ref, olderCursor, projectLabel, updatedLabel } = opts;
       const scope = ref;
+
+      // Capacity check: count new identities this projection would bring.
+      // If total would exceed max, throw before touching the registry.
+      const newCount = countNewIdentities(conv.items, scope);
+      if (totalIdentities + newCount > maxReg) {
+        throw new ProjectionCapacityError();
+      }
 
       // Pre-compute question keys first so items can link to them.
       const { questions, keyMap, opQuestionKeys, opOptionKeys } =
@@ -431,20 +598,26 @@ export function createLiveConversationProjector(options?: {
       if (scope === undefined) {
         keyRegistry.clear();
         seqRegistry.clear();
+        allocatedKeys.clear();
+        totalIdentities = 0;
       } else {
-        const prefix = `${scope}:`;
-        for (const k of keyRegistry.keys()) {
-          if (k.startsWith(prefix)) keyRegistry.delete(k);
+        // Free allocated keys for this scope from both registries.
+        for (const k of nestedDeleteScope(keyRegistry, scope)) {
+          allocatedKeys.delete(k);
         }
-        for (const k of seqRegistry.keys()) {
-          if (k.startsWith(prefix)) seqRegistry.delete(k);
+        for (const s of nestedDeleteScope(seqRegistry, scope)) {
+          allocatedKeys.delete(s);
         }
+        // Recount total identities from keyRegistry (accurate, avoids drift).
+        totalIdentities = nestedCount(keyRegistry);
       }
     },
 
     dispose(): void {
       keyRegistry.clear();
       seqRegistry.clear();
+      allocatedKeys.clear();
+      totalIdentities = 0;
     },
   };
 }
