@@ -93,7 +93,7 @@ func registerCommunicateTool(reg *tool.Registry, deps *toolDeps) {
 					if strings.TrimSpace(msg.Text) != "" {
 						inbox = append(inbox, msg.Text)
 					}
-					if len(msg.Images) > 0 && msg.ClientMutationID == "" {
+					if len(msg.Images) > 0 {
 						deferred = append(deferred, msg)
 					}
 				}
