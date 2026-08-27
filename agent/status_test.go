@@ -427,6 +427,9 @@ func TestSession_DetailedStatus_EmptySections(t *testing.T) {
 		t.Errorf("expected no MCP servers, got %d", len(ds.MCP))
 	}
 	// No plugins in a vanilla session.
+	if ds.Plugins == nil {
+		t.Fatal("expected an explicit empty plugin slice")
+	}
 	if len(ds.Plugins) != 0 {
 		t.Errorf("expected no plugins, got %d", len(ds.Plugins))
 	}

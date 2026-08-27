@@ -6,8 +6,18 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../protocol/errors";
 import { FakeClient } from "../../protocol/testing/fakeClient";
-import type { Thread, ThreadCapabilities, ThreadStartParams, ThreadStartResponse } from "../../protocol/types.gen";
+import type {
+  AnyNotification,
+  LaunchOption,
+  PluginPreviewResponse,
+  Thread,
+  ThreadCapabilities,
+  ThreadStartParams,
+  ThreadStartResponse,
+} from "../../protocol/types.gen";
 import { ClientProvider } from "../../shell/clientContext";
+import { connectionStore } from "../../stores/connection";
+import { extensionsStore, resetExtensionsStoreForTests } from "../../stores/extensions";
 import { Toast } from "../../widgets";
 import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
 import textareaStyles from "../../widgets/textarea/textarea.module.css";
@@ -91,6 +101,7 @@ function readyClient(configure?: (fake: FakeClient) => void): FakeClient {
   fake.on("evener/projects/recent", () => ({ data: [] }));
   fake.on("evener/paths/complete", () => ({ data: [] }));
   fake.on("evener/path/validate", () => ({ path: "", valid: true }));
+  fake.on("evener/plugin/preview", () => ({ plugins: [] }));
   fake.on("thread/start", () => startResponse("local:abc123"));
   configure?.(fake);
   return fake;
@@ -178,6 +189,8 @@ beforeEach(() => {
 
 afterEach(() => {
   cleanup();
+  connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
+  resetExtensionsStoreForTests();
   vi.unstubAllGlobals();
   window.history.pushState({}, "", "/");
   resetToastStoreForTests();
@@ -211,8 +224,8 @@ test("the configuration row is working directory, model and effort - and nothing
 // Issue #198: the phone's attach button and model trigger are the composer's,
 // in the composer's place - the card's own control row - rather than a fixed
 // band at the foot of the viewport and a bespoke sheet in the settings list.
-// The row order below is the whole remaining Treatment A list: Model left it
-// when the card took the job.
+// The row order below is the Treatment A list plus session-only Plugins. Model
+// left it when the card took the job.
 test("mobile Spawn sets attachments and the model from inside the prompt card, not from the settings rows", async () => {
   renderSpawn(readyClient());
   await settled();
@@ -220,7 +233,7 @@ test("mobile Spawn sets attachments and the model from inside the prompt card, n
   const mobileConfig = screen.getByTestId("spawn-mobile-config");
   expect(
     [...mobileConfig.querySelectorAll<HTMLElement>("[data-testid='mobile-spawn-row']")].map((row) => row.dataset.label),
-  ).toEqual(["Harness", "Working directory", "Branch", "Reasoning effort", "Access mode"]);
+  ).toEqual(["Harness", "Working directory", "Branch", "Reasoning effort", "Access mode", "Plugins"]);
 
   const card = screen.getByTestId("spawn-prompt-card");
   const controls = screen.getByTestId("spawn-controls");
@@ -468,6 +481,455 @@ test("a full submit sends the cwd, prompt, and access-mode sandbox, then routes 
   });
   // Sticky defaults persist the working dir globally on submit (floor §1.9).
   expect(localStorage.getItem("evener-hub.spawn-defaults.global.working_dir")).toBe("/tmp/project");
+});
+
+test("Spawn preview omits enabledPlugins while selection remains untouched", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient();
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toEqual({
+      cwd: "/tmp/project",
+    }),
+  );
+});
+
+test("desktop plugin summary remains mounted with exact loading and error status", async () => {
+  const pending = new Promise<PluginPreviewResponse>(() => {});
+  const pendingClient = readyClient((f) => f.on("evener/plugin/preview", () => pending));
+  renderSpawn(pendingClient);
+  expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("Inspecting plugins…");
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+
+  cleanup();
+  const errorClient = readyClient((f) => {
+    f.on("evener/plugin/preview", () => {
+      throw new Error("preview unavailable");
+    });
+  });
+  renderSpawn(errorClient);
+  await waitFor(() =>
+    expect(screen.getByTestId("spawn-plugin-summary").textContent).toContain("Couldn't inspect plugins"),
+  );
+  expect(screen.getByTestId("spawn-plugin-summary").textContent).not.toContain("0 of 0");
+});
+
+const SPAWN_PLUGIN_PREVIEW: PluginPreviewResponse = {
+  plugins: [
+    {
+      name: "alpha",
+      source: "installed",
+      selected: true,
+      skillCount: 1,
+      agentCount: 0,
+      commandCount: 0,
+      hookCount: 0,
+      mcpCount: 0,
+    },
+    {
+      name: "beta",
+      source: "directory",
+      path: "/tmp/beta",
+      selected: true,
+      skillCount: 0,
+      agentCount: 0,
+      commandCount: 1,
+      hookCount: 0,
+      mcpCount: 0,
+    },
+  ],
+};
+
+async function openDesktopPluginSelection(user: ReturnType<typeof userEvent.setup>): Promise<void> {
+  await waitFor(() => expect(screen.getByTestId("spawn-plugin-disclosure")).toBeTruthy());
+  const disclosure = screen.getByTestId("spawn-plugin-disclosure") as HTMLDetailsElement;
+  if (!disclosure.open) await user.click(screen.getByText("Plugins for this session"));
+}
+
+test("explicit plugin selection reaches Preview, resolve, and Thread Start", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", () => SPAWN_PLUGIN_PREVIEW);
+    f.on("evener/launch/resolve", () => ({
+      effective: { model: "anthropic/claude-sonnet-4-5" },
+      layers: {},
+      provenance: {},
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+
+  await waitFor(() => {
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toMatchObject({
+      cwd: "/tmp/project",
+      launchOverrides: { enabledPlugins: ["alpha"] },
+    });
+  });
+  await waitFor(() => {
+    expect(fake.calls.filter((call) => call.method === "evener/launch/resolve").at(-1)?.params).toMatchObject({
+      cwd: "/tmp/project",
+      launchOverrides: { enabledPlugins: ["alpha"] },
+    });
+  });
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    launchOverrides: { enabledPlugins: ["alpha"] },
+  });
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toEqual({
+      cwd: "/tmp/project",
+    }),
+  );
+});
+
+test("a missing working directory still exposes plugin selection before Create & start", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", (params) => {
+      if (params.cwd === "/tmp/new") return SPAWN_PLUGIN_PREVIEW;
+      return { plugins: [] };
+    });
+    f.on("evener/path/validate", () => ({
+      path: "/tmp/new",
+      valid: false,
+      error: "stat /tmp/new: no such file or directory",
+    }));
+  });
+  renderSpawn(fake);
+  await settled();
+
+  await setWorkingDir(user, "/tmp/new");
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toMatchObject({
+      cwd: "/tmp/new",
+      launchOverrides: { enabledPlugins: ["alpha"] },
+    }),
+  );
+
+  await user.click(screen.getByTestId("spawn-submit"));
+  await user.click(await screen.findByRole("button", { name: "Create & start" }));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    cwd: "/tmp/new",
+    launchOverrides: { enabledPlugins: ["alpha"] },
+  });
+});
+
+test("explicit selection blocks while refresh is pending but preview failure still submits to server validation", async () => {
+  const user = userEvent.setup();
+  let rejectRefresh!: (reason?: unknown) => void;
+  const refreshPending = new Promise<PluginPreviewResponse>((_, reject) => {
+    rejectRefresh = reject;
+  });
+  let explicitPreviewCalls = 0;
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", (params) => {
+      const names = params.launchOverrides?.enabledPlugins;
+      if (Array.isArray(names) && names.length === 1 && names[0] === "alpha") {
+        explicitPreviewCalls += 1;
+        if (explicitPreviewCalls === 2) return refreshPending;
+      }
+      return SPAWN_PLUGIN_PREVIEW;
+    });
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await waitFor(() => expect(explicitPreviewCalls).toBe(1));
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+
+  // A plugin notification starts a fresh inspection while the explicit allow-list remains selected.
+  await act(async () => {
+    // The Spawn pane's preview refresh is exercised by changing its revision through
+    // the same notification path as the connected app shell.
+    fake.emitNotification({ method: "evener/plugin/updated", params: {} } as AnyNotification);
+  });
+  expect(extensionsStore.getState().pluginRevision).toBe(1);
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true));
+  await waitFor(() => expect(explicitPreviewCalls).toBe(2));
+
+  rejectRefresh(new Error("preview unavailable"));
+  await waitFor(() => expect(screen.getAllByText("Couldn't inspect plugins").length).toBeGreaterThan(0));
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    launchOverrides: { enabledPlugins: ["alpha"] },
+  });
+});
+
+test("known-invalid explicit selection stays blocked when an unrelated edit's refresh fails", async () => {
+  const user = userEvent.setup();
+  let rejectRefresh!: (reason?: unknown) => void;
+  const refreshPending = new Promise<PluginPreviewResponse>((_, reject) => {
+    rejectRefresh = reject;
+  });
+  const invalidPreview: PluginPreviewResponse = {
+    ...SPAWN_PLUGIN_PREVIEW,
+    selectionErrors: [{ name: "alpha", reason: "plugin is unavailable" }],
+  };
+  let explicitPreviewCalls = 0;
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", (params) => {
+      const names = params.launchOverrides?.enabledPlugins;
+      if (Array.isArray(names) && names.length === 1 && names[0] === "alpha") {
+        explicitPreviewCalls += 1;
+        return invalidPreview;
+      }
+      if (Array.isArray(names) && names.length === 2 && names.includes("alpha") && names.includes("beta")) {
+        explicitPreviewCalls += 1;
+        return refreshPending;
+      }
+      return SPAWN_PLUGIN_PREVIEW;
+    });
+    f.on("thread/start", () => {
+      throw new Error("start must not be reached");
+    });
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await waitFor(() => expect(explicitPreviewCalls).toBe(1));
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true));
+
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await waitFor(() => expect(explicitPreviewCalls).toBe(2));
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+
+  rejectRefresh(new Error("preview unavailable"));
+  await waitFor(() => expect(screen.getAllByText("Couldn't inspect plugins").length).toBeGreaterThan(0));
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
+});
+
+test("explicit empty plugin selection reaches Thread Start as an empty list", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => f.on("evener/plugin/preview", () => SPAWN_PLUGIN_PREVIEW));
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("button", { name: "None" }));
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toMatchObject({
+      launchOverrides: { enabledPlugins: [] },
+    }),
+  );
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    launchOverrides: { enabledPlugins: [] },
+  });
+});
+
+test("selection survives Advanced-options updates and failed Start", async () => {
+  const user = userEvent.setup();
+  const advancedOption: LaunchOption = {
+    field: "maxRounds",
+    wireField: "maxRounds",
+    label: "Max rounds",
+    group: "general",
+    kind: "integer",
+    perLaunch: true,
+  };
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", () => SPAWN_PLUGIN_PREVIEW);
+    f.on("evener/launch/schema", () => ({ options: [advancedOption] }));
+    f.on("thread/start", () => {
+      throw new Error("start failed");
+    });
+  });
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await waitFor(() => expect(screen.getByRole("switch", { name: "beta" }).getAttribute("aria-checked")).toBe("false"));
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.clear(screen.getByLabelText("Max rounds"));
+  await user.type(screen.getByLabelText("Max rounds"), "7");
+  await waitFor(() => {
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toMatchObject({
+      launchOverrides: { enabledPlugins: ["alpha"], maxRounds: 7 },
+    });
+  });
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  expect(screen.getByRole("switch", { name: "beta" }).getAttribute("aria-checked")).toBe("false");
+});
+
+test("preview failure exposes retry without guessing zero or blocking default Start", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", () => {
+      throw new Error("preview unavailable");
+    });
+  });
+  renderSpawn(fake);
+
+  await waitFor(() => expect(screen.getAllByText("Couldn't inspect plugins").length).toBeGreaterThan(0));
+  expect(screen.queryByText(/0 of 0/)).toBeNull();
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false);
+  await user.click(screen.getAllByRole("button", { name: "Retry" })[0]!);
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").length).toBeGreaterThan(1),
+  );
+});
+
+test("retained stale plugin names block every submit path until removed", async () => {
+  const user = userEvent.setup();
+  const stalePreview: PluginPreviewResponse = {
+    plugins: [
+      { ...SPAWN_PLUGIN_PREVIEW.plugins[0]!, name: "alpha" },
+      { ...SPAWN_PLUGIN_PREVIEW.plugins[1]!, name: "gone" },
+      { ...SPAWN_PLUGIN_PREVIEW.plugins[1]!, name: "beta" },
+    ],
+  };
+  const refreshedPreview: PluginPreviewResponse = {
+    plugins: [{ ...SPAWN_PLUGIN_PREVIEW.plugins[0]!, name: "alpha" }],
+  };
+  const advancedOption: LaunchOption = {
+    field: "maxRounds",
+    wireField: "maxRounds",
+    label: "Max rounds",
+    group: "general",
+    kind: "integer",
+    perLaunch: true,
+  };
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", (params) =>
+      params.launchOverrides?.maxRounds === 7 ? refreshedPreview : stalePreview,
+    );
+    f.on("evener/launch/schema", () => ({ options: [advancedOption] }));
+    f.on("thread/start", () => {
+      throw new Error("start failed");
+    });
+  });
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await waitFor(() => expect(screen.getByTestId("spawn-plugin-disclosure")).toBeTruthy());
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.clear(screen.getByLabelText("Max rounds"));
+  await user.type(screen.getByLabelText("Max rounds"), "7");
+  await waitFor(() => expect(screen.getByRole("button", { name: "Remove gone" })).toBeTruthy());
+
+  const pathValidateCallsBefore = fake.calls.filter((call) => call.method === "evener/path/validate").length;
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+  await user.keyboard("{Meta>}{Enter}{/Meta}");
+  await user.click(screen.getByTestId("spawn-submit"));
+  expect(fake.calls.filter((call) => call.method === "evener/path/validate")).toHaveLength(pathValidateCallsBefore);
+  expect(fake.calls.some((call) => call.method === "thread/start")).toBe(false);
+  expect(screen.getByRole("button", { name: "Remove gone" })).toBeTruthy();
+
+  await user.click(screen.getByRole("button", { name: "Remove gone" }));
+  await waitFor(() => {
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toMatchObject({
+      launchOverrides: { enabledPlugins: ["alpha"], maxRounds: 7 },
+    });
+  });
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+});
+
+test("switching to a non-Evener harness hides plugins and clears explicit selection from start", async () => {
+  const user = userEvent.setup();
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", () => SPAWN_PLUGIN_PREVIEW);
+  });
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/project");
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toMatchObject({
+      launchOverrides: { enabledPlugins: ["alpha"] },
+    }),
+  );
+
+  await user.click(screen.getByRole("button", { name: "Advanced options" }));
+  await user.selectOptions(screen.getByLabelText("Harness"), "codex-cli");
+
+  expect(screen.queryByTestId("spawn-plugin-desktop")).toBeNull();
+  expect(
+    [
+      ...screen.getByTestId("spawn-mobile-config").querySelectorAll<HTMLElement>("[data-testid='mobile-spawn-row']"),
+    ].map((row) => row.dataset.label),
+  ).not.toContain("Plugins");
+  await user.click(screen.getByTestId("spawn-submit"));
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  const start = fake.calls.find((call) => call.method === "thread/start");
+  expect(start?.params).not.toMatchObject({ launchOverrides: { enabledPlugins: ["alpha"] } });
+});
+
+test("clearing an invalid selection after preview failure reaches Create & start", async () => {
+  const user = userEvent.setup();
+  let previewAvailable = true;
+  const invalidPreview: PluginPreviewResponse = {
+    ...SPAWN_PLUGIN_PREVIEW,
+    selectionErrors: [{ name: "alpha", reason: "plugin is unavailable" }],
+  };
+  const fake = readyClient((f) => {
+    f.on("evener/plugin/preview", (params) => {
+      if (!previewAvailable) throw new Error("preview unavailable");
+      if (params.launchOverrides?.enabledPlugins) return invalidPreview;
+      return SPAWN_PLUGIN_PREVIEW;
+    });
+    f.on("evener/path/validate", () => ({
+      path: "/tmp/new",
+      valid: false,
+      error: "stat /tmp/new: no such file or directory",
+    }));
+  });
+  connectionStore.getState().connect(fake);
+  renderSpawn(fake);
+  await settled();
+  await setWorkingDir(user, "/tmp/new");
+  await openDesktopPluginSelection(user);
+  await user.click(screen.getByRole("switch", { name: "beta" }));
+  await waitFor(() =>
+    expect(fake.calls.filter((call) => call.method === "evener/plugin/preview").at(-1)?.params).toMatchObject({
+      launchOverrides: { enabledPlugins: ["alpha"] },
+    }),
+  );
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true));
+
+  previewAvailable = false;
+  await user.click(screen.getByRole("button", { name: "Retry" }));
+  await waitFor(() => expect(screen.getAllByText("Couldn't inspect plugins").length).toBeGreaterThan(0));
+
+  expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(true);
+  await user.click(screen.getByRole("button", { name: "None" }));
+  await waitFor(() => expect((screen.getByTestId("spawn-submit") as HTMLButtonElement).disabled).toBe(false));
+  await user.click(screen.getByTestId("spawn-submit"));
+  await user.click(await screen.findByRole("button", { name: "Create & start" }));
+
+  await waitFor(() => expect(fake.calls.some((call) => call.method === "thread/start")).toBe(true));
+  expect(fake.calls.find((call) => call.method === "thread/start")?.params).toMatchObject({
+    cwd: "/tmp/new",
+    launchOverrides: { enabledPlugins: [] },
+  });
 });
 
 // A blank prompt starts a DORMANT session, exactly as the placeholder

@@ -1,7 +1,7 @@
 # Navigation Transport Optimization Design
 
 **Date:** 2026-08-25
-**Status:** approved design, pending implementation plan
+**Status:** Implemented by PR #490
 **Scope:** replace the Web UI's monolithic `/api/tree` refresh path with revisioned, resource-scoped navigation snapshots while preserving current navigation behavior.
 
 ## Problem

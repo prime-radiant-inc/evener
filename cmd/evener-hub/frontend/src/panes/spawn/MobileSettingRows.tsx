@@ -8,9 +8,12 @@
 // picker on every other.
 import { useEffect, useRef, useState } from "react";
 import type { PathFieldPanelProps } from "../../widgets";
-import { PathFieldPanel, Sheet } from "../../widgets";
+import { Button, PathFieldPanel, Sheet } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import styles from "./MobileSettingRows.module.css";
+import { PluginSelectionPanel } from "./PluginSelectionPanel";
+import type { PluginSelectionState } from "./pluginSelectionState";
+import type { PluginPreviewLoadState } from "./usePluginPreview";
 
 export interface MobilePickerOption {
   value: string;
@@ -35,9 +38,14 @@ export interface MobileSettingRowsProps {
   accessMode: string;
   accessOptions: MobilePickerOption[];
   onAccessChange: (value: string) => void;
+  pluginPreview: PluginPreviewLoadState;
+  pluginSelection: PluginSelectionState;
+  pluginsSupported?: boolean;
+  onPluginSelectionChange: (next: PluginSelectionState) => void;
+  onPluginRetry: () => void;
 }
 
-type PickerName = "Harness" | "Working directory" | "Reasoning effort" | "Access mode";
+type PickerName = "Harness" | "Working directory" | "Reasoning effort" | "Access mode" | "Plugins";
 
 const CLASS = {
   config: requireClass(styles.config, "MobileSettingRows.module.css", "config"),
@@ -163,8 +171,14 @@ export function MobileSettingRows({
   accessMode,
   accessOptions,
   onAccessChange,
+  pluginPreview,
+  pluginSelection,
+  pluginsSupported = true,
+  onPluginSelectionChange,
+  onPluginRetry,
 }: MobileSettingRowsProps) {
   const [openPicker, setOpenPicker] = useState<PickerName | null>(null);
+  const [pluginDraft, setPluginDraft] = useState<PluginSelectionState>(pluginSelection);
   const lastTriggerRef = useRef<HTMLButtonElement | null>(null);
 
   useEffect(() => {
@@ -174,6 +188,13 @@ export function MobileSettingRows({
 
   function closePicker(committedCwd = cwd): void {
     if (openPicker === "Working directory") onCwdPanelClose(committedCwd);
+    if (openPicker === "Plugins") setPluginDraft(pluginSelection);
+    setOpenPicker(null);
+  }
+
+  function finishPlugins(apply: boolean): void {
+    if (apply) onPluginSelectionChange(pluginDraft);
+    else setPluginDraft(pluginSelection);
     setOpenPicker(null);
   }
 
@@ -186,6 +207,18 @@ export function MobileSettingRows({
   const harnessLabel = harnessOptions.find((option) => option.value === harness)?.label ?? harness;
   const reasoningLabel = reasoningOptions.find((option) => option.value === reasoningEffort)?.label ?? "(default)";
   const accessLabel = accessOptions.find((option) => option.value === accessMode)?.label ?? "(default)";
+  const pluginResponse =
+    pluginPreview.status === "ready" || pluginPreview.status === "error" ? pluginPreview.response : undefined;
+  const pluginSummary =
+    pluginPreview.status === "loading"
+      ? "Inspecting plugins…"
+      : pluginPreview.status === "error"
+        ? "Couldn't inspect plugins"
+        : `${
+            pluginPreview.response.plugins.filter((plugin) =>
+              pluginSelection.mode === "explicit" ? pluginSelection.names.includes(plugin.name) : plugin.selected,
+            ).length
+          } of ${pluginPreview.response.plugins.length}`;
 
   return (
     <>
@@ -216,7 +249,27 @@ export function MobileSettingRows({
           onClick={() => open("Access mode")}
           expanded={openPicker === "Access mode"}
         />
+        {pluginsSupported && (
+          <MobileSettingRow
+            label="Plugins"
+            value={pluginSummary}
+            onClick={() => {
+              if (pluginResponse) setPluginDraft(pluginSelection);
+              open("Plugins");
+            }}
+            expanded={openPicker === "Plugins"}
+            disabled={!pluginResponse}
+          />
+        )}
       </div>
+      {pluginsSupported && pluginPreview.status === "error" && (
+        <div className={CLASS.sheetBody} role="status">
+          <span>Couldn't inspect plugins</span>{" "}
+          <Button variant="quiet" size="xs" type="button" onClick={onPluginRetry}>
+            Retry
+          </Button>
+        </div>
+      )}
 
       <OptionSheet
         name="Harness"
@@ -261,6 +314,35 @@ export function MobileSettingRows({
             complete={complete}
             listRecents={listRecents}
             fallbackDir={fallbackDir}
+          />
+        </div>
+      </Sheet>
+
+      <Sheet
+        open={pluginsSupported && openPicker === "Plugins" && pluginResponse !== undefined}
+        side="bottom"
+        size="wide"
+        onClose={() => finishPlugins(false)}
+        title="Plugins for this session"
+        footer={
+          <div className={CLASS.sheetBody}>
+            <Button variant="quiet" size="sm" type="button" onClick={() => finishPlugins(false)}>
+              Cancel
+            </Button>
+            <Button variant="primary" size="sm" type="button" onClick={() => finishPlugins(true)}>
+              Done
+            </Button>
+          </div>
+        }
+      >
+        <div className={CLASS.sheetBody}>
+          <p>Load only selected plugins. This choice applies to this session.</p>
+          <PluginSelectionPanel
+            preview={pluginResponse ?? { plugins: [] }}
+            selection={pluginDraft}
+            removeOnly={pluginPreview.status === "error"}
+            onSelectionChange={setPluginDraft}
+            onRetry={onPluginRetry}
           />
         </div>
       </Sheet>

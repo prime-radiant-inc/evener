@@ -2632,6 +2632,48 @@ test("typing further narrows the menu live", async () => {
   expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/review")]);
 });
 
+test("slash completion hides excluded plugin commands but keeps loaded plugin commands", async () => {
+  useCommandCatalog.setState({
+    commands: [
+      { name: "review", description: "review the diff", source: "plugin", pluginName: "loaded" },
+      { name: "revoke", description: "revoke access", source: "plugin", pluginName: "excluded" },
+    ],
+    loaded: true,
+  });
+  const user = userEvent.setup();
+  await mountComposer("ref_slash_plugins", {
+    evener: {
+      ...testThread("ref_slash_plugins").evener,
+      diagnostics: { plugins: [{ name: "loaded", skillCount: 0, agentCount: 0, hookCount: 0, mcpCount: 0 }] },
+    },
+  });
+
+  await user.type(textarea(), "hi /rev");
+
+  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/review")]);
+});
+
+test("slash completion keeps built-ins while hiding plugin commands for an explicit empty inventory", async () => {
+  useCommandCatalog.setState({
+    commands: [
+      { name: "review", description: "review the diff", source: "plugin", pluginName: "excluded" },
+      { name: "release", description: "cut a release", source: "plugin", pluginName: "excluded" },
+    ],
+    loaded: true,
+  });
+  const user = userEvent.setup();
+  await mountComposer("ref_slash_empty", {
+    evener: {
+      ...testThread("ref_slash_empty").evener,
+      diagnostics: { plugins: [] },
+    },
+  });
+
+  await user.type(textarea(), "hi /re");
+
+  expect(slashOptions().map((el) => el.textContent)).toEqual([expect.stringContaining("/reasoning-effort")]);
+});
+
 test("a mid-word slash never opens the menu", async () => {
   useCommandCatalog.setState({ commands: REVIEW_RELEASE_CATALOG, loaded: true });
   const user = userEvent.setup();
@@ -2699,7 +2741,12 @@ test("committing a plugin-sourced catalog entry inserts the QUALIFIED /plugin:na
     loaded: true,
   });
   const user = userEvent.setup();
-  await mountComposer("ref_slash_qualified");
+  await mountComposer("ref_slash_qualified", {
+    evener: {
+      ...testThread("ref_slash_qualified").evener,
+      diagnostics: { plugins: [{ name: "p", skillCount: 0, agentCount: 0, hookCount: 0, mcpCount: 0 }] },
+    },
+  });
   await user.type(textarea(), "hi /rev");
 
   await user.keyboard("{Tab}");

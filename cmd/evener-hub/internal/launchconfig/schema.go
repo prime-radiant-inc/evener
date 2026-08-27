@@ -22,6 +22,8 @@ const (
 	LaunchControlEnvMap      LaunchControlKind = "envMap"
 )
 
+const LaunchControlPluginSelection LaunchControlKind = "pluginSelection"
+
 const (
 	LaunchPathNone       LaunchPathKind = ""
 	LaunchPathDir        LaunchPathKind = "dir"
@@ -105,6 +107,7 @@ func LaunchOptionSchema() []LaunchOption {
 		{Field: "mcp_configs", WireField: "mcpConfigs", Label: "MCP config files", Description: "JSON config files declaring MCP servers. Each file may define one or more servers.", Group: LaunchGroupResources, Kind: LaunchControlPathList, PathKind: LaunchPathFile, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
 		{Field: "mcps", WireField: "mcps", Label: "MCP servers", Description: "Inline MCP server definitions. Each entry specifies a name, command, and optional arguments.", Group: LaunchGroupResources, Kind: LaunchControlMCPList, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
 		{Field: "model_fallbacks", WireField: "modelFallbacks", Label: "Model fallbacks", Description: "Ordered list of alternative models evener tries when the primary model is unavailable or rate-limited.", Group: LaunchGroupResources, Kind: LaunchControlModelList, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
+		{Field: "enabled_plugins", WireField: "enabledPlugins", Label: "Enabled plugins", Description: "Select the installed plugins enabled for this launch. An empty selection disables all plugins.", Group: LaunchGroupResources, Kind: LaunchControlPluginSelection, Repeatable: true, PerLaunch: true, DriverSupport: evenerOnly},
 		{Field: "env", WireField: "env", Label: "Environment variables", Description: "Extra environment variables injected into the evener process. Do not store credentials here; use the Providers page instead.", Group: LaunchGroupEnvironment, Kind: LaunchControlEnvMap, Repeatable: true, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},
 		{Field: "sandbox", WireField: "sandbox", Label: "Sandbox", Description: "Confine the session to a sandbox mode. off = no confinement; read-only = reads anywhere but secret paths, no writes (a private temp dir only); workspace-write = reads anywhere but secret paths, writes the working tree; restricted = reads and writes only the working tree. All sandboxed modes mask credential and secret paths, give a private temp dir, and confine spawned shell commands too. Network egress is a separate toggle (Sandbox network egress). Default off.", Group: LaunchGroupSandbox, Kind: LaunchControlSelect, DefaultableLayers: defaultLayers, PerLaunch: true, Choices: sandboxChoices(), DriverSupport: evenerOnly},
 		{Field: "sandbox_net", WireField: "sandboxNet", Label: "Sandbox network egress", Description: "Allow network egress when sandboxed. Default on. Has no effect unless a sandbox mode is set.", Group: LaunchGroupSandbox, Kind: LaunchControlBoolean, DefaultableLayers: defaultLayers, PerLaunch: true, DriverSupport: evenerOnly},

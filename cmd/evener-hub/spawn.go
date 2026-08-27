@@ -285,6 +285,9 @@ func buildSpawnArgs(req hubcore.SpawnRequest) []string {
 	if req.RunDir != "" {
 		args = append(args, "--run-dir", req.RunDir)
 	}
+	if req.PluginRoot != "" {
+		args = append(args, "--plugin-root", req.PluginRoot)
+	}
 	if req.AppReplaySize > 0 {
 		args = append(args, "--app-replay-size", strconv.Itoa(req.AppReplaySize))
 	}

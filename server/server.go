@@ -161,6 +161,31 @@ type DetailedStatus struct {
 	Agents    []string             `json:"agents,omitempty"`
 }
 
+// MarshalJSON preserves an explicit empty plugin inventory while keeping a
+// nil inventory absent for old or unwired sources that cannot report it.
+func (s DetailedStatus) MarshalJSON() ([]byte, error) {
+	type alias DetailedStatus
+	a := alias(s)
+	a.Plugins = nil
+	raw, err := json.Marshal(a)
+	if err != nil {
+		return nil, err
+	}
+	if s.Plugins == nil {
+		return raw, nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	plugins, err := json.Marshal(s.Plugins)
+	if err != nil {
+		return nil, err
+	}
+	fields["plugins"] = plugins
+	return json.Marshal(fields)
+}
+
 // StatusInfo is the JSON response for GET /status.
 type StatusInfo struct {
 	SessionID        string             `json:"session_id"`

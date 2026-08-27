@@ -11,6 +11,10 @@ import (
 // fail once, loudly, at initialize -- rather than agreeing there and then
 // disagreeing on every request.
 //
+// v4 requires child binaries launched by the hub to understand the
+// --plugin-root argument used for fresh sessions. A v3 child can pass the
+// launch check but then reject that argument before serving AppWire.
+//
 // v3 dropped expectedTurnId from turn/steer, turn/queue, turn/interrupt,
 // turn/drainAsSteer and turn/promoteQueuedAsSteer: control is session-scoped and
 // names no turn. A v2 daemon still requires that field, so a v3 client talking
@@ -18,7 +22,7 @@ import (
 // "Steer and Stop are broken again" instead of as a version skew. The pair is
 // reachable in ordinary operation because daemons outlive the hub that spawned
 // them, so an operator who rebuilds and restarts the hub has one.
-const ProtocolVersion = "evener-appwire-v3"
+const ProtocolVersion = "evener-appwire-v4"
 
 const (
 	MethodInitialize                  = "initialize"
@@ -76,6 +80,7 @@ const (
 	MethodEvenerInstanceRemove        = "evener/instance/remove"
 	MethodEvenerInstanceSetDefault    = "evener/instance/setDefault"
 	MethodEvenerPluginCheckNow        = "evener/plugin/checkNow"
+	MethodEvenerPluginPreview         = "evener/plugin/preview"
 	MethodEvenerMarketplaceList       = "evener/marketplace/list"
 	MethodEvenerMarketplaceAdd        = "evener/marketplace/add"
 	MethodEvenerMarketplaceRemove     = "evener/marketplace/remove"
@@ -531,6 +536,31 @@ type EvenerDiagnostics struct {
 	Delegates []EvenerDelegateInfo  `json:"delegates,omitempty"`
 	TurnSlots *EvenerTurnSlots      `json:"turnSlots,omitempty"`
 	Agents    []string              `json:"agents,omitempty"`
+}
+
+// MarshalJSON preserves an explicit empty plugin inventory while keeping a
+// nil inventory absent for old or unwired sources that cannot report it.
+func (d EvenerDiagnostics) MarshalJSON() ([]byte, error) {
+	type alias EvenerDiagnostics
+	a := alias(d)
+	a.Plugins = nil
+	raw, err := json.Marshal(a)
+	if err != nil {
+		return nil, err
+	}
+	if d.Plugins == nil {
+		return raw, nil
+	}
+	var fields map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &fields); err != nil {
+		return nil, err
+	}
+	plugins, err := json.Marshal(d.Plugins)
+	if err != nil {
+		return nil, err
+	}
+	fields["plugins"] = plugins
+	return json.Marshal(fields)
 }
 
 type EvenerToolInfo struct {
@@ -2225,6 +2255,7 @@ type LaunchConfigLayer struct {
 	SystemPromptAppendText      string            `json:"systemPromptAppendText,omitempty"`
 	SystemPromptAppend          []string          `json:"systemPromptAppend,omitempty"`
 	ModelFallbacks              []string          `json:"modelFallbacks,omitempty"`
+	EnabledPlugins              *[]string         `json:"enabledPlugins,omitempty"`
 	MCPs                        []MCPServerSpec   `json:"mcps,omitempty"`
 	Env                         map[string]string `json:"env,omitempty"`
 	Verbose                     *bool             `json:"verbose,omitempty"`
@@ -2322,6 +2353,48 @@ type LaunchConfigTrustRepoParams struct {
 type PluginCheckNowResponse struct {
 	Updated []string `json:"updated,omitempty"`
 	Errors  []string `json:"errors,omitempty"`
+}
+
+// PluginPreviewParams requests the side-effect-free launch plugin inventory
+// for a working directory and optional per-launch overrides.
+type PluginPreviewParams struct {
+	CWD             string             `json:"cwd"`
+	LaunchOverrides *LaunchConfigLayer `json:"launchOverrides,omitempty"`
+}
+
+// PluginPreviewResponse is the launch plugin inventory and structured
+// diagnostics returned by evener/plugin/preview.
+type PluginPreviewResponse struct {
+	Plugins         []PluginLaunchCandidate `json:"plugins"`
+	Diagnostics     []PluginDiagnostic      `json:"diagnostics,omitempty"`
+	SelectionErrors []PluginSelectionError  `json:"selectionErrors,omitempty"`
+}
+
+type PluginLaunchCandidate struct {
+	Name         string `json:"name"`
+	Version      string `json:"version,omitempty"`
+	Description  string `json:"description,omitempty"`
+	Source       string `json:"source"`
+	Marketplace  string `json:"marketplace,omitempty"`
+	Path         string `json:"path,omitempty"`
+	Selected     bool   `json:"selected"`
+	SkillCount   int    `json:"skillCount"`
+	AgentCount   int    `json:"agentCount"`
+	CommandCount int    `json:"commandCount"`
+	HookCount    int    `json:"hookCount"`
+	MCPCount     int    `json:"mcpCount"`
+}
+
+type PluginDiagnostic struct {
+	Name    string `json:"name,omitempty"`
+	Path    string `json:"path,omitempty"`
+	Source  string `json:"source,omitempty"`
+	Message string `json:"message"`
+}
+
+type PluginSelectionError struct {
+	Name   string `json:"name"`
+	Reason string `json:"reason"`
 }
 
 // MarketplaceSourceInput is the wire shape of a marketplace source. Kind

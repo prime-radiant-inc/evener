@@ -704,6 +704,22 @@ export function slashCommandInvocation(command: Pick<CommandDescriptor, "name" |
     : `/${command.name}`;
 }
 
+// The command catalog is global, but plugin commands are only valid in a
+// session that loaded their plugin. Keep this filter at the palette boundary:
+// the store remains the complete catalog for other consumers, and the
+// no-session state deliberately keeps its global view.
+export function visibleCatalogCommands(
+  commands: CommandDescriptor[],
+  activePluginNames: ReadonlySet<string> | null | undefined,
+): CommandDescriptor[] {
+  if (activePluginNames === undefined) return commands;
+  return commands.filter(
+    (command) =>
+      command.source !== "plugin" ||
+      (activePluginNames !== null && command.pluginName !== undefined && activePluginNames.has(command.pluginName)),
+  );
+}
+
 function catalogCommands(catalog: CommandDescriptor[]): Command[] {
   return catalog.map((command) => ({
     id: command.name,

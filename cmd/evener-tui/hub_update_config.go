@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-tui/internal/launchconfig"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuipick"
 )
@@ -182,8 +183,64 @@ func (m hubModel) handleLaunchOverridesResult(msg launchconfig.LaunchOverridesRe
 	m.launchOverridesModal = nil
 	if !msg.Cancelled {
 		m.spawnLaunchOverrides = msg.Overrides
+		cmd := m.requestSpawnPluginPreview()
+		return m, cmd
 	}
 	return m, nil
+}
+
+func (m hubModel) handlePluginPreviewResult(msg launchconfig.PluginPreviewResultMsg) (tea.Model, tea.Cmd) {
+	if m.mode != hubModeSpawn || !m.spawnHarnessSupportsPlugins() || msg.Key != m.spawnPluginPreviewRequestKey {
+		return m, nil
+	}
+	m.spawnPluginPreviewLoading = false
+	if msg.Err != nil {
+		if m.spawnPluginPreviewParamsDigest != m.spawnPluginPreviewLastSuccess {
+			m.spawnPluginPreview = appwire.PluginPreviewResponse{}
+			m.spawnPluginPreviewLoaded = false
+		}
+		m.spawnPluginPreviewErr = msg.Err
+		return m.forwardSpawnPluginPreviewToPanel(msg)
+	}
+	m.spawnPluginPreviewErr = nil
+	m.spawnPluginPreviewLoaded = true
+	m.spawnPluginPreview = msg.Response
+	m.spawnPluginPreviewLastSuccess = m.spawnPluginPreviewParamsDigest
+	return m.forwardSpawnPluginPreviewToPanel(msg)
+}
+
+func (m hubModel) handlePluginsForLaunchResult(msg launchconfig.PluginsForLaunchResultMsg) (tea.Model, tea.Cmd) {
+	if !m.spawnHarnessSupportsPlugins() {
+		m.spawnPluginsPanel = nil
+		return m, nil
+	}
+	if msg.Retry {
+		cmd := m.requestSpawnPluginPreview()
+		return m, cmd
+	}
+	m.spawnPluginsPanel = nil
+	if msg.Cancelled || !msg.Applied || msg.EnabledPlugins == nil {
+		return m, nil
+	}
+	updated := appwire.LaunchConfigLayer{}
+	if m.spawnLaunchOverrides != nil {
+		updated = *m.spawnLaunchOverrides
+	}
+	values := append([]string(nil), (*msg.EnabledPlugins)...)
+	updated.EnabledPlugins = &values
+	m.spawnLaunchOverrides = &updated
+	cmd := m.requestSpawnPluginPreview()
+	return m, cmd
+}
+
+func (m hubModel) forwardSpawnPluginPreviewToPanel(msg launchconfig.PluginPreviewResultMsg) (tea.Model, tea.Cmd) {
+	if m.spawnPluginsPanel == nil {
+		return m, nil
+	}
+	updated, cmd := m.spawnPluginsPanel.Update(msg)
+	panel := updated.(launchconfig.PluginsForLaunchPanel)
+	m.spawnPluginsPanel = &panel
+	return m, cmd
 }
 
 func (m hubModel) handleLaunchSettingsEditRequest(msg launchconfig.LaunchSettingsEditRequestMsg) (tea.Model, tea.Cmd) {

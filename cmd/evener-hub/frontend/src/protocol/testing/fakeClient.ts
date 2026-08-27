@@ -60,7 +60,7 @@ export type ConnectHandler = () => InitializeResponse | Promise<InitializeRespon
 // to script one just to get past the handshake.
 const DEFAULT_INITIALIZE_RESPONSE: InitializeResponse = {
   serverInfo: { name: "fake-evener-hub", version: "0.0.0" },
-  protocolVersion: "evener-appwire-v3",
+  protocolVersion: "evener-appwire-v4",
   sourceId: "fake",
   features: {
     threadList: false,

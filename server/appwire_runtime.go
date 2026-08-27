@@ -1278,6 +1278,9 @@ func appDiagnosticsFromDetailedStatus(ds DetailedStatus) *appwire.EvenerDiagnost
 	out := &appwire.EvenerDiagnostics{
 		Hooks: make(map[string]int, len(ds.Hooks)),
 	}
+	if ds.Plugins != nil {
+		out.Plugins = make([]appwire.EvenerPluginInfo, 0, len(ds.Plugins))
+	}
 	for _, tool := range ds.Tools {
 		out.Tools = append(out.Tools, appwire.EvenerToolInfo{Name: tool.Name, Source: tool.Source})
 	}

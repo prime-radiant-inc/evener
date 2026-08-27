@@ -1,10 +1,92 @@
 package appwire
 
 import (
+	"bytes"
 	"encoding/json"
 	"strings"
 	"testing"
 )
+
+func TestLaunchConfigEnabledPluginsJSONPresence(t *testing.T) {
+	nilRaw, err := json.Marshal(LaunchConfigLayer{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Contains(nilRaw, []byte(`"enabledPlugins"`)) {
+		t.Fatalf("nil encoded: %s", nilRaw)
+	}
+
+	empty := []string{}
+	emptyRaw, err := json.Marshal(LaunchConfigLayer{EnabledPlugins: &empty})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(emptyRaw, []byte(`"enabledPlugins":[]`)) {
+		t.Fatalf("empty lost: %s", emptyRaw)
+	}
+
+	var roundTrip LaunchConfigLayer
+	if err := json.Unmarshal(emptyRaw, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if roundTrip.EnabledPlugins == nil || len(*roundTrip.EnabledPlugins) != 0 {
+		t.Fatalf("round trip = %#v", roundTrip.EnabledPlugins)
+	}
+
+	named := []string{"alpha", "beta"}
+	namedRaw, err := json.Marshal(LaunchConfigLayer{EnabledPlugins: &named})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Contains(namedRaw, []byte(`"enabledPlugins":["alpha","beta"]`)) {
+		t.Fatalf("named selection lost: %s", namedRaw)
+	}
+	var namedRoundTrip LaunchConfigLayer
+	if err := json.Unmarshal(namedRaw, &namedRoundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if namedRoundTrip.EnabledPlugins == nil || len(*namedRoundTrip.EnabledPlugins) != 2 || (*namedRoundTrip.EnabledPlugins)[0] != "alpha" || (*namedRoundTrip.EnabledPlugins)[1] != "beta" {
+		t.Fatalf("named round trip = %#v", namedRoundTrip.EnabledPlugins)
+	}
+}
+
+func TestPluginPreviewWireShape(t *testing.T) {
+	empty := []string{}
+	in := PluginPreviewParams{CWD: "/work", LaunchOverrides: &LaunchConfigLayer{EnabledPlugins: &empty}}
+	raw, err := json.Marshal(in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), `"enabledPlugins":[]`) {
+		t.Fatalf("explicit empty selection lost: %s", raw)
+	}
+	want := PluginPreviewResponse{Plugins: []PluginLaunchCandidate{{
+		Name: "alpha", Version: "1.2.3", Description: "desc", Source: "directory",
+		Marketplace: "acme", Path: "/plugins/alpha", Selected: true,
+		SkillCount: 1, AgentCount: 2, CommandCount: 3, HookCount: 4, MCPCount: 5,
+	}}, Diagnostics: []PluginDiagnostic{{Name: "bad", Path: "/bad", Source: "directory", Message: "invalid"}}, SelectionErrors: []PluginSelectionError{{Name: "missing", Reason: "no valid plugin candidate"}}}
+	raw, err = json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var got PluginPreviewResponse
+	if err := json.Unmarshal(raw, &got); err != nil {
+		t.Fatal(err)
+	}
+	if len(got.Plugins) != 1 || got.Plugins[0].MCPCount != 5 || got.Diagnostics[0].Source != "directory" || got.SelectionErrors[0].Reason != "no valid plugin candidate" {
+		t.Fatalf("round trip = %+v", got)
+	}
+}
+
+func TestThreadResumeParamsRemainSelectionFree(t *testing.T) {
+	raw, err := json.Marshal(ThreadResumeParams{Ref: "local:session", Session: "session"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(raw), "enabledPlugins") || strings.Contains(string(raw), "launchOverrides") {
+		t.Fatalf("resume wire gained launch selection fields: %s", raw)
+	}
+}
 
 func TestThreadItemOutputImagesJSONRoundTrip(t *testing.T) {
 	item := ThreadItem{

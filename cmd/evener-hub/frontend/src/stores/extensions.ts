@@ -58,6 +58,7 @@ export interface ExtensionsStoreState {
   browseMarketplace(name: string): Promise<void>;
 
   plugins: PluginEntry[] | null;
+  pluginRevision: number;
   pluginsLoading: boolean;
   pluginsError: string | null;
   fetchPlugins(): Promise<void>;
@@ -170,6 +171,7 @@ export const extensionsStore = createStore<ExtensionsStoreState>((set, get) => (
   },
 
   plugins: null,
+  pluginRevision: 0,
   pluginsLoading: false,
   pluginsError: null,
 
@@ -324,8 +326,10 @@ function scheduleLaunchLayerRefetch(): void {
 
 function handleNotification(n: AnyNotification): void {
   if (n.method === "evener/marketplace/updated") scheduleMarketplaceRefetch();
-  else if (n.method === "evener/plugin/updated") schedulePluginRefetch();
-  else if (n.method === "evener/launch/updated") scheduleLaunchLayerRefetch();
+  else if (n.method === "evener/plugin/updated") {
+    extensionsStore.setState((state) => ({ pluginRevision: state.pluginRevision + 1 }));
+    schedulePluginRefetch();
+  } else if (n.method === "evener/launch/updated") scheduleLaunchLayerRefetch();
 }
 
 function attachNotifications(client: AppwireClientLike): void {
@@ -365,6 +369,7 @@ export function resetExtensionsStoreForTests(): void {
     marketplacesError: null,
     browseCatalogs: new Map(),
     plugins: null,
+    pluginRevision: 0,
     pluginsLoading: false,
     pluginsError: null,
     launchLayer: null,

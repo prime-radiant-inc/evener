@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -2153,5 +2154,15 @@ func TestSessionConfigDelegateTurnKnobsSnapshotRoundTrip(t *testing.T) {
 	out := configFromSnapshot(in.toSnapshot())
 	if out.MaxConcurrentDelegateTurns != 7 || out.MaxRetainedTerminal != 99 {
 		t.Fatalf("round trip = %+v, want 7/99", out)
+	}
+}
+
+func TestPluginSelectionSnapshotRoundTrip(t *testing.T) {
+	t.Parallel()
+	for _, want := range [][]string{nil, {}, {"/plugins/alpha", "/plugins/beta"}} {
+		got := configFromSnapshot((SessionConfig{PluginDirs: want}).toSnapshot()).PluginDirs
+		if !slices.Equal(want, got) {
+			t.Fatalf("PluginDirs round trip = %v, want %v", got, want)
+		}
 	}
 }

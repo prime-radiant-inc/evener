@@ -35,6 +35,21 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
+func TestHubRPCPluginPreviewRoute(t *testing.T) {
+	server := appserver.NewServer(appserver.ServerConfig{ServerName: "hub", SourceID: "local"})
+	registerPluginHandlers(server, newHubPluginsController(t.TempDir(), t.TempDir()))
+	out, err := server.Router().Dispatch(context.Background(), appwire.Request{
+		Method: appwire.MethodEvenerPluginPreview,
+		Params: json.RawMessage(`{"cwd":"/tmp"}`),
+	})
+	if err != nil {
+		t.Fatalf("preview route: %v", err)
+	}
+	if _, ok := out.(appwire.PluginPreviewResponse); !ok {
+		t.Fatalf("preview route response = %T, want PluginPreviewResponse", out)
+	}
+}
+
 func TestHubRPCThreadListUsesAppWireRendezvous(t *testing.T) {
 	runDir := t.TempDir()
 	writeRendezvous(t, runDir, rendezvous.Entry{
@@ -6383,7 +6398,7 @@ func TestHubRPCModelListReportsEvenerLaunchDiagnostics(t *testing.T) {
 	bin := filepath.Join(dir, "fake-evener")
 	script := `#!/bin/sh
 if [ "$1" = "launch-check" ]; then
-  printf '{"protocol":"evener-appwire-v3","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
+  printf '{"protocol":"evener-appwire-v4","models":[{"provider":"ollama","model":"local"}],"diagnostics":[{"provider":"openai","source":"provider","title":"Provider error","message":"HTTP 403"}]}\n'
   exit 0
 fi
 exit 2
@@ -7714,6 +7729,11 @@ func TestHubRPCThreadResumeRoutesConfiguredCodexSource(t *testing.T) {
 		resumeCalled = true
 		if params["threadId"] != "th_codex" {
 			t.Fatalf("thread/resume params=%+v", params)
+		}
+		for _, field := range []string{"pluginDirs", "enabledPlugins"} {
+			if _, present := params[field]; present {
+				t.Fatalf("thread/resume unexpectedly carried launch selection %q: %+v", field, params)
+			}
 		}
 		return map[string]any{"thread": map[string]any{
 			"id":            "th_codex",
@@ -9671,6 +9691,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerPluginDisable,
 		appwire.MethodEvenerPluginSetAutoUpgrade,
 		appwire.MethodEvenerPluginCheckNow,
+		appwire.MethodEvenerPluginPreview,
 	}
 
 	// The list is a lock, not a sample: nothing may be registered that it does

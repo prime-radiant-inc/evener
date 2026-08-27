@@ -5,8 +5,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -16,9 +19,307 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/auth/openai/oaitest"
+	"primeradiant.com/evener/internal/plugins"
 	"primeradiant.com/evener/llm"
 )
+
+func TestRunPluginSelectionValidationPrecedesStartupHooks(t *testing.T) {
+	selected := []string{"missing-plugin"}
+	var order []string
+	oldResolve := runResolvePlugins
+	oldEnsure := runEnsureUserConfigDirs
+	oldSeed := runSeedMarketplaces
+	t.Cleanup(func() {
+		runResolvePlugins = oldResolve
+		runEnsureUserConfigDirs = oldEnsure
+		runSeedMarketplaces = oldSeed
+	})
+	runResolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+		order = append(order, "resolve")
+		return plugins.LaunchPluginResolution{SelectionErrors: []plugins.PluginSelectionError{{Name: "missing-plugin", Reason: "no valid plugin candidate"}}}, nil
+	}
+	runEnsureUserConfigDirs = func() error {
+		order = append(order, "ensure-config")
+		return nil
+	}
+	runSeedMarketplaces = func() error {
+		order = append(order, "seed-marketplaces")
+		return nil
+	}
+
+	err := run(context.Background(), runConfig{
+		workDir: t.TempDir(), stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}, enabledPlugins: &selected,
+	})
+	if err == nil || !strings.Contains(err.Error(), "enabled plugin selection is unavailable") {
+		t.Fatalf("run error = %v, want strict selection error", err)
+	}
+	if !reflect.DeepEqual(order, []string{"resolve"}) {
+		t.Fatalf("startup order = %v, want resolver only", order)
+	}
+}
+
+func TestRunPassesResolvedPluginDirsToSessionConfig(t *testing.T) {
+	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+	selectedDir := t.TempDir()
+	selected := []string{"alpha"}
+	oldResolve := runResolvePlugins
+	oldProvision := runProvisionSandbox
+	t.Cleanup(func() { runResolvePlugins = oldResolve; runProvisionSandbox = oldProvision })
+	runResolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+		return plugins.LaunchPluginResolution{SelectedDirs: []string{selectedDir}}, nil
+	}
+	var got []string
+	runProvisionSandbox = func(_ *execenv.LocalExecutionEnvironment, cfg *agent.SessionConfig, _ string) error {
+		got = append([]string(nil), cfg.PluginDirs...)
+		return errors.New("stop after config")
+	}
+	err := run(context.Background(), runConfig{
+		prompt: "prompt", model: "openai/gpt-test", workDir: t.TempDir(), stateDir: t.TempDir(),
+		noDefaultMarketplaces: true, enabledPlugins: &selected, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "stop after config") {
+		t.Fatalf("run error = %v", err)
+	}
+	if !reflect.DeepEqual(got, []string{selectedDir}) {
+		t.Fatalf("session plugin dirs = %v, want %v", got, []string{selectedDir})
+	}
+}
+
+func TestRunResumeRestoresRecordedPluginDirs(t *testing.T) {
+	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+	oldResolve := runResolvePlugins
+	oldRestore := runRestoreSession
+	oldEnsure := runEnsureUserConfigDirs
+	oldAttach := runAttachAPILogger
+	t.Cleanup(func() {
+		runResolvePlugins = oldResolve
+		runRestoreSession = oldRestore
+		runEnsureUserConfigDirs = oldEnsure
+		runAttachAPILogger = oldAttach
+	})
+	runEnsureUserConfigDirs = func() error { return nil }
+	fresh := []string{"/plugins/fresh"}
+	runResolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+		return plugins.LaunchPluginResolution{SelectedDirs: fresh}, nil
+	}
+	var got []string
+	runRestoreSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, meta schema.SessionMeta, _ agent.RestoreSessionConfig) (*agent.Session, error) {
+		got = append([]string(nil), meta.Config.PluginDirs...)
+		return nil, errors.New("stop after restore config")
+	}
+	runAttachAPILogger = func(*llm.Client, string, io.Writer) (func(string) error, func() error, error) {
+		return func(string) error { return nil }, func() error { return nil }, nil
+	}
+
+	for _, tc := range []struct {
+		name string
+		set  func(*runConfig, string)
+	}{
+		{name: "resume", set: func(cfg *runConfig, id string) { cfg.resume = id }},
+		{name: "resume-last", set: func(cfg *runConfig, _ string) { cfg.resumeLast = true }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			stateDir := t.TempDir()
+			const sessionID = "02wMz5Txv1C3Hut0M8GCeB"
+			old := []string{"/plugins/historical"}
+			if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+				ID: sessionID, ProfileID: "openai", Model: "gpt-test",
+				Config: schema.ConfigSnapshot{PluginDirs: old},
+			}); err != nil {
+				t.Fatalf("SaveSessionMeta: %v", err)
+			}
+			cfg := runConfig{workDir: stateDir, stateDir: stateDir, noDefaultMarketplaces: true, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{}}
+			tc.set(&cfg, sessionID)
+			err := run(context.Background(), cfg)
+			if err == nil || !strings.Contains(err.Error(), "stop after restore config") {
+				t.Fatalf("run error = %v", err)
+			}
+			if !reflect.DeepEqual(got, old) {
+				t.Fatalf("restored PluginDirs = %v, want persisted %v", got, old)
+			}
+		})
+	}
+}
+
+func TestRunResumeRejectsEnabledPluginSelection(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		cfg  runConfig
+		want string
+	}{
+		{name: "resume", cfg: runConfig{resume: "session"}, want: "--enabled-plugins cannot be used with --resume"},
+		{name: "resume-last", cfg: runConfig{resumeLast: true}, want: "--enabled-plugins cannot be used with --resume-last"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			selected := []string{"new-plugin"}
+			tc.cfg.enabledPlugins = &selected
+			err := run(context.Background(), tc.cfg)
+			if err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("run error = %v, want selection rejection", err)
+			}
+		})
+	}
+}
+
+func TestRunResumeWithCreatesFreshPluginSnapshot(t *testing.T) {
+	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+	oldResolve := runResolvePlugins
+	oldRestore := runRestoreSession
+	oldEnsure := runEnsureUserConfigDirs
+	oldAttach := runAttachAPILogger
+	t.Cleanup(func() {
+		runResolvePlugins = oldResolve
+		runRestoreSession = oldRestore
+		runEnsureUserConfigDirs = oldEnsure
+		runAttachAPILogger = oldAttach
+	})
+	runEnsureUserConfigDirs = func() error { return nil }
+	fresh := []string{"/plugins/fresh-alpha", "/plugins/fresh-beta"}
+	runResolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+		return plugins.LaunchPluginResolution{SelectedDirs: fresh}, nil
+	}
+	var restored schema.SessionMeta
+	var persisted schema.SessionMeta
+	stateDir := t.TempDir()
+	var reserved string
+	runAttachAPILogger = func(*llm.Client, string, io.Writer) (func(string) error, func() error, error) {
+		return func(id string) error { reserved = id; return nil }, func() error { return nil }, nil
+	}
+	runRestoreSession = func(_ *llm.Client, _ *provider.Profile, _ execenv.ExecutionEnvironment, meta schema.SessionMeta, _ agent.RestoreSessionConfig) (*agent.Session, error) {
+		restored = meta
+		var err error
+		persisted, err = schema.LoadSessionMeta(stateDir, meta.ID)
+		if err != nil {
+			return nil, fmt.Errorf("reload child metadata: %w", err)
+		}
+		return nil, errors.New("stop after resume-with restore")
+	}
+
+	const sourceID = "02wMz5Txv1C3Hut0M8GCeB"
+	old := []string{"/plugins/historical"}
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sourceID, ProfileID: "openai", Model: "gpt-test",
+		Config: schema.ConfigSnapshot{PluginDirs: old},
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+	transcriptPath := filepath.Join(stateDir, "sessions", sourceID+".transcript.jsonl")
+	writer, err := transcript.NewWriter(transcriptPath, transcript.Header{SessionID: sourceID, ProfileID: "openai", Model: "gpt-test", WorkingDir: stateDir})
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := writer.Append(schema.NewTurn(schema.TurnUserInput, llm.User("source context"))); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close writer: %v", err)
+	}
+
+	err = run(context.Background(), runConfig{
+		resumeWith: sourceID, prompt: "new prompt", workDir: stateDir, stateDir: stateDir,
+		noDefaultMarketplaces: true, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+	})
+	if err == nil || !strings.Contains(err.Error(), "stop after resume-with restore") {
+		t.Fatalf("run error = %v", err)
+	}
+	if restored.ID == "" || restored.ID == sourceID || restored.ParentSessionID != sourceID {
+		t.Fatalf("resume-with meta identity = %#v", restored)
+	}
+	if !reflect.DeepEqual(restored.Config.PluginDirs, fresh) {
+		t.Fatalf("resume-with PluginDirs = %v, want %v", restored.Config.PluginDirs, fresh)
+	}
+	if !reflect.DeepEqual(persisted.Config.PluginDirs, fresh) {
+		t.Fatalf("persisted resume-with PluginDirs = %v, want %v", persisted.Config.PluginDirs, fresh)
+	}
+	if reserved != restored.ID {
+		t.Fatalf("reserved session = %q, want new session %q", reserved, restored.ID)
+	}
+	source, err := schema.LoadSessionMeta(stateDir, sourceID)
+	if err != nil {
+		t.Fatalf("LoadSessionMeta(source): %v", err)
+	}
+	if !reflect.DeepEqual(source.Config.PluginDirs, old) {
+		t.Fatalf("source PluginDirs = %v, want unchanged %v", source.Config.PluginDirs, old)
+	}
+	for _, suffix := range []string{".meta.json", ".transcript.jsonl", ".api.jsonl", ".log.jsonl"} {
+		if _, err := os.Stat(filepath.Join(stateDir, "sessions", restored.ID+suffix)); !os.IsNotExist(err) {
+			t.Fatalf("failed resume-with child artifact %q remains: %v", suffix, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", restored.ID)); !os.IsNotExist(err) {
+		t.Fatalf("failed resume-with child jobs directory remains: %v", err)
+	}
+}
+
+func TestRunResumeWithNonLockReservationFailureRemovesChild(t *testing.T) {
+	installRunScriptedProvider(t, &scriptedProvider{name: "openai"})
+	oldAttach := runAttachAPILogger
+	oldEnsure := runEnsureUserConfigDirs
+	oldResolve := runResolvePlugins
+	oldRestore := runRestoreSession
+	t.Cleanup(func() {
+		runAttachAPILogger = oldAttach
+		runEnsureUserConfigDirs = oldEnsure
+		runResolvePlugins = oldResolve
+		runRestoreSession = oldRestore
+	})
+	runEnsureUserConfigDirs = func() error { return nil }
+	runResolvePlugins = func([]string, *[]string) (plugins.LaunchPluginResolution, error) {
+		return plugins.LaunchPluginResolution{}, nil
+	}
+	runRestoreSession = func(*llm.Client, *provider.Profile, execenv.ExecutionEnvironment, schema.SessionMeta, agent.RestoreSessionConfig) (*agent.Session, error) {
+		t.Fatal("restore called after reservation failure")
+		return nil, nil
+	}
+
+	stateDir := t.TempDir()
+	reservationErr := errors.New("quarantine API log target")
+	var childID string
+	runAttachAPILogger = func(*llm.Client, string, io.Writer) (func(string) error, func() error, error) {
+		return func(id string) error {
+			childID = id
+			return reservationErr
+		}, func() error { return nil }, nil
+	}
+
+	const sourceID = "02wMz5Txv1C3Hut0M8GCeD"
+	if err := schema.SaveSessionMeta(stateDir, schema.SessionMeta{
+		ID: sourceID, ProfileID: "openai", Model: "gpt-test",
+	}); err != nil {
+		t.Fatalf("SaveSessionMeta: %v", err)
+	}
+	writer, err := transcript.NewWriter(
+		filepath.Join(stateDir, "sessions", sourceID+".transcript.jsonl"),
+		transcript.Header{SessionID: sourceID, ProfileID: "openai", Model: "gpt-test", WorkingDir: stateDir},
+	)
+	if err != nil {
+		t.Fatalf("NewWriter: %v", err)
+	}
+	if err := writer.Close(); err != nil {
+		t.Fatalf("Close writer: %v", err)
+	}
+
+	err = run(context.Background(), runConfig{
+		resumeWith: sourceID, prompt: "new prompt", workDir: stateDir, stateDir: stateDir,
+		noDefaultMarketplaces: true, stdout: &bytes.Buffer{}, stderr: &bytes.Buffer{},
+	})
+	if !errors.Is(err, reservationErr) {
+		t.Fatalf("run error = %v, want %v", err, reservationErr)
+	}
+	if childID == "" {
+		t.Fatal("resume-with child was never reserved")
+	}
+	for _, suffix := range []string{".meta.json", ".transcript.jsonl", ".api.jsonl", ".log.jsonl"} {
+		if _, err := os.Stat(filepath.Join(stateDir, "sessions", childID+suffix)); !os.IsNotExist(err) {
+			t.Fatalf("failed resume-with child artifact %q remains: %v", suffix, err)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", childID)); !os.IsNotExist(err) {
+		t.Fatalf("failed resume-with child jobs directory remains: %v", err)
+	}
+}
 
 // TestRunWithArgs verifies that the run function processes a prompt from CLI args
 // and produces output on stdout.
@@ -324,7 +625,6 @@ func TestRunResumeRunningReservesBeforeRestore(t *testing.T) {
 	}{
 		{name: "resume", configure: func(cfg *runConfig, id string) { cfg.resume = id }},
 		{name: "resume-last", configure: func(cfg *runConfig, _ string) { cfg.resumeLast = true }},
-		{name: "resume-with", configure: func(cfg *runConfig, id string) { cfg.resumeWith = id; cfg.prompt = "continue" }},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

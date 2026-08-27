@@ -335,6 +335,9 @@ export function hydrateThread(resp: ThreadReadResponse, ref: string, now: number
     // An absent aggregate means the daemon could not authoritatively read
     // tasks; preserve a present zero so an empty task list stays distinct.
     tasks: thread.evener.tasks ?? null,
+    ...(thread.evener.diagnostics
+      ? { diagnostics: { plugins: thread.evener.diagnostics.plugins?.map((plugin) => ({ name: plugin.name })) } }
+      : {}),
     delegates: (thread.evener.diagnostics?.delegates ?? []).map(cloneStableDelegate),
     turnSlots: thread.evener.diagnostics?.turnSlots ? { ...thread.evener.diagnostics.turnSlots } : null,
     jobsUpdatedAt: null,

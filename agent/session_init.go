@@ -522,11 +522,14 @@ func (s *Session) hasConfiguredDelegateCapability() bool {
 type RestoreSessionConfig struct {
 	// LifetimeContext owns this restored session tree when supplied by a
 	// one-shot run. Nil preserves daemon/background ownership.
-	LifetimeContext             context.Context
-	StateDir                    string
-	Project                     identifier.Project
-	ResolveProfile              func(ref string) (*provider.Profile, error)
-	AcquireSessionOwnership     func(sessionID string) error
+	LifetimeContext         context.Context
+	StateDir                string
+	Project                 identifier.Project
+	ResolveProfile          func(ref string) (*provider.Profile, error)
+	AcquireSessionOwnership func(sessionID string) error
+	// OwnershipAlreadyAcquired keeps a host reservation alive across restore
+	// failure while still carrying AcquireSessionOwnership into the session.
+	OwnershipAlreadyAcquired    bool
 	ModelFallbacks              []string
 	OpenAIResponsesContinuation string
 	LLMRetryPolicy              *llm.RetryPolicy
@@ -591,10 +594,12 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 	restoreComplete := false
 	ownershipAcquired := false
 	if restoreCfg.AcquireSessionOwnership != nil {
-		if err := restoreCfg.AcquireSessionOwnership(meta.ID); err != nil {
-			return nil, fmt.Errorf("acquire session ownership: %w", err)
+		if !restoreCfg.OwnershipAlreadyAcquired {
+			if err := restoreCfg.AcquireSessionOwnership(meta.ID); err != nil {
+				return nil, fmt.Errorf("acquire session ownership: %w", err)
+			}
+			ownershipAcquired = true
 		}
-		ownershipAcquired = true
 		if restoreCfg.StateDir != "" {
 			var currentMeta schema.SessionMeta
 			var err error
@@ -604,7 +609,9 @@ func RestoreSessionFromMetaWithConfig(client *llm.Client, profile *provider.Prof
 				currentMeta, err = schema.LoadSessionMeta(restoreCfg.StateDir, meta.ID)
 			}
 			if err != nil {
-				_ = client.ReleaseSessionAPILog(meta.ID)
+				if ownershipAcquired {
+					_ = client.ReleaseSessionAPILog(meta.ID)
+				}
 				return nil, fmt.Errorf("reload session metadata after ownership: %w", err)
 			}
 			meta = currentMeta

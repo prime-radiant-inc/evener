@@ -36,6 +36,33 @@ func TestMethodCatalogWellFormed(t *testing.T) {
 	}
 }
 
+func TestPluginPreviewIsHubOnly(t *testing.T) {
+	var found *MethodSpec
+	for i := range Methods {
+		if Methods[i].Name == MethodEvenerPluginPreview {
+			found = &Methods[i]
+			break
+		}
+	}
+	if found == nil {
+		t.Fatal("plugin preview missing from method catalog")
+	}
+	if found.Scope != ScopeHub {
+		t.Fatalf("plugin preview scope = %q, want hub", found.Scope)
+	}
+	if _, ok := found.Params.(PluginPreviewParams); !ok {
+		t.Fatalf("plugin preview params = %T", found.Params)
+	}
+	if _, ok := found.Result.(PluginPreviewResponse); !ok {
+		t.Fatalf("plugin preview result = %T", found.Result)
+	}
+	for _, name := range CatalogMethodNames(ScopeDaemon) {
+		if name == MethodEvenerPluginPreview {
+			t.Fatal("plugin preview must not be in daemon catalog")
+		}
+	}
+}
+
 func TestNotificationCatalogWellFormed(t *testing.T) {
 	seen := map[string]bool{}
 	for i, n := range Notifications {
