@@ -791,6 +791,16 @@ export interface MarketplaceSourceInput {
 export interface ModelDescriptor {
   provider: string;
   model: string;
+  displayName?: string;
+  contextWindow?: number;
+  supportsTools?: boolean;
+  supportsVision?: boolean;
+  maxOutputTokens?: number;
+  supportsWebSearch?: boolean;
+  supportsReasoning?: boolean;
+  inputCostPerMillion?: number;
+  outputCostPerMillion?: number;
+  reasoningEffortLevels?: string[];
 }
 
 export interface ModelListDiagnostic {

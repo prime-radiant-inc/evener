@@ -35,7 +35,7 @@ import (
 	"primeradiant.com/evener/rendezvous"
 
 	// Side-effect imports register provider adapters. These are the same
-	// adapters `evener serve` uses, so the hub's /api/models reflects what
+	// adapters `evener serve` uses, so the hub's model/list reflects what
 	// spawning will succeed at — only providers configured in the hub's
 	// environment surface in the picker.
 	_ "primeradiant.com/evener/llm/providers/anthropic"
@@ -291,15 +291,6 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 	// as a fallback when a session's project dir can't be found in the past index.
 	stateDir := filepath.Dir(filepath.Clean(strings.TrimSuffix(stateGlob, "*")))
 
-	// Keep configured providers available for settings; launch choices come
-	// from the Evener harness contract exposed by HubSpawner.
-	var models []hubcore.ModelDescriptor
-	for _, p := range cfg.Providers {
-		for _, m := range p.Models {
-			models = append(models, hubcore.ModelDescriptor{Provider: p.Name, Model: m})
-		}
-	}
-
 	// inputs is the shared inputs-version counter the /api/tree memo (TreeCache)
 	// keys on; bumped whenever an input to the tree changes so the next request
 	// recomputes instead of serving a stale memoized tree.
@@ -392,7 +383,6 @@ func runMain(args []string, stderr io.Writer, deps mainDeps) error {
 		PinSections:         pinSections,
 		Spawner:             spawner,
 		DeletionStore:       deletionStore,
-		Models:              models,
 		PastPerPage:         cfg.PastResultsPerPage,
 		StateDir:            stateDir,
 		CredsStore:          credsStore,

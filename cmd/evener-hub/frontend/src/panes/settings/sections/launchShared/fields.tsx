@@ -5,7 +5,7 @@
 // modelList/envMap/mcpServerList) live in collectionFields.tsx instead.
 //
 // modelPicker renders the rich searchable ModelCatalog widget (restoring the
-// legacy settings-pickers.js Appendix A popup): the /api/models catalog with
+// legacy settings-pickers.js Appendix A popup): the model/list catalog with
 // display names, capability badges, cost, and a Recent section. Its
 // value/onChange contract matches the plain free-text input wave 7 shipped
 // with, so the schema/collect path is untouched.
@@ -213,17 +213,12 @@ export function ScalarField({
     // A composite widget, not a single labelable control, so the field label
     // is a plain span (mirroring the spawn form's own Model field) rather than
     // a FormRow's <label htmlFor> - the ModelCatalog's inner combobox carries
-    // its own accessible name. loadCatalog is the unscoped /api/models call
+    // its own accessible name. loadCatalog is the unscoped model/list call
     // (launch defaults aren't harness/cwd-scoped the way a live spawn is).
     return (
       <div className={CLASS.modelBlock}>
         <span className={CLASS.modelLabel}>{option.label}</span>
-        <ModelCatalog
-          value={value}
-          onChange={onChange}
-          loadCatalog={() => fetchModelCatalog()}
-          emptyLabel={resolvedLabel}
-        />
+        <ModelCatalog value={value} onChange={onChange} loadCatalog={fetchModelCatalog} emptyLabel={resolvedLabel} />
         {option.description && <p className={CLASS.modelHelp}>{option.description}</p>}
         <DefaultHint text={globalDefaultHint} />
       </div>

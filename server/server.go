@@ -352,7 +352,7 @@ type Server struct {
 	modelFunc                       func(string) error
 	nameFunc                        func(string)
 	reasoningEffortFunc             func(string)
-	listModelsFunc                  func(context.Context) ([]ModelsResponseItem, error)
+	listModelsFunc                  func(context.Context) ([]appwire.ModelDescriptor, error)
 	tasksFn                         func() any
 	jobsFn                          func(appwire.JobsListParams) (any, error)
 	jobOutputFn                     func(jobID string, beforeBytes, maxBytes int64) (data any, found bool, err error)
@@ -435,7 +435,6 @@ func NewServer(cfg ServerConfig) *Server {
 	s.mux.HandleFunc("/drain-as-steer", s.handleDrainAsSteer)
 	s.mux.HandleFunc("/compact", s.handleCompact)
 	s.mux.HandleFunc("/model", s.handleModel)
-	s.mux.HandleFunc("/models", s.handleModels)
 	s.mux.HandleFunc("/clear", s.handleClear)
 	s.mux.HandleFunc("/input", s.handleInput)
 	s.mux.HandleFunc("/tasks", s.handleTasks)
@@ -672,19 +671,8 @@ type ModelRequest struct {
 	Model string `json:"model"`
 }
 
-// ModelsResponseItem is a single model entry in the GET /models response.
-type ModelsResponseItem struct {
-	ID          string `json:"id"`
-	DisplayName string `json:"display_name"`
-}
-
-// ModelsResponse is the JSON response for GET /models.
-type ModelsResponse struct {
-	Models []ModelsResponseItem `json:"models"`
-}
-
-// SetListModelsFunc sets the function called by GET /models.
-func (s *Server) SetListModelsFunc(fn func(context.Context) ([]ModelsResponseItem, error)) {
+// SetListModelsFunc sets the function used by the typed model/list method.
+func (s *Server) SetListModelsFunc(fn func(context.Context) ([]appwire.ModelDescriptor, error)) {
 	s.mu.Lock()
 	s.listModelsFunc = fn
 	s.mu.Unlock()

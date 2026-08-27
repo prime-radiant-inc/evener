@@ -272,30 +272,6 @@ func (s *Server) handleModel(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (s *Server) handleModels(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
-	s.mu.RLock()
-	fn := s.listModelsFunc
-	s.mu.RUnlock()
-
-	if fn == nil {
-		http.Error(w, "model listing not available", http.StatusServiceUnavailable)
-		return
-	}
-
-	models, err := fn(r.Context())
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadGateway)
-		return
-	}
-
-	w.Header().Set("Content-Type", "application/json")
-	_ = json.NewEncoder(w).Encode(ModelsResponse{Models: models})
-}
-
 func (s *Server) handleTasks(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)

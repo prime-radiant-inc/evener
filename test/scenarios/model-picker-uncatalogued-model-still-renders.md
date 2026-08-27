@@ -7,8 +7,9 @@ with its name and provider-qualified id, carry **no** badge/cost/context
 metadata at all, stay selectable, and launch.
 
 Ollama supplies a real, no-stub example of the rule.
-`catalogModelInfo`'s ollama branch (`cmd/evener-hub/web_spawn.go#catalogModelInfo`,
-the branch at `:506-510`) suppresses the generic bare-id
+`catalogModelInfo` (`cmd/evener-hub/app_models.go#catalogModelInfo`) delegates
+to `ResolveLiveModelInfo`'s ollama branch (`llm/model_catalog.go#ResolveLiveModelInfo`),
+which suppresses the generic bare-id
 `LookupModelInfo` fallback and requires an exact `"ollama/<id>"` catalog
 key — "local ollama models are unrelated to same-named upstream catalog
 entries". The embedded catalog carries 29 `ollama/*` keys
@@ -50,11 +51,8 @@ So the assertion is **absence of the element**, not an empty one.
 
 ### Browser-free (the exact assertions — everything but "is it rendered")
 
-1. `GET /api/models?diagnostics=1`, find the ollama entry:
-   ```bash
-   curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/models?diagnostics=1" \
-     | jq '.models[] | select(.provider=="ollama" and .model=="gemma4:e4b")'
-   ```
+1. Send `model/list` over the authenticated AppWire connection and inspect
+   `result.data` for the ollama entry with `model == "gemma4:e4b"`.
 2. Compare against a *catalogued* neighbour from the same response (any
    `openai` row) so the difference is visible rather than asserted in a
    vacuum.
@@ -68,7 +66,7 @@ So the assertion is **absence of the element**, not an empty one.
 
 4. Open `/new`, open the Model field's trigger (the `<button>` whose
    accessible name ends `— change model`,
-   `widgets/modelCatalog/index.tsx:388-406`), and inspect the row:
+   `widgets/modelCatalog/index.tsx#ModelCatalog`), and inspect the row:
    ```javascript
    (() => {
      const rows = [...document.querySelectorAll('[role="listbox"][aria-label="Model"] li[role="option"]')];
@@ -96,17 +94,17 @@ So the assertion is **absence of the element**, not an empty one.
 ## Expected
 
 - **Step 1 (exact)**: the entry is exactly
-  `{"display_name":"Gemma4:e4b","model":"gemma4:e4b","provider":"ollama"}`
+  `{"displayName":"Gemma4:e4b","model":"gemma4:e4b","provider":"ollama"}`
   — the badge/cost/context keys are **absent**, not `null` and not
-  `false`: `supports_tools`, `supports_vision`, `supports_reasoning`,
-  `supports_web_search`, `context_window`, `max_output_tokens`,
-  `input_cost_per_million`, `output_cost_per_million`. The display name
+  `false`: `supportsTools`, `supportsVision`, `supportsReasoning`,
+  `supportsWebSearch`, `contextWindow`, `maxOutputTokens`,
+  `inputCostPerMillion`, `outputCostPerMillion`. The display name
   is still the prettified id
-  (`prettifyModelDisplayName`, `cmd/evener-hub/web_spawn.go#prettifyModelDisplayName`) —
+  (`prettifyModelDisplayName`, `cmd/evener-hub/app_models.go#prettifyModelDisplayName`) —
   degradation drops facts, it does not drop the row. This exact key set
   is pinned by
-  `TestModelDescriptorsToAPIModels_UncataloguedModelStillRendersWithoutBadges`
-  (`cmd/evener-hub/app_models_test.go#TestModelDescriptorsToAPIModels_UncataloguedModelStillRendersWithoutBadges`).
+  `TestEnrichModelDescriptors_UncataloguedModelStillRendersWithoutBadges`
+  (`cmd/evener-hub/app_models_test.go#TestEnrichModelDescriptors_UncataloguedModelStillRendersWithoutBadges`).
 - **Step 2**: the openai neighbour carries those keys, proving the
   absence in step 1 is about the model and not about the endpoint.
 - **Steps 4/5**: `found` is true; `text` is exactly `Gemma4:e4b`;
@@ -116,7 +114,7 @@ So the assertion is **absence of the element**, not an empty one.
   selectable option. Falsify: the row is missing entirely; a meta span
   exists (empty or otherwise); the row renders as
   `ollama/gemma4:e4b` instead of the display name (see Sharp edges —
-  that means the `/api/models` enrichment failed, a different fault);
+  that means the `model/list` enrichment failed, a different fault);
   or the row is greyed/disabled.
 - **Step 6**: the TUI row reads `Gemma4:e4b  ollama/gemma4:e4b` with no
   ` · ctx · price · caps` tail — `modelInfoMetaTail` returns `""` for a
@@ -152,14 +150,12 @@ So the assertion is **absence of the element**, not an empty one.
   exists. Same reason step 2 exists at the JSON level.
 - **A blank display name means a different failure.** The picker's label
   falls back to the qualified `provider/model` when `displayName` is
-  empty (`toCatalogOptions`, `widgets/modelCatalog/catalogView.ts:24-28`).
-  On the spawn picker that happens when the `/api/models` enrichment
-  call fails and `mergeScopedCatalog` degrades the entry to
-  `{provider, model, displayName: ""}`
-  (`widgets/modelCatalog/scopedCatalog.ts:22-24`) — which also produces
-  an empty meta and therefore looks exactly like correct degradation.
-  If the row reads `ollama/gemma4:e4b` rather than `Gemma4:e4b`, check
-  `/api/models` before concluding anything about the catalog.
+  empty (`toCatalogOptions`, `widgets/modelCatalog/catalogView.ts`).
+  The typed `model/list` call is the single source for the spawn picker, so a
+  request failure is shown by the picker's error alert (`ModelCatalog`'s
+  `openPicker`) rather than silently becoming a second, less-informed list.
+  If a successful row reads `ollama/gemma4:e4b` rather than `Gemma4:e4b`, inspect
+  the `model/list` response before concluding anything about the catalog.
 - Don't confuse "uncatalogued" with "disabled" — this model has no
   `DisabledReason` and is fully selectable and launchable. The TUI only
   sets `DisabledReason` from a provider's launch diagnostic
@@ -177,4 +173,4 @@ So the assertion is **absence of the element**, not an empty one.
   `widgets/modelCatalog/pickerRows.test.ts:118` ("an entry with no
   metadata at all yields an empty string"). If that passes and the live
   row still shows a meta line, the enrichment invented metadata — look
-  at `/api/models`, not at the widget.
+  at `model/list`, not at the widget.

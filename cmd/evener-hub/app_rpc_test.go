@@ -6133,7 +6133,6 @@ func TestHubRPCModelListUsesEvenerLaunchContractWhenDaemonFails(t *testing.T) {
 		RunDir:  runDir,
 		Roster:  roster,
 		Spawner: spawner,
-		Models:  []hubcore.ModelDescriptor{{Provider: "openai", Model: "gpt-stale"}},
 	})
 	defer hub.Close()
 	client := dialHubRPC(t, hub)

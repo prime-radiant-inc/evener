@@ -237,7 +237,7 @@ var nonChatModelSubstrings = []string{
 
 // IsChatModelID reports whether modelID names a text-completion model rather than
 // an embedding, audio, image, or moderation model. It is a substring check on the
-// lowercased ID, matching the skip rule the launch-check and hub /api/models paths
+// lowercased ID, matching the skip rule the launch-check and hub model-list paths
 // previously duplicated. A nil or empty ID reports false.
 func IsChatModelID(modelID string) bool {
 	if modelID == "" {

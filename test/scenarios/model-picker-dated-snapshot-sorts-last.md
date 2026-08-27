@@ -1,8 +1,8 @@
 # model-picker-dated-snapshot-sorts-last: bare family id before its dated snapshot, within a provider
 
-**What this covers**: Track B Tasks 4 (`sortModelEntriesDatedLast`,
-`cmd/evener-hub/web_spawn.go:226`, over `isDatedSnapshotModelID`, `:197`)
-and 11 (TUI `modelPickerItems`, `cmd/evener-tui/hub_commands.go:469-482`) —
+**What this covers**: Track B Tasks 4 (`sortModelDescriptors`,
+`cmd/evener-hub/app_models.go`, over `isDatedSnapshotModelID`)
+and 11 (TUI `modelPickerItems`, `cmd/evener-tui/hub_commands.go#modelPickerItems`) —
 within one provider's group, a bare model id (e.g. `claude-opus-4-6`)
 must render before its dated snapshot (`claude-opus-4-6-20251101`),
 regardless of the order the live listing returned them in.
@@ -10,10 +10,9 @@ regardless of the order the live listing returned them in.
 **Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map. What changed since this card was written is *where* the
 rule is observable, and it is good news: **the exact assertion is now
-browser-free.** `sortModelEntriesDatedLast` runs inside
-`modelDescriptorsToAPIModels` (`web_spawn.go:309`) and again on the
-live-model fallback (`:470`), so the order is visible in the
-`GET /api/models` JSON directly — no picker, no Chrome, no
+browser-free.** `sortModelDescriptors` runs on the typed `model/list`
+response after enrichment, so the order is visible in the AppWire response
+directly — no picker or Chrome, no
 provider-with-a-dated-pair required in a *rendered* list, only in the
 hub's enumeration. The old card had no such level to check at and fell
 back to unit tests for everything.
@@ -38,25 +37,21 @@ list.
 
 ### Browser-free (the exact assertion)
 
-1. `GET /api/models?diagnostics=1` and read the provider's group in
-   response order:
-   ```bash
-   curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/models?diagnostics=1" \
-     | jq -r '.models[] | "\(.provider)/\(.model)"'
-   ```
+1. Send `model/list` over the authenticated AppWire connection and read the
+   provider's group in `result.data` order.
    Within each provider run, every id matching `-\d{8}(-v\d+)?$`
-   (`datedSnapshotSuffix`, `web_spawn.go#datedSnapshotSuffix`) must come after every id
+   (`datedSnapshotSuffix`, `app_models.go#datedSnapshotSuffix`) must come after every id
    in that run that doesn't. Providers themselves sort ascending
-   (`sortModelEntriesDatedLast`, `:226-241`).
+   (`sortModelDescriptors`, `app_models.go`).
 2. Same check through the TUI's own path: `modelPickerItems` applies the
    identical predicate over `buildModelPickerItems`'s unordered output
-   (`hub_commands.go:469-482`, the sort at `:471-480`).
+   (`cmd/evener-tui/hub_commands.go#modelPickerItems`).
 
 ### Browser (does the rendered list preserve it)
 
 3. Open `/settings/launch-evener`, click the model field's trigger (the
    `<button>` whose accessible name ends `— change model`,
-   `widgets/modelCatalog/index.tsx:388-406`), and read the listbox in
+   `widgets/modelCatalog/index.tsx#ModelCatalog`), and read the listbox in
    DOM order:
    ```javascript
    ({
@@ -68,7 +63,7 @@ list.
    `role="presentation"` rows are group heads (and unavailable-provider
    lines — see Sharp edges); `role="option"` rows are the models, in the
    server's order (`toCatalogOptions` preserves it,
-   `widgets/modelCatalog/catalogView.ts:24-28`).
+   `widgets/modelCatalog/catalogView.ts#toCatalogOptions`).
    The settings page renders **two** model pickers — the schema declares
    both `model` (label `Model`) and `fast_cheap_model` (label `Fast cheap
    model`) as `modelPicker` controls
@@ -99,7 +94,7 @@ list.
   precedes the dated row.
 - Note the display names are prettified and the dated suffix is
   *stripped from the label*, so the two rows read identically
-  (`prettifyModelDisplayName`, `web_spawn.go#prettifyModelDisplayName`, and its test
+  (`prettifyModelDisplayName`, `app_models.go#prettifyModelDisplayName`, and its test
   expecting `"Claude Opus 4 6"`). Distinguish them by the qualified id
   in the row's meta/id text, not by the display name.
 
@@ -120,7 +115,7 @@ Investigated and ruled out:
 - **`openai`** (the OAuth-authenticated live account) enumerated only 5
   models (`codex-auto-review`, `gpt-5.3-codex-spark`, `gpt-5.4`,
   `gpt-5.4-mini`, `gpt-5.5`) — no dated snapshot ids at all, confirmed
-  via repeated live `/api/models` calls.
+  via repeated live `model/list` calls.
 - **`ollama`** model ids always carry a `name:tag` suffix (e.g.
   `gemma4:e4b`, and even an `ollama cp`'d rename came back as
   `claude-opus-4-5:latest`) — the trailing `:tag` breaks
@@ -142,9 +137,9 @@ Given no live path existed, the rule was verified as passing, on that
 build, via:
 
 - `TestIsDatedSnapshotModelID` (`cmd/evener-hub/app_models_test.go#TestIsDatedSnapshotModelID`).
-- `TestModelDescriptorsToAPIModels_UsesPrettifiedDisplayNameAndSortsDatedLast`
-  (`cmd/evener-hub/app_models_test.go#TestModelDescriptorsToAPIModels_UsesPrettifiedDisplayNameAndSortsDatedLast`) — asserts
-  `modelDescriptorsToAPIModels([{anthropic, claude-opus-4-6-20251101},
+- `TestEnrichModelDescriptors_UsesPrettifiedDisplayNameAndSortsDatedLast`
+  (`cmd/evener-hub/app_models_test.go#TestEnrichModelDescriptors_UsesPrettifiedDisplayNameAndSortsDatedLast`) — asserts
+  `enrichModelListResponse({data: [{anthropic, claude-opus-4-6-20251101},
   {anthropic, claude-opus-4-6}, {openai, gpt-5.2}], nil)` returns the
   anthropic group in order `[claude-opus-4-6, claude-opus-4-6-20251101]`
   regardless of input order.
@@ -155,7 +150,7 @@ build, via:
 Both are still the fallback when no dated pair is reachable:
 
 ```bash
-go test ./cmd/evener-hub/ -run TestModelDescriptorsToAPIModels_UsesPrettifiedDisplayNameAndSortsDatedLast
+go test ./cmd/evener-hub/ -run TestEnrichModelDescriptors_UsesPrettifiedDisplayNameAndSortsDatedLast
 go test ./cmd/evener-tui/ -run TestModelPickerItems_SortsDatedSnapshotLastWithinProvider
 ```
 
@@ -181,25 +176,14 @@ remove your `$run` dir. Nothing is spawned by this card.
 
 ## Sharp edges
 
-- **The spawn picker is not sorted by this rule, and that is not a
-  bug — it is a different list.** The settings picker's set IS
-  `/api/models` (`fetchModelCatalog()`,
-  `panes/settings/sections/launchShared/fields.tsx:189-198`), so it
-  inherits `sortModelEntriesDatedLast`. The spawn picker's set is the
-  harness/cwd-scoped appwire `model/list`, merged with `/api/models`
-  only for *metadata* — `mergeScopedCatalog` builds its `models` array
-  by mapping over the scoped list, so the scoped order wins
-  (`widgets/modelCatalog/scopedCatalog.ts:17-29`,
-  `panes/spawn/ModelField.tsx:33-46`). `model/list` returns
-  `evenerLaunchModelList`'s data untouched (`cmd/evener-hub/app_models.go:76-81`);
-  the launch check sorts models by raw id within a provider
-  (`launchcheck.go:175`). For a bare/dated *pair* that by-id sort gives
-  the same answer (the bare id is a prefix, so it sorts first), which is
-  why the pair assertion still holds there — but the stronger property
-  ("every dated id after every bare id in the group") is only
-  guaranteed on `/api/models` and in the TUI. Assert group-wide ordering
-  on the settings picker; a spawn-picker failure of the *group-wide*
-  form is expected, not a regression.
+- **Both web pickers inherit the hub's ordering.** The settings picker uses
+  unscoped AppWire `model/list`, while the spawn picker uses the
+  harness/cwd-scoped call. Both go through `hubModelList` and
+  `enrichModelListResponse` in `cmd/evener-hub/app_models.go`, which applies
+  `sortModelDescriptors` after enrichment. The TUI applies the corresponding
+  `modelPickerItems` ordering to its response. Assert group-wide ordering on
+  either web picker or the TUI; a difference points to the caller or renderer,
+  not an intentional scope distinction.
 - **`role="presentation"` is two different things.** The listbox uses it
   for provider/`Recent` group heads *and* for unavailable-provider lines
   (`widgets/modelCatalog/index.tsx:263-277`). A group head is a bare
@@ -208,13 +192,13 @@ remove your `$run` dir. Nothing is spawned by this card.
   `role="option"` rows are models.
 - Don't confuse "dated" with "has a date-shaped substring anywhere" —
   the regex is anchored to the *end* of the id (`-\d{8}(-v\d+)?$`,
-  `web_spawn.go:193`), applied to the segment after the last `/`
-  (`:197-202`). That is why Ollama's `:latest`/`:tag` suffix defeats it,
+  `app_models.go`), applied to the segment after the last `/`. That is why
+  Ollama's `:latest`/`:tag` suffix defeats it,
   and why OpenRouter's `-02-15`-style partial dates (5 digits, not 8)
   are correctly treated as non-dated by the same rule that correctly
   flags `-20260420` as dated.
 - The `openrouter` launch-check visibility filter is unrelated to and
-  upstream of anything in this track — it's why `GET /api/models` for an
+  upstream of anything in this track — it's why `model/list` for an
   `openrouter` instance only ever showed 6-7 curated
   deepseek/inception/minimax models instead of openrouter's real
   340-model live catalog. Worth knowing if a future card wants to use

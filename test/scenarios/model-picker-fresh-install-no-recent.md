@@ -11,25 +11,23 @@ picker.
 The rule is enforced independently at three layers, which is what makes
 it worth an e2e card at all:
 
-- **Wire**: `recent` is always present and always an array, never null —
-  `writeModelsResponse` coerces nil to `[]`
-  (`cmd/evener-hub/web_spawn.go#writeModelsResponse`), and
-  `recentModelEntriesFromDescriptors` returns nil for an empty ref list
-  (`:248-251`).
+- **Wire**: the typed `model/list` response omits `recent` when there is no
+  history (`omitempty`); clients normalize an omitted value to an empty list.
+  `data` contains the provider-grouped descriptors.
 - **Web**: `buildPickerRows` emits the `Recent` group head *only* when
   the filtered recent list is non-empty
-  (`widgets/modelCatalog/pickerRows.ts:88-97`).
+  (`widgets/modelCatalog/pickerRows.ts#buildPickerRows`).
 - **TUI**: `modelPickerItemsFromResponse` early-returns before building
   any Recent items when `len(resp.Recent) == 0`
-  (`cmd/evener-tui/hub_commands.go:510-512`).
+  (`cmd/evener-tui/hub_commands.go#modelPickerItemsFromResponse`).
 
 **Surface**: see `docs/developing-evener/agentic-testing.md`, "Driving the web UI" — the
 selector map. The old `button[data-chip="model"]` / `.chip-picker-group`
 / `[data-settings-model-picker]` / `.chip-picker-provider` selectors this
 card used are all gone with the vanilla frontend (`660376f78`). Both
 pickers are now the **same** shared ARIA combobox widget
-(`widgets/modelCatalog/`): `panes/spawn/ModelField.tsx:48` and
-`panes/settings/sections/launchShared/fields.tsx:198` render the same
+(`widgets/modelCatalog/`): `panes/spawn/ModelField.tsx#ModelField` and
+`panes/settings/sections/launchShared/fields.tsx#ScalarField` render the same
 `<ModelCatalog>`, differing only in which `loadCatalog` they inject. So
 there is one markup to assert against, not two.
 
@@ -59,20 +57,16 @@ there is one markup to assert against, not two.
 
 ### Browser-free (the authoritative record)
 
-1. ```bash
-   curl -s -H "Authorization: Bearer $TOKEN" "$HUB/api/models?diagnostics=1" \
-     | jq '{recent, providers: ([.models[].provider] | unique)}'
-   ```
-   `?diagnostics=1` is not optional here — the bare response is a
-   models-only array with no `recent` key at all
-   (`writeModelsResponse`, `web_spawn.go#writeModelsResponse`), so checking the
-   default shape proves nothing.
+1. Use the direct AppWire recipe in `docs/developing-evener/agentic-testing.md`
+   to send `model/list` with the test working directory. Inspect
+   `result.data` for the providers and treat an omitted `result.recent` as an
+   empty list.
 
 ### Browser
 
 2. Open `/new`, click the Model field's trigger (the `<button>` whose
    accessible name ends `— change model`,
-   `widgets/modelCatalog/index.tsx:388-406`), and read the group heads:
+   `widgets/modelCatalog/index.tsx#ModelCatalog`), and read the group heads:
    ```javascript
    ({
      port: location.port,
@@ -102,8 +96,8 @@ there is one markup to assert against, not two.
 
 ## Expected
 
-- **Step 1**: `recent` is `[]` — present, empty, never omitted and never
-  `null`. `providers` is the set that actually enumerated (`["ollama",
+- **Step 1**: `result.recent` is omitted or empty, and never contains a model.
+  `result.data`'s providers are the set that actually enumerated (`["ollama",
   "openai"]` on this run).
 - **Steps 2/3**: `groups` is exactly the enumerated provider names, e.g.
   `["ollama","openai"]` — no `"Recent"` entry. `optionCount` is
@@ -123,9 +117,8 @@ there is one markup to assert against, not two.
   ```
   with no `RECENT` header anywhere above `OLLAMA`.
 - Falsification: any picker renders a `Recent`/`RECENT` group (even an
-  empty one with a header and no rows), or
-  `/api/models?diagnostics=1`'s `recent` field is missing or `null`
-  instead of `[]`.
+  empty one with a header and no rows), or `result.recent` contains a model
+  despite the empty Past index.
 
 ## Cleanup
 
@@ -154,12 +147,11 @@ there is one markup to assert against, not two.
   `<provider> — <message>` (`unavailableLine`, `pickerRows.ts:60-65`),
   so a down provider shows up in `groups` above. That is expected —
   check for the exact string `Recent`, not for the group count.
-- **The spawn picker's Recent is additionally scoped.** Even with a
-  populated index, `mergeScopedCatalog` filters Recent to models the
-  current harness/cwd actually offers
-  (`widgets/modelCatalog/scopedCatalog.ts:26-27`). Irrelevant to this
-  card (empty stays empty) but it matters the moment you seed history —
-  see `model-picker-recent-reflects-last-5-global.md`.
+- **The spawn picker's model/list request is scoped.** Even with a populated
+  index, its `harness`/`cwd` parameters select the models the current launch
+  context offers. That is irrelevant to this card (empty stays empty) but it
+  matters the moment you seed history — see
+  `model-picker-recent-reflects-last-5-global.md`.
 - `lunarouter` (a `type=openai chat-completions` instance pointed at a
   `trycloudflare.com` tunnel) was unreachable for this entire session
   (DNS resolution failure — the tunnel had expired) and surfaced only as

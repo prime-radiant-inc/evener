@@ -284,7 +284,7 @@ export function ModelListField({
 
 /**
  * The modelList add row: the shared model picker plus CollectionEditor's own
- * submit button. The picker is unscoped (/api/models with no harness/cwd) -
+ * submit button. The picker is unscoped (model/list with no harness/cwd) -
  * a launch-config fallback list isn't scoped to one live spawn - matching the
  * scalar modelPicker field in this section's sibling fields.tsx.
  *
@@ -304,7 +304,7 @@ function ModelAddField({
   return (
     <>
       <span className={CLASS.modelAddField}>
-        <ModelCatalog value={value} onChange={onChange} loadCatalog={() => fetchModelCatalog()} />
+        <ModelCatalog value={value} onChange={onChange} loadCatalog={fetchModelCatalog} />
       </span>
       <Button type="submit" variant="quiet" disabled={value.trim() === "" || disabled}>
         Add

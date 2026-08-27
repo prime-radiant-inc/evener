@@ -169,7 +169,7 @@ the Past index's Recent list.
   scopes the request to.
 - `model-picker-badges-match-catalog-data.md` — the rendered capability
   badges (tools / vision / reasoning / web-search / context window /
-  max output / price) match both `/api/models?diagnostics=1` and the
+  max output / price) match the typed AppWire `model/list` response and the
   embedded catalog's raw LiteLLM data; found and fixed a real
   spawn-picker data-source bug.
 - `model-picker-dated-snapshot-sorts-last.md` — inside a provider group

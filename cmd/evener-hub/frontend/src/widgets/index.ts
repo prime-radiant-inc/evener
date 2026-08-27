@@ -58,7 +58,7 @@ export type { MenuEntry, MenuItem, MenuProps, MenuSeparator } from "./menu";
 export { isSeparator, Menu } from "./menu";
 export type { MeterProps, MeterTone } from "./meter";
 export { Meter } from "./meter";
-// ModelCatalog is both the component and the /api/models envelope type. The
+// ModelCatalog is both the component and the typed model/list catalog shape. The
 // plain re-export carries BOTH meanings; only the pure-type members need
 // `export type` (a second `export type { ModelCatalog }` would duplicate it).
 export type { ModelCatalogEntry, ModelCatalogPanelProps, ModelCatalogProps } from "./modelCatalog";

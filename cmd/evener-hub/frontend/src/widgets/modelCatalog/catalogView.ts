@@ -1,5 +1,5 @@
-// Pure view helpers for the rich model catalog: turning the /api/models
-// entries into the picker's searchable options, provider grouping, and the
+// Pure view helpers for the rich model catalog: turning model/list entries
+// into the picker's searchable options, provider grouping, and the
 // per-row metadata (capability badges, cost, context window). No React, no
 // wire - unit-tested in isolation (catalogView.test.ts). The widget
 // (index.tsx) composes these into rows; the swap sites never see them.
@@ -19,8 +19,7 @@ export interface CatalogOption {
 
 /** Maps entries to options, preserving the server's provider-sorted order.
  * The label is the display name, falling back to the qualified id for a model
- * the embedded catalog doesn't know (its display_name still arrives, but an
- * empty one must not render a blank row). */
+ * the embedded catalog doesn't know; an empty one must not render a blank row. */
 export function toCatalogOptions(entries: ModelCatalogEntry[]): CatalogOption[] {
   return entries.map((entry) => {
     const qualified = `${entry.provider}/${entry.model}`;

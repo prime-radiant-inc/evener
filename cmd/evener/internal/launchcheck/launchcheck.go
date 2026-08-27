@@ -270,7 +270,7 @@ func launchCheckModelListUnavailable(err error) bool {
 // launchCheckModelVisible reports whether a live model should appear in the
 // launch model list for a provider with the given behavior tag. It delegates to
 // the shared llm.ModelCatalog.VisibleLiveModel rule so the launch-check path and
-// the hub /api/models path cannot drift. See VisibleLiveModel for the
+// the hub model-list path cannot drift. See VisibleLiveModel for the
 // live-API-first tool-support resolution this implements.
 func launchCheckModelVisible(behaviorTag string, live llm.ModelInfo, cat *llm.ModelCatalog) bool {
 	return cat.VisibleLiveModel(behaviorTag, live)

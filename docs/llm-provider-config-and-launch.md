@@ -472,8 +472,8 @@ config-aware:
 always present after `LoadClient`) and re-applies the output-schema/decisions
 overrides — and on startup writes a rendezvous entry carrying `modelRef.Provider`
 (`serve.go:404`). The standalone `evener run` (`cmd/evener/run.go:127,138`) and the
-hub's own live-models endpoint behind `/api/models` (`cmd/evener-hub/web.go:2027`)
-likewise build via `cmdutil.LoadClient`, so all three see custom instances.
+hub's own `model/list` implementation likewise builds via `cmdutil.LoadClient`,
+so all three see custom instances.
 
 `cmdutil.LoadClient` (`cmdutil/load_client.go:31`) is **always** `NewFromProviders`
 — it loads `providers.toml` when present, or seeds the config in memory from the

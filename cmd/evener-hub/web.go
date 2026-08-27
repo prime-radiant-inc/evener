@@ -80,8 +80,11 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 		frontendHash:     fHash,
 		deletionStoreErr: deletionStoreErr,
 	}
+	if web.cfg.LiveModels == nil {
+		web.cfg.LiveModels = web.fetchLiveModels
+	}
 	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}})
-	web.appRPC = newHubAppServerWithNavigation(cfg, sources, web.navigation)
+	web.appRPC = newHubAppServerWithNavigation(web.cfg, sources, web.navigation)
 	if deletionStoreErr == nil {
 		_ = web.resumeProjectDeletions()
 	}
@@ -161,7 +164,6 @@ func (s *WebServer) Handler() http.Handler {
 
 	// API
 	mux.HandleFunc("/api/spawn", s.handleApiSpawn)
-	mux.HandleFunc("/api/models", s.handleApiModels)
 	mux.HandleFunc("/api/dirs/create", s.handleAPIDirCreate)
 	mux.HandleFunc("/api/git/head", s.handleApiGitHead)
 	mux.HandleFunc("/api/health", s.handleAPIHealth)

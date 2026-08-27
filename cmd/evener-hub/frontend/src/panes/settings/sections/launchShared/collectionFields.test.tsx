@@ -9,7 +9,7 @@ import * as catalogClientModule from "../../../../widgets/modelCatalog/catalogCl
 import { EnvMapField, McpServerListField, ModelListField, PathListField } from "./collectionFields";
 
 // modelList adds come from the shared searchable ModelCatalog picker, which
-// fetches /api/models; the wire loader is mocked so these stay hermetic.
+// calls model/list; the wire loader is mocked so these stay hermetic.
 //
 // vi.spyOn, not vi.mock: see ModelField.test.tsx's own comment on this exact
 // pattern - under a shared module registry (isolate:false), a vi.mock()

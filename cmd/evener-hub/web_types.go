@@ -25,13 +25,12 @@ type spawnRequest struct {
 	Items           []appwire.InputItem        `json:"items,omitempty"`
 }
 
-// modelsCache is a per-WebServer TTL cache of the RAW live model list (all
-// providers' ListModels results, un-overlaid — see overlayLiveEntries).
-// Provider /models calls are cheap but not free.
+// modelsCache is a per-WebServer TTL cache of the raw live model list. Provider
+// configuration overlays are applied to fresh descriptors on each response.
 type modelsCache struct {
 	mu      sync.Mutex
 	expires time.Time
-	models  []map[string]any
+	models  []appwire.ModelDescriptor
 }
 
 const liveModelsTTL = 5 * time.Minute

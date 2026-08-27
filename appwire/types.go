@@ -1691,6 +1691,20 @@ type ModelListParams struct {
 type ModelDescriptor struct {
 	Provider string `json:"provider"`
 	Model    string `json:"model"`
+	// The remaining fields are optional because daemon and remote-source model
+	// lists may know only the launchable identity. Hub responses fill these from
+	// the embedded catalog when available. Pointer scalars preserve an explicit
+	// false/zero from a live provider instead of treating it as unknown.
+	DisplayName           string   `json:"displayName,omitempty"`
+	ContextWindow         *int     `json:"contextWindow,omitempty"`
+	SupportsTools         *bool    `json:"supportsTools,omitempty"`
+	SupportsVision        *bool    `json:"supportsVision,omitempty"`
+	MaxOutputTokens       *int     `json:"maxOutputTokens,omitempty"`
+	SupportsWebSearch     *bool    `json:"supportsWebSearch,omitempty"`
+	SupportsReasoning     *bool    `json:"supportsReasoning,omitempty"`
+	InputCostPerMillion   *float64 `json:"inputCostPerMillion,omitempty"`
+	OutputCostPerMillion  *float64 `json:"outputCostPerMillion,omitempty"`
+	ReasoningEffortLevels []string `json:"reasoningEffortLevels,omitempty"`
 }
 
 type ModelListDiagnostic struct {

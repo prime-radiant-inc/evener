@@ -21,7 +21,7 @@ const fuzzSessionID = sandboxSessionID
 // hub routes the handler fuzz drives — the single canonical list in
 // internal/fuzzroutes, shared with the corpus harvester so the two can't drift.
 // Mutating routes (/api/spawn, /api/dirs/create, the action verbs),
-// routes that shell out (/api/git/head), and provider-probing routes (/api/models)
+// routes that shell out (/api/git/head), and provider-probing model-list calls
 // are excluded so a fuzzed request can never touch the real environment.
 var fuzzReadOnlyRoutes = fuzzroutes.ReadOnly
 

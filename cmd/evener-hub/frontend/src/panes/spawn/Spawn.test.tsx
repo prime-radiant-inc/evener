@@ -9,6 +9,8 @@ import { FakeClient } from "../../protocol/testing/fakeClient";
 import type {
   AnyNotification,
   LaunchOption,
+  ModelDescriptor,
+  ModelListResponse,
   PluginPreviewResponse,
   Thread,
   ThreadCapabilities,
@@ -23,6 +25,8 @@ import promptCardStyles from "../../widgets/promptcard/promptcard.module.css";
 import textareaStyles from "../../widgets/textarea/textarea.module.css";
 import { resetToastStoreForTests } from "../../widgets/toast/store";
 import Spawn from "./Spawn";
+
+let modelListOverride: ModelDescriptor[] | null = null;
 
 class MemoryStorage {
   private store = new Map<string, string>();
@@ -93,9 +97,9 @@ function readyClient(configure?: (fake: FakeClient) => void): FakeClient {
   }));
   fake.on("evener/launch/schema", () => ({ options: [] }));
   fake.on("model/list", () => ({
-    data: [
-      { provider: "anthropic", model: "claude-sonnet-4-5" },
-      { provider: "openai", model: "gpt-5" },
+    data: modelListOverride ?? [
+      { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
+      { provider: "openai", model: "gpt-5", displayName: "openai/gpt-5" },
     ],
   }));
   fake.on("evener/projects/recent", () => ({ data: [] }));
@@ -171,6 +175,7 @@ beforeAll(() => {
 
 beforeEach(() => {
   localStorage.clear();
+  modelListOverride = null;
   fetchMock = vi.fn((url: string) => {
     if (url.startsWith("/api/git/head")) {
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ branch: "main" }) } as Response);
@@ -1573,8 +1578,8 @@ test("preselects the first launchable model when the resolved default's provider
   const fake = readyClient((f) => {
     f.on("model/list", () => ({
       data: [
-        { provider: "anthropic", model: "claude-sonnet-4-5" },
-        { provider: "anthropic", model: "claude-opus-4" },
+        { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
+        { provider: "anthropic", model: "claude-opus-4", displayName: "anthropic/claude-opus-4" },
       ],
     }));
     f.on("evener/launch/resolve", () => ({
@@ -1637,8 +1642,8 @@ test("a sticky per-project model default is never clobbered by the uncredentiale
   const fake = readyClient((f) => {
     f.on("model/list", () => ({
       data: [
-        { provider: "anthropic", model: "claude-opus-4" },
-        { provider: "anthropic", model: "claude-sonnet-4-5" },
+        { provider: "anthropic", model: "claude-opus-4", displayName: "anthropic/claude-opus-4" },
+        { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
       ],
     }));
     f.on("evener/launch/resolve", () => ({
@@ -1669,29 +1674,14 @@ test("surfaces the discard notice when a prefilled model is no longer offered (f
 // --- Effort: the ladder belongs to the selected model -----------------------
 //
 // The Effort select used to render one hardcoded ladder (minimal/low/medium/
-// high + none) for EVERY model. /api/models already serves each model's own
-// reasoning_effort_levels (web_spawn.go) and the merged catalog carries them,
-// so the select derives its options from the selected model's entry - or, with
-// Model left at "(default)", from the hub's resolved default model - falling
-// back to the classic ladder only when the hub can't enumerate levels.
+// high + none) for EVERY model. model/list now serves each model's own
+// reasoningEffortLevels, so the select derives its options from the selected
+// model's descriptor - or, with Model left at "(default)", from the hub's
+// resolved default model - falling back to the classic ladder only when the
+// hub can't enumerate levels.
 
-function stubModelsApi(models: Array<Record<string, unknown>>): void {
-  vi.stubGlobal(
-    "fetch",
-    vi.fn((url: string) => {
-      if (url.startsWith("/api/git/head")) {
-        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ branch: "main" }) } as Response);
-      }
-      if (url.startsWith("/api/models")) {
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({ models, recent: [], diagnostics: [] }),
-        } as Response);
-      }
-      return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response);
-    }),
-  );
+function scriptModelList(models: ModelDescriptor[]): void {
+  modelListOverride = models;
 }
 
 function effortSelect(): HTMLSelectElement {
@@ -1716,18 +1706,20 @@ async function pickModel(user: ReturnType<typeof userEvent.setup>, query: string
 
 test("the Effort select offers the selected model's own ladder and re-derives it on a model switch", async () => {
   const user = userEvent.setup();
-  stubModelsApi([
+  scriptModelList([
     {
       provider: "anthropic",
       model: "claude-sonnet-4-5",
-      supports_reasoning: true,
-      reasoning_effort_levels: ["low", "medium", "high"],
+      displayName: "anthropic/claude-sonnet-4-5",
+      supportsReasoning: true,
+      reasoningEffortLevels: ["low", "medium", "high"],
     },
     {
       provider: "openai",
       model: "gpt-5",
-      supports_reasoning: true,
-      reasoning_effort_levels: ["minimal", "low", "medium", "high", "xhigh", "max"],
+      displayName: "openai/gpt-5",
+      supportsReasoning: true,
+      reasoningEffortLevels: ["minimal", "low", "medium", "high", "xhigh", "max"],
     },
   ]);
   renderSpawn(readyClient());
@@ -1748,14 +1740,21 @@ test("the Effort select offers the selected model's own ladder and re-derives it
 
 test("a model the catalog says cannot reason disables the Effort select and clears a chosen effort", async () => {
   const user = userEvent.setup();
-  stubModelsApi([
+  scriptModelList([
     {
       provider: "anthropic",
       model: "claude-sonnet-4-5",
-      supports_reasoning: true,
-      reasoning_effort_levels: ["low", "medium", "high"],
+      displayName: "anthropic/claude-sonnet-4-5",
+      supportsReasoning: true,
+      reasoningEffortLevels: ["low", "medium", "high"],
     },
-    { provider: "openai", model: "gpt-5", supports_reasoning: false, reasoning_effort_levels: [] },
+    {
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "openai/gpt-5",
+      supportsReasoning: false,
+      reasoningEffortLevels: [],
+    },
   ]);
   renderSpawn(readyClient());
   await settled();
@@ -1771,14 +1770,21 @@ test("a model the catalog says cannot reason disables the Effort select and clea
 
 test("with Model left at '(default)', the Effort select follows the hub's resolved default model", async () => {
   const user = userEvent.setup();
-  stubModelsApi([
+  scriptModelList([
     {
       provider: "anthropic",
       model: "claude-sonnet-4-5",
-      supports_reasoning: true,
-      reasoning_effort_levels: ["low", "medium", "high"],
+      displayName: "anthropic/claude-sonnet-4-5",
+      supportsReasoning: true,
+      reasoningEffortLevels: ["low", "medium", "high"],
     },
-    { provider: "openai", model: "gpt-5", supports_reasoning: true, reasoning_effort_levels: ["low", "high"] },
+    {
+      provider: "openai",
+      model: "gpt-5",
+      displayName: "openai/gpt-5",
+      supportsReasoning: true,
+      reasoningEffortLevels: ["low", "high"],
+    },
   ]);
   const fake = readyClient((f) => {
     f.on("evener/launch/resolve", () => ({
@@ -1802,8 +1808,8 @@ test("with Model left at '(default)', the Effort select follows the hub's resolv
 
 test("the classic ladder remains when the hub can't enumerate the model's own levels", async () => {
   const user = userEvent.setup();
-  // The default fetch mock 404s /api/models, so the enrichment fails and the
-  // catalog degrades to label-only entries - the select must keep working.
+  // The default model/list fixture has no reasoning metadata, so the catalog
+  // degrades to label-only entries - the select must keep working.
   renderSpawn(readyClient());
   await settled();
 
@@ -1811,107 +1817,51 @@ test("the classic ladder remains when the hub can't enumerate the model's own le
   await waitFor(() => expect(effortOptionValues()).toEqual(["", "minimal", "low", "medium", "high", "none"]));
 });
 
-// The pane-level modelCatalog (the Effort select's source of
-// reasoningEffortLevels) loads via a debounced /api/models enrichment, while
-// the picker loads its OWN catalog on open. The two responses can complete in
-// either order: a failed enrichment produces a label-only entry, while the
-// picker has the model's full capability metadata. Neither completion is
-// allowed to downgrade the other.
-test.each(["pane response first", "picker response first"] as const)(
-  "the Effort select keeps the picked model's own ladder when the pane-level catalog enrichment failed (%s)",
-  async (completionOrder) => {
-    vi.useFakeTimers();
-    const models = [
-      {
-        provider: "openai",
-        model: "gpt-5",
-        supports_reasoning: true,
-        reasoning_effort_levels: ["minimal", "low", "medium", "high", "xhigh", "max"],
-      },
-    ];
-    const requests: Array<{ promise: Promise<Response>; resolve: (response: Response) => void }> = [];
-    vi.stubGlobal(
-      "fetch",
-      vi.fn((url: string) => {
-        if (url.startsWith("/api/git/head")) {
-          return Promise.resolve({
-            ok: true,
-            status: 200,
-            json: () => Promise.resolve({ branch: "main" }),
-          } as Response);
-        }
-        if (url.startsWith("/api/models")) {
-          let resolve!: (response: Response) => void;
-          const promise = new Promise<Response>((done) => {
-            resolve = done;
-          });
-          requests.push({ promise, resolve });
-          return promise;
-        }
-        return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response);
-      }),
+// The pane-level Effort preview and the picker share one harness/cwd-scoped
+// model/list promise. A rich response therefore reaches both consumers
+// without the old REST enrichment request or a two-source merge race.
+test("the Effort select and picker share one scoped model/list response", async () => {
+  const user = userEvent.setup();
+  let resolve: ((response: ModelListResponse) => void) | undefined;
+  const fake = readyClient((f) => {
+    f.on(
+      "model/list",
+      () =>
+        new Promise<ModelListResponse>((done) => {
+          resolve = done;
+        }),
     );
-    try {
-      renderSpawn(readyClient());
+  });
+  renderSpawn(fake);
+  await settled();
 
-      if (completionOrder === "pane response first") {
-        vi.runOnlyPendingTimers();
-        expect(requests).toHaveLength(1);
-        fireEvent.click(modelTrigger());
-        expect(screen.getByRole("combobox", { name: "Model" })).toBeTruthy();
-        expect(requests).toHaveLength(2);
-      } else {
-        fireEvent.click(modelTrigger());
-        expect(screen.getByRole("combobox", { name: "Model" })).toBeTruthy();
-        expect(requests).toHaveLength(1);
-        vi.runOnlyPendingTimers();
-        expect(requests).toHaveLength(2);
-      }
+  await waitFor(() => expect(resolve).toBeDefined());
+  if (!resolve) throw new Error("model/list test response resolver was not installed");
+  const resolveModelList = resolve;
+  await user.click(modelTrigger());
+  expect(screen.getByRole("combobox", { name: "Model" })).toBeTruthy();
+  expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(1);
 
-      const paneRequest = completionOrder === "pane response first" ? requests[0] : requests[1];
-      const pickerRequest = completionOrder === "pane response first" ? requests[1] : requests[0];
-      if (paneRequest === undefined || pickerRequest === undefined)
-        throw new Error("catalog request barrier was not reached");
-      const paneFallback = { ok: false, status: 502, json: () => Promise.resolve({}) } as Response;
-      const pickerCatalog = {
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ models, recent: [], diagnostics: [] }),
-      } as Response;
+  await act(async () => {
+    resolveModelList({
+      data: [
+        {
+          provider: "openai",
+          model: "gpt-5",
+          displayName: "openai/gpt-5",
+          supportsReasoning: true,
+          reasoningEffortLevels: ["minimal", "low", "medium", "high", "xhigh", "max"],
+        },
+      ],
+    });
+  });
 
-      if (completionOrder === "pane response first") {
-        await act(async () => {
-          paneRequest.resolve(paneFallback);
-          await paneRequest.promise;
-        });
-        await act(async () => {
-          pickerRequest.resolve(pickerCatalog);
-          await pickerRequest.promise;
-        });
-      } else {
-        await act(async () => {
-          pickerRequest.resolve(pickerCatalog);
-          await pickerRequest.promise;
-        });
-      }
-
-      const combo = screen.getByRole("combobox", { name: "Model" });
-      fireEvent.change(combo, { target: { value: "gpt-5" } });
-      fireEvent.click(screen.getByText("openai/gpt-5"));
-
-      if (completionOrder === "picker response first") {
-        await act(async () => {
-          paneRequest.resolve(paneFallback);
-          await paneRequest.promise;
-        });
-      }
-
-      expect(effortOptionValues()).toEqual(["", "minimal", "low", "medium", "high", "xhigh", "max", "none"]);
-    } finally {
-      vi.useRealTimers();
-    }
-  },
-);
+  await user.click(await screen.findByText("openai/gpt-5"));
+  await waitFor(() =>
+    expect(effortOptionValues()).toEqual(["", "minimal", "low", "medium", "high", "xhigh", "max", "none"]),
+  );
+  expect(fake.calls.filter((call) => call.method === "model/list")).toHaveLength(1);
+});
 
 // --- post-success reset (floor §1.14 L186, wave6-report.md gap) -----------
 //
@@ -2321,16 +2271,17 @@ test("shows a Loader, not static text, while the spawn request is in flight", as
 // is sent must be the same value.
 test("an effort the fallback ladder cannot name is still offered, not silently sent as (default)", async () => {
   const user = userEvent.setup();
-  stubModelsApi([
+  scriptModelList([
     {
       provider: "openai",
       model: "gpt-5",
-      supports_reasoning: true,
-      reasoning_effort_levels: ["minimal", "low", "medium", "high", "xhigh", "max"],
+      displayName: "openai/gpt-5",
+      supportsReasoning: true,
+      reasoningEffortLevels: ["minimal", "low", "medium", "high", "xhigh", "max"],
     },
     // No reasoning metadata at all: catalogEffortLevels returns null here, so
     // the select falls back to the guessed minimal/low/medium/high ladder.
-    { provider: "anthropic", model: "claude-sonnet-4-5" },
+    { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "anthropic/claude-sonnet-4-5" },
   ]);
   let started: ThreadStartParams | undefined;
   renderSpawn(
@@ -2362,42 +2313,21 @@ test("an effort the fallback ladder cannot name is still offered, not silently s
   expect(started?.reasoningEffort ?? "").toBe(displayed);
 });
 
-// The Effort ladder needs the merged model catalog, and the effect that loads it
-// is keyed on loadCatalog -- a useCallback over [loadModels, harness, cwd],
-// where loadModels is itself over [client, harness, cwd]. cwd updates straight
-// from the field's onChange, so every character typed into the working-directory
-// path mints a new callback identity and refires the effect: one model/list RPC
-// plus one /api/models fetch per keystroke, to learn a ladder that only matters
-// when the Effort select is used.
+// The Effort ladder needs the scoped model catalog. The loader is keyed by
+// harness+cwd, but its request is debounced so every character typed into the
+// working-directory path does not issue a separate model/list RPC.
 test("typing a working directory does not reload the model catalog per keystroke", async () => {
   const user = userEvent.setup();
-  let catalogFetches = 0;
-  vi.stubGlobal(
-    "fetch",
-    vi.fn((url: string) => {
-      if (url.startsWith("/api/git/head")) {
-        return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ branch: "main" }) } as Response);
-      }
-      if (url.startsWith("/api/models")) {
-        catalogFetches++;
-        return Promise.resolve({
-          ok: true,
-          status: 200,
-          json: () => Promise.resolve({ models: [], recent: [], diagnostics: [] }),
-        } as Response);
-      }
-      return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response);
-    }),
-  );
-  renderSpawn(readyClient());
+  const fake = readyClient();
+  renderSpawn(fake);
   await settled();
 
-  const baseline = catalogFetches;
+  const baseline = fake.calls.filter((call) => call.method === "model/list").length;
   await user.type(screen.getByLabelText("Working directory"), "/tmp/some/project");
   await settled();
 
   // 17 characters typed. One reload for the settled path is the contract; a
   // reload per character is the defect.
-  const perKeystroke = catalogFetches - baseline;
+  const perKeystroke = fake.calls.filter((call) => call.method === "model/list").length - baseline;
   expect(perKeystroke).toBeLessThanOrEqual(1);
 });

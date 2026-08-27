@@ -21,6 +21,7 @@ import type {
   HarnessDescriptor,
   LaunchConfigLayer,
   LaunchOption,
+  ModelListResponse,
   PluginSelectionError,
 } from "../../protocol/types.gen";
 import { useClient } from "../../shell/clientContext";
@@ -48,8 +49,8 @@ import { CloseIcon } from "../../widgets/dialog/CloseIcon";
 import { Disclosure } from "../../widgets/disclosure";
 import { requireClass } from "../../widgets/internal/requireClass";
 import type { ModelCatalog, ModelCatalogEntry } from "../../widgets/modelCatalog";
-import { fetchModelCatalog } from "../../widgets/modelCatalog/catalogClient";
-import { mergeCatalogEntry, mergeCatalogSnapshot, mergeScopedCatalog } from "../../widgets/modelCatalog/scopedCatalog";
+import { modelListToCatalog } from "../../widgets/modelCatalog/catalogClient";
+import { mergeCatalogEntry, mergeCatalogSnapshot } from "../../widgets/modelCatalog/scopedCatalog";
 import { ModelSwitchTrigger } from "../session/chrome/ModelSwitchTrigger";
 import { AttachmentTile } from "../session/composer/AttachmentTile";
 import { AttachIcon } from "../session/composer/attachments/AttachIcon";
@@ -92,8 +93,8 @@ export type SpawnPaneParams = Record<string, never>;
 // enumerate - the same fallback the session status row uses (StatusRow.tsx's
 // DEFAULT_EFFORT_LEVELS), so both surfaces agree on the unknown case. The
 // select's real ladder comes from the selected model's catalog entry
-// (reasoningEffortLevels/supportsReasoning, served by /api/models -
-// web_spawn.go); "(default)" + an explicit "none" ride every ladder.
+// (reasoningEffortLevels/supportsReasoning, served by model/list);
+// "(default)" + an explicit "none" ride every ladder.
 const FALLBACK_EFFORT_LEVELS = ["minimal", "low", "medium", "high"];
 // Shared empty-ladder constant so the derived value keeps a stable identity
 // across renders (the stale-effort effect below keys off it).
@@ -182,10 +183,10 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // unconfirmable state never blocks Start (same fail-open shape as
   // preflightDir).
   const [noDefaultModel, setNoDefaultModel] = useState(false);
-  // The merged launchable-model catalog (model/list + /api/models), loaded at
-  // pane level so the Effort select can read the selected model's own
-  // reasoningEffortLevels without waiting for a picker to open. null = not
-  // loaded or the load failed - the select stays on the fallback ladder.
+  // The launchable-model catalog, loaded at pane level so the Effort select can
+  // read the selected model's own reasoningEffortLevels without waiting for a
+  // picker to open. null = not loaded or the load failed - the select stays on
+  // the fallback ladder.
   const [modelCatalog, setModelCatalog] = useState<ModelCatalog | null>(null);
   // The hub's resolved default model for this cwd ("" until resolve confirms
   // one): what the Effort ladder keys off while Model reads "(default)".
@@ -258,26 +259,34 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   // below for how noDefaultModel is set.
   const modelRequired = model === "" && noDefaultModel;
 
-  const loadModels = useCallback(
-    () => client.request("model/list", { harness: harness || undefined, cwd: cwd || undefined }).then((r) => r.data),
-    [client, harness, cwd],
-  );
-  // The advanced panel's model-valued fields use the same scoped catalog the
-  // top-level Model field does: model/list is the authoritative launchable SET
-  // for this harness+cwd, enriched best-effort with /api/models metadata (a
-  // failed enrichment degrades to the plain scoped list, never an empty
-  // picker) - the identical composition ModelField.tsx documents.
-  const loadCatalog = useCallback(
-    () =>
-      Promise.all([
-        loadModels(),
-        // A failed enrichment degrades to the plain scoped list
-        // (mergeScopedCatalog tolerates null); a failed model/list still
-        // rejects, so the picker surfaces the real error.
-        fetchModelCatalog({ harness: harness || undefined, cwd: cwd || undefined }).catch(() => null),
-      ]).then(([scoped, enrichment]) => mergeScopedCatalog(scoped, enrichment)),
-    [loadModels, harness, cwd],
-  );
+  const modelListCache = useRef<{ client: object; entries: Map<string, Promise<ModelListResponse>> }>({
+    client,
+    entries: new Map(),
+  });
+  const loadModelList = useCallback((): Promise<ModelListResponse> => {
+    if (modelListCache.current.client !== client) {
+      modelListCache.current = { client, entries: new Map() };
+    }
+    const cache = modelListCache.current.entries;
+    const key = `${harness}\0${cwd}`;
+    const cached = cache.get(key);
+    if (cached) return cached;
+
+    const request = client.request("model/list", { harness: harness || undefined, cwd: cwd || undefined });
+    let tracked: Promise<ModelListResponse>;
+    tracked = request.catch((error) => {
+      if (cache.get(key) === tracked) cache.delete(key);
+      throw error;
+    });
+    cache.set(key, tracked);
+    return tracked;
+  }, [client, harness, cwd]);
+  const loadModels = useCallback(() => loadModelList().then((response) => response.data ?? []), [loadModelList]);
+  // Every model-valued control in the spawn pane consumes this one scoped
+  // response. The same promise is shared with the default-model preview, so
+  // opening a picker and resolving the working directory cannot issue
+  // duplicate model/list RPCs for the same harness and cwd.
+  const loadCatalog = useCallback(() => loadModelList().then(modelListToCatalog), [loadModelList]);
   // Both path RPCs answer with a Go slice, and an EMPTY one marshals as JSON
   // null rather than [] - a hub with no remembered projects, or a directory with
   // no children. types.gen.ts declares `data: string[]`, so the compiler is no
@@ -383,7 +392,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // Stale-model cleanup (floor §1.10): sweep the persisted defaults against the
     // live model list; if this project's prefilled model was discarded, clear it
     // and surface the inline notice.
-    client.request("model/list", {}).then(
+    loadModelList().then(
       (r) => {
         if (!active) return;
         const { discarded } = sweepStaleModels(r.data);
@@ -433,19 +442,13 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   }, [busy]);
 
   // Pane-level merged catalog for the Effort select's per-model ladder: the
-  // same composition the model pickers load on demand (model/list's
-  // launchable SET enriched with /api/models metadata, which is where
-  // reasoningEffortLevels/supportsReasoning live - model/list itself carries
-  // only provider/model pairs). Reloads with the harness/cwd scope, exactly
-  // like loadCatalog itself. Fail-open: a rejected load leaves modelCatalog
-  // null and the select on the fallback ladder.
-  // Debounced, because loadCatalog closes over cwd and cwd updates straight
-  // from the path field's onChange: undelayed, this costs one model/list RPC
-  // plus one /api/models fetch per CHARACTER typed into the working directory.
-  // The catalog is scoped by harness+cwd so it cannot simply stop tracking cwd,
-  // and its only reader here is the Effort ladder, which nobody consults
-  // mid-keystroke -- so it settles with the path instead of chasing it. The
-  // model pickers keep calling loadCatalog on demand and are unaffected.
+  // same model/list catalog the pickers load on demand. Reloads with the
+  // harness/cwd scope, exactly like loadCatalog itself. Fail-open: a rejected
+  // load leaves modelCatalog null and the select on the fallback ladder.
+  // Debounced because cwd updates straight from the path field's onChange. The
+  // catalog is scoped by harness+cwd, so it settles with the path instead of
+  // chasing every keystroke; model pickers call the same keyed loader on
+  // demand.
   useEffect(() => {
     let active = true;
     const settle = setTimeout(() => {
@@ -518,32 +521,35 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       return undefined;
     }
     let active = true;
-    Promise.all([resolveConfig(advancedOverrides), loadModels().catch(() => null)]).then(
-      ([result, models]) => {
-        if (!active) return;
-        setResolvedDefaults(result.effective);
-        const defaultModel = (result.effective.model ?? "").trim();
-        setNoDefaultModel(defaultModel === "");
-        setResolvedDefaultModel(defaultModel);
-        if (defaultModel === "" || modelRef.current !== "" || !models || models.length === 0) return;
-        const slash = defaultModel.indexOf("/");
-        const defaultProvider = slash === -1 ? defaultModel : defaultModel.slice(0, slash);
-        const defaultCredentialed = models.some((m) => m.provider === defaultProvider);
-        const fallback = models[0];
-        if (!defaultCredentialed && fallback) {
-          setModel(`${fallback.provider}/${fallback.model}`);
-        }
-      },
-      () => {
-        if (active) {
-          setNoDefaultModel(false);
-          setResolvedDefaultModel("");
-          setResolvedDefaults(null);
-        }
-      },
-    );
+    const settle = setTimeout(() => {
+      Promise.all([resolveConfig(advancedOverrides), loadModels().catch(() => null)]).then(
+        ([result, models]) => {
+          if (!active) return;
+          setResolvedDefaults(result.effective);
+          const defaultModel = (result.effective.model ?? "").trim();
+          setNoDefaultModel(defaultModel === "");
+          setResolvedDefaultModel(defaultModel);
+          if (defaultModel === "" || modelRef.current !== "" || !models || models.length === 0) return;
+          const slash = defaultModel.indexOf("/");
+          const defaultProvider = slash === -1 ? defaultModel : defaultModel.slice(0, slash);
+          const defaultCredentialed = models.some((m) => m.provider === defaultProvider);
+          const fallback = models[0];
+          if (!defaultCredentialed && fallback) {
+            setModel(`${fallback.provider}/${fallback.model}`);
+          }
+        },
+        () => {
+          if (active) {
+            setNoDefaultModel(false);
+            setResolvedDefaultModel("");
+            setResolvedDefaults(null);
+          }
+        },
+      );
+    }, CATALOG_SETTLE_MS);
     return () => {
       active = false;
+      clearTimeout(settle);
     };
   }, [cwd, advancedOverrides, resolveConfig, loadModels]);
 
@@ -1002,9 +1008,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
               value={model}
               onChange={handleModelChange}
               onPickEntry={handleModelPickEntry}
-              loadModels={loadModels}
-              harness={harness || undefined}
-              cwd={cwd || undefined}
+              loadCatalog={loadCatalog}
               emptyLabel={
                 modelRequired
                   ? MODEL_CHOOSE_LABEL

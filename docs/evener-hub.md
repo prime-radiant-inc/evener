@@ -350,20 +350,17 @@ The smoke checks use `jq` and `python3`; install both first. Basic health
 curl -fsS http://127.0.0.1:9180/api/health | jq .
 ```
 
-Other API routes need the auth token. Check the spawn-scoped Evener model
-list. Use the same `hub_config` and `hub_state_root` values as in the start
-recipe above; the defaults below are the XDG defaults. For a custom
-`evener hub --config /path/to/hub.toml`, set `hub_config` to that path and set
-`hub_state_root` to the exact `hub_state_root` value in that file.
+Other API routes need the auth token. Model enumeration is AppWire-only:
+connect to `ws://127.0.0.1:9180/rpc`, authenticate with the token, send
+`initialize`, then send this typed request (see
+`docs/developing-evener/agentic-testing.md`, "Driving AppWire directly"):
 
-```bash
-hub_config="${XDG_CONFIG_HOME:-$HOME/.config}/evener/hub.toml"
-hub_state_root="${XDG_STATE_HOME:-$HOME/.local/state}/evener"
-curl -fsS \
-  -H "Authorization: Bearer $(cat "$hub_state_root/auth-token")" \
-  "http://127.0.0.1:9180/api/models?cwd=$(python3 -c 'import urllib.parse,sys; print(urllib.parse.quote(sys.argv[1]))' /path/to/project)" \
-  | jq .
+```json
+{"id":2,"method":"model/list","params":{"cwd":"/path/to/project"}}
 ```
+
+The response's `result.data` contains the spawn-scoped descriptors;
+`result.recent` is the optional global Recent group.
 
 Manual verification:
 

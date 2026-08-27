@@ -553,27 +553,11 @@ test("/model source lists models and run sets the split provider/model with a su
   expect(pushes).toContainEqual({ kind: "success", text: "Model: openai/gpt-5.5" });
 });
 
-// UX fix: /model's enum source used to build its list from the bare
-// model/list result alone (id + provider hint, no display name). It now
-// merges in the same rich /api/models catalog ModelSwitch.tsx's own
-// mid-session picker already uses (mergeScopedCatalog), so a model with a
-// human display name shows it here too.
-test("/model source enriches the scoped list with the rich catalog's display names (mergeScopedCatalog)", async () => {
+// The palette and the mid-session picker consume the same rich model/list
+// response, so a model with a human display name shows it here too.
+test("/model source uses the model/list display names", async () => {
   const fake = connectFake();
-  fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5" }] }));
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(async () => ({
-      ok: true,
-      status: 200,
-      statusText: "OK",
-      json: async () => ({
-        models: [{ provider: "openai", model: "gpt-5.5", display_name: "GPT-5.5" }],
-        recent: [],
-        diagnostics: [],
-      }),
-    })),
-  );
+  fake.on("model/list", () => ({ data: [{ provider: "openai", model: "gpt-5.5", displayName: "GPT-5.5" }] }));
   focusSession("ref_a");
   seedModel("ref_a", { status: { type: "idle" } });
   const c = cmd("model");

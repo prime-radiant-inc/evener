@@ -45,8 +45,8 @@ func FuzzWebWorkspacePass5(f *testing.F) {
 		child.WorktreePath = filepath.Join(t.TempDir(), "tree")
 		past.SeedForTest([]schema.SessionMeta{parent, child, {ID: "fork", Name: "Fork", ParentSessionID: "child"}})
 		roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "child", Model: "openai/gpt-4o", WorkingDir: child.EnvInfo.WorkingDir}, SessionID: "child", Status: "ended"})
-		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster, LiveModels: func(context.Context) []map[string]any {
-			return []map[string]any{{"provider": "fixture", "model": "model"}}
+		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster, LiveModels: func(context.Context) []appwire.ModelDescriptor {
+			return []appwire.ModelDescriptor{{Provider: "fixture", Model: "model"}}
 		}})
 		web.sources.Add(source)
 
@@ -117,12 +117,9 @@ func FuzzWebWorkspacePass5(f *testing.F) {
 				web.handleApiSpawn(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/api/spawn", strings.NewReader(body)))
 			}
 		case 11:
-			for _, target := range []string{"/api/models", "/api/models?diagnostics=1", "/api/models?harness=unknown"} {
-				web.handleApiModels(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, target, nil))
-			}
-			models := modelDescriptorsToAPIModels([]appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-4o"}, {}, {Provider: "z", Model: "m-20251101"}}, nil)
-			_ = recentModelEntriesFromDescriptors(models, []appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-4o"}, {Provider: "x", Model: "y"}})
-			_ = web.overlayLiveEntries(models)
+			_, _ = hubModelList(context.Background(), web.cfg, web.sources, appwire.ModelListParams{Harness: "unknown"})
+			models := enrichModelDescriptors([]appwire.ModelDescriptor{{Provider: "openai", Model: "gpt-4o"}, {}, {Provider: "z", Model: "m-20251101"}}, nil)
+			_ = attachRecentModels(web.cfg, appwire.ModelListResponse{Data: models})
 			_ = catalogModelInfo(llm.EmbeddedModelCatalog(), "", text)
 			_ = behaviorTagFor(nil, text)
 			_ = prettifyModelDisplayName(text)
