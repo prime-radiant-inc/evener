@@ -382,7 +382,7 @@ target.measureShell = measureShell;
 target.settledShell = (async () => {
   await booted;
   const deadline = performance.now() + 15_000;
-  const expectedRows = PROJECT_COUNT + PROJECT_COUNT; // 12 project rows + 12 first-session rows
+  const expectedRows = PROJECT_COUNT * (1 + SESSION_COUNT); // every project row plus every expanded session row
   for (;;) {
     // Every project row plus every session row is in the accessibility tree
     // only once the rail has rendered the full expanded tree.
