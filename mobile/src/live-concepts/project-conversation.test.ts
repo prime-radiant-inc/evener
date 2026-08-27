@@ -9,7 +9,10 @@
 
 import { describe, expect, it } from "vitest";
 import type { MobileConversation } from "../conversation/model";
-import { projectLiveConversation } from "./project-conversation";
+import {
+  projectLiveConversation,
+  projectLiveConversationWithCursor,
+} from "./project-conversation";
 
 // --- fixture helpers ---------------------------------------------------------
 
@@ -53,9 +56,8 @@ describe("projectLiveConversation", () => {
       items: [{ kind: "user", id: "u1", text: "Hello world" }],
     });
     const view = projectLiveConversation(conv, "ref-1");
-    const item = view.items.find((i) => i.key === "u1");
+    const item = view.items.find((i) => i.kind === "user");
     expect(item).toBeDefined();
-    expect(item?.kind).toBe("user");
     expect(item?.body).toBe("Hello world");
   });
 
@@ -71,8 +73,7 @@ describe("projectLiveConversation", () => {
       ],
     });
     const view = projectLiveConversation(conv, "ref-1");
-    const item = view.items.find((i) => i.key === "a1");
-    expect(item?.kind).toBe("assistant");
+    const item = view.items.find((i) => i.kind === "assistant");
     expect(item?.body).toBe("thinking...");
     expect(item?.streaming).toBe(true);
   });
@@ -96,13 +97,14 @@ describe("projectLiveConversation", () => {
       ],
     });
     const view = projectLiveConversation(conv, "ref-1");
-    const item = view.items.find((i) => i.key === "tool-1");
-    expect(item?.kind).toBe("tool");
+    const item = view.items.find((i) => i.kind === "tool");
     expect(item?.label).toBe("shell");
-    // Body should be metadata-only — not raw arguments/output/error
+    // C6: The body now shows the reasoning/tool delta content (detail.output),
+    // not just "label — state". But raw arguments/error should NOT leak.
     expect(item?.body).not.toContain("secret");
-    expect(item?.body).not.toContain("sensitive");
     expect(item?.body).not.toContain("some error");
+    // The output text IS visible (C6: display reasoning/tool delta content)
+    expect(item?.body).toContain("sensitive output");
   });
 
   it("maps a question row", () => {
@@ -130,8 +132,7 @@ describe("projectLiveConversation", () => {
       ],
     });
     const view = projectLiveConversation(conv, "ref-1");
-    const item = view.items.find((i) => i.key === "q1");
-    expect(item?.kind).toBe("question");
+    const item = view.items.find((i) => i.kind === "question");
     expect(item?.body).toContain("Which option?");
     // Questions should also appear in the questions array
     expect(view.questions).toHaveLength(1);
@@ -151,8 +152,7 @@ describe("projectLiveConversation", () => {
       ],
     });
     const view = projectLiveConversation(conv, "ref-1");
-    const item = view.items.find((i) => i.key === "fail-1");
-    expect(item?.kind).toBe("failure");
+    const item = view.items.find((i) => i.kind === "failure");
     expect(item?.body).toContain("Something went wrong");
   });
 
@@ -169,8 +169,7 @@ describe("projectLiveConversation", () => {
       ],
     });
     const view = projectLiveConversation(conv, "ref-1");
-    const item = view.items.find((i) => i.key === "att-1");
-    expect(item?.kind).toBe("attachment");
+    const item = view.items.find((i) => i.kind === "attachment");
     // Body should not expose the raw src URL
     expect(item?.body).not.toContain("file:///secret");
     expect(item?.body).not.toContain("path.png");
@@ -194,13 +193,25 @@ describe("projectLiveConversation", () => {
     expect(view.title).toBe("some preview");
   });
 
-  it("returns olderAvailable from conversation state", () => {
+  it("returns olderAvailable false by default", () => {
     const conv = makeConversation();
     const view = projectLiveConversation(conv, "ref-1");
     expect(view.olderAvailable).toBe(false);
   });
 
-  it("sets truncated flag on items that exceed the 64 KiB limit", () => {
+  it("returns olderAvailable true when olderCursor is provided (I7)", () => {
+    const conv = makeConversation();
+    const view = projectLiveConversationWithCursor(conv, "ref-1", "page-1");
+    expect(view.olderAvailable).toBe(true);
+  });
+
+  it("returns olderAvailable false when olderCursor is null (I7)", () => {
+    const conv = makeConversation();
+    const view = projectLiveConversationWithCursor(conv, "ref-1", null);
+    expect(view.olderAvailable).toBe(false);
+  });
+
+  it("sets truncated flag on items that exceed the 64 KiB UTF-8 limit", () => {
     const largeText = "x".repeat(70_000);
     const conv = makeConversation({
       items: [
@@ -213,7 +224,7 @@ describe("projectLiveConversation", () => {
       ],
     });
     const view = projectLiveConversation(conv, "ref-1");
-    const item = view.items.find((i) => i.key === "big-1");
+    const item = view.items.find((i) => i.kind === "assistant");
     expect(item?.truncated).toBe(true);
   });
 
@@ -222,7 +233,7 @@ describe("projectLiveConversation", () => {
       items: [{ kind: "user", id: "u1", text: "short" }],
     });
     const view = projectLiveConversation(conv, "ref-1");
-    const item = view.items.find((i) => i.key === "u1");
+    const item = view.items.find((i) => i.kind === "user");
     expect(item?.truncated).toBe(false);
   });
 
@@ -238,18 +249,57 @@ describe("projectLiveConversation", () => {
     expect(a).toEqual(b);
   });
 
-  it("returns a private operational-key map (keys are stable but non-enumerable)", () => {
+  it("returns opaque private keys that do not expose raw operational IDs (C2)", () => {
     const conv = makeConversation({
       items: [
-        { kind: "user", id: "u1", text: "hi" },
-        { kind: "assistant", id: "a1", markdown: "hello", streaming: false },
+        { kind: "user", id: "sensitive-user-id-123", text: "hi" },
+        {
+          kind: "assistant",
+          id: "secret-agent-id-456",
+          markdown: "hello",
+          streaming: false,
+        },
       ],
     });
     const view = projectLiveConversation(conv, "ref-1");
-    // The view should have items with stable keys
     const keys = view.items.map((i) => i.key);
-    expect(keys).toEqual(["u1", "a1"]);
-    // The view shape should match LiveConversationView
-    expect(view.status).toBe("ready");
+    // Keys should be opaque — NOT the raw item IDs
+    expect(keys).not.toContain("sensitive-user-id-123");
+    expect(keys).not.toContain("secret-agent-id-456");
+    // Keys should be stable strings
+    for (const key of keys) {
+      expect(typeof key).toBe("string");
+      expect(key.length).toBeGreaterThan(0);
+    }
+  });
+
+  it("question keys are opaque — do not expose raw call IDs (C2)", () => {
+    const conv = makeConversation({
+      items: [
+        {
+          kind: "question",
+          id: "q1",
+          batch: {
+            callId: "call-secret-789",
+            questions: [
+              {
+                key: "call-secret-789:0",
+                header: "Choose",
+                question: "Which?",
+                options: [{ label: "A", detail: "Option A" }],
+                multiSelect: false,
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const view = projectLiveConversation(conv, "ref-1");
+    for (const q of view.questions) {
+      expect(q.key).not.toContain("call-secret-789");
+      for (const opt of q.options) {
+        expect(opt.key).not.toContain("call-secret-789");
+      }
+    }
   });
 });

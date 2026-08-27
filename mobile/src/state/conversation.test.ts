@@ -14,7 +14,10 @@ import type {
   MobileConversation,
 } from "../conversation/model";
 import type { ActivityView } from "../services/activity";
-import type { ConversationService } from "../services/conversation";
+import type {
+  ConversationReadProjection,
+  LiveConversationService,
+} from "../services/conversation";
 import { createActivityStore } from "./activity";
 import { createConversationStore } from "./conversation";
 
@@ -67,7 +70,7 @@ function textInput(text: string): InputItem[] {
 }
 
 // A fake ConversationService that returns scripted values without any network.
-class FakeConversationService implements ConversationService {
+class FakeConversationService implements LiveConversationService {
   ref: string | null = null;
   openConv: MobileConversation = makeConversation();
   olderCursor: string | null = null;
@@ -96,21 +99,17 @@ class FakeConversationService implements ConversationService {
     activity: ActivityView;
     olderCursor: string | null;
   } | null = null;
-  readProjectionCalls: { ref: string; cursor?: string }[] = [];
+  readProjectionCalls: { ref: string }[] = [];
+  // refreshCapabilities support
+  refreshCapsResult: ThreadCapabilities | null = null;
+  refreshCapsCallCount = 0;
 
   async open(ref: string): Promise<MobileConversation> {
     this.ref = ref;
     return this.openConv;
   }
-  async readProjection(
-    ref: string,
-    cursor?: string,
-  ): Promise<{
-    conversation: MobileConversation;
-    activity: ActivityView;
-    olderCursor: string | null;
-  }> {
-    this.readProjectionCalls.push({ ref, cursor });
+  async readProjection(ref: string): Promise<ConversationReadProjection> {
+    this.readProjectionCalls.push({ ref });
     if (this.readProjectionResult) return this.readProjectionResult;
     return {
       conversation: this.openConv,
@@ -122,6 +121,10 @@ class FakeConversationService implements ConversationService {
       },
       olderCursor: this.olderCursor,
     };
+  }
+  async refreshCapabilities(): Promise<ThreadCapabilities | null> {
+    this.refreshCapsCallCount += 1;
+    return this.refreshCapsResult ?? { ...ALL_TRUE_CAPS };
   }
   async loadOlder(
     _cursor: string,
@@ -378,7 +381,12 @@ describe("ConversationStore", () => {
         store.getState().setDraft("exact draft text");
         const p = call(store, service, textInput("test"));
         const pending = store.getState().pendingMutation;
-        expect(pending?.draftSnapshot).toBe("exact draft text");
+        // Interrupt snapshots null; others snapshot the exact draft text.
+        if (kind === "interrupt") {
+          expect(pending?.draftSnapshot).toBeNull();
+        } else {
+          expect(pending?.draftSnapshot).toBe("exact draft text");
+        }
         resolveFn?.();
         await p;
       });
@@ -409,12 +417,21 @@ describe("ConversationStore", () => {
         await store.getState().open(service, "ref-1");
         store.getState().setDraft("draft to restore");
         await call(store, service, textInput("test"));
-        // Draft should be restored
-        expect(store.getState().draft).toBe("draft to restore");
         // Error should be set
         expect(store.getState().error).not.toBeNull();
-        // Pending should be null
-        expect(store.getState().pendingMutation).toBeNull();
+        // Failed mutation state PERSISTS (not cleared to null)
+        expect(store.getState().pendingMutation).not.toBeNull();
+        expect(store.getState().pendingMutation?.status).toBe("failed");
+        // Draft should be restored for send/steer/queue (interrupt doesn't
+        // snapshot draft, so it's not restored)
+        if (kind === "interrupt") {
+          // Interrupt doesn't clear draft, so it remains as-is
+          expect(store.getState().draft).toBe("draft to restore");
+        } else {
+          // Send/steer/queue clear draft on submit, restore on failure if no
+          // new text was typed. Since no new text was typed, restore happens.
+          expect(store.getState().draft).toBe("draft to restore");
+        }
       });
 
       it(`${kind}: records generation in mutation state`, async () => {
@@ -494,10 +511,8 @@ describe("ConversationStore", () => {
       });
       service.sendShouldReject = rejectErr as Error;
 
-      // Script the refreshed thread with send=false
-      service.openConv = makeConversation({
-        capabilities: { ...ALL_TRUE_CAPS, send: false } as MobileCapabilities,
-      });
+      // Script refreshCapabilities to return send=false
+      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
 
       // Before the send, capabilities should have send=true
       expect(store.getState().conversation?.capabilities.send).toBe(true);
@@ -510,6 +525,8 @@ describe("ConversationStore", () => {
       expect(store.getState().conversation?.capabilities.send).toBe(false);
       // And the error should also be set
       expect(store.getState().error).not.toBeNull();
+      // refreshCapabilities should have been called (NOT open())
+      expect(service.refreshCapsCallCount).toBe(1);
     });
   });
 
@@ -732,9 +749,64 @@ describe("ConversationStore", () => {
       await store.getState().openProjected?.(service, activityStore, "ref-1");
       expect(store.getState().olderCursor).toBe("page-1");
     });
+
+    it("resets draft from prior thread (I8)", async () => {
+      const service = new FakeConversationService();
+      const activityStore = createActivityStore();
+      const store = createConversationStore();
+      // Set draft from a prior thread
+      store.getState().setDraft("old thread draft");
+      // Open a new projected conversation
+      service.readProjectionResult = {
+        conversation: makeConversation(),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      await store.getState().openProjected?.(service, activityStore, "ref-1");
+      // Draft should be reset — not carried from the prior thread.
+      expect(store.getState().draft).toBe("");
+    });
+
+    it("C3: routes notifications to both conversation and activity stores", async () => {
+      const service = new FakeConversationService();
+      const activityStore = createActivityStore();
+      const store = createConversationStore();
+      const activityView: ActivityView = {
+        tasks: [{ status: "done", count: 3 }],
+        work: [],
+        usage: { totalTokens: 42 },
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+      };
+      service.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-1" }),
+        activity: activityView,
+        olderCursor: null,
+      };
+      await store.getState().openProjected?.(service, activityStore, "ref-1");
+      // Emit a notification that both stores should handle
+      service.notificationHandler?.({
+        method: "evener/task/updated",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          total: 10,
+          done: 5,
+        },
+      } as AnyNotification);
+      // Activity store should have been patched
+      const doneGroup = activityStore
+        .getState()
+        .view?.tasks.find((g) => g.status === "done");
+      expect(doneGroup?.count).toBe(5);
+    });
   });
 
-  describe("loadOlder retained cap", () => {
+  describe("loadOlder retained cap and ordering (I7)", () => {
     it("enforces a 500-item retained cap at the store level", async () => {
       const service = new FakeConversationService();
       // Generate 600 items from loadOlder; only 500 should be retained.
@@ -751,6 +823,35 @@ describe("ConversationStore", () => {
       expect(conv).not.toBeNull();
       // The store should cap retained items at 500.
       expect(conv?.items.length).toBeLessThanOrEqual(500);
+    });
+
+    it("I7: prepends older items and retains the oldest (not newest) at cap", async () => {
+      const service = new FakeConversationService();
+      // Create 600 existing items + 600 older items = 1200 total. Cap is 500.
+      // Prepend ordering should keep the oldest 500 (from the front of the
+      // merged array), so further paging still has useful rows.
+      const existingItems = Array.from({ length: 600 }, (_, i) => ({
+        kind: "user" as const,
+        id: `existing-${i}`,
+        text: `existing ${i}`,
+      }));
+      const olderItems = Array.from({ length: 600 }, (_, i) => ({
+        kind: "user" as const,
+        id: `older-${i}`,
+        text: `older ${i}`,
+      }));
+      service.openConv = makeConversation({ items: existingItems });
+      service.olderItems = { items: olderItems, nextCursor: undefined };
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      // open() caps existing items to 500 (newest)
+      expect(store.getState().conversation?.items.length).toBe(500);
+      await store.getState().loadOlder(service);
+      const conv = store.getState().conversation;
+      expect(conv?.items.length).toBe(500);
+      // The oldest items (from loadOlder) should be at the front, since
+      // we trim from the newest (end) in prepend mode.
+      expect(conv?.items[0]?.id).toBe("older-0");
     });
   });
 
@@ -891,6 +992,35 @@ describe("ConversationStore", () => {
         expect(item.state).toBe("completed");
       }
     });
+
+    it("C6: upserts completed item even when start was missed", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      // Start with NO items — the item/started was missed.
+      service.openConv = makeConversation({ items: [] });
+      await store.getState().open(service, "ref-1");
+      // item/completed arrives for an item that was never started.
+      store.getState().applyNotification({
+        method: "item/completed",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          item: {
+            type: "commandExecution",
+            id: "tool-missed",
+            toolName: "shell",
+            status: "completed",
+            output: "done",
+          },
+        },
+      } as AnyNotification);
+      const conv = store.getState().conversation;
+      // The completed item should be inserted (UPSERT), not lost.
+      const item = conv?.items.find((i) => i.id === "tool-missed");
+      expect(item).toBeDefined();
+      expect(item?.kind).toBe("activity");
+    });
   });
 
   describe("assistant delta appends to item", () => {
@@ -990,6 +1120,31 @@ describe("ConversationStore", () => {
         expect(item.detail.output).toBe("line1\nline2");
       }
     });
+
+    it("I4: delta targeting missing item triggers coalesced resync", async () => {
+      const rehydrateCalls: string[] = [];
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.openConv = makeConversation({ items: [] });
+      await store.getState().open(service, "ref-1");
+      store.getState().setCoalescer?.({
+        requestRehydrate(ref: string) {
+          rehydrateCalls.push(ref);
+        },
+      });
+      // Delta for an item that doesn't exist in the store
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t1",
+          itemId: "nonexistent",
+          delta: "text",
+        },
+      } as AnyNotification);
+      expect(rehydrateCalls).toContain("ref-1");
+    });
   });
 
   describe("split Unicode remains valid", () => {
@@ -1040,8 +1195,8 @@ describe("ConversationStore", () => {
     });
   });
 
-  describe("arguments/output stop at 64 KiB and end with truncation marker", () => {
-    it("truncates assistant item markdown at 64 KiB with marker", async () => {
+  describe("arguments/output stop at 64 KiB UTF-8 and end with truncation marker", () => {
+    it("truncates assistant item markdown at 64 KiB UTF-8 with marker", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       const largeText = "x".repeat(70_000);
@@ -1059,15 +1214,16 @@ describe("ConversationStore", () => {
       const conv = store.getState().conversation;
       const item = conv?.items.find((i) => i.id === "item-big");
       if (item?.kind === "assistant") {
-        expect(item.markdown.length).toBeLessThanOrEqual(65536);
+        // UTF-8 byte length must be <= 64 KiB
+        const encoder = new TextEncoder();
+        expect(encoder.encode(item.markdown).length).toBeLessThanOrEqual(65536);
         expect(item.markdown.endsWith("… truncated")).toBe(true);
-        // The marker appears exactly once
         const markerCount = item.markdown.split("… truncated").length - 1;
         expect(markerCount).toBe(1);
       }
     });
 
-    it("truncates tool output at 64 KiB with marker exactly once", async () => {
+    it("truncates tool output at 64 KiB UTF-8 with marker exactly once", async () => {
       const service = new FakeConversationService();
       const store = createConversationStore();
       const largeOutput = "y".repeat(70_000);
@@ -1086,11 +1242,43 @@ describe("ConversationStore", () => {
       const conv = store.getState().conversation;
       const item = conv?.items.find((i) => i.id === "tool-big");
       if (item?.kind === "activity") {
-        expect(item.detail.output?.length).toBeLessThanOrEqual(65536);
+        const encoder = new TextEncoder();
+        expect(
+          encoder.encode(item.detail.output ?? "").length,
+        ).toBeLessThanOrEqual(65536);
         expect(item.detail.output?.endsWith("… truncated")).toBe(true);
         const markerCount =
           (item.detail.output?.split("… truncated").length ?? 1) - 1;
         expect(markerCount).toBe(1);
+      }
+    });
+
+    it("truncates multibyte text at 64 KiB UTF-8 boundary without splitting surrogates", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      // Each 'é' is 2 bytes in UTF-8. 35,000 é chars = 70,000 bytes > 64 KiB.
+      const largeMultibyte = "é".repeat(35_000);
+      service.openConv = makeConversation({
+        items: [
+          {
+            kind: "assistant",
+            id: "item-multi",
+            markdown: largeMultibyte,
+            streaming: true,
+          },
+        ],
+      });
+      await store.getState().open(service, "ref-1");
+      const conv = store.getState().conversation;
+      const item = conv?.items.find((i) => i.id === "item-multi");
+      if (item?.kind === "assistant") {
+        const encoder = new TextEncoder();
+        const byteLen = encoder.encode(item.markdown).length;
+        expect(byteLen).toBeLessThanOrEqual(65536);
+        // The result must be valid Unicode (no split surrogates)
+        const decoded = new TextDecoder().decode(encoder.encode(item.markdown));
+        expect(decoded).toBe(item.markdown);
+        expect(item.markdown.endsWith("… truncated")).toBe(true);
       }
     });
   });
@@ -1253,6 +1441,8 @@ describe("ConversationStore", () => {
     });
 
     it("preserves expandedToolKeys/presentation state across rehydrate", async () => {
+      // C7: expandedToolKeys is removed from the production store — presentation
+      // state lives in live-ui-store. Rehydrate only preserves draft.
       const service = new FakeConversationService();
       const activityStore = createActivityStore();
       const store = createConversationStore();
@@ -1267,11 +1457,10 @@ describe("ConversationStore", () => {
         olderCursor: "cursor-1",
       };
       await store.getState().openProjected?.(service, activityStore, "ref-1");
-      // Set some presentation state
-      store.getState().setExpandedToolKeys?.(new Set(["tool-1"]));
-      // Rehydrate: presentation state should survive
+      // Rehydrate should preserve draft but not carry presentation state.
+      store.getState().setDraft("my draft");
       await store.getState().rehydrate?.(service, activityStore);
-      expect(store.getState().expandedToolKeys?.has("tool-1")).toBe(true);
+      expect(store.getState().draft).toBe("my draft");
     });
   });
 
