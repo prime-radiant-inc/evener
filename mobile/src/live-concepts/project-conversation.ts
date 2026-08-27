@@ -10,12 +10,21 @@
 // IDs. The projection maintains a private operational-key map internally and
 // returns display keys that are stable but do not expose operational
 // identifiers in the DOM.
+//
+// `sequenceLabel` is an opaque stable adapter output used only for ordering
+// and stable disclosure identity across re-projections. It is not a
+// user-facing ID. `questionKey` links a transcript item to its
+// LiveQuestionView; null when the item is not a question-bearing turn.
+// `updatedLabel` is null when no authoritative timestamp exists; the
+// projection never fabricates one. `tone` reflects the overall conversation
+// display tone derived from the conversation status.
 
 import type {
   MobileConversation,
   MobileTimelineItem,
 } from "../conversation/model";
 import type {
+  DisplayTone,
   LiveConversationView,
   LiveQuestionView,
   LiveTranscriptItem,
@@ -38,7 +47,17 @@ function truncate(text: string): { body: string; truncated: boolean } {
   }
   const targetBytes = MAX_LIVE_BYTES - markerBytes.length;
   const decoder = new TextDecoder("utf-8", { fatal: false });
-  const truncatedBody = decoder.decode(encoded.subarray(0, targetBytes));
+  let truncatedBody = decoder.decode(encoded.subarray(0, targetBytes));
+  // If the re-encoded truncated text + marker exceeds maxBytes (due to
+  // replacement chars at the boundary), trim further.
+  let truncatedBytes = textEncoder.encode(truncatedBody);
+  while (
+    truncatedBytes.length + markerBytes.length > MAX_LIVE_BYTES &&
+    truncatedBody.length > 0
+  ) {
+    truncatedBody = truncatedBody.slice(0, -1);
+    truncatedBytes = textEncoder.encode(truncatedBody);
+  }
   return {
     body: truncatedBody + TRUNCATION_MARKER,
     truncated: true,
@@ -55,11 +74,39 @@ function nextKey(kind: string): string {
   return `k${keyCounter}:${kind}`;
 }
 
+// Opaque stable sequence label generator: produces a stable label for a given
+// source item that is consistent across re-projections of the same input. It
+// uses the item's index in the items array, which is deterministic for a given
+// MobileConversation. The label is opaque — not the raw item ID.
+function sequenceLabelFor(index: number): string {
+  return `s${index}`;
+}
+
+// Derive the overall conversation display tone from the conversation status.
+function conversationTone(status: string): DisplayTone {
+  if (status === "running") return "running";
+  if (status === "error" || status === "failed") return "failed";
+  if (status === "ready" || status === "idle") return "idle";
+  return "unknown";
+}
+
+// Context for projecting items, carrying question keys for linking.
+interface ProjectionContext {
+  questionKeys: Map<string, string>; // item.id -> question key
+  itemIndex: number;
+}
+
 // Map a mobile timeline item to a live transcript item. Metadata-only: tool
 // arguments, output, error, exit codes, and attachment src URLs are never
 // included in the body. Activity items show reasoning/tool delta content
 // (the detail.output field) in the body, not just "label — state".
-function projectItem(item: MobileTimelineItem): LiveTranscriptItem {
+function projectItem(
+  item: MobileTimelineItem,
+  ctx: ProjectionContext,
+): LiveTranscriptItem {
+  const seq = sequenceLabelFor(ctx.itemIndex);
+  ctx.itemIndex += 1;
+
   switch (item.kind) {
     case "user":
       return {
@@ -70,6 +117,8 @@ function projectItem(item: MobileTimelineItem): LiveTranscriptItem {
         tone: "idle",
         streaming: false,
         truncated: false,
+        questionKey: null,
+        sequenceLabel: seq,
       };
 
     case "assistant": {
@@ -82,6 +131,8 @@ function projectItem(item: MobileTimelineItem): LiveTranscriptItem {
         tone: item.streaming ? "running" : "idle",
         streaming: item.streaming,
         truncated,
+        questionKey: null,
+        sequenceLabel: seq,
       };
     }
 
@@ -108,6 +159,8 @@ function projectItem(item: MobileTimelineItem): LiveTranscriptItem {
               : "success",
         streaming: item.state === "running",
         truncated,
+        questionKey: null,
+        sequenceLabel: seq,
       };
     }
 
@@ -120,11 +173,15 @@ function projectItem(item: MobileTimelineItem): LiveTranscriptItem {
         tone: item.tone === "warning" ? "attention" : "idle",
         streaming: false,
         truncated: false,
+        questionKey: null,
+        sequenceLabel: seq,
       };
 
     case "question": {
       const firstQuestion = item.batch.questions[0];
       const prompt = firstQuestion?.question ?? "";
+      // Link this transcript item to its question key.
+      const qKey = ctx.questionKeys.get(item.id) ?? null;
       return {
         key: nextKey("question"),
         kind: "question",
@@ -133,6 +190,8 @@ function projectItem(item: MobileTimelineItem): LiveTranscriptItem {
         tone: "attention",
         streaming: false,
         truncated: false,
+        questionKey: qKey,
+        sequenceLabel: seq,
       };
     }
 
@@ -145,6 +204,8 @@ function projectItem(item: MobileTimelineItem): LiveTranscriptItem {
         tone: "failed",
         streaming: false,
         truncated: false,
+        questionKey: null,
+        sequenceLabel: seq,
       };
 
     case "attachments": {
@@ -158,22 +219,29 @@ function projectItem(item: MobileTimelineItem): LiveTranscriptItem {
         tone: "idle",
         streaming: false,
         truncated: false,
+        questionKey: null,
+        sequenceLabel: seq,
       };
     }
   }
 }
 
-// Project ask_user question batches into the live questions array. Question
-// keys are opaque private keys, not raw call/idx identifiers.
-function projectQuestions(
-  items: readonly MobileTimelineItem[],
-): LiveQuestionView[] {
+// Pre-compute question keys for each question item so that transcript items
+// can link to them. Returns a map of item.id -> question key. Also returns
+// the LiveQuestionView array.
+function projectQuestions(items: readonly MobileTimelineItem[]): {
+  questions: LiveQuestionView[];
+  keyMap: Map<string, string>;
+} {
   const questions: LiveQuestionView[] = [];
+  const keyMap = new Map<string, string>();
   for (const item of items) {
     if (item.kind !== "question") continue;
     for (const q of item.batch.questions) {
+      const qKey = nextKey("q");
+      keyMap.set(item.id, qKey);
       questions.push({
-        key: nextKey("q"),
+        key: qKey,
         header: q.header,
         prompt: q.question,
         options: q.options.map((o) => ({
@@ -185,47 +253,26 @@ function projectQuestions(
       });
     }
   }
-  return questions;
+  return { questions, keyMap };
 }
 
-export function projectLiveConversation(
-  conv: MobileConversation,
-  ref: string,
-): LiveConversationView {
-  // Reset the key counter at the start of each projection pass to ensure
-  // deterministic keys within a single call.
-  keyCounter = 0;
-  const items = conv.items.map(projectItem);
-  const questions = projectQuestions(conv.items);
-  const title = conv.name ?? conv.preview;
-
-  return {
-    // threadKey is an opaque key — use the ref but note it is the only
-    // operational identifier exposed, and only for thread-level identity
-    // (not item-level).
-    threadKey: ref,
-    title,
-    // project is the sessionId — but in the live view we expose it as a
-    // display-safe project label, not an operational identifier.
-    project: conv.sessionId,
-    status: conv.status,
-    items,
-    questions,
-    // olderAvailable is derived from olderCursor: if we have a cursor, more
-    // older items are available.
-    olderAvailable: false,
-  };
-}
-
-// Overload that accepts an optional olderCursor to derive olderAvailable.
-export function projectLiveConversationWithCursor(
+// Build the projection context (question key map) and project all items.
+function buildProjection(
   conv: MobileConversation,
   ref: string,
   olderCursor: string | null,
 ): LiveConversationView {
+  // Reset the key counter at the start of each projection pass to ensure
+  // deterministic keys within a single call.
   keyCounter = 0;
-  const items = conv.items.map(projectItem);
-  const questions = projectQuestions(conv.items);
+
+  // Pre-compute question keys first so items can link to them.
+  const { questions, keyMap } = projectQuestions(conv.items);
+
+  // Project items with the question key context.
+  const ctx: ProjectionContext = { questionKeys: keyMap, itemIndex: 0 };
+  const items = conv.items.map((item) => projectItem(item, ctx));
+
   const title = conv.name ?? conv.preview;
 
   return {
@@ -236,5 +283,25 @@ export function projectLiveConversationWithCursor(
     items,
     questions,
     olderAvailable: olderCursor !== null,
+    tone: conversationTone(conv.status),
+    // updatedLabel is null when no authoritative timestamp exists. The
+    // projection never fabricates a timestamp to fill this field.
+    updatedLabel: null,
   };
+}
+
+export function projectLiveConversation(
+  conv: MobileConversation,
+  ref: string,
+): LiveConversationView {
+  return buildProjection(conv, ref, null);
+}
+
+// Overload that accepts an optional olderCursor to derive olderAvailable.
+export function projectLiveConversationWithCursor(
+  conv: MobileConversation,
+  ref: string,
+  olderCursor: string | null,
+): LiveConversationView {
+  return buildProjection(conv, ref, olderCursor);
 }
