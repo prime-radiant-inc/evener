@@ -1,13 +1,15 @@
 # delegate_send renderer: prettier card with delegate link and chat body
 
+
+> **Current contract / partial supersession (2026-08-26, Task31/PR480).** Any delegate `JobRecord`, public delegate `job_id`, delegate `job.notification`, or `job:` transcript claim in this historical design is not shipped and is superseded. Delegates use stable `dlg_...` resources with private run generations; lifecycle attention is `<delegate-notification>`; delegate conversation/result history uses session transcript refs. `job_...`, `job.notification`, and `job:` output remain shell-only. Non-delegate design material below remains applicable unless a newer evergreen contract says otherwise.
 Date: 2026-08-06
 Status: approved (user picked Approach A and all three recommended presentation options)
 
 ## Problem
 
 The `delegate_send` tool row renders its collapsed summary as a raw metadata
-dump — `Messaged dlg_… · delegate_id dlg_… · started · started_job_id job_… ·
-running · running in background` — and its expanded body as a labeled
+dump — `Messaged dlg_… · delegate_id dlg_… · started · running · running in
+background` — and its expanded body as a labeled
 `CodeBlock`. The row tells the reader nothing useful at a glance and gives no
 way to jump to the delegate it messaged.
 

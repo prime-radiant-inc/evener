@@ -303,8 +303,8 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   Session B discovers Session A by content (`find({query})`), gets A's
   `transcript_ref`, and reads it to reconstruct A's work — B is never
   handed A's ref. Makes the bucket-sharing precondition explicit.
-- `transcript-subagent-audit-children-of.md` — a parent starts a delegate
-  job; `find({children_of:"<parent ref>"})` enumerates the child (kind
+- `transcript-subagent-audit-children-of.md` — a parent starts a stable
+  delegate resource; `find({children_of:"<parent ref>"})` enumerates the child (kind
   `subagent`, `parent_ref` set, no transcript opened), then an outline +
   range read judges whether the child actually ran the commands it claims
   (the delegation trust-but-verify loop).
@@ -320,21 +320,20 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
 ## Job control (CLI)
 
 - `subagent-cancel-runaway.md` — `job_stop` stops a long-running delegate
-  job, then `delegate_send` targets the delegate_id to
+  resource, then `delegate_send` targets the delegate_id to
   continue the preserved child conversation and complete a shorter follow-up.
-- `subagent-list-and-output.md` — `job_list` enumerates a delegate job and
-  `read_transcript(transcript_ref="job:<job_id>")` peeks the result twice
-  without consuming or hiding it.
+- `subagent-list-and-output.md` — `job_list` orients on a stable delegate
+  resource and `read_transcript` reads its session transcript twice without
+  consuming or hiding it.
 - `job-shell-lifecycle.md` — the shell tool's whole job-capable
   lifecycle: foreground inline result, a nonzero exit reported honestly
   rather than hidden, `mode: "background"` launch-and-return,
   `max_runtime_ms` killing a runaway into `stopped`/`run_timeout`, and
   the complete-or-handle output window.
 - `job-stop-and-children.md` — `job_stop` lands `cancelled` /
-  `stopped_by_parent` with retained output still readable (stopping
-  deletes nothing), `max_wait_ms` makes the stop call itself wait for
-  finalization, and `include_children` fells the delegate's visible
-  nested shell job too.
+  `stopped_by_parent` with retained shell output still readable (stopping
+  deletes nothing), and `max_wait_ms` makes the stop call itself wait for
+  finalization.
 - `job-list-and-recovery.md` — `job_list` as the authoritative durable
   inventory: `status[]`/`type[]` filters, newest-first ordering, the
   short-job race (a job that finished before any running-filtered list
@@ -345,10 +344,10 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   the single parent-visible `job_id` (routing-if-live, so a confirmed
   stop rather than `not_controllable`), and its output stays readable
   after the delegate is finished.
-- `job-notification-semantics.md` — exactly one terminal notification
-  per notification-armed job (shell and delegate asserted separately),
-  the `<job-notification>` block's exact field set, and fires that land
-  mid-turn queueing to the turn boundary batched and without loss.
+- `job-notification-semantics.md` — exactly one terminal notification for
+  each notification-armed shell job, the `<job-notification>` block's exact
+  field set, and fires that land mid-turn queueing to the turn boundary
+  batched and without loss.
 - `job-restart-durability.md` — `kill -9` mid-job: restart finalizes the
   orphaned `running` record exactly once as `stopped`/`runtime_lost`
   with a stable `terminal_generation`, pre-crash output stays readable,
@@ -357,17 +356,12 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   command failure.
 - `job-delegate-result-schema.md` — `delegate.result_schema` end to end:
   a complying result returns `structured_result_valid: true` inline and
-  again on a later `job:` transcript read, a violating one is reported honestly
-  (validity false plus a machine-readable reason, no invented result),
-  and a resumed turn inherits the original schema.
+  again from the delegate session transcript, a violating one is reported
+  honestly (validity false plus a machine-readable reason, no invented
+  result), and a resumed turn inherits the original schema.
 - `job-send-message-surface.md` — the handle split: a `job_id` handed to
   `delegate_send` is rejected with guidance toward the `delegate_id`, a
-  RUNNING delegate takes a live steer with no new job, and an IDLE one automatically starts its next job in the same conversation.
-- `job-notification-wake.md` — the proactive completion wake
-  (serve-mode ONLY, driven through the hub): a parent starts a non-blocking
-  delegate and ends its turn; when the child reaches a terminal state later,
-  Evener wakes the parent with `<job-notification ...>` and the woken model
-  reads the result from the notification excerpt.
+  RUNNING delegate takes a live steer with no new activation job, and an IDLE one automatically starts its next private run in the same conversation.
 - `job-delegate-wait-no-poll.md` — a parent that delegated its whole task
   and has no independent work ends its turn and waits for the notification
   instead of looping `job_status`; falsifies the polling-loop regression from
@@ -381,10 +375,9 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   the OWNER-SCOPED rule (the root hears only the coordinator, never a
   worker), and the cascade stop.
 - `recursion-deaf-coordinator-drivedown.md` — the design-spec §9
-  headline: an IDLE coordinator is driven so its model gets a
-  notification turn for its workers' completions, while the root's
-  rail shows only the coordinator's terminal (owner-scoped, asserted
-  on the coordinator's own transcript).
+  headline: an IDLE coordinator is driven so its model receives direct
+  delegate notifications for its workers, while the root's rail shows
+  only the coordinator's direct delegate notification (owner-scoped).
 - `job-watch-observer-snide-thread.md` - observer commentary stays in
   the observer transcript while watch frames carry enough metadata for
   useful sidecar work.
@@ -431,12 +424,6 @@ shape (refs, snippets, scan stats, window headers, Turn numbering).
   parent-source observer gets event payloads, never a cross-session
   read (renamed from `sidecar-test-triage-output-match`, kata
   `f9gn`).
-- `sidecar-handoff-packager-job-notification.md` - handoff sidecar
-  packages a completed delegate result from a `job.notification`
-  frame, and pins the observer read grant: the delivery mints a durable
-  read on the named job, the frame names the `read_transcript` call
-  that spends it, `job_status` stays denied, and the observer's own
-  callback jobs mint nothing.
 - `sidecar-feedback-governor-communicate.md` - loop governor reports
   repeated-tool-choice risk from an explicit caller frame.
 - `sidecar-quality-auditor-communicate.md` - quality auditor flags a
