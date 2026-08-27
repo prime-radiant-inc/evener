@@ -1406,6 +1406,8 @@ type JobActivitySession struct {
 	Branch      JobActivityBranchState `json:"branch"`
 }
 
+// JobActivityTree is one bounded page of retained activity. Truncated branches
+// carry continuations that request later pages of that branch.
 type JobActivityTree struct {
 	Revision uint64             `json:"revision"`
 	Root     JobActivitySession `json:"root"`
