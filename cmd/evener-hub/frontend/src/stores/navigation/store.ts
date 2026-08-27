@@ -112,17 +112,39 @@ let revalidator: NavigationRevalidator | null = null;
 let unsubs: Array<() => void> = [];
 let bootEpoch = 0;
 let bootStartedEpoch = -1;
+let manifestFanout: { key: string; promise: Promise<void> } | null = null;
 const PAGE_LIMIT = 50;
 const CATALOG_LIMIT = 100;
+const NAVIGATION_CATALOGS = ["projects", "archived_projects", "test_runs"] as const;
 const key = (k: ResourceKey) => Object.freeze(k);
-function setResource(state: ResourceState, client = activeClient, epoch = bootEpoch): void {
-  if (client !== activeClient || epoch !== bootEpoch) return;
-  if (state.key.kind === "manifest") navigationStore.setState({ manifest: state as ResourceState<NavigationManifest> });
-  else {
-    const resources = new Map(navigationStore.getState().resources);
-    resources.set(keyID(state.key), state);
-    navigationStore.setState({ resources });
+function setResource(state: ResourceState): void {
+  if (state.key.kind === "manifest") {
+    navigationStore.setState({ manifest: state as ResourceState<NavigationManifest> });
+    return;
   }
+  const resources = new Map(navigationStore.getState().resources);
+  resources.set(keyID(state.key), state);
+  navigationStore.setState({ resources });
+}
+function publishResourceState(state: ResourceState): void {
+  setResource(state);
+  if (state.error instanceof NavigationProtocolError) {
+    navigationStore.setState({ protocolError: state.error });
+    if (state.key.kind !== "manifest") revalidator?.force([{ kind: "manifest" }]);
+  }
+}
+function coordinateManifestState(state: ResourceState, epoch: number): void {
+  if (
+    state.key.kind !== "manifest" ||
+    state.loading ||
+    state.stale ||
+    !state.data ||
+    !isNavigationManifest(state.data)
+  ) {
+    return;
+  }
+  navigationStore.setState({ attention: { changed: [], summary: state.data.attentionSummary } });
+  void fanOutManifestResources(state.data, epoch).catch(() => undefined);
 }
 class NavigationProtocolError extends Error {
   constructor(message: string) {
@@ -327,26 +349,7 @@ function load<T>(k: ResourceKey): Promise<ResourceState<T>> {
   const requestRevalidator = revalidator;
   const requestClient = activeClient;
   if (!requestClient) return Promise.reject(new Error("navigation is not initialized"));
-  const requestEpoch = bootEpoch;
-  const requestGeneration = requestRevalidator.generationID;
-  return requestRevalidator.load<T>(key(k), requestFor<T>(k, requestClient)).then((s) => {
-    if (
-      requestClient !== activeClient ||
-      requestEpoch !== bootEpoch ||
-      requestRevalidator !== revalidator ||
-      requestGeneration !== revalidator.generationID
-    )
-      return s as ResourceState<T>;
-    setResource(s);
-    if (k.kind === "manifest" && s.data && isNavigationManifest(s.data)) {
-      navigationStore.setState({ attention: { changed: [], summary: s.data.attentionSummary } });
-    }
-    if (s.error instanceof NavigationProtocolError) {
-      navigationStore.setState({ protocolError: s.error });
-      if (k.kind !== "manifest") requestRevalidator.force([{ kind: "manifest" }]);
-    }
-    return s as ResourceState<T>;
-  });
+  return requestRevalidator.load<T>(key(k), requestFor<T>(k, requestClient));
 }
 async function withProjectRecovery(projectKey: string): Promise<ResourceState<NavigationProjectResource>> {
   const first = await load<NavigationProjectResource>({ kind: "project", projectKey });
@@ -363,16 +366,14 @@ async function withProjectRecovery(projectKey: string): Promise<ResourceState<Na
     revalidator?.force([manifestKey]);
     const manifest = await load<NavigationManifest>(manifestKey).catch(() => null);
     if (manifest?.data && !manifest.error && !manifest.stale && isNavigationManifest(manifest.data)) {
-      const manifestData = manifest.data;
-      const catalogJobs = (["projects", "archived_projects", "test_runs"] as const)
-        .filter((catalog) => manifestData.catalogs[catalog].count > 0)
-        .map((catalog) =>
+      await Promise.all(
+        nonemptyCatalogs(manifest.data).map((catalog) =>
           navigationStore
             .getState()
             .loadCatalog(catalog)
             .catch(() => undefined),
-        );
-      await Promise.all(catalogJobs);
+        ),
+      );
     }
   } else {
     revalidator?.force(candidates.map((r) => r.key));
@@ -438,6 +439,9 @@ function actions() {
     },
   };
 }
+function nonemptyCatalogs(manifest: NavigationManifest): Array<(typeof NAVIGATION_CATALOGS)[number]> {
+  return NAVIGATION_CATALOGS.filter((catalog) => manifest.catalogs[catalog].count > 0);
+}
 
 async function boot(cap: NavigationCapability, epoch: number, client: AppwireClientLike): Promise<void> {
   if (client !== activeClient || epoch !== bootEpoch) return;
@@ -464,7 +468,7 @@ async function boot(cap: NavigationCapability, epoch: number, client: AppwireCli
   });
   if (bootStartedEpoch === epoch) return;
   bootStartedEpoch = epoch;
-  let manifest = await navigationStore
+  const manifest = await navigationStore
     .getState()
     .loadManifest()
     .catch(() => null);
@@ -473,34 +477,37 @@ async function boot(cap: NavigationCapability, epoch: number, client: AppwireCli
   // flight. The revalidator owns the trailing retry, so consume that retry
   // before deciding that boot has no manifest to fan out from.
   if (manifest.error) {
-    manifest = await navigationStore
+    await navigationStore
       .getState()
       .loadManifest()
       .catch(() => null);
-    if (!manifest || epoch !== bootEpoch || client !== activeClient) return;
   }
-  const m = manifest.data;
-  if (!m) return;
-  if (!isNavigationManifest(m)) {
-    navigationStore.setState({ protocolError: new Error("invalid navigation manifest") });
+}
+
+async function fanOutManifestResources(manifest: NavigationManifest, epoch: number): Promise<void> {
+  if (epoch !== bootEpoch || activeClient === null) return;
+  const manifestKey = `${manifest.generation_id}:${manifest.revision}`;
+  if (manifestFanout?.key === manifestKey) {
+    await manifestFanout.promise;
     return;
   }
+  const promise = hydrateManifestResources(manifest, epoch);
+  manifestFanout = { key: manifestKey, promise };
+  await promise;
+}
+
+async function hydrateManifestResources(manifest: NavigationManifest, epoch: number): Promise<void> {
   const jobs: Array<() => Promise<unknown>> = [];
-  if (m.sections.live.count > 0) jobs.push(() => navigationStore.getState().loadSection("live"));
-  if (m.sections.needs_you.count > 0) jobs.push(() => navigationStore.getState().loadSection("needs_you"));
-  if (m.sections.pin_sections.count > 0) jobs.push(() => navigationStore.getState().loadPinCatalog());
-  for (const c of ["projects", "archived_projects", "test_runs"] as const)
-    if (m.catalogs[c].count > 0) jobs.push(() => navigationStore.getState().loadCatalog(c));
+  if (manifest.sections.live.count > 0) jobs.push(() => navigationStore.getState().loadSection("live"));
+  if (manifest.sections.needs_you.count > 0) jobs.push(() => navigationStore.getState().loadSection("needs_you"));
+  if (manifest.sections.pin_sections.count > 0) jobs.push(() => navigationStore.getState().loadPinCatalog());
+  jobs.push(...nonemptyCatalogs(manifest).map((catalog) => () => navigationStore.getState().loadCatalog(catalog)));
   await runBounded(jobs, epoch);
   if (epoch !== bootEpoch || activeClient === null) return;
   const pinCatalog = navigationStore
     .getState()
     .resources.get(keyID({ kind: "pin_catalog", offset: 0, limit: CATALOG_LIMIT }));
   const pinSections = (pinCatalog?.data as NavigationPinSectionCatalog | null)?.pin_sections ?? [];
-  await runBounded(
-    pinSections.filter((p) => p.count > 0).map((p) => () => navigationStore.getState().loadPinSection(p.id)),
-    epoch,
-  );
   // Hydrate only visible/default-expanded projects. A small explicit worker
   // pool prevents a large catalog from monopolising the browser connection.
   const projects = selectSummaries();
@@ -508,7 +515,10 @@ async function boot(cap: NavigationCapability, epoch: number, client: AppwireCli
     .filter((p) => navigationStore.getState().expanded.get(p.key) ?? p.default_expanded)
     .map((p) => p.key);
   await runBounded(
-    pending.map((project) => () => hydrateProject(project, epoch)),
+    [
+      ...pinSections.filter((p) => p.count > 0).map((p) => () => navigationStore.getState().loadPinSection(p.id)),
+      ...pending.map((project) => () => hydrateProject(project, epoch)),
+    ],
     epoch,
   );
 }
@@ -554,6 +564,7 @@ export function initNavigation(
   unsubs = [];
   activeClient = client;
   bootEpoch++;
+  manifestFanout = null;
   const epoch = bootEpoch;
   const ownedClient = client;
   const start = (info?: InitializeResponse | NavigationCapability | null) => {
@@ -572,7 +583,13 @@ export function initNavigation(
     void boot(cap, epoch, ownedClient);
   };
   revalidator = new NavigationRevalidator();
-  unsubs.push(revalidator.subscribe((state) => setResource(state, ownedClient, epoch)));
+  unsubs.push(
+    revalidator.subscribe((state) => {
+      if (ownedClient !== activeClient || epoch !== bootEpoch) return;
+      publishResourceState(state);
+      coordinateManifestState(state, epoch);
+    }),
+  );
   unsubs.push(
     client.onNotification((n) => {
       if (ownedClient !== activeClient || epoch !== bootEpoch) return;
@@ -650,6 +667,7 @@ export function initNavigation(
       revalidator = null;
       activeClient = null;
       bootStartedEpoch = -1;
+      manifestFanout = null;
     }
   };
 }
@@ -663,5 +681,6 @@ export function resetNavigationStoreForTests(): void {
   revalidator = null;
   activeClient = null;
   bootStartedEpoch = -1;
+  manifestFanout = null;
   navigationStore.setState({ ...initial(), ...actions() });
 }
