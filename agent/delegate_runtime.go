@@ -1263,7 +1263,7 @@ func (runtime delegateRuntime) create(ctx context.Context, args delegateArgs) de
 	// The sandbox one fires when a derived read-only scope had to degrade on this
 	// host, so the parent learns the boundary is advisory for the child's shell
 	// rather than discovering it from a clobbered file.
-	result.Warnings = appendUniqueStrings(result.Warnings, sharedWorkspaceAdvisory, degradedReadOnlyDelegateAdvisory(requestedSandbox))
+	result.Warnings = appendUniqueStrings(result.Warnings, sharedWorkspaceAdvisory, degradedReadOnlyDelegateAdvisory(prepared.sub.sess.currentEnv()))
 	return result
 }
 

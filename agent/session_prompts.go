@@ -265,7 +265,11 @@ func sandboxPromptLine(env execenv.ExecutionEnvironment) string {
 		line += ". Scratch directory (read-write even in this sandbox; also $" +
 			envvars.TmpDir.Name + " / $" + envvars.EVENERScratchDir.Name + " for shell commands): " + scratch
 		if le.Sandbox.Mode == sandbox.ModeReadOnly || le.Sandbox.WriteBlocked {
-			line += ". Read-only delegates may write only inside this scratch directory; all other writes are denied"
+			if le.Sandbox.Enforced() {
+				line += ". Read-only delegates may write only inside this scratch directory; all other writes are denied"
+			} else {
+				line += ". Your file tools may write only inside this scratch directory; all other file-tool writes are denied"
+			}
 		}
 		line += ". In your final human-readable handoff, report this absolute scratch path and the absolute paths of any artifacts your parent should retain; cleanup is manual."
 	}

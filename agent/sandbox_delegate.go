@@ -168,6 +168,19 @@ func (s *Session) prepareSubagentEnvironment(workingDir string, requested *sandb
 			return nil, false, fmt.Errorf("per-delegate sandbox: %w", err)
 		}
 		subEnv = local
+	} else if workingDir != "" {
+		// A fresh isolated clone normally inherits its parent's already-provisioned
+		// wrapper scratch. The degraded read-only policy has no wrapper, so the clone
+		// inherits the policy but not the parent's owned scratch. Provision its own
+		// before any file tool can cache an enforcement layer with no writable root.
+		if local, ok := subEnv.(*execenv.LocalExecutionEnvironment); ok &&
+			local.Sandbox != nil && local.Sandbox.FileToolConfined() && local.Wrapper == nil {
+			if err := local.EnableSandbox(local.Sandbox); err != nil {
+				local.DisposeSandboxScratch()
+				return nil, false, fmt.Errorf("inherited delegate sandbox: %w", err)
+			}
+			subEnv = local
+		}
 	}
 	return subEnv, workingDir != "" || requested != nil, nil
 }
@@ -271,6 +284,14 @@ func degradedReadOnlyBoundaryFor(mode sandbox.Mode, writeBlocked bool) (degraded
 	}, true
 }
 
+func degradedReadOnlyBoundaryFromEnv(env execenv.ExecutionEnvironment) (degradedReadOnlyBoundary, bool) {
+	local, ok := env.(*execenv.LocalExecutionEnvironment)
+	if !ok || local == nil || local.Sandbox == nil {
+		return degradedReadOnlyBoundary{}, false
+	}
+	return degradedReadOnlyBoundaryFor(local.Sandbox.Mode, local.Sandbox.WriteBlocked)
+}
+
 func (b degradedReadOnlyBoundary) shellDisclosure(subject string) string {
 	parts := make([]string, 0, 3)
 	if !b.ShellSandboxed {
@@ -297,11 +318,8 @@ func (b degradedReadOnlyBoundary) shellDisclosure(subject string) string {
 // path, so its shell can still write any absolute path — but it does put the
 // delegate's own directory somewhere an ACCIDENTAL write lands harmlessly, which
 // is the same collision-avoidance claim the shared-workspace advisory makes.
-func degradedReadOnlyDelegateAdvisory(policy *sandbox.SandboxPolicy) string {
-	if policy == nil {
-		return ""
-	}
-	boundary, ok := degradedReadOnlyBoundaryFor(policy.Mode, policy.WriteBlocked)
+func degradedReadOnlyDelegateAdvisory(env execenv.ExecutionEnvironment) string {
+	boundary, ok := degradedReadOnlyBoundaryFromEnv(env)
 	if !ok {
 		return ""
 	}

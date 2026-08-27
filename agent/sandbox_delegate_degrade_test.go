@@ -321,6 +321,56 @@ func TestDegradedWorktreeIsolationDoesNotAddKernelConfinement(t *testing.T) {
 	}
 }
 
+// TestInheritedDegradedWorktreeProvisionsScratchBeforeFileToolUse catches an
+// isolated child inheriting a wrapperless write block without re-running
+// EnableSandbox. The child must own its scratch before its first file tool builds
+// the cached enforcement layer, or the later shell scratch never becomes writable
+// through that cache.
+func TestInheritedDegradedWorktreeProvisionsScratchBeforeFileToolUse(t *testing.T) {
+	lane, home := sbxLane(t)
+	parent := sbxDelegateSession(t, sbxNoBackendFacts(home))
+	sbxSetParentEnv(t, parent, lane)
+	policy, err := parent.readOnlyDelegateSandbox()
+	if err != nil {
+		t.Fatalf("readOnlyDelegateSandbox: %v", err)
+	}
+	degraded, _, err := parent.prepareSubagentEnvironment("", policy)
+	if err != nil {
+		t.Fatalf("prepare degraded parent environment: %v", err)
+	}
+	parent.mu.Lock()
+	parent.env = degraded
+	parent.mu.Unlock()
+
+	childLane := filepath.Join(filepath.Dir(lane), "isolated-child")
+	if err := os.MkdirAll(childLane, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	childEnv, ownsFresh, err := parent.prepareSubagentEnvironment(childLane, nil)
+	if err != nil {
+		t.Fatalf("prepare inherited child environment: %v", err)
+	}
+	child, ok := childEnv.(*execenv.LocalExecutionEnvironment)
+	if !ok {
+		t.Fatal("inherited child env must be a LocalExecutionEnvironment")
+	}
+	if !ownsFresh {
+		t.Fatal("an isolated inherited child must own its fresh environment")
+	}
+	t.Cleanup(child.DisposeSandboxScratch)
+
+	scratch := child.SessionScratchDir()
+	if scratch == "" {
+		t.Fatal("an inherited wrapperless write block must provision scratch before file-tool use")
+	}
+	if _, err := child.WriteFile(filepath.Join(scratch, "findings.md"), "ready\n"); err != nil {
+		t.Fatalf("the first file-tool use must write the inherited child's scratch: %v", err)
+	}
+	if _, ok := degradedReadOnlyBoundaryFromEnv(child); !ok {
+		t.Fatal("the inherited child's effective environment must report its degraded boundary")
+	}
+}
+
 // TestDegradedParentPropagatesItsWriteBlock: WriteBlocked is a FLOOR, built so a
 // child can never drop it. A degraded parent's block is real — its file tools deny
 // every workspace write — so it must reach its own children too, both as the
