@@ -216,18 +216,7 @@ function reportCleanupFailure(error) {
   console.error(error instanceof Error ? error.message : String(error));
 }
 
-export function filterCrashpadProcessTable(processList) {
-  return processList
-    .split("\n")
-    .filter((line) => {
-      const match = line.match(/^\s*\d+\s+\d+\s+(.+)$/);
-      return match && /(?:^|\/)chrome_crashpad_handler(?:\s|$)/.test(match[1]);
-    })
-    .join("\n");
-}
-
-export function listSystemProcesses({ processTable, processCommand = ["/bin/ps"] } = {}) {
-  if (processTable !== undefined) return filterCrashpadProcessTable(processTable);
+export function listSystemProcesses({ processCommand = ["/bin/ps"] } = {}) {
   // Stream the complete table through awk and retain only full-argv Crashpad
   // candidates. Capturing the unfiltered table exceeds execFileSync's 1 MiB
   // maxBuffer on a process-heavy host. Filtering the command column, rather
