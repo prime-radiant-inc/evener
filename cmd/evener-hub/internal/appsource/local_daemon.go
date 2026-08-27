@@ -263,7 +263,7 @@ func (s *LocalDaemonSource) StartTurn(ctx context.Context, params appwire.TurnSt
 func (s *LocalDaemonSource) SteerTurn(ctx context.Context, params appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
 	entry, err := s.entryForRef(params.Ref, params.ThreadID)
 	if err != nil {
-		return appwire.TurnSteerResponse{}, err
+		return appwire.TurnSteerResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
 	}
 	var out appwire.TurnSteerResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
@@ -285,7 +285,7 @@ func (s *LocalDaemonSource) ResolveSandboxEscalation(ctx context.Context, params
 func (s *LocalDaemonSource) InterruptTurn(ctx context.Context, params appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
 	entry, err := s.entryForRef(params.Ref, params.ThreadID)
 	if err != nil {
-		return appwire.TurnInterruptResponse{}, err
+		return appwire.TurnInterruptResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
 	}
 	var out appwire.TurnInterruptResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
@@ -327,7 +327,7 @@ func (s *LocalDaemonSource) restInterrupt(ctx context.Context, entry rendezvous.
 func (s *LocalDaemonSource) QueueTurn(ctx context.Context, params appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
 	entry, err := s.entryForRef(params.Ref, "")
 	if err != nil {
-		return appwire.TurnQueueResponse{}, err
+		return appwire.TurnQueueResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
 	}
 	var out appwire.TurnQueueResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
@@ -339,7 +339,7 @@ func (s *LocalDaemonSource) QueueTurn(ctx context.Context, params appwire.TurnQu
 func (s *LocalDaemonSource) DrainAsSteer(ctx context.Context, params appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
 	entry, err := s.entryForRef(params.Ref, "")
 	if err != nil {
-		return appwire.TurnDrainAsSteerResponse{}, err
+		return appwire.TurnDrainAsSteerResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
 	}
 	var out appwire.TurnDrainAsSteerResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
@@ -351,7 +351,7 @@ func (s *LocalDaemonSource) DrainAsSteer(ctx context.Context, params appwire.Tur
 func (s *LocalDaemonSource) PromoteQueuedAsSteer(ctx context.Context, params appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
 	entry, err := s.entryForRef(params.Ref, "")
 	if err != nil {
-		return appwire.TurnPromoteQueuedAsSteerResponse{}, err
+		return appwire.TurnPromoteQueuedAsSteerResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
 	}
 	var out appwire.TurnPromoteQueuedAsSteerResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
@@ -363,7 +363,7 @@ func (s *LocalDaemonSource) PromoteQueuedAsSteer(ctx context.Context, params app
 func (s *LocalDaemonSource) CancelQueued(ctx context.Context, params appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
 	entry, err := s.entryForRef(params.Ref, "")
 	if err != nil {
-		return appwire.TurnCancelQueuedResponse{}, err
+		return appwire.TurnCancelQueuedResponse{}, localDaemonMutationEntryError(params.ClientMutationID, err)
 	}
 	var resp appwire.TurnCancelQueuedResponse
 	err = s.withMutationClient(ctx, entry, params.ClientMutationID, func(client *appwire.Client) error {
@@ -722,6 +722,22 @@ func localDaemonMutationCallError(clientMutationID string, err error) error {
 			RetryDisposition: appwire.RetryDispositionAutomatic,
 		},
 	}
+}
+
+func localDaemonMutationEntryError(clientMutationID string, err error) error {
+	var wire appwire.WireError
+	if !errors.As(err, &wire) {
+		return err
+	}
+	data, ok := wire.Data.(appwire.ErrorData)
+	if wire.Code != appwire.CodeUnavailable || !ok || data.EvenerErrorInfo != appwire.ErrorSessionUnavailable {
+		return err
+	}
+	data.ClientMutationID = clientMutationID
+	data.MutationOutcome = appwire.MutationOutcomeNotAccepted
+	data.RetryDisposition = appwire.RetryDispositionNone
+	wire.Data = data
+	return wire
 }
 
 func localDaemonInitializeError(err error) error {
