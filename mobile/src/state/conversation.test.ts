@@ -8895,4 +8895,307 @@ describe("ConversationStore", () => {
       expect(reintroduced?.kind).toBe("user");
     });
   });
+
+  // --- Task 2A-Truncation residual fix round 2: I1/M1 exact prior-frozen
+  // carryover for loadOlder (truncatedItemIds ∩ currentConv.item IDs ∩ final
+  // retained IDs) + centralized incremental append+cap reconciliation.
+  //
+  // An incoming raw page item matching a stale frozen ID is independently
+  // judged from raw content (exceedsByteLimit), NOT carried over as frozen
+  // from the prior set. When an incremental append (item/started, item/completed,
+  // warning) evicts an already-frozen item via the 500-cap, the evicted ID is
+  // pruned from truncatedItemIds and the page/live ownership maps so a later
+  // re-introduction with short content accepts a delta.
+  describe("Task 2A-Truncation residual fix round 2", () => {
+    async function openProjectedWithItems(items: ThreadItem[]): Promise<{
+      store: ReturnType<typeof createConversationStore>;
+      service: FakeConversationService;
+    }> {
+      const service = new FakeConversationService();
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({ turns: [makeTurn({ id: "t0", items })] }),
+      );
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      return { store, service };
+    }
+
+    // M1 omission: oversized X frozen → authoritative reread omits X (removes
+    // freeze via reconciliation) → raw SHORT assistant X arrives via page
+    // (loadOlder, not lifecycle) → X independently judged from raw content
+    // (short → not frozen) → later delta applies.
+    it("M1 omission: oversized X frozen, reread omits X, raw short page X accepts delta", async () => {
+      const oversized = "x".repeat(MAX_ITEM_BYTES + 100);
+      const { store, service } = await openProjectedWithItems([
+        userMessageItem("B", "base"),
+        agentMessageItem("X", oversized, "inProgress"),
+      ]);
+      // Verify X is frozen.
+      const xBefore = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(
+        xBefore?.kind === "assistant" &&
+          xBefore.markdown.endsWith("… truncated"),
+      ).toBe(true);
+
+      // Rehydrate omitting X — reconciliation removes the freeze for X.
+      service.readProjectionResult = makeReadProjectionResult(
+        makeThread({
+          turns: [
+            makeTurn({ id: "t0", items: [userMessageItem("B", "base")] }),
+          ],
+        }),
+      );
+      await store.getState().rehydrate(service, createFakeSink());
+      expect(
+        store.getState().conversation?.items.find((i) => i.id === "X"),
+      ).toBeUndefined();
+
+      // Load a page bringing X back as a raw SHORT assistant item (not via a
+      // lifecycle notification). The page content is short, so X must NOT be
+      // frozen — an incoming raw page item is independently judged from its
+      // raw content, not from any stale frozen ID.
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = {
+        items: [
+          {
+            kind: "assistant",
+            id: "X",
+            markdown: "short-page",
+            streaming: false,
+          },
+        ],
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+
+      // X is present with the short page content, no truncation marker.
+      const xPage = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xPage).toBeDefined();
+      expect(xPage?.kind).toBe("assistant");
+      expect(xPage?.kind === "assistant" && xPage.markdown).toBe("short-page");
+      expect(
+        xPage?.kind === "assistant" && xPage.markdown.endsWith("… truncated"),
+      ).toBe(false);
+
+      // A later delta to X must apply — X is NOT frozen.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+          delta: " appended",
+        },
+      } as AnyNotification);
+      const xDelta = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xDelta?.kind === "assistant" && xDelta.markdown).toBe(
+        "short-page appended",
+      );
+    });
+
+    // M1 cap: oversized retained X is actually evicted by an incremental
+    // append at 501 (item/started pushes to 501, cap trims the oldest which is
+    // X). Assert actual cap/IDs/order. The stale freeze entry for X must be
+    // pruned so that a later re-introduction with short content accepts a
+    // delta.
+    it("M1 cap: oversized X evicted by incremental append at 501, re-introduced short accepts delta", async () => {
+      const oversized = "x".repeat(MAX_ITEM_BYTES + 100);
+      // Build 500 items: X (oversized, first/oldest) + 499 small user items.
+      // X is at index 0 (oldest), so capItems will evict it when a 501st item
+      // is appended.
+      const items: ThreadItem[] = [
+        agentMessageItem("X", oversized, "completed"),
+      ];
+      for (let i = 1; i < 500; i++) {
+        items.push(userMessageItem(`u-${i}`, ""));
+      }
+      const { store, service } = await openProjectedWithItems(items);
+
+      // Verify X is present and frozen (at 500 items, all retained).
+      expect(store.getState().conversation?.items.length).toBe(500);
+      const xBefore = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xBefore?.kind).toBe("assistant");
+      expect(
+        xBefore?.kind === "assistant" &&
+          xBefore.markdown.endsWith("… truncated"),
+      ).toBe(true);
+      // X is the oldest item (index 0).
+      expect(store.getState().conversation?.items[0]?.id).toBe("X");
+
+      // Incremental append via item/started — pushes to 501, cap trims the
+      // oldest (X) down to 500.
+      store.getState().applyNotification({
+        method: "item/started",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          item: userMessageItem("new-item", "fresh"),
+        },
+      } as AnyNotification);
+
+      // Assert actual cap: exactly 500 items.
+      const conv = store.getState().conversation;
+      expect(conv?.items.length).toBe(500);
+      // Assert actual IDs: X is evicted (not in items).
+      expect(conv?.items.find((i) => i.id === "X")).toBeUndefined();
+      // Assert actual order: new item is at the tail (newest).
+      expect(conv?.items[conv.items.length - 1]?.id).toBe("new-item");
+      // The oldest surviving item is now u-1 (X was evicted).
+      expect(conv?.items[0]?.id).toBe("u-1");
+
+      // The stale freeze for X must be pruned. Simulate a state where the
+      // conversation has fewer items (as a rehydrate would produce) WITHOUT
+      // clearing truncatedItemIds — this is the state that occurs if the
+      // incremental append didn't prune. Then loadOlder with X short must
+      // independently judge X (not frozen).
+      //
+      // After the fix, the incremental append prunes X from truncatedItemIds,
+      // so this test passes because priorFrozen doesn't include X. Without the
+      // fix, X remains in truncatedItemIds, and priorFrozen includes X, causing
+      // reconcileTruncationFrom to wrongly freeze the short page item.
+      const currentConv = store.getState().conversation;
+      if (currentConv !== null) {
+        store.setState({
+          conversation: {
+            ...currentConv,
+            items: currentConv.items.slice(0, 10),
+          },
+          olderCursor: "cursor-1",
+        });
+      }
+
+      // Load a page bringing X back as a raw SHORT assistant item.
+      service.olderItems = {
+        items: [
+          {
+            kind: "assistant",
+            id: "X",
+            markdown: "short-page",
+            streaming: false,
+          },
+        ],
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+
+      // X is present with short page content, no marker.
+      const xPage = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xPage).toBeDefined();
+      expect(xPage?.kind).toBe("assistant");
+      expect(xPage?.kind === "assistant" && xPage.markdown).toBe("short-page");
+      expect(
+        xPage?.kind === "assistant" && xPage.markdown.endsWith("… truncated"),
+      ).toBe(false);
+
+      // A later delta to X must apply — X is NOT frozen.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+          delta: " appended",
+        },
+      } as AnyNotification);
+      const xDelta = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xDelta?.kind === "assistant" && xDelta.markdown).toBe(
+        "short-page appended",
+      );
+    });
+
+    // M1 cap via warning: same eviction but via a warning notification, which
+    // is another incremental append+cap path. Verify the same pruning happens.
+    it("M1 cap via warning: oversized X evicted by warning at 501, re-introduced short accepts delta", async () => {
+      const oversized = "x".repeat(MAX_ITEM_BYTES + 100);
+      const items: ThreadItem[] = [
+        agentMessageItem("X", oversized, "completed"),
+      ];
+      for (let i = 1; i < 500; i++) {
+        items.push(userMessageItem(`u-${i}`, ""));
+      }
+      const { store, service } = await openProjectedWithItems(items);
+      expect(store.getState().conversation?.items.length).toBe(500);
+      expect(store.getState().conversation?.items[0]?.id).toBe("X");
+
+      // Warning pushes to 501, cap trims X (oldest).
+      store.getState().applyNotification({
+        method: "warning",
+        params: { message: "test warning" },
+      } as AnyNotification);
+
+      // Assert actual cap/IDs/order.
+      const conv = store.getState().conversation;
+      expect(conv?.items.length).toBe(500);
+      expect(conv?.items.find((i) => i.id === "X")).toBeUndefined();
+      // The warning item is at the tail (failure kind).
+      const tail = conv?.items[conv.items.length - 1];
+      expect(tail?.kind).toBe("failure");
+
+      // Simulate fewer items (as rehydrate would produce) without clearing
+      // truncatedItemIds. Then page-load X short — must not be frozen.
+      const currentConv = store.getState().conversation;
+      if (currentConv !== null) {
+        store.setState({
+          conversation: {
+            ...currentConv,
+            items: currentConv.items.slice(0, 10),
+          },
+          olderCursor: "cursor-1",
+        });
+      }
+      service.olderItems = {
+        items: [
+          {
+            kind: "assistant",
+            id: "X",
+            markdown: "short-page",
+            streaming: false,
+          },
+        ],
+        nextCursor: undefined,
+      };
+      await store.getState().loadOlder(service);
+
+      const xPage = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xPage?.kind === "assistant" && xPage.markdown).toBe("short-page");
+      expect(
+        xPage?.kind === "assistant" && xPage.markdown.endsWith("… truncated"),
+      ).toBe(false);
+
+      // Delta applies — X NOT frozen.
+      store.getState().applyNotification({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          turnId: "t0",
+          itemId: "X",
+          delta: " appended",
+        },
+      } as AnyNotification);
+      const xDelta = store
+        .getState()
+        .conversation?.items.find((i) => i.id === "X");
+      expect(xDelta?.kind === "assistant" && xDelta.markdown).toBe(
+        "short-page appended",
+      );
+    });
+  });
 });
