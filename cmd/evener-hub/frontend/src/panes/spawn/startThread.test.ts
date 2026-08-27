@@ -16,6 +16,7 @@ const NO_CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: false,
   shutdown: false,
   changeModel: false,
+  changeVisionModel: false,
   queue: false,
   goal: false,
   rename: false,

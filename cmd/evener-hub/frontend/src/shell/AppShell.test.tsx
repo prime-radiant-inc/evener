@@ -188,6 +188,7 @@ const THREAD_CAPABILITIES = {
   forkFromTurn: false,
   shutdown: false,
   changeModel: false,
+  changeVisionModel: false,
   queue: false,
   goal: false,
   rename: false,

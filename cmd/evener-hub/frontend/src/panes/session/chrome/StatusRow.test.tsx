@@ -35,6 +35,7 @@ const CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
@@ -49,6 +50,7 @@ function testModel(overrides: Partial<ThreadModel> = {}): ThreadModel {
     status: { type: "idle" },
     modelProvider: "anthropic/claude-sonnet-4-5",
     model: "anthropic/claude-sonnet-4-5",
+    visionModel: "",
     askPending: false,
     pendingEscalations: [],
     turns: [],
@@ -173,9 +175,10 @@ test("groups model and effort visually while retaining two independent controls"
     />,
   );
   const identity = screen.getByTestId("status-row-identity");
-  expect(identity.contains(screen.getByRole("button", { name: /change model/i }))).toBe(true);
+  expect(identity.contains(screen.getByTestId("model-switch-trigger"))).toBe(true);
   expect(identity.contains(screen.getByRole("combobox", { name: /reasoning effort/i }))).toBe(true);
-  expect(identity.children).toHaveLength(2);
+  expect(identity.contains(screen.getByTestId("vision-model-switch-trigger"))).toBe(true);
+  expect(identity.children).toHaveLength(3);
 });
 
 // --- model switcher ---------------------------------------------------------
@@ -188,7 +191,7 @@ test("shows a single model label when provider and model are still the same stri
       now={1000}
     />,
   );
-  expect(screen.getByText("anthropic/claude-sonnet-4-5")).toBeTruthy();
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
 });
 
 test("shows provider/model once a live thread/model/changed has actually split them apart", () => {
@@ -199,7 +202,7 @@ test("shows provider/model once a live thread/model/changed has actually split t
       now={1000}
     />,
   );
-  expect(screen.getByText("anthropic/claude-opus-5")).toBeTruthy();
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-opus-5");
 });
 
 // composition proof only - ModelSwitch.test.tsx owns the full picker
@@ -216,7 +219,7 @@ test("wires the model-switch trigger in, acting on the SAME sessionRef passed to
   });
 
   render(<StatusRow sessionRef="ref_a" model={testModel()} now={1000} />);
-  await user.click(screen.getByRole("button", { name: /change model/i }));
+  await user.click(screen.getByTestId("model-switch-trigger"));
   // Named "Model" (widgets/modelCatalog's own aria-label); the effort control's
   // own combobox is named "Reasoning effort", so this is unambiguous even
   // though both roles now live on the same row.

@@ -33,6 +33,7 @@ const CAPABILITIES: ThreadCapabilities = {
   forkFromTurn: true,
   shutdown: true,
   changeModel: true,
+  changeVisionModel: true,
   queue: true,
   goal: true,
   rename: true,
@@ -198,7 +199,7 @@ test("composes the status row, the session menu, and the goal control once the r
   render(<SessionChrome ref="ref_a" />);
 
   // Status row: model chip.
-  expect(screen.getByText("anthropic/claude-sonnet-4-5")).toBeTruthy();
+  expect(screen.getByTestId("model-switch-value").textContent).toBe("anthropic/claude-sonnet-4-5");
   // Session menu trigger.
   expect(screen.getByRole("button", { name: /session actions/i })).toBeTruthy();
   // Goal control: the goal chip, once a goal is set. Two triggers share this
@@ -236,7 +237,7 @@ test("composer placement renders one ordered inline status and actions cluster w
   const identity = within(cluster).getByTestId("status-row-identity");
   const context = within(cluster).getByTestId("status-row-context");
   const actions = within(cluster).getByRole("button", { name: "Session actions" });
-  expect(within(identity).getByRole("button", { name: /change model/i })).toBeTruthy();
+  expect(within(identity).getByTestId("model-switch-trigger")).toBeTruthy();
   expect(within(identity).getByRole("combobox", { name: "Reasoning effort" })).toBeTruthy();
   expect(statusRow.contains(identity)).toBe(true);
   expect(statusRow.contains(context)).toBe(true);
