@@ -407,6 +407,10 @@ func (c *Client) ThreadReasoningEffortSet(ctx context.Context, params ThreadReas
 	return c.request(ctx, MethodThreadReasoningEffortSet, params, nil)
 }
 
+func (c *Client) ThreadVisionModelSet(ctx context.Context, params ThreadVisionModelSetParams) error {
+	return c.request(ctx, MethodThreadVisionModelSet, params, nil)
+}
+
 func (c *Client) ThreadCompactStart(ctx context.Context, params ThreadCompactStartParams) error {
 	return c.request(ctx, MethodThreadCompactStart, params, nil)
 }
