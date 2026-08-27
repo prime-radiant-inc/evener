@@ -467,11 +467,21 @@ async function boot(cap: NavigationCapability, epoch: number, client: AppwireCli
   });
   if (bootStartedEpoch === epoch) return;
   bootStartedEpoch = epoch;
-  const manifest = await navigationStore
+  let manifest = await navigationStore
     .getState()
     .loadManifest()
     .catch(() => null);
   if (!manifest || epoch !== bootEpoch || client !== activeClient) return;
+  // A reconnect can force the first manifest read while it is still in
+  // flight. The revalidator owns the trailing retry, so consume that retry
+  // before deciding that boot has no manifest to fan out from.
+  if (manifest.error) {
+    manifest = await navigationStore
+      .getState()
+      .loadManifest()
+      .catch(() => null);
+    if (!manifest || epoch !== bootEpoch || client !== activeClient) return;
+  }
   const m = manifest.data;
   if (!m) return;
   if (!isNavigationManifest(m)) {
