@@ -140,7 +140,7 @@ func FuzzSessionTreePass6(f *testing.F) {
 			// Tree method/summary/project gates and populated project projection.
 			past := hubcore.NewPastIndex("")
 			past.SeedForTest([]schema.SessionMeta{{ID: "past-6", Name: title, CreatedAt: now.Add(-time.Hour), UpdatedAt: now, EnvInfo: schema.EnvironmentInfo{WorkingDir: "/work/project"}}})
-			web = NewWebServer(hubcore.WebConfig{Past: past})
+			_ = NewWebServer(hubcore.WebConfig{Past: past})
 
 		case 6:
 			// Archived project stub and favorite/pinned projection.
@@ -155,7 +155,7 @@ func FuzzSessionTreePass6(f *testing.F) {
 			if err := favorite.Set("session", "past-6", true, now); err != nil {
 				t.Fatal(err)
 			}
-			web = NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite})
+			_ = NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite})
 
 		case 7:
 			// Session API parse/method/subroute matrix and fork decode failures.
