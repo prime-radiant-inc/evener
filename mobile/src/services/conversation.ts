@@ -70,7 +70,7 @@ export interface ConversationReadProjection {
 // The canonical service interface — preserved for screen test mocks that only
 // need the basic open/send/steer/queue/interrupt/close surface.
 export interface ConversationService {
-  open(ref: string): Promise<MobileConversation>;
+  open(ref: string, cursor?: string): Promise<MobileConversation>;
   loadOlder(cursor: string): Promise<{
     items: MobileTimelineItem[];
     nextCursor?: string;
@@ -99,7 +99,7 @@ export interface ConversationService {
 // methods that must not be optional-fallback to the old open() path.
 export interface LiveConversationService extends ConversationService {
   readProjection(ref: string): Promise<ConversationReadProjection>;
-  refreshCapabilities(): Promise<ThreadCapabilities | null>;
+  refreshCapabilities(ref: string): Promise<ThreadCapabilities | null>;
 }
 
 let defaultIdCounter = 0;
@@ -144,10 +144,11 @@ export function createConversationService(
   // Returns the refreshed capabilities. This is the only path the store should
   // use for actionUnavailable recovery — it never disturbs the active
   // subscription.
-  async function refreshCapabilities(): Promise<ThreadCapabilities | null> {
-    if (ref === null) return null;
+  async function refreshCapabilities(
+    threadRef: string,
+  ): Promise<ThreadCapabilities | null> {
     const response: ThreadReadResponse = await client.request("thread/read", {
-      ref,
+      ref: threadRef,
       includeTurns: false,
       subscribe: false,
     });
@@ -168,13 +169,14 @@ export function createConversationService(
   }
 
   return {
-    async open(threadRef) {
+    async open(threadRef, cursor) {
       ref = threadRef;
       const response: ThreadReadResponse = await client.request("thread/read", {
         ref: threadRef,
         includeTurns: true,
         subscribe: true,
         replaceSubscription: true,
+        ...(cursor !== undefined ? { turnLimit: READ_TURN_LIMIT } : {}),
       });
       capabilities = response.thread.evener.capabilities;
       return projectThread(response.thread);
