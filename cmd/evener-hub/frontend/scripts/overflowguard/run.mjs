@@ -138,6 +138,7 @@ async function measureAt(cdpEndpoint, url, width) {
     let measurementViewport = viewport;
     if (!realizedLayout.mobile) {
       await applyViewport(send, { width, height: 360, mobile: false });
+      await waitForDynamicViewport(send);
       measurementViewport = await realizedViewport(send);
     }
     let detail = null;
@@ -169,6 +170,38 @@ async function measureAt(cdpEndpoint, url, width) {
     await clearViewportOverride(send);
     page.close();
   }
+}
+
+async function waitForDynamicViewport(send) {
+  await evaluate(
+    send,
+    `new Promise((resolve, reject) => {
+      const probe = document.createElement('div');
+      probe.style.cssText = 'position:fixed;visibility:hidden;pointer-events:none;top:0;left:0;height:100dvh;width:1px';
+      document.body.append(probe);
+      let previous = null;
+      let stable = 0;
+      let frames = 0;
+      const check = () => {
+        const current = probe.getBoundingClientRect().height;
+        if (current === window.innerHeight && current === previous) stable++;
+        else stable = 0;
+        if (stable >= 2) {
+          probe.remove();
+          resolve(current);
+          return;
+        }
+        if (++frames >= 120) {
+          probe.remove();
+          reject(new Error('dynamic viewport height did not settle: probe=' + current + ', innerHeight=' + window.innerHeight));
+          return;
+        }
+        previous = current;
+        requestAnimationFrame(check);
+      };
+      requestAnimationFrame(check);
+    })`,
+  );
 }
 
 async function dispatchTrustedKey(send, key, code, windowsVirtualKeyCode) {
