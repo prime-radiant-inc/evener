@@ -3645,7 +3645,7 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     await setGoalReachedHandler;
 
     const refreshReads: Array<(response: ThreadReadResponse) => void> = [];
-    let resolveRefreshReadsReached = () => {
+    let resolveRefreshReadsReached: () => void = () => {
       throw new Error("both hydration handlers were not reached");
     };
     const refreshReadsReached = new Promise<void>((resolve) => {
@@ -3694,7 +3694,7 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     await threadsStore.getState().watchThread("ref_a");
 
     const refreshReads: Array<(response: ThreadReadResponse) => void> = [];
-    let resolveRefreshReadsReached = () => {
+    let resolveRefreshReadsReached: () => void = () => {
       throw new Error("both hydration handlers were not reached");
     };
     const refreshReadsReached = new Promise<void>((resolve) => {
