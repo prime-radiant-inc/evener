@@ -163,8 +163,13 @@ export function decodeInitializeResponse(value: unknown): InitializeResponse {
       (!isRecord(navigation) ||
         !hasRequiredAndOptionalKeys(navigation, NAVIGATION_CAPABILITY_KEYS) ||
         typeof navigation.version !== "number" ||
+        !Number.isSafeInteger(navigation.version) ||
+        navigation.version < 1 ||
         typeof navigation.generationId !== "string" ||
-        typeof navigation.sequence !== "number"))
+        navigation.generationId.trim() === "" ||
+        typeof navigation.sequence !== "number" ||
+        !Number.isSafeInteger(navigation.sequence) ||
+        navigation.sequence < 0))
   ) {
     throw new Error("invalid initialize response");
   }
