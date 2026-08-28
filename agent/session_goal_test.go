@@ -159,6 +159,18 @@ func TestClearGoalRemovesGoal(t *testing.T) {
 	}
 }
 
+func TestGoalStatusReturnsObjectiveWithStatusAndIterations(t *testing.T) {
+	t.Parallel()
+	sess := newGoalMethodSession(t)
+	defer sess.Close()
+
+	sess.getOrCreateGoalStore().Set("ship the footer", time.Now())
+	objective, status, iterations, ok := sess.GoalStatus()
+	if !ok || objective != "ship the footer" || status != "active" || iterations != 0 {
+		t.Fatalf("GoalStatus() = %q, %q, %d, %v", objective, status, iterations, ok)
+	}
+}
+
 // lastSteeringText returns the text of the final TurnSteering turn in the
 // session history, or "" with ok=false when the last turn is not steering.
 func lastSteeringText(sess *Session) (string, bool) {

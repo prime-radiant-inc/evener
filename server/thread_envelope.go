@@ -90,7 +90,7 @@ type ThreadEnvelopeSource interface {
 	DetailedStatus() DetailedStatus
 	ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation)
 	TaskAggregate() *appwire.TaskAggregate
-	GoalStatus() (status string, iterations int, ok bool)
+	GoalStatus() (objective, status string, iterations int, ok bool)
 	WorkMetrics() (workMillis int64, usage *appwire.EvenerUsage, activeTurnStartedAt int64)
 	FailedToolCalls() (count int, measured bool)
 	AskPending() bool
@@ -318,8 +318,8 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 		next.Tasks = src.TaskAggregate()
 	}
 	if facets&facetGoal != 0 {
-		if status, iterations, ok := src.GoalStatus(); ok {
-			next.Goal = &appwire.GoalState{Status: status, Iterations: iterations}
+		if objective, status, iterations, ok := src.GoalStatus(); ok {
+			next.Goal = &appwire.GoalState{Objective: objective, Status: status, Iterations: iterations}
 		}
 	}
 	if facets&facetWork != 0 {

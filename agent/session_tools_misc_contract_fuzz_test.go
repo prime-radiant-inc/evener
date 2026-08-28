@@ -251,7 +251,7 @@ func stmRunRoundContracts(t *testing.T, program []byte) {
 	if goal.IsError || !strings.Contains(goal.Output, "Goal marked complete") {
 		t.Fatalf("update_goal completion = %#v", goal)
 	}
-	if status, _, ok := s.GoalStatus(); !ok || status != "complete" {
+	if _, status, _, ok := s.GoalStatus(); !ok || status != "complete" {
 		t.Fatalf("goal status = %q ok=%v, want complete", status, ok)
 	}
 

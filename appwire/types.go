@@ -510,12 +510,18 @@ type ThreadStatus struct {
 	ActiveFlags []string `json:"activeFlags,omitempty"`
 }
 
+type TaskSummary struct {
+	ID          int    `json:"id"`
+	Description string `json:"description"`
+}
+
 // TaskAggregate carries the authoritative task-list progress for a thread
 // snapshot. A nil *TaskAggregate on EvenerThread means the source cannot know
 // the session's task state; a present zero is an authoritative empty list.
 type TaskAggregate struct {
-	Total int `json:"total"`
-	Done  int `json:"done"`
+	Total   int          `json:"total"`
+	Done    int          `json:"done"`
+	Current *TaskSummary `json:"current,omitempty"`
 }
 
 type EvenerThread struct {
@@ -635,6 +641,7 @@ type EvenerThread struct {
 // of continuation turns taken. A nil *GoalState on EvenerThread means no goal is
 // set.
 type GoalState struct {
+	Objective  string `json:"objective,omitempty"`
 	Status     string `json:"status"`
 	Iterations int    `json:"iterations"`
 }

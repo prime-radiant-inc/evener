@@ -1501,15 +1501,20 @@ func (l liveThreadEnvelopeSource) TaskAggregate() *appwire.TaskAggregate {
 		return nil
 	}
 	done := 0
+	aggregate := &appwire.TaskAggregate{Total: len(tasks)}
 	for _, task := range tasks {
 		if task.Status == taskpkg.TaskDone {
 			done++
 		}
+		if aggregate.Current == nil && task.Status == taskpkg.TaskInProgress {
+			aggregate.Current = &appwire.TaskSummary{ID: task.ID, Description: task.Description}
+		}
 	}
-	return &appwire.TaskAggregate{Total: len(tasks), Done: done}
+	aggregate.Done = done
+	return aggregate
 }
 
-func (l liveThreadEnvelopeSource) GoalStatus() (string, int, bool) {
+func (l liveThreadEnvelopeSource) GoalStatus() (string, string, int, bool) {
 	return l.session().GoalStatus()
 }
 

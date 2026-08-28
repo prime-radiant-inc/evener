@@ -445,6 +445,7 @@ export interface GoalSetResponse {
 }
 
 export interface GoalState {
+  objective?: string;
   status: string;
   iterations: number;
 }
@@ -1417,6 +1418,7 @@ export interface Source {
 export interface TaskAggregate {
   total: number;
   done: number;
+  current?: TaskSummary;
 }
 
 export interface TaskListParams {
@@ -1425,6 +1427,11 @@ export interface TaskListParams {
 
 export interface TaskListResponse {
   data: unknown;
+}
+
+export interface TaskSummary {
+  id: number;
+  description: string;
 }
 
 export interface TaskUpdatedParams {

@@ -19,6 +19,7 @@ type stubThreadEnvelopeSource struct {
 	queue            appwire.QueueState
 	pendingMutations []appwire.PendingMutation
 	tasks            *appwire.TaskAggregate
+	goalObjective    string
 	goalStatus       string
 	goalIterations   int
 	goalSet          bool
@@ -56,8 +57,8 @@ func (s *stubThreadEnvelopeSource) ClientMutationProjection() (appwire.QueueStat
 	return s.queue, s.pendingMutations
 }
 
-func (s *stubThreadEnvelopeSource) GoalStatus() (string, int, bool) {
-	return s.goalStatus, s.goalIterations, s.goalSet
+func (s *stubThreadEnvelopeSource) GoalStatus() (string, string, int, bool) {
+	return s.goalObjective, s.goalStatus, s.goalIterations, s.goalSet
 }
 
 func (s *stubThreadEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int64) {

@@ -61,7 +61,7 @@ func TestCloneThreadOwnsNestedMutableState(t *testing.T) {
 				Input:         []InputItem{{Data: []byte("pending"), Metadata: map[string]string{"pending": "value"}}},
 				QueueEntryIDs: []string{"queued"},
 			}},
-			Tasks:                 &TaskAggregate{Total: 2, Done: 1},
+			Tasks:                 &TaskAggregate{Total: 2, Done: 1, Current: &TaskSummary{ID: 2, Description: "current task"}},
 			Goal:                  &GoalState{Status: "active", Iterations: 1},
 			Usage:                 &EvenerUsage{TotalTokens: 15},
 			FailedToolCalls:       &failedToolCalls,
@@ -116,5 +116,17 @@ func TestCloneThreadOwnsNestedMutableState(t *testing.T) {
 	}
 	if original.Evener.Queue.Preview[0] != "preview" || original.Evener.PendingMutations[0].Input[0].Data[0] != 'p' || original.Evener.PendingMutations[0].Input[0].Metadata["pending"] != "value" || original.Evener.Tasks.Total != 2 || original.Evener.Goal.Status != "active" || original.Evener.Usage.TotalTokens != 15 || *original.Evener.FailedToolCalls != 12 {
 		t.Fatal("evener state was changed through its clone")
+	}
+}
+
+func TestCloneThreadClonesTaskAggregateCurrent(t *testing.T) {
+	source := Thread{Evener: EvenerThread{Tasks: &TaskAggregate{
+		Current: &TaskSummary{ID: 2, Description: "wire current work"},
+	}}}
+	clone := CloneThread(source)
+
+	source.Evener.Tasks.Current.Description = "changed source task"
+	if clone.Evener.Tasks.Current.Description != "wire current work" {
+		t.Fatalf("clone current task = %+v, changed with source", clone.Evener.Tasks.Current)
 	}
 }
