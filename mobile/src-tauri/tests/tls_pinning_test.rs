@@ -5,6 +5,7 @@
 
 use std::net::{IpAddr, Ipv4Addr};
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 use app_lib::error::ReleaseMode;
 use app_lib::http_transport::{HubHttp, HubRequest};
@@ -14,12 +15,13 @@ use app_lib::profile_runtime::RealPairingProbe;
 use futures_util::StreamExt;
 use rcgen::{generate_simple_self_signed, CertifiedKey};
 use rustls::pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 use tokio::net::TcpListener;
 use tokio_rustls::TlsAcceptor;
 use tokio_tungstenite::tungstenite::{protocol::Role, Message};
 
 const HOST: &str = "hub.identity.test";
+const OVERSIZED_HEALTH_BYTES: usize = 70 * 1024;
 
 struct LoopbackResolver;
 
@@ -29,15 +31,6 @@ impl DnsResolver for LoopbackResolver {
     }
 }
 
-struct TlsFixture {
-    port: u16,
-    root: reqwest::Certificate,
-    root_der: Vec<u8>,
-    server_names: Arc<Mutex<Vec<String>>>,
-    requests: Arc<Mutex<Vec<String>>>,
-    close_codes: Arc<Mutex<Vec<u16>>>,
-}
-
 #[derive(Clone, Copy)]
 enum PairingHandshake {
     None,
@@ -45,12 +38,204 @@ enum PairingHandshake {
     Malformed { token: &'static str },
 }
 
+#[derive(Clone, Copy)]
+enum HealthBehavior {
+    Healthy,
+    Stall,
+    Oversized,
+}
+
+#[derive(Clone)]
+struct ScriptState {
+    pairing: PairingHandshake,
+    health: HealthBehavior,
+    requests: Arc<Mutex<Vec<String>>>,
+    close_codes: Arc<Mutex<Vec<u16>>>,
+    health_seen: Arc<tokio::sync::Notify>,
+    health_release: Arc<tokio::sync::Notify>,
+}
+
+impl ScriptState {
+    fn new(pairing: PairingHandshake, health: HealthBehavior) -> Self {
+        Self {
+            pairing,
+            health,
+            requests: Arc::new(Mutex::new(Vec::new())),
+            close_codes: Arc::new(Mutex::new(Vec::new())),
+            health_seen: Arc::new(tokio::sync::Notify::new()),
+            health_release: Arc::new(tokio::sync::Notify::new()),
+        }
+    }
+
+    async fn wait_for_health_request(&self) {
+        loop {
+            let seen = self.health_seen.notified();
+            if self
+                .requests
+                .lock()
+                .unwrap()
+                .iter()
+                .any(|request| request.starts_with("GET /api/health "))
+            {
+                return;
+            }
+            seen.await;
+        }
+    }
+}
+
+async fn serve_scripted_connection<S>(mut stream: S, script: ScriptState)
+where
+    S: AsyncRead + AsyncWrite + Unpin,
+{
+    let mut bytes = Vec::new();
+    let mut buffer = [0_u8; 1024];
+    loop {
+        let count = stream.read(&mut buffer).await.unwrap_or(0);
+        if count == 0 {
+            break;
+        }
+        bytes.extend_from_slice(&buffer[..count]);
+        if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
+            break;
+        }
+    }
+    let request = String::from_utf8_lossy(&bytes).into_owned();
+    script.requests.lock().unwrap().push(request.clone());
+
+    if request.starts_with("GET /rpc ") {
+        let expected_token = match script.pairing {
+            PairingHandshake::None => None,
+            PairingHandshake::Accept { token } | PairingHandshake::Malformed { token } => {
+                Some(token)
+            }
+        };
+        let has_expected_auth = expected_token.is_some_and(|token| {
+            request
+                .to_ascii_lowercase()
+                .contains(&format!("authorization: bearer {token}").to_ascii_lowercase())
+        });
+        if !has_expected_auth {
+            let _ = stream
+                .write_all(
+                    b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
+                )
+                .await;
+            let _ = stream.shutdown().await;
+            return;
+        }
+        if matches!(script.pairing, PairingHandshake::Malformed { .. }) {
+            let _ = stream
+                .write_all(b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n")
+                .await;
+            let _ = stream.shutdown().await;
+            return;
+        }
+        let key = request
+            .lines()
+            .find_map(|line| {
+                line.split_once(':').and_then(|(name, value)| {
+                    name.eq_ignore_ascii_case("sec-websocket-key")
+                        .then(|| value.trim())
+                })
+            })
+            .unwrap();
+        let accept = tokio_tungstenite::tungstenite::handshake::derive_accept_key(key.as_bytes());
+        let response = format!(
+            "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
+        );
+        let _ = stream.write_all(response.as_bytes()).await;
+        let mut websocket =
+            tokio_tungstenite::WebSocketStream::from_raw_socket(stream, Role::Server, None).await;
+        while let Some(message) = websocket.next().await {
+            match message {
+                Ok(Message::Close(frame)) => {
+                    script
+                        .close_codes
+                        .lock()
+                        .unwrap()
+                        .push(frame.map_or(1005, |frame| u16::from(frame.code)));
+                    break;
+                }
+                Ok(_) => {}
+                Err(_) => break,
+            }
+        }
+        return;
+    }
+
+    if request.starts_with("GET /api/health ") {
+        script.health_seen.notify_waiters();
+        match script.health {
+            HealthBehavior::Healthy => {
+                let body = r#"{"mobile_api_version":1}"#;
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+                    body.len(), body
+                );
+                let _ = stream.write_all(response.as_bytes()).await;
+            }
+            HealthBehavior::Stall => {
+                script.health_release.notified().await;
+            }
+            HealthBehavior::Oversized => {
+                let mut body = br#"{"mobile_api_version":1}"#.to_vec();
+                body.resize(OVERSIZED_HEALTH_BYTES, b' ');
+                let _ = stream
+                    .write_all(
+                        b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nConnection: close\r\n\r\n",
+                    )
+                    .await;
+                let _ = stream.write_all(&body).await;
+            }
+        }
+        let _ = stream.shutdown().await;
+        return;
+    }
+
+    let (status, body) = if request.starts_with("GET /api/mobile/pairing ") {
+        (
+            "503 Service Unavailable",
+            r#"{"error":"route unavailable"}"#,
+        )
+    } else {
+        ("404 Not Found", r#"{"error":"not found"}"#)
+    };
+    let response = format!(
+        "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
+        body.len(), body
+    );
+    let _ = stream.write_all(response.as_bytes()).await;
+    let _ = stream.shutdown().await;
+}
+
+struct TlsFixture {
+    port: u16,
+    root: reqwest::Certificate,
+    root_der: Vec<u8>,
+    server_names: Arc<Mutex<Vec<String>>>,
+    script: ScriptState,
+}
+
 impl TlsFixture {
     async fn start(expected_connections: usize) -> Self {
-        Self::start_with_pairing(expected_connections, PairingHandshake::None).await
+        Self::start_scripted(
+            expected_connections,
+            PairingHandshake::None,
+            HealthBehavior::Healthy,
+        )
+        .await
     }
 
     async fn start_with_pairing(expected_connections: usize, pairing: PairingHandshake) -> Self {
+        Self::start_scripted(expected_connections, pairing, HealthBehavior::Healthy).await
+    }
+
+    async fn start_scripted(
+        expected_connections: usize,
+        pairing: PairingHandshake,
+        health: HealthBehavior,
+    ) -> Self {
         let CertifiedKey { cert, signing_key } =
             generate_simple_self_signed(vec![HOST.to_owned()]).unwrap();
         let cert_der: CertificateDer<'static> = cert.der().clone();
@@ -63,119 +248,21 @@ impl TlsFixture {
         let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
         let port = listener.local_addr().unwrap().port();
         let server_names = Arc::new(Mutex::new(Vec::new()));
-        let requests = Arc::new(Mutex::new(Vec::new()));
-        let close_codes = Arc::new(Mutex::new(Vec::new()));
         let names = server_names.clone();
-        let captured = requests.clone();
-        let observed_closes = close_codes.clone();
+        let script = ScriptState::new(pairing, health);
+        let server_script = script.clone();
 
         tokio::spawn(async move {
             for _ in 0..expected_connections {
                 let (socket, _) = listener.accept().await.unwrap();
-                let mut tls = match acceptor.accept(socket).await {
+                let tls = match acceptor.accept(socket).await {
                     Ok(tls) => tls,
                     Err(_) => continue,
                 };
                 if let Some(name) = tls.get_ref().1.server_name() {
                     names.lock().unwrap().push(name.to_owned());
                 }
-                let mut bytes = Vec::new();
-                let mut buffer = [0_u8; 1024];
-                loop {
-                    let count = tls.read(&mut buffer).await.unwrap_or(0);
-                    if count == 0 {
-                        break;
-                    }
-                    bytes.extend_from_slice(&buffer[..count]);
-                    if bytes.windows(4).any(|window| window == b"\r\n\r\n") {
-                        break;
-                    }
-                }
-                let request = String::from_utf8_lossy(&bytes).into_owned();
-                captured.lock().unwrap().push(request.clone());
-                if request.starts_with("GET /rpc ") {
-                    let expected_token = match pairing {
-                        PairingHandshake::None => None,
-                        PairingHandshake::Accept { token }
-                        | PairingHandshake::Malformed { token } => Some(token),
-                    };
-                    let has_expected_auth = expected_token.is_some_and(|token| {
-                        request.to_ascii_lowercase().contains(
-                            &format!("authorization: bearer {token}").to_ascii_lowercase(),
-                        )
-                    });
-                    if !has_expected_auth {
-                        let _ = tls
-                            .write_all(
-                                b"HTTP/1.1 401 Unauthorized\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                            )
-                            .await;
-                        let _ = tls.shutdown().await;
-                        continue;
-                    }
-                    if matches!(pairing, PairingHandshake::Malformed { .. }) {
-                        let _ = tls
-                            .write_all(
-                                b"HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: close\r\n\r\n",
-                            )
-                            .await;
-                        let _ = tls.shutdown().await;
-                        continue;
-                    }
-                    let key = request
-                        .lines()
-                        .find_map(|line| {
-                            line.split_once(':').and_then(|(name, value)| {
-                                name.eq_ignore_ascii_case("sec-websocket-key")
-                                    .then(|| value.trim())
-                            })
-                        })
-                        .unwrap();
-                    let accept = tokio_tungstenite::tungstenite::handshake::derive_accept_key(
-                        key.as_bytes(),
-                    );
-                    let response = format!(
-                        "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: websocket\r\nSec-WebSocket-Accept: {accept}\r\n\r\n"
-                    );
-                    let _ = tls.write_all(response.as_bytes()).await;
-                    let mut websocket = tokio_tungstenite::WebSocketStream::from_raw_socket(
-                        tls,
-                        Role::Server,
-                        None,
-                    )
-                    .await;
-                    while let Some(message) = websocket.next().await {
-                        match message {
-                            Ok(Message::Close(frame)) => {
-                                observed_closes
-                                    .lock()
-                                    .unwrap()
-                                    .push(frame.map_or(1005, |frame| u16::from(frame.code)));
-                                break;
-                            }
-                            Ok(_) => {}
-                            Err(_) => break,
-                        }
-                    }
-                    continue;
-                }
-
-                let (status, body) = if request.starts_with("GET /api/health ") {
-                    ("200 OK", r#"{"mobile_api_version":1}"#)
-                } else if request.starts_with("GET /api/mobile/pairing ") {
-                    (
-                        "503 Service Unavailable",
-                        r#"{"error":"route unavailable"}"#,
-                    )
-                } else {
-                    ("404 Not Found", r#"{"error":"not found"}"#)
-                };
-                let response = format!(
-                    "HTTP/1.1 {status}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{}",
-                    body.len(), body
-                );
-                let _ = tls.write_all(response.as_bytes()).await;
-                let _ = tls.shutdown().await;
+                serve_scripted_connection(tls, server_script.clone()).await;
             }
         });
 
@@ -184,8 +271,7 @@ impl TlsFixture {
             root: reqwest::Certificate::from_der(cert_der.as_ref()).unwrap(),
             root_der: cert_der.as_ref().to_vec(),
             server_names,
-            requests,
-            close_codes,
+            script,
         }
     }
 
@@ -196,6 +282,45 @@ impl TlsFixture {
     fn origin(&self, host: &str) -> String {
         format!("https://{host}:{}", self.port)
     }
+}
+
+struct PlainPairingFixture {
+    port: u16,
+    script: ScriptState,
+}
+
+impl PlainPairingFixture {
+    async fn start() -> Self {
+        let listener = TcpListener::bind((Ipv4Addr::LOCALHOST, 0)).await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let script = ScriptState::new(
+            PairingHandshake::Accept {
+                token: "plain-pairing-bearer",
+            },
+            HealthBehavior::Healthy,
+        );
+        let server_script = script.clone();
+        tokio::spawn(async move {
+            for _ in 0..2 {
+                let (stream, _) = listener.accept().await.unwrap();
+                serve_scripted_connection(stream, server_script.clone()).await;
+            }
+        });
+        Self { port, script }
+    }
+
+    fn origin(&self) -> String {
+        format!("http://{HOST}:{}", self.port)
+    }
+}
+
+fn request_header<'a>(request: &'a str, expected_name: &str) -> Option<&'a str> {
+    request.lines().find_map(|line| {
+        line.split_once(':').and_then(|(name, value)| {
+            name.eq_ignore_ascii_case(expected_name)
+                .then(|| value.trim())
+        })
+    })
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -220,7 +345,7 @@ async fn hub_https_connects_to_pinned_socket_with_original_tls_identity() {
         .unwrap();
 
     assert_eq!(fixture.server_names.lock().unwrap().as_slice(), [HOST]);
-    let requests = fixture.requests.lock().unwrap();
+    let requests = fixture.script.requests.lock().unwrap();
     assert_eq!(requests.len(), 1);
     let request = requests[0].to_ascii_lowercase();
     assert!(request.contains(&format!("host: {HOST}:{}", fixture.port)));
@@ -274,15 +399,111 @@ async fn pairing_probe_uses_tls_for_health_and_authenticated_appwire_with_origin
         fixture.server_names.lock().unwrap().as_slice(),
         [HOST, HOST]
     );
-    let requests = fixture.requests.lock().unwrap();
+    let requests = fixture.script.requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
     assert!(requests[0].starts_with("GET /api/health "));
     assert!(!requests[0].to_ascii_lowercase().contains("authorization:"));
     assert!(requests[1].starts_with("GET /rpc "));
-    assert!(requests[1]
-        .to_ascii_lowercase()
-        .contains("authorization: bearer pairing-bearer"));
-    assert_eq!(fixture.close_codes.lock().unwrap().as_slice(), [1000]);
+    assert_eq!(
+        request_header(&requests[1], "Authorization"),
+        Some("Bearer pairing-bearer")
+    );
+    let expected_host = format!("{HOST}:{}", fixture.port);
+    let expected_origin = format!("wss://{HOST}:{}", fixture.port);
+    assert_eq!(
+        request_header(&requests[1], "Host"),
+        Some(expected_host.as_str())
+    );
+    assert_eq!(
+        request_header(&requests[1], "Origin"),
+        Some(expected_origin.as_str())
+    );
+    assert_eq!(
+        fixture.script.close_codes.lock().unwrap().as_slice(),
+        [1000]
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pairing_probe_converts_http_origin_to_ws_rpc_with_exact_headers() {
+    let fixture = PlainPairingFixture::start().await;
+    let probe = RealPairingProbe::new(TlsFixture::policy());
+    let version = probe
+        .probe(
+            &fixture.origin(),
+            "plain-pairing-bearer",
+            ReleaseMode::Debug {
+                allow_loopback: true,
+            },
+        )
+        .unwrap();
+
+    assert_eq!(version, 1);
+    let requests = fixture.script.requests.lock().unwrap();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[1].starts_with("GET /rpc "));
+    let expected_host = format!("{HOST}:{}", fixture.port);
+    let expected_origin = format!("ws://{HOST}:{}", fixture.port);
+    assert_eq!(
+        request_header(&requests[1], "Host"),
+        Some(expected_host.as_str())
+    );
+    assert_eq!(
+        request_header(&requests[1], "Origin"),
+        Some(expected_origin.as_str())
+    );
+    assert_eq!(
+        request_header(&requests[1], "Authorization"),
+        Some("Bearer plain-pairing-bearer")
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pairing_probe_bounds_stalled_health_request() {
+    let fixture =
+        TlsFixture::start_scripted(1, PairingHandshake::None, HealthBehavior::Stall).await;
+    let origin = fixture.origin(HOST);
+    let probe = RealPairingProbe::new(TlsFixture::policy())
+        .with_root_certificate_der(fixture.root_der.clone())
+        .unwrap()
+        .with_pairing_timeout(Duration::from_millis(250));
+
+    let task = tokio::task::spawn_blocking(move || {
+        probe.probe(&origin, "stalled-health-token", ReleaseMode::Release)
+    });
+    fixture.script.wait_for_health_request().await;
+    let error = task.await.unwrap().unwrap_err();
+    fixture.script.health_release.notify_one();
+
+    let message = error.to_string();
+    assert!(message.contains("health request timed out"), "{message}");
+    assert!(!message.contains("stalled-health-token"));
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn pairing_probe_rejects_oversized_health_before_json_parse() {
+    let fixture =
+        TlsFixture::start_scripted(1, PairingHandshake::None, HealthBehavior::Oversized).await;
+    let probe = RealPairingProbe::new(TlsFixture::policy())
+        .with_root_certificate_der(fixture.root_der.clone())
+        .unwrap();
+
+    let error = probe
+        .probe(
+            &fixture.origin(HOST),
+            "oversized-health-token",
+            ReleaseMode::Release,
+        )
+        .unwrap_err();
+    let message = error.to_string();
+    assert!(message.contains("health response too large"), "{message}");
+    assert!(!message.contains("oversized-health-token"));
+    let requests = fixture.script.requests.lock().unwrap();
+    assert_eq!(
+        requests.len(),
+        1,
+        "oversized health must stop before AppWire"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -305,12 +526,13 @@ async fn pairing_probe_rejects_invalid_appwire_token() {
             ReleaseMode::Release,
         )
         .is_err());
-    let requests = fixture.requests.lock().unwrap();
+    let requests = fixture.script.requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
     assert!(requests[1].starts_with("GET /rpc "));
-    assert!(requests[1]
-        .to_ascii_lowercase()
-        .contains("authorization: bearer invalid-bearer"));
+    assert_eq!(
+        request_header(&requests[1], "Authorization"),
+        Some("Bearer invalid-bearer")
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -333,7 +555,7 @@ async fn pairing_probe_rejects_invalid_appwire_handshake() {
             ReleaseMode::Release,
         )
         .is_err());
-    let requests = fixture.requests.lock().unwrap();
+    let requests = fixture.script.requests.lock().unwrap();
     assert_eq!(requests.len(), 2);
     assert!(requests[1].starts_with("GET /rpc "));
 }
