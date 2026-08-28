@@ -57,6 +57,8 @@ pub enum ProfileError {
     PreviewNotFound(String),
     #[error("probe failed for {origin}: {message}")]
     ProbeFailed { origin: String, message: String },
+    #[error("pairing probe timed out")]
+    ProbeTimedOut,
     #[error("invalid pairing URL: {0}")]
     InvalidPairing(String),
     #[error("mobile API version mismatch: expected 1, got {0}")]
