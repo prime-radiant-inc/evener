@@ -87,10 +87,7 @@ export function createProfileScopedServices(
 class LeaseAwareProfileClient implements ProfileAppwireClient {
   private active = true;
   private disposed = false;
-  private readonly pendingSettlements = new Set<{
-    readonly deliver: () => void;
-    readonly suppress: () => void;
-  }>();
+  private readonly pendingSettlements = new Set<CoordinatedRequest>();
 
   constructor(private readonly transport: ProfileClientTransport) {}
 
@@ -99,7 +96,6 @@ class LeaseAwareProfileClient implements ProfileAppwireClient {
     this.active = active;
     if (active) {
       const pending = [...this.pendingSettlements];
-      this.pendingSettlements.clear();
       for (const settlement of pending) settlement.deliver();
     }
   }
@@ -112,28 +108,21 @@ class LeaseAwareProfileClient implements ProfileAppwireClient {
     if (!this.active || this.disposed) {
       return Promise.reject(new Error("profile scope is inactive"));
     }
+    const { request, promise } =
+      this.createCoordinatedRequest<MethodTypes[M]["result"]>();
+    this.pendingSettlements.add(request);
     let raw: Promise<MethodTypes[M]["result"]>;
     try {
       raw = this.transport.request(method, params, opts);
     } catch (cause) {
-      return Promise.reject(cause);
+      request.settle(() => promise.reject(cause));
+      return promise.value;
     }
-    return new Promise<MethodTypes[M]["result"]>((resolve, reject) => {
-      void raw.then(
-        (value) => {
-          this.settleRequest({
-            deliver: () => resolve(value),
-            suppress: () => reject(new Error("profile scope is inactive")),
-          });
-        },
-        (cause: unknown) => {
-          this.settleRequest({
-            deliver: () => reject(cause),
-            suppress: () => reject(new Error("profile scope is inactive")),
-          });
-        },
-      );
-    });
+    void raw.then(
+      (value) => request.settle(() => promise.resolve(value)),
+      (cause: unknown) => request.settle(() => promise.reject(cause)),
+    );
+    return promise.value;
   }
 
   onNotification(handler: (notification: AnyNotification) => void): () => void {
@@ -150,10 +139,9 @@ class LeaseAwareProfileClient implements ProfileAppwireClient {
     if (this.disposed) return;
     this.active = false;
     this.disposed = true;
-    this.transport.close();
     const pending = [...this.pendingSettlements];
-    this.pendingSettlements.clear();
     for (const settlement of pending) settlement.suppress();
+    this.transport.close();
   }
 
   onStateChange(handler: (state: string) => void): () => void {
@@ -162,20 +150,58 @@ class LeaseAwareProfileClient implements ProfileAppwireClient {
     });
   }
 
-  private settleRequest(settlement: {
-    readonly deliver: () => void;
-    readonly suppress: () => void;
-  }): void {
+  private createCoordinatedRequest<T>(): {
+    readonly request: CoordinatedRequest;
+    readonly promise: {
+      readonly value: Promise<T>;
+      readonly resolve: (value: T) => void;
+      readonly reject: (cause?: unknown) => void;
+    };
+  } {
+    let resolvePromise: (value: T) => void = () => {};
+    let rejectPromise: (cause?: unknown) => void = () => {};
+    const value = new Promise<T>((resolve, reject) => {
+      resolvePromise = resolve;
+      rejectPromise = reject;
+    });
+    let completed = false;
+    let delivery: () => void = () => {};
+    const complete = (completion: () => void): void => {
+      if (completed) return;
+      completed = true;
+      this.pendingSettlements.delete(request);
+      completion();
+    };
+    const request: CoordinatedRequest = {
+      settle: (nextDelivery) => {
+        delivery = () => complete(nextDelivery);
+        this.settleRequest(request);
+      },
+      deliver: () => delivery(),
+      suppress: () =>
+        complete(() => rejectPromise(new Error("profile scope is inactive"))),
+    };
+    return {
+      request,
+      promise: { value, resolve: resolvePromise, reject: rejectPromise },
+    };
+  }
+
+  private settleRequest(request: CoordinatedRequest): void {
     if (this.disposed) {
-      settlement.suppress();
+      request.suppress();
       return;
     }
     if (this.active) {
-      settlement.deliver();
-      return;
+      request.deliver();
     }
-    this.pendingSettlements.add(settlement);
   }
+}
+
+interface CoordinatedRequest {
+  readonly settle: (delivery: () => void) => void;
+  readonly deliver: () => void;
+  readonly suppress: () => void;
 }
 
 export interface ProductionServices {

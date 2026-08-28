@@ -1050,13 +1050,24 @@ describe("RootShell — profile-scope ownership", () => {
       }
       expect(scoped.rosterStore.getState().loading).toBe(true);
 
+      const rawSettlement =
+        outcome === "resolve"
+          ? list.promise
+          : list.promise.catch((cause) => cause);
+      harness.unmount();
+      await client.closed.promise;
+      expect(client.close).toHaveBeenCalledTimes(1);
       if (outcome === "resolve") {
         list.resolve({ data: [thread] });
       } else {
         list.reject(new Error("controlled final roster rejection"));
       }
-      harness.unmount();
-      await client.closed.promise;
+      const settledRaw = await rawSettlement;
+      if (outcome === "reject") {
+        expect(settledRaw).toMatchObject({
+          message: "controlled final roster rejection",
+        });
+      }
       await refreshResult;
 
       expect(scoped.rosterStore.getState()).toMatchObject({
@@ -1118,13 +1129,24 @@ describe("RootShell — profile-scope ownership", () => {
         error: null,
       });
 
+      const rawSettlement =
+        outcome === "resolve"
+          ? read.promise
+          : read.promise.catch((cause) => cause);
+      harness.unmount();
+      await client.closed.promise;
+      expect(client.close).toHaveBeenCalledTimes(1);
       if (outcome === "resolve") {
         read.resolve({ thread });
       } else {
         read.reject(new Error("controlled final read rejection"));
       }
-      harness.unmount();
-      await client.closed.promise;
+      const settledRaw = await rawSettlement;
+      if (outcome === "reject") {
+        expect(settledRaw).toMatchObject({
+          message: "controlled final read rejection",
+        });
+      }
       await openResult;
 
       expect(conversationStore.getState()).toMatchObject({
