@@ -159,6 +159,57 @@ describe("createProfileScopedServices", () => {
     expect(request).toHaveBeenCalledTimes(2);
     expect(close).toHaveBeenCalledTimes(1);
   });
+
+  it("suppresses every started request when close precedes raw settlement", async () => {
+    const resolvingRawRequest = createDeferred<unknown>();
+    const rejectingRawRequest = createDeferred<unknown>();
+    const request = vi
+      .fn()
+      .mockImplementationOnce(() => resolvingRawRequest.promise)
+      .mockImplementationOnce(() => rejectingRawRequest.promise);
+    const close = vi.fn();
+    const client: ConversationClientLike & {
+      connect: () => Promise<unknown>;
+      close: () => void;
+      onStateChange: (handler: (state: string) => void) => () => void;
+    } = {
+      request,
+      onNotification: vi.fn(() => () => {}),
+      connect: vi.fn(() => Promise.resolve({})),
+      close,
+      onStateChange: vi.fn(() => () => {}),
+    };
+    const scoped = createProfileScopedServices(PROFILE, () => client);
+    const resolvingResult = scoped.client.request("thread/list", {
+      limit: 501,
+    });
+    const rejectingResult = scoped.client.request("thread/list", {
+      limit: 501,
+    });
+    const rawRejection = rejectingRawRequest.promise.then(
+      () => {
+        throw new Error("controlled raw request resolved");
+      },
+      (cause) => cause,
+    );
+
+    scoped.client.close();
+    scoped.client.close();
+
+    await expect(resolvingResult).rejects.toThrow("profile scope is inactive");
+    await expect(rejectingResult).rejects.toThrow("profile scope is inactive");
+    expect(close).toHaveBeenCalledTimes(1);
+
+    resolvingRawRequest.resolve({ data: [] });
+    rejectingRawRequest.reject(new Error("controlled raw rejection"));
+    await resolvingRawRequest.promise;
+    await expect(rawRejection).resolves.toMatchObject({
+      message: "controlled raw rejection",
+    });
+    await expect(resolvingResult).rejects.toThrow("profile scope is inactive");
+    await expect(rejectingResult).rejects.toThrow("profile scope is inactive");
+    expect(close).toHaveBeenCalledTimes(1);
+  });
 });
 
 describe("createBrowserConceptStorage", () => {
