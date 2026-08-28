@@ -27,6 +27,10 @@ The first release solves request-shape safety for every retained adapter surface
 - Bind credentials to the selected trusted origin and instance. A custom origin must never inherit a first-party provider credential by adapter type alone.
 - Preserve provenance on provider-native history artifacts so a surface cannot replay another surface's raw state without validation.
 - Reject untyped provider options and any attempt to overwrite core request fields.
+- Scope the variant to deployment, region, and entitlement when those dimensions
+  affect the provider contract.
+- Route every executable construction path, including environment/default-client
+  paths and credential refresh, through a typed, validated operation contract.
 
 ### Operational requirements
 
@@ -71,8 +75,8 @@ A serving surface is a named API contract such as:
 
 - `openai.responses.v1`;
 - `openai.chat.v1`;
-- `anthropic-messages`;
-- `google-generative-ai`.
+- `anthropic.messages.v1`;
+- `google.generate-content.v1`.
 
 A surface identifies the adapter family and API version. It does not authorize a destination or credential. The instance owns the trusted base URL and authentication binding.
 
@@ -82,6 +86,7 @@ A serving variant is the executable selection unit:
 
 ```
 provider instance + normalized origin + credential scope
+  + deployment/region/entitlement (when applicable)
   + wire model ID + surface + API version
 ```
 
@@ -91,25 +96,36 @@ It contains:
 - an API family and version;
 - an endpoint path selected by the adapter;
 - an authentication scope reference;
+- deployment, region, and entitlement scope when they affect behavior;
 - an immutable request contract;
 - the model limits and capabilities relevant to that surface;
 - a stable effective-contract revision.
 
-Each operation is a subidentity of the variant. A buffered generation,
-streaming generation, token-count, or model-list operation has its own
-operation contract and API-log identity.
+Each model-scoped operation is a subidentity of the variant. Buffered generation,
+streaming generation, and token counting have independent operation contracts and
+API-log identities. Instance-scoped discovery and credential refresh are separate
+operations described below.
 
 The base URL and authentication remain trusted instance configuration. A catalog cannot replace them.
 
-### Operation contract
+### Operation contracts
 
-A serving variant has a contract for every network operation it exposes. At
-minimum this covers buffered generation, streaming generation, provider-side
-input-token counting, and provider model listing when the adapter implements
-them. Each operation names its stable endpoint family and path, request shape,
-response or stream grammar, timeout policy, and API-log identity. A generation
-contract cannot be reused for token counting merely because both operations use
-the same provider or model.
+A serving variant has a contract for every model-scoped operation it exposes. At
+minimum this covers buffered generation, streaming generation, and provider-side
+input-token counting. Each operation names its stable endpoint family and path,
+request shape, response or stream grammar, timeout policy, and API-log identity.
+A generation contract cannot be reused for token counting merely because both
+operations use the same provider or model.
+
+Model listing is not model-scoped: it runs before a model is selected. It has an
+instance/integration-scoped discovery contract keyed by instance, normalized
+origin, credential scope, adapter revision, and inventory API version.
+
+Credential refresh is a separate instance-scoped operation. It has a curated
+issuer/token endpoint, method and body shape, timeout, redirect policy,
+redaction rule, and API-log identity. Resolver construction is network-free;
+refresh is lazy and must occur only after the credential-refresh operation has
+been validated.
 
 ### Request contract
 
@@ -215,10 +231,6 @@ Only user-global/state-root provider configuration is loaded implicitly. A proje
 - a parent directory that is not group/world writable;
 - explicit user selection when the path is outside the default state root.
 
-These checks apply to the implicit default path as well as explicitly supplied
-paths. The file and every parent in the resolved path are checked before the
-configuration becomes executable authority.
-
 The resolved credential reference is bound to the instance and normalized
 origin, including scheme, host, and effective port. First-party provider
 credentials and OAuth records are valid only for their curated first-party
@@ -226,6 +238,36 @@ origins. A custom base URL requires an instance-scoped credential or explicit
 credential header. Missing or mismatched binding fails before transport.
 The HTTP client rejects redirects in v1; it does not forward a prompt body or
 headers to either a same-origin alternate path or a cross-origin target.
+
+Environment construction is not a second runtime. The environment registry,
+`NewFromEnv`, and the lazy default client are removed from supported model-call
+entrypoints. An explicit environment bootstrap may materialize a schema-2
+instance with an instance-scoped credential, after which the normal resolver
+must validate the complete variant and operation contract before constructing an
+adapter. No environment path may create an unversioned adapter directly.
+
+OAuth refresh is not hidden inside adapter construction. It runs lazily through
+the credential-refresh operation contract, with its curated issuer, no redirects,
+bounded timeout, and redacted attempt record. An expired token cannot cause an
+unmodeled network request during resolver or startup construction.
+
+### URL canonicalization
+
+URL handling uses one canonical parser and joiner for allowlisting, transport,
+session identity, and API-log provenance. A configured base URL must have an
+explicit `https` scheme, or `http` only for an explicitly configured loopback
+development endpoint. It must not contain userinfo, query, fragment, opaque
+data, invalid or empty ports, encoded path separators, or dot-segment traversal.
+
+The canonical host is lower-case ASCII; non-ASCII/IDNA hostnames and trailing
+dots are rejected rather than converted. IPv4 and bracketed IPv6 are normalized
+by the URL parser. The effective port is inserted (`443` for HTTPS, `80` for
+permitted HTTP). The base path is normalized to a leading-slash prefix without
+a trailing slash. Each operation supplies a relative path, which is joined to
+that prefix without implicit `/v1` insertion or deduplication. The effective
+URL, including its path prefix but excluding credentials, is part of the
+configuration fingerprint. Credential binding uses the canonical scheme, host,
+and effective-port origin.
 
 ## Authority and resolution
 
@@ -290,6 +332,11 @@ auth-selected backend branch must map to exactly one row. If an adapter cannot
 be given a stable surface ID, operation contracts, and tests, it is removed
 from the new configuration schema rather than accepted outside the resolver.
 
+Every curated non-default capability or field claim carries an official
+documentation reference or explicit contract-test reference, source/API
+revision, exact scope, reviewed date, and review/expiry status. Registry
+validation rejects an executable `supported` claim without that evidence.
+
 ### OpenAI public Responses
 
 Implement the native OpenAI Responses contract, including supported Responses continuation and reasoning fields where the adapter requires them. This is the desired contract for the native surface, not a promise to preserve accidental behavior from the old implementation.
@@ -346,13 +393,24 @@ The first release also removes generic model fallback for model calls. A fallbac
 model cannot silently select another surface or contract. Any future fallback is
 the separate provider-specific project described below.
 
-The HTTP client rejects all redirects in v1. It does not follow 301, 302, 307,
-or 308 responses, even on the same origin. The selected endpoint, method, body,
-and headers therefore remain the ones validated by the contract.
+Every HTTP client used by the serving system rejects all redirects in v1. It
+does not follow 301, 302, 303, 307, or 308 responses, even on the same origin.
+The selected endpoint, method, body, and headers therefore remain the ones
+validated by the contract. This applies to generation, streaming, token count,
+model listing, and credential refresh.
 
-The API-attempt record includes the complete variant identity, operation, and
-effective-contract revision. Contract resolution, validation, and serialization
-are separate observable phases so a future failure identifies the boundary.
+The API-attempt record includes the complete variant identity for model-scoped
+operations, or the complete instance/integration identity for discovery and
+credential refresh, together with the operation and effective-contract revision.
+Contract resolution, validation, and serialization are separate observable
+phases so a future failure identifies the boundary.
+
+Every production model-call entry point uses the resolver: primary generation,
+cheap-model calls, vision-model calls, context compaction and summaries,
+fork summaries, hook/plugin model calls, evaluation/judge calls, web-fetch or
+web-search model calls, direct client calls, and provider token counting. Each
+entry point supplies its target instance/model and receives its own variant;
+none may copy only the parent's provider or model fields.
 
 ### Session identity
 
@@ -362,31 +420,41 @@ Session metadata persists:
 - wire model ID and canonical model ID;
 - selected surface and API version;
 - normalized origin/configuration fingerprint;
+- deployment, region, and entitlement scope when applicable;
 - adapter ID and implementation revision;
 - effective-contract revision;
 - credential-scope fingerprint, never the credential;
 - continuation/state compatibility marker.
 
+The session also stores an append-only variant-selection timeline keyed by the
+request/turn or transcript entry at which a model or surface was selected. A
+fork copies the timeline prefix through its divergence point; a model/surface
+switch appends a new selection instead of overwriting the history needed by an
+older fork.
+
 The effective-contract revision is the hash of a canonical serialization of the
 adapter implementation revision, surface/API version, curated profile revision,
-operation contracts, and every wire- or response-affecting resolved override.
-Behavior changes implemented in code require an adapter revision bump.
+operation contracts, deployment/region/entitlement scope when applicable, and
+every wire- or response-affecting resolved override. Behavior changes
+implemented in code require an adapter revision bump.
 
 Resume requires equality of the persisted variant, normalized origin/configuration
-fingerprint, credential-scope fingerprint, adapter revision, and effective
-contract revision. If any component differs or is unavailable, resume fails with
-an explicit migration/recovery error before dispatch. A curated-code upgrade may
-invalidate a revision only through a declared transition; it cannot silently
-reinterpret old provider state.
+fingerprint, deployment/region/entitlement scope when applicable,
+credential-scope fingerprint, adapter revision, and effective contract revision.
+If any component differs or is unavailable, resume fails with an explicit
+migration/recovery error before dispatch. A curated-code upgrade may invalidate
+a revision only through a declared transition; it cannot silently reinterpret old
+provider state.
 
 ### History provenance
 
 Provider-native content parts that carry raw wire artifacts, including server-tool
 calls, encrypted reasoning, response IDs, item IDs, and thought signatures, carry
 their complete source variant or an equivalent provenance marker. By default,
-replay requires equality of instance, normalized origin, credential scope, wire
-model, surface/API version, adapter revision, contract revision, and operation
-family. Before replay, the target contract either:
+replay requires equality of instance, normalized origin, credential scope,
+deployment/region/entitlement scope when applicable, wire model, surface/API
+version, adapter revision, contract revision, and operation family. Before
+replay, the target contract either:
 
 - accepts the artifact's source and target shape;
 - applies a typed, documented translation; or
@@ -423,7 +491,9 @@ All tests use fake transports or pure functions. No provider credentials or netw
 - typed allowlist validation;
 - supported, unsupported, unknown, and conflict states for both capabilities and fields;
 - same-layer conflict versus higher-priority override;
-- operation selection and distinct generation, streaming, token-count, and model-list contracts;
+- operation selection and distinct generation, streaming, token-count, model-list, and credential-refresh contracts;
+- model listing resolves as an instance-scoped discovery operation, not a
+  model-scoped variant;
 - unknown surface and unknown adapter fail before dispatch;
 - unknown model on a known surface uses only its defined core contract;
 - launch, hub, model-switch, fork, and resume boundaries carry the selected
@@ -431,7 +501,15 @@ All tests use fake transports or pure functions. No provider credentials or netw
 - alias exact-match precedence, one-way mapping, duplicate/cycle rejection, and wire-ID recording;
 - custom-origin credential binding, credential mismatch, symlink/permission rejection, and cross-origin redirect rejection;
 - default-path and explicit-path trust checks;
-- persisted variant identity, origin/auth/adapter comparison, and resume failure when any revision is unavailable.
+- environment/default-client paths remove the unsupported ambient path or
+  explicitly materialize through the resolver; neither may construct an adapter
+  directly;
+- lazy OAuth refresh uses its own operation contract and never runs during
+  resolver/startup construction;
+- URL canonicalization equivalence, lookalike rejection, path-prefix joining,
+  and invalid-component rejection;
+- persisted variant identity, origin/auth/adapter/deployment/region/entitlement
+  comparison, and resume failure when any revision is unavailable;
 - schema 1, missing schema, unsupported schema, and legacy session metadata are
   rejected before adapter construction.
 
@@ -447,12 +525,21 @@ Golden request tests cover every retained adapter/surface in the table above. Th
 - untyped provider options and core-field overrides are rejected with zero dispatch;
 - no automatic Responses-to-Chat request after an empty Responses stream or provider error;
 - no generic model fallback request after an ordinary model error;
+- every auxiliary model-call entry point resolves and records its target variant;
 - surface-switch history containing a prior server-tool artifact;
-- same-surface history from a different instance, model, credential scope, or contract revision is rejected;
+- same-surface history from a different instance, origin, model, API version,
+  adapter revision, deployment/region/entitlement, credential scope, operation
+  family, or contract revision is rejected;
 - image, document, and audio requests on unsupported/unknown surfaces fail with zero transport dispatch;
 - explicit structured-output, tool, stop, output-cap, and continuation requests fail rather than being silently weakened when unavailable;
-- token-count and model-list operations use their declared endpoints and contracts;
-- 301/302/307/308 redirects produce no request to the redirect target;
+- token-count uses its model-scoped contract; model-list and credential-refresh
+  use their instance-scoped contracts;
+- credential refresh, generation, stream, token-count, and model-list clients
+  all reject 301/302/303/307/308 redirects without forwarding a body or headers;
+- API logs and structured errors contain operation, API version, adapter
+  implementation revision, phase, and non-secret identity fields but
+  no credential values, credential headers, userinfo, query secrets, or prompt
+  data in identity fields;
 - response and error parsing for each retained adapter.
 
 ### Cross-layer tests
