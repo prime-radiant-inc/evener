@@ -100,6 +100,7 @@ interface PendingRequest {
 }
 
 const INITIALIZE_RESPONSE_KEYS = ["serverInfo", "protocolVersion", "sourceId", "features"] as const;
+const INITIALIZE_RESPONSE_OPTIONAL_KEYS = ["navigation"] as const;
 
 const FEATURE_KEYS = [
   "threadList",
@@ -115,27 +116,37 @@ const FEATURE_KEYS = [
   "directoryComplete",
   "auth",
 ] as const;
+const FEATURE_OPTIONAL_KEYS = ["transcriptDisplaySettings"] as const;
+const NAVIGATION_CAPABILITY_KEYS = ["version", "generationId", "sequence"] as const;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
-  const actual = Object.keys(value).sort();
-  const wanted = [...expected].sort();
-  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
+function hasRequiredAndOptionalKeys(
+  value: Record<string, unknown>,
+  required: readonly string[],
+  optional: readonly string[] = [],
+): boolean {
+  const actual = Object.keys(value);
+  const allowed = new Set([...required, ...optional]);
+  return required.every((key) => Object.hasOwn(value, key)) && actual.every((key) => allowed.has(key));
 }
 
 /** Runtime boundary for the untyped JSON-RPC initialize result. */
 export function decodeInitializeResponse(value: unknown): InitializeResponse {
-  if (!isRecord(value) || !hasExactKeys(value, INITIALIZE_RESPONSE_KEYS)) {
+  if (
+    !isRecord(value) ||
+    !hasRequiredAndOptionalKeys(value, INITIALIZE_RESPONSE_KEYS, INITIALIZE_RESPONSE_OPTIONAL_KEYS)
+  ) {
     throw new Error("invalid initialize response");
   }
   const serverInfo = value.serverInfo;
   const features = value.features;
+  const navigation = value.navigation;
   if (
     !isRecord(serverInfo) ||
-    !hasExactKeys(serverInfo, ["name", "version"]) ||
+    !hasRequiredAndOptionalKeys(serverInfo, ["name", "version"]) ||
     typeof serverInfo.name !== "string" ||
     serverInfo.name.trim() === "" ||
     typeof serverInfo.version !== "string" ||
@@ -145,8 +156,15 @@ export function decodeInitializeResponse(value: unknown): InitializeResponse {
     typeof value.sourceId !== "string" ||
     value.sourceId.trim() === "" ||
     !isRecord(features) ||
-    !hasExactKeys(features, FEATURE_KEYS) ||
-    FEATURE_KEYS.some((key) => typeof features[key] !== "boolean")
+    !hasRequiredAndOptionalKeys(features, FEATURE_KEYS, FEATURE_OPTIONAL_KEYS) ||
+    FEATURE_KEYS.some((key) => typeof features[key] !== "boolean") ||
+    (Object.hasOwn(features, "transcriptDisplaySettings") && typeof features.transcriptDisplaySettings !== "boolean") ||
+    (Object.hasOwn(value, "navigation") &&
+      (!isRecord(navigation) ||
+        !hasRequiredAndOptionalKeys(navigation, NAVIGATION_CAPABILITY_KEYS) ||
+        typeof navigation.version !== "number" ||
+        typeof navigation.generationId !== "string" ||
+        typeof navigation.sequence !== "number"))
   ) {
     throw new Error("invalid initialize response");
   }
