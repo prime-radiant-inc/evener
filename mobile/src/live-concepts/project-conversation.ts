@@ -29,7 +29,11 @@
 //
 // I4: Oversized UTF-8 content yields exactly one truncation marker even if
 // the input already contains the marker one or many times. Byte cap and
-// code-point boundary are preserved.
+// code-point boundary are preserved. A literal trailing marker is ambiguous
+// (genuine content may end with it) — the projector does NOT infer
+// truncated from the suffix. Set membership in the store's
+// truncatedItemIds identifies store truncation; the projector combines
+// that with its own oversized-content truncation.
 
 import type {
   MobileConversation,
@@ -64,11 +68,13 @@ function truncateToValidUtf8(encoded: Uint8Array, targetBytes: number): string {
   return "";
 }
 
-// I4: If content fits within cap, preserve as-is (a trailing marker means
-// the store already truncated it, but the projector no longer infers
-// truncated=true from the marker suffix — the store's truncatedItemIds set
-// is the authoritative source. If content exceeds cap, strip ALL existing
-// markers so the output has exactly one, then truncate and add a single marker.
+// If content fits within cap, preserve as-is — the projector returns
+// truncated:false. A literal trailing marker is ambiguous: genuine content
+// may legitimately end with "… truncated", so the suffix alone does not
+// identify store truncation. The caller combines this with the store's
+// truncatedItemIds set (authoritative: has(sourceItem.id)). If content
+// exceeds cap, strip ALL existing markers so the output has exactly one,
+// then truncate and add a single marker, and return truncated:true.
 
 // Build the KMP failure (partial match) table for the marker. failure[i] is
 // the length of the longest proper prefix of marker[0..i) that is also a
