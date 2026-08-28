@@ -273,10 +273,10 @@ async function measureTrustedFocus(send) {
       if (!editor || segments.length !== 6) throw new Error('live Detail focus fixture is incomplete');
     })()`,
   );
-  // Chromium can report the pre-scrollbar content width for several paints
-  // after a newly focused, overflowing Popover becomes interactive. Await the
-  // panel's own track until it is stable instead of trusting a detached
-  // scrollbar probe or a fixed frame count.
+  // Chromium can report the pre-scrollbar content width until the first
+  // trusted keyboard interaction makes the overflowing Popover's scrollbar
+  // visible. Warm the control with the first transition before establishing
+  // the baseline; the transition itself remains in the asserted sequence.
   await waitForDesktopScrollbar(send);
   const readState = async () =>
     evaluate(
@@ -333,8 +333,9 @@ async function measureTrustedFocus(send) {
         };
       })()`,
     );
-  const baseline = await readState();
   await dispatchTrustedKey(send, "Home", "Home", 36);
+  await waitForDesktopScrollbar(send);
+  const baseline = await readState();
   const first = await readState();
   for (let index = 0; index < 3; index++) await dispatchTrustedKey(send, "ArrowRight", "ArrowRight", 39);
   const middle = await readState();
