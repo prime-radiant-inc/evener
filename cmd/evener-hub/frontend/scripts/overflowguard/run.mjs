@@ -186,27 +186,46 @@ async function waitForDesktopScrollbar(send) {
         resolve(null);
         return;
       }
-      const probe = document.createElement('div');
-      probe.style.cssText = 'position:absolute;visibility:hidden;overflow:scroll;width:100px;height:100px';
-      document.body.append(probe);
-      const expected = probe.offsetWidth - probe.clientWidth;
-      probe.remove();
+      const track = panel.querySelector('[role="radiogroup"]');
+      if (!track) {
+        resolve(null);
+        return;
+      }
+      // A classic scrollbar can be laid out asynchronously after focus moves
+      // into an overflowing panel. Do not compare against a detached probe:
+      // headless Chromium can report that probe as an overlay scrollbar while
+      // the real panel acquires a 15px gutter on its next layout.
+      const geometry = () => {
+        const box = track.getBoundingClientRect();
+        return [
+          panel.scrollHeight,
+          panel.clientHeight,
+          panel.clientWidth,
+          track.clientWidth,
+          box.left,
+          box.right,
+          box.width,
+        ];
+      };
+      let previous = null;
+      let stable = 0;
       let frames = 0;
       const check = () => {
-        const style = getComputedStyle(panel);
-        const borders = (Number.parseFloat(style.borderLeftWidth) || 0) + (Number.parseFloat(style.borderRightWidth) || 0);
-        const actual = panel.offsetWidth - panel.clientWidth - borders;
-        if (panel.scrollHeight > panel.clientHeight && Math.abs(actual - expected) <= ${GEOMETRY_TOLERANCE}) {
-          resolve({ expected, actual });
+        const current = geometry();
+        if (JSON.stringify(current) === JSON.stringify(previous)) stable++;
+        else stable = 0;
+        if (panel.scrollHeight > panel.clientHeight && stable >= 3) {
+          resolve({ geometry: current });
           return;
         }
         if (++frames >= 120) {
-          reject(new Error('desktop Detail scrollbar geometry did not settle: expected=' + expected + ', actual=' + actual + ', scroll=' + panel.scrollHeight + '/' + panel.clientHeight));
+          reject(new Error('desktop Detail scrollbar geometry did not settle: geometry=' + JSON.stringify(current) + ', scroll=' + panel.scrollHeight + '/' + panel.clientHeight));
           return;
         }
+        previous = current;
         requestAnimationFrame(check);
       };
-      check();
+      requestAnimationFrame(check);
     })`,
   );
 }
@@ -221,9 +240,10 @@ async function measureTrustedFocus(send) {
       if (!editor || segments.length !== 6) throw new Error('live Detail focus fixture is incomplete');
     })()`,
   );
-  // Chromium can report the pre-scrollbar content width for one paint after a
-  // newly focused, overflowing Popover becomes interactive. Await the actual
-  // platform gutter (zero for overlay scrollbars) instead of a fixed frame count.
+  // Chromium can report the pre-scrollbar content width for several paints
+  // after a newly focused, overflowing Popover becomes interactive. Await the
+  // panel's own track until it is stable instead of trusting a detached
+  // scrollbar probe or a fixed frame count.
   await waitForDesktopScrollbar(send);
   const readState = async () =>
     evaluate(
