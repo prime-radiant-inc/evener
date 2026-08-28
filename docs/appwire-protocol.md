@@ -1107,7 +1107,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `section_id` | `string` |  |  |
+| `sectionId` | `string` |  |  |
 
 
 ### `PinSectionDeleteResponse`
@@ -1116,7 +1116,7 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `ok` | `bool` |  |  |
 | `changed` | `bool` |  |  |
-| `member_count` | `int` |  |  |
+| `memberCount` | `int` |  |  |
 | `navigation` | `appwire.NavigationMutation` |  |  |
 
 
@@ -1124,7 +1124,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `section_id` | `string` |  |  |
+| `sectionId` | `string` |  |  |
 | `name` | `string` |  |  |
 
 
@@ -1300,9 +1300,9 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `session_ref` | `string` |  |  |
-| `section_id` | `*string` | yes |  |
-| `section_name` | `*string` | yes |  |
+| `sessionRef` | `string` |  |  |
+| `sectionId` | `*string` | yes |  |
+| `sectionName` | `*string` | yes |  |
 
 
 ### `SessionPinAssignResponse`
@@ -1319,7 +1319,7 @@ _(no fields)_
 
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
-| `session_ref` | `string` |  |  |
+| `sessionRef` | `string` |  |  |
 
 
 ### `SessionPinUnpinResponse`

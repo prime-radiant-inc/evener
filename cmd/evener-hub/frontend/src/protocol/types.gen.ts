@@ -1106,22 +1106,22 @@ export interface PendingMutation {
 export interface PinSection {
   id: string;
   name: string;
-  member_count: number;
+  memberCount: number;
 }
 
 export interface PinSectionDeleteParams {
-  section_id: string;
+  sectionId: string;
 }
 
 export interface PinSectionDeleteResponse {
   ok: boolean;
   changed: boolean;
-  member_count: number;
+  memberCount: number;
   navigation: NavigationMutation;
 }
 
 export interface PinSectionRenameParams {
-  section_id: string;
+  sectionId: string;
   name: string;
 }
 
@@ -1312,9 +1312,9 @@ export interface SessionDeleteResponse {
 }
 
 export interface SessionPinAssignParams {
-  session_ref: string;
-  section_id?: string;
-  section_name?: string;
+  sessionRef: string;
+  sectionId?: string;
+  sectionName?: string;
 }
 
 export interface SessionPinAssignResponse {
@@ -1325,16 +1325,16 @@ export interface SessionPinAssignResponse {
 }
 
 export interface SessionPinAssignment {
-  session_ref: string;
+  sessionRef: string;
   section: PinSection;
 }
 
 export interface SessionPinUnpinAssignment {
-  session_ref: string;
+  sessionRef: string;
 }
 
 export interface SessionPinUnpinParams {
-  session_ref: string;
+  sessionRef: string;
 }
 
 export interface SessionPinUnpinResponse {

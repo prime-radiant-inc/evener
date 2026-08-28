@@ -44,15 +44,15 @@ func TestPinningWireShapes(t *testing.T) {
 		value any
 		want  string
 	}{
-		{"rename params", PinSectionRenameParams{SectionID: "section-a", Name: "Research"}, `{"section_id":"section-a","name":"Research"}`},
-		{"delete params", PinSectionDeleteParams{SectionID: "section-a"}, `{"section_id":"section-a"}`},
-		{"assign by id", SessionPinAssignParams{SessionRef: "local:session-a", SectionID: stringPointer("section-a")}, `{"session_ref":"local:session-a","section_id":"section-a"}`},
-		{"assign by name", SessionPinAssignParams{SessionRef: "local:session-a", SectionName: stringPointer("Research")}, `{"session_ref":"local:session-a","section_name":"Research"}`},
-		{"unpin params", SessionPinUnpinParams{SessionRef: "local:session-a"}, `{"session_ref":"local:session-a"}`},
-		{"rename response", PinSectionRenameResponse{OK: true, Changed: true, Section: PinSection{ID: "section-a", Name: "Research", MemberCount: 2}, Navigation: navigation}, `{"ok":true,"changed":true,"section":{"id":"section-a","name":"Research","member_count":2},"navigation":{"generation_id":"generation-a","targets":[]}}`},
-		{"delete response", PinSectionDeleteResponse{OK: true, Changed: true, MemberCount: 2, Navigation: navigation}, `{"ok":true,"changed":true,"member_count":2,"navigation":{"generation_id":"generation-a","targets":[]}}`},
-		{"assign response", SessionPinAssignResponse{OK: true, Changed: true, Assignment: SessionPinAssignment{SessionRef: "local:session-a", Section: PinSection{ID: "section-a", Name: "Research", MemberCount: 1}}, Navigation: navigation}, `{"ok":true,"changed":true,"assignment":{"session_ref":"local:session-a","section":{"id":"section-a","name":"Research","member_count":1}},"navigation":{"generation_id":"generation-a","targets":[]}}`},
-		{"unpin response", SessionPinUnpinResponse{OK: true, Assignment: SessionPinUnpinAssignment{SessionRef: "local:session-a"}, Navigation: navigation}, `{"ok":true,"changed":false,"assignment":{"session_ref":"local:session-a"},"navigation":{"generation_id":"generation-a","targets":[]}}`},
+		{"rename params", PinSectionRenameParams{SectionID: "section-a", Name: "Research"}, `{"sectionId":"section-a","name":"Research"}`},
+		{"delete params", PinSectionDeleteParams{SectionID: "section-a"}, `{"sectionId":"section-a"}`},
+		{"assign by id", SessionPinAssignParams{SessionRef: "local:session-a", SectionID: stringPointer("section-a")}, `{"sessionRef":"local:session-a","sectionId":"section-a"}`},
+		{"assign by name", SessionPinAssignParams{SessionRef: "local:session-a", SectionName: stringPointer("Research")}, `{"sessionRef":"local:session-a","sectionName":"Research"}`},
+		{"unpin params", SessionPinUnpinParams{SessionRef: "local:session-a"}, `{"sessionRef":"local:session-a"}`},
+		{"rename response", PinSectionRenameResponse{OK: true, Changed: true, Section: PinSection{ID: "section-a", Name: "Research", MemberCount: 2}, Navigation: navigation}, `{"ok":true,"changed":true,"section":{"id":"section-a","name":"Research","memberCount":2},"navigation":{"generation_id":"generation-a","targets":[]}}`},
+		{"delete response", PinSectionDeleteResponse{OK: true, Changed: true, MemberCount: 2, Navigation: navigation}, `{"ok":true,"changed":true,"memberCount":2,"navigation":{"generation_id":"generation-a","targets":[]}}`},
+		{"assign response", SessionPinAssignResponse{OK: true, Changed: true, Assignment: SessionPinAssignment{SessionRef: "local:session-a", Section: PinSection{ID: "section-a", Name: "Research", MemberCount: 1}}, Navigation: navigation}, `{"ok":true,"changed":true,"assignment":{"sessionRef":"local:session-a","section":{"id":"section-a","name":"Research","memberCount":1}},"navigation":{"generation_id":"generation-a","targets":[]}}`},
+		{"unpin response", SessionPinUnpinResponse{OK: true, Assignment: SessionPinUnpinAssignment{SessionRef: "local:session-a"}, Navigation: navigation}, `{"ok":true,"changed":false,"assignment":{"sessionRef":"local:session-a"},"navigation":{"generation_id":"generation-a","targets":[]}}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

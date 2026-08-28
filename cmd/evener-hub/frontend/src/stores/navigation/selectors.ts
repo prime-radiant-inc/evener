@@ -1,4 +1,4 @@
-import type { NavigationProjectSummary, NavigationSessionSummary, PinSection } from "../../protocol/types.gen";
+import type { NavigationProjectSummary, NavigationSessionSummary } from "../../protocol/types.gen";
 import { navigationStore } from "./store";
 import { isNavigationUnavailable, keyID, type ResourceKey, type ResourceState } from "./types";
 export const selectAttentionSummary = (s: ReturnType<typeof navigationStore.getState>) => s.attention.summary;
@@ -117,10 +117,15 @@ function loadedSectionRows(
 export function selectGlobalRows(state = navigationStore.getState()): NavigationSessionSummary[] {
   return [...selectLiveRows(state), ...selectNeedsYouRows(state)];
 }
-export interface LoadedPinSection extends PinSection {
+export interface NavigationPinSectionSummary {
+  id: string;
+  name: string;
+  member_count: number;
+}
+export interface LoadedPinSection extends NavigationPinSectionSummary {
   sessions: NavigationSessionSummary[];
 }
-export function selectPinSectionSummaries(state = navigationStore.getState()): PinSection[] {
+export function selectPinSectionSummaries(state = navigationStore.getState()): NavigationPinSectionSummary[] {
   const descriptors = [...state.resources.values()]
     .filter((resource) => resource.key.kind === "pin_catalog" && resource.data !== null)
     .sort((a, b) => {

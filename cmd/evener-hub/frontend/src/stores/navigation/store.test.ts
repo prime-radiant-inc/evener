@@ -389,6 +389,58 @@ test("resource keys map to exact AppWire params and preserve decoded identifiers
   s.setExpanded("p", false);
 });
 
+test("pin catalog page loading preserves every assignment target", async () => {
+  const client = await init((params) => {
+    if (params.resource === "manifest") return wire(emptyManifest());
+    if (params.resource !== "pin_catalog") throw new Error(`unexpected resource ${params.resource}`);
+    if (params.offset === 0) return wire({ pin_sections: [{ id: "first", name: "First", count: 0 }], remaining: 1 });
+    if (params.offset === 1) return wire({ pin_sections: [{ id: "second", name: "Second", count: 2 }], remaining: 0 });
+    throw new Error(`unexpected pin catalog offset ${params.offset}`);
+  });
+
+  await navigationStore.getState().loadPinCatalogPages();
+
+  expect(
+    client.calls
+      .map((call) => call.params as NavigationReadParams)
+      .filter((params) => params.resource === "pin_catalog"),
+  ).toEqual([
+    { resource: "pin_catalog", offset: 0, limit: 100 },
+    { resource: "pin_catalog", offset: 1, limit: 100 },
+  ]);
+  expect(selectPinSectionSummaries()).toEqual([
+    { id: "first", name: "First", member_count: 0 },
+    { id: "second", name: "Second", member_count: 2 },
+  ]);
+});
+
+test("forced pin catalog page loading replaces every fresh cached page", async () => {
+  let refreshed = false;
+  const client = await init((params) => {
+    if (params.resource === "manifest") return wire(emptyManifest());
+    if (params.resource === "pin_catalog" && params.offset === 0)
+      return refreshed
+        ? wire({ pin_sections: [{ id: "section", name: "After", count: 0 }], remaining: 0 })
+        : wire({ pin_sections: [{ id: "section", name: "Before", count: 0 }], remaining: 1 });
+    if (params.resource === "pin_catalog" && params.offset === 1)
+      return refreshed
+        ? wire({ pin_sections: [], remaining: 0 })
+        : wire({ pin_sections: [{ id: "deleted", name: "Deleted", count: 1 }], remaining: 0 });
+    throw new Error(`unexpected resource ${params.resource}`);
+  });
+
+  await navigationStore.getState().loadPinCatalogPages();
+  refreshed = true;
+  await navigationStore.getState().loadPinCatalogPages(true);
+
+  expect(
+    client.calls
+      .map((call) => call.params as NavigationReadParams)
+      .filter((params) => params.resource === "pin_catalog"),
+  ).toHaveLength(4);
+  expect(selectPinSectionSummaries()).toEqual([{ id: "section", name: "After", member_count: 0 }]);
+});
+
 test("AppWire envelope status and conditional reads preserve cached navigation", async () => {
   let manifestCalls = 0;
   const client = await init((params) => {

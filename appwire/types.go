@@ -363,11 +363,11 @@ type SessionDeleteResponse struct {
 type PinSection struct {
 	ID          string `json:"id"`
 	Name        string `json:"name"`
-	MemberCount int    `json:"member_count"`
+	MemberCount int    `json:"memberCount"`
 }
 
 type PinSectionRenameParams struct {
-	SectionID string `json:"section_id"`
+	SectionID string `json:"sectionId"`
 	Name      string `json:"name"`
 }
 
@@ -379,28 +379,28 @@ type PinSectionRenameResponse struct {
 }
 
 type PinSectionDeleteParams struct {
-	SectionID string `json:"section_id"`
+	SectionID string `json:"sectionId"`
 }
 
 type PinSectionDeleteResponse struct {
 	OK          bool               `json:"ok"`
 	Changed     bool               `json:"changed"`
-	MemberCount int                `json:"member_count"`
+	MemberCount int                `json:"memberCount"`
 	Navigation  NavigationMutation `json:"navigation"`
 }
 
 type SessionPinAssignParams struct {
-	SessionRef  string  `json:"session_ref"`
-	SectionID   *string `json:"section_id,omitempty"`
-	SectionName *string `json:"section_name,omitempty"`
+	SessionRef  string  `json:"sessionRef"`
+	SectionID   *string `json:"sectionId,omitempty"`
+	SectionName *string `json:"sectionName,omitempty"`
 }
 
 type SessionPinUnpinParams struct {
-	SessionRef string `json:"session_ref"`
+	SessionRef string `json:"sessionRef"`
 }
 
 type SessionPinAssignment struct {
-	SessionRef string     `json:"session_ref"`
+	SessionRef string     `json:"sessionRef"`
 	Section    PinSection `json:"section"`
 }
 
@@ -412,7 +412,7 @@ type SessionPinAssignResponse struct {
 }
 
 type SessionPinUnpinAssignment struct {
-	SessionRef string `json:"session_ref"`
+	SessionRef string `json:"sessionRef"`
 }
 
 type SessionPinUnpinResponse struct {

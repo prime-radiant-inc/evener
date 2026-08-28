@@ -46,7 +46,7 @@ export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPicke
     let active = true;
     void navigationStore
       .getState()
-      .loadPinCatalog()
+      .loadPinCatalogPages()
       .then(() => {
         if (!active) return;
         setSections(sortedPinSectionSummaries());
@@ -71,7 +71,7 @@ export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPicke
       setError(errorText(err));
       if (isPinSectionNotFound(err)) {
         try {
-          await navigationStore.getState().loadPinCatalog();
+          await navigationStore.getState().loadPinCatalogPages(true);
           setSections(sortedPinSectionSummaries());
         } catch {
           // Keep the assignment's useful not-found error visible. A later

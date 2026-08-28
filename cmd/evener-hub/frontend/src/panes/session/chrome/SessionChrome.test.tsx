@@ -348,13 +348,13 @@ test("session-menu pin assignment uses typed AppWire and converges its navigatio
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_pin"));
   fake.on("evener/session-pin/assign", (params) => {
-    expect(params).toEqual({ session_ref: "ref_pin", section_id: "research" });
+    expect(params).toEqual({ sessionRef: "ref_pin", sectionId: "research" });
     return {
       ok: true,
       changed: true,
       assignment: {
-        session_ref: "local:sess_ref_pin",
-        section: { id: "research", name: "Research", member_count: 1 },
+        sessionRef: "local:sess_ref_pin",
+        section: { id: "research", name: "Research", memberCount: 1 },
       },
       navigation: {
         generation_id: "generation_test",
@@ -393,7 +393,7 @@ test("session-menu pin assignment uses typed AppWire and converges its navigatio
     resources.set(keyID(pinKey), pinCatalog);
     return {
       resources,
-      loadPinCatalog: vi.fn().mockResolvedValue(pinCatalog),
+      loadPinCatalogPages: vi.fn().mockResolvedValue(undefined),
       trackPinSection,
       applyNavigationMutation,
     };
@@ -407,7 +407,7 @@ test("session-menu pin assignment uses typed AppWire and converges its navigatio
   await waitFor(() =>
     expect(fake.calls).toContainEqual({
       method: "evener/session-pin/assign",
-      params: { session_ref: "ref_pin", section_id: "research" },
+      params: { sessionRef: "ref_pin", sectionId: "research" },
     }),
   );
   expect(applyNavigationMutation).toHaveBeenCalledWith({

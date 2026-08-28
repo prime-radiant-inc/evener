@@ -47,12 +47,12 @@ func registerPinSectionHandlers(server *appserver.Server, cfg hubcore.WebConfig,
 
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionPinAssign, func(ctx context.Context, params appwire.SessionPinAssignParams) (appwire.SessionPinAssignResponse, error) {
 		if (params.SectionID == nil) == (params.SectionName == nil) {
-			return appwire.SessionPinAssignResponse{}, appwire.InvalidParams("exactly one of section_id or section_name is required")
+			return appwire.SessionPinAssignResponse{}, appwire.InvalidParams("exactly one of sectionId or sectionName is required")
 		}
 		if cfg.PinSections == nil {
 			return appwire.SessionPinAssignResponse{}, appwire.InternalError("pin section store not configured")
 		}
-		sessionID, err := resolvePinSession(ctx, resolve, params.SessionRef, "session_ref")
+		sessionID, err := resolvePinSession(ctx, resolve, params.SessionRef, "sessionRef")
 		if err != nil {
 			return appwire.SessionPinAssignResponse{}, err
 		}
@@ -81,7 +81,7 @@ func registerPinSectionHandlers(server *appserver.Server, cfg hubcore.WebConfig,
 		if cfg.PinSections == nil {
 			return appwire.SessionPinUnpinResponse{}, appwire.InternalError("pin section store not configured")
 		}
-		sessionID, err := resolvePinSession(ctx, resolve, params.SessionRef, "session_ref")
+		sessionID, err := resolvePinSession(ctx, resolve, params.SessionRef, "sessionRef")
 		if err != nil {
 			return appwire.SessionPinUnpinResponse{}, err
 		}

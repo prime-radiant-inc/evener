@@ -52,13 +52,13 @@ describe("named pin sections", () => {
       ok: true as const,
       changed: true,
       assignment: {
-        session_ref: "local:s1",
-        section: { id: "canonical", name: "Research", member_count: 1 },
+        sessionRef: "local:s1",
+        section: { id: "canonical", name: "Research", memberCount: 1 },
       },
       navigation: { generation_id: "generation-a", targets: [] },
     };
     client.on("evener/session-pin/assign", (params) => {
-      expect(params).toEqual({ session_ref: "local:s1", section_name: "Research" });
+      expect(params).toEqual({ sessionRef: "local:s1", sectionName: "Research" });
       return response;
     });
 
@@ -70,11 +70,11 @@ describe("named pin sections", () => {
     const response = {
       ok: true as const,
       changed: false,
-      assignment: { session_ref: "local:s1", section: { id: "s/1", name: "Client", member_count: 1 } },
+      assignment: { sessionRef: "local:s1", section: { id: "s/1", name: "Client", memberCount: 1 } },
       navigation: { generation_id: "generation-a", targets: [] },
     };
     client.on("evener/session-pin/assign", (params) => {
-      expect(params).toEqual({ session_ref: "local:s1", section_id: "s/1" });
+      expect(params).toEqual({ sessionRef: "local:s1", sectionId: "s/1" });
       return response;
     });
 
@@ -101,11 +101,11 @@ describe("named pin sections", () => {
     const response = {
       ok: true as const,
       changed: true,
-      assignment: { session_ref: "local:s/1" },
+      assignment: { sessionRef: "local:s/1" },
       navigation: { generation_id: "generation-a", targets: [] },
     };
     client.on("evener/session-pin/unpin", (params) => {
-      expect(params).toEqual({ session_ref: "local:s/1" });
+      expect(params).toEqual({ sessionRef: "local:s/1" });
       return response;
     });
 
@@ -114,11 +114,11 @@ describe("named pin sections", () => {
 
   test("renames through the typed method and returns the canonical summary", async () => {
     const client = new FakeClient();
-    const section = { id: "section/one", name: "New name", member_count: 3 };
+    const section = { id: "section/one", name: "New name", memberCount: 3 };
     const navigation = { generation_id: "g", targets: [] };
     const response = { ok: true as const, changed: true, section, navigation };
     client.on("evener/pin-section/rename", (params) => {
-      expect(params).toEqual({ section_id: "section/one", name: "New name" });
+      expect(params).toEqual({ sectionId: "section/one", name: "New name" });
       return response;
     });
 
@@ -130,11 +130,11 @@ describe("named pin sections", () => {
     const response = {
       ok: true as const,
       changed: true,
-      member_count: 4,
+      memberCount: 4,
       navigation: { generation_id: "generation-a", targets: [] },
     };
     client.on("evener/pin-section/delete", (params) => {
-      expect(params).toEqual({ section_id: "section/one" });
+      expect(params).toEqual({ sectionId: "section/one" });
       return response;
     });
 

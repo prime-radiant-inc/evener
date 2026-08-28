@@ -8,7 +8,6 @@ import type { AppwireClientLike } from "../../protocol/testing/fakeClient";
 import type {
   FavoriteSetResponse,
   NavigationMutation,
-  PinSection,
   PinSectionDeleteResponse,
   PinSectionRenameResponse,
   ProjectDeleteResponse,
@@ -17,8 +16,9 @@ import type {
   SessionPinUnpinResponse,
 } from "../../protocol/types.gen";
 import { connectionStore } from "../../stores/connection";
+import type { NavigationPinSectionSummary } from "../../stores/navigation/selectors";
 
-export type PinSectionSummary = PinSection;
+export type PinSectionSummary = NavigationPinSectionSummary;
 
 export interface NavigationMutationReceipt {
   navigation: NavigationMutation;
@@ -46,11 +46,16 @@ export async function assignSessionPin(
   ref: string,
   target: { section_id: string } | { section_name: string },
 ): Promise<SessionPinAssignResponse> {
-  return client.request("evener/session-pin/assign", { session_ref: ref, ...target });
+  return client.request(
+    "evener/session-pin/assign",
+    "section_id" in target
+      ? { sessionRef: ref, sectionId: target.section_id }
+      : { sessionRef: ref, sectionName: target.section_name },
+  );
 }
 
 export async function unpinSession(client: AppwireClientLike, ref: string): Promise<SessionPinUnpinResponse> {
-  return client.request("evener/session-pin/unpin", { session_ref: ref });
+  return client.request("evener/session-pin/unpin", { sessionRef: ref });
 }
 
 export async function renamePinSection(
@@ -58,11 +63,11 @@ export async function renamePinSection(
   id: string,
   name: string,
 ): Promise<PinSectionRenameResponse> {
-  return client.request("evener/pin-section/rename", { section_id: id, name });
+  return client.request("evener/pin-section/rename", { sectionId: id, name });
 }
 
 export async function deletePinSection(client: AppwireClientLike, id: string): Promise<PinSectionDeleteResponse> {
-  return client.request("evener/pin-section/delete", { section_id: id });
+  return client.request("evener/pin-section/delete", { sectionId: id });
 }
 
 /** Sets an archive decision through evener/archive/set. workingDir is required

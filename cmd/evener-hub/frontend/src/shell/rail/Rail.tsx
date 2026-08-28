@@ -811,7 +811,11 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
         () => assignSessionPin(client, session.ref, target),
         "Couldn't assign pinned session",
         (result) => {
-          const assignedSection = section ?? result.assignment.section;
+          const assignedSection = section ?? {
+            id: result.assignment.section.id,
+            name: result.assignment.section.name,
+            member_count: result.assignment.section.memberCount,
+          };
           navigationStore.getState().trackPinSection(assignedSection.id);
           return {
             kind: "sessionPin",
@@ -959,7 +963,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
   async function requestSectionDelete(section: RailPinSection) {
     const token = ++sectionDeleteRequestToken.current;
     try {
-      await navigationStore.getState().loadPinCatalog();
+      await navigationStore.getState().loadPinCatalogPages(true);
       if (token !== sectionDeleteRequestToken.current) return;
       const summaries = selectPinSectionSummaries(navigationStore.getState());
       const durable = summaries.find((candidate) => candidate.id === section.id);
