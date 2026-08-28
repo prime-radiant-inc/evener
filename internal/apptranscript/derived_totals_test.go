@@ -72,8 +72,6 @@ func requireDerivedTotalsFromFile(t testing.TB, cache *TurnCache, path string, m
 // The combined scan answers exactly what the two individual scans answer:
 // one transcript, both figures, one pass.
 func TestDerivedTotalsFromFileMatchesIndividualScans(t *testing.T) {
-	zero := 0
-	one := 1
 	path := writeDerivedTotalsTranscript(t, []schema.Turn{
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("first"), Usage: llm.Usage{InputTokens: 100, OutputTokens: 10, TotalTokens: 110}},
 		{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
@@ -84,11 +82,11 @@ func TestDerivedTotalsFromFileMatchesIndividualScans(t *testing.T) {
 		}}},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("after failure"), Usage: llm.Usage{InputTokens: 200, OutputTokens: 20, TotalTokens: 220}},
 		{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
-			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c2", Name: "shell", ToolState: marshalDerivedTotalsToolState(t, map[string]any{"exit_code": one})}},
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c2", Name: "shell", ToolState: marshalDerivedTotalsToolState(t, map[string]any{"exit_code": 1})}},
 		}}},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("clean"), Usage: llm.Usage{InputTokens: 50, OutputTokens: 5, TotalTokens: 55}},
 		{Kind: schema.TurnToolResults, Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{
-			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c3", Name: "shell", ToolState: marshalDerivedTotalsToolState(t, map[string]any{"exit_code": zero})}},
+			{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{ToolCallID: "c3", Name: "shell", ToolState: marshalDerivedTotalsToolState(t, map[string]any{"exit_code": 0})}},
 		}}},
 	})
 
@@ -116,7 +114,6 @@ func TestDerivedTotalsFromFileMatchesIndividualScans(t *testing.T) {
 // A fork child's inherited prefix contributes to neither figure, and the
 // failure rule still resolves tool names from inherited calls.
 func TestDerivedTotalsFromFileSkipsInheritedForkPrefix(t *testing.T) {
-	one := 1
 	path := writeDerivedTotalsTranscript(t, []schema.Turn{
 		// Parent's prefix: entry 1 announces a call, entry 2 answers it
 		// with a failure, entry 3 spends tokens.
@@ -143,7 +140,6 @@ func TestDerivedTotalsFromFileSkipsInheritedForkPrefix(t *testing.T) {
 	if failures != 1 {
 		t.Fatalf("post-divergence failures = %d, want 1 (the child's own; the parent's is excluded but its call still names the result)", failures)
 	}
-	_ = one
 }
 
 // An empty own span reports absent usage, not zero, and a zero failure count is
