@@ -20,7 +20,7 @@ type mutRoute struct {
 }
 
 // mutatingRoutes are exactly the routes the Phase-4 read-only handler fuzz
-// excluded: the append-only retired /api/spawn and /api/sessions slots, the
+// excluded: append-only tombstones for retired routes, the
 // live-git seam reads, and the live steer/queue/drain-as-steer actions under
 // /s. Retired slots stay in place so route-indexed fuzz corpora remain
 // compatible; they now exercise ordinary unknown-route handling. Under the B0
@@ -29,15 +29,16 @@ type mutRoute struct {
 var mutatingRoutes = []mutRoute{
 	{http.MethodPost, "/api/spawn", true},
 	{http.MethodGet, "/api/models?harness={id}", false},
-	// Former session REST routes retained for corpus-index stability.
-	{http.MethodPost, "/api/sessions/{id}/clear", false},
-	{http.MethodPost, "/api/sessions/{id}/model", true},
-	{http.MethodPost, "/api/sessions/{id}/reasoning-effort", true},
-	{http.MethodPost, "/api/sessions/{id}/interrupt", false},
-	{http.MethodPost, "/api/sessions/{id}/compact", false},
-	{http.MethodPost, "/api/sessions/{id}/shutdown", false},
-	{http.MethodPost, "/api/sessions/{id}/send", true},
-	{http.MethodPost, "/api/sessions/{id}/fork", true},
+	// Unique unknown-route tombstones retain the removed slots without
+	// inventorying the retired routes.
+	{http.MethodPost, "/__retired__/session-rest/{id}/clear", false},
+	{http.MethodPost, "/__retired__/session-rest/{id}/model", true},
+	{http.MethodPost, "/__retired__/session-rest/{id}/reasoning-effort", true},
+	{http.MethodPost, "/__retired__/session-rest/{id}/interrupt", false},
+	{http.MethodPost, "/__retired__/session-rest/{id}/compact", false},
+	{http.MethodPost, "/__retired__/session-rest/{id}/shutdown", false},
+	{http.MethodPost, "/__retired__/session-rest/{id}/send", true},
+	{http.MethodPost, "/__retired__/session-rest/{id}/fork", true},
 	// Active form-action routes.
 	{http.MethodPost, "/s/{id}/steer", true},
 	{http.MethodPost, "/s/{id}/queue", true},
@@ -105,15 +106,15 @@ func FuzzWebMutatingHandler(f *testing.F) {
 		{"/api/spawn", "", `{"harness":"evener","working_dir":"` + s.CWD + `","items":[{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"}]}`},
 		{"/api/models?harness={id}", "evener", ""},
 		{"/api/models?harness={id}", "codex", ""},
-		// Former session REST seeds retained for corpus-index stability.
-		{"/api/sessions/{id}/clear", sandboxSessionID, ""},
-		{"/api/sessions/{id}/model", sandboxSessionID, `{"model":"openai/gpt-5.5"}`},
-		{"/api/sessions/{id}/reasoning-effort", sandboxSessionID, `{"reasoning_effort":"high"}`},
-		{"/api/sessions/{id}/interrupt", sandboxSessionID, ""},
-		{"/api/sessions/{id}/compact", sandboxSessionID, ""},
-		{"/api/sessions/{id}/shutdown", sandboxSessionID, ""},
-		{"/api/sessions/{id}/send", sandboxSessionID, `{"text":"hi"}`},
-		{"/api/sessions/{id}/fork", sandboxSessionID, `{"sourceTurnId":"turn_1","editedInput":"x"}`},
+		// Tombstone seeds retain their route indices for existing corpora.
+		{"/__retired__/session-rest/{id}/clear", sandboxSessionID, ""},
+		{"/__retired__/session-rest/{id}/model", sandboxSessionID, `{"model":"openai/gpt-5.5"}`},
+		{"/__retired__/session-rest/{id}/reasoning-effort", sandboxSessionID, `{"reasoning_effort":"high"}`},
+		{"/__retired__/session-rest/{id}/interrupt", sandboxSessionID, ""},
+		{"/__retired__/session-rest/{id}/compact", sandboxSessionID, ""},
+		{"/__retired__/session-rest/{id}/shutdown", sandboxSessionID, ""},
+		{"/__retired__/session-rest/{id}/send", sandboxSessionID, `{"text":"hi"}`},
+		{"/__retired__/session-rest/{id}/fork", sandboxSessionID, `{"sourceTurnId":"turn_1","editedInput":"x"}`},
 		{"/s/{id}/steer", sandboxSessionID, `{"text":"go"}`},
 		{"/s/{id}/queue", sandboxSessionID, `{"text":"later"}`},
 		{"/s/{id}/drain-as-steer", sandboxSessionID, `{}`},
