@@ -3586,6 +3586,46 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(threadsStore.getState().threads.get("ref_a")?.goal).toBeNull();
   });
 
+  test("setGoal does not overwrite a newer goal notification in either tracked map", async () => {
+    const fake = connectFakeClient();
+    let requestReachedHandler = false;
+    let resolveSetGoal: (response: { started: boolean }) => void = () => {
+      throw new Error("goal/set handler was not reached");
+    };
+    fake.on(
+      "goal/set",
+      () =>
+        new Promise((resolve) => {
+          requestReachedHandler = true;
+          resolveSetGoal = resolve;
+        }),
+    );
+
+    const model = hydrateThread(readResponse("ref_a"), "ref_a", 1000);
+    threadsStore.setState({
+      threads: new Map([["ref_a", model]]),
+      watchedThreads: new Map([["ref_a", model]]),
+    });
+
+    const pending = threadsStore.getState().setGoal("ref_a", "local objective");
+    await flushUntil(() => requestReachedHandler);
+    expect(requestReachedHandler).toBe(true);
+
+    const pushedGoal = { objective: "newer pushed objective", status: "active", iterations: 4 };
+    fake.emitNotification({
+      method: "evener/goal/updated",
+      params: { threadId: model.threadId, ref: "ref_a", goal: pushedGoal },
+    });
+    expect(threadsStore.getState().threads.get("ref_a")?.goal).toEqual(pushedGoal);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.goal).toEqual(pushedGoal);
+
+    resolveSetGoal({ started: true });
+    await pending;
+
+    expect(threadsStore.getState().threads.get("ref_a")?.goal).toEqual(pushedGoal);
+    expect(threadsStore.getState().watchedThreads.get("ref_a")?.goal).toEqual(pushedGoal);
+  });
+
   test("rename sends evener/thread/name/set with {ref, name}", async () => {
     const fake = connectFakeClient();
     fake.on("evener/thread/name/set", () => ({}));

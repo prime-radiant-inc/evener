@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"errors"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -130,6 +131,102 @@ func TestGoalUpdatedEmissionDoesNotHoldSessionMutex(t *testing.T) {
 	}
 	if unlocked := <-checked; !unlocked {
 		t.Fatal("GOAL_UPDATED was emitted while Session.mu was held")
+	}
+}
+
+func TestConcurrentGoalMutationsEmitInCommittedOrder(t *testing.T) {
+	sess := newGoalMethodSession(t)
+	defer sess.Close()
+
+	type observation struct {
+		objective          string
+		sessionMuUnlocked  bool
+		goalSerializerHeld bool
+	}
+	observed := make(chan observation, 2)
+	releaseFirstEmission := make(chan struct{})
+	var firstEmission sync.Once
+	sess.descendantEvent = func(ev events.SessionEvent) {
+		if ev.Kind != events.EventGoalUpdated {
+			return
+		}
+		data, ok := ev.Data.(events.GoalUpdatedData)
+		if !ok || data.Goal == nil {
+			return
+		}
+
+		sessionMuUnlocked := sess.mu.TryLock()
+		if sessionMuUnlocked {
+			sess.mu.Unlock()
+		}
+		goalSerializerHeld := !sess.goalUpdateMu.TryLock()
+		if !goalSerializerHeld {
+			sess.goalUpdateMu.Unlock()
+		}
+
+		block := false
+		firstEmission.Do(func() { block = true })
+		observed <- observation{
+			objective:          data.Goal.Objective,
+			sessionMuUnlocked:  sessionMuUnlocked,
+			goalSerializerHeld: goalSerializerHeld,
+		}
+		if block {
+			<-releaseFirstEmission
+		}
+	}
+
+	type mutationResult struct {
+		objective string
+		err       error
+	}
+	mutate := func(objective string, started chan<- struct{}) <-chan mutationResult {
+		done := make(chan mutationResult, 1)
+		go func() {
+			if started != nil {
+				started <- struct{}{}
+			}
+			_, err := sess.SetGoal(context.Background(), objective)
+			done <- mutationResult{objective: objective, err: err}
+		}()
+		return done
+	}
+
+	firstDone := mutate("first committed objective", nil)
+	firstObserved := <-observed
+	firstCommitted, ok := sess.getOrCreateGoalStore().Snapshot()
+	if !ok {
+		t.Fatal("first concurrent mutation did not commit a goal")
+	}
+
+	secondStarted := make(chan struct{})
+	secondDone := mutate("second committed objective", secondStarted)
+	<-secondStarted
+	close(releaseFirstEmission)
+
+	firstResult := <-firstDone
+	secondResult := <-secondDone
+	if firstResult.err != nil || secondResult.err != nil {
+		t.Fatalf("concurrent SetGoal results = %q: %v, %q: %v", firstResult.objective, firstResult.err, secondResult.objective, secondResult.err)
+	}
+	secondObserved := <-observed
+	secondCommitted, ok := sess.getOrCreateGoalStore().Snapshot()
+	if !ok {
+		t.Fatal("second concurrent mutation did not commit a goal")
+	}
+
+	committedOrder := []string{firstCommitted.Objective, secondCommitted.Objective}
+	observedOrder := []string{firstObserved.objective, secondObserved.objective}
+	if !slices.Equal(observedOrder, committedOrder) {
+		t.Fatalf("GOAL_UPDATED order = %q, committed mutation order = %q", observedOrder, committedOrder)
+	}
+	for i, got := range []observation{firstObserved, secondObserved} {
+		if !got.sessionMuUnlocked {
+			t.Fatalf("GOAL_UPDATED %d (%q) was emitted while Session.mu was held", i, got.objective)
+		}
+		if !got.goalSerializerHeld {
+			t.Fatalf("GOAL_UPDATED %d (%q) was emitted after goalUpdateMu was released", i, got.objective)
+		}
 	}
 }
 
