@@ -10986,6 +10986,11 @@ describe("ConversationStore", () => {
 
         // Rebind to B — the rebind transition settles A's pending mutation
         // (set pendingMutation: null) and increments the binding epoch.
+        // The service/sink binding changes, but ref and conversation generation
+        // must remain exact so late-A suppression is proven by binding identity,
+        // not by ordinary ref/generation staleness.
+        const refBeforeRebind = store.getState().ref;
+        const generationBeforeRebind = store.getState().conversationGeneration;
         const serviceB = new FakeConversationService();
         serviceB.readProjectionResult = {
           conversation: makeConversation({ id: "thread-B" }),
@@ -11000,12 +11005,12 @@ describe("ConversationStore", () => {
         const sinkB = createFakeSink();
         await store.getState().rehydrate(serviceB, sinkB);
 
-        // After rebind to B fully completes, explicitly assert same ref and
-        // generation are B's, not A's.
+        // After rebind to B fully completes, explicitly prove ref and
+        // generation did not change; only service/sink identity changed.
         const stateB = store.getState();
-        expect(stateB.ref).toBe("ref-A");
+        expect(stateB.ref).toBe(refBeforeRebind);
+        expect(stateB.conversationGeneration).toBe(generationBeforeRebind);
         expect(stateB.conversation?.id).toBe("thread-B");
-        const genB = stateB.conversationGeneration;
 
         // A's pending mutation was settled by the rebind — verify it is null.
         expect(stateB.pendingMutation).toBeNull();
@@ -11044,9 +11049,11 @@ describe("ConversationStore", () => {
           expect(store.getState()).toBe(exactStateAfterB);
           // Notification count 0 — no set() fired.
           expect(notificationCount).toBe(0);
-          // ref and generation still B's.
-          expect(store.getState().ref).toBe("ref-A");
-          expect(store.getState().conversationGeneration).toBe(genB);
+          // ref and generation remain the exact pre-rebind values.
+          expect(store.getState().ref).toBe(refBeforeRebind);
+          expect(store.getState().conversationGeneration).toBe(
+            generationBeforeRebind,
+          );
           // No additional A reads or sink writes after rebind.
           expect(serviceA.readProjectionCalls.length).toBe(readsA);
           expect(sinkA.setLiveViewCalls.length).toBe(writesA);
