@@ -326,16 +326,9 @@ func startWaiterInterruptDaemon(t *testing.T) *waiterInterruptDaemon {
 			liveSession.Close()
 		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
-		shutdownReq, requestErr := http.NewRequestWithContext(cleanupCtx, http.MethodPost, "http://"+entry.Address+"/shutdown", nil)
-		var shutdownResp *http.Response
-		var shutdownErr error
-		if requestErr == nil {
-			shutdownResp, shutdownErr = http.DefaultClient.Do(shutdownReq)
-		} else {
-			shutdownErr = requestErr
-		}
-		if shutdownErr == nil {
-			shutdownResp.Body.Close()
+		if err := shutdownServeTestDaemon(cleanupCtx, entry.Address, entry.SessionID); err != nil {
+			cleanupCancel()
+			return
 		}
 		select {
 		case runErr := <-done:

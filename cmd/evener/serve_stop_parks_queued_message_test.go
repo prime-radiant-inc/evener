@@ -132,9 +132,8 @@ func startStopParkDaemon(t *testing.T) *stopParkDaemon {
 	}
 	t.Cleanup(func() {
 		client.Close()
-		shutdownResp, shutdownErr := http.Post("http://"+entry.Address+"/shutdown", "", nil)
-		if shutdownErr == nil {
-			shutdownResp.Body.Close()
+		if err := shutdownServeTestDaemon(ctx, entry.Address, entry.SessionID); err != nil {
+			return
 		}
 		select {
 		case runErr := <-done:

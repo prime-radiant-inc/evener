@@ -189,4 +189,3 @@ Run `git status --short --branch` and `git log --oneline origin/main..HEAD`. Rep
 - Spec coverage: Task 2 removes every named route; Tasks 1 and 4 explicitly protect `/rpc`, `/status`, and `/clear`; Task 3 removes the test-only clients.
 - Placeholder scan: no TBD/TODO marker or unnamed action remains.
 - Type consistency: only existing `appwire.Client.ThreadShutdown`, `TurnStart`, and server typed handlers are used; no production interface is added.
-
