@@ -65,7 +65,9 @@ function truncateToValidUtf8(encoded: Uint8Array, targetBytes: number): string {
 }
 
 // I4: If content fits within cap, preserve as-is (a trailing marker means
-// the store already truncated it). If content exceeds cap, strip ALL existing
+// the store already truncated it, but the projector no longer infers
+// truncated=true from the marker suffix — the store's truncatedItemIds set
+// is the authoritative source. If content exceeds cap, strip ALL existing
 // markers so the output has exactly one, then truncate and add a single marker.
 
 // Build the KMP failure (partial match) table for the marker. failure[i] is
@@ -124,7 +126,10 @@ function truncate(text: string): { body: string; truncated: boolean } {
   const encoded = textEncoder.encode(text);
 
   if (encoded.length <= MAX_LIVE_BYTES) {
-    return { body: text, truncated: text.endsWith(TRUNCATION_MARKER) };
+    // Within cap: body unchanged, projector did not truncate. The store's
+    // truncatedItemIds set (passed via options) is the authoritative source
+    // for whether this item was truncated — no suffix inference here.
+    return { body: text, truncated: false };
   }
 
   // Oversized: strip ALL existing markers in O(n), then truncate + add
@@ -351,6 +356,11 @@ export interface ConversationProjectOptions {
   olderCursor: string | null;
   projectLabel: string;
   updatedLabel: string | null;
+  // Plan3 host projection: authoritative set of item IDs the store has
+  // truncated (frozen). The projector marks an item truncated:true when
+  // the projector itself truncates oversized content OR the store set
+  // marks the item's ID as truncated. This replaces suffix inference.
+  truncatedItemIds: ReadonlySet<string>;
 }
 
 // --- projector instance ------------------------------------------------------
@@ -440,6 +450,7 @@ export function createLiveConversationProjector(options?: {
       opts: ConversationProjectOptions,
     ): { view: LiveConversationView; operational: ConversationOperationalMap } {
       const { ref, olderCursor, projectLabel, updatedLabel } = opts;
+      const truncatedItemIds = opts.truncatedItemIds;
       const scope = ref;
 
       // --- I1: Preflight capacity check (before any allocation) -------------
@@ -580,6 +591,9 @@ export function createLiveConversationProjector(options?: {
 
           case "assistant": {
             const { body, truncated } = truncate(item.markdown);
+            // Plan3: truncated is projector-actually-truncated OR the store
+            // marked this item's ID as truncated (authoritative freeze set).
+            const isTruncated = truncated || truncatedItemIds.has(item.id);
             rows.push({
               key: stageKey([scope, "item", item.id]),
               kind: "assistant",
@@ -587,7 +601,7 @@ export function createLiveConversationProjector(options?: {
               body,
               tone: item.streaming ? "running" : "idle",
               streaming: item.streaming,
-              truncated,
+              truncated: isTruncated,
               questionKey: null,
               sequenceLabel: stageSeq([scope, "item", item.id]),
             });
@@ -600,6 +614,9 @@ export function createLiveConversationProjector(options?: {
               outputText.length > 0
                 ? truncate(outputText)
                 : { body: "", truncated: false };
+            // Plan3: truncated is projector-actually-truncated OR the store
+            // marked this item's ID as truncated (authoritative freeze set).
+            const isTruncated = truncated || truncatedItemIds.has(item.id);
             rows.push({
               key: stageKey([scope, "item", item.id]),
               kind: "tool",
@@ -612,7 +629,7 @@ export function createLiveConversationProjector(options?: {
                     ? "failed"
                     : "success",
               streaming: item.state === "running",
-              truncated,
+              truncated: isTruncated,
               questionKey: null,
               sequenceLabel: stageSeq([scope, "item", item.id]),
             });
