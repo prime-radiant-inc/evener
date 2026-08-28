@@ -3244,7 +3244,7 @@ test("a built-in invocation (/goal) runs the RPC instead of sending, and clears 
   expect(localStorage.getItem("evener.composer.draft.v1.ref_builtin_goal")).toBeNull();
 });
 
-test("a successful /goal shows the goal chip immediately - no rehydrate needed (goal/set has no live push)", async () => {
+test("a successful /goal response fallback shows the goal chip without rehydration", async () => {
   const user = userEvent.setup();
   const fake = await mountComposer("ref_builtin_goal_chip");
   fake.on("goal/set", () => ({ started: true }));
@@ -3252,9 +3252,9 @@ test("a successful /goal shows the goal chip immediately - no rehydrate needed (
   await user.type(textarea(), "/goal ship the demo");
   await user.click(submitButton());
 
-  // The wire carries no goal-changed notification and the fake never
-  // rehydrates the thread, so the chip can only come from the optimistic
-  // override the command applies (GoalControl's own module cache).
+  // This fake emits no notification and never rehydrates the thread, so this
+  // exercises the goal/set response fallback stored in ThreadModel. Separate
+  // store tests prove an accepted push or hydration invalidates that fallback.
   await waitFor(() => expect(screen.getByTestId("goal-chip-trigger")).toBeTruthy());
   expect(screen.getByTestId("goal-chip-trigger").textContent).toContain("Goal: active");
 });

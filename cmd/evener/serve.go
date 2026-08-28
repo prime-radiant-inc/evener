@@ -1451,12 +1451,13 @@ func cloneServeWorktree(value *appwire.JobActivityWorktree) *appwire.JobActivity
 	return &clone
 }
 
-// liveThreadEnvelopeSource is the daemon's one window onto live session state
-// for the materialized thread envelope. The server samples it at the moments
-// those values change (server/thread_envelope.go's facetsByEvent), never on a
-// read: every method here can take the session's mutex, the task store's, or
-// read jobs.jsonl, and a read path that could reach them would hold the
-// projection gate across that work.
+// liveThreadEnvelopeSource is the daemon's one sampling window onto live session
+// state for the materialized root envelope. The server uses it for the
+// pre-bridge seed and retained checkpoint/legacy facets, never on a read. Typed
+// task and goal carriers bypass this adapter and patch cached root/descendant
+// state inside CommitProjection. Every method here can take the session's mutex,
+// the task store's, or read jobs.jsonl, and a read path that could reach them
+// would hold the projection gate across that work.
 //
 // It resolves the session per call rather than capturing one, so it follows
 // /clear onto the replacement session exactly as the sixteen closures it
