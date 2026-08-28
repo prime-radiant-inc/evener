@@ -71,9 +71,9 @@ func TestRenderHubSessionStatusRendersDiagnosticsSections(t *testing.T) {
 			Plugins: []appwire.EvenerPluginInfo{
 				{Name: "superpowers", Version: "5.1.0", SkillCount: 30, AgentCount: 2, HookCount: 4},
 			},
-			Hooks: map[string]int{
-				"SessionStart":     2,
-				"UserPromptSubmit": 1,
+			HookEvents: []appwire.EvenerHookEventStatus{
+				{Event: "SessionStart", Count: 2},
+				{Event: "UserPromptSubmit", Count: 1},
 			},
 			Jobs: []appwire.EvenerJobInfo{
 				{JobID: "job_1", JobType: "delegate", Status: "running"},
@@ -102,7 +102,7 @@ func TestRenderHubSessionStatusRendersDiagnosticsSections(t *testing.T) {
 		"writing-plans",
 		"Plugins (1):",
 		"superpowers v5.1.0 (30 skills, 2 agents, 4 hooks)",
-		"Hooks (2):",
+		"Hook Events (2):",
 		"SessionStart: 2",
 		"UserPromptSubmit: 1",
 		"Jobs (1):",

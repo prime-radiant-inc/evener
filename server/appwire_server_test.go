@@ -888,8 +888,8 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 			Skills: []SkillInfo{
 				{Name: "superpowers:systematic-debugging", Description: "debug"},
 			},
-			Plugins: []PluginStatusInfo{{Name: "superpowers", Version: "4.3.0", SkillCount: 12, AgentCount: 2, HookCount: 4}},
-			Hooks:   map[string]int{"PreToolUse": 3},
+			Plugins:    []PluginStatusInfo{{Name: "superpowers", Version: "4.3.0", SkillCount: 12, AgentCount: 2, HookCount: 4}},
+			HookEvents: []HookEventStatus{{Event: "PreToolUse", Count: 3}},
 			Jobs: []JobStatusInfo{{
 				JobID:         "job-1",
 				JobType:       "delegate",
@@ -934,8 +934,8 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 		diag.Jobs[0].OutputBytes != 128 || diag.Jobs[0].TranscriptRef != "local:child-1" {
 		t.Fatalf("job diagnostics=%+v", diag.Jobs)
 	}
-	if diag.Hooks["PreToolUse"] != 3 {
-		t.Fatalf("hooks=%+v", diag.Hooks)
+	if len(diag.HookEvents) != 1 || diag.HookEvents[0].Event != "PreToolUse" || diag.HookEvents[0].Count != 3 {
+		t.Fatalf("hook events=%+v", diag.HookEvents)
 	}
 }
 

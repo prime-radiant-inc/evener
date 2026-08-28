@@ -2,7 +2,6 @@ package appwire
 
 import (
 	"encoding/json"
-	"maps"
 )
 
 // CloneThread returns a copy of t in which every known nested mutable field
@@ -186,7 +185,7 @@ func cloneEvenerDiagnostics(d *EvenerDiagnostics) *EvenerDiagnostics {
 	cp.MCP = cloneMCPServers(d.MCP)
 	cp.Skills = append([]EvenerSkillInfo(nil), d.Skills...)
 	cp.Plugins = append([]EvenerPluginInfo(nil), d.Plugins...)
-	cp.Hooks = cloneStringIntMap(d.Hooks)
+	cp.HookEvents = append([]EvenerHookEventStatus(nil), d.HookEvents...)
 	cp.Jobs = cloneEvenerJobs(d.Jobs)
 	cp.Delegates = cloneDelegateInfos(d.Delegates)
 	if d.TurnSlots != nil {
@@ -281,8 +280,4 @@ func clonePendingMutation(m PendingMutation) PendingMutation {
 	m.Input = cloneInputItems(m.Input)
 	m.QueueEntryIDs = append([]string(nil), m.QueueEntryIDs...)
 	return m
-}
-
-func cloneStringIntMap(m map[string]int) map[string]int {
-	return maps.Clone(m)
 }

@@ -36,9 +36,9 @@ func TestCloneThreadOwnsNestedMutableState(t *testing.T) {
 		}},
 		Evener: EvenerThread{
 			Diagnostics: &EvenerDiagnostics{
-				MCP:   []EvenerMCPServerInfo{{Tools: []string{"tool"}}},
-				Hooks: map[string]int{"hook": 1},
-				Jobs:  []EvenerJobInfo{{Resumable: &resumable, ExitCode: &jobExit}},
+				MCP:        []EvenerMCPServerInfo{{Tools: []string{"tool"}}},
+				HookEvents: []EvenerHookEventStatus{{Event: "hook", Count: 1}},
+				Jobs:       []EvenerJobInfo{{Resumable: &resumable, ExitCode: &jobExit}},
 				Delegates: []EvenerDelegateInfo{{
 					RunningForMS:     &runningFor,
 					QuietForMS:       &quietFor,

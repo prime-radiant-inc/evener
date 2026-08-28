@@ -148,17 +148,25 @@ type TurnSlotStatus struct {
 	Drives int64 `json:"drive_turns"`
 }
 
+// HookEventStatus describes a single hook event's registration state.
+type HookEventStatus struct {
+	Event     string `json:"event"`
+	Count     int    `json:"count"`
+	Tier      string `json:"tier,omitempty"`
+	Supported bool   `json:"supported"`
+}
+
 // DetailedStatus captures the full session configuration for /status display.
 type DetailedStatus struct {
-	Tools     []ToolInfo           `json:"tools,omitempty"`
-	MCP       []MCPServerInfo      `json:"mcp,omitempty"`
-	Skills    []SkillInfo          `json:"skills,omitempty"`
-	Plugins   []PluginStatusInfo   `json:"plugins,omitempty"`
-	Hooks     map[string]int       `json:"hooks,omitempty"`
-	Jobs      []JobStatusInfo      `json:"jobs,omitempty"`
-	Delegates []DelegateStatusInfo `json:"delegates,omitempty"`
-	TurnSlots *TurnSlotStatus      `json:"turn_slots,omitempty"`
-	Agents    []string             `json:"agents,omitempty"`
+	Tools      []ToolInfo           `json:"tools,omitempty"`
+	MCP        []MCPServerInfo      `json:"mcp,omitempty"`
+	Skills     []SkillInfo          `json:"skills,omitempty"`
+	Plugins    []PluginStatusInfo   `json:"plugins,omitempty"`
+	HookEvents []HookEventStatus    `json:"hook_events,omitempty"`
+	Jobs       []JobStatusInfo      `json:"jobs,omitempty"`
+	Delegates  []DelegateStatusInfo `json:"delegates,omitempty"`
+	TurnSlots  *TurnSlotStatus      `json:"turn_slots,omitempty"`
+	Agents     []string             `json:"agents,omitempty"`
 }
 
 // MarshalJSON preserves an explicit empty plugin inventory while keeping a

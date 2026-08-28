@@ -181,10 +181,9 @@ func writeEvenerDiagnostics(b *strings.Builder, diag *appwire.EvenerDiagnostics)
 		fmt.Fprintf(b, "\n  %s v%s (%d skills, %d agents, %d hooks)", plugin.Name, version, plugin.SkillCount, plugin.AgentCount, plugin.HookCount)
 	}
 
-	fmt.Fprintf(b, "\n\nHooks (%d):", len(diag.Hooks))
-	hooks := sortedHookEntries(diag.Hooks)
-	if len(hooks) > 0 {
-		fmt.Fprintf(b, "\n  %s", strings.Join(hooks, "  "))
+	fmt.Fprintf(b, "\n\nHook Events (%d):", len(diag.HookEvents))
+	for _, he := range diag.HookEvents {
+		fmt.Fprintf(b, "\n  %s: %d", he.Event, he.Count)
 	}
 
 	fmt.Fprintf(b, "\n\nJobs (%d):", len(diag.Jobs))
@@ -205,15 +204,6 @@ func sortedKeys(values map[string][]string) []string {
 	}
 	sort.Strings(keys)
 	return keys
-}
-
-func sortedHookEntries(hooks map[string]int) []string {
-	out := make([]string, 0, len(hooks))
-	for event, count := range hooks {
-		out = append(out, fmt.Sprintf("%s: %d", event, count))
-	}
-	sort.Strings(out)
-	return out
 }
 
 func capabilityList(caps hubSessionCapabilities) string {
