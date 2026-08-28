@@ -370,8 +370,8 @@ function ActionsMenu({ label, items }: { label: string; items: MenuItem[] }) {
 // project cannot be resolved (cmd/evener-hub/navigation_projection.go). It can
 // appear in the wire's `projects` array like any other TreeProject,
 // but the server rejects both archive and delete for this exact key
-// ("no-project is not a local project" - app_archive.go/
-// web_api_project_delete.go). Offering menu items that are guaranteed to
+// ("no-project is not a local project" - app_archive.go/project_delete.go).
+// Offering menu items that are guaranteed to
 // fail server-side would be worse than offering none - kept as an
 // all-or-nothing exclusion (favorite included) rather than special-casing
 // per action, since evener/favorite/set's own project-kind validation is a

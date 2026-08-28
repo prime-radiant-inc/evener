@@ -652,30 +652,30 @@ func TestCovAPITreeSourcesLocalOnly(t *testing.T) {
 	}
 }
 
-// --- web_api_project_delete.go: removeProjectSessionRendezvous ---
+// --- project_delete.go: removeProjectSessionRendezvous ---
 
 // TestCovRemoveProjectSessionRendezvousEmptyRunDir covers the empty runDir
-// guard (web_api_project_delete.go:477-478).
+// guard in removeProjectSessionRendezvous.
 func TestCovRemoveProjectSessionRendezvousEmptyRunDir(t *testing.T) {
 	if err := removeProjectSessionRendezvous("", "s1"); err != nil {
 		t.Fatalf("expected nil error for empty runDir, got %v", err)
 	}
 }
 
-// --- web_api_project_delete.go: removeProjectSessionDaemonLog ---
+// --- project_delete.go: removeProjectSessionDaemonLog ---
 
 // TestCovRemoveProjectSessionDaemonLogEmptyRunDir covers the empty runDir
-// guard (web_api_project_delete.go:511-512).
+// guard in removeProjectSessionDaemonLog.
 func TestCovRemoveProjectSessionDaemonLogEmptyRunDir(t *testing.T) {
 	if err := removeProjectSessionDaemonLog("", "s1"); err != nil {
 		t.Fatalf("expected nil error for empty runDir, got %v", err)
 	}
 }
 
-// --- web_api_project_delete.go: resumeProjectDeletions ---
+// --- project_delete.go: resumeProjectDeletions ---
 
 // TestCovResumeProjectDeletionsNoStore covers the nil-store path
-// (web_api_project_delete.go:254-255).
+// before resuming any recorded deletion.
 func TestCovResumeProjectDeletionsNoStore(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
 	if err := web.resumeProjectDeletions(); err != nil {
@@ -684,7 +684,7 @@ func TestCovResumeProjectDeletionsNoStore(t *testing.T) {
 }
 
 // TestCovResumeProjectDeletionsWithEmptyStore covers the path where the store
-// has no in-progress deletions (web_api_project_delete.go:258).
+// has no in-progress deletions.
 func TestCovResumeProjectDeletionsWithEmptyStore(t *testing.T) {
 	dir := t.TempDir()
 	store, err := hubcore.NewDeletionStore(dir)
@@ -777,7 +777,7 @@ func TestCovWebassetsHandlerTraversal(t *testing.T) {
 	}
 }
 
-// --- web_api_project_delete.go: appendProjectDeleteLiveSkip ---
+// --- project_delete.go: appendProjectDeleteLiveSkip ---
 
 // TestCovAppendProjectDeleteLiveSkip covers the helper.
 func TestCovAppendProjectDeleteLiveSkip(t *testing.T) {

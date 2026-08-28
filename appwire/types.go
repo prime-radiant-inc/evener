@@ -60,6 +60,7 @@ const (
 	MethodEvenerNavigationRead        = "evener/navigation/read"
 	MethodEvenerFavoriteSet           = "evener/favorite/set"
 	MethodEvenerArchiveSet            = "evener/archive/set"
+	MethodEvenerProjectDelete         = "evener/project/delete"
 	MethodEvenerSearch                = "evener/search"
 	MethodEvenerHarnessesList         = "evener/harnesses/list"
 	MethodEvenerUpgrade               = "evener/upgrade"
@@ -301,6 +302,35 @@ type ArchiveParams struct {
 type ArchiveResponse struct {
 	OK         bool               `json:"ok"`
 	Navigation NavigationMutation `json:"navigation"`
+}
+
+// ProjectDeleteParams identifies the exact local project to delete. WorkingDir
+// is resolved independently and must produce Key before any destructive work.
+type ProjectDeleteParams struct {
+	Key        string `json:"key"`
+	WorkingDir string `json:"workingDir"`
+}
+
+// ProjectDeleteSkip records one session that a project deletion could not own
+// or remove without weakening its live-session and deletion-fence protections.
+type ProjectDeleteSkip struct {
+	ID     string `json:"id"`
+	Reason string `json:"reason"`
+}
+
+// ProjectDeleteResponse reports exactly which project sessions were removed or
+// skipped and the navigation mutation committed for the resulting tree.
+type ProjectDeleteResponse struct {
+	Deleted    []string            `json:"deleted"`
+	Skipped    []ProjectDeleteSkip `json:"skipped"`
+	Navigation NavigationMutation  `json:"navigation"`
+}
+
+// ProjectDeleteConflictData preserves the live-session details returned when
+// a whole-project delete refuses to begin.
+type ProjectDeleteConflictData struct {
+	ErrorData
+	Live []string `json:"live"`
 }
 
 // SearchParams selects matching live and past sessions for the hub command

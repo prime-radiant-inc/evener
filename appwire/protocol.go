@@ -127,6 +127,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerNavigationRead, NavigationReadParams{}, NavigationReadResponse{}, ScopeHub, "Reads one bounded, revisioned hub navigation resource, optionally conditional on its ETag."},
 	{MethodEvenerFavoriteSet, FavoriteSetParams{}, FavoriteSetResponse{}, ScopeHub, "Sets or clears a project favorite and returns the committed navigation invalidation targets."},
 	{MethodEvenerArchiveSet, ArchiveParams{}, ArchiveResponse{}, ScopeHub, "Sets or clears an explicit project or session archive decision and returns its committed navigation receipt."},
+	{MethodEvenerProjectDelete, ProjectDeleteParams{}, ProjectDeleteResponse{}, ScopeHub, "Deletes every removable session in one path-validated local project and returns detailed outcomes plus its committed navigation receipt."},
 	{MethodEvenerSearch, SearchParams{}, SearchResponse{}, ScopeHub, "Searches live and persisted sessions for the hub command palette."},
 	{MethodEvenerHarnessesList, HarnessListParams{}, HarnessListResponse{}, ScopeHub, "Lists available harness descriptors."},
 	{MethodEvenerUpgrade, UpgradeParams{}, UpgradeResponse{}, ScopeHub, "Performs or reports a evener binary upgrade."},

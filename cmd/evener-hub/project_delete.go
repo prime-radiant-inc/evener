@@ -2,10 +2,8 @@ package hub
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"os"
 	"path/filepath"
 	"slices"
@@ -14,36 +12,26 @@ import (
 	"sync"
 
 	"primeradiant.com/evener/agent/schema"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/llm"
 	"primeradiant.com/evener/rendezvous"
 )
 
-type projectDeleteSkip struct {
-	ID     string `json:"id"`
-	Reason string `json:"reason"`
-}
+type projectDeleteSkip = appwire.ProjectDeleteSkip
 
-type projectDeleteResponse struct {
-	Deleted    []string                  `json:"deleted"`
-	Skipped    []projectDeleteSkip       `json:"skipped"`
-	Navigation hubapi.NavigationMutation `json:"navigation"`
-}
-
-func (s *WebServer) writeProjectDelete(w http.ResponseWriter, r *http.Request, deleted []string, skipped []projectDeleteSkip, changed bool, project string) {
+func (s *WebServer) projectDeleteResult(ctx context.Context, deleted []string, skipped []projectDeleteSkip, changed bool, project string) (appwire.ProjectDeleteResponse, error) {
 	navigation := s.emptyNavigationMutation()
 	if changed {
 		hint := navigationChangeHint{Projects: []string{project}}
 		var err error
-		navigation, err = s.navigation.Refresh(r.Context(), hint)
+		navigation, err = s.navigation.Refresh(ctx, hint)
 		if err != nil {
-			writeAPIError(w, http.StatusServiceUnavailable, err.Error())
-			return
+			return appwire.ProjectDeleteResponse{}, appwire.Unavailable(err.Error())
 		}
 	}
-	writeAPIJSON(w, http.StatusOK, projectDeleteResponse{Deleted: deleted, Skipped: skipped, Navigation: navigation})
+	return appwire.ProjectDeleteResponse{Deleted: deleted, Skipped: skipped, Navigation: navigation}, nil
 }
 
 var (
@@ -65,50 +53,32 @@ var (
 	}
 )
 
-// handleAPIProjectDelete removes every session file under a project and scrubs
-// only the decision rows for artifacts it removed. Path-validated; refuses
-// when anything is live at entry.
-func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeAPIError(w, http.StatusMethodNotAllowed, "POST required")
-		return
+// projectDelete removes every session file under a project and scrubs only the
+// decision rows for artifacts it removed. It validates both the project key
+// and working directory and refuses the whole operation when anything is live
+// at entry.
+func (s *WebServer) projectDelete(ctx context.Context, params appwire.ProjectDeleteParams) (appwire.ProjectDeleteResponse, error) {
+	if params.Key == "" || params.WorkingDir == "" {
+		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams("key and workingDir are required")
 	}
-	var body struct {
-		Key        string `json:"key"`
-		WorkingDir string `json:"working_dir"`
+	if params.Key == "no-project" {
+		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams("no-project is not a local project")
 	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "invalid JSON: "+err.Error())
-		return
+	if err := identifier.ValidateProjectID(params.Key); err != nil {
+		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams("invalid project ID: " + err.Error())
 	}
-	if body.Key == "" || body.WorkingDir == "" {
-		writeAPIError(w, http.StatusBadRequest, "key and workingDir are required")
-		return
-	}
-	if body.Key == "no-project" {
-		writeAPIError(w, http.StatusBadRequest, "no-project is not a local project")
-		return
-	}
-	if err := identifier.ValidateProjectID(body.Key); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "invalid project ID: "+err.Error())
-		return
-	}
-	project, err := identifier.ResolveProject(body.WorkingDir)
+	project, err := identifier.ResolveProject(params.WorkingDir)
 	if err != nil {
-		writeAPIError(w, http.StatusBadRequest, "resolve project: "+err.Error())
-		return
+		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams("resolve project: " + err.Error())
 	}
-	if project.ID != body.Key {
-		writeAPIError(w, http.StatusBadRequest, "project ID does not match working_dir")
-		return
+	if project.ID != params.Key {
+		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams("project ID does not match workingDir")
 	}
 	if s.cfg.Past == nil {
-		writeAPIError(w, http.StatusInternalServerError, "past index not configured")
-		return
+		return appwire.ProjectDeleteResponse{}, appwire.InternalError("past index not configured")
 	}
 	if s.deletionStoreErr != nil {
-		writeAPIError(w, http.StatusInternalServerError, "load deletion state: "+s.deletionStoreErr.Error())
-		return
+		return appwire.ProjectDeleteResponse{}, appwire.InternalError("load deletion state: " + s.deletionStoreErr.Error())
 	}
 	if record, ok := s.cfg.DeletionStore.DeletingProject(project.ID); ok {
 		releaseOwnership, ownerErr := s.acquireProjectDeletionOwnership(record, nil)
@@ -117,8 +87,7 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 			if errors.Is(ownerErr.Err, llm.ErrAPILogTargetLocked) || ownerErr.Live {
 				skipped = appendProjectDeleteLiveSkip(nil, ownerErr.ThreadID)
 			}
-			s.writeProjectDelete(w, r, []string{}, skipped, false, project.ID)
-			return
+			return s.projectDeleteResult(ctx, []string{}, skipped, false, project.ID)
 		}
 		defer func() {
 			if releaseOwnership != nil {
@@ -127,28 +96,25 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 		}()
 		result := s.cleanupProjectDeletion(record, nil)
 		if len(result.DecisionErrors) > 0 {
-			writeAPIError(w, http.StatusInternalServerError, strings.Join(result.DecisionErrors, "; "))
-			return
+			return appwire.ProjectDeleteResponse{}, appwire.InternalError(strings.Join(result.DecisionErrors, "; "))
 		}
 		releaseOwnership()
 		releaseOwnership = nil
-		s.writeProjectDelete(w, r, result.Deleted, result.Skipped, len(result.Deleted) > 0, project.ID)
-		return
+		return s.projectDeleteResult(ctx, result.Deleted, result.Skipped, len(result.Deleted) > 0, project.ID)
 	}
 	// Validate the body against the current tree entry for that key — never
 	// invert the lossy slug on a destructive path (round-2 A11).
-	tree, _ := s.memoTree(r.Context())
+	tree, _ := s.memoTree(ctx)
 	var matched *hubcore.TreeProject
 	for _, p := range append(append([]hubcore.TreeProject(nil), tree.Projects...), tree.ArchivedProjects...) {
-		if p.Key == body.Key {
+		if p.Key == params.Key {
 			pp := p
 			matched = &pp
 			break
 		}
 	}
 	if matched == nil || matched.WorkingDir != project.CanonicalPath {
-		writeAPIError(w, http.StatusBadRequest, "key does not match workingDir")
-		return
+		return appwire.ProjectDeleteResponse{}, appwire.InvalidParams("key does not match workingDir")
 	}
 
 	// Resolve every distinct candidate path before deleting anything. This uses
@@ -161,15 +127,14 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 	}
 	projects, err := hubcore.ResolveProjectMapStrict(metas, nil)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "resolve project membership: "+err.Error())
-		return
+		return appwire.ProjectDeleteResponse{}, appwire.InternalError("resolve project membership: " + err.Error())
 	}
 
 	// Select the session set from All() (carries StateDir), uncapped.
 	var entries []hubcore.PastEntry
 	for _, e := range all {
 		workingDir := hubcore.EffectiveWorkingDir(e.Meta)
-		if projects[workingDir].ID == body.Key {
+		if projects[workingDir].ID == params.Key {
 			entries = append(entries, e)
 		}
 	}
@@ -183,14 +148,19 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 			}
 		}
 		if len(liveNames) > 0 {
-			writeAPIJSON(w, http.StatusConflict, map[string]any{"error": "project has live sessions", "live": liveNames})
-			return
+			return appwire.ProjectDeleteResponse{}, appwire.WireError{
+				Code:    appwire.CodeConflict,
+				Message: "project has live sessions",
+				Data: appwire.ProjectDeleteConflictData{
+					ErrorData: appwire.ErrorData{EvenerErrorInfo: appwire.ErrorConflict},
+					Live:      liveNames,
+				},
+			}
 		}
 	}
 
 	if len(entries) == 0 {
-		s.writeProjectDelete(w, r, []string{}, []projectDeleteSkip{}, false, project.ID)
-		return
+		return s.projectDeleteResult(ctx, []string{}, []projectDeleteSkip{}, false, project.ID)
 	}
 	targets := make([]hubcore.DeletionTarget, 0, len(entries))
 	stateDirs := make(map[string]string, len(entries))
@@ -208,24 +178,21 @@ func (s *WebServer) handleAPIProjectDelete(w http.ResponseWriter, r *http.Reques
 		}
 	}()
 	if len(ownedTargets) == 0 {
-		s.writeProjectDelete(w, r, []string{}, skipped, false, project.ID)
-		return
+		return s.projectDeleteResult(ctx, []string{}, skipped, false, project.ID)
 	}
 
 	record, err := s.cfg.DeletionStore.BeginProject(project.ID, ownedTargets, len(skipped) == 0)
 	if err != nil {
-		writeAPIError(w, http.StatusInternalServerError, "commit deletion fence: "+err.Error())
-		return
+		return appwire.ProjectDeleteResponse{}, appwire.InternalError("commit deletion fence: " + err.Error())
 	}
 	result := s.cleanupProjectDeletion(record, stateDirs)
 	result.Skipped = append(skipped, result.Skipped...)
 	if len(result.DecisionErrors) > 0 {
-		writeAPIError(w, http.StatusInternalServerError, strings.Join(result.DecisionErrors, "; "))
-		return
+		return appwire.ProjectDeleteResponse{}, appwire.InternalError(strings.Join(result.DecisionErrors, "; "))
 	}
 	releaseOwnership()
 	releaseOwnership = nil
-	s.writeProjectDelete(w, r, result.Deleted, result.Skipped, len(result.Deleted) > 0, project.ID)
+	return s.projectDeleteResult(ctx, result.Deleted, result.Skipped, len(result.Deleted) > 0, project.ID)
 }
 
 type projectDeletionOwnershipError struct {

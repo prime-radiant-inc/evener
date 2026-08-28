@@ -1,10 +1,10 @@
 // actions.ts wraps the application mutations the rail's row menu drives:
 // favorite/rename/archive/delete-project. REST-backed actions retain their
-// handler-specific request helpers below; favorite and archive use the typed
-// AppWire client. No optimistic UI: callers await the response's exact
-// navigation targets before removing their overlay.
+// handler-specific request helpers below; favorite, archive, and project delete
+// use the typed AppWire client. No optimistic UI: callers await the response's
+// exact navigation targets before removing their overlay.
 import type { AppwireClientLike } from "../../protocol/testing/fakeClient";
-import type { FavoriteSetResponse, NavigationMutation } from "../../protocol/types.gen";
+import type { FavoriteSetResponse, NavigationMutation, ProjectDeleteResponse } from "../../protocol/types.gen";
 import { connectionStore } from "../../stores/connection";
 
 /** Wire shape of GET /api/pin-sections — { id, name, member_count }. */
@@ -19,11 +19,7 @@ export interface NavigationMutationReceipt {
 }
 export type FavoriteMutationResponse = FavoriteSetResponse;
 
-export interface ProjectDeleteResult {
-  deleted: string[];
-  skipped: { id: string; reason: string }[];
-  navigation: NavigationMutation;
-}
+export type ProjectDeleteResult = ProjectDeleteResponse;
 
 async function parseErrorBody(res: Response): Promise<string> {
   try {
@@ -162,12 +158,15 @@ export async function setArchived(
   return client.request("evener/archive/set", params);
 }
 
-/** POST /api/project/delete. Body: {key, working_dir}. Destructive -
- * removes every session file under the project. Rejects (409, surfaced as
- * a thrown Error carrying the handler's message) when anything in the
- * project is still live. */
+/** Deletes every removable session in a path-validated local project through
+ * evener/project/delete. A live session at entry rejects the whole request as
+ * an AppWire conflict; concurrent resumes are returned in skipped. */
 export async function deleteProject(key: string, workingDir: string): Promise<ProjectDeleteResult> {
-  return postJSON<ProjectDeleteResult>("/api/project/delete", { key, working_dir: workingDir });
+  const client: AppwireClientLike | null = connectionStore.getState().client;
+  if (!client) {
+    throw new Error("project delete action: no client connected; call connectionStore.connect(client) first");
+  }
+  return client.request("evener/project/delete", { key, workingDir });
 }
 
 /** POST /api/sessions/{ref}/delete. No body - the ref in the URL is the only

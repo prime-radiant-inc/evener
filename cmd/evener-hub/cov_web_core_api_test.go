@@ -98,21 +98,12 @@ func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
 
 }
 
-func TestCovWebCoreAPIDeleteAndRenameValidation(t *testing.T) {
+func TestCovWebCoreAPIRenameValidation(t *testing.T) {
 	emptyPast := hubcore.NewPastIndex(filepath.Join(t.TempDir(), "projects", "*"))
 	if _, err := emptyPast.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
 	web := NewWebServer(hubcore.WebConfig{Past: emptyPast})
-	for _, tc := range []struct{ method, body string }{
-		{http.MethodGet, ""}, {http.MethodPost, "{"}, {http.MethodPost, `{}`},
-		{http.MethodPost, `{"key":"k","working_dir":"/w"}`},
-	} {
-		req := httptest.NewRequest(tc.method, "/api/project/delete", strings.NewReader(tc.body))
-		rec := httptest.NewRecorder()
-		web.handleAPIProjectDelete(rec, req)
-	}
-
 	for _, tc := range []struct{ method, body string }{
 		{http.MethodGet, ""}, {http.MethodPost, "{"}, {http.MethodPost, `{}`},
 		{http.MethodPost, `{"name":" renamed "}`},
@@ -159,7 +150,7 @@ func FuzzCovWebCoreAPI(f *testing.F) {
 	f.Fuzz(func(t *testing.T, order byte) {
 		tests := []func(*testing.T){
 			TestCovWebCoreAPIHelpersAndRoutes,
-			TestCovWebCoreAPIDeleteAndRenameValidation,
+			TestCovWebCoreAPIRenameValidation,
 			TestProjectDeleteRemovesFilesAndScrubs,
 			TestProjectDeleteRejectsKeyWorkingDirMismatch,
 			TestProjectDeleteRefusesWhenLive,

@@ -38,7 +38,9 @@ left to fragment-route.
 - `evener/favorite/set` — set or clear a project's favorite (Pinned) decision;
   the typed method retains the explicit rejection for obsolete session-shaped
   favorite requests.
-- `POST /api/project/delete` — delete every session under a project.
+- `evener/project/delete` — delete every removable session under a
+  path-validated local project and return detailed outcomes plus its committed
+  navigation receipt.
 - `POST /api/sessions/{ref}/rename` — rename a session.
 
 ## What changed (2026-07-04 sidebar rebuild)
@@ -53,7 +55,7 @@ left to fragment-route.
 - Project favorites use the typed `evener/favorite/set` method; favorited
   sessions surface in a Pinned tier through the separate session-pin API.
 - A project and every session under it can be deleted in one action
-  (`POST /api/project/delete`).
+  (`evener/project/delete`).
 - Test-run sessions are classified into their own tier server-side, in
   `/api/tree` — the client does not yet render them as a distinct sidebar
   section.

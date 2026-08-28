@@ -256,19 +256,37 @@ describe("setArchived", () => {
 });
 
 describe("deleteProject", () => {
-  test("POSTs /api/project/delete with exact key/working_dir body and returns the parsed result", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ deleted: ["a", "b"], skipped: [] }));
-    const result = await deleteProject("proj-key", "/home/user/proj");
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/project/delete",
-      JSON_INIT({ key: "proj-key", working_dir: "/home/user/proj" }),
-    );
-    expect(result).toEqual({ deleted: ["a", "b"], skipped: [] });
+  test("sends the typed AppWire request and returns its result", async () => {
+    const response = {
+      deleted: ["a", "b"],
+      skipped: [],
+      navigation: { generation_id: "g1", targets: [] },
+    };
+    const client = new FakeClient();
+    client.on("evener/project/delete", (params) => {
+      expect(params).toEqual({ key: "proj-key", workingDir: "/home/user/proj" });
+      return response;
+    });
+    connectionStore.getState().connect(client);
+
+    await expect(deleteProject("proj-key", "/home/user/proj")).resolves.toEqual(response);
+    expect(client.calls).toEqual([
+      { method: "evener/project/delete", params: { key: "proj-key", workingDir: "/home/user/proj" } },
+    ]);
   });
 
-  test("a 409 conflict (live sessions) rejects with the server's error message", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "project has live sessions", live: ["sess1"] }, 409));
+  test("propagates an AppWire conflict", async () => {
+    const client = new FakeClient();
+    client.on("evener/project/delete", () => {
+      throw new Error("project has live sessions");
+    });
+    connectionStore.getState().connect(client);
+
     await expect(deleteProject("proj-key", "/dir")).rejects.toThrow("project has live sessions");
+  });
+
+  test("rejects when no AppWire client is connected", async () => {
+    await expect(deleteProject("proj-key", "/dir")).rejects.toThrow("project delete action: no client connected");
   });
 });
 

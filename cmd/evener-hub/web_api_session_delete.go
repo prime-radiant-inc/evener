@@ -37,8 +37,8 @@ func (s *WebServer) writeSessionDelete(w http.ResponseWriter, r *http.Request, d
 
 // handleAPISessionDelete removes one ended or confirmed-crashed LOCAL session
 // (kata n15j) without touching any project sibling. It is the single-target
-// counterpart of handleAPIProjectDelete (web_api_project_delete.go) and
-// deliberately reuses that file's machinery rather than re-implementing it:
+// counterpart of projectDelete (project_delete.go) and deliberately reuses
+// that file's machinery rather than re-implementing it:
 // the same per-session lock + crash-vs-live predicate + API-log ownership
 // reservation (acquireProjectDeletionOwnership, which already applies kata
 // 8at6's projectSessionLive fix), and the same raw artifact removal
@@ -52,12 +52,12 @@ func (s *WebServer) writeSessionDelete(w http.ResponseWriter, r *http.Request, d
 // always comes from the trusted Past index (pe.StateDir), never from string
 // concatenation over the id.
 //
-// The response envelope mirrors handleAPIProjectDelete's own
+// The response envelope mirrors projectDelete's own
 // {"deleted":[...],"skipped":[...]} shape for a target set of at most one,
 // so the frontend's existing ProjectDeleteResult parsing/toast logic applies
 // unchanged. A session no longer present in the Past index (never existed,
 // or a previous call already deleted it) reports a clean no-op rather than
-// an error, matching handleAPIProjectDelete's own "nothing to do" path -
+// an error, matching projectDelete's own "nothing to do" path -
 // that is what keeps a repeated delete idempotent.
 func (s *WebServer) handleAPISessionDelete(w http.ResponseWriter, r *http.Request, id string) {
 	if r.Method != http.MethodPost {

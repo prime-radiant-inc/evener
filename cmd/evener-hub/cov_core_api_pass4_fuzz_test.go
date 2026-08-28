@@ -137,14 +137,11 @@ func FuzzCoreAPIPass4(f *testing.F) {
 		call(http.MethodPost, "/api/sessions/local:ended/rename", `{"name":" ended renamed "}`)
 		call(http.MethodPost, "/api/sessions/local:missing/rename", `{"name":"x"}`)
 		call(http.MethodPost, "/api/sessions/local:ended/rename", `{`)
-		call(http.MethodPost, "/api/project/delete", `{`)
-		call(http.MethodPost, "/api/project/delete", `{}`)
-		call(http.MethodGet, "/api/project/delete", "")
-		projectBody := `{"key":"` + testProjectID(t, workingDir) + `","working_dir":"` + workingDir + `"}`
+		projectParams := appwire.ProjectDeleteParams{Key: testProjectID(t, workingDir), WorkingDir: workingDir}
 		web.cfg.Roster = hubcore.NewRosterWithEntries(hubcore.LiveEntry{SessionID: "ended", Status: "active"})
-		direct(web.handleAPIProjectDelete, http.MethodPost, "/api/project/delete", projectBody)
+		_, _ = web.projectDelete(context.Background(), projectParams)
 		web.cfg.Roster = hubcore.NewRosterWithEntries()
-		direct(web.handleAPIProjectDelete, http.MethodPost, "/api/project/delete", projectBody)
+		_, _ = web.projectDelete(context.Background(), projectParams)
 
 		// Exercise the real process boundary for both a repository and an error.
 		repo := filepath.Join(root, "repo")

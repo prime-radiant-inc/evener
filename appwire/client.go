@@ -577,6 +577,12 @@ func (c *Client) ArchiveSet(ctx context.Context, params ArchiveParams) (ArchiveR
 	return out, err
 }
 
+func (c *Client) ProjectDelete(ctx context.Context, params ProjectDeleteParams) (ProjectDeleteResponse, error) {
+	var out ProjectDeleteResponse
+	err := c.request(ctx, MethodEvenerProjectDelete, params, &out)
+	return out, err
+}
+
 func (c *Client) Search(ctx context.Context, params SearchParams) (SearchResponse, error) {
 	var out SearchResponse
 	err := c.request(ctx, MethodEvenerSearch, params, &out)

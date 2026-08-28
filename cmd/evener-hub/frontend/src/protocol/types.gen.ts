@@ -1169,6 +1169,22 @@ export interface PluginSetAutoUpgradeParams {
   autoUpgrade: boolean;
 }
 
+export interface ProjectDeleteParams {
+  key: string;
+  workingDir: string;
+}
+
+export interface ProjectDeleteResponse {
+  deleted: string[];
+  skipped: ProjectDeleteSkip[];
+  navigation: NavigationMutation;
+}
+
+export interface ProjectDeleteSkip {
+  id: string;
+  reason: string;
+}
+
 export interface ProjectsRecentParams {
   limit?: number;
 }
@@ -1881,6 +1897,7 @@ export const METHOD_NAMES = [
   "evener/navigation/read",
   "evener/favorite/set",
   "evener/archive/set",
+  "evener/project/delete",
   "evener/search",
   "evener/harnesses/list",
   "evener/upgrade",
@@ -2049,6 +2066,7 @@ export interface MethodTypes {
   "evener/navigation/read": { params: NavigationReadParams; result: NavigationReadResponse };
   "evener/favorite/set": { params: FavoriteSetParams; result: FavoriteSetResponse };
   "evener/archive/set": { params: ArchiveParams; result: ArchiveResponse };
+  "evener/project/delete": { params: ProjectDeleteParams; result: ProjectDeleteResponse };
   "evener/search": { params: SearchParams; result: SearchResponse };
   "evener/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };
   "evener/upgrade": { params: UpgradeParams; result: UpgradeResponse };

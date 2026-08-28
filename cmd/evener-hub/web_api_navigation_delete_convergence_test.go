@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -17,12 +16,8 @@ import (
 	"primeradiant.com/evener/identifier"
 )
 
-func assertDeleteNavigation(t *testing.T, web *WebServer, body []byte, kind appwire.NavigationTargetKind, projectKey string) {
+func assertDeleteNavigation(t *testing.T, web *WebServer, response appwire.ProjectDeleteResponse, kind appwire.NavigationTargetKind, projectKey string) {
 	t.Helper()
-	var response projectDeleteResponse
-	if err := json.Unmarshal(body, &response); err != nil {
-		t.Fatal(err)
-	}
 	events := web.navigation.DrainPublications()
 	if len(events) != 1 {
 		t.Fatalf("typed navigation events=%d, want one: %+v", len(events), events)
@@ -42,7 +37,7 @@ func assertDeleteNavigation(t *testing.T, web *WebServer, body []byte, kind appw
 	}
 }
 
-func TestRESTDeleteNavigationConvergence(t *testing.T) {
+func TestDeleteNavigationConvergence(t *testing.T) {
 	t.Run("project full partial resumed and no-op", func(t *testing.T) {
 		root := t.TempDir()
 		projectDir := filepath.Join(root, "project")
@@ -73,20 +68,17 @@ func TestRESTDeleteNavigationConvergence(t *testing.T) {
 			t.Fatal(err)
 		}
 		source.changeTitle("project-full")
-		req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(`{"key":"`+project.ID+`","working_dir":"`+project.CanonicalPath+`"}`))
-		rec := httptest.NewRecorder()
-		web.Handler().ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("full status=%d body=%s", rec.Code, rec.Body.String())
-		}
-		var full projectDeleteResponse
-		if err := json.Unmarshal(rec.Body.Bytes(), &full); err != nil {
-			t.Fatal(err)
+		full, err := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+			Key:        project.ID,
+			WorkingDir: project.CanonicalPath,
+		})
+		if err != nil {
+			t.Fatalf("full delete: %v", err)
 		}
 		if len(full.Deleted) != 2 || len(full.Skipped) != 0 {
 			t.Fatalf("full response=%+v", full)
 		}
-		assertDeleteNavigation(t, web, rec.Body.Bytes(), appwire.NavigationTargetProject, project.ID)
+		assertDeleteNavigation(t, web, full, appwire.NavigationTargetProject, project.ID)
 
 	})
 
@@ -123,15 +115,12 @@ func TestRESTDeleteNavigationConvergence(t *testing.T) {
 		if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
 			t.Fatal(err)
 		}
-		req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(`{"key":"`+project.ID+`","working_dir":"`+project.CanonicalPath+`"}`))
-		rec := httptest.NewRecorder()
-		web.Handler().ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("no-op status=%d body=%s", rec.Code, rec.Body.String())
-		}
-		var noop projectDeleteResponse
-		if err := json.Unmarshal(rec.Body.Bytes(), &noop); err != nil {
-			t.Fatal(err)
+		noop, err := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+			Key:        project.ID,
+			WorkingDir: project.CanonicalPath,
+		})
+		if err != nil {
+			t.Fatalf("no-op delete: %v", err)
 		}
 		if len(noop.Deleted) != 0 || len(noop.Skipped) != 1 || noop.Skipped[0].ID != webTestSessionID || len(noop.Navigation.Targets) != 0 || len(web.navigation.DrainPublications()) != 0 {
 			t.Fatalf("no-op response/events=%+v", noop)
@@ -178,20 +167,17 @@ func TestRESTDeleteNavigationConvergence(t *testing.T) {
 			t.Fatal(err)
 		}
 		source.changeTitle("partial")
-		req := httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(`{"key":"`+project.ID+`","working_dir":"`+project.CanonicalPath+`"}`))
-		rec := httptest.NewRecorder()
-		web.Handler().ServeHTTP(rec, req)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("partial status=%d body=%s", rec.Code, rec.Body.String())
-		}
-		var response projectDeleteResponse
-		if err := json.Unmarshal(rec.Body.Bytes(), &response); err != nil {
-			t.Fatal(err)
+		response, err := dispatchProjectDelete(t, web, appwire.ProjectDeleteParams{
+			Key:        project.ID,
+			WorkingDir: project.CanonicalPath,
+		})
+		if err != nil {
+			t.Fatalf("partial delete: %v", err)
 		}
 		if len(response.Deleted) != 1 || len(response.Skipped) != 1 {
 			t.Fatalf("partial response=%+v", response)
 		}
-		assertDeleteNavigation(t, web, rec.Body.Bytes(), appwire.NavigationTargetProject, project.ID)
+		assertDeleteNavigation(t, web, response, appwire.NavigationTargetProject, project.ID)
 	})
 
 	t.Run("project resumed request", func(t *testing.T) {
@@ -222,16 +208,11 @@ func TestRESTDeleteNavigationConvergence(t *testing.T) {
 		if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
 			t.Fatal(err)
 		}
-		body := `{"key":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `"}`
+		params := appwire.ProjectDeleteParams{Key: project.ID, WorkingDir: project.CanonicalPath}
 		source.changeTitle("resume-first")
-		first := httptest.NewRecorder()
-		web.Handler().ServeHTTP(first, httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body)))
-		if first.Code != http.StatusOK {
-			t.Fatalf("first status=%d body=%s", first.Code, first.Body.String())
-		}
-		var firstResponse projectDeleteResponse
-		if err := json.Unmarshal(first.Body.Bytes(), &firstResponse); err != nil {
-			t.Fatal(err)
+		firstResponse, err := dispatchProjectDelete(t, web, params)
+		if err != nil {
+			t.Fatalf("first resumed delete: %v", err)
 		}
 		if len(firstResponse.Deleted) != 0 || len(firstResponse.Navigation.Targets) != 0 || len(web.navigation.DrainPublications()) != 0 {
 			t.Fatalf("first resumed response/events=%+v", firstResponse)
@@ -247,19 +228,14 @@ func TestRESTDeleteNavigationConvergence(t *testing.T) {
 		// The resumed request completes durable directory cleanup and reports the
 		// session as newly deleted, so it publishes the converged project target.
 		source.changeTitle("resume-second")
-		second := httptest.NewRecorder()
-		web.Handler().ServeHTTP(second, httptest.NewRequest(http.MethodPost, "/api/project/delete", newBody(body)))
-		if second.Code != http.StatusOK {
-			t.Fatalf("resumed status=%d body=%s", second.Code, second.Body.String())
-		}
-		var resumed projectDeleteResponse
-		if err := json.Unmarshal(second.Body.Bytes(), &resumed); err != nil {
-			t.Fatal(err)
+		resumed, err := dispatchProjectDelete(t, web, params)
+		if err != nil {
+			t.Fatalf("resumed delete: %v", err)
 		}
 		if len(resumed.Deleted) != 1 {
 			t.Fatalf("resumed response/events=%+v", resumed)
 		}
-		assertDeleteNavigation(t, web, second.Body.Bytes(), appwire.NavigationTargetProject, project.ID)
+		assertDeleteNavigation(t, web, resumed, appwire.NavigationTargetProject, project.ID)
 	})
 
 	t.Run("session changed repeated and no-op", func(t *testing.T) {
