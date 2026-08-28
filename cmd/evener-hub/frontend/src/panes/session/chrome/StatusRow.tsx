@@ -22,13 +22,11 @@ import { requireClass } from "../../../widgets/internal/requireClass";
 import { ModelSwitch } from "./ModelSwitch";
 import { contextTone, formatWorkDuration, totalWorkMillis } from "./statusFormat";
 import styles from "./statusrow.module.css";
-import { VisionModelSwitch } from "./VisionModelSwitch";
 
 export interface StatusRowProps {
   sessionRef: string;
   model: ThreadModel;
   now: number;
-  showVisionModel?: boolean;
 }
 
 const CLASS = {
@@ -145,7 +143,7 @@ function ReasoningEffortControl({ sessionRef, model }: { sessionRef: string; mod
   );
 }
 
-export function StatusRow({ sessionRef, model, now, showVisionModel = true }: StatusRowProps) {
+export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
   const workMs = totalWorkMillis(model.workMillis, model.activeTurnStartedAt, now);
   const hasContext = model.contextWindow > 0;
   // The clock reports an in-flight turn's elapsed time, so it has nothing to
@@ -162,7 +160,6 @@ export function StatusRow({ sessionRef, model, now, showVisionModel = true }: St
       <span className={CLASS.identity} data-testid="status-row-identity">
         <ModelSwitch sessionRef={sessionRef} model={model} />
         <ReasoningEffortControl sessionRef={sessionRef} model={model} />
-        {showVisionModel && <VisionModelSwitch sessionRef={sessionRef} model={model} />}
       </span>
       {hasContext && (
         <>

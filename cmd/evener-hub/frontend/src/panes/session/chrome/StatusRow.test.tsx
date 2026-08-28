@@ -170,7 +170,7 @@ test.each([
   },
 );
 
-test("groups model, effort, and vision controls visually", () => {
+test("groups model and effort visually while retaining two independent controls", () => {
   render(
     <StatusRow
       sessionRef="ref_a"
@@ -185,8 +185,7 @@ test("groups model, effort, and vision controls visually", () => {
   const identity = screen.getByTestId("status-row-identity");
   expect(identity.contains(screen.getByTestId("model-switch-trigger"))).toBe(true);
   expect(identity.contains(screen.getByRole("combobox", { name: /reasoning effort/i }))).toBe(true);
-  expect(identity.contains(screen.getByTestId("vision-model-switch-trigger"))).toBe(true);
-  expect(identity.children).toHaveLength(3);
+  expect(identity.children).toHaveLength(2);
 });
 
 // --- model switcher ---------------------------------------------------------

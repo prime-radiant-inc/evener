@@ -246,7 +246,6 @@ test("composer placement renders one ordered inline status and actions cluster w
   const actions = within(cluster).getByRole("button", { name: "Session actions" });
   expect(within(identity).getByTestId("model-switch-trigger")).toBeTruthy();
   expect(within(identity).getByRole("combobox", { name: "Reasoning effort" })).toBeTruthy();
-  expect(within(statusContainer).queryByTestId("vision-model-switch-trigger")).toBeNull();
   expect(statusRow.contains(identity)).toBe(true);
   expect(statusRow.contains(context)).toBe(true);
   expect(cluster.children).toHaveLength(2);
