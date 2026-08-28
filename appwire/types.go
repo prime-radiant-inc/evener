@@ -56,6 +56,7 @@ const (
 	MethodEvenerProjectsRecent        = "evener/projects/recent"
 	MethodEvenerPathValidate          = "evener/path/validate"
 	MethodEvenerGitHead               = "evener/git/head"
+	MethodEvenerMobilePairing         = "evener/mobile/pairing"
 	MethodEvenerNavigationRead        = "evener/navigation/read"
 	MethodEvenerFavoriteSet           = "evener/favorite/set"
 	MethodEvenerArchiveSet            = "evener/archive/set"
@@ -1696,6 +1697,19 @@ type GitHeadParams struct {
 // string when the working directory has no readable git HEAD.
 type GitHeadResponse struct {
 	Head string `json:"head"`
+}
+
+// MobilePairingParams supplies the authenticated web application's explicit
+// origin. The hub validates it before embedding its auth token in a pairing
+// URL, unless configured MobileBaseURL takes precedence.
+type MobilePairingParams struct {
+	Origin string `json:"origin"`
+}
+
+// MobilePairingResponse carries the reusable /auth bootstrap URL scanned by
+// the phone.
+type MobilePairingResponse struct {
+	AuthURL string `json:"authUrl"`
 }
 
 type HarnessListParams struct{}

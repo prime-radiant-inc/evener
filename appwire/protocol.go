@@ -123,6 +123,7 @@ var Methods = []MethodSpec{
 	{MethodEvenerProjectsRecent, ProjectsRecentParams{}, ProjectsRecentResponse{}, ScopeHub, "Lists the most recently used project working directories (session creation path-dropdown options; default cap 15)."},
 	{MethodEvenerPathValidate, PathValidateParams{}, PathValidateResponse{}, ScopeHub, "Validates a launch path."},
 	{MethodEvenerGitHead, GitHeadParams{}, GitHeadResponse{}, ScopeHub, "Reads git HEAD for a working directory."},
+	{MethodEvenerMobilePairing, MobilePairingParams{}, MobilePairingResponse{}, ScopeHub, "Creates a validated mobile pairing URL for the authenticated web application."},
 	{MethodEvenerNavigationRead, NavigationReadParams{}, NavigationReadResponse{}, ScopeHub, "Reads one bounded, revisioned hub navigation resource, optionally conditional on its ETag."},
 	{MethodEvenerFavoriteSet, FavoriteSetParams{}, FavoriteSetResponse{}, ScopeHub, "Sets or clears a project favorite and returns the committed navigation invalidation targets."},
 	{MethodEvenerArchiveSet, ArchiveParams{}, ArchiveResponse{}, ScopeHub, "Sets or clears an explicit project or session archive decision and returns its committed navigation receipt."},

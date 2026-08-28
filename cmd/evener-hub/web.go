@@ -171,7 +171,6 @@ func (s *WebServer) Handler() http.Handler {
 
 	// API
 	mux.HandleFunc("/api/health", s.handleAPIHealth)
-	mux.HandleFunc("/api/mobile/pairing", s.handleAPIMobilePairing)
 	mux.HandleFunc("/api/pin-sections", s.handleAPIPinSections)
 	mux.HandleFunc("/api/pin-sections/", s.handleAPIPinSection)
 	mux.HandleFunc("/api/session-pin", s.handleAPISessionPin)

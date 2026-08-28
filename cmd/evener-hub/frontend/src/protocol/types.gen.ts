@@ -830,6 +830,14 @@ export interface MarketplaceSourceInput {
   sha?: string;
 }
 
+export interface MobilePairingParams {
+  origin: string;
+}
+
+export interface MobilePairingResponse {
+  authUrl: string;
+}
+
 export interface ModelDescriptor {
   provider: string;
   model: string;
@@ -1869,6 +1877,7 @@ export const METHOD_NAMES = [
   "evener/projects/recent",
   "evener/path/validate",
   "evener/git/head",
+  "evener/mobile/pairing",
   "evener/navigation/read",
   "evener/favorite/set",
   "evener/archive/set",
@@ -2036,6 +2045,7 @@ export interface MethodTypes {
   "evener/projects/recent": { params: ProjectsRecentParams; result: ProjectsRecentResponse };
   "evener/path/validate": { params: PathValidateParams; result: PathValidateResponse };
   "evener/git/head": { params: GitHeadParams; result: GitHeadResponse };
+  "evener/mobile/pairing": { params: MobilePairingParams; result: MobilePairingResponse };
   "evener/navigation/read": { params: NavigationReadParams; result: NavigationReadResponse };
   "evener/favorite/set": { params: FavoriteSetParams; result: FavoriteSetResponse };
   "evener/archive/set": { params: ArchiveParams; result: ArchiveResponse };
