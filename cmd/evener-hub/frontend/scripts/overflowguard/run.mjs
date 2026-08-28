@@ -384,13 +384,19 @@ function assertDetail(result, width) {
       }
       if (JSON.stringify(focus.labels) !== JSON.stringify(baseline.labels)) failures.push("segment labels changed during keyboard focus transitions");
       if (!focus.track || !baseline.track || !nearlyEqual(focus.track.left, baseline.track.left) || !nearlyEqual(focus.track.right, baseline.track.right) || !nearlyEqual(focus.track.width, baseline.track.width) || focus.track.clientWidth !== baseline.track.clientWidth || focus.track.scrollWidth !== baseline.track.scrollWidth) {
-        failures.push(`track geometry changed during trusted focus transition to ${expectedFocusLabels[index]}`);
+        failures.push(
+          `track geometry changed during trusted focus transition to ${expectedFocusLabels[index]}: ` +
+            `baseline=${JSON.stringify(baseline.track)}, current=${JSON.stringify(focus.track)}`,
+        );
       }
       if (focus.geometry.length !== baseline.geometry.length || focus.geometry.some((segment, segmentIndex) => {
         const before = baseline.geometry[segmentIndex];
         return !before || !nearlyEqual(segment.left, before.left) || !nearlyEqual(segment.right, before.right) || !nearlyEqual(segment.top, before.top) || !nearlyEqual(segment.bottom, before.bottom) || !nearlyEqual(segment.width, before.width) || !nearlyEqual(segment.height, before.height);
       })) {
-        failures.push(`segment geometry changed during trusted focus transition to ${expectedFocusLabels[index]}`);
+        failures.push(
+          `segment geometry changed during trusted focus transition to ${expectedFocusLabels[index]}: ` +
+            `baseline=${JSON.stringify(baseline.geometry)}, current=${JSON.stringify(focus.geometry)}`,
+        );
       }
     }
   }
