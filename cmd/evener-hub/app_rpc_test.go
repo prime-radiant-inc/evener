@@ -4493,11 +4493,34 @@ func TestHubSourceRegistryRoutesRunningSubagentThroughOwnerDaemon(t *testing.T) 
 		Entry:              entry,
 		SessionID:          "root",
 		RunningSubagentIDs: []string{"child"},
+		RunningJobs: []appwire.EvenerJobInfo{{
+			JobID: "job_shell", JobType: "shell", Status: "running",
+		}},
 	})
 	registry := newHubSourceRegistry(hubcore.WebConfig{Roster: roster})
 	source, ok := registry.Source("local")
 	if !ok {
 		t.Fatal("local source missing")
+	}
+	listed, err := source.ListThreads(context.Background(), appwire.ThreadListParams{})
+	if err != nil {
+		t.Fatalf("list root and running subagent: %v", err)
+	}
+	rootCarriedJob := false
+	childListed := false
+	for _, thread := range listed.Data {
+		switch thread.ID {
+		case "root":
+			rootCarriedJob = thread.Evener.Diagnostics != nil && len(thread.Evener.Diagnostics.Jobs) == 1
+		case "child":
+			childListed = true
+			if thread.Evener.Diagnostics != nil {
+				t.Fatalf("child alias duplicated owner jobs: %+v", thread.Evener.Diagnostics.Jobs)
+			}
+		}
+	}
+	if !rootCarriedJob || !childListed {
+		t.Fatalf("listed threads = %+v, want root job and job-free child alias", listed.Data)
 	}
 	read, err := source.ReadThread(context.Background(), appwire.ThreadReadParams{Ref: "local:child"})
 	if err != nil {

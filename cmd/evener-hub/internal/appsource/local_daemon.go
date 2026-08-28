@@ -873,7 +873,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 		},
 		Status: appwire.ThreadStatus{Type: status},
 	}
-	if len(item.RunningJobs) > 0 {
+	if !item.ReadOnlyAlias && len(item.RunningJobs) > 0 {
 		thread.Evener.Diagnostics = &appwire.EvenerDiagnostics{Jobs: cloneLocalDaemonJobs(item.RunningJobs)}
 	}
 	if item.ReadOnlyAlias {
@@ -887,18 +887,7 @@ func (s *LocalDaemonSource) threadFromEntry(item LocalDaemonEntry) appwire.Threa
 }
 
 func cloneLocalDaemonJobs(in []appwire.EvenerJobInfo) []appwire.EvenerJobInfo {
-	out := append([]appwire.EvenerJobInfo(nil), in...)
-	for i := range out {
-		if out[i].Resumable != nil {
-			resumable := *out[i].Resumable
-			out[i].Resumable = &resumable
-		}
-		if out[i].ExitCode != nil {
-			exitCode := *out[i].ExitCode
-			out[i].ExitCode = &exitCode
-		}
-	}
-	return out
+	return appwire.CloneEvenerJobs(in)
 }
 
 func localDaemonRendezvousEntry(item LocalDaemonEntry) rendezvous.Entry {
