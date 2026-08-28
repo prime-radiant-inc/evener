@@ -38,6 +38,7 @@ import type {
   AnyNotification,
   EvenerDelegateInfo,
   EvenerJobInfo,
+  ThreadCapabilities,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type {
   ActivityView,
@@ -76,6 +77,16 @@ export interface LiveActivityState {
     n: AnyNotification,
     identity: ActivityIdentity,
   ): NotificationOutcome;
+
+  // Narrow strict sink for a capabilities-only refresh. Updates only
+  // view.capabilities for the exact current identity and an open view; returns
+  // false on stale/missing/wrong identity and preserves tasks/work/usage/
+  // reasoning. This is the seam the conversation cap-refresh writer calls
+  // independently of the notification stream.
+  setLiveCapabilities(
+    capabilities: ThreadCapabilities,
+    identity: ActivityIdentity,
+  ): boolean;
 
   reset(): void;
 
@@ -444,6 +455,44 @@ function patchLive(
       return "rehydrate";
     }
 
+    // --- I2: control-copy notifications ------------------------------------
+    // These patch ONLY the named control fields on the shared ActivityView;
+    // tasks/work/usage are preserved. Identity/ref validation already happened
+    // in applyLiveNotification before patchLive is reached, so a wrong
+    // identity/ref never reaches here. Never infer anything from status or
+    // model labels — only the explicitly supplied fields are applied.
+
+    case "thread/status/changed": {
+      const params = n.params as ParamsOf<"thread/status/changed">;
+      // Replace capabilities ONLY when supplied; preserve otherwise. The
+      // status payload's type/activeFlags carry no ActivityView state.
+      if (params.capabilities === undefined) return "applied";
+      set({ view: { ...view, capabilities: { ...params.capabilities } } });
+      return "applied";
+    }
+
+    case "thread/model/changed": {
+      const params = n.params as ParamsOf<"thread/model/changed">;
+      // Set reasoningEffortLevels + supportsReasoning exactly, including an
+      // explicit undefined (clearing the field). modelProvider/model are not
+      // ActivityView fields; never infer reasoning support from the label.
+      set({
+        view: {
+          ...view,
+          reasoningEffortLevels: params.reasoningEffortLevels,
+          supportsReasoning: params.supportsReasoning,
+        },
+      });
+      return "applied";
+    }
+
+    case "thread/reasoning-effort/changed": {
+      const params = n.params as ParamsOf<"thread/reasoning-effort/changed">;
+      // Set reasoningEffort exactly, including an explicit undefined.
+      set({ view: { ...view, reasoningEffort: params.reasoningEffort } });
+      return "applied";
+    }
+
     default:
       return "ignored";
   }
@@ -519,10 +568,31 @@ export function createActivityStore() {
       return patchLive(n, state.view, set);
     },
 
+    setLiveCapabilities(capabilities, id) {
+      // Narrow strict sink: update ONLY view.capabilities for the exact current
+      // identity and an open view. Return false (without mutation) on
+      // stale/missing/wrong identity or a null view. Preserve tasks/work/usage/
+      // reasoning.
+      if (identity === null) return false;
+      if (!matchesCurrent(id)) return false;
+      const state = get();
+      if (state.view === null) return false;
+      set({ view: { ...state.view, capabilities: { ...capabilities } } });
+      return true;
+    },
+
     reset() {
-      invalidatedAt = generation;
-      generation += 1;
-      identity = null;
+      // Idempotent while already reset (identity === null): a repeated/external
+      // reset, or a reset before any view was opened, must NOT advance the
+      // rejection boundary. Only a real reset (identity !== null) invalidates
+      // the current accepted generation and clears the view. This preserves
+      // rejection of late old identities while avoiding a phantom boundary
+      // advance that would reject a valid newer identity.
+      if (identity !== null) {
+        invalidatedAt = generation;
+        generation += 1;
+        identity = null;
+      }
       set({ view: null, status: "idle", error: null });
     },
 
