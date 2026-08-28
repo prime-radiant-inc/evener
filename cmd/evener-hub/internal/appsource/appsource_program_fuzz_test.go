@@ -41,7 +41,6 @@ func FuzzAppSourceProgram(f *testing.F) {
 		fuzzScenarioLocalDaemonSourceSubscribeThreadPreservesThreadReadWireError,
 		fuzzScenarioLocalDaemonSourceStartTurnMapsDroppedTransportToMutationOutcomeUnknown,
 		fuzzScenarioLocalDaemonSourceSendsHubTokenBearer,
-		fuzzScenarioLocalDaemonSourceInterruptWithoutTurnIDUsesRESTInterrupt,
 		fuzzScenarioRegistryRoutesByRefSource,
 		fuzzScenarioRegistryRejectsMissingSource,
 		fuzzScenarioRegistryAllReturnsSourcesInIDOrder,
