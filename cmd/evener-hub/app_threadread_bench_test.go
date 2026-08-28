@@ -17,11 +17,6 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// apptranscriptNewTurnCacheForBench exists only to name the constructor this
-// benchmark needs without importing the package solely for that symbol in the
-// loop body; keep it trivial.
-var apptranscriptNewTurnCacheForBench = apptranscript.NewTurnCache
-
 // seedLargePastThread builds one past session with a large synthetic transcript
 // (thousands of user/assistant/tool turns carrying usage, tool calls, and failed
 // tool results — the shape the derived usage/failure scans walk) and returns the
@@ -44,74 +39,59 @@ func seedLargePastThread(tb testing.TB, rounds int) (hubcore.WebConfig, appwire.
 		tb.Fatal(err)
 	}
 	path := filepath.Join(sessions, sessionID+".transcript.jsonl")
-	file, err := os.Create(path)
+	writer, err := transcript.NewWriter(path, transcript.Header{
+		SessionID: sessionID, CreatedAt: now, ProfileID: "openai", Model: "gpt-5",
+	})
 	if err != nil {
 		tb.Fatal(err)
 	}
-	// Buffered writes: seeding is input fixture construction, not the measured
-	// read, and the transcript read back is byte-identical either way.
-	writer := newSynclessBufferedWriter(file)
-	writeLine := func(v any) {
-		line, err := json.Marshal(v)
-		if err != nil {
+	// Input fixture, not a durability test: batch the writes so seeding a large
+	// synthetic transcript does not pay one fsync per Append. Close still
+	// flushes, so the transcript read back is byte-identical.
+	writer.SyncInterval = time.Hour
+	// seq numbers the synthetic turns for call IDs and timestamps; the entry's
+	// own Seq is the writer's, incremented once per Append.
+	seq := 0
+	appendTurn := func(turn schema.Turn) {
+		seq++
+		turn.Timestamp = time.Unix(1_700_000_000+int64(seq), 0).UTC()
+		if err := writer.Append(turn); err != nil {
 			tb.Fatal(err)
 		}
-		writer.Write(append(line, '\n'))
 	}
-	writeLine(transcript.Header{Kind: "header", FormatVersion: transcript.FormatVersion, SessionID: sessionID, CreatedAt: now, ProfileID: "openai", Model: "gpt-5"})
-	seq := 0
 	assistantText := strings.Repeat("a long assistant answer line that mirrors real transcript density ", 8)
 	cacheRead := 800
 	for i := range rounds {
-		seq++
-		writeLine(transcript.Entry{Kind: "entry", Seq: seq, Turn: schema.Turn{
+		appendTurn(schema.Turn{
 			Kind: schema.TurnUserInput, Message: llm.User(fmt.Sprintf("round %d request", i)),
-			Timestamp: time.Unix(1_700_000_000+int64(seq), 0).UTC(),
-		}})
-		seq++
-		writeLine(transcript.Entry{Kind: "entry", Seq: seq, Turn: schema.Turn{
+		})
+		callID := fmt.Sprintf("call_%d", seq)
+		appendTurn(schema.Turn{
 			Kind: schema.TurnAssistant,
 			Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 				{Kind: llm.ContentText, Text: assistantText},
-				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: fmt.Sprintf("call_%d", seq), Name: "shell", Arguments: json.RawMessage(`{"argv":["ls","-la"]}`)}},
+				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: callID, Name: "shell", Arguments: json.RawMessage(`{"argv":["ls","-la"]}`)}},
 			}},
-			Usage:     llm.Usage{InputTokens: 1200, OutputTokens: 340, CacheReadTokens: &cacheRead},
-			Timestamp: time.Unix(1_700_000_000+int64(seq), 0).UTC(),
-		}})
-		seq++
-		// Every eighth tool result fails (IsError), so the failure scan has real
-		// work; the rest carry a nonzero exit code every sixteenth call.
-		seq++
-		failed := i%8 == 0
+			Usage: llm.Usage{InputTokens: 1200, OutputTokens: 340, CacheReadTokens: &cacheRead},
+		})
+		// Every sixteenth tool result is a shell result whose command failed
+		// but whose result is not an error — the case the failure rule reads
+		// from opaque tool state. Every other eighth fails via IsError, so the
+		// failure scan has real work either way.
+		toolResult := &llm.ToolResultData{ToolCallID: callID, Name: "shell"}
 		if i%16 == 0 {
-			// A shell result whose command failed but whose result is not an
-			// error — the case the failure rule reads from opaque tool state.
-			writeLine(transcript.Entry{Kind: "entry", Seq: seq, Turn: schema.Turn{
-				Kind: schema.TurnToolResults,
-				Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{
-					Kind: llm.ContentToolResult,
-					ToolResult: &llm.ToolResultData{
-						ToolCallID: fmt.Sprintf("call_%d", seq-1), Name: "shell",
-						Content:   strings.Repeat("command failed output ", 2),
-						ToolState: json.RawMessage(`{"exit_code":1}`),
-					},
-				}}},
-				Timestamp: time.Unix(1_700_000_000+int64(seq), 0).UTC(),
-			}})
-			continue
+			toolResult.Content = strings.Repeat("command failed output ", 2)
+			toolResult.ToolState = json.RawMessage(`{"exit_code":1}`)
+		} else {
+			toolResult.Content = strings.Repeat("tool output text mirroring a real result body ", 6)
+			toolResult.IsError = i%8 == 0
 		}
-		writeLine(transcript.Entry{Kind: "entry", Seq: seq, Turn: schema.Turn{
+		appendTurn(schema.Turn{
 			Kind: schema.TurnToolResults,
 			Message: llm.Message{Role: llm.RoleTool, Content: []llm.ContentPart{{
-				Kind: llm.ContentToolResult,
-				ToolResult: &llm.ToolResultData{
-					ToolCallID: fmt.Sprintf("call_%d", seq-1), Name: "shell",
-					Content: strings.Repeat("tool output text mirroring a real result body ", 6),
-					IsError: failed,
-				},
+				Kind: llm.ContentToolResult, ToolResult: toolResult,
 			}}},
-			Timestamp: time.Unix(1_700_000_000+int64(seq), 0).UTC(),
-		}})
+		})
 	}
 	if err := writer.Close(); err != nil {
 		tb.Fatal(err)
@@ -123,39 +103,6 @@ func seedLargePastThread(tb testing.TB, rounds int) (hubcore.WebConfig, appwire.
 	return hubcore.WebConfig{Past: idx}, appwire.ThreadReadParams{
 		Ref: "local:" + sessionID, IncludeTurns: true, TurnLimit: 40,
 	}, path
-}
-
-// synclessBufferedWriter buffers transcript fixture writes so seeding a large
-// synthetic transcript does not pay one write syscall per entry.
-type synclessBufferedWriter struct {
-	file *os.File
-	buf  []byte
-}
-
-func newSynclessBufferedWriter(file *os.File) *synclessBufferedWriter {
-	return &synclessBufferedWriter{file: file}
-}
-
-func (w *synclessBufferedWriter) Write(p []byte) {
-	w.buf = append(w.buf, p...)
-	if len(w.buf) >= 1<<20 {
-		w.flush()
-	}
-}
-
-func (w *synclessBufferedWriter) flush() {
-	if len(w.buf) == 0 {
-		return
-	}
-	if _, err := w.file.Write(w.buf); err != nil {
-		panic(err)
-	}
-	w.buf = w.buf[:0]
-}
-
-func (w *synclessBufferedWriter) Close() error {
-	w.flush()
-	return w.file.Close()
 }
 
 // BenchmarkPastThreadReadResponseCold times a past session's initial
@@ -181,7 +128,7 @@ func BenchmarkPastThreadReadResponseCold(b *testing.B) {
 						b.Fatal(err)
 					}
 				}
-				pastTranscriptCache = apptranscriptNewTurnCacheForBench()
+				pastTranscriptCache = apptranscript.NewTurnCache()
 				b.StartTimer()
 				response, found, err := pastThreadReadResponse(cfg, params)
 				if err != nil || !found {

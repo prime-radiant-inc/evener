@@ -596,31 +596,11 @@ func derivedWorkspaceUsage(entry hubcore.PastEntry) *appwire.EvenerUsage {
 	return total
 }
 
-// stampDerivedFailureCount reports how many of the session's tool calls failed,
-// by scanning its own span of the FULL transcript.
-//
-// It is derived server-side because the client cannot derive it honestly. A
-// windowed thread/read hands the client a suffix of the session — measured at
-// about 47% of a long real session's document at load (kata hw2n) — and a count
-// over that suffix is a partial figure wearing a full-session label. For
-// failures that is worse than saying nothing: the harm the count exists to fix
-// is a reader concluding a run was clean because they had not yet scrolled to
-// the failure, and a "0 failed" computed from the loaded window states exactly
-// that conclusion in the session's own chrome.
-//
-// A fork child's transcript OPENS with a verbatim copy of the parent's prefix,
-// whose failures the PARENT made. DivergenceTurn marks where the child's own
-// history begins, and only that span is counted — the same attribution rule
-// stampDerivedTotals applies to tokens.
-//
-// Applied only on the single-thread read paths, for the reason
-// stampDerivedTotals states: pastEntryThread also runs once per entry on
-// the thread-list and transcript-target sweeps, where a scan per session costs a
-// read of every transcript in the state dir.
-//
-// A read error (a legacy format_version 1 transcript, a missing file) leaves the
-// count ABSENT. Unknown is the honest report, the client renders an absent count
-// as nothing, and a session nobody can read must not be reported as clean.
+// stampDerivedFailureCount is stampDerivedTotals's failure-only half, for a
+// thread whose usage total the meta already carried: it scans the session's own
+// span for the failure count alone. The full rationale — why the count is
+// derived server-side, the divergence cut, error-means-absent — is stamped above
+// stampDerivedTotals.
 func stampDerivedFailureCount(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
 	count, err := pastTranscriptCache.FailedToolCallsFromFile(pastTranscriptPath(entry), transcriptJSONLMaxLineBytes, entry.Meta.DivergenceTurn)
 	if err != nil {

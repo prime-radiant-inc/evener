@@ -10,9 +10,9 @@ import (
 )
 
 // derivedTotals is what DerivedTotalsFromFile computes in one pass: the
-// session's full-transcript token sum and failed-tool-call count, plus whether
-// the counted span carried any usage at all (absent and zero are different
-// claims — see UsageTotalFromFile).
+// session's full-transcript token sum and its failed-tool-call count. A nil
+// usage means the counted span carried no token data — the nil-usage semantics
+// DerivedTotalsFromFile documents below.
 type derivedTotals struct {
 	usage          *appwire.EvenerUsage
 	failedToolCall int
