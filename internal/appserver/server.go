@@ -11,6 +11,16 @@ import (
 	"primeradiant.com/evener/appwire"
 )
 
+// maxConcurrentRequestsPerConnection bounds how many post-initialize
+// requests one connection may have running at once. Legitimate browser
+// bursts stay far below this (the UI issues a handful of overlapping reads
+// and mutations per view); the cap exists so a misbehaving client that
+// floods requests faster than handlers complete cannot grow goroutines and
+// handler state without bound, degrading the whole server's memory and
+// scheduler headroom. Overflow is answered with a retryable wire error, not
+// a disconnect, because a compliant retry will find capacity.
+const maxConcurrentRequestsPerConnection = 128
+
 type ServerConfig struct {
 	ServerName string
 	Version    string
@@ -91,7 +101,12 @@ func (s *Server) NewConnection(id string) *Connection {
 	// share one constant so neither peer can quietly become the smaller pipe
 	// (at 32 this side evicted live clients whose send loop napped through a
 	// turn-boundary burst on a loaded machine).
-	return &Connection{id: id, server: s, send: make(chan appwire.Message, appwire.NotificationBufferCap)}
+	return &Connection{
+		id:       id,
+		server:   s,
+		send:     make(chan appwire.Message, appwire.NotificationBufferCap),
+		inFlight: make(chan struct{}, maxConcurrentRequestsPerConnection),
+	}
 }
 
 func (s *Server) logf(format string, args ...any) {
@@ -278,9 +293,14 @@ func navigationCapability(capability *appwire.NavigationCapability) *appwire.Nav
 }
 
 type Connection struct {
-	id          string
-	server      *Server
-	send        chan appwire.Message
+	id     string
+	server *Server
+	send   chan appwire.Message
+	// inFlight is the per-connection in-flight request limiter: a buffered
+	// semaphore of maxConcurrentRequestsPerConnection slots. It is taken
+	// non-blockingly by dispatchMessage and released by the handler goroutine
+	// on completion, so the receive loop never parks on it.
+	inFlight    chan struct{}
 	sendMu      sync.RWMutex
 	sendClosed  bool
 	mu          sync.RWMutex
@@ -453,8 +473,9 @@ func (c *Connection) HandleMessage(ctx context.Context, msg appwire.Message) app
 	}
 	req := *msg.Request
 	// ping is the browser's app-level heartbeat (browsers cannot send WS ping
-	// frames from JS). It bypasses the router and is answered inline in the
-	// receive loop, so no busy handler can starve it.
+	// frames from JS). It bypasses the router, and dispatchMessage answers it
+	// inline in the receive loop ahead of any handler goroutine, so however
+	// busy the connection's handlers get, ping is never starved.
 	if req.Method == appwire.MethodPing {
 		return appwire.ResponseMessage(req.ID, struct{}{})
 	}
@@ -767,4 +788,80 @@ func (c *Connection) setInitialized() {
 	c.mu.Lock()
 	c.initialized = true
 	c.mu.Unlock()
+}
+
+// dispatchMessage applies the connection's dispatch policy to one inbound
+// message: which messages run inline in the receive loop and which run on
+// their own goroutine. A transport's receive loop is the only caller; the
+// policy lives on the Connection so any second transport inherits the same
+// sequencing for free.
+//
+// It runs each post-initialize request on its own goroutine so a slow
+// handler no longer head-of-line blocks the connection's other requests —
+//
+// Ordering constraints that survive concurrency:
+//
+//   - initialize must be the first request. Until the connection reports
+//     initialized, every message is handled inline in the receive loop:
+//     pre-initialize requests other than ping are rejected ("initialize
+//     required"), and the initialize handshake itself completes — response
+//     enqueued — before the loop reads another frame. Dispatch of later
+//     requests therefore cannot observe a half-initialized connection.
+//   - notifications and ping are always handled inline: they are bounded
+//     work, and answering ping inline is what keeps the app-level heartbeat
+//     responsive no matter how many handlers are busy.
+//   - post-initialize requests must first take a slot from the in-flight
+//     limiter. The acquire is non-blocking — the receive loop must never
+//     park on the limiter, or ping would be head-of-line blocked again. On
+//     capacity exhaustion the request is answered immediately with a
+//     retryable Unavailable wire error rather than dispatched.
+//   - responses enter the connection send queue through the same
+//     enqueueResponse path as before, so hydration capture commit/abort
+//     ordering is unchanged.
+//
+// Error responses from enqueueResponse are terminal for the connection, but
+// a handler goroutine must not tear the receive loop down out from under it;
+// canceling the shared context is enough — the next Recv fails and the loop
+// exits with the normal close handling.
+func (c *Connection) dispatchMessage(ctx context.Context, msg appwire.Message) {
+	if msg.Request == nil || msg.Request.Method == appwire.MethodPing {
+		c.handleAndEnqueue(ctx, msg)
+		return
+	}
+	if !c.isInitialized() {
+		c.handleAndEnqueue(ctx, msg)
+		return
+	}
+	// Non-blocking acquire: the receive loop must never park on the limiter.
+	select {
+	case c.inFlight <- struct{}{}:
+	default:
+		// The response is already decided, so it bypasses HandleMessage and
+		// is enqueued directly.
+		c.enqueueDispatched(ctx, appwire.ErrorMessage(msg.Request.ID, appwire.Unavailable(
+			fmt.Sprintf("connection already has %d requests in flight; retry shortly", maxConcurrentRequestsPerConnection),
+		)))
+		return
+	}
+	go func() {
+		defer func() { <-c.inFlight }()
+		c.handleAndEnqueue(ctx, msg)
+	}()
+}
+
+// handleAndEnqueue runs one request through HandleMessage and enqueues its
+// response.
+func (c *Connection) handleAndEnqueue(ctx context.Context, msg appwire.Message) {
+	c.enqueueDispatched(ctx, c.HandleMessage(ctx, msg))
+}
+
+// enqueueDispatched is the one enqueue body every dispatch path shares:
+// enqueue a response, canceling the connection when it cannot be enqueued.
+func (c *Connection) enqueueDispatched(ctx context.Context, resp appwire.Message) {
+	if resp.Kind() == appwire.MessageInvalid {
+		return
+	}
+	if err := c.enqueueResponse(ctx, resp); err != nil {
+		c.cancelContext()
+	}
 }
