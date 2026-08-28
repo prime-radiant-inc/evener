@@ -27,7 +27,15 @@
 // The conversation store is the narrowed LiveConversationState store (not the
 // base ConversationState). The dispatcher is the sole writer to its stores via
 // the store's own methods; it attaches rejection handlers that publish a
-// sanitized message to the owning store rather than swallowing.
+// generic fixed message to the owning store rather than swallowing.
+//
+// Error safety: rejection handlers NEVER publish the raw Error.message — a
+// secret/ref-bearing rejection must not leak into the store. Every conversation
+// rejection goes through the store-owned publishExternalError action, passing
+// the exact ref + conversationGeneration captured before the Promise so a late
+// rejection after a generation/ref change produces zero publication. Roster
+// rejections publish a generic fixed message only if the roster generation
+// captured before the Promise is still current.
 
 import type { StoreApi } from "zustand";
 import type { UseBoundStore } from "zustand/react";
@@ -37,7 +45,10 @@ import type {
   AskResolution,
 } from "../components/composer/composeAskAnswers";
 import { composeAskAnswers } from "../components/composer/composeAskAnswers";
-import type { MobileConversation } from "../conversation/model";
+import type {
+  MobileAskQuestion,
+  MobileConversation,
+} from "../conversation/model";
 import type { LiveConversationService } from "../services/conversation";
 import type { RosterService } from "../services/roster";
 import type { LiveConversationState } from "../state/conversation";
@@ -55,17 +66,36 @@ import type {
 
 type BoundStore<State> = UseBoundStore<StoreApi<State>>;
 
+// Generic fixed error messages. Never the raw Error.message — a secret or
+// ref-bearing rejection must not leak into the store.
+const ROSTER_ERROR_MESSAGE = "Roster operation failed";
+const CONVERSATION_ERROR_MESSAGE = "Conversation operation failed";
+
 /**
  * The locally narrowed runtime the dispatcher needs. The base
  * LiveConceptRuntime.conversationStore is typed as the base
  * ConversationState; the dispatcher requires the narrowed
  * UseBoundStore<StoreApi<LiveConversationState>> and a
  * LiveConversationService | null so call sites never cast.
+ *
+ * The conversation store must expose a store-owned publishExternalError action
+ * (being added independently on the integrated parent) so the dispatcher never
+ * calls external StoreApi.setState for error publication. It passes the exact
+ * ref + conversationGeneration captured before each Promise; the store action
+ * is responsible for suppressing publication when they no longer match.
  */
 export interface LiveIntentDispatcherRuntime {
   readonly rosterStore: BoundStore<RosterState> | null;
   readonly rosterService: RosterService | null;
-  readonly conversationStore: BoundStore<LiveConversationState>;
+  readonly conversationStore: BoundStore<
+    LiveConversationState & {
+      publishExternalError(
+        message: string,
+        expectedRef: string | null,
+        expectedGeneration: number,
+      ): void;
+    }
+  >;
   readonly conversationService: LiveConversationService | null;
 }
 
@@ -140,8 +170,8 @@ export interface LiveIntentUiStore {
  * Create an intent dispatcher bound to a narrowed runtime, RootShell
  * callbacks, and UI store. The returned function translates a
  * LiveConceptIntent into store/callback actions. Every Promise is observed;
- * store methods own normal publication; a rejection handler writes a
- * sanitized message to the owning store. No transport, no retry, no timers.
+ * store methods own normal publication; a rejection handler publishes a
+ * generic fixed message to the owning store. No transport, no retry, no timers.
  */
 export function createLiveIntentDispatcher(
   runtime: LiveIntentDispatcherRuntime,
@@ -161,8 +191,14 @@ export function createLiveIntentDispatcher(
       case "refreshRoster": {
         const { rosterStore, rosterService } = runtime;
         if (rosterStore === null || rosterService === null) return;
-        observe(rosterStore.getState().refresh(rosterService), (err) => {
-          rosterStore.setState({ error: sanitizeError(err) });
+        const rosterGen = rosterStore.getState().generation;
+        observe(rosterStore.getState().refresh(rosterService), () => {
+          // Publish a generic fixed message only if the roster generation
+          // captured before the Promise is still current — a late rejection
+          // after a profile switch / reset produces zero publication.
+          if (rosterStore.getState().generation === rosterGen) {
+            rosterStore.setState({ error: ROSTER_ERROR_MESSAGE });
+          }
         });
         return;
       }
@@ -179,13 +215,8 @@ export function createLiveIntentDispatcher(
         return;
       }
       case "loadOlder": {
-        const { conversationStore, conversationService } = runtime;
-        if (conversationService === null) return;
-        observe(
-          conversationStore.getState().loadOlder(conversationService),
-          (err) => {
-            conversationStore.setState({ error: sanitizeError(err) });
-          },
+        observeConversation(runtime, (store, service) =>
+          store.loadOlder(service),
         );
         return;
       }
@@ -211,26 +242,18 @@ export function createLiveIntentDispatcher(
         const draft = conversationStore.getState().draft;
         const input: InputItem[] = [{ type: "text", text: draft }];
         const method = intent.mode;
-        const store = conversationStore.getState();
-        const promise =
+        observeConversation(runtime, (store, service) =>
           method === "send"
-            ? store.send(conversationService, input)
+            ? store.send(service, input)
             : method === "steer"
-              ? store.steer(conversationService, input)
-              : store.queue(conversationService, input);
-        observe(promise, (err) => {
-          conversationStore.setState({ error: sanitizeError(err) });
-        });
+              ? store.steer(service, input)
+              : store.queue(service, input),
+        );
         return;
       }
       case "interrupt": {
-        const { conversationStore, conversationService } = runtime;
-        if (conversationService === null) return;
-        observe(
-          conversationStore.getState().interrupt(conversationService),
-          (err) => {
-            conversationStore.setState({ error: sanitizeError(err) });
-          },
+        observeConversation(runtime, (store, service) =>
+          store.interrupt(service),
         );
         return;
       }
@@ -276,7 +299,46 @@ export function createLiveIntentDispatcher(
 }
 
 // ---------------------------------------------------------------------------
-// submitQuestion — canonical all-pending answers payload
+// Conversation error observation — capture ref + generation, publish generic
+// ---------------------------------------------------------------------------
+
+// Observe a conversation Promise: capture the exact ref + conversationGeneration
+// before the Promise; on rejection call the store-owned publishExternalError
+// with the generic fixed message and the captured identity. The store action
+// is responsible for suppressing publication when the identity no longer
+// matches. Never calls external StoreApi.setState, never publishes the raw
+// Error.message.
+function observeConversation(
+  runtime: LiveIntentDispatcherRuntime,
+  call: (
+    store: LiveConversationState & {
+      publishExternalError(
+        message: string,
+        expectedRef: string | null,
+        expectedGeneration: number,
+      ): void;
+    },
+    service: LiveConversationService,
+  ) => Promise<void>,
+): void {
+  const { conversationStore, conversationService } = runtime;
+  if (conversationService === null) return;
+  const store = conversationStore.getState();
+  const expectedRef = store.ref;
+  const expectedGen = store.conversationGeneration;
+  observe(call(store, conversationService), () => {
+    conversationStore
+      .getState()
+      .publishExternalError(
+        CONVERSATION_ERROR_MESSAGE,
+        expectedRef,
+        expectedGen,
+      );
+  });
+}
+
+// ---------------------------------------------------------------------------
+// submitQuestion — canonical all-or-nothing answers payload
 // ---------------------------------------------------------------------------
 
 function submitQuestion(
@@ -297,27 +359,39 @@ function submitQuestion(
   if (projection === null) return;
   const { view, operational } = projection;
 
-  // Require the clicked key to be in the operational question map.
+  // C1: the clicked key must be in BOTH the current view.questions AND the
+  // current operational questionKeys. If either is missing, return with zero
+  // send — never continue, never compose a fallback.
+  const clickedInView = view.questions.some((q) => q.key === clickedKey);
+  if (!clickedInView) return;
   if (!operational.questionKeys.has(clickedKey)) return;
 
   // Compose ONE canonical [answers] payload over ALL current projected pending
   // questions in view order — not only the clicked card.
   const answerItems: AskAnswerItem[] = [];
   for (const questionView of view.questions) {
+    // C1: every view question MUST have an operational link. A missing link
+    // for ANY question (not just the clicked one) is all-or-nothing: return
+    // with zero send, never skip and continue.
     const link = operational.questionKeys.get(questionView.key);
-    // A projected question view without an operational link is stale/skipped.
-    if (link === undefined) continue;
+    if (link === undefined) return;
+
+    // C1: every view question MUST have an exact source MobileAskQuestion
+    // matching callId + questionKey in the retained conversation. A missing
+    // source for ANY question is all-or-nothing: return with zero send, never
+    // compose a fallback header/ifUnanswered.
+    const sourceQuestion = findSourceQuestion(conversation, link);
+    if (sourceQuestion === undefined) return;
 
     const draft = uiStore.getState().questionDrafts[questionView.key];
     const note = draft?.note ?? "";
     const selectedOptionKeys = draft?.selectedOptionKeys ?? [];
     const resolution = draft?.resolution ?? null;
 
-    // Resolve the source question from the live conversation by callId + key,
-    // so we can read header + ifUnanswered from the retained source data.
-    const sourceQuestion = findSourceQuestion(conversation, link);
-    const header = sourceQuestion?.header;
-    const ifUnanswered = sourceQuestion?.ifUnanswered;
+    // Validate the source header + ifUnanswered come from the exact source
+    // question — no fallback composition.
+    const header = sourceQuestion.header;
+    const ifUnanswered = sourceQuestion.ifUnanswered;
 
     const answerResolution = resolveResolution(
       resolution,
@@ -340,12 +414,7 @@ function submitQuestion(
 
   const text = composeAskAnswers(answerItems);
   const input: InputItem[] = [{ type: "text", text }];
-  observe(
-    conversationStore.getState().send(conversationService, input),
-    (err) => {
-      conversationStore.setState({ error: sanitizeError(err) });
-    },
-  );
+  observeConversation(runtime, (store, service) => store.send(service, input));
 }
 
 // Resolve a QuestionDraft.resolution + selected option display keys into an
@@ -398,14 +467,14 @@ function resolveResolution(
 function findSourceQuestion(
   conversation: MobileConversation,
   link: QuestionLink,
-): { header: string; ifUnanswered?: string } | undefined {
+): MobileAskQuestion | undefined {
   for (const item of conversation.items) {
     if (item.kind !== "question") continue;
     if (item.batch.callId !== link.callId) continue;
     for (const q of item.batch.questions) {
       if (q === undefined) continue;
       if (q.key === link.questionKey) {
-        return { header: q.header, ifUnanswered: q.ifUnanswered };
+        return q;
       }
     }
   }
@@ -416,21 +485,11 @@ function findSourceQuestion(
 // Shared helpers
 // ---------------------------------------------------------------------------
 
-// Observe a Promise: store methods own normal publication; on rejection write
-// a sanitized message via the onReject callback. Never swallow, never leave an
-// unhandled rejection, never retry.
-function observe<T>(
-  promise: Promise<T>,
-  onReject: (err: unknown) => void,
-): void {
+// Observe a Promise: store methods own normal publication; on rejection call
+// the onReject callback. Never swallow, never leave an unhandled rejection,
+// never retry.
+function observe<T>(promise: Promise<T>, onReject: () => void): void {
   promise.then(undefined, onReject);
-}
-
-// Sanitize an unknown rejection into a plain message. Uses the Error.message
-// when available, otherwise String(err). Never leaks non-string values.
-function sanitizeError(err: unknown): string {
-  if (err instanceof Error) return err.message;
-  return String(err);
 }
 
 // Compile-time exhaustiveness guard. A new LiveConceptIntent variant without
