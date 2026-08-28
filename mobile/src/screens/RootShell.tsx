@@ -79,6 +79,22 @@ interface OwnedProfileScope {
   readonly epoch: number;
 }
 
+interface ActiveProfileGraph {
+  readonly scope: Pick<
+    OwnedProfileScope,
+    "profileId" | "origin" | "generation"
+  >;
+  readonly scoped: ProfileScopedServices;
+  disposed: boolean;
+  unsubscribeRoster: () => void;
+  unsubscribeState: () => void;
+}
+
+interface PendingProfileGraphDisposal {
+  readonly graph: ActiveProfileGraph;
+  cancelled: boolean;
+}
+
 export function RootShell({ services, stores }: RootShellProps): JSX.Element {
   const { connection, navigation, preferences } = stores;
   const profiles = connection((s) => s.profiles);
@@ -126,15 +142,19 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
   const [_attachmentStore] = useState(createAttachmentStore);
   const [conceptUiStore] = useState(() =>
     createLiveConceptUiStore(
-      services.conceptStorage ?? createMemoryConceptStorage(),
+      safeConceptStorage(
+        services.conceptStorage ?? createMemoryConceptStorage(),
+      ),
     ),
   );
   const selectedConcept = conceptUiStore((state) => state.concept);
   const workOpen = conceptUiStore((state) => state.workOpen);
 
-  const liveServicesRef = useRef<ProfileScopedServices | null>(null);
   const [liveServices, setLiveServices] =
     useState<ProfileScopedServices | null>(null);
+  const activeProfileGraphRef = useRef<ActiveProfileGraph | null>(null);
+  const pendingProfileGraphDisposalRef =
+    useRef<PendingProfileGraphDisposal | null>(null);
   const profileScopeEpochRef = useRef(0);
   const initialProfileScope: OwnedProfileScope = {
     profileId: activeProfileId,
@@ -145,6 +165,30 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
   const ownedProfileScopeRef = useRef<OwnedProfileScope>(initialProfileScope);
   const [ownedProfileScope, setOwnedProfileScope] =
     useState<OwnedProfileScope>(initialProfileScope);
+
+  const scheduleProfileGraphDisposal = useCallback(
+    (graph: ActiveProfileGraph) => {
+      const pending: PendingProfileGraphDisposal = {
+        graph,
+        cancelled: false,
+      };
+      pendingProfileGraphDisposalRef.current = pending;
+      queueMicrotask(() => {
+        if (
+          pending.cancelled ||
+          pendingProfileGraphDisposalRef.current !== pending
+        ) {
+          return;
+        }
+        pendingProfileGraphDisposalRef.current = null;
+        disposeProfileGraph(graph);
+        if (activeProfileGraphRef.current === graph) {
+          activeProfileGraphRef.current = null;
+        }
+      });
+    },
+    [],
+  );
 
   const conceptSwitcherOpenerRef = useRef<HTMLElement | null>(null);
   const conceptSwitcherWasOpenRef = useRef(false);
@@ -227,15 +271,38 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
     };
     const currentOwner = ownedProfileScopeRef.current;
     const scopeChanged = !sameProfileScope(currentOwner, targetScope);
-    const previous = liveServicesRef.current;
+    const currentGraph = activeProfileGraphRef.current;
+    const pendingDisposal = pendingProfileGraphDisposalRef.current;
 
-    if (scopeChanged || previous !== null) {
-      previous?.rosterStore.getState().reset();
-      liveServicesRef.current = null;
+    if (
+      currentGraph !== null &&
+      !currentGraph.disposed &&
+      sameProfileScope(currentGraph.scope, targetScope) &&
+      !scopeChanged
+    ) {
+      if (pendingDisposal?.graph === currentGraph) {
+        pendingDisposal.cancelled = true;
+        pendingProfileGraphDisposalRef.current = null;
+      }
+      return () => scheduleProfileGraphDisposal(currentGraph);
+    }
+
+    if (pendingDisposal !== null) {
+      pendingDisposal.cancelled = true;
+      pendingProfileGraphDisposalRef.current = null;
+    }
+    if (currentGraph !== null) {
+      currentGraph.scoped.rosterStore.getState().reset();
+      disposeProfileGraph(currentGraph);
+      activeProfileGraphRef.current = null;
+    }
+
+    if (scopeChanged) {
       setLiveServices(null);
       conversationStore.getState().reset();
       activityStore.getState().reset();
       conceptUiStore.getState().resetProfileScope();
+      navigation.getState().clearConversations();
       setShowVoice(false);
       setConceptSwitcherOpen(false);
 
@@ -264,10 +331,16 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
       return;
     }
 
-    let disposed = false;
     const scoped = createScoped(profile);
-    liveServicesRef.current = scoped;
-    const unsubscribeRoster = connectRosterNotifications(
+    const graph: ActiveProfileGraph = {
+      scope: targetScope,
+      scoped,
+      disposed: false,
+      unsubscribeRoster: () => {},
+      unsubscribeState: () => {},
+    };
+    activeProfileGraphRef.current = graph;
+    graph.unsubscribeRoster = connectRosterNotifications(
       scoped.rosterStore,
       scoped.rosterService,
       (handler) => scoped.client.onNotification(handler),
@@ -275,35 +348,38 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
 
     const setReachability = (state: string): void => {
       const reachability = mapClientState(state);
-      if (reachability !== null && !disposed) {
+      if (reachability !== null && !graph.disposed) {
         connection.getState().setReachability(profile.id, reachability);
       }
     };
-    const unsubscribe = scoped.client.onStateChange(setReachability);
+    graph.unsubscribeState = scoped.client.onStateChange(setReachability);
     setReachability("connecting");
 
     void scoped.client
       .connect()
       .then(() => {
-        if (disposed) return;
+        if (
+          graph.disposed ||
+          activeProfileGraphRef.current !== graph ||
+          !sameProfileScope(ownedProfileScopeRef.current, graph.scope)
+        ) {
+          return;
+        }
         connection.getState().setReachability(profile.id, "reachable");
         setLiveServices(scoped);
         void scoped.rosterStore.getState().refresh(scoped.rosterService);
       })
       .catch(() => {
-        if (!disposed) {
+        if (
+          !graph.disposed &&
+          activeProfileGraphRef.current === graph &&
+          sameProfileScope(ownedProfileScopeRef.current, graph.scope)
+        ) {
           connection.getState().setReachability(profile.id, "unreachable");
         }
       });
 
-    return () => {
-      disposed = true;
-      unsubscribeRoster();
-      unsubscribe();
-      scoped.client.close();
-      // Keep the closed graph reachable until the next owner effect resets its
-      // roster as part of the atomic profile-scope transaction.
-    };
+    return () => scheduleProfileGraphDisposal(graph);
   }, [
     activeProfileId,
     activeProfileOrigin,
@@ -312,6 +388,8 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
     conceptUiStore,
     connection,
     conversationStore,
+    navigation,
+    scheduleProfileGraphDisposal,
     services.createProfileScopedServices,
   ]);
 
@@ -651,6 +729,40 @@ function sameProfileScope(
     owned.origin === target.origin &&
     owned.generation === target.generation
   );
+}
+
+function disposeProfileGraph(graph: ActiveProfileGraph): void {
+  if (graph.disposed) return;
+  graph.disposed = true;
+  graph.unsubscribeRoster();
+  graph.unsubscribeState();
+  graph.scoped.client.close();
+}
+
+function safeConceptStorage(storage: ConceptStorage): ConceptStorage {
+  return {
+    read: () => {
+      try {
+        return storage.read();
+      } catch {
+        return null;
+      }
+    },
+    write: (conceptId) => {
+      try {
+        storage.write(conceptId);
+      } catch {
+        // Persistence is best-effort; the live UI store still updates in memory.
+      }
+    },
+    remove: () => {
+      try {
+        storage.remove();
+      } catch {
+        // Treat an unavailable persistence backend as already empty.
+      }
+    },
+  };
 }
 
 function createMemoryConceptStorage(): ConceptStorage {

@@ -24,6 +24,14 @@ afterEach(() => cleanup());
 
 const cssPath = path.join(__dirname, "global.css");
 const cssSource = readFileSync(cssPath, "utf8");
+const stillwaterCssPath = path.join(
+  __dirname,
+  "..",
+  "live-concepts",
+  "stillwater",
+  "stillwater.css",
+);
+const stillwaterCssSource = readFileSync(stillwaterCssPath, "utf8");
 
 const htmlPath = path.join(__dirname, "..", "..", "index.html");
 const htmlSource = readFileSync(htmlPath, "utf8");
@@ -105,6 +113,7 @@ function parseSheet(source: string): SheetModel {
 }
 
 const sheet = parseSheet(cssSource);
+const stillwaterSheet = parseSheet(stillwaterCssSource);
 
 function must<T>(value: T | undefined, label: string): T {
   if (value === undefined) throw new Error(`missing ${label}`);
@@ -163,6 +172,17 @@ function oneRule(selector: string): StyleRuleEntry {
     `expected exactly one rule for ${selector}, found ${matches.length}`,
   ).toBe(1);
   return must(matches[0], `rule ${selector}`);
+}
+
+function oneStillwaterRule(selector: string): StyleRuleEntry {
+  const matches = stillwaterSheet.styleRules.filter(
+    (rule) => rule.selector === selector && rule.media === "",
+  );
+  expect(
+    matches.length,
+    `expected exactly one Stillwater rule for ${selector}, found ${matches.length}`,
+  ).toBe(1);
+  return must(matches[0], `Stillwater rule ${selector}`);
 }
 
 /** All top-level rules that apply to this selector, including grouped rules. */
@@ -810,11 +830,44 @@ describe("7C lane D — conversation participates in shell flex geometry", () =>
     // the canonical shell's single-scroll-owner geometry.
     expect(conversation.querySelectorAll(":scope > .sw-scroll").length).toBe(1);
     expect(conversation.querySelectorAll(".sw-scroll").length).toBe(1);
+    const topbar = scroller.querySelector<HTMLElement>(":scope > .sw-topbar");
+    if (topbar === null) throw new Error("missing live conversation top bar");
+    const routeContent = scroller.querySelector<HTMLElement>(
+      ":scope > .sw-route-content",
+    );
+    if (routeContent === null) throw new Error("missing live route content");
     expect(scroller.querySelectorAll(":scope > .sw-topbar").length).toBe(1);
     expect(scroller.querySelectorAll(":scope > .sw-route-content").length).toBe(
       1,
     );
+    expect(topbar.nextElementSibling).toBe(routeContent);
     expect(container.querySelectorAll(".evener-bottombar").length).toBe(0);
+
+    expect(conversation).toHaveClass("concept-stillwater");
+    expect(scroller).toHaveClass("sw-scroll");
+    expect(topbar).toHaveClass("sw-topbar");
+
+    const rootRule = oneStillwaterRule(".concept-stillwater");
+    expect(rootRule.decls.display).toBe("grid");
+    expect(rootRule.decls.flex).toBe("1 1 auto");
+    expect(rootRule.decls["min-height"]).toBe("0px");
+    expect(rootRule.decls.overflow).toBe("hidden");
+    expect(rootRule.decls["grid-template-rows"]).toBe("minmax(0, 1fr)");
+
+    const scrollRule = oneStillwaterRule(".concept-stillwater .sw-scroll");
+    expect(scrollRule.decls.width).toBe("100%");
+    expect(scrollRule.decls["min-height"]).toBe("0px");
+    expect(scrollRule.decls["overflow-y"]).toBe("auto");
+    expect(scrollRule.decls["overscroll-behavior-y"]).toBe("contain");
+
+    const topbarRule = oneStillwaterRule(".concept-stillwater .sw-topbar");
+    expect(topbarRule.decls.position).toBe("sticky");
+    expect(topbarRule.decls.top).toBe("0px");
+    expect(topbarRule.decls["z-index"]).toBe("2");
+    expect(topbarRule.decls.display).toBe("flex");
+    expect(topbarRule.decls["min-width"]).toBe("0px");
+    expect(topbarRule.decls["align-items"]).toBe("flex-start");
+    expect(topbarRule.decls["justify-content"]).toBe("space-between");
   });
 
   it("real tab screen nests TopBar under the compensated screen scroller", () => {
