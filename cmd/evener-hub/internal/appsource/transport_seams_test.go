@@ -5,8 +5,6 @@ import (
 	"errors"
 	"io"
 	"net/http"
-	"net/http/httptest"
-	"strings"
 	"sync"
 	"testing"
 
@@ -409,28 +407,6 @@ func fuzzScenarioForwardLocalDaemonNotificationCanceled(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	forwardLocalDaemonNotification(ctx, make(chan appwire.Notification), appwire.Notification{})
-}
-
-func fuzzScenarioLocalDaemonRESTDefaultClientAndRequestError(t *testing.T) {
-	s := NewLocalDaemonSource("local", nil, nil)
-	if err := s.restInterrupt(context.Background(), rendezvous.Entry{Address: "%"}); err == nil {
-		t.Fatal("invalid URL returned nil")
-	}
-	s.client = &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return nil, errors.New("connection refused")
-	})}
-	if err := s.restInterrupt(context.Background(), rendezvous.Entry{Address: "daemon"}); err == nil {
-		t.Fatal("transport error returned nil")
-	}
-	s.client = nil
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }))
-	defer server.Close()
-	if err := s.restInterrupt(context.Background(), rendezvous.Entry{Address: strings.TrimPrefix(server.URL, "http://")}); err != nil {
-		t.Fatal(err)
-	}
-	if got := (&LocalDaemonSource{}).liveEntries(); got != nil {
-		t.Fatalf("nil entries = %#v", got)
-	}
 }
 
 func fuzzScenarioLocalDaemonInternalHandshakeErrorFallbacks(t *testing.T) {

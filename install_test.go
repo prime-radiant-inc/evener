@@ -28,6 +28,24 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
+func shutdownInstalledServe(ctx context.Context, entry rendezvous.Entry) error {
+	transport, err := appwire.DialWebSocket(ctx, "ws://"+entry.Address+"/rpc", http.DefaultClient)
+	if err != nil {
+		return err
+	}
+	client := appwire.NewClient(transport)
+	defer client.Close()
+	client.Start(context.WithoutCancel(ctx))
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{
+		ClientInfo: appwire.ClientInfo{Name: "install-test-shutdown", Version: "test"},
+	}); err != nil {
+		return err
+	}
+	return client.ThreadShutdown(ctx, appwire.ThreadShutdownParams{
+		Ref: appwire.Ref{SourceID: "local", ThreadID: entry.SessionID}.String(),
+	})
+}
+
 func TestWebPreflightBootstrapsMissingFrontendDependencies(t *testing.T) {
 	t.Parallel()
 
@@ -874,10 +892,9 @@ api_key = "sk-install-test"
 			return
 		default:
 		}
-		resp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
-		if err == nil {
-			_ = resp.Body.Close()
-		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+		_ = shutdownInstalledServe(shutdownCtx, entry)
+		cancel()
 		select {
 		case <-done:
 		case <-time.After(5 * time.Second):

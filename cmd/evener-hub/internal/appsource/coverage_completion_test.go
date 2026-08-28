@@ -122,47 +122,6 @@ func emptyHandler[T any](context.Context, T) (appwire.EmptyResponse, error) {
 	return appwire.EmptyResponse{}, nil
 }
 
-func fuzzScenarioLocalDaemonSourceUnavailableSurface(t *testing.T) {
-	source := NewLocalDaemonSource("", nil, nil)
-	ctx := context.Background()
-	if got, err := source.ListModels(ctx, appwire.ModelListParams{}); err != nil || len(got.Data) != 0 {
-		t.Fatalf("ListModels = %+v, %v", got, err)
-	}
-	for name, err := range map[string]error{
-		"start":  func() error { _, err := source.StartThread(ctx, appwire.ThreadStartParams{}); return err }(),
-		"resume": func() error { _, err := source.ResumeThread(ctx, appwire.ThreadResumeParams{}); return err }(),
-		"fork":   func() error { _, err := source.ForkThread(ctx, appwire.ThreadForkParams{}); return err }(),
-	} {
-		if err == nil {
-			t.Fatalf("%s returned nil", name)
-		}
-	}
-	if err := source.restInterrupt(ctx, rendezvous.Entry{}); err == nil {
-		t.Fatal("restInterrupt returned nil")
-	}
-}
-
-func fuzzScenarioLocalDaemonRESTInterruptFailures(t *testing.T) {
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer token" {
-			t.Errorf("authorization = %q", r.Header.Get("Authorization"))
-		}
-		http.Error(w, " denied ", http.StatusForbidden)
-	}))
-	defer server.Close()
-	entry := rendezvous.Entry{Address: server.Listener.Addr().String(), HubToken: "token"}
-	source := NewLocalDaemonSource("local", nil, server.Client())
-	if err := source.restInterrupt(context.Background(), entry); err == nil || !strings.Contains(err.Error(), "denied") {
-		t.Fatalf("error = %v", err)
-	}
-
-	canceled, cancel := context.WithCancel(context.Background())
-	cancel()
-	if err := source.restInterrupt(canceled, entry); !errors.Is(err, context.Canceled) {
-		t.Fatalf("canceled error = %v", err)
-	}
-}
-
 func fuzzScenarioCodexLiveThreadRemainingLifecycleBranches(t *testing.T) {
 	var closed atomic.Int32
 	closedSignal := make(chan struct{})

@@ -1441,8 +1441,8 @@ func (s *Server) appCapabilities(state string, processing bool) appwire.ThreadCa
 		// harness that never arms a cancel does not advertise Stop. It is
 		// sticky where cancelFunc is per-turn, which is the whole difference.
 		// Whether a cancel is armed at the instant the request arrives stays the
-		// business of the paths that act on it -- handleInterrupt still answers
-		// Unavailable with none wired, and InterruptClientMutation has its own
+		// business of the typed interrupt handler. InterruptClientMutation has
+		// its own
 		// quiescence precondition (kata vewa).
 		Interrupt:         s.interruptWired && active && !closed,
 		Compact:           s.compactFunc != nil && !closed,
