@@ -8,9 +8,11 @@ import (
 
 func TestTaskUpdatedData_CurrentJSON(t *testing.T) {
 	withCurrent, err := json.Marshal(TaskUpdatedData{
-		Total:   3,
-		Done:    1,
-		Current: &TaskSummaryData{ID: 2, Description: "live current task"},
+		TaskStateData: TaskStateData{
+			Total:   3,
+			Done:    1,
+			Current: &TaskSummaryData{ID: 2, Description: "live current task"},
+		},
 	})
 	if err != nil {
 		t.Fatalf("marshal TaskUpdatedData with current: %v", err)
@@ -19,12 +21,114 @@ func TestTaskUpdatedData_CurrentJSON(t *testing.T) {
 		t.Fatalf("TaskUpdatedData JSON = %s", withCurrent)
 	}
 
-	withoutCurrent, err := json.Marshal(TaskUpdatedData{Total: 3, Done: 1})
+	withoutCurrent, err := json.Marshal(TaskUpdatedData{TaskStateData: TaskStateData{Total: 3, Done: 1}})
 	if err != nil {
 		t.Fatalf("marshal TaskUpdatedData without current: %v", err)
 	}
 	if strings.Contains(string(withoutCurrent), `"current"`) {
 		t.Fatalf("TaskUpdatedData without current = %s", withoutCurrent)
+	}
+}
+
+func TestSessionStartCurrentWorkSeedTriStateJSON(t *testing.T) {
+	tests := []struct {
+		name string
+		data SessionStartData
+		want string
+	}{
+		{name: "unknown", data: SessionStartData{}, want: `{"profile":"","model":""}`},
+		{
+			name: "explicit clear",
+			data: SessionStartData{CurrentWork: &CurrentWorkSeedData{}},
+			want: `{"profile":"","model":"","current_work":{"goal":null}}`,
+		},
+		{
+			name: "goal",
+			data: SessionStartData{CurrentWork: &CurrentWorkSeedData{Goal: &GoalStateData{
+				Objective:  "ship focus sentence",
+				Status:     "active",
+				Iterations: 2,
+			}}},
+			want: `{"profile":"","model":"","current_work":{"goal":{"objective":"ship focus sentence","status":"active","iterations":2}}}`,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			encoded, err := json.Marshal(tt.data)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := string(encoded); got != tt.want {
+				t.Fatalf("SessionStartData JSON = %s, want %s", got, tt.want)
+			}
+			var roundTrip SessionStartData
+			if err := json.Unmarshal(encoded, &roundTrip); err != nil {
+				t.Fatal(err)
+			}
+			switch tt.name {
+			case "unknown":
+				if roundTrip.CurrentWork != nil {
+					t.Fatalf("CurrentWork = %+v, want nil unknown seed", roundTrip.CurrentWork)
+				}
+			case "explicit clear":
+				if roundTrip.CurrentWork == nil || roundTrip.CurrentWork.Goal != nil {
+					t.Fatalf("CurrentWork = %+v, want present seed with nil Goal", roundTrip.CurrentWork)
+				}
+			default:
+				if roundTrip.CurrentWork == nil || roundTrip.CurrentWork.Goal == nil || roundTrip.CurrentWork.Goal.Objective != "ship focus sentence" {
+					t.Fatalf("CurrentWork = %+v, want structured goal", roundTrip.CurrentWork)
+				}
+			}
+		})
+	}
+}
+
+func TestSessionStartCurrentWorkSeedCarriesAuthoritativeEmptyTasks(t *testing.T) {
+	data := SessionStartData{CurrentWork: &CurrentWorkSeedData{
+		Tasks: &TaskStateData{},
+	}}
+	encoded, err := json.Marshal(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := string(encoded), `{"profile":"","model":"","current_work":{"tasks":{"total":0,"done":0},"goal":null}}`; got != want {
+		t.Fatalf("SessionStartData JSON = %s, want %s", got, want)
+	}
+	var roundTrip SessionStartData
+	if err := json.Unmarshal(encoded, &roundTrip); err != nil {
+		t.Fatal(err)
+	}
+	if roundTrip.CurrentWork == nil || roundTrip.CurrentWork.Tasks == nil {
+		t.Fatalf("round trip lost authoritative empty task state: %+v", roundTrip.CurrentWork)
+	}
+}
+
+func TestTaskUpdatedDataCarriesTaskStoreOwnerSessionID(t *testing.T) {
+	want := TaskUpdatedData{
+		TaskStateData: TaskStateData{
+			Total:   1,
+			Current: &TaskSummaryData{ID: 4, Description: "current"},
+		},
+		TaskStoreOwnerSessionID: "root-session",
+	}
+	encoded, err := json.Marshal(want)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var typed TaskUpdatedData
+	if err := json.Unmarshal(encoded, &typed); err != nil {
+		t.Fatal(err)
+	}
+	if typed.TaskStoreOwnerSessionID != want.TaskStoreOwnerSessionID {
+		t.Fatalf("typed owner = %q, want %q", typed.TaskStoreOwnerSessionID, want.TaskStoreOwnerSessionID)
+	}
+	var generic map[string]any
+	if err := json.Unmarshal(encoded, &generic); err != nil {
+		t.Fatal(err)
+	}
+	if got := generic["task_store_owner_session_id"]; got != want.TaskStoreOwnerSessionID {
+		t.Fatalf("generic owner = %#v, want %q", got, want.TaskStoreOwnerSessionID)
 	}
 }
 

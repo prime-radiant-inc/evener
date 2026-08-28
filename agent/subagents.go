@@ -961,6 +961,9 @@ func (s *Session) prepareSubagentRunFromSelection(
 			// Non-fatal: surface as a warning so the spawn still proceeds but the
 			// failure is observable instead of silently swallowed.
 			s.emit(events.EventWarning, warningDataFromError("failed to populate subagent tasks from templates", err))
+		} else {
+			summary := taskpkg.Summarize(subStore.View())
+			subSess.emit(events.EventTaskUpdated, taskUpdatedData(summary, subSess.taskStoreOwnerSessionID()))
 		}
 		// Inject the first task's prompt as a steering message.
 		if current, ok := subStore.CurrentInProgress(); ok {

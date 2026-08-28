@@ -1665,6 +1665,8 @@ func (runtime delegateRuntime) restoreIdle(started delegateStartCommit) (*subage
 			child.discardRestoredCandidate()
 			return nil, false, fmt.Errorf("restore committed delegate tasks: %w", err)
 		}
+		summary := task.Summarize(child.getOrCreateTaskStore().View())
+		child.emit(events.EventTaskUpdated, taskUpdatedData(summary, child.taskStoreOwnerSessionID()))
 	}
 	now := s.sclock().Now()
 	stableDescriptor := cloneDelegateStartDescriptor(descriptor)

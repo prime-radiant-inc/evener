@@ -109,6 +109,30 @@ type TaskUpdateSnapshot struct {
 	After  []Task
 }
 
+// ListSummary is the transport-neutral progress and current-work view of a task
+// list. Current is an owned copy and may be mutated independently of the input.
+type ListSummary struct {
+	Total   int
+	Done    int
+	Current *Task
+}
+
+// Summarize derives progress and the first in-progress task from one list
+// snapshot. Only done tasks count as complete.
+func Summarize(tasks []Task) ListSummary {
+	summary := ListSummary{Total: len(tasks)}
+	for i := range tasks {
+		if tasks[i].Status == TaskDone {
+			summary.Done++
+		}
+		if summary.Current == nil && tasks[i].Status == TaskInProgress {
+			current := cloneTasks(tasks[i : i+1])[0]
+			summary.Current = &current
+		}
+	}
+	return summary
+}
+
 func cloneTime(value *time.Time) *time.Time {
 	if value == nil {
 		return nil
@@ -398,13 +422,8 @@ func (s *TaskStore) Progress() (total, done int) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	total = len(s.tasks)
-	for _, t := range s.tasks {
-		if t.Status == TaskDone {
-			done++
-		}
-	}
-	return total, done
+	summary := Summarize(s.tasks)
+	return summary.Total, summary.Done
 }
 
 // NextEligible returns open tasks whose dependencies are all satisfied
@@ -449,10 +468,9 @@ func (s *TaskStore) CurrentInProgress() (Task, bool) {
 // currentInProgressLocked returns the first task with status in_progress, if
 // any. Callers must hold s.mu.
 func (s *TaskStore) currentInProgressLocked() (Task, bool) {
-	for _, t := range s.tasks {
-		if t.Status == TaskInProgress {
-			return t, true
-		}
+	summary := Summarize(s.tasks)
+	if summary.Current != nil {
+		return *summary.Current, true
 	}
 	return Task{}, false
 }

@@ -33,7 +33,17 @@ type SessionStartData struct {
 	// agent.SessionAwaiting) reaches the wire instead of an assumed idle. A
 	// fresh session always starts idle and leaves this empty; downstream
 	// consumers already default an empty/unrecognized value to idle.
-	State string `json:"state,omitempty"`
+	State                   string               `json:"state,omitempty"`
+	CurrentWork             *CurrentWorkSeedData `json:"current_work,omitempty"`
+	TaskStoreOwnerSessionID string               `json:"task_store_owner_session_id,omitempty"`
+}
+
+// CurrentWorkSeedData is the self-contained task and goal state carried at
+// session start. A nil seed means unknown; within a present seed, nil Goal is
+// an authoritative clear and nil Tasks means task state is unavailable.
+type CurrentWorkSeedData struct {
+	Tasks *TaskStateData `json:"tasks,omitempty"`
+	Goal  *GoalStateData `json:"goal"`
 }
 
 // SessionEndData is the payload for an EventSessionEnd event.
@@ -433,13 +443,19 @@ type TaskSummaryData struct {
 	Description string `json:"description"`
 }
 
+// TaskStateData is an authoritative task-list progress snapshot.
+type TaskStateData struct {
+	Total   int              `json:"total"`
+	Done    int              `json:"done"`
+	Current *TaskSummaryData `json:"current,omitempty"`
+}
+
 // TaskUpdatedData is the payload for an EventTaskUpdated event: the current
 // task-list progress after an append or status change, so subscribers refresh
 // the task-status row without re-polling.
 type TaskUpdatedData struct {
-	Total   int              `json:"total"`
-	Done    int              `json:"done"`
-	Current *TaskSummaryData `json:"current,omitempty"`
+	TaskStateData
+	TaskStoreOwnerSessionID string `json:"task_store_owner_session_id,omitempty"`
 }
 
 // SessionNameChangedData is the payload for an EventSessionNameChanged event.
