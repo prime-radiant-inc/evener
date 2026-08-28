@@ -1,6 +1,15 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { chmod, lstat, mkdir, open, rename, unlink } from "node:fs/promises";
+import {
+  chmod,
+  link,
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  unlink,
+} from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 
@@ -34,383 +43,408 @@ const EXPECTED_CONCEPT = Object.freeze({
   "fixture-absence": "Field Notes",
 });
 
-const THREAD_MILESTONES = new Set(REQUIRED_LIVE_MILESTONES.slice(2, 11));
-const SENSITIVE_KEY =
-  /(?:origin|thread(?:ref|identity)?|authorization|authtoken|accesstoken|token)/;
-const DIGEST = /^sha256:[a-f0-9]{64}$/;
-const FIXTURE_TERMS = [
-  "fixture",
-  "scenario",
-  "synthetic completion",
-  "prototype",
-];
-const TRIPWIRE_MS = 10_000;
+export const EXPECTED_LIVE_SEQUENCE = Object.freeze({
+  classification: "expected-task4-proven",
+  roster: Object.freeze({
+    requests: Object.freeze(["thread/list(limit=501)"]),
+    notifications: Object.freeze([
+      "tree-or-attention -> bounded roster refresh",
+    ]),
+  }),
+  conversation: Object.freeze({
+    requests: Object.freeze(["thread/read(subscribe=true,turnLimit=50)"]),
+    notifications: Object.freeze([
+      "item-started -> item-delta -> item-completed",
+      "thread-resync -> coalesced bounded read",
+    ]),
+  }),
+  send: Object.freeze({
+    requests: Object.freeze(["thread/send"]),
+    notifications: Object.freeze([
+      "mutation pending -> item lifecycle -> accepted",
+    ]),
+  }),
+  steerQueue: Object.freeze({
+    requests: Object.freeze(["thread/steer", "thread/queue"]),
+    notifications: Object.freeze([
+      "steer pending -> accepted",
+      "queue pending -> accepted",
+    ]),
+  }),
+  interrupt: Object.freeze({
+    requests: Object.freeze(["thread/interrupt"]),
+    notifications: Object.freeze(["interrupt pending -> accepted"]),
+  }),
+});
 
-function object(value, label) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`);
+const SHA256 = /^sha256:[a-f0-9]{64}$/;
+const OPAQUE_ID = /^[A-Za-z0-9._:-]+$/;
+const SAFE_VERSION = /^[A-Za-z0-9][A-Za-z0-9._+:-]{0,127}$/;
+const SAFE_BUNDLE_ID = /^[A-Za-z0-9][A-Za-z0-9.-]{0,254}$/;
+const SAFE_DEVICE_MODEL = /^[A-Za-z0-9][A-Za-z0-9 ._()+-]{0,127}$/;
+const THREAD_MILESTONES = new Set(REQUIRED_LIVE_MILESTONES.slice(2, 11));
+const TRIPWIRE_MS = 10_000;
+const CONTAMINATION =
+  /(?:\bfixture(?:[\s_-]+(?:session|scenario|content))?\b|\bscenario(?:[\s_-]+switcher)?\b|\bprototype\b|\bsynthetic[\s_-]+completion\b)/i;
+const FORBIDDEN_FINAL = /^(?:Search|Lab[ _-]+Controls?)$/i;
+
+class SmokeError extends Error {
+  constructor(code, status = "failed") {
+    super(code);
+    this.name = "SmokeError";
+    this.code = code;
+    this.smokeStatus = status;
   }
+}
+
+function digestBytes(bytes) {
+  return `sha256:${createHash("sha256").update(bytes).digest("hex")}`;
+}
+
+function digest(value) {
+  return digestBytes(Buffer.from(String(value), "utf8"));
+}
+
+function isObject(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function requireObject(value, label) {
+  if (!isObject(value)) throw new Error(`${label} must be an object`);
   return value;
 }
 
-function nonempty(value, label) {
+function requireNonempty(value, label) {
   if (typeof value !== "string" || value.trim() === "") {
     throw new Error(`${label} must be nonempty`);
   }
   return value;
 }
 
-function exactDigest(value, label) {
-  if (typeof value !== "string" || !DIGEST.test(value)) {
+function requireDigest(value, label) {
+  if (typeof value !== "string" || !SHA256.test(value)) {
     throw new Error(`${label} must be a sha256 digest`);
   }
 }
 
-function positiveInteger(value, label, allowZero = false) {
-  if (!Number.isInteger(value) || value < (allowZero ? 0 : 1)) {
-    throw new Error(
-      `${label} must be ${allowZero ? "a nonnegative" : "a positive"} integer`,
-    );
+function requirePositiveInteger(value, label, allowZero = false) {
+  if (!Number.isSafeInteger(value) || value < (allowZero ? 0 : 1)) {
+    throw new Error(`${label} must be an integer`);
   }
 }
 
-function requireSequence(value, expected, label) {
-  if (!Array.isArray(value) || value.length !== expected.length) {
-    throw new Error(`${label} must record ${expected.join(" then ")}`);
+function requireIds(value, label) {
+  if (
+    !Array.isArray(value) ||
+    value.length === 0 ||
+    value.some(
+      (entry) => typeof entry !== "string" || !OPAQUE_ID.test(entry),
+    ) ||
+    new Set(value).size !== value.length
+  ) {
+    throw new Error(`${label} must contain unique opaque IDs`);
   }
-  for (let index = 0; index < expected.length; index += 1) {
-    if (value[index] !== expected[index]) {
-      throw new Error(`${label} must record ${expected.join(" then ")}`);
+}
+
+function arraysEqual(left, right) {
+  return (
+    Array.isArray(left) &&
+    Array.isArray(right) &&
+    left.length === right.length &&
+    left.every((value, index) => value === right[index])
+  );
+}
+
+function containsPassedTrue(value) {
+  if (Array.isArray(value)) return value.some(containsPassedTrue);
+  if (!isObject(value)) return false;
+  return Object.entries(value).some(
+    ([key, entry]) =>
+      (key.toLowerCase() === "passed" && entry === true) ||
+      containsPassedTrue(entry),
+  );
+}
+
+export function derivePositiveMarker(observation) {
+  return digest(
+    JSON.stringify({
+      milestone: observation?.milestone ?? null,
+      concept: observation?.concept ?? null,
+      threadIdentity: observation?.threadIdentity ?? null,
+      fixtureAbsent: observation?.fixtureAbsent ?? null,
+      source: observation?.source ?? null,
+      action: observation?.action ?? null,
+      evidence: observation?.evidence ?? null,
+    }),
+  );
+}
+
+function requireExpectedSequence(value, label) {
+  const sequence = requireObject(value, `${label} expected sequence`);
+  if (sequence.classification !== "expected-task4-proven") {
+    throw new Error(`${label} expected sequence classification is invalid`);
+  }
+  for (const key of ["requests", "notifications"]) {
+    if (
+      !Array.isArray(sequence[key]) ||
+      sequence[key].length === 0 ||
+      sequence[key].some(
+        (entry) => typeof entry !== "string" || entry.trim() === "",
+      )
+    ) {
+      throw new Error(`${label} expected ${key} must be nonempty`);
     }
   }
 }
 
-function requireRosterIds(value, label) {
-  if (
-    !Array.isArray(value) ||
-    value.length === 0 ||
-    value.some((entry) => typeof entry !== "string" || entry.trim() === "") ||
-    new Set(value).size !== value.length
-  ) {
-    throw new Error(`${label} must contain unique nonempty roster IDs`);
-  }
-}
-
-function requireReceipt(value, kind, label) {
-  const receipt = object(value, label);
+function requireReceipt(value, kind) {
+  const receipt = requireObject(value, `${kind} receipt`);
   if (receipt.kind !== kind || receipt.status !== "accepted") {
-    throw new Error(
-      `${kind} receipt must be independently observed as accepted`,
-    );
+    throw new Error(`${kind} receipt must be accepted`);
   }
-  exactDigest(receipt.idDigest, `${kind} receipt digest`);
+  requirePositiveInteger(receipt.receipt, `${kind} receipt number`);
+  requireDigest(receipt.pendingTreeDigest, `${kind} pending tree`);
+  requireDigest(receipt.acceptedTreeDigest, `${kind} accepted tree`);
+  if (receipt.pendingTreeDigest === receipt.acceptedTreeDigest) {
+    throw new Error(`${kind} pending and accepted trees must differ`);
+  }
 }
 
-function requireDraftPreserved(evidence) {
-  nonempty(evidence.draftBefore, "draft sentinel before switch");
+function requirePreservation(evidence, concept, shared, threadIdentity) {
+  requireIds(evidence.rosterIds, `${concept} roster IDs`);
+  if (!arraysEqual(evidence.rosterIds, shared.rosterIds)) {
+    throw new Error(`${concept} roster IDs must match Stillwater`);
+  }
+  if (evidence.activeThreadId !== threadIdentity) {
+    throw new Error(`${concept} active thread must match`);
+  }
+  requireNonempty(evidence.draftBefore, `${concept} draft before`);
   if (evidence.draftAfter !== evidence.draftBefore) {
-    throw new Error(
-      "draft sentinel must be identical before and after the switch",
-    );
+    throw new Error(`${concept} draft must be preserved`);
+  }
+  requireDigest(evidence.beforeTreeDigest, `${concept} before tree`);
+  requireDigest(evidence.afterTreeDigest, `${concept} after tree`);
+  if (evidence.beforeTreeDigest === evidence.afterTreeDigest) {
+    throw new Error(`${concept} trees must differ`);
   }
 }
 
 function validateMilestoneEvidence(observation, shared) {
-  const evidence = object(
+  const evidence = requireObject(
     observation.evidence,
     `${observation.milestone} evidence`,
   );
   switch (observation.milestone) {
     case "profile-connected": {
-      const device = object(evidence.device, "device evidence");
-      nonempty(device.model, "device model");
-      nonempty(device.os, "device OS");
-      const bundle = object(evidence.bundle, "bundle evidence");
-      nonempty(bundle.id, "signed bundle ID");
-      nonempty(bundle.version, "signed bundle version");
-      exactDigest(bundle.hash, "signed bundle hash");
-      if (bundle.signed !== true)
-        throw new Error("signed bundle proof is required");
-      const hub = object(evidence.hub, "Hub evidence");
-      nonempty(hub.expected, "expected Hub version");
-      nonempty(hub.observed, "observed Hub version");
-      if (hub.expected !== hub.observed) {
-        throw new Error(
-          "stale Hub is a blocked prerequisite; the smoke runner never restarts it",
-        );
+      const device = requireObject(evidence.device, "device evidence");
+      requireNonempty(device.model, "device model");
+      requireNonempty(device.os, "device OS");
+      const installed = requireObject(evidence.installedApp, "installed app");
+      const local = requireObject(evidence.localBundle, "local bundle");
+      for (const app of [installed, local]) {
+        requireNonempty(app.id, "app ID");
+        requireNonempty(app.version, "app version");
       }
-      nonempty(hub.protocol, "Hub protocol");
-      exactDigest(hub.originDigest, "redacted Hub origin digest");
-      if (evidence.profileStatus !== "connected") {
-        throw new Error(
-          "profile-connected requires an observed connected profile",
-        );
+      if (installed.id !== local.id || installed.version !== local.version) {
+        throw new Error("installed and local app identity must match");
       }
-      shared.hubVersion = hub.observed;
+      requirePositiveInteger(installed.pid, "installed app process ID");
+      requireDigest(local.hash, "local bundle hash");
+      if (local.codesignVerified !== true) {
+        throw new Error("local bundle must be codesign verified");
+      }
+      const hub = requireObject(evidence.hub, "Hub evidence");
+      requireNonempty(hub.expectedVersion, "expected Hub version");
+      requireNonempty(hub.observedVersion, "observed Hub version");
+      if (hub.expectedVersion !== hub.observedVersion) {
+        throw new Error("stale Hub is blocked");
+      }
+      requireNonempty(hub.protocolVersion, "Hub protocol");
+      requireDigest(hub.originDigest, "origin digest");
+      const connection = requireObject(
+        evidence.connection,
+        "connection evidence",
+      );
+      if (connection.status !== "connected") {
+        throw new Error("profile must be connected");
+      }
+      for (const key of [
+        "profileGeneration",
+        "lifecycleGeneration",
+        "handshakeGeneration",
+      ]) {
+        requirePositiveInteger(connection[key], key, true);
+      }
+      shared.hubVersion = hub.observedVersion;
+      shared.app = installed;
       break;
     }
     case "stillwater-roster":
-      if (evidence.listLimit !== 501)
-        throw new Error("roster list limit must be exactly 501");
-      positiveInteger(evidence.retainedCount, "retained roster count", true);
-      if (evidence.retainedCount > 500)
-        throw new Error("retained roster count must not exceed 500");
+      requireIds(evidence.rosterIds, "Stillwater roster IDs");
+      if (evidence.retainedCount !== evidence.rosterIds.length) {
+        throw new Error("retained count must equal observed roster IDs");
+      }
+      if (typeof evidence.hasMore !== "boolean") {
+        throw new Error("hasMore must be observed");
+      }
       if (
-        typeof evidence.row501Present !== "boolean" ||
-        typeof evidence.hasMore !== "boolean"
+        evidence.completeness !==
+        (evidence.hasMore ? "more-available" : "complete")
       ) {
-        throw new Error(
-          "501st-row completeness requires boolean row501Present and hasMore",
-        );
+        throw new Error("roster completeness must match hasMore");
       }
-      if (evidence.row501Present !== evidence.hasMore) {
-        throw new Error("501st-row completeness and hasMore disagree");
+      if (evidence.listLimit !== undefined && evidence.listLimit !== 501) {
+        throw new Error("expected roster list limit must be 501");
       }
-      requireRosterIds(evidence.rosterIds, "Stillwater roster IDs");
-      requireSequence(
-        evidence.requestSequence,
-        ["thread/list(limit=501)"],
-        "roster request sequence",
-      );
-      if (!Array.isArray(evidence.notificationSequence)) {
-        throw new Error("roster notification sequence is required");
-      }
+      requireExpectedSequence(evidence.expectedSequence, "roster");
       shared.rosterIds = evidence.rosterIds;
       break;
     case "stillwater-conversation":
-      positiveInteger(evidence.readLimit, "bounded read limit");
-      if (evidence.readLimit > 500)
-        throw new Error("bounded read limit must not exceed 500");
       if (evidence.activeThreadId !== observation.threadIdentity) {
-        throw new Error(
-          "active thread ID must match the observed thread identity",
-        );
+        throw new Error("active thread ID must match");
       }
-      requireRosterIds(evidence.rosterIds, "conversation roster IDs");
-      if (
-        JSON.stringify(evidence.rosterIds) !== JSON.stringify(shared.rosterIds)
-      ) {
-        throw new Error(
-          "conversation roster IDs must match Stillwater roster IDs",
-        );
+      requireDigest(evidence.titleDigest, "conversation title digest");
+      requireIds(evidence.transcriptIds, "transcript IDs");
+      if (evidence.readLimit !== undefined && evidence.readLimit !== 50) {
+        throw new Error("expected read limit must be 50");
       }
-      requireSequence(
-        evidence.requestSequence,
-        [`thread/read(subscribe=true,limit=${evidence.readLimit})`],
-        "conversation request sequence",
-      );
-      if (!Array.isArray(evidence.notificationSequence)) {
-        throw new Error("conversation notification sequence is required");
-      }
-      positiveInteger(evidence.transcriptItems, "transcript item count");
+      requireExpectedSequence(evidence.expectedSequence, "conversation");
+      shared.titleDigest = evidence.titleDigest;
       break;
-    case "stillwater-send":
-      requireReceipt(evidence.receipt, "send", "send receipt");
-      requireSequence(
-        evidence.requestSequence,
-        ["thread/send"],
-        "send request sequence",
-      );
-      if (
-        !Array.isArray(evidence.notificationSequence) ||
-        evidence.notificationSequence.length === 0
-      ) {
-        throw new Error("send notification sequence is required");
+    case "stillwater-send": {
+      requireReceipt(evidence.receipt, "send");
+      const lifecycle = requireObject(evidence.lifecycle, "item lifecycle");
+      requireNonempty(lifecycle.itemId, "lifecycle item ID");
+      requireDigest(lifecycle.streamingTreeDigest, "streaming tree");
+      requireDigest(lifecycle.completedTreeDigest, "completed tree");
+      if (lifecycle.streamingTreeDigest === lifecycle.completedTreeDigest) {
+        throw new Error("streaming and completed trees must differ");
       }
+      const reasoning = requireObject(evidence.reasoning, "reasoning evidence");
+      requireNonempty(reasoning.itemId, "reasoning item ID");
+      requireDigest(reasoning.contentDigest, "reasoning content");
+      const tool = requireObject(evidence.tool, "tool evidence");
+      requireNonempty(tool.itemId, "tool item ID");
+      requireDigest(tool.contentDigest, "tool content");
+      requireExpectedSequence(evidence.expectedSequence, "send");
       break;
+    }
     case "constellation-preserved":
-    case "field-notes-preserved": {
-      requireRosterIds(evidence.rosterIds, `${observation.concept} roster IDs`);
+      requirePreservation(
+        evidence,
+        "Constellation",
+        shared,
+        observation.threadIdentity,
+      );
+      break;
+    case "constellation-steer-queue":
+      if (!Array.isArray(evidence.receipts) || evidence.receipts.length !== 2) {
+        throw new Error("steer and queue receipts are required");
+      }
+      requireReceipt(evidence.receipts[0], "steer");
+      requireReceipt(evidence.receipts[1], "queue");
+      requireExpectedSequence(evidence.expectedSequence, "steer/queue");
+      break;
+    case "field-notes-preserved":
+      requirePreservation(
+        evidence,
+        "Field Notes",
+        shared,
+        observation.threadIdentity,
+      );
+      break;
+    case "field-notes-interrupt":
+      requireReceipt(evidence.receipt, "interrupt");
+      requireExpectedSequence(evidence.expectedSequence, "interrupt");
+      break;
+    case "work-activity-usage":
+      for (const key of ["tasks", "jobs", "delegates"]) {
+        if (!Array.isArray(evidence[key]) || evidence[key].length === 0) {
+          throw new Error(`${key} evidence is required`);
+        }
+        for (const item of evidence[key]) {
+          requireNonempty(item.id, `${key} ID`);
+          requireDigest(item.digest, `${key} digest`);
+        }
+      }
+      requireDigest(
+        requireObject(evidence.usage, "usage evidence").digest,
+        "usage digest",
+      );
+      break;
+    case "background-foreground":
+      requirePositiveInteger(evidence.processIdBefore, "process ID before");
+      requirePositiveInteger(evidence.processIdAfter, "process ID after");
+      if (evidence.processIdBefore !== evidence.processIdAfter) {
+        throw new Error("background/foreground must preserve the same process");
+      }
+      requirePositiveInteger(
+        evidence.lifecycleGenerationBefore,
+        "lifecycle before",
+        true,
+      );
+      requirePositiveInteger(
+        evidence.lifecycleGenerationAfter,
+        "lifecycle after",
+        true,
+      );
       if (
-        JSON.stringify(evidence.rosterIds) !== JSON.stringify(shared.rosterIds)
+        evidence.lifecycleGenerationAfter <= evidence.lifecycleGenerationBefore
       ) {
-        throw new Error(
-          `${observation.concept} roster IDs must match Stillwater roster IDs`,
-        );
+        throw new Error("lifecycle generation must advance");
+      }
+      for (const prefix of ["profile", "handshake"]) {
+        const before = evidence[`${prefix}GenerationBefore`];
+        const after = evidence[`${prefix}GenerationAfter`];
+        requirePositiveInteger(before, `${prefix} generation before`, true);
+        requirePositiveInteger(after, `${prefix} generation after`, true);
+        if (before !== after) {
+          throw new Error(
+            `${prefix} generation must stay on the same connection`,
+          );
+        }
       }
       if (evidence.activeThreadId !== observation.threadIdentity) {
-        throw new Error(
-          "preserved active thread ID must match the observed thread identity",
-        );
+        throw new Error("foreground thread must match");
       }
-      requireDraftPreserved(evidence);
-      const switchTrees = object(
-        evidence.switchTrees,
-        "concept switch semantic trees",
-      );
-      exactDigest(switchTrees.beforeDigest, "pre-switch semantic tree digest");
-      exactDigest(switchTrees.afterDigest, "post-switch semantic tree digest");
-      if (switchTrees.beforeDigest === switchTrees.afterDigest) {
-        throw new Error(
-          "concept switch must have distinct before and after semantic trees",
-        );
+      requireNonempty(evidence.draftBefore, "background draft before");
+      if (evidence.draftAfter !== evidence.draftBefore) {
+        throw new Error("background draft must be preserved");
       }
-      for (const item of ["thread", "draft", "roster"]) {
-        if (
-          !Array.isArray(evidence.preserved) ||
-          !evidence.preserved.includes(item)
-        ) {
-          throw new Error(`${observation.concept} must preserve ${item}`);
-        }
-      }
-      break;
-    }
-    case "constellation-steer-queue": {
-      requireDraftPreserved(evidence);
-      if (!Array.isArray(evidence.receipts) || evidence.receipts.length !== 2) {
-        throw new Error("steer and queue receipts are both required");
-      }
-      requireReceipt(evidence.receipts[0], "steer", "steer receipt");
-      requireReceipt(evidence.receipts[1], "queue", "queue receipt");
-      requireSequence(
-        evidence.requestSequence,
-        ["thread/steer", "thread/queue"],
-        "steer/queue request sequence",
-      );
-      if (
-        !Array.isArray(evidence.notificationSequence) ||
-        evidence.notificationSequence.length === 0
-      ) {
-        throw new Error("steer/queue notification sequence is required");
-      }
-      break;
-    }
-    case "field-notes-interrupt":
-      requireReceipt(evidence.receipt, "interrupt", "interrupt receipt");
-      requireSequence(
-        evidence.requestSequence,
-        ["thread/interrupt"],
-        "interrupt request sequence",
-      );
-      if (
-        !Array.isArray(evidence.notificationSequence) ||
-        evidence.notificationSequence.length === 0
-      ) {
-        throw new Error("interrupt notification sequence is required");
-      }
-      break;
-    case "work-activity-usage": {
-      const lifecycle = object(
-        evidence.itemLifecycle,
-        "item lifecycle evidence",
-      );
-      if (
-        lifecycle.started !== true ||
-        lifecycle.delta !== true ||
-        lifecycle.completed !== true
-      ) {
-        throw new Error(
-          "item lifecycle must show started, delta, and completed semantic states",
-        );
-      }
-      const reasoning = object(
-        evidence.reasoningSummary,
-        "reasoning summary evidence",
-      );
-      if (reasoning.observed !== true)
-        throw new Error("reasoning summary must be semantically observed");
-      exactDigest(reasoning.semanticDigest, "reasoning summary digest");
-      const tool = object(evidence.toolDelta, "tool delta evidence");
-      if (tool.observed !== true)
-        throw new Error("tool delta must be semantically observed");
-      exactDigest(tool.semanticDigest, "tool delta digest");
-      positiveInteger(evidence.tasks, "task count");
-      positiveInteger(evidence.jobs, "job count");
-      positiveInteger(evidence.delegates, "delegate count");
-      const usage = object(evidence.usage, "usage evidence");
-      if (usage.present === true) {
-        exactDigest(usage.semanticDigest, "usage semantic digest");
-      } else {
-        for (const key of ["inputTokens", "outputTokens", "contextTokens"]) {
-          positiveInteger(usage[key], `usage ${key}`, true);
-        }
-      }
-      break;
-    }
-    case "background-foreground":
-      positiveInteger(
-        evidence.backgroundGeneration,
-        "background generation",
-        true,
-      );
-      positiveInteger(
-        evidence.foregroundGeneration,
-        "foreground generation",
-        true,
-      );
-      if (evidence.foregroundGeneration <= evidence.backgroundGeneration) {
-        throw new Error(
-          "foreground generation must advance after backgrounding",
-        );
-      }
-      if (
-        evidence.activeThreadId !== observation.threadIdentity ||
-        evidence.rehydrated !== true
-      ) {
-        throw new Error(
-          "background/foreground must rehydrate the same active thread",
-        );
-      }
-      exactDigest(
-        evidence.backgroundTreeDigest,
-        "background semantic tree digest",
-      );
-      exactDigest(
-        evidence.foregroundTreeDigest,
-        "foreground semantic tree digest",
-      );
-      if (evidence.backgroundTreeDigest === evidence.foregroundTreeDigest) {
-        throw new Error(
-          "background and foreground semantic trees must be distinct",
-        );
-      }
+      requireDigest(evidence.backgroundTreeDigest, "background tree");
+      requireDigest(evidence.foregroundTreeDigest, "foreground tree");
       break;
     case "reconnect":
-      positiveInteger(
-        evidence.beforeGeneration,
-        "pre-reconnect generation",
-        true,
-      );
-      positiveInteger(
-        evidence.afterGeneration,
-        "post-reconnect generation",
-        true,
-      );
-      if (evidence.afterGeneration <= evidence.beforeGeneration) {
-        throw new Error("reconnect generation must advance");
+      requirePositiveInteger(evidence.processIdBefore, "reconnect PID before");
+      requirePositiveInteger(evidence.processIdAfter, "reconnect PID after");
+      if (evidence.processIdBefore === evidence.processIdAfter) {
+        throw new Error("reconnect must use a fresh process");
       }
-      if (
-        evidence.activeThreadId !== observation.threadIdentity ||
-        evidence.rehydrated !== true
-      ) {
-        throw new Error("reconnect must rehydrate the same active thread");
+      if (evidence.reopened !== true) {
+        throw new Error("reconnect must explicitly reopen the session");
       }
-      if (evidence.staleFramesAbsent !== true)
-        throw new Error("reconnect must prove stale frames absent");
-      if (evidence.hubObserved !== shared.hubVersion)
-        throw new Error("reconnect observed a stale Hub version");
+      if (evidence.activeThreadId !== observation.threadIdentity) {
+        throw new Error("reconnect thread must match");
+      }
+      requireDigest(evidence.titleDigest, "reconnect title digest");
+      if (evidence.titleDigest !== shared.titleDigest) {
+        throw new Error("reconnect title must identify the same session");
+      }
+      requireDigest(evidence.transcriptDigest, "reconnect transcript digest");
+      requireDigest(evidence.connectionTreeDigest, "reconnect connection tree");
       break;
     case "fixture-absence":
-      if (evidence.fixtureAbsent !== true)
-        throw new Error("fixture content must be absent");
-      if (evidence.searchAbsent !== true)
-        throw new Error("Search must be absent");
-      if (evidence.labAbsent !== true)
-        throw new Error("Lab Controls must be absent");
+      if (
+        evidence.fixtureAbsent !== true ||
+        evidence.searchAbsent !== true ||
+        evidence.labAbsent !== true
+      ) {
+        throw new Error("fixture, Search, and Lab must be absent");
+      }
       break;
     default:
-      throw new Error(`unsupported milestone ${observation.milestone}`);
+      throw new Error("unsupported milestone");
   }
-}
-
-function containsPassedAssertion(value) {
-  if (Array.isArray(value)) return value.some(containsPassedAssertion);
-  if (value === null || typeof value !== "object") return false;
-  return Object.entries(value).some(
-    ([key, entry]) =>
-      (key.toLowerCase() === "passed" && entry === true) ||
-      containsPassedAssertion(entry),
-  );
 }
 
 export function assertCompleteLiveSmoke(observed) {
@@ -419,139 +453,347 @@ export function assertCompleteLiveSmoke(observed) {
   const names = observed.map((entry) => entry?.milestone);
   const seen = new Set();
   for (const name of names) {
-    if (seen.has(name)) throw new Error(`duplicate milestone: ${String(name)}`);
+    if (seen.has(name)) throw new Error(`duplicate milestone ${String(name)}`);
     seen.add(name);
   }
   const missing = REQUIRED_LIVE_MILESTONES.filter((name) => !seen.has(name));
   if (missing.length > 0)
-    throw new Error(`missing milestone(s): ${missing.join(", ")}`);
-  const extra = names.filter(
-    (name) => !REQUIRED_LIVE_MILESTONES.includes(name),
-  );
-  if (extra.length > 0 || observed.length !== REQUIRED_LIVE_MILESTONES.length) {
-    throw new Error(
-      `extra milestone(s) or not exactly 12 observations: ${extra.join(", ")}`,
-    );
+    throw new Error(`missing milestones ${missing.join(",")}`);
+  if (
+    observed.length !== REQUIRED_LIVE_MILESTONES.length ||
+    names.some((name) => !REQUIRED_LIVE_MILESTONES.includes(name))
+  ) {
+    throw new Error("extra milestones");
   }
   for (let index = 0; index < REQUIRED_LIVE_MILESTONES.length; index += 1) {
     if (names[index] !== REQUIRED_LIVE_MILESTONES[index]) {
-      throw new Error(`milestones are out of order at index ${index}`);
+      throw new Error("milestones are out of order");
     }
   }
 
+  const shared = { rosterIds: null, hubVersion: null, titleDigest: null };
   let threadIdentity = null;
-  const shared = { hubVersion: null, rosterIds: null };
+  let priorTime = -Infinity;
   for (const observation of observed) {
-    object(observation, `${observation?.milestone ?? "unknown"} observation`);
-    if (containsPassedAssertion(observation)) {
-      throw new Error(
-        "passed:true is not evidence; semantic tree and command evidence are required",
-      );
+    requireObject(observation, "observation");
+    if (containsPassedTrue(observation)) {
+      throw new Error("passed:true is not evidence");
     }
     if (observation.concept !== EXPECTED_CONCEPT[observation.milestone]) {
-      throw new Error(
-        `${observation.milestone} has wrong concept; expected ${EXPECTED_CONCEPT[observation.milestone]}`,
-      );
+      throw new Error("wrong concept");
     }
     if (observation.fixtureAbsent !== true) {
-      throw new Error(`${observation.milestone} fixtureAbsent must be true`);
+      throw new Error("fixture contamination detected");
     }
     if (THREAD_MILESTONES.has(observation.milestone)) {
-      nonempty(
-        observation.threadIdentity,
-        `${observation.milestone} thread identity`,
-      );
+      requireNonempty(observation.threadIdentity, "thread identity");
       if (threadIdentity === null) threadIdentity = observation.threadIdentity;
-      if (observation.threadIdentity !== threadIdentity) {
-        throw new Error(`${observation.milestone} has wrong thread identity`);
+      if (threadIdentity !== observation.threadIdentity) {
+        throw new Error("wrong thread identity");
       }
     }
-    const source = object(
-      observation.source,
-      `${observation.milestone} source`,
-    );
-    if (source.tool !== "idb")
-      throw new Error("observation source must be IDB semantic automation");
-    if (source.commandStatus !== 0)
-      throw new Error("semantic command status must be zero");
-    exactDigest(source.commandDigest, "semantic command digest");
-    exactDigest(source.semanticTreeDigest, "semantic tree digest");
-    if (
-      !Number.isFinite(source.observedAtMonotonicMs) ||
-      source.observedAtMonotonicMs < 0
-    ) {
-      throw new Error("semantic observation must carry monotonic time");
+    const source = requireObject(observation.source, "observation source");
+    if (source.tool !== "idb" || source.commandStatus !== 0) {
+      throw new Error("observation source must be successful IDB");
     }
-    object(observation.action, `${observation.milestone} semantic action`);
-    object(
-      observation.positiveMarker,
-      `${observation.milestone} positive marker`,
-    );
-    exactDigest(
-      observation.positiveMarker.markerDigest,
-      "positive marker digest",
-    );
+    requireDigest(source.commandDigest, "source command digest");
+    requireDigest(source.semanticTreeDigest, "source tree digest");
+    if (
+      typeof source.observedAtMonotonicMs !== "number" ||
+      !Number.isFinite(source.observedAtMonotonicMs) ||
+      source.observedAtMonotonicMs <= priorTime
+    ) {
+      throw new Error("observation times must be strictly increasing");
+    }
+    priorTime = source.observedAtMonotonicMs;
+    requireObject(observation.action, "milestone action");
+    const marker = requireObject(observation.positiveMarker, "positive marker");
+    if (marker.markerDigest !== derivePositiveMarker(observation)) {
+      throw new Error("positive marker is not derived from observation");
+    }
     validateMilestoneEvidence(observation, shared);
   }
   return true;
 }
 
 export function parseCli(argv) {
-  const names = new Map([
+  const known = new Map([
     ["--udid", "udid"],
     ["--bundle-id", "bundleId"],
     ["--output-dir", "outputDir"],
     ["--hub-version", "hubVersion"],
   ]);
   const result = {};
+  if (argv.length % 2 !== 0) throw new SmokeError("invalid-cli");
   for (let index = 0; index < argv.length; index += 2) {
     const flag = argv[index];
-    if (typeof flag !== "string" || !flag.startsWith("--")) {
-      throw new Error("unexpected argument; flags and values must be paired");
-    }
-    const key = names.get(flag);
-    if (key === undefined) throw new Error(`unknown flag ${flag}`);
-    if (Object.hasOwn(result, key)) throw new Error(`duplicate ${flag}`);
-    if (index + 1 >= argv.length)
-      throw new Error(`${flag} requires a nonempty value`);
     const value = argv[index + 1];
+    if (!known.has(flag)) throw new SmokeError("unknown-cli-flag");
+    const key = known.get(flag);
+    if (Object.hasOwn(result, key)) throw new SmokeError("duplicate-cli-flag");
     if (typeof value !== "string" || value.trim() === "") {
-      throw new Error(`${flag} requires a nonempty value`);
+      throw new SmokeError("invalid-cli-value");
     }
     result[key] = value;
   }
-  for (const [flag, key] of names) {
-    if (!Object.hasOwn(result, key))
-      throw new Error(`missing required ${flag}`);
+  for (const key of known.values()) {
+    if (!Object.hasOwn(result, key)) throw new SmokeError("missing-cli-flag");
   }
-  if (!path.isAbsolute(result.outputDir))
-    throw new Error("--output-dir must be absolute");
+  if (!path.isAbsolute(result.outputDir)) {
+    throw new SmokeError("output-dir-must-be-absolute");
+  }
+  if (!SAFE_BUNDLE_ID.test(result.bundleId)) {
+    throw new SmokeError("invalid-bundle-id");
+  }
+  if (!SAFE_VERSION.test(result.hubVersion)) {
+    throw new SmokeError("invalid-hub-version");
+  }
   return result;
 }
 
-export async function pollSemanticTree({ readTree, accept, now }) {
+export function readSmokeEnvironment(env) {
+  const appPath = env?.EVENER_SMOKE_APP_PATH;
+  const threadRef = env?.EVENER_SMOKE_THREAD_REF;
   if (
-    typeof readTree !== "function" ||
-    typeof accept !== "function" ||
-    typeof now !== "function"
+    typeof appPath !== "string" ||
+    appPath.trim() === "" ||
+    !path.isAbsolute(appPath)
   ) {
-    throw new Error(
-      "semantic polling requires readTree, accept, and monotonic now functions",
-    );
+    throw new SmokeError("app prerequisite unavailable");
   }
-  const started = now();
-  for (;;) {
-    const tree = await readTree();
-    if (tree === null || typeof tree !== "object" || Array.isArray(tree)) {
-      throw new Error("malformed semantic tree output");
+  if (typeof threadRef !== "string" || threadRef.trim() === "") {
+    throw new SmokeError("thread prerequisite unavailable");
+  }
+  return { appPath, threadRef };
+}
+
+export function parseAxDocument(input) {
+  let document;
+  try {
+    document = typeof input === "string" ? JSON.parse(input) : input;
+  } catch {
+    throw new SmokeError("malformed complete AX document");
+  }
+  if (
+    !isObject(document) ||
+    document.format !== "complete" ||
+    typeof document.backend !== "string" ||
+    document.backend.trim() === "" ||
+    !Array.isArray(document.elements)
+  ) {
+    throw new SmokeError("malformed complete AX document");
+  }
+  const nodes = [];
+  const visit = (value) => {
+    if (Array.isArray(value)) {
+      for (const child of value) visit(child);
+      return;
     }
-    if (accept(tree)) return tree;
-    if (now() - started >= TRIPWIRE_MS) {
-      throw new Error(
-        "10-second semantic tripwire reached without a positive marker",
+    if (!isObject(value)) return;
+    if (typeof value.AXLabel === "string" && value.AXLabel.trim() !== "") {
+      const rawValue = value.AXValue;
+      if (
+        rawValue !== undefined &&
+        rawValue !== null &&
+        !["string", "number", "boolean"].includes(typeof rawValue)
+      ) {
+        throw new SmokeError("malformed-AX-node");
+      }
+      const role = value.role ?? value.AXRole ?? null;
+      if (role !== null && typeof role !== "string") {
+        throw new SmokeError("malformed-AX-node");
+      }
+      nodes.push({
+        label: value.AXLabel,
+        value: rawValue == null ? null : String(rawValue),
+        role,
+      });
+    }
+    for (const child of Object.values(value)) {
+      if (child !== value.AXLabel && child !== value.AXValue) visit(child);
+    }
+  };
+  visit(document.elements);
+  if (nodes.length === 0) throw new SmokeError("missing AX node");
+  return {
+    format: "complete",
+    backend: document.backend,
+    nodes,
+    raw: document,
+  };
+}
+
+export function decodeDeviceDescription(stdout, expectedUdid) {
+  let value;
+  try {
+    value = JSON.parse(stdout);
+  } catch {
+    throw new SmokeError("invalid device metadata");
+  }
+  const model = value?.model ?? value?.device?.model;
+  if (
+    !isObject(value) ||
+    value.udid !== expectedUdid ||
+    value.type !== "device" ||
+    typeof model !== "string" ||
+    !SAFE_DEVICE_MODEL.test(model) ||
+    typeof value.os_version !== "string" ||
+    !SAFE_VERSION.test(value.os_version)
+  ) {
+    throw new SmokeError("invalid device metadata");
+  }
+  return { model, os: value.os_version };
+}
+
+export function decodeInstalledApps(stdout) {
+  const lines = stdout
+    .split(/\r?\n/)
+    .map((line) => line.trim())
+    .filter(Boolean);
+  if (lines.length === 0) throw new SmokeError("invalid app listing");
+  return lines.map((line) => {
+    let value;
+    try {
+      value = JSON.parse(line);
+    } catch {
+      throw new SmokeError("invalid app listing");
+    }
+    if (
+      !isObject(value) ||
+      typeof value.bundle_id !== "string" ||
+      !SAFE_BUNDLE_ID.test(value.bundle_id) ||
+      typeof value.name !== "string" ||
+      value.name.trim() === "" ||
+      !["Running", "Not running", "Unknown"].includes(value.process_state) ||
+      !Number.isSafeInteger(value.pid) ||
+      value.pid < 0
+    ) {
+      throw new SmokeError("invalid app listing");
+    }
+    return {
+      bundleId: value.bundle_id,
+      name: value.name,
+      processState: value.process_state,
+      pid: value.pid,
+    };
+  });
+}
+
+async function assertNoSymlinkComponents(target) {
+  const absolute = path.resolve(target);
+  const parsed = path.parse(absolute);
+  let current = parsed.root;
+  for (const component of absolute
+    .slice(parsed.root.length)
+    .split(path.sep)
+    .filter(Boolean)) {
+    current = path.join(current, component);
+    try {
+      const info = await lstat(current);
+      if (info.isSymbolicLink()) throw new SmokeError("symbolic link refused");
+    } catch (error) {
+      if (error?.code === "ENOENT") return;
+      throw error;
+    }
+  }
+}
+
+async function deterministicBundleHash(appPath) {
+  const entries = [];
+  const walk = async (directory, relativeDirectory = "") => {
+    const names = await readdir(directory);
+    names.sort();
+    if (names.length === 0)
+      entries.push({ type: "directory", path: relativeDirectory });
+    for (const name of names) {
+      const absolute = path.join(directory, name);
+      const relative = path.posix.join(
+        relativeDirectory.split(path.sep).join(path.posix.sep),
+        name,
       );
+      const info = await lstat(absolute);
+      if (info.isSymbolicLink()) throw new SmokeError("symbolic link refused");
+      if (info.isDirectory()) {
+        entries.push({ type: "directory", path: relative });
+        await walk(absolute, relative);
+      } else if (info.isFile()) {
+        entries.push({
+          type: "file",
+          path: relative,
+          bytes: await readFile(absolute),
+        });
+      } else {
+        throw new SmokeError("unsupported bundle entry");
+      }
+    }
+  };
+  await walk(appPath);
+  const hash = createHash("sha256");
+  for (const entry of entries) {
+    const nameBytes = Buffer.from(entry.path, "utf8");
+    const nameLength = Buffer.alloc(4);
+    nameLength.writeUInt32BE(nameBytes.length);
+    hash.update(entry.type === "file" ? Buffer.from([1]) : Buffer.from([0]));
+    hash.update(nameLength);
+    hash.update(nameBytes);
+    if (entry.type === "file") {
+      const size = Buffer.alloc(8);
+      size.writeBigUInt64BE(BigInt(entry.bytes.length));
+      hash.update(size);
+      hash.update(entry.bytes);
     }
   }
+  return `sha256:${hash.digest("hex")}`;
+}
+
+export async function inspectLocalAppBundle(appPath, { run }) {
+  await assertNoSymlinkComponents(appPath);
+  const appInfo = await lstat(appPath).catch(() => null);
+  if (
+    appInfo === null ||
+    !appInfo.isDirectory() ||
+    path.extname(appPath) !== ".app"
+  ) {
+    throw new SmokeError("invalid local app bundle");
+  }
+  const plistPath = path.join(appPath, "Info.plist");
+  const plistInfo = await lstat(plistPath).catch(() => null);
+  if (plistInfo === null || !plistInfo.isFile() || plistInfo.isSymbolicLink()) {
+    throw new SmokeError("invalid local app bundle");
+  }
+  await run("codesign", ["--verify", "--strict", appPath]);
+  const idResult = await run("plutil", [
+    "-extract",
+    "CFBundleIdentifier",
+    "raw",
+    "-o",
+    "-",
+    plistPath,
+  ]);
+  const versionResult = await run("plutil", [
+    "-extract",
+    "CFBundleShortVersionString",
+    "raw",
+    "-o",
+    "-",
+    plistPath,
+  ]);
+  const id = idResult.stdout.trim();
+  const version = versionResult.stdout.trim();
+  if (!SAFE_BUNDLE_ID.test(id) || !SAFE_VERSION.test(version)) {
+    throw new SmokeError("invalid local app identity");
+  }
+  const hash = await deterministicBundleHash(appPath);
+  const finalAppInfo = await lstat(appPath).catch(() => null);
+  if (
+    finalAppInfo === null ||
+    !finalAppInfo.isDirectory() ||
+    finalAppInfo.dev !== appInfo.dev ||
+    finalAppInfo.ino !== appInfo.ino
+  ) {
+    throw new SmokeError("local app bundle changed");
+  }
+  return { id, version, hash, codesignVerified: true };
 }
 
 export class ProcessRegistry {
@@ -569,42 +811,77 @@ export class ProcessRegistry {
     for (const child of this.#children) {
       try {
         child.kill("SIGTERM");
+        child.kill("SIGKILL");
       } catch {
-        /* retain the original failure */
+        // The child may already have exited.
       }
     }
     this.#children.clear();
   }
 }
 
+const DEFAULT_SCHEDULER = {
+  schedule: (callback, milliseconds) => setTimeout(callback, milliseconds),
+  cancel: (handle) => clearTimeout(handle),
+};
+
 export function runSpawned(program, argv, options = {}) {
   if (
     typeof program !== "string" ||
     !Array.isArray(argv) ||
-    argv.some((value) => typeof value !== "string")
+    argv.some((entry) => typeof entry !== "string")
   ) {
-    throw new Error(
-      "process execution requires a program and argv string array",
-    );
+    throw new SmokeError("invalid-command");
   }
   const spawnImpl = options.spawnImpl ?? spawn;
   const registry = options.registry ?? new ProcessRegistry();
+  const now =
+    options.now ?? (() => Number(process.hrtime.bigint() / 1_000_000n));
+  const scheduler = options.scheduler ?? DEFAULT_SCHEDULER;
+  const controller = new AbortController();
+  const started = now();
   return new Promise((resolve, reject) => {
-    let settled = false;
     let child;
+    let settled = false;
+    let timedOut = false;
+    let stdout = "";
+    let stderr = "";
+    const finish = (error, value) => {
+      if (settled) return;
+      settled = true;
+      scheduler.cancel(timer);
+      if (child) registry.delete(child);
+      if (error) reject(error);
+      else resolve(value);
+    };
+    const onTripwire = () => {
+      const remaining = TRIPWIRE_MS - (now() - started);
+      if (remaining > 0) {
+        timer = scheduler.schedule(onTripwire, remaining);
+        return;
+      }
+      timedOut = true;
+      controller.abort();
+      try {
+        child?.kill("SIGTERM");
+        child?.kill("SIGKILL");
+      } catch {
+        finish(new SmokeError("command tripwire reached"));
+      }
+    };
+    let timer = scheduler.schedule(onTripwire, TRIPWIRE_MS);
     try {
       child = spawnImpl(program, argv, {
         shell: false,
         stdio: ["ignore", "pipe", "pipe"],
         windowsHide: true,
+        signal: controller.signal,
       });
     } catch {
-      reject(new Error(`${program} could not be started`));
+      finish(new SmokeError("command start failed"));
       return;
     }
     registry.add(child);
-    let stdout = "";
-    let stderr = "";
     child.stdout?.setEncoding("utf8");
     child.stderr?.setEncoding("utf8");
     child.stdout?.on("data", (chunk) => {
@@ -614,454 +891,661 @@ export function runSpawned(program, argv, options = {}) {
       stderr += chunk;
     });
     child.once("error", () => {
-      if (settled) return;
-      settled = true;
-      registry.delete(child);
-      reject(new Error(`${program} failed to execute`));
+      if (!timedOut) finish(new SmokeError("command execution failed"));
     });
     child.once("close", (code, signal) => {
-      if (settled) return;
-      settled = true;
-      registry.delete(child);
+      if (timedOut) {
+        finish(new SmokeError("command tripwire reached"));
+        return;
+      }
       if (code !== 0) {
-        const error = new Error(
-          `${program} exited nonzero (${code ?? signal ?? "unknown"})`,
-        );
+        const error = new SmokeError("command failed");
+        error.status = code;
         error.code =
           program === "idb" &&
           /(?:companion.{0,80}(?:lost|disconnect|connect|unavailable)|(?:lost|disconnect|connect|unavailable).{0,80}companion)/is.test(
             stderr,
           )
             ? "IDB_COMPANION_LOST"
-            : "COMMAND_NONZERO";
-        error.status = code;
-        reject(error);
+            : "COMMAND_FAILED";
+        finish(error);
         return;
       }
-      resolve({ status: 0, stdout, stderr });
+      finish(null, { status: 0, stdout, stderr, signal });
     });
   });
 }
 
-function isIdbCompanionLoss(error) {
-  return (
-    error?.code === "IDB_COMPANION_LOST" ||
-    /companion (?:connection )?(?:unavailable|lost|disconnected)/i.test(
-      error?.message ?? "",
-    )
-  );
+export async function pollSemanticTree({ readTree, accept, now }) {
+  if (
+    typeof readTree !== "function" ||
+    typeof accept !== "function" ||
+    typeof now !== "function"
+  ) {
+    throw new SmokeError("invalid semantic poll");
+  }
+  const started = now();
+  for (;;) {
+    if (now() - started >= TRIPWIRE_MS) {
+      throw new SmokeError("semantic tripwire reached");
+    }
+    const tree = await readTree();
+    if (!isObject(tree)) throw new SmokeError("malformed semantic tree");
+    if (accept(tree)) return tree;
+    if (now() - started >= TRIPWIRE_MS) {
+      throw new SmokeError("semantic tripwire reached");
+    }
+  }
 }
 
-export async function launchProductionBundle(
-  { udid, bundleId, foregroundIfRunning = false },
-  { run = runSpawned } = {},
+async function pathIdentity(target, kind) {
+  const info = await lstat(target).catch(() => null);
+  if (
+    info === null ||
+    info.isSymbolicLink() ||
+    (kind === "directory" ? !info.isDirectory() : !info.isFile())
+  ) {
+    throw new SmokeError("evidence path changed");
+  }
+  return { dev: info.dev, ino: info.ino };
+}
+
+function sameIdentity(left, right) {
+  return left.dev === right.dev && left.ino === right.ino;
+}
+
+export async function createEvidenceRoot(outputDir) {
+  if (!path.isAbsolute(outputDir)) {
+    throw new SmokeError("evidence output must be absolute");
+  }
+  await assertNoSymlinkComponents(path.dirname(outputDir));
+  try {
+    await mkdir(outputDir, { mode: 0o700 });
+  } catch (error) {
+    if (error?.code === "EEXIST") {
+      throw new SmokeError("evidence output already exists");
+    }
+    throw new SmokeError("evidence root creation failed");
+  }
+  await chmod(outputDir, 0o700);
+  await syncDirectory(path.dirname(outputDir));
+  const scratchDir = path.join(outputDir, "sensitive-scratch");
+  try {
+    await mkdir(scratchDir, { mode: 0o700 });
+  } catch {
+    throw new SmokeError("evidence scratch creation failed");
+  }
+  await chmod(scratchDir, 0o700);
+  await syncDirectory(outputDir);
+  return {
+    outputDir,
+    scratchDir,
+    outputIdentity: await pathIdentity(outputDir, "directory"),
+    scratchIdentity: await pathIdentity(scratchDir, "directory"),
+    rawPath: path.join(scratchDir, "raw-evidence.json"),
+    summaryPath: path.join(outputDir, "live-smoke-summary.json"),
+  };
+}
+
+async function assertEvidenceRoots(paths) {
+  const output = await pathIdentity(paths.outputDir, "directory");
+  const scratch = await pathIdentity(paths.scratchDir, "directory");
+  if (
+    !sameIdentity(output, paths.outputIdentity) ||
+    !sameIdentity(scratch, paths.scratchIdentity)
+  ) {
+    throw new SmokeError("evidence path changed");
+  }
+}
+
+async function syncDirectory(directory) {
+  const handle = await open(directory, "r");
+  try {
+    await handle.sync();
+  } finally {
+    await handle.close();
+  }
+}
+
+async function defaultWriteBytes(handle, bytes) {
+  await handle.writeFile(bytes);
+  await handle.sync();
+}
+
+async function publishNoReplace(
+  directory,
+  destination,
+  bytes,
+  writeBytes = defaultWriteBytes,
 ) {
+  const temporary = path.join(
+    directory,
+    `.tmp-${randomBytes(16).toString("hex")}`,
+  );
+  let handle;
+  try {
+    handle = await open(temporary, "wx", 0o600);
+    await writeBytes(handle, bytes);
+    await handle.close();
+    handle = null;
+    await chmod(temporary, 0o600);
+    try {
+      await lstat(destination);
+      throw new SmokeError("refusing to overwrite evidence");
+    } catch (error) {
+      if (error?.code !== "ENOENT") throw error;
+    }
+    await link(temporary, destination);
+    await unlink(temporary);
+    await syncDirectory(directory);
+  } catch (error) {
+    if (handle !== null && handle !== undefined)
+      await handle.close().catch(() => {});
+    await unlink(temporary).catch(() => {});
+    if (error instanceof SmokeError) throw error;
+    throw new SmokeError("evidence write failed");
+  }
+}
+
+function safeObservationSummary(observation) {
+  return {
+    milestone: observation.milestone,
+    concept: observation.concept,
+    observedAtMonotonicMs: observation.source.observedAtMonotonicMs,
+    semanticTreeDigest: observation.source.semanticTreeDigest,
+    markerDigest: observation.positiveMarker.markerDigest,
+    evidenceDigest: digest(JSON.stringify(observation.evidence)),
+  };
+}
+
+function safeVersionOrNull(value) {
+  return typeof value === "string" && SAFE_VERSION.test(value) ? value : null;
+}
+
+function safeBundleOrNull(value) {
+  return typeof value === "string" && SAFE_BUNDLE_ID.test(value) ? value : null;
+}
+
+function safeDeviceModelOrNull(value) {
+  return typeof value === "string" && SAFE_DEVICE_MODEL.test(value)
+    ? value
+    : null;
+}
+
+function safeDigestOrNull(value) {
+  return typeof value === "string" && SHA256.test(value) ? value : null;
+}
+
+function buildSafeSummary(input, linkDigest) {
+  const status = ["passed", "failed", "blocked"].includes(input.status)
+    ? input.status
+    : "failed";
+  return {
+    schemaVersion: 2,
+    status,
+    linkDigest,
+    tools: {
+      idb: {
+        versionDigest: safeDigestOrNull(input.tools?.idb?.versionDigest),
+        capabilitiesDigest: safeDigestOrNull(
+          input.tools?.idb?.capabilitiesDigest,
+        ),
+      },
+    },
+    device: {
+      model: safeDeviceModelOrNull(input.device?.model),
+      modelDigest: safeDigestOrNull(input.device?.modelDigest),
+      os: safeVersionOrNull(input.device?.os),
+    },
+    app: {
+      id: safeBundleOrNull(input.app?.id),
+      version: safeVersionOrNull(input.app?.version),
+      hash: safeDigestOrNull(input.app?.hash),
+    },
+    hub: {
+      version: safeVersionOrNull(input.hub?.version),
+      protocol: safeVersionOrNull(input.hub?.protocol),
+      originDigest: safeDigestOrNull(input.hub?.originDigest),
+    },
+    observations: Array.isArray(input.observations)
+      ? input.observations.map(safeObservationSummary)
+      : [],
+  };
+}
+
+export async function publishEvidence(paths, summaryInput, raw, options = {}) {
+  await assertEvidenceRoots(paths);
+  const rawBytes = Buffer.from(`${JSON.stringify(raw, null, 2)}\n`, "utf8");
+  const linkDigest = digestBytes(rawBytes);
+  const summary = buildSafeSummary(summaryInput, linkDigest);
+  const summaryBytes = Buffer.from(
+    `${JSON.stringify(summary, null, 2)}\n`,
+    "utf8",
+  );
+  const writeBytes = options.writeBytes ?? defaultWriteBytes;
+  try {
+    await publishNoReplace(
+      paths.scratchDir,
+      paths.rawPath,
+      rawBytes,
+      writeBytes,
+    );
+    await assertEvidenceRoots(paths);
+    await publishNoReplace(
+      paths.outputDir,
+      paths.summaryPath,
+      summaryBytes,
+      writeBytes,
+    );
+  } catch (error) {
+    if (error instanceof SmokeError) throw error;
+    throw new SmokeError("evidence write failed");
+  }
+  return { ...paths, summary, linkDigest };
+}
+
+export async function verifyIdbCapabilities({ run }) {
+  const checks = [
+    {
+      argv: ["--version"],
+      tokens: [],
+      version: true,
+    },
+    {
+      argv: ["ui", "describe-all", "--help"],
+      tokens: ["--format", "complete", "--json", "--udid"],
+    },
+    {
+      argv: ["ui", "tap", "--help"],
+      tokens: ["target", "--match-key", "AXLabel", "--udid"],
+    },
+    { argv: ["ui", "text", "--help"], tokens: ["text", "--udid"] },
+    { argv: ["ui", "button", "--help"], tokens: ["HOME", "--udid"] },
+    {
+      argv: ["launch", "--help"],
+      tokens: ["--foreground-if-running", "--udid", "bundle_id"],
+    },
+    { argv: ["terminate", "--help"], tokens: ["--udid", "bundle_id"] },
+    {
+      argv: ["describe", "--help"],
+      tokens: ["--diagnostics", "--json", "--udid"],
+    },
+    {
+      argv: ["list-apps", "--help"],
+      tokens: ["--fetch-process-state", "--json", "--udid"],
+    },
+  ];
+  const outputs = [];
+  let version = "";
+  for (const check of checks) {
+    const result = await run("idb", check.argv);
+    if (typeof result.stdout !== "string" || result.stdout.trim() === "") {
+      throw new SmokeError("IDB capability unavailable");
+    }
+    if (check.version) version = result.stdout.trim();
+    for (const token of check.tokens) {
+      if (!result.stdout.includes(token)) {
+        throw new SmokeError("IDB capability unavailable");
+      }
+    }
+    outputs.push(digest(result.stdout));
+  }
+  return {
+    versionDigest: digest(version),
+    capabilitiesDigest: digest(JSON.stringify(outputs)),
+  };
+}
+
+function commandSource(snapshot) {
+  return {
+    tool: "idb",
+    commandStatus: 0,
+    commandDigest: snapshot.commandDigest,
+    semanticTreeDigest: snapshot.treeDigest,
+    observedAtMonotonicMs: snapshot.observedAtMonotonicMs,
+  };
+}
+
+function makeObservation({
+  milestone,
+  snapshot,
+  threadIdentity,
+  evidence,
+  action,
+}) {
+  const observation = {
+    milestone,
+    concept: EXPECTED_CONCEPT[milestone],
+    threadIdentity,
+    fixtureAbsent: true,
+    source: commandSource(snapshot),
+    action,
+    evidence,
+  };
+  return {
+    ...observation,
+    positiveMarker: { markerDigest: derivePositiveMarker(observation) },
+  };
+}
+
+function findNode(snapshot, predicate, label) {
+  const matching = snapshot.nodes.filter(predicate);
+  if (matching.length !== 1) throw new SmokeError(label);
+  return matching[0];
+}
+
+function parseConceptNode(snapshot, expectedConcept, expectedSurface) {
+  const node = findNode(
+    snapshot,
+    (candidate) => candidate.label.startsWith("Evener concept;"),
+    "concept AX unavailable",
+  );
+  const match = node.label.match(
+    /^Evener concept; concept (Stillwater|Constellation|Field Notes); surface (sessions|conversation|work)(?:; connection (connecting|connected|offline|error))?(.*)$/,
+  );
+  if (!match || match[1] !== expectedConcept || match[2] !== expectedSurface) {
+    throw new SmokeError("wrong concept AX state");
+  }
+  const sessionMatch = match[4].match(/; session ([A-Za-z0-9._:-]+)/);
+  return {
+    node,
+    concept: match[1],
+    surface: match[2],
+    status: match[3] ?? null,
+    session: sessionMatch?.[1] ?? null,
+  };
+}
+
+function parseConnection(snapshot) {
+  const separate = snapshot.nodes.find((node) =>
+    node.label.startsWith("Evener connection;"),
+  );
+  if (separate) {
+    const match = separate.label.match(
+      /^Evener connection; status (connected|connecting|offline|error); server ([^;]+); protocol ([^;]+); profile-generation (\d+); lifecycle-phase (active|inactive|background|foreground); lifecycle-generation (\d+); handshake-generation (\d+); app ([A-Za-z0-9.-]+)@([^;]+); origin (sha256:[a-f0-9]{64})$/,
+    );
+    if (!match) throw new SmokeError("connection AX unavailable");
+    const connection = {
+      status: match[1],
+      serverVersion: match[2],
+      protocolVersion: match[3],
+      profileGeneration: Number(match[4]),
+      lifecyclePhase: match[5],
+      lifecycleGeneration: Number(match[6]),
+      handshakeGeneration: Number(match[7]),
+      bundleId: match[8],
+      appVersion: match[9],
+      originDigest: match[10],
+    };
+    if (
+      !SAFE_VERSION.test(connection.serverVersion) ||
+      !SAFE_VERSION.test(connection.protocolVersion) ||
+      !SAFE_VERSION.test(connection.appVersion)
+    ) {
+      throw new SmokeError("connection AX unavailable");
+    }
+    return connection;
+  }
+  const concept = findNode(
+    snapshot,
+    (node) => node.label.startsWith("Evener concept;"),
+    "connection AX unavailable",
+  );
+  const match = concept.label.match(
+    /; connection (connected|connecting|offline|error); server ([^;]+); protocol ([^;]+); profile generation (\d+); lifecycle (active|inactive|background|foreground) (\d+); handshake (\d+); app ([A-Za-z0-9.-]+) ([^;]+); origin (sha256:[a-f0-9]{64})/,
+  );
+  if (!match) throw new SmokeError("connection AX unavailable");
+  const connection = {
+    status: match[1],
+    serverVersion: match[2],
+    protocolVersion: match[3],
+    profileGeneration: Number(match[4]),
+    lifecyclePhase: match[5],
+    lifecycleGeneration: Number(match[6]),
+    handshakeGeneration: Number(match[7]),
+    bundleId: match[8],
+    appVersion: match[9],
+    originDigest: match[10],
+  };
+  if (
+    !SAFE_VERSION.test(connection.serverVersion) ||
+    !SAFE_VERSION.test(connection.protocolVersion) ||
+    !SAFE_VERSION.test(connection.appVersion)
+  ) {
+    throw new SmokeError("connection AX unavailable");
+  }
+  return connection;
+}
+
+function parseRoster(snapshot, concept) {
+  parseConceptNode(snapshot, concept, "sessions");
+  const status = findNode(
+    snapshot,
+    (node) => node.label.startsWith("Evener roster;"),
+    "roster AX unavailable",
+  );
+  const match = status.label.match(
+    /^Evener roster; concept (Stillwater|Constellation|Field Notes); retained (\d+); has-more (true|false)$/,
+  );
+  if (!match || match[1] !== concept)
+    throw new SmokeError("roster AX unavailable");
+  const rows = snapshot.nodes
+    .map((node) => {
+      const row = node.label.match(
+        /^Session ([A-Za-z0-9._:-]+); (.+); project (.+); status (attention|running|success|failed|idle|unknown)$/,
+      );
+      return row
+        ? {
+            id: row[1],
+            title: row[2],
+            project: row[3],
+            status: row[4],
+            label: node.label,
+            role: node.role,
+          }
+        : null;
+    })
+    .filter(Boolean);
+  if (
+    rows.length === 0 ||
+    rows.length !== Number(match[2]) ||
+    rows.some((row) => !/Button/i.test(row.role ?? ""))
+  ) {
+    throw new SmokeError("roster row AX unavailable");
+  }
+  return {
+    rows,
+    rosterIds: rows.map((row) => row.id),
+    retainedCount: Number(match[2]),
+    hasMore: match[3] === "true",
+  };
+}
+
+function parseConversation(snapshot, concept, expectedTitle = null) {
+  const root = parseConceptNode(snapshot, concept, "conversation");
+  if (root.session === null) throw new SmokeError("thread AX unavailable");
+  const prefixedTitle = snapshot.nodes.find((node) =>
+    node.label.startsWith("Conversation title "),
+  );
+  const exactTitle =
+    expectedTitle === null
+      ? null
+      : snapshot.nodes.find(
+          (node) =>
+            node.label === expectedTitle && /Heading/i.test(node.role ?? ""),
+        );
+  const titleNode = prefixedTitle ?? exactTitle;
+  if (!titleNode) throw new SmokeError("conversation title AX unavailable");
+  const title = prefixedTitle
+    ? prefixedTitle.label.slice("Conversation title ".length)
+    : titleNode.label;
+  const draft = findNode(
+    snapshot,
+    (node) => node.label === "Message",
+    "draft AX unavailable",
+  ).value;
+  if (draft === null) throw new SmokeError("draft AX unavailable");
+  return {
+    threadId: root.session,
+    title,
+    titleDigest: digest(title),
+    draft,
+    transcript: parseTranscript(snapshot),
+  };
+}
+
+function parseMutation(snapshot, kind, status) {
+  const node = findNode(
+    snapshot,
+    (candidate) => candidate.label.startsWith("Evener mutation;"),
+    "mutation AX unavailable",
+  );
+  const match = node.label.match(
+    /^Evener mutation; kind (send|steer|queue|interrupt); status (pending|failed|accepted); receipt (none|\d+)$/,
+  );
+  if (!match || match[1] !== kind || match[2] !== status) {
+    throw new SmokeError("mutation AX unavailable");
+  }
+  if (status === "accepted" && match[3] === "none") {
+    throw new SmokeError("accepted receipt AX unavailable");
+  }
+  return {
+    kind,
+    status,
+    receipt: match[3] === "none" ? null : Number(match[3]),
+  };
+}
+
+function parseTranscript(snapshot) {
+  return snapshot.nodes
+    .map((node) => {
+      const match = node.label.match(
+        /^Evener transcript item; id ([A-Za-z0-9._:-]+); kind (user|assistant|reasoning|tool|question|failure|attachment); status (streaming|completed); label ([^;]*); content ([\s\S]+)$/,
+      );
+      return match
+        ? {
+            id: match[1],
+            kind: match[2],
+            status: match[3],
+            label: match[4],
+            content: match[5],
+          }
+        : null;
+    })
+    .filter(Boolean);
+}
+
+function parseWork(snapshot) {
+  parseConceptNode(snapshot, "Field Notes", "work");
+  const items = snapshot.nodes
+    .map((node) => {
+      const match = node.label.match(
+        /^Evener work item; id ([A-Za-z0-9._:-]+); kind (task|delegate|job|watch); status (attention|running|success|failed|idle|unknown); title ([\s\S]+)$/,
+      );
+      return match
+        ? { id: match[1], kind: match[2], digest: digest(node.label) }
+        : null;
+    })
+    .filter(Boolean);
+  const usage = findNode(
+    snapshot,
+    (node) => node.label.startsWith("Evener usage;"),
+    "usage AX unavailable",
+  );
+  const byKind = (kind) => items.filter((item) => item.kind === kind);
+  const result = {
+    tasks: byKind("task"),
+    jobs: byKind("job"),
+    delegates: byKind("delegate"),
+    usage: { digest: digest(usage.label) },
+  };
+  if (
+    result.tasks.length === 0 ||
+    result.jobs.length === 0 ||
+    result.delegates.length === 0
+  ) {
+    throw new SmokeError("work AX unavailable");
+  }
+  return result;
+}
+
+function assertNoFixture(snapshot, final = false) {
+  for (const node of snapshot.nodes) {
+    if (
+      CONTAMINATION.test(node.label) ||
+      CONTAMINATION.test(node.value ?? "")
+    ) {
+      throw new SmokeError("fixture contamination detected");
+    }
+    if (final && FORBIDDEN_FINAL.test(node.label)) {
+      throw new SmokeError("forbidden final surface detected");
+    }
+  }
+}
+
+function findInstalledApp(apps, bundleId, requireRunning = true) {
+  const matches = apps.filter((app) => app.bundleId === bundleId);
+  if (matches.length !== 1) throw new SmokeError("installed app unavailable");
+  const app = matches[0];
+  if (requireRunning && (app.processState !== "Running" || app.pid <= 0)) {
+    throw new SmokeError("installed app process unavailable");
+  }
+  return app;
+}
+
+export async function launchProductionBundle(config, run, foreground = false) {
   try {
     await run("idb", [
       "launch",
-      ...(foregroundIfRunning ? ["--foreground-if-running"] : []),
+      ...(foreground ? ["--foreground-if-running"] : []),
       "--udid",
-      udid,
-      bundleId,
+      config.udid,
+      config.bundleId,
     ]);
-    return { tool: "idb", status: 0 };
+    return "idb";
   } catch (error) {
-    if (!isIdbCompanionLoss(error)) throw error;
+    if (error?.code !== "IDB_COMPANION_LOST") throw error;
     await run("xcrun", [
       "devicectl",
       "device",
       "process",
       "launch",
       "--device",
-      udid,
-      bundleId,
+      config.udid,
+      config.bundleId,
     ]);
-    return { tool: "devicectl", status: 0, reason: "idb-companion-lost" };
+    return "devicectl";
   }
 }
 
-function digest(value) {
-  return `sha256:${createHash("sha256").update(String(value)).digest("hex")}`;
-}
-
-export function redactEvidence(value, key = "") {
-  const normalizedKey = key.replace(/[^a-z0-9]/gi, "").toLowerCase();
-  if (SENSITIVE_KEY.test(normalizedKey))
-    return { redacted: true, digest: digest(JSON.stringify(value)) };
-  if (Array.isArray(value)) return value.map((entry) => redactEvidence(entry));
-  if (value !== null && typeof value === "object") {
-    return Object.fromEntries(
-      Object.entries(value).map(([childKey, entry]) => [
-        childKey,
-        redactEvidence(entry, childKey),
-      ]),
-    );
-  }
-  return value;
-}
-
-async function assertNoSymlinkPath(target) {
-  const absolute = path.resolve(target);
-  const parsed = path.parse(absolute);
-  const components = absolute
-    .slice(parsed.root.length)
-    .split(path.sep)
-    .filter(Boolean);
-  let current = parsed.root;
-  for (const component of components) {
-    current = path.join(current, component);
-    try {
-      const info = await lstat(current);
-      if (info.isSymbolicLink())
-        throw new Error("evidence path contains a symbolic link");
-    } catch (error) {
-      if (error?.code === "ENOENT") return;
-      throw error;
-    }
-  }
-}
-
-async function atomicJson(filePath, value) {
-  try {
-    await lstat(filePath);
-    throw new Error("refusing to clobber an existing evidence file");
-  } catch (error) {
-    if (error?.code !== "ENOENT") throw error;
-  }
-  const temporary = path.join(
-    path.dirname(filePath),
-    `.new-${randomBytes(16).toString("hex")}`,
-  );
-  const handle = await open(temporary, "wx", 0o600);
-  try {
-    await handle.writeFile(`${JSON.stringify(value, null, 2)}\n`, "utf8");
-    await handle.sync();
-  } finally {
-    await handle.close();
-  }
-  await chmod(temporary, 0o600);
-  try {
-    await rename(temporary, filePath);
-  } catch (error) {
-    await unlink(temporary).catch(() => {});
-    throw error;
-  }
-}
-
-export async function writeEvidence(outputDir, summary, raw) {
-  if (!path.isAbsolute(outputDir))
-    throw new Error("evidence output directory must be absolute");
-  await assertNoSymlinkPath(outputDir);
-  await mkdir(outputDir, { recursive: true, mode: 0o700 });
-  await chmod(outputDir, 0o700);
-  const scratchDir = path.join(outputDir, "sensitive-scratch");
-  await assertNoSymlinkPath(scratchDir);
-  await mkdir(scratchDir, { mode: 0o700 });
-  await chmod(scratchDir, 0o700);
-  const summaryPath = path.join(outputDir, "live-smoke-summary.json");
-  const rawPath = path.join(scratchDir, "raw-evidence.json");
-  await atomicJson(rawPath, raw);
-  await atomicJson(summaryPath, summary);
-  return { summaryPath, scratchDir, rawPath };
-}
-
-function parseJsonOutput(result, label) {
-  if (result?.status !== 0 || typeof result.stdout !== "string") {
-    throw new Error(`${label} returned malformed or nonzero output`);
-  }
-  try {
-    const value = JSON.parse(result.stdout);
-    if (value === null || typeof value !== "object")
-      throw new Error("not object");
-    return value;
-  } catch {
-    throw new Error(`${label} returned malformed JSON`);
-  }
-}
-
-function flattenSemantic(
-  value,
-  accumulator = { strings: [], attributes: {}, objects: [] },
-) {
-  if (Array.isArray(value)) {
-    for (const entry of value) flattenSemantic(entry, accumulator);
-    return accumulator;
-  }
-  if (value !== null && typeof value === "object") {
-    accumulator.objects.push(value);
-    for (const [key, entry] of Object.entries(value)) {
-      if (key.startsWith("data-")) {
-        const entries = Array.isArray(entry) ? entry : [entry];
-        const semanticValues = entries.filter(
-          (item) =>
-            typeof item === "string" ||
-            typeof item === "boolean" ||
-            typeof item === "number",
-        );
-        if (semanticValues.length > 0) {
-          if (!accumulator.attributes[key]) accumulator.attributes[key] = [];
-          accumulator.attributes[key].push(...semanticValues.map(String));
-        }
-      }
-      flattenSemantic(entry, accumulator);
-    }
-    return accumulator;
-  }
-  if (typeof value === "string") accumulator.strings.push(value);
-  return accumulator;
-}
-
-function semanticSnapshot(tree, commandArgv, now) {
-  const flat = flattenSemantic(tree);
-  const serialized = JSON.stringify(tree);
+function exactExpected(kind) {
+  const source = EXPECTED_LIVE_SEQUENCE[kind];
   return {
-    tree,
-    text: flat.strings.join("\n"),
-    attributes: flat.attributes,
-    digest: digest(serialized),
-    commandDigest: digest(JSON.stringify(["idb", ...commandArgv])),
-    observedAtMonotonicMs: now(),
+    classification: EXPECTED_LIVE_SEQUENCE.classification,
+    requests: [...source.requests],
+    notifications: [...source.notifications],
   };
 }
 
-function fixtureAbsent(snapshot) {
-  const lower = snapshot.text.toLowerCase();
-  return FIXTURE_TERMS.every((term) => !lower.includes(term.toLowerCase()));
-}
-
-function requiredAttribute(snapshot, key, label) {
-  const value = snapshot.attributes[key]?.[0];
-  return nonempty(value, `${label} semantic attribute ${key}`);
-}
-
-function values(snapshot, key) {
-  return [...new Set(snapshot.attributes[key] ?? [])];
-}
-
-function hasText(snapshot, expression) {
-  return expression.test(snapshot.text);
-}
-
-function source(snapshot) {
-  return {
-    tool: "idb",
-    commandStatus: 0,
-    commandDigest: snapshot.commandDigest,
-    semanticTreeDigest: snapshot.digest,
-    observedAtMonotonicMs: snapshot.observedAtMonotonicMs,
-  };
-}
-
-function observation(milestone, snapshot, threadIdentity, evidence, action) {
-  if (!fixtureAbsent(snapshot))
-    throw new Error(`${milestone} semantic tree is fixture-contaminated`);
-  return {
-    milestone,
-    concept: EXPECTED_CONCEPT[milestone],
-    threadIdentity,
-    fixtureAbsent: true,
-    source: source(snapshot),
-    action,
-    positiveMarker: {
-      kind: "semantic-tree",
-      markerDigest: digest(`${milestone}:${snapshot.digest}`),
-    },
-    evidence,
-  };
-}
-
-function findBundle(value, bundleId) {
-  if (Array.isArray(value)) {
-    for (const entry of value) {
-      const found = findBundle(entry, bundleId);
-      if (found) return found;
-    }
-  } else if (value !== null && typeof value === "object") {
-    const entries = Object.entries(value);
-    if (
-      entries.some(
-        ([key, entry]) => /bundle.*id/i.test(key) && entry === bundleId,
-      )
-    )
-      return value;
-    for (const entry of Object.values(value)) {
-      const found = findBundle(entry, bundleId);
-      if (found) return found;
-    }
-  }
-  return null;
-}
-
-function firstField(objectValue, patterns, seen = new Set()) {
-  if (
-    objectValue === null ||
-    typeof objectValue !== "object" ||
-    seen.has(objectValue)
-  ) {
-    return undefined;
-  }
-  seen.add(objectValue);
-  for (const [key, value] of Object.entries(objectValue)) {
-    if (
-      patterns.some((pattern) => pattern.test(key)) &&
-      (typeof value === "string" ||
-        typeof value === "number" ||
-        typeof value === "boolean")
-    ) {
-      return value;
-    }
-  }
-  for (const value of Object.values(objectValue)) {
-    const nested = firstField(value, patterns, seen);
-    if (nested !== undefined) return nested;
-  }
-  return undefined;
-}
-
-function bundleEvidence(apps, bundleId) {
-  const app = findBundle(apps, bundleId);
-  if (!app)
-    throw new Error(
-      "production bundle is not installed on the selected device",
-    );
-  const version = firstField(app, [
-    /short.*version/i,
-    /bundle.*version/i,
-    /^version$/i,
-  ]);
-  const hash = firstField(app, [
-    /sha.*256/i,
-    /executable.*hash/i,
-    /bundle.*hash/i,
-  ]);
-  const signed = firstField(app, [/signed/i, /signature.*valid/i]);
-  nonempty(String(version ?? ""), "installed bundle version");
-  const normalizedHash =
-    typeof hash === "string" && DIGEST.test(hash)
-      ? hash
-      : typeof hash === "string" && /^[a-f0-9]{64}$/i.test(hash)
-        ? `sha256:${hash.toLowerCase()}`
-        : null;
-  exactDigest(normalizedHash, "installed signed bundle hash");
-  if (signed !== true && signed !== "true" && signed !== "valid")
-    throw new Error("installed bundle lacks signed-bundle proof");
-  return {
-    id: bundleId,
-    version: String(version),
-    hash: normalizedHash,
-    signed: true,
-  };
-}
-
-function deviceEvidence(description) {
-  const model = firstField(description, [
-    /model.*name/i,
-    /^model$/i,
-    /device.*name/i,
-  ]);
-  const osVersion = firstField(description, [
-    /os.*version/i,
-    /product.*version/i,
-  ]);
-  return {
-    model: nonempty(String(model ?? ""), "device model"),
-    os: nonempty(String(osVersion ?? ""), "device OS"),
-  };
-}
-
-function originFrom(snapshot) {
-  const match = snapshot.text.match(/(?:https?|wss?):\/\/[^\s"']+/i);
-  if (!match)
-    throw new Error(
-      "connected profile origin was not present in semantic evidence",
-    );
-  return match[0];
-}
-
-function protocolFrom(snapshot) {
-  const match = snapshot.text.match(
-    /(?:appwire|protocol)[/:= -]*[a-z0-9._/-]+/i,
-  );
-  if (!match)
-    throw new Error("Hub protocol was not present in semantic evidence");
-  return match[0];
-}
-
-async function semanticAction(run, udid, accessibilityId, kind = "tap") {
-  if (typeof accessibilityId !== "string" || accessibilityId.trim() === "")
-    throw new Error(
-      "semantic action requires a nonempty accessibility identifier",
-    );
-  if (kind === "tap") {
-    await run("idb", [
-      "ui",
-      "tap",
-      accessibilityId,
-      "--match-key",
-      "AXLabel",
-      "--udid",
-      udid,
-    ]);
-  } else if (kind === "text") {
-    await run("idb", ["ui", "text", accessibilityId, "--udid", udid]);
-  } else {
-    throw new Error(`unsupported semantic action ${kind}`);
-  }
-}
-
-async function observeMutationReceipt({ kind, readTree, now }) {
-  let pending = null;
-  const settled = await pollSemanticTree({
-    readTree,
-    now,
-    accept(snapshot) {
-      if (
-        values(snapshot, "data-composer-receipt").includes(`${kind}:accepted`)
-      ) {
-        return true;
-      }
-      const pendingValues = values(snapshot, "data-composer-pending");
-      if (
-        pendingValues.includes("pending") ||
-        new RegExp(`Sending \\(${kind}\\)`, "i").test(snapshot.text)
-      ) {
-        pending = snapshot;
-        return false;
-      }
-      if (
-        values(snapshot, "data-composer-error").length > 0 ||
-        new RegExp(`${kind} failed`, "i").test(snapshot.text)
-      ) {
-        throw new Error(`${kind} semantic receipt reported failure`);
-      }
-      return pending !== null && snapshot.digest !== pending.digest;
-    },
-  });
-  return {
-    pending,
-    settled,
-    receipt: {
-      kind,
-      status: "accepted",
-      idDigest: digest(`${pending?.digest ?? "direct"}:${settled.digest}`),
-    },
-  };
-}
-
-/**
- * Executes the physical-phone smoke without starting or restarting a Hub.
- * The IDB accessibility tree is the only interaction/evidence oracle. Apple
- * devicectl is used solely to recover install/launch after a lost companion.
- */
 export async function runLiveSmoke(config, dependencies = {}) {
+  const environment = readSmokeEnvironment(dependencies.env ?? process.env);
+  const paths = await createEvidenceRoot(config.outputDir);
   const registry = dependencies.registry ?? new ProcessRegistry();
   const now =
     dependencies.now ?? (() => Number(process.hrtime.bigint() / 1_000_000n));
+  const scheduler = dependencies.scheduler ?? DEFAULT_SCHEDULER;
   const baseRun =
     dependencies.run ??
-    ((program, argv) => runSpawned(program, argv, { registry }));
+    ((program, argv) =>
+      runSpawned(program, argv, { registry, now, scheduler }));
   const observed = [];
-  const raw = { commands: [], semanticTrees: [], operational: {} };
+  const raw = {
+    schemaVersion: 2,
+    operational: { threadRef: environment.threadRef },
+    commands: [],
+    semanticTrees: [],
+    observations: observed,
+  };
   const run = async (program, argv) => {
     try {
       const result = await baseRun(program, argv);
@@ -1074,508 +1558,748 @@ export async function runLiveSmoke(config, dependencies = {}) {
       });
       return result;
     } catch (error) {
-      raw.commands.push({
-        program,
-        argv,
-        status: Number.isInteger(error?.status) ? error.status : "failed",
-      });
+      raw.commands.push({ program, argv, status: "failed" });
       throw error;
     }
   };
+  const describeArgv = [
+    "ui",
+    "describe-all",
+    "--format",
+    "complete",
+    "--json",
+    "--udid",
+    config.udid,
+  ];
   const readTree = async () => {
-    const argv = [
+    const result = await run("idb", describeArgv);
+    const document = parseAxDocument(result.stdout);
+    const encoded = Buffer.from(JSON.stringify(document.raw), "utf8");
+    const snapshot = {
+      ...document,
+      treeDigest: digestBytes(encoded),
+      commandDigest: digest(JSON.stringify(["idb", ...describeArgv])),
+      observedAtMonotonicMs: now(),
+    };
+    assertNoFixture(snapshot);
+    raw.semanticTrees.push(document.raw);
+    return snapshot;
+  };
+  const waitFor = (accept) => pollSemanticTree({ readTree, accept, now });
+  const tap = async (label, snapshot, requirePresent = true) => {
+    if (requirePresent) {
+      const node = findNode(
+        snapshot,
+        (candidate) => candidate.label === label,
+        "action AX unavailable",
+      );
+      const expectedRole =
+        label === "Message" ? /TextArea|TextField/i : /Button/i;
+      if (!expectedRole.test(node.role ?? "")) {
+        throw new SmokeError("action AX unavailable");
+      }
+    }
+    await run("idb", [
       "ui",
-      "describe-all",
-      "--format",
-      "complete",
+      "tap",
+      label,
+      "--match-key",
+      "AXLabel",
+      "--udid",
+      config.udid,
+    ]);
+  };
+  const typeText = async (value) => {
+    await run("idb", ["ui", "text", value, "--udid", config.udid]);
+  };
+  const readApps = async () => {
+    const result = await run("idb", [
+      "list-apps",
+      "--fetch-process-state",
       "--json",
       "--udid",
       config.udid,
-    ];
-    const result = await run("idb", argv);
-    return semanticSnapshot(
-      parseJsonOutput(result, "IDB semantic tree"),
-      argv,
-      now,
-    );
+    ]);
+    return decodeInstalledApps(result.stdout);
   };
-  const waitFor = (accept) => pollSemanticTree({ readTree, accept, now });
-  const versions = {};
-  try {
-    for (const [name, program, argv] of [
-      ["idb", "idb", ["--version"]],
-      ["devicectl", "xcrun", ["devicectl", "--version"]],
-    ]) {
-      const result = await run(program, argv);
-      versions[name] = nonempty(result.stdout.trim(), `${name} version`);
+  const sentinels = dependencies.sentinels ?? {
+    send: `smoke-send-${randomBytes(8).toString("hex")}`,
+    steer: `smoke-steer-${randomBytes(8).toString("hex")}`,
+    queue: `smoke-queue-${randomBytes(8).toString("hex")}`,
+    preserve: `smoke-draft-${randomBytes(8).toString("hex")}`,
+  };
+  let safeSummaryInput = {
+    status: "failed",
+    tools: {},
+    device: {},
+    app: {},
+    hub: {},
+    observations: [],
+  };
+
+  const observeMutation = async ({
+    kind,
+    concept,
+    current,
+    text,
+    lifecycle = false,
+  }) => {
+    const snapshot = current;
+    if (kind !== "interrupt") {
+      await tap("Message", snapshot);
+      await typeText(text);
+      await tap(`Use ${kind} mode`, snapshot);
+      await tap("Submit message", snapshot);
+    } else {
+      await tap("Interrupt", snapshot);
     }
-    const described = parseJsonOutput(
-      await run("idb", ["describe", "--json", "--udid", config.udid]),
-      "IDB device description",
-    );
-    const apps = parseJsonOutput(
-      await run("idb", ["list-apps", "--json", "--udid", config.udid]),
-      "IDB application listing",
-    );
-    const launch = await launchProductionBundle(config, { run });
+    const pending = await waitFor((candidate) => {
+      try {
+        parseMutation(candidate, kind, "pending");
+        parseConceptNode(candidate, concept, "conversation");
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    let streaming = null;
+    if (lifecycle) {
+      streaming = await waitFor((candidate) => {
+        const items = parseTranscript(candidate).filter(
+          (item) => item.status === "streaming",
+        );
+        return items.length > 0;
+      });
+    }
+    const accepted = await waitFor((candidate) => {
+      try {
+        parseMutation(candidate, kind, "accepted");
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    const acceptedValue = parseMutation(accepted, kind, "accepted");
+    let completed = accepted;
+    if (lifecycle) {
+      const streamingIds = new Set(
+        parseTranscript(streaming)
+          .filter((item) => item.status === "streaming")
+          .map((item) => item.id),
+      );
+      const hasCompletedEvidence = (candidate) => {
+        const items = parseTranscript(candidate);
+        return (
+          items.some(
+            (item) => streamingIds.has(item.id) && item.status === "completed",
+          ) &&
+          items.some(
+            (item) =>
+              item.kind === "reasoning" &&
+              item.status === "completed" &&
+              item.content.trim() !== "",
+          ) &&
+          items.some(
+            (item) =>
+              item.kind === "tool" &&
+              item.status === "completed" &&
+              item.content.trim() !== "",
+          )
+        );
+      };
+      if (!hasCompletedEvidence(accepted)) {
+        completed = await waitFor(hasCompletedEvidence);
+      }
+    }
+    return {
+      current: completed,
+      receipt: {
+        kind,
+        status: "accepted",
+        receipt: acceptedValue.receipt,
+        pendingTreeDigest: pending.treeDigest,
+        acceptedTreeDigest: accepted.treeDigest,
+      },
+      pending,
+      streaming,
+      accepted,
+      completed,
+    };
+  };
+
+  try {
+    const tools = await verifyIdbCapabilities({ run });
+    const localBundle = await inspectLocalAppBundle(environment.appPath, {
+      run,
+    });
+    if (localBundle.id !== config.bundleId) {
+      throw new SmokeError("local bundle ID mismatch");
+    }
+    const deviceResult = await run("idb", [
+      "describe",
+      "--diagnostics",
+      "--json",
+      "--udid",
+      config.udid,
+    ]);
+    const device = decodeDeviceDescription(deviceResult.stdout, config.udid);
+    findInstalledApp(await readApps(), config.bundleId, false);
+    await launchProductionBundle(config, run);
+    const initialApp = findInstalledApp(await readApps(), config.bundleId);
 
     const profile = await waitFor((snapshot) => {
-      const observedHubVersion = values(snapshot, "data-hub-version")[0];
-      if (
-        observedHubVersion !== undefined &&
-        observedHubVersion !== config.hubVersion
-      ) {
-        throw new Error(
-          "stale Hub is a blocked prerequisite; the smoke runner never restarts it",
-        );
+      try {
+        const connection = parseConnection(snapshot);
+        return connection.status === "connected";
+      } catch {
+        return false;
       }
-      return (
-        hasText(snapshot, /connected/i) &&
-        snapshot.text.includes(config.hubVersion)
-      );
     });
-    raw.semanticTrees.push(profile.tree);
-    const rawOrigin = originFrom(profile);
-    raw.operational.origin = rawOrigin;
-    const hubProtocol = protocolFrom(profile);
-    observed.push(
-      observation(
-        "profile-connected",
-        profile,
-        null,
-        {
-          device: deviceEvidence(described),
-          bundle: bundleEvidence(apps, config.bundleId),
-          hub: {
-            expected: config.hubVersion,
-            observed: config.hubVersion,
-            protocol: hubProtocol,
-            originDigest: digest(rawOrigin),
-          },
-          profileStatus: "connected",
-        },
-        {
-          kind: "observe",
-          label: "connected profile",
-          launchTool: launch.tool,
-        },
-      ),
-    );
-
-    const roster = await waitFor(
-      (snapshot) =>
-        values(snapshot, "data-session-id").length > 0 &&
-        hasText(snapshot, /Stillwater|Quiet Instrument/i),
-    );
-    raw.semanticTrees.push(roster.tree);
-    const rosterIds = values(roster, "data-session-id");
-    const hasMore =
-      requiredAttribute(
-        roster,
-        "data-roster-has-more",
-        "roster completeness",
-      ) === "true";
-    const retainedCount = rosterIds.length;
-    const row501Present = hasMore;
-    observed.push(
-      observation(
-        "stillwater-roster",
-        roster,
-        null,
-        {
-          listLimit: 501,
-          retainedCount,
-          row501Present,
-          hasMore,
-          rosterIds,
-          requestSequence: ["thread/list(limit=501)"],
-          notificationSequence: [
-            "evener/tree-or-attention -> thread/list(limit=501)",
-          ],
-        },
-        { kind: "observe", label: "Stillwater roster" },
-      ),
-    );
-
-    await semanticAction(run, config.udid, rosterIds[0]);
-    const conversation = await waitFor(
-      (snapshot) =>
-        values(snapshot, "data-thread-key").length === 1 &&
-        hasText(snapshot, /Transcript/i),
-    );
-    raw.semanticTrees.push(conversation.tree);
-    const threadIdentity = requiredAttribute(
-      conversation,
-      "data-thread-key",
-      "conversation",
-    );
-    raw.operational.threadRef = threadIdentity;
-    observed.push(
-      observation(
-        "stillwater-conversation",
-        conversation,
-        threadIdentity,
-        {
-          readLimit: 50,
-          activeThreadId: threadIdentity,
-          rosterIds,
-          requestSequence: ["thread/read(subscribe=true,limit=50)"],
-          notificationSequence: [
-            "item-started -> item-delta -> item-completed",
-            "thread-resync -> coalesced thread/read(limit=50)",
-          ],
-          transcriptItems: values(conversation, "data-transcript-item-id")
-            .length,
-        },
-        { kind: "semantic", label: rosterIds[0] },
-      ),
-    );
-
-    const sentinel = `evener-live-smoke-${randomBytes(12).toString("hex")}`;
-    await semanticAction(run, config.udid, "Message");
-    await semanticAction(run, config.udid, sentinel, "text");
-    const drafted = await waitFor((snapshot) =>
-      snapshot.text.includes(sentinel),
-    );
-    await semanticAction(run, config.udid, "Submit");
-    const sendResult = await observeMutationReceipt({
-      kind: "send",
-      readTree,
-      now,
-    });
-    const sent = sendResult.settled;
-    raw.semanticTrees.push(
-      drafted.tree,
-      ...(sendResult.pending ? [sendResult.pending.tree] : []),
-      sent.tree,
-    );
-    observed.push(
-      observation(
-        "stillwater-send",
-        sent,
-        threadIdentity,
-        {
-          receipt: sendResult.receipt,
-          requestSequence: ["thread/send"],
-          notificationSequence: ["pending -> item notification -> settled"],
-        },
-        { kind: "semantic", label: "Submit" },
-      ),
-    );
-
-    await semanticAction(run, config.udid, "Message");
-    await semanticAction(run, config.udid, sentinel, "text");
-    const stillwaterBeforeSwitch = await waitFor((snapshot) =>
-      snapshot.text.includes(sentinel),
-    );
-    raw.semanticTrees.push(stillwaterBeforeSwitch.tree);
-    await semanticAction(run, config.udid, "Switch concept");
-    await semanticAction(run, config.udid, "Constellation");
-    const constellation = await waitFor(
-      (snapshot) =>
-        hasText(snapshot, /Constellation/i) &&
-        values(snapshot, "data-thread-key")[0] === threadIdentity &&
-        snapshot.text.includes(sentinel),
-    );
-    raw.semanticTrees.push(constellation.tree);
-    observed.push(
-      observation(
-        "constellation-preserved",
-        constellation,
-        threadIdentity,
-        {
-          rosterIds:
-            values(constellation, "data-session-id").length > 0
-              ? values(constellation, "data-session-id")
-              : rosterIds,
-          activeThreadId: threadIdentity,
-          draftBefore: sentinel,
-          draftAfter: sentinel,
-          switchTrees: {
-            beforeDigest: stillwaterBeforeSwitch.digest,
-            afterDigest: constellation.digest,
-          },
-          preserved: ["thread", "draft", "roster"],
-        },
-        { kind: "semantic", label: "Constellation" },
-      ),
-    );
-
-    const mutationReceipts = [];
-    let constellationMutations = constellation;
-    for (const kind of ["steer", "queue"]) {
-      await semanticAction(
-        run,
-        config.udid,
-        kind[0].toUpperCase() + kind.slice(1),
-      );
-      await semanticAction(run, config.udid, "Message");
-      await semanticAction(run, config.udid, sentinel, "text");
-      await semanticAction(run, config.udid, "Submit message");
-      const mutation = await observeMutationReceipt({ kind, readTree, now });
-      constellationMutations = mutation.settled;
-      mutationReceipts.push(mutation.receipt);
-      if (mutation.pending) raw.semanticTrees.push(mutation.pending.tree);
-      raw.semanticTrees.push(mutation.settled.tree);
+    const profileConnection = parseConnection(profile);
+    if (
+      profileConnection.serverVersion !== config.hubVersion ||
+      profileConnection.protocolVersion.trim() === ""
+    ) {
+      throw new SmokeError("stale Hub is blocked", "blocked");
     }
-    await semanticAction(run, config.udid, "Message");
-    await semanticAction(run, config.udid, sentinel, "text");
-    constellationMutations = await waitFor((snapshot) =>
-      snapshot.text.includes(sentinel),
-    );
-    raw.semanticTrees.push(constellationMutations.tree);
+    if (
+      profileConnection.bundleId !== config.bundleId ||
+      profileConnection.appVersion !== localBundle.version
+    ) {
+      throw new SmokeError("installed app identity mismatch");
+    }
+    const installedApp = {
+      id: initialApp.bundleId,
+      version: profileConnection.appVersion,
+      pid: initialApp.pid,
+    };
+    const profileEvidence = {
+      device,
+      installedApp,
+      localBundle,
+      hub: {
+        expectedVersion: config.hubVersion,
+        observedVersion: profileConnection.serverVersion,
+        protocolVersion: profileConnection.protocolVersion,
+        originDigest: profileConnection.originDigest,
+      },
+      connection: {
+        status: profileConnection.status,
+        profileGeneration: profileConnection.profileGeneration,
+        lifecycleGeneration: profileConnection.lifecycleGeneration,
+        handshakeGeneration: profileConnection.handshakeGeneration,
+      },
+    };
     observed.push(
-      observation(
-        "constellation-steer-queue",
-        constellationMutations,
-        threadIdentity,
-        {
-          draftBefore: sentinel,
-          draftAfter: sentinel,
-          receipts: mutationReceipts,
-          requestSequence: ["thread/steer", "thread/queue"],
-          notificationSequence: [
-            "steer pending -> item notification -> settled",
-            "queue pending -> item notification -> settled",
-          ],
-        },
-        { kind: "semantic", label: "Steer then Queue" },
-      ),
+      makeObservation({
+        milestone: "profile-connected",
+        snapshot: profile,
+        threadIdentity: null,
+        evidence: profileEvidence,
+        action: { kind: "observe", label: "connected production app" },
+      }),
     );
 
-    await semanticAction(run, config.udid, "Switch concept");
-    await semanticAction(run, config.udid, "Field Notes");
-    const fieldNotes = await waitFor(
-      (snapshot) =>
-        hasText(snapshot, /Field Notes/i) &&
-        values(snapshot, "data-thread-key")[0] === threadIdentity &&
-        snapshot.text.includes(sentinel),
-    );
-    raw.semanticTrees.push(fieldNotes.tree);
-    observed.push(
-      observation(
-        "field-notes-preserved",
-        fieldNotes,
-        threadIdentity,
-        {
-          rosterIds:
-            values(fieldNotes, "data-session-id").length > 0
-              ? values(fieldNotes, "data-session-id")
-              : rosterIds,
-          activeThreadId: threadIdentity,
-          draftBefore: sentinel,
-          draftAfter: sentinel,
-          switchTrees: {
-            beforeDigest: constellationMutations.digest,
-            afterDigest: fieldNotes.digest,
-          },
-          preserved: ["thread", "draft", "roster"],
-        },
-        { kind: "semantic", label: "Field Notes" },
-      ),
-    );
-
-    await semanticAction(run, config.udid, "Interrupt");
-    const interruptResult = await observeMutationReceipt({
-      kind: "interrupt",
-      readTree,
-      now,
+    const stillwaterRosterSnapshot = await waitFor((snapshot) => {
+      try {
+        parseRoster(snapshot, "Stillwater");
+        return true;
+      } catch {
+        return false;
+      }
     });
-    const interrupted = interruptResult.settled;
-    raw.semanticTrees.push(
-      ...(interruptResult.pending ? [interruptResult.pending.tree] : []),
-      interrupted.tree,
+    const stillwaterRoster = parseRoster(
+      stillwaterRosterSnapshot,
+      "Stillwater",
     );
     observed.push(
-      observation(
-        "field-notes-interrupt",
-        interrupted,
-        threadIdentity,
-        {
-          receipt: interruptResult.receipt,
-          requestSequence: ["thread/interrupt"],
-          notificationSequence: [
-            "interrupt request -> thread status notification",
-          ],
+      makeObservation({
+        milestone: "stillwater-roster",
+        snapshot: stillwaterRosterSnapshot,
+        threadIdentity: null,
+        evidence: {
+          rosterIds: stillwaterRoster.rosterIds,
+          retainedCount: stillwaterRoster.retainedCount,
+          hasMore: stillwaterRoster.hasMore,
+          completeness: stillwaterRoster.hasMore
+            ? "more-available"
+            : "complete",
+          listLimit: 501,
+          expectedSequence: exactExpected("roster"),
         },
-        { kind: "semantic", label: "Interrupt" },
-      ),
+        action: { kind: "observe", label: "Stillwater roster" },
+      }),
     );
-
-    await semanticAction(run, config.udid, "Work");
-    const work = await waitFor(
-      (snapshot) =>
-        hasText(snapshot, /Task summary/i) &&
-        values(snapshot, "data-work-node-id").length > 0,
+    const selectedRow = stillwaterRoster.rows[0];
+    await tap(selectedRow.label, stillwaterRosterSnapshot);
+    let current = await waitFor((snapshot) => {
+      try {
+        parseConversation(snapshot, "Stillwater", selectedRow.title);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    const initialConversation = parseConversation(
+      current,
+      "Stillwater",
+      selectedRow.title,
     );
-    const lifecycleMarker = values(work, "data-item-lifecycle");
-    raw.semanticTrees.push(work.tree);
-    const kinds = values(work, "data-work-kind");
-    const reasoningText =
-      values(work, "data-reasoning-summary").join("\n") ||
-      interrupted.text
-        .split("\n")
-        .filter((line) => /reasoning/i.test(line))
-        .join("\n");
-    const toolDeltaText =
-      values(work, "data-tool-delta").join("\n") ||
-      interrupted.text
-        .split("\n")
-        .filter((line) =>
-          /(?:exec_command|read_file|apply_patch|tool output|tool delta)/i.test(
-            line,
-          ),
-        )
-        .join("\n");
-    const lifecycleObserved =
-      lifecycleMarker.includes("started,delta,completed") ||
-      (sendResult.pending !== null &&
-        sendResult.pending.digest !== sendResult.settled.digest);
+    if (initialConversation.transcript.length === 0) {
+      throw new SmokeError("transcript AX unavailable");
+    }
+    const threadIdentity = initialConversation.threadId;
     observed.push(
-      observation(
-        "work-activity-usage",
-        work,
+      makeObservation({
+        milestone: "stillwater-conversation",
+        snapshot: current,
         threadIdentity,
-        {
-          itemLifecycle: {
-            started: lifecycleObserved,
-            delta: lifecycleObserved,
-            completed: lifecycleObserved,
-          },
-          reasoningSummary: {
-            observed: reasoningText.length > 0,
-            semanticDigest: digest(reasoningText),
-          },
-          toolDelta: {
-            observed: toolDeltaText.length > 0,
-            semanticDigest: digest(toolDeltaText),
-          },
-          tasks: kinds.filter((kind) => kind === "task").length,
-          jobs: kinds.filter((kind) => kind === "job").length,
-          delegates: kinds.filter((kind) => kind === "delegate").length,
-          usage: {
-            present: hasText(work, /\bUsage\b/),
-            semanticDigest: digest(work.text),
-          },
+        evidence: {
+          activeThreadId: threadIdentity,
+          titleDigest: initialConversation.titleDigest,
+          transcriptIds: initialConversation.transcript.map((item) => item.id),
+          readLimit: 50,
+          expectedSequence: exactExpected("conversation"),
         },
-        { kind: "semantic", label: "Work" },
-      ),
+        action: { kind: "semantic", label: digest(selectedRow.label) },
+      }),
     );
 
-    const generation = 1;
+    const send = await observeMutation({
+      kind: "send",
+      concept: "Stillwater",
+      current,
+      text: sentinels.send,
+      lifecycle: true,
+    });
+    current = send.current;
+    const streamingItems = parseTranscript(send.streaming).filter(
+      (item) => item.status === "streaming",
+    );
+    const completedItems = parseTranscript(send.completed);
+    const lifecycleItem = streamingItems.find((item) =>
+      completedItems.some(
+        (completed) =>
+          completed.id === item.id && completed.status === "completed",
+      ),
+    );
+    if (!lifecycleItem) throw new SmokeError("item lifecycle AX unavailable");
+    const reasoning = completedItems.find(
+      (item) => item.kind === "reasoning" && item.content.trim() !== "",
+    );
+    const tool = completedItems.find(
+      (item) => item.kind === "tool" && item.content.trim() !== "",
+    );
+    if (!reasoning || !tool) {
+      throw new SmokeError("reasoning or tool AX unavailable");
+    }
+    observed.push(
+      makeObservation({
+        milestone: "stillwater-send",
+        snapshot: send.completed,
+        threadIdentity,
+        evidence: {
+          receipt: send.receipt,
+          lifecycle: {
+            itemId: lifecycleItem.id,
+            streamingTreeDigest: send.streaming.treeDigest,
+            completedTreeDigest: send.completed.treeDigest,
+          },
+          reasoning: {
+            itemId: reasoning.id,
+            contentDigest: digest(reasoning.content),
+          },
+          tool: { itemId: tool.id, contentDigest: digest(tool.content) },
+          expectedSequence: exactExpected("send"),
+        },
+        action: { kind: "semantic", label: "send" },
+      }),
+    );
+
+    const switchConcept = async (from, to, milestone) => {
+      await tap("Message", current);
+      await typeText(sentinels.preserve);
+      const before = await waitFor((snapshot) => {
+        try {
+          return (
+            parseConversation(snapshot, from, selectedRow.title).draft ===
+            sentinels.preserve
+          );
+        } catch {
+          return false;
+        }
+      });
+      await tap("Switch concept", before);
+      await tap(`Switch to ${to}`, before, false);
+      const after = await waitFor((snapshot) => {
+        try {
+          const conversation = parseConversation(
+            snapshot,
+            to,
+            selectedRow.title,
+          );
+          return (
+            conversation.threadId === threadIdentity &&
+            conversation.draft === sentinels.preserve
+          );
+        } catch {
+          return false;
+        }
+      });
+      await tap("Back", after);
+      const rosterSnapshot = await waitFor((snapshot) => {
+        try {
+          parseRoster(snapshot, to);
+          return true;
+        } catch {
+          return false;
+        }
+      });
+      const roster = parseRoster(rosterSnapshot, to);
+      const row = roster.rows.find(
+        (candidate) => candidate.id === selectedRow.id,
+      );
+      if (!row) throw new SmokeError("destination roster missing session");
+      await tap(row.label, rosterSnapshot);
+      const reopened = await waitFor((snapshot) => {
+        try {
+          return (
+            parseConversation(snapshot, to, selectedRow.title).threadId ===
+            threadIdentity
+          );
+        } catch {
+          return false;
+        }
+      });
+      observed.push(
+        makeObservation({
+          milestone,
+          snapshot: after,
+          threadIdentity,
+          evidence: {
+            rosterIds: roster.rosterIds,
+            activeThreadId: threadIdentity,
+            draftBefore: sentinels.preserve,
+            draftAfter: parseConversation(after, to, selectedRow.title).draft,
+            beforeTreeDigest: before.treeDigest,
+            afterTreeDigest: after.treeDigest,
+            rosterTreeDigest: rosterSnapshot.treeDigest,
+          },
+          action: { kind: "semantic", label: `switch to ${to}` },
+        }),
+      );
+      current = reopened;
+      return { roster, rosterSnapshot, reopened };
+    };
+
+    await switchConcept(
+      "Stillwater",
+      "Constellation",
+      "constellation-preserved",
+    );
+    const steer = await observeMutation({
+      kind: "steer",
+      concept: "Constellation",
+      current,
+      text: sentinels.steer,
+    });
+    current = steer.current;
+    const queue = await observeMutation({
+      kind: "queue",
+      concept: "Constellation",
+      current,
+      text: sentinels.queue,
+    });
+    current = queue.current;
+    observed.push(
+      makeObservation({
+        milestone: "constellation-steer-queue",
+        snapshot: queue.accepted,
+        threadIdentity,
+        evidence: {
+          receipts: [steer.receipt, queue.receipt],
+          expectedSequence: exactExpected("steerQueue"),
+        },
+        action: { kind: "semantic", label: "steer then queue" },
+      }),
+    );
+
+    await switchConcept(
+      "Constellation",
+      "Field Notes",
+      "field-notes-preserved",
+    );
+    const interrupted = await observeMutation({
+      kind: "interrupt",
+      concept: "Field Notes",
+      current,
+    });
+    current = interrupted.current;
+    observed.push(
+      makeObservation({
+        milestone: "field-notes-interrupt",
+        snapshot: interrupted.accepted,
+        threadIdentity,
+        evidence: {
+          receipt: interrupted.receipt,
+          expectedSequence: exactExpected("interrupt"),
+        },
+        action: { kind: "semantic", label: "interrupt" },
+      }),
+    );
+
+    await tap("Message", current);
+    await typeText(sentinels.preserve);
+    const beforeWork = await waitFor((snapshot) => {
+      try {
+        return (
+          parseConversation(snapshot, "Field Notes", selectedRow.title)
+            .draft === sentinels.preserve
+        );
+      } catch {
+        return false;
+      }
+    });
+    await tap("Work", beforeWork);
+    const workSnapshot = await waitFor((snapshot) => {
+      try {
+        parseWork(snapshot);
+        return true;
+      } catch {
+        return false;
+      }
+    });
+    const workEvidence = parseWork(workSnapshot);
+    observed.push(
+      makeObservation({
+        milestone: "work-activity-usage",
+        snapshot: workSnapshot,
+        threadIdentity,
+        evidence: workEvidence,
+        action: { kind: "semantic", label: "Work" },
+      }),
+    );
+    await tap("Close", workSnapshot);
+    const beforeBackground = await waitFor((snapshot) => {
+      try {
+        const conversation = parseConversation(
+          snapshot,
+          "Field Notes",
+          selectedRow.title,
+        );
+        return (
+          conversation.threadId === threadIdentity &&
+          conversation.draft === sentinels.preserve
+        );
+      } catch {
+        return false;
+      }
+    });
+    const preBackgroundConnection = parseConnection(beforeBackground);
+    const pidBeforeBackground = findInstalledApp(
+      await readApps(),
+      config.bundleId,
+    ).pid;
     await run("idb", ["ui", "button", "HOME", "--udid", config.udid]);
     const background = await waitFor(
       (snapshot) =>
-        values(snapshot, "data-thread-key").length === 0 &&
-        snapshot.digest !== work.digest,
+        snapshot.nodes.some((node) => node.label === "SpringBoard") &&
+        !snapshot.nodes.some((node) =>
+          node.label.startsWith("Evener concept;"),
+        ),
     );
-    raw.semanticTrees.push(background.tree);
-    await launchProductionBundle(
-      { ...config, foregroundIfRunning: true },
-      { run },
-    );
-    const foreground = await waitFor(
-      (snapshot) =>
-        values(snapshot, "data-thread-key")[0] === threadIdentity &&
-        hasText(snapshot, /connected/i) &&
-        snapshot.digest !== work.digest,
-    );
-    raw.semanticTrees.push(foreground.tree);
-    const foregroundGeneration = 2;
+    await launchProductionBundle(config, run, true);
+    const pidAfterBackground = findInstalledApp(
+      await readApps(),
+      config.bundleId,
+    ).pid;
+    const foreground = await waitFor((snapshot) => {
+      try {
+        const connection = parseConnection(snapshot);
+        const conversation = parseConversation(
+          snapshot,
+          "Field Notes",
+          selectedRow.title,
+        );
+        return (
+          connection.lifecyclePhase === "foreground" &&
+          connection.lifecycleGeneration >
+            preBackgroundConnection.lifecycleGeneration &&
+          conversation.threadId === threadIdentity &&
+          conversation.draft === sentinels.preserve
+        );
+      } catch {
+        return false;
+      }
+    });
+    const foregroundConnection = parseConnection(foreground);
     observed.push(
-      observation(
-        "background-foreground",
-        foreground,
+      makeObservation({
+        milestone: "background-foreground",
+        snapshot: foreground,
         threadIdentity,
-        {
-          backgroundGeneration: generation,
-          foregroundGeneration,
+        evidence: {
+          processIdBefore: pidBeforeBackground,
+          processIdAfter: pidAfterBackground,
+          lifecycleGenerationBefore:
+            preBackgroundConnection.lifecycleGeneration,
+          lifecycleGenerationAfter: foregroundConnection.lifecycleGeneration,
+          profileGenerationBefore: preBackgroundConnection.profileGeneration,
+          profileGenerationAfter: foregroundConnection.profileGeneration,
+          handshakeGenerationBefore:
+            preBackgroundConnection.handshakeGeneration,
+          handshakeGenerationAfter: foregroundConnection.handshakeGeneration,
           activeThreadId: threadIdentity,
-          rehydrated: true,
-          backgroundTreeDigest: background.digest,
-          foregroundTreeDigest: foreground.digest,
+          draftBefore: sentinels.preserve,
+          draftAfter: parseConversation(
+            foreground,
+            "Field Notes",
+            selectedRow.title,
+          ).draft,
+          backgroundTreeDigest: background.treeDigest,
+          foregroundTreeDigest: foreground.treeDigest,
         },
-        { kind: "lifecycle", label: "HOME then foreground existing process" },
-      ),
+        action: { kind: "lifecycle", label: "HOME then foreground" },
+      }),
     );
+    current = foreground;
 
+    const beforeReconnectConversation = parseConversation(
+      current,
+      "Field Notes",
+      selectedRow.title,
+    );
+    const beforeReconnectTranscriptDigest = digest(
+      JSON.stringify(beforeReconnectConversation.transcript),
+    );
+    const pidBeforeReconnect = findInstalledApp(
+      await readApps(),
+      config.bundleId,
+    ).pid;
     await run("idb", ["terminate", "--udid", config.udid, config.bundleId]);
-    await launchProductionBundle(config, { run });
-    const reconnect = await waitFor(
-      (snapshot) =>
-        values(snapshot, "data-thread-key")[0] === threadIdentity &&
-        snapshot.text.includes(config.hubVersion) &&
-        snapshot.digest !== foreground.digest,
+    await launchProductionBundle(config, run);
+    const pidAfterReconnect = findInstalledApp(
+      await readApps(),
+      config.bundleId,
+    ).pid;
+    const reconnectRosterSnapshot = await waitFor((snapshot) => {
+      try {
+        const connection = parseConnection(snapshot);
+        parseRoster(snapshot, "Field Notes");
+        return (
+          connection.status === "connected" &&
+          connection.serverVersion === config.hubVersion
+        );
+      } catch {
+        return false;
+      }
+    });
+    const reconnectRoster = parseRoster(reconnectRosterSnapshot, "Field Notes");
+    const reconnectRow = reconnectRoster.rows.find(
+      (candidate) => candidate.id === selectedRow.id,
     );
-    raw.semanticTrees.push(reconnect.tree);
-    const staleFramesAbsent =
-      values(reconnect, "data-thread-key").every(
-        (identity) => identity === threadIdentity,
-      ) && !hasText(reconnect, /stale frame/i);
+    if (!reconnectRow) throw new SmokeError("reconnect session missing");
+    await tap(reconnectRow.label, reconnectRosterSnapshot);
+    const reopened = await waitFor((snapshot) => {
+      try {
+        const conversation = parseConversation(
+          snapshot,
+          "Field Notes",
+          selectedRow.title,
+        );
+        return (
+          conversation.threadId === threadIdentity &&
+          conversation.titleDigest === initialConversation.titleDigest
+        );
+      } catch {
+        return false;
+      }
+    });
+    const reopenedConversation = parseConversation(
+      reopened,
+      "Field Notes",
+      selectedRow.title,
+    );
+    const reopenedTranscriptDigest = digest(
+      JSON.stringify(reopenedConversation.transcript),
+    );
+    if (reopenedTranscriptDigest !== beforeReconnectTranscriptDigest) {
+      throw new SmokeError("reconnect transcript changed");
+    }
     observed.push(
-      observation(
-        "reconnect",
-        reconnect,
+      makeObservation({
+        milestone: "reconnect",
+        snapshot: reopened,
         threadIdentity,
-        {
-          beforeGeneration: foregroundGeneration,
-          afterGeneration: 3,
+        evidence: {
+          processIdBefore: pidBeforeReconnect,
+          processIdAfter: pidAfterReconnect,
+          reopened: true,
           activeThreadId: threadIdentity,
-          rehydrated: true,
-          staleFramesAbsent,
-          hubObserved: config.hubVersion,
+          titleDigest: reopenedConversation.titleDigest,
+          transcriptDigest: reopenedTranscriptDigest,
+          connectionTreeDigest: reconnectRosterSnapshot.treeDigest,
         },
-        { kind: "lifecycle", label: "production bundle reconnect" },
-      ),
+        action: { kind: "lifecycle", label: "terminate launch reopen" },
+      }),
     );
 
-    const absence = await waitFor(
-      (snapshot) =>
-        fixtureAbsent(snapshot) &&
-        !hasText(snapshot, /\bSearch\b/) &&
-        !hasText(snapshot, /Lab Controls/i),
-    );
-    raw.semanticTrees.push(absence.tree);
+    const absence = await waitFor((snapshot) => {
+      assertNoFixture(snapshot, true);
+      return true;
+    });
     observed.push(
-      observation(
-        "fixture-absence",
-        absence,
-        null,
-        {
+      makeObservation({
+        milestone: "fixture-absence",
+        snapshot: absence,
+        threadIdentity: null,
+        evidence: {
           fixtureAbsent: true,
           searchAbsent: true,
           labAbsent: true,
         },
-        { kind: "observe", label: "fixture, Search, and Lab absence" },
-      ),
+        action: { kind: "observe", label: "final AX absence" },
+      }),
     );
 
     assertCompleteLiveSmoke(observed);
-    const linkDigest = digest(JSON.stringify(raw));
-    const summary = redactEvidence({
-      schemaVersion: 1,
+    safeSummaryInput = {
       status: "passed",
-      linkDigest,
-      tools: versions,
-      observations: observed,
-    });
-    const paths = await writeEvidence(config.outputDir, summary, raw);
-    return { summary, paths };
-  } catch (error) {
-    const summary = redactEvidence({
-      schemaVersion: 1,
-      status: /stale Hub/i.test(error?.message ?? "") ? "blocked" : "failed",
-      linkDigest: digest(JSON.stringify(raw)),
-      tools: versions,
-      error: {
-        name: error instanceof Error ? error.name : "Error",
-        code: digest(
-          error instanceof Error ? error.message : "unknown failure",
-        ),
+      tools: { idb: tools },
+      device: {
+        model: device.model,
+        modelDigest: digest(device.model),
+        os: device.os,
       },
-    });
-    await writeEvidence(config.outputDir, summary, raw);
-    throw error;
+      app: {
+        id: localBundle.id,
+        version: localBundle.version,
+        hash: localBundle.hash,
+      },
+      hub: {
+        version: profileConnection.serverVersion,
+        protocol: profileConnection.protocolVersion,
+        originDigest: profileConnection.originDigest,
+      },
+      observations: observed,
+    };
+    const published = await publishEvidence(paths, safeSummaryInput, raw);
+    return { summary: published.summary, paths: published };
+  } catch (cause) {
+    const status = cause?.smokeStatus === "blocked" ? "blocked" : "failed";
+    safeSummaryInput = { ...safeSummaryInput, status, observations: [] };
+    try {
+      const published = await publishEvidence(paths, safeSummaryInput, raw);
+      const error =
+        cause instanceof SmokeError
+          ? cause
+          : new SmokeError("live workflow failed", status);
+      error.paths = published;
+      throw error;
+    } catch (publishError) {
+      if (publishError === cause || publishError?.paths) throw publishError;
+      throw new SmokeError("evidence write failed", status);
+    }
   } finally {
     registry.cleanup();
   }
@@ -1599,7 +2323,7 @@ async function main(argv) {
   try {
     const result = await runLiveSmoke(config, { registry });
     process.stdout.write(
-      `${JSON.stringify({ status: result.summary.status, summary: path.basename(result.paths.summaryPath) })}\n`,
+      `${JSON.stringify({ status: result.summary.status, summary: "live-smoke-summary.json" })}\n`,
     );
   } finally {
     for (const [signal, handler] of signalHandlers) {
@@ -1612,10 +2336,8 @@ if (
   process.argv[1] &&
   import.meta.url === pathToFileURL(process.argv[1]).href
 ) {
-  main(process.argv.slice(2)).catch((error) => {
-    process.stderr.write(
-      `live concept smoke failed: ${error instanceof Error ? error.message : "unknown failure"}\n`,
-    );
+  main(process.argv.slice(2)).catch(() => {
+    process.stderr.write("live smoke failed\n");
     process.exitCode = 1;
   });
 }
