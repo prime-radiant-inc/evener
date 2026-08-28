@@ -21,11 +21,13 @@ import Settings from "../panes/settings/Settings";
 import "../panes/sessionPanels";
 import { hydrateThread } from "../protocol/reducer";
 import { FakeClient } from "../protocol/testing/fakeClient";
-import type { ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
+import type { NavigationSessionLocation, ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
 import { ClientProvider } from "../shell/clientContext";
 import { DockHost } from "../shell/DockHost";
 import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
+import { navigationStore } from "../stores/navigation/store";
+import { keyID } from "../stores/navigation/types";
 import { threadsStore } from "../stores/threads";
 import { initTranscriptDisplay, transcriptDisplayStore } from "../stores/transcriptDisplay";
 import { makeTranscriptDisplayConfig } from "../transcriptDisplay/config";
@@ -214,6 +216,47 @@ connectionStore.getState().connect(fake);
 threadsStore.setState((s) => ({
   threads: new Map(s.threads).set(REF, hydrateThread(snapshot, REF, 1000)),
 }));
+const locationKey = { kind: "location", ref: REF } as const;
+const location: NavigationSessionLocation = {
+  generation_id: "overflow_generation",
+  revision: 1,
+  ref: REF,
+  top_level_ref: REF,
+  top_level: true,
+  tier: "current",
+  session: {
+    ref: REF,
+    host_id: "local",
+    session_id: snapshot.thread.sessionId,
+    title: snapshot.thread.name ?? REF,
+    project: "",
+    state: "active",
+    kind: "session",
+    live: true,
+    children: [],
+  },
+};
+navigationStore.setState({
+  mode: "v1",
+  clientGenerationID: location.generation_id,
+  resources: new Map([
+    [
+      keyID(locationKey),
+      {
+        key: locationKey,
+        data: location,
+        loadedRevision: location.revision,
+        targetRevision: null,
+        forceToken: 0,
+        etag: "overflow-location",
+        loading: false,
+        stale: false,
+        error: null,
+        generationID: location.generation_id,
+      },
+    ],
+  ]),
+});
 initTranscriptDisplay();
 // The browser guard must not inherit a developer's local transcript settings.
 // Activity plus both diagnostic families keeps the real system-prompt and raw
@@ -307,23 +350,22 @@ interface DetailGeometry {
   triggerHitTestable: boolean;
   trigger: { left: number; right: number; top: number; bottom: number; width: number; height: number } | null;
   open: boolean;
-  portalContained: boolean;
+  overlayContained: boolean;
   panel: { left: number; right: number; top: number; bottom: number; width: number; height: number } | null;
   horizontalOverflowCount: number;
-  targetHeights: number[];
   targets: Array<{ kind: string; label: string; height: number }>;
   fieldsetsFound: number;
   overflowElements: string[];
   fieldsetStacked: boolean;
+  fieldsetsNonOverlapping: boolean;
   rootRemPx: number;
   editorContainerWidth: number;
   fieldsetColumns: number;
   sheetBottomAnchored: boolean;
-  popoverAnchored: boolean;
-  popoverScroll: {
+  dialogCentered: boolean;
+  overlayScroll: {
     connected: boolean;
     contained: boolean;
-    expanded: boolean;
     scrollable: boolean;
     beforeTop: number;
     afterTop: number;
@@ -454,12 +496,6 @@ function effectiveTargetElement(element: HTMLElement): HTMLElement {
   return element;
 }
 
-function popoverGap(panel: ReturnType<typeof geometryOf>, trigger: ReturnType<typeof geometryOf>): number {
-  if (panel.bottom <= trigger.top) return trigger.top - panel.bottom;
-  if (panel.top >= trigger.bottom) return panel.top - trigger.bottom;
-  return 0;
-}
-
 function horizontalOverflowElements(root: Element): HTMLElement[] {
   return [root, ...Array.from(root.querySelectorAll<HTMLElement>("*"))].filter(
     (element): element is HTMLElement =>
@@ -478,16 +514,6 @@ function actualScrollContainers(root: Element): HTMLElement[] {
   });
 }
 
-function markLiveOwner(): boolean {
-  const trigger = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
-    button.textContent?.trim().startsWith("Detail:"),
-  );
-  const owner = trigger?.closest<HTMLElement>("div");
-  if (!owner) return false;
-  owner.dataset.testid = "transcript-detail-control";
-  return true;
-}
-
 function editorOwner(editor: HTMLElement): {
   surface: "live" | "settings";
   layout: "desktop" | "mobile";
@@ -502,7 +528,7 @@ function editorOwner(editor: HTMLElement): {
       ownerTestId,
     };
   }
-  const owner = document.querySelector<HTMLElement>('[data-testid="transcript-detail-control"]');
+  const owner = editor.closest<HTMLElement>('[data-testid="transcript-detail-control"]');
   return {
     surface: "live",
     layout: window.matchMedia("(max-width: 899px)").matches ? "mobile" : "desktop",
@@ -668,7 +694,7 @@ function measureSettings(): SettingsGeometry {
 async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
   const pane = document.getElementById("oh-pane");
   const trigger = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
-    button.textContent?.trim().startsWith("Detail:"),
+    button.textContent?.includes("Session actions"),
   );
   if (!pane || !trigger) {
     return {
@@ -678,23 +704,22 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
       triggerHitTestable: false,
       trigger: null,
       open: false,
-      portalContained: false,
+      overlayContained: false,
       panel: null,
       horizontalOverflowCount: 0,
-      targetHeights: [],
       targets: [],
       fieldsetsFound: 0,
       overflowElements: [],
       fieldsetStacked: false,
+      fieldsetsNonOverlapping: false,
       rootRemPx: 0,
       editorContainerWidth: 0,
       fieldsetColumns: 0,
       sheetBottomAnchored: false,
-      popoverAnchored: false,
-      popoverScroll: {
+      dialogCentered: false,
+      overlayScroll: {
         connected: false,
         contained: false,
-        expanded: false,
         scrollable: false,
         beforeTop: 0,
         afterTop: 0,
@@ -705,7 +730,8 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
     };
   }
   const mobile = window.matchMedia("(max-width: 899px)").matches;
-  markLiveOwner();
+  trigger.scrollIntoView({ block: "nearest", inline: "nearest" });
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
   const paneBox = pane.getBoundingClientRect();
   const triggerBox = geometryOf(trigger);
   const triggerCenter = { x: (triggerBox.left + triggerBox.right) / 2, y: (triggerBox.top + triggerBox.bottom) / 2 };
@@ -722,14 +748,28 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
     triggerBox.bottom <= paneBox.bottom + 1;
   trigger.click();
   await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
+  const menu = Array.from(document.querySelectorAll<HTMLElement>('[role="menu"]')).find(
+    (candidate) => candidate.getAttribute("aria-labelledby") === trigger.id,
+  );
+  const verbosityItem = Array.from(menu?.querySelectorAll<HTMLElement>('[role="menuitem"]') ?? []).find(
+    (item) => item.textContent?.trim() === "Verbosity…",
+  );
+  if (!verbosityItem) throw new Error("Session actions did not expose pane-only Verbosity…");
+  const verbosityTarget = {
+    kind: "menuitem",
+    label: "Verbosity…",
+    height: verbosityItem.getBoundingClientRect().height,
+  };
+  verbosityItem.click();
+  await new Promise<void>((resolve) => requestAnimationFrame(() => requestAnimationFrame(() => resolve())));
   const finite = document
     .getAnimations()
     .filter((animation) => animation.effect?.getTiming().iterations !== Number.POSITIVE_INFINITY);
   await Promise.all(finite.map((animation) => animation.finished.catch(() => undefined)));
 
-  const panel = mobile
-    ? document.querySelector<HTMLElement>('[role="dialog"][aria-modal="true"]')
-    : document.querySelector<HTMLElement>('[data-testid="transcript-detail-popover"]');
+  const panel = Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"][aria-modal="true"]')).find(
+    (dialog) => dialog.querySelector("h2")?.textContent?.trim() === "Verbosity",
+  );
   if (!panel) {
     return {
       found: true,
@@ -738,23 +778,22 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
       trigger: triggerBox,
       triggerHitTestable,
       open: false,
-      portalContained: false,
+      overlayContained: false,
       panel: null,
       horizontalOverflowCount: 0,
-      targetHeights: [],
       targets: [],
       fieldsetsFound: 0,
       overflowElements: [],
       fieldsetStacked: false,
+      fieldsetsNonOverlapping: false,
       rootRemPx: 0,
       editorContainerWidth: 0,
       fieldsetColumns: 0,
       sheetBottomAnchored: false,
-      popoverAnchored: false,
-      popoverScroll: {
+      dialogCentered: false,
+      overlayScroll: {
         connected: false,
         contained: false,
-        expanded: false,
         scrollable: false,
         beforeTop: 0,
         afterTop: 0,
@@ -764,6 +803,9 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
       effectiveTargets: [],
     };
   }
+  const owner = panel.querySelector<HTMLElement>('[data-testid="transcript-detail-control"]');
+  const editor = owner?.querySelector<HTMLElement>('section[aria-label="Transcript detail editor"]');
+  if (!owner || !editor) throw new Error("Verbosity Dialog/Sheet does not own its transcript editor");
   await waitForStablePanel(panel);
   if (includeAdvanced) {
     const advanced = Array.from(panel.querySelectorAll<HTMLElement>("summary")).find((summary) =>
@@ -779,7 +821,6 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
     await waitForStablePanel(panel);
   }
   const panelBox = geometryOf(panel);
-  const finalTriggerBox = geometryOf(trigger);
   const accessibleName = (element: Element): string => {
     const ariaLabel = element.getAttribute("aria-label");
     if (ariaLabel) return ariaLabel;
@@ -796,7 +837,7 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
   };
   const controls = [
     trigger,
-    ...Array.from(panel.querySelectorAll<HTMLElement>("button, select, [role=radio], [role=switch]")),
+    ...Array.from(panel.querySelectorAll<HTMLElement>("button, select, summary, [role=radio], [role=switch]")),
   ];
   const switchLabels = Array.from(panel.querySelectorAll<HTMLElement>('[role="switch"]')).flatMap((switchElement) => {
     const ids = switchElement.getAttribute("aria-labelledby")?.split(/\s+/) ?? [];
@@ -805,6 +846,7 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
       .filter((label): label is HTMLElement => label instanceof HTMLElement && panel.contains(label));
   });
   const targets = [
+    verbosityTarget,
     ...controls.map((element) => ({
       kind: element === trigger ? "trigger" : (element.getAttribute("role") ?? element.tagName.toLowerCase()),
       label: accessibleName(element),
@@ -816,10 +858,8 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
       height: element.getBoundingClientRect().height,
     })),
   ];
-  const targetHeights = targets.map((target) => target.height);
   const fieldsets = Array.from(panel.querySelectorAll<HTMLElement>("fieldset"));
   const fieldsetBoxes = fieldsets.map(geometryOf);
-  const editor = panel.querySelector<HTMLElement>('section[aria-label="Transcript detail editor"]');
   const editorStyle = editor ? getComputedStyle(editor) : null;
   const editorContainerWidth = editor
     ? editor.clientWidth -
@@ -832,53 +872,64 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
   }
   const fieldsetColumns = columnLefts.length;
   const rootRemPx = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
-  const effectiveTargets = controls.map((element) => {
-    const effectiveElement = effectiveTargetElement(element);
-    return {
-      kind: element === trigger ? "trigger" : (element.getAttribute("role") ?? element.tagName.toLowerCase()),
-      label: accessibleName(element),
-      height: effectiveElement.getBoundingClientRect().height,
-    };
-  });
+  const effectiveTargets = [
+    verbosityTarget,
+    ...controls.map((element) => {
+      const effectiveElement = effectiveTargetElement(element);
+      return {
+        kind: element === trigger ? "trigger" : (element.getAttribute("role") ?? element.tagName.toLowerCase()),
+        label: accessibleName(element),
+        height: effectiveElement.getBoundingClientRect().height,
+      };
+    }),
+  ];
   const fieldsetStacked =
     fieldsets.length === 3 &&
     fieldsetBoxes.every((box, index) => {
       const previous = fieldsetBoxes[index - 1];
       return index === 0 || (previous !== undefined && box.top >= previous.bottom - 1);
     });
-  let popoverScroll = {
+  const fieldsetsNonOverlapping = fieldsetBoxes.every((box, index) =>
+    fieldsetBoxes
+      .slice(index + 1)
+      .every(
+        (other) =>
+          box.right <= other.left + 1 ||
+          other.right <= box.left + 1 ||
+          box.bottom <= other.top + 1 ||
+          other.bottom <= box.top + 1,
+      ),
+  );
+  let overlayScroll = {
     connected: true,
     contained: true,
-    expanded: true,
     scrollable: false,
     beforeTop: 0,
     afterTop: 0,
     scrollHeight: 0,
     clientHeight: 0,
   };
-  if (!mobile) {
-    const scrollPanel = panel.querySelector<HTMLElement>('[role="dialog"]') ?? panel;
-    const beforeTop = scrollPanel.scrollTop;
-    const scrollable = scrollPanel.scrollHeight > scrollPanel.clientHeight;
-    scrollPanel.scrollTop = scrollPanel.scrollHeight;
-    scrollPanel.dispatchEvent(new Event("scroll"));
-    await waitForStablePanel(panel);
-    const scrolledPanelBox = geometryOf(panel);
-    popoverScroll = {
-      connected: panel.isConnected,
-      contained:
-        scrolledPanelBox.left >= -1 &&
-        scrolledPanelBox.right <= window.innerWidth + 1 &&
-        scrolledPanelBox.top >= -1 &&
-        scrolledPanelBox.bottom <= window.innerHeight + 1,
-      expanded: trigger.getAttribute("aria-expanded") === "true",
-      scrollable,
-      beforeTop,
-      afterTop: scrollPanel.scrollTop,
-      scrollHeight: scrollPanel.scrollHeight,
-      clientHeight: scrollPanel.clientHeight,
-    };
-  }
+  const scrollPanel = owner.parentElement;
+  if (!scrollPanel) throw new Error("Verbosity Dialog/Sheet scroll owner is missing");
+  const beforeTop = scrollPanel.scrollTop;
+  const scrollable = scrollPanel.scrollHeight > scrollPanel.clientHeight;
+  scrollPanel.scrollTop = scrollPanel.scrollHeight;
+  scrollPanel.dispatchEvent(new Event("scroll"));
+  await waitForStablePanel(panel);
+  const scrolledPanelBox = geometryOf(panel);
+  overlayScroll = {
+    connected: panel.isConnected,
+    contained:
+      scrolledPanelBox.left >= -1 &&
+      scrolledPanelBox.right <= window.innerWidth + 1 &&
+      scrolledPanelBox.top >= -1 &&
+      scrolledPanelBox.bottom <= window.innerHeight + 1,
+    scrollable,
+    beforeTop,
+    afterTop: scrollPanel.scrollTop,
+    scrollHeight: scrollPanel.scrollHeight,
+    clientHeight: scrollPanel.clientHeight,
+  };
   return {
     found: true,
     mobile,
@@ -886,14 +937,13 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
     trigger: triggerBox,
     triggerHitTestable,
     open: true,
-    portalContained:
+    overlayContained:
       panelBox.left >= -1 &&
       panelBox.right <= window.innerWidth + 1 &&
       panelBox.top >= -1 &&
       panelBox.bottom <= window.innerHeight + 1,
     panel: panelBox,
     horizontalOverflowCount: horizontalOverflowElements(panel).length,
-    targetHeights,
     targets,
     fieldsetsFound: fieldsets.length,
     effectiveTargets,
@@ -903,16 +953,16 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
         `${element.scrollWidth}/${element.clientWidth}x${element.scrollHeight}/${element.clientHeight}`,
     ),
     fieldsetStacked,
+    fieldsetsNonOverlapping,
     rootRemPx,
     editorContainerWidth,
     fieldsetColumns,
     sheetBottomAnchored: mobile && panelBox.bottom >= window.innerHeight - 1,
-    popoverAnchored:
+    dialogCentered:
       !mobile &&
-      panelBox.left <= finalTriggerBox.right + 1 &&
-      panelBox.right >= finalTriggerBox.left - 1 &&
-      popoverGap(panelBox, finalTriggerBox) <= 24,
-    popoverScroll,
+      Math.abs((panelBox.left + panelBox.right) / 2 - window.innerWidth / 2) <= 1 &&
+      Math.abs((panelBox.top + panelBox.bottom) / 2 - window.innerHeight / 2) <= 1,
+    overlayScroll,
   };
 }
 
@@ -1150,13 +1200,10 @@ function measure() {
     ? Array.from(liveEditorElement.querySelectorAll<HTMLElement>("fieldset")).map(geometryOf)
     : [];
   const triggerElement = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
-    button.textContent?.trim().startsWith("Detail:"),
+    button.textContent?.includes("Session actions"),
   );
   const triggerBox = triggerElement ? geometryOf(triggerElement) : null;
-  const scrollRoots = [
-    pane,
-    ...Array.from(document.querySelectorAll<HTMLElement>('[data-testid="transcript-detail-popover"], [role="dialog"]')),
-  ];
+  const scrollRoots = [pane, ...Array.from(document.querySelectorAll<HTMLElement>('[role="dialog"]'))];
   const scrollContainers = Array.from(new Set(scrollRoots.flatMap((root) => actualScrollContainers(root))));
   const quoteFontSize = subagentQuote ? Number.parseFloat(getComputedStyle(subagentQuote).fontSize) : 0;
   function statusGeometry(element: HTMLElement | null) {
@@ -1292,12 +1339,10 @@ declare global {
     measure: typeof measure;
     dump: typeof dump;
     inspectDetail: typeof inspectDetail;
-    markLiveOwner: typeof markLiveOwner;
     settled: Promise<true>;
   }
 }
 window.measure = measure;
 window.dump = dump;
 window.inspectDetail = inspectDetail;
-window.markLiveOwner = markLiveOwner;
 window.settled = settled;

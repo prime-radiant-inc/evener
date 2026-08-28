@@ -19,6 +19,8 @@ import { connectionStore } from "../../../stores/connection";
 import { navigationStore, resetNavigationStoreForTests } from "../../../stores/navigation/store";
 import { keyID } from "../../../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
+import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
+import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
 import "../../sessionPanels";
 import { ActivityPanelBody } from "./ActivityPanel";
 import { resetGoalOverridesForTests } from "./GoalControl";
@@ -155,6 +157,7 @@ beforeEach(() => {
   resetActivitySummaryStoreForTests();
   resetGoalOverridesForTests();
   resetNavigationStoreForTests();
+  resetTranscriptDisplayStoreForTests();
 });
 
 afterEach(() => {
@@ -169,6 +172,7 @@ afterEach(() => {
   // test. Under isolate:false that is what a later file's own
   // connectionStore.connect() re-triggers via rewireClient.
   resetThreadsStoreForTests();
+  resetTranscriptDisplayStoreForTests();
 });
 
 function installMobileViewport(): () => void {
@@ -306,6 +310,84 @@ test("status row has no inline Details/Tasks/Activity buttons; they live in the 
   expect(screen.getByRole("menuitem", { name: "Details" })).toBeTruthy();
   expect(screen.getByRole("menuitem", { name: /Tasks/ })).toBeTruthy();
   expect(screen.getByRole("menuitem", { name: /Activity/ })).toBeTruthy();
+});
+
+test("desktop Session actions opens the full Verbosity Dialog, persists selection, and restores trigger focus", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_verbosity"));
+  await threadsStore.getState().ensureThread("ref_verbosity");
+
+  render(<SessionChrome ref="ref_verbosity" />);
+
+  const actions = screen.getByRole("button", { name: "Session actions" });
+  await user.click(actions);
+  await user.click(screen.getByRole("menuitem", { name: "Verbosity…" }));
+
+  const dialog = screen.getByRole("dialog", { name: "Verbosity" });
+  expect(dialog.getAttribute("aria-modal")).toBe("true");
+  expect(
+    within(dialog)
+      .getAllByRole("radio")
+      .map((radio) => radio.textContent),
+  ).toEqual(["Chat", "Intent", "Tools", "Activity", "Full", "Custom"]);
+  const activity = within(dialog).getByRole("radio", { name: "Activity" });
+  await user.click(activity);
+  expect(transcriptDisplayStore.getState().local.desktop).toEqual(
+    makeTranscriptDisplayConfig({ kind: "preset", level: "activity" }),
+  );
+  expect(document.activeElement).toBe(activity);
+
+  await user.keyboard("{Escape}");
+  expect(screen.queryByRole("dialog", { name: "Verbosity" })).toBeNull();
+  expect(document.activeElement).toBe(actions);
+
+  await user.click(actions);
+  await user.click(screen.getByRole("menuitem", { name: "Verbosity…" }));
+  await user.click(screen.getByRole("button", { name: "Close" }));
+  expect(screen.queryByRole("dialog", { name: "Verbosity" })).toBeNull();
+  expect(document.activeElement).toBe(actions);
+});
+
+test("desktop Verbosity keeps Edit hub defaults wired to Settings Transcript", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_verbosity_settings"));
+  await threadsStore.getState().ensureThread("ref_verbosity_settings");
+  window.history.replaceState({}, "", "/");
+
+  render(<SessionChrome ref="ref_verbosity_settings" />);
+  await user.click(screen.getByRole("button", { name: "Session actions" }));
+  await user.click(screen.getByRole("menuitem", { name: "Verbosity…" }));
+  await user.click(screen.getByRole("button", { name: "Edit hub defaults" }));
+
+  expect(window.location.pathname).toBe("/settings/transcript");
+});
+
+test("mobile Session actions opens the full Verbosity bottom Sheet", async () => {
+  const restoreViewport = installMobileViewport();
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_verbosity_mobile"));
+  await threadsStore.getState().ensureThread("ref_verbosity_mobile");
+
+  try {
+    render(<SessionChrome ref="ref_verbosity_mobile" />);
+    const actions = screen.getByRole("button", { name: "Session actions" });
+    await user.click(actions);
+    await user.click(screen.getByRole("menuitem", { name: "Verbosity…" }));
+
+    const sheet = screen.getByRole("dialog", { name: "Verbosity" });
+    expect(sheet.className).toContain("bottom");
+    expect(within(sheet).getAllByRole("radio")).toHaveLength(6);
+    expect(within(sheet).getByText(/^Customize & advanced/)).toBeTruthy();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "Verbosity" })).toBeNull();
+    expect(document.activeElement).toBe(actions);
+  } finally {
+    restoreViewport();
+  }
 });
 
 test("menu Tasks item toggles the sessionTasks workspace pane on desktop", async () => {

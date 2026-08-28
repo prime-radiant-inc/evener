@@ -317,8 +317,7 @@ export interface UseTranscriptViewRegistrationOptions {
   measureAnchors?: (el: HTMLElement) => ViewAnchorPosition[];
   anchorEntries?: readonly Omit<ViewAnchorPosition, "offset" | "height">[];
   renderedRowCount?: number;
-  detailTriggerRef?: RefObject<HTMLElement | null>;
-  focusDetailTrigger?: () => void;
+  focusFallback?: () => void;
   announce?: (summary: string) => void;
 }
 
@@ -334,12 +333,8 @@ interface PendingTranscriptViewRestore {
   focusScrollRequested: boolean;
 }
 
-function focusDetailForOptions(options: UseTranscriptViewRegistrationOptions): void {
-  if (options.focusDetailTrigger) {
-    options.focusDetailTrigger();
-    return;
-  }
-  options.detailTriggerRef?.current?.focus();
+function focusFallbackForOptions(options: UseTranscriptViewRegistrationOptions): void {
+  options.focusFallback?.();
 }
 
 /**
@@ -372,7 +367,7 @@ export function useTranscriptViewRegistration(
       if (count > 0) currentOptions.listRef?.current?.scrollToIndex(count - 1, { align: "end" });
       const focusResult = focusCapturedEntry(el, pending.captured, candidates, currentOptions.listRef, pending);
       if (focusResult === "waiting") return;
-      if (focusResult === "missing") focusDetailForOptions(currentOptions);
+      if (focusResult === "missing") focusFallbackForOptions(currentOptions);
       pendingRef.current = null;
       return;
     }
@@ -409,7 +404,7 @@ export function useTranscriptViewRegistration(
 
     const focusResult = focusCapturedEntry(el, pending.captured, candidates, currentOptions.listRef, pending);
     if (focusResult === "waiting") return;
-    if (focusResult === "missing") focusDetailForOptions(currentOptions);
+    if (focusResult === "missing") focusFallbackForOptions(currentOptions);
     pendingRef.current = null;
   }, []);
 
@@ -435,15 +430,6 @@ export function useTranscriptViewRegistration(
     };
   }, []);
 
-  const focusDetailTrigger = useCallback(() => {
-    const currentOptions = optionsRef.current;
-    if (currentOptions.focusDetailTrigger) {
-      currentOptions.focusDetailTrigger();
-      return;
-    }
-    currentOptions.detailTriggerRef?.current?.focus();
-  }, []);
-
   const announce = useCallback((summary: string) => {
     optionsRef.current.announce?.(summary);
   }, []);
@@ -455,10 +441,9 @@ export function useTranscriptViewRegistration(
       layout,
       capture,
       restore,
-      focusDetailTrigger,
       announce,
     });
-  }, [announce, capture, enabled, focusDetailTrigger, id, layout, restore]);
+  }, [announce, capture, enabled, id, layout, restore]);
 
   // biome-ignore lint/correctness/useExhaustiveDependencies: viewKey is deliberately trigger-only
   useLayoutEffect(() => {

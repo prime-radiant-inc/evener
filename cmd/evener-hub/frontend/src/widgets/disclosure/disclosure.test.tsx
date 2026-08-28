@@ -221,6 +221,12 @@ test("disabled styling attenuates only the summary and suppresses its hover wash
   expect(css).not.toMatch(/\.body[^}]*opacity\s*:/);
 });
 
+test("keeps the summary at the narrow-viewport tap floor", () => {
+  expect(motionCss()).toMatch(
+    /@media\s*\(max-width:\s*899px\)\s*\{[\s\S]*?\.summary\s*\{[^}]*min-height:\s*var\(--tap-min\)/,
+  );
+});
+
 // --- A6: opening animates, subtly, and honors prefers-reduced-motion -----
 
 test("the chevron rotation and the body fade are declared with real motion", () => {

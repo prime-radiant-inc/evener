@@ -26,7 +26,6 @@ function view(id: string, snapshot: CapturedTranscriptView): RegisteredTranscrip
     id,
     capture: vi.fn(() => snapshot),
     restore: vi.fn(),
-    focusDetailTrigger: vi.fn(),
     announce: vi.fn(),
   };
 }

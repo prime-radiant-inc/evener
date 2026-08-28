@@ -56,6 +56,8 @@
   position: fixed;
   z-index: var(--z-menu);
   min-width: 180px;
+  max-block-size: calc(100dvh - (2 * var(--space-2)));
+  overflow-y: auto;
   margin: 0;
   padding: var(--space-1) 0;
   list-style: none;
@@ -74,6 +76,16 @@
   to {
     opacity: 1;
     transform: scale(1);
+  }
+}
+
+@keyframes menuFade {
+  from {
+    opacity: 0;
+  }
+
+  to {
+    opacity: 1;
   }
 }
 
@@ -110,6 +122,23 @@
   outline: var(--focus-ring);
   outline-offset: -2px;
   background: var(--hover-1);
+}
+
+@media (max-width: 899px) {
+  .popup {
+    animation-name: menuFade;
+  }
+
+  .trigger {
+    min-height: var(--tap-min);
+  }
+
+  .item {
+    box-sizing: border-box;
+    display: flex;
+    align-items: center;
+    min-height: var(--tap-min);
+  }
 }
 
 .itemDisabled {

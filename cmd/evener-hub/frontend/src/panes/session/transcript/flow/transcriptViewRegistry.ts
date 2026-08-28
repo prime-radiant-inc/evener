@@ -12,7 +12,6 @@ export interface RegisteredTranscriptView {
   layout?: string;
   capture(): CapturedTranscriptView;
   restore(captured: CapturedTranscriptView): void;
-  focusDetailTrigger(): void;
   announce(summary: string): void;
 }
 

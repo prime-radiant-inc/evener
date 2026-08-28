@@ -1,12 +1,18 @@
-import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { createRef, useState } from "react";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
 import type { ItemModel, ThreadModel } from "../../../protocol/model";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import { threadsStore } from "../../../stores/threads";
 import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
 import { createTranscriptRenderContext, TranscriptRenderProvider } from "../../../transcriptDisplay/renderContext";
+import type { VirtualListHandle } from "../../../widgets";
 import { resetDisclosureStoreForTests } from "../../../widgets/disclosure/disclosureStore";
-import { captureTranscriptViews, resetTranscriptViewRegistryForTests } from "./flow/transcriptViewRegistry";
+import {
+  captureTranscriptViews,
+  resetTranscriptViewRegistryForTests,
+  transitionTranscriptViews,
+} from "./flow/transcriptViewRegistry";
 import { ToolCallCluster } from "./ToolCallCluster";
 import { TranscriptBody } from "./TranscriptBody";
 import { threadFingerprintForItem } from "./types";
@@ -356,6 +362,46 @@ describe("TranscriptBody", () => {
     expect(captureTranscriptViews().size).toBe(0);
   });
 
+  test("focuses the stable transcript region when a view change removes the focused row", async () => {
+    const announce = vi.fn();
+    const listRef = createRef<VirtualListHandle>();
+    let showChat: () => void = () => {
+      throw new Error("focus harness did not mount");
+    };
+    function FocusHarness() {
+      const [config, setConfig] = useState(preset("tools"));
+      showChat = () => setConfig(preset("chat"));
+      return (
+        <TranscriptBody
+          model={fixture}
+          config={config}
+          surface="live"
+          disclosureScope="live:focus-fallback"
+          viewId="focus-fallback"
+          listRef={listRef}
+          onAnnounceViewChange={announce}
+        />
+      );
+    }
+    render(<FocusHarness />);
+    const tool = await screen.findByTestId("tool-row-trigger");
+    tool.focus();
+    expect(document.activeElement).toBe(tool);
+    expect(document.querySelector('[data-view-anchor-id="tool_1"]')?.contains(tool)).toBe(true);
+    const capturedViews = captureTranscriptViews();
+    expect([...capturedViews.keys()]).toEqual(["focus-fallback"]);
+    expect(capturedViews.get("focus-fallback")?.focusedEntryId).toBe("tool_1");
+
+    act(() => {
+      transitionTranscriptViews(showChat, "Chat", {
+        fingerprint: "chat",
+      });
+    });
+
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("region", { name: "Transcript" })));
+    expect(announce).toHaveBeenCalledWith("Chat");
+  });
+
   test("uses normal page flow for preview without an inner virtual scroller", () => {
     render(
       <TranscriptBody model={fixture} config={preset("tools")} surface="preview" disclosureScope="preview:test" />,
@@ -535,36 +581,6 @@ describe("TranscriptBody", () => {
       />,
     );
     expect(firstToolExpanded()).toBe("false");
-  });
-
-  test.each(["live", "readOnly"] as const)("places the detail toolbar above the %s scroller", (surface) => {
-    render(
-      <TranscriptBody
-        model={fixture}
-        config={preset("tools")}
-        surface={surface}
-        disclosureScope={`${surface}:toolbar`}
-        toolbar={<button type="button">Detail: Tools</button>}
-      />,
-    );
-
-    const toolbar = screen.getByRole("button", { name: "Detail: Tools" });
-    const scroller = screen.getByTestId("transcript-virtual-list");
-    expect(toolbar.compareDocumentPosition(scroller) & Node.DOCUMENT_POSITION_FOLLOWING).toBeTruthy();
-  });
-
-  test("does not render a toolbar on the preview surface", () => {
-    render(
-      <TranscriptBody
-        model={fixture}
-        config={preset("tools")}
-        surface="preview"
-        disclosureScope="preview:toolbar"
-        toolbar={<button type="button">Detail: Tools</button>}
-      />,
-    );
-
-    expect(screen.queryByRole("button", { name: "Detail: Tools" })).toBeNull();
   });
 
   test("Tools/Full previews mount item and cluster renderers without threadsStore or RPC access", () => {

@@ -1,29 +1,21 @@
-import type { Ref, RefObject } from "react";
-import { useId, useRef, useState } from "react";
-import { useIsMobile } from "../../../shell/useIsMobile";
+import type { RefObject } from "react";
+import { useRef } from "react";
 import { transcriptDisplayStore, useTranscriptDisplayStore } from "../../../stores/transcriptDisplay";
-import {
-  advancedEnabledCount,
-  contentSummary,
-  type EffectiveConfigSources,
-  resolveEffectiveConfig,
-  type ViewportClass,
-} from "../../../transcriptDisplay/config";
-import { Button, Popover, Sheet } from "../../../widgets";
+import { resolveEffectiveConfig, type ViewportClass } from "../../../transcriptDisplay/config";
+import { Button, Dialog, Sheet } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
 import { TranscriptDetailEditor } from "./TranscriptDetailEditor";
 import styles from "./transcriptDisplay.module.css";
 
 export interface TranscriptDetailControlProps {
+  open: boolean;
+  onClose(): void;
   layout: ViewportClass;
   onEditHubDefaults(): void;
-  triggerRef?: Ref<HTMLButtonElement>;
 }
 
 const CLASS = {
-  root: requireClass(styles.detailControl, "transcriptDisplay.module.css", "detailControl"),
   panel: requireClass(styles.detailPanel, "transcriptDisplay.module.css", "detailPanel"),
-  panelTitle: requireClass(styles.detailPanelTitle, "transcriptDisplay.module.css", "detailPanelTitle"),
   content: requireClass(styles.detailContent, "transcriptDisplay.module.css", "detailContent"),
   sheetContent: requireClass(styles.detailSheetContent, "transcriptDisplay.module.css", "detailSheetContent"),
   scope: requireClass(styles.detailScope, "transcriptDisplay.module.css", "detailScope"),
@@ -31,13 +23,6 @@ const CLASS = {
   warning: requireClass(styles.detailWarning, "transcriptDisplay.module.css", "detailWarning"),
   actions: requireClass(styles.detailActions, "transcriptDisplay.module.css", "detailActions"),
 };
-
-function summaryFor(sources: EffectiveConfigSources): string {
-  const normalized = resolveEffectiveConfig(sources);
-  const extras = advancedEnabledCount(normalized);
-  const content = contentSummary(normalized.content);
-  return extras === 0 ? `Detail: ${content}` : `Detail: ${content} · ${extras} extras`;
-}
 
 interface DetailPanelProps {
   layout: ViewportClass;
@@ -50,9 +35,8 @@ interface DetailPanelProps {
   onChange(value: ReturnType<typeof resolveEffectiveConfig>): void;
   onClearLocal(): void;
   onEditHubDefaults(): void;
-  showTitle: boolean;
-  headingId: string;
   showActions: boolean;
+  mobile: boolean;
   editButtonRef: RefObject<HTMLButtonElement | null>;
 }
 
@@ -94,9 +78,8 @@ function DetailPanel({
   onChange,
   onClearLocal,
   onEditHubDefaults,
-  showTitle,
-  headingId,
   showActions,
+  mobile,
   editButtonRef,
 }: DetailPanelProps) {
   const layoutName = layout === "desktop" ? "Desktop" : "Mobile";
@@ -110,12 +93,10 @@ function DetailPanel({
     failureMessages.set(storageWarning, storageWarning);
 
   return (
-    <div className={showTitle ? CLASS.content : CLASS.sheetContent}>
-      {showTitle && (
-        <h2 id={headingId} className={CLASS.panelTitle}>
-          Transcript display details
-        </h2>
-      )}
+    <div
+      className={mobile ? CLASS.sheetContent : `${CLASS.panel} ${CLASS.content}`}
+      data-testid="transcript-detail-control"
+    >
       <p className={CLASS.scope}>{localExists ? `Local ${layoutName} view` : "Using hub default"}</p>
       {statusMessages.length > 0 && (
         <div className={CLASS.status} role="status" aria-live="polite">
@@ -144,11 +125,9 @@ function DetailPanel({
   );
 }
 
-export function TranscriptDetailControl({ layout, onEditHubDefaults, triggerRef }: TranscriptDetailControlProps) {
-  const [open, setOpen] = useState(false);
-  const headingId = useId();
+export function TranscriptDetailControl({ open, onClose, layout, onEditHubDefaults }: TranscriptDetailControlProps) {
   const editButtonRef = useRef<HTMLButtonElement>(null);
-  const isMobile = useIsMobile();
+  const isMobile = layout === "mobile";
   const local = useTranscriptDisplayStore((state) => state.local[layout]);
   const hub = useTranscriptDisplayStore((state) => state.hub[layout]);
   const hubLoading = useTranscriptDisplayStore((state) => state.hubLoading);
@@ -156,14 +135,9 @@ export function TranscriptDetailControl({ layout, onEditHubDefaults, triggerRef 
   const hubSupport = useTranscriptDisplayStore((state) => state.hubSupport);
   const storageWarning = useTranscriptDisplayStore((state) => state.storageWarning);
   const effectiveConfig = resolveEffectiveConfig({ local, hub, layout });
-  const triggerLabel = summaryFor({ local, hub, layout });
-
-  function close(): void {
-    setOpen(false);
-  }
 
   function editHubDefaults(): void {
-    close();
+    onClose();
     onEditHubDefaults();
   }
 
@@ -179,9 +153,8 @@ export function TranscriptDetailControl({ layout, onEditHubDefaults, triggerRef 
       onChange={(next) => transcriptDisplayStore.getState().setLocal(layout, next)}
       onClearLocal={() => transcriptDisplayStore.getState().clearLocal(layout)}
       onEditHubDefaults={editHubDefaults}
-      showTitle={!isMobile}
-      headingId={headingId}
       showActions={!isMobile}
+      mobile={isMobile}
       editButtonRef={editButtonRef}
     />
   );
@@ -195,48 +168,13 @@ export function TranscriptDetailControl({ layout, onEditHubDefaults, triggerRef 
     />
   );
 
-  const trigger = (
-    <Button
-      ref={triggerRef}
-      size="sm"
-      variant="secondary"
-      aria-expanded={open}
-      aria-haspopup="dialog"
-      onClick={() => setOpen((current) => !current)}
-    >
-      {triggerLabel}
-    </Button>
-  );
-
-  return (
-    <div className={CLASS.root}>
-      {isMobile ? (
-        <>
-          {trigger}
-          <Sheet
-            open={open}
-            side="bottom"
-            size="wide"
-            onClose={close}
-            title="Transcript display details"
-            footer={footer}
-          >
-            {panel}
-          </Sheet>
-        </>
-      ) : (
-        <Popover
-          open={open}
-          onClose={close}
-          closeOnScroll={false}
-          trigger={trigger}
-          data-testid="transcript-detail-popover"
-        >
-          <div className={CLASS.panel} role="dialog" aria-modal="false" aria-labelledby={headingId}>
-            {panel}
-          </div>
-        </Popover>
-      )}
-    </div>
+  return isMobile ? (
+    <Sheet open={open} side="bottom" size="wide" onClose={onClose} title="Verbosity" footer={footer}>
+      {panel}
+    </Sheet>
+  ) : (
+    <Dialog open={open} onClose={onClose} title="Verbosity">
+      {panel}
+    </Dialog>
   );
 }

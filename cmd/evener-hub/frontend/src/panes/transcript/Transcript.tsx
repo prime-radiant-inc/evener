@@ -17,7 +17,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useStore } from "zustand";
 import type { PaneProps } from "../../shell/paneRegistry";
-import { navigate, paneToURL } from "../../shell/routing";
 import { connectionStore } from "../../stores/connection";
 import { threadsStore } from "../../stores/threads";
 import { transcriptDisplayStore } from "../../stores/transcriptDisplay";
@@ -27,7 +26,6 @@ import { VisuallyHidden } from "../../widgets/internal/VisuallyHidden";
 import { NOW_TICK_MS, SessionNowContext, useNowTick } from "../session/liveness";
 import { LoadOlderRow } from "../session/transcript/flow/LoadOlderRow";
 import { TranscriptBody } from "../session/transcript/TranscriptBody";
-import { TranscriptDetailControl } from "../session/transcript/TranscriptDetailControl";
 import { useTranscript } from "../session/transcript/useTranscript";
 import { JobLog } from "./JobLog";
 
@@ -86,7 +84,6 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
   // Session.tsx's own comment on the same wiring.
   const { model, loadingOlder, loadOlderReportingError, olderError } = useTranscript(ref);
   const listRef = useRef<VirtualListHandle>(null);
-  const detailTriggerRef = useRef<HTMLButtonElement>(null);
   const announcementSequence = useRef(0);
   const [viewAnnouncement, setViewAnnouncement] = useState({ text: "", key: 0 });
 
@@ -135,17 +132,6 @@ function ThreadTranscript({ params, paneId }: { params: TranscriptParams; paneId
           disclosureScope={`transcript:readOnly:${ref}`}
           sessionRef={ref}
           viewId={paneId}
-          detailTriggerRef={detailTriggerRef}
-          toolbar={
-            <TranscriptDetailControl
-              layout={displayViewport}
-              triggerRef={detailTriggerRef}
-              onEditHubDefaults={() => {
-                const url = paneToURL("settings", { section: "transcript" });
-                if (url !== null) navigate(url);
-              }}
-            />
-          }
           onAnnounceViewChange={(summary) => {
             announcementSequence.current += 1;
             setViewAnnouncement({ text: `Transcript detail: ${summary}`, key: announcementSequence.current });
