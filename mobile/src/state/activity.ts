@@ -575,7 +575,6 @@ export function createActivityStore() {
       // identity and an open view. Return false (without mutation) on
       // stale/missing/wrong identity or a null view. Preserve tasks/work/usage/
       // reasoning.
-      if (identity === null) return false;
       if (!matchesCurrent(id)) return false;
       const state = get();
       if (state.view === null) return false;

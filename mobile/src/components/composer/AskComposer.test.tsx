@@ -465,7 +465,7 @@ describe("AskComposer — several questions in one batch", () => {
     ];
     const { service } = renderAsk(makeConversation(items));
     // First question: select Yes
-    fireEvent.click(screen.getAllByText("Yes")[0]!);
+    fireEvent.click(screen.getByTestId("ask-option-q1-Yes"));
     // Second question: select B
     fireEvent.click(screen.getByText("B"));
     fireEvent.click(screen.getByTestId("ask-send-answers"));
@@ -487,7 +487,7 @@ describe("AskComposer — untouched questions compose as skip", () => {
     ];
     const { service } = renderAsk(makeConversation(items));
     // Answer only the first; leave the second untouched.
-    fireEvent.click(screen.getAllByText("Yes")[0]!);
+    fireEvent.click(screen.getByTestId("ask-option-q1-Yes"));
     fireEvent.click(screen.getByTestId("ask-send-answers"));
     const text = sentText(service);
     expect(text).toBe(
