@@ -1276,6 +1276,7 @@ func (s *Server) appThread() appwire.Thread {
 		Evener: appwire.EvenerThread{
 			Ref:                   ref,
 			Profile:               status.Profile,
+			TurnCount:             status.Turns,
 			ActiveTurnID:          activeTurnID,
 			ContextPressure:       pressure,
 			ContextUsed:           metrics.Used,

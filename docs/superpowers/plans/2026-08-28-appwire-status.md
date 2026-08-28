@@ -34,8 +34,7 @@ an empty-diff review with no findings and no invented changes.
 - Modify: `appwire/types.go`
 - Modify: `server/appwire_runtime.go`
 - Test: `server/appwire_server_test.go`
-- Regenerate: `docs/appwire-protocol.md`
-- Regenerate: `cmd/evener-hub/frontend/src/appwireTypes.ts`
+- Regenerate: `cmd/evener-hub/frontend/src/protocol/types.gen.ts`
 
 **Interfaces:**
 - Consumes: `server.StatusInfo.Turns` from the daemon's materialized status snapshot.
@@ -81,10 +80,9 @@ go test ./appwire ./server -run 'TestServerAppWireThreadReadCarriesTurnCountWith
 
 - [ ] **Step 5: Commit**
 
-Stage only the typed field, server projection, focused test, generated protocol
-reference, generated TypeScript declarations, and the two design documents.
-Commit with a detailed message explaining why a typed count avoids an unbounded
-turn read.
+Stage only the typed field, server projection, focused test, generated
+TypeScript declaration, and the two design documents. Commit with a detailed
+message explaining why a typed count avoids an unbounded turn read.
 
 ### Task 2: Read and project daemon status through real AppWire
 
@@ -329,4 +327,3 @@ If a gate fails, root-cause it; do not widen timeouts or bypass hooks.
 Commit any simplify-only changes separately. Report the branch, commit hashes,
 exact commands and results, the empty pre-implementation review, the final
 simplify findings/actions, and any unresolved limitation. Do not merge.
-
