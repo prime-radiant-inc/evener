@@ -86,6 +86,19 @@ describe("decodeInitializeResponse", () => {
     expect(decodeInitializeResponse(response)).toEqual(response);
   });
 
+  test("accepts and preserves maximum safe navigation integers", () => {
+    const response = {
+      ...FAKE_INITIALIZE_RESULT,
+      navigation: {
+        version: Number.MAX_SAFE_INTEGER,
+        generationId: "maximum-safe-navigation-generation",
+        sequence: Number.MAX_SAFE_INTEGER,
+      },
+    };
+
+    expect(decodeInitializeResponse(response)).toEqual(response);
+  });
+
   test.each([
     ["missing server version", { ...FAKE_INITIALIZE_RESULT, serverInfo: { name: "hub" } }],
     ["empty protocol", { ...FAKE_INITIALIZE_RESULT, protocolVersion: "" }],
@@ -166,6 +179,34 @@ describe("decodeInitializeResponse", () => {
     ],
   ])("rejects %s", (_name, value) => {
     expect(() => decodeInitializeResponse(value)).toThrow("invalid initialize response");
+  });
+
+  test.each([
+    ["zero version", { version: 0 }],
+    ["negative version", { version: -1 }],
+    ["fractional version", { version: 1.5 }],
+    ["NaN version", { version: Number.NaN }],
+    ["infinite version", { version: Number.POSITIVE_INFINITY }],
+    ["unsafe version", { version: Number.MAX_SAFE_INTEGER + 1 }],
+    ["negative sequence", { sequence: -1 }],
+    ["fractional sequence", { sequence: 0.5 }],
+    ["NaN sequence", { sequence: Number.NaN }],
+    ["infinite sequence", { sequence: Number.POSITIVE_INFINITY }],
+    ["unsafe sequence", { sequence: Number.MAX_SAFE_INTEGER + 1 }],
+    ["empty generation ID", { generationId: "" }],
+    ["whitespace generation ID", { generationId: " \t " }],
+  ])("rejects navigation with %s", (_name, override) => {
+    expect(() =>
+      decodeInitializeResponse({
+        ...FAKE_INITIALIZE_RESULT,
+        navigation: {
+          version: 1,
+          generationId: "test-navigation-generation",
+          sequence: 0,
+          ...override,
+        },
+      }),
+    ).toThrow("invalid initialize response");
   });
 });
 
