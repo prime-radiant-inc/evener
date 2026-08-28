@@ -2421,7 +2421,7 @@ describe("ConversationStore", () => {
   // doneCount has already reached target.
   function makeControlledRead(service: FakeConversationService): {
     started: (target?: number) => Promise<void>;
-    release: () => void;
+    release: () => boolean;
     completed: (target?: number) => Promise<void>;
     getStartedCount: () => number;
     getDoneCount: () => number;
@@ -2469,7 +2469,11 @@ describe("ConversationStore", () => {
       },
       release: () => {
         const r = releaseQueue.shift();
-        if (r !== undefined) r();
+        if (r !== undefined) {
+          r();
+          return true;
+        }
+        return false;
       },
       completed: (target = 1) => {
         if (doneCount >= target) return Promise.resolve();
@@ -7467,32 +7471,33 @@ describe("ConversationStore", () => {
       });
     }
 
-    // Fix 2: Detect and drain any straggler reads with full quiescence. Each
-    // released straggler read must be awaited to completion AND followed by a
-    // scheduler drain yield so its rehydrate effect fully commits before
-    // exact assertions. Fire-and-forget release is not sufficient — an
-    // unreleased read leaves a hanging job and an unawaited released read
-    // may still be in-flight when counts are asserted.
+    // Fix 3: Event-driven quiescent straggler draining. Every release that
+    // actually frees a queued read must be paired with an awaited completion
+    // and a scheduler microtask cross so the rehydrate effect fully commits.
+    // No fire-and-forget release, no bounded safety loop.
     //
-    // This pairs every detected straggler release with:
-    //   1. await ctrl.completed(target) — the read resolves
-    //   2. await yieldMicrotask() — scheduler drain / observable quiescence
+    // Algorithm: cross one scheduler microtask so any queued reread dispatches
+    // and reaches the release gate. If release() returns true (a real queued
+    // read was freed), register/await that exact next completed(target),
+    // cross another scheduler microtask so its trailing effect drains, then
+    // repeat. When release() returns false after a scheduler turn, the
+    // queue is quiescent — no reads are pending or in-flight.
     async function drainAndAwaitStragglers(
       ctrl: ReturnType<typeof makeControlledRead>,
     ): Promise<void> {
-      const started = ctrl.getStartedCount();
-      const done = ctrl.getDoneCount();
-      const stragglerCount = started - done;
-      // Release and await each straggler read to completion, then yield so
-      // its rehydrate effect drains through the scheduler.
-      for (let i = 0; i < stragglerCount; i++) {
-        ctrl.release();
-        await ctrl.completed(done + i + 1);
+      // Cross a scheduler microtask so any queued reread dispatches and
+      // reaches the controlled release gate.
+      await yieldMicrotask();
+      // Event-driven loop: release returns true only when it freed a real
+      // queued read. Each freed read is awaited to completion plus a
+      // scheduler drain yield. When release returns false after a scheduler
+      // turn, the queue is quiescent.
+      while (true) {
+        const released = ctrl.release();
+        if (!released) break;
+        await ctrl.completed(ctrl.getDoneCount() + 1);
         await yieldMicrotask();
       }
-      // Safety: release any remaining pending reads that may have started
-      // during the drain (bounded to avoid infinite loops).
-      for (let i = 0; i < 10; i++) ctrl.release();
     }
 
     // --- (A) invalid-only ownership tests ---
