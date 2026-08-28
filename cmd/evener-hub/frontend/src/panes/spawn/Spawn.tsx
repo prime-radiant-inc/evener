@@ -798,7 +798,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     setBusy(true);
     setBusyStartedAt(Date.now());
     try {
-      await createDir(path);
+      await createDir(client, path);
       await doSpawn();
     } catch (err) {
       // friendlyLaunchErrorMessage, not errorText: doSpawn's thread/start call

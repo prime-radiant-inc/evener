@@ -173,7 +173,7 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 - [ ] Deterministic "not fixable by creating a directory" errors — literal strings `path is not a directory`, `absolute path required`, `path is required` — render an inline error and abort instead of offering to create (`spawn.js:582-588`)
 - [ ] Any other invalid-path reason offers an IN-FORM (not native `confirm()`) dialog: `` The directory `<path>` doesn't exist yet. Create it and start the session? `` with Cancel / "Create & start" buttons; "Create & start" receives initial focus (`spawn.js:527-566, 589-591`)
 - [ ] Declining aborts the submit with NO error shown (`spawn.js:559-561, 591`)
-- [ ] Accepting POSTs `/api/dirs/create`; on a non-OK response the inline error uses the response body's `.error` field when present, else falls back to `HTTP <status>` (`spawn.js:592-606`)
+- [ ] Requesting `evener/dirs/create` over the authenticated AppWire connection; a server error's message reaches the existing inline launch-error path (`spawn.js:592-606`)
 
 ### 1.14 Submission & result handling
 

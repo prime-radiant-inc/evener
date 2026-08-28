@@ -11,7 +11,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -2075,84 +2074,6 @@ func TestWeb_APIFork_DeferInputParity(t *testing.T) {
 	if resp.OriginalInput != "second task" {
 		t.Errorf("original_input=%q, want %q", resp.OriginalInput, "second task")
 	}
-}
-
-// TestWeb_ApiModels_ReturnsListWithProviderEnv verifies the endpoint
-// shape — returns a JSON array of {provider, model, …} entries when
-// run against a live provider API. Skips unless live tests are explicitly
-// enabled and a real API key is set.
-// TestWeb_ApiDirCreate covers POST /api/dirs/create, used by the spawn flow to
-// create a proposed working directory that does not exist yet.
-func TestWeb_ApiDirCreate(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	post := func(path string) *httptest.ResponseRecorder {
-		body := strings.NewReader(`{"path":` + strconv.Quote(path) + `}`)
-		req := httptest.NewRequest(http.MethodPost, "/api/dirs/create", body)
-		req.Host = "127.0.0.1:9180"
-		req.Header.Set("Content-Type", "application/json")
-		rec := httptest.NewRecorder()
-		web.Handler().ServeHTTP(rec, req)
-		return rec
-	}
-
-	t.Run("creates a missing directory and its parents", func(t *testing.T) {
-		target := filepath.Join(t.TempDir(), "missing", "nested")
-		rec := post(target)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
-		}
-		var resp map[string]any
-		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-			t.Fatalf("invalid JSON: %v", err)
-		}
-		if resp["created"] != true {
-			t.Errorf("expected created:true, got %v", resp["created"])
-		}
-		if info, err := os.Stat(target); err != nil || !info.IsDir() {
-			t.Errorf("directory was not created: err=%v", err)
-		}
-	})
-
-	t.Run("existing directory is idempotent", func(t *testing.T) {
-		target := t.TempDir()
-		rec := post(target)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("status: %d body=%q", rec.Code, rec.Body.String())
-		}
-		var resp map[string]any
-		_ = json.Unmarshal(rec.Body.Bytes(), &resp)
-		if resp["created"] != false {
-			t.Errorf("expected created:false for an existing dir, got %v", resp["created"])
-		}
-	})
-
-	t.Run("file at the path is a conflict", func(t *testing.T) {
-		file := filepath.Join(t.TempDir(), "afile")
-		if err := os.WriteFile(file, []byte("x"), 0o644); err != nil {
-			t.Fatal(err)
-		}
-		rec := post(file)
-		if rec.Code != http.StatusConflict {
-			t.Errorf("expected 409 for a file path, got %d body=%q", rec.Code, rec.Body.String())
-		}
-	})
-
-	t.Run("relative path is rejected", func(t *testing.T) {
-		rec := post("relative/dir")
-		if rec.Code != http.StatusBadRequest {
-			t.Errorf("expected 400 for a relative path, got %d", rec.Code)
-		}
-	})
-
-	t.Run("GET is rejected", func(t *testing.T) {
-		req := httptest.NewRequest(http.MethodGet, "/api/dirs/create?path=/tmp/x", nil)
-		req.Host = "127.0.0.1:9180"
-		rec := httptest.NewRecorder()
-		web.Handler().ServeHTTP(rec, req)
-		if rec.Code != http.StatusMethodNotAllowed {
-			t.Errorf("expected 405 for GET, got %d", rec.Code)
-		}
-	})
 }
 
 func startAppwireTestDaemon(t *testing.T, dir, sessionID string, register func(*appserver.Server)) *httptest.Server {

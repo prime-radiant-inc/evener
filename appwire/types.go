@@ -51,6 +51,7 @@ const (
 	MethodEvenerThreadTranscriptsList = "evener/thread/transcripts/list"
 	MethodEvenerSubagentPreview       = "evener/subagentPreview"
 	MethodEvenerPathsComplete         = "evener/paths/complete"
+	MethodEvenerDirsCreate            = "evener/dirs/create"
 	MethodEvenerProjectsRecent        = "evener/projects/recent"
 	MethodEvenerPathValidate          = "evener/path/validate"
 	MethodEvenerNavigationRead        = "evener/navigation/read"
@@ -1551,6 +1552,17 @@ type PathsCompleteParams struct {
 
 type PathsCompleteResponse struct {
 	Data []string `json:"data"`
+}
+
+// DirsCreateParams requests creation of a working directory and any missing
+// parents for a Spawn preflight.
+type DirsCreateParams struct {
+	Path string `json:"path"`
+}
+
+type DirsCreateResponse struct {
+	Path    string `json:"path"`
+	Created bool   `json:"created"`
 }
 
 // ProjectsRecentParams selects how many recent project directories the hub

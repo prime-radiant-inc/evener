@@ -129,17 +129,10 @@ func FuzzCoreAPIPass4(f *testing.F) {
 		call(http.MethodGet, "/api/git/head?cwd="+workingDir, "")
 		call(http.MethodGet, "/api/git/head?cwd=/definitely/missing/pass4", "")
 		call(http.MethodPost, "/api/git/head", "")
-		direct(web.handleAPIDirCreate, http.MethodPost, "/api/dirs/create", `{}`)
-		direct(web.handleAPIDirCreate, http.MethodPost, "/api/dirs/create", `{"path":"relative"}`)
-		direct(web.handleAPIDirCreate, http.MethodPost, "/api/dirs/create", `{"path":"`+workingDir+`"}`)
 		filePath := filepath.Join(root, "already-file")
 		if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
 		}
-		direct(web.handleAPIDirCreate, http.MethodPost, "/api/dirs/create", `{"path":"`+filePath+`"}`)
-		direct(web.handleAPIDirCreate, http.MethodPost, "/api/dirs/create", `{"path":"`+filepath.Join(root, "created-dir")+`"}`)
-		web.cfg.MkdirAll = func(string, os.FileMode) error { return errors.New("mkdir failed") }
-		direct(web.handleAPIDirCreate, http.MethodPost, "/api/dirs/create", `{"path":"`+filepath.Join(root, "new-dir")+`"}`)
 
 		call(http.MethodPost, "/api/sessions/local:ended/rename", `{"name":" ended renamed "}`)
 		call(http.MethodPost, "/api/sessions/local:missing/rename", `{"name":"x"}`)

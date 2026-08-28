@@ -105,6 +105,7 @@ function readyClient(configure?: (fake: FakeClient) => void): FakeClient {
   fake.on("evener/projects/recent", () => ({ data: [] }));
   fake.on("evener/paths/complete", () => ({ data: [] }));
   fake.on("evener/path/validate", () => ({ path: "", valid: true }));
+  fake.on("evener/dirs/create", ({ path }) => ({ path, created: true }));
   fake.on("evener/plugin/preview", () => ({ plugins: [] }));
   fake.on("thread/start", () => startResponse("local:abc123"));
   configure?.(fake);
@@ -179,13 +180,6 @@ beforeEach(() => {
   fetchMock = vi.fn((url: string) => {
     if (url.startsWith("/api/git/head")) {
       return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ branch: "main" }) } as Response);
-    }
-    if (url === "/api/dirs/create") {
-      return Promise.resolve({
-        ok: true,
-        status: 200,
-        json: () => Promise.resolve({ path: "/x", created: true }),
-      } as Response);
     }
     return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response);
   });
@@ -1196,6 +1190,7 @@ test("offers to create a missing directory, then creates it and spawns", async (
       valid: false,
       error: "stat /tmp/new: no such file or directory",
     }));
+    f.on("evener/dirs/create", () => ({ path: "/tmp/new", created: true }));
   });
   renderSpawn(fake);
   await settled();
@@ -1207,10 +1202,7 @@ test("offers to create a missing directory, then creates it and spawns", async (
   await user.click(await screen.findByRole("button", { name: "Create & start" }));
 
   await waitFor(() =>
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/dirs/create",
-      expect.objectContaining({ body: JSON.stringify({ path: "/tmp/new" }) }),
-    ),
+    expect(fake.calls).toContainEqual({ method: "evener/dirs/create", params: { path: "/tmp/new" } }),
   );
   await waitFor(() => expect(fake.calls.some((c) => c.method === "thread/start")).toBe(true));
   // doSpawn's busy reset is shared by both callers - handleCreateConfirm's
