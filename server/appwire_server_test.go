@@ -1013,7 +1013,7 @@ func TestServerAppWireTaskAndGoalPatchesAreInSnapshotBeforeNotificationDelivery(
 	client := newTask2SubscribedClient(t, srv, "atomic", "local:root")
 
 	feedBridge(srv, events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
-		TaskStateData:           events.TaskStateData{Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "carrier task"}},
+		Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "carrier task"},
 		TaskStoreOwnerSessionID: "root",
 	}})
 	awaitTask2Notification(t, client, appwire.NotifyEvenerTaskUpdated)
@@ -1073,9 +1073,7 @@ func TestServerAppWireCheckpointCannotOverwriteDescendantSharedTaskCarrier(t *te
 	<-parked
 
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "child", Data: events.TaskUpdatedData{
-		TaskStateData: events.TaskStateData{
-			Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "new shared-owner task"},
-		},
+		Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "new shared-owner task"},
 		TaskStoreOwnerSessionID: "root",
 		TaskPublicationEpoch:    10,
 		TaskPublicationRevision: 2,
@@ -1151,7 +1149,7 @@ func TestServerAppWireCheckpointStillRepairsTaskAndGoalWithoutConcurrentCarrier(
 		meta:  schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "initial sampled goal", Status: "active", Iterations: 1}},
 	})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
-		TaskStateData: events.TaskStateData{Total: 2, Current: &events.TaskSummaryData{ID: 2, Description: "stale carrier task"}},
+		Total: 2, Current: &events.TaskSummaryData{ID: 2, Description: "stale carrier task"},
 	}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "root", Data: events.GoalUpdatedData{Goal: &events.GoalStateData{
 		Objective: "stale carrier goal", Status: "active", Iterations: 2,
@@ -1193,7 +1191,7 @@ func TestServerAppWireTaskAndGoalUpdatesHaveOneOrderForEveryClient(t *testing.T)
 	go func() {
 		defer close(taskDone)
 		srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
-			TaskStateData:           events.TaskStateData{Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "first carrier"}},
+			Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "first carrier"},
 			TaskStoreOwnerSessionID: "root",
 		}})
 	}()
@@ -1290,7 +1288,7 @@ func TestServerAppWireDescendantCarriersReplaceSeedAndClearGoal(t *testing.T) {
 		},
 	}})
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "child", Data: events.TaskUpdatedData{
-		TaskStateData:           events.TaskStateData{Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "child replacement"}},
+		Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "child replacement"},
 		TaskStoreOwnerSessionID: "child",
 	}})
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "child", Data: events.GoalUpdatedData{Goal: nil}})
@@ -1324,7 +1322,7 @@ func TestServerAppWireSharedTaskOwnerFansOutInOneCommit(t *testing.T) {
 	}
 	cursor := srv.appNotifier.CurrentSequence()
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "matching-child", Data: events.TaskUpdatedData{
-		TaskStateData:           events.TaskStateData{Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "shared replacement"}},
+		Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "shared replacement"},
 		TaskStoreOwnerSessionID: "root",
 		TaskPublicationEpoch:    20,
 		TaskPublicationRevision: 2,
@@ -1377,9 +1375,7 @@ func TestServerAppWireTaskPublicationRevisionRejectsDelayedRootCarrier(t *testin
 	}})
 
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "child", Data: events.TaskUpdatedData{
-		TaskStateData: events.TaskStateData{
-			Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "newer child carrier"},
-		},
+		Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "newer child carrier"},
 		TaskStoreOwnerSessionID: "root",
 		TaskPublicationEpoch:    30,
 		TaskPublicationRevision: 3,
@@ -1390,9 +1386,7 @@ func TestServerAppWireTaskPublicationRevisionRejectsDelayedRootCarrier(t *testin
 	// first but its asynchronous event drain delivers it only after the child has
 	// synchronously applied revision 3.
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
-		TaskStateData: events.TaskStateData{
-			Total: 2, Current: &events.TaskSummaryData{ID: 1, Description: "delayed older root carrier"},
-		},
+		Total: 2, Current: &events.TaskSummaryData{ID: 1, Description: "delayed older root carrier"},
 		TaskStoreOwnerSessionID: "root",
 		TaskPublicationEpoch:    30,
 		TaskPublicationRevision: 2,
@@ -1408,9 +1402,7 @@ func TestServerAppWireTaskPublicationRevisionRejectsDelayedRootCarrier(t *testin
 	}
 
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
-		TaskStateData: events.TaskStateData{
-			Total: 3, Done: 2, Current: &events.TaskSummaryData{ID: 3, Description: "newest root carrier"},
-		},
+		Total: 3, Done: 2, Current: &events.TaskSummaryData{ID: 3, Description: "newest root carrier"},
 		TaskStoreOwnerSessionID: "root",
 		TaskPublicationEpoch:    30,
 		TaskPublicationRevision: 4,
@@ -1439,7 +1431,7 @@ func TestServerAppWireOldTaskProducerUpdatesOnlySource(t *testing.T) {
 	}})
 	cursor := srv.appNotifier.CurrentSequence()
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "child", Data: events.TaskUpdatedData{
-		TaskStateData:           events.TaskStateData{Total: 1, Current: &events.TaskSummaryData{ID: 2, Description: "legacy source only"}},
+		Total: 1, Current: &events.TaskSummaryData{ID: 2, Description: "legacy source only"},
 		TaskStoreOwnerSessionID: "root",
 		// Revision zero identifies a producer predating the ordering fence. Even
 		// with owner metadata, compatibility routing must remain source-only.
@@ -1516,7 +1508,7 @@ func TestServerAppWireTaskPublicationEpochAllowsSameIDColdRestore(t *testing.T) 
 		_, oldHighRevision = nextPublication(oldStore)
 	}
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: ownerID, Data: events.TaskUpdatedData{
-		TaskStateData:           events.TaskStateData{Total: 6, Done: 5, Current: &events.TaskSummaryData{ID: 6, Description: "old incarnation high revision"}},
+		Total: 6, Done: 5, Current: &events.TaskSummaryData{ID: 6, Description: "old incarnation high revision"},
 		TaskStoreOwnerSessionID: ownerID,
 		TaskPublicationEpoch:    oldEpoch,
 		TaskPublicationRevision: oldHighRevision,
@@ -1544,7 +1536,7 @@ func TestServerAppWireTaskPublicationEpochAllowsSameIDColdRestore(t *testing.T) 
 
 	_, newUpdateRevision := nextPublication(newStore)
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: ownerID, Data: events.TaskUpdatedData{
-		TaskStateData:           events.TaskStateData{Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "restored incarnation update"}},
+		Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "restored incarnation update"},
 		TaskStoreOwnerSessionID: ownerID,
 		TaskPublicationEpoch:    newEpoch,
 		TaskPublicationRevision: newUpdateRevision,
@@ -1555,7 +1547,7 @@ func TestServerAppWireTaskPublicationEpochAllowsSameIDColdRestore(t *testing.T) 
 	// but its older epoch must no longer be accepted.
 	_, delayedOldRevision := nextPublication(oldStore)
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: ownerID, Data: events.TaskUpdatedData{
-		TaskStateData:           events.TaskStateData{Total: 7, Done: 6, Current: &events.TaskSummaryData{ID: 7, Description: "delayed retired incarnation"}},
+		Total: 7, Done: 6, Current: &events.TaskSummaryData{ID: 7, Description: "delayed retired incarnation"},
 		TaskStoreOwnerSessionID: ownerID,
 		TaskPublicationEpoch:    oldEpoch,
 		TaskPublicationRevision: delayedOldRevision,

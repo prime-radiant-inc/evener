@@ -94,7 +94,7 @@ func eventDataProgramCases(text string, n int, flag bool) []eventDataProgramCase
 		{ToolCallRepairedData{ToolName: text, CallID: text, Changes: []string{text}}, EventToolCallRepaired},
 		{SteeringInjectedData{Text: text}, EventSteeringInjected},
 		{QueueChangedData{Depth: n, Preview: []string{text}}, EventQueueChanged},
-		{TaskUpdatedData{TaskStateData: TaskStateData{Total: n, Done: n, Current: &TaskSummaryData{ID: n, Description: text}}, TaskStoreOwnerSessionID: text}, EventTaskUpdated},
+		{TaskUpdatedData{Total: n, Done: n, Current: &TaskSummaryData{ID: n, Description: text}, TaskStoreOwnerSessionID: text}, EventTaskUpdated},
 		{SessionNameChangedData{Name: text, Source: text}, EventSessionNameChanged},
 		{ModelChangedData{OldProvider: text, OldModel: text, NewProvider: text, NewModel: text, ReasoningEffortLevels: []string{text}, SupportsReasoning: flag}, EventModelChanged},
 		{ReasoningEffortChangedData{ReasoningEffort: text}, EventReasoningEffortChanged},

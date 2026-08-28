@@ -459,8 +459,10 @@ type TaskStateData struct {
 // task-list progress after an append or status change, so subscribers refresh
 // the task-status row without re-polling.
 type TaskUpdatedData struct {
-	TaskStateData
-	TaskStoreOwnerSessionID string `json:"task_store_owner_session_id,omitempty"`
+	Total                   int              `json:"total"`
+	Done                    int              `json:"done"`
+	Current                 *TaskSummaryData `json:"current,omitempty"`
+	TaskStoreOwnerSessionID string           `json:"task_store_owner_session_id,omitempty"`
 	// TaskPublicationEpoch and TaskPublicationRevision are internal ordering
 	// metadata assigned by the shared TaskStore publication serializer. They never
 	// enter event JSON.
