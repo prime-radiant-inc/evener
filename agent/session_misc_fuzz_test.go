@@ -267,7 +267,7 @@ func FuzzSessionGoalCompactState(f *testing.F) {
 			if err != nil || !started || kicks != 1 {
 				t.Fatalf("non-empty goal result=(%v,%v,kicks=%d)", started, err, kicks)
 			}
-			_, status, iterations, ok := goalSession.GoalStatus()
+			status, iterations, ok := goalSession.GoalStatus()
 			if !ok || status != "active" || iterations != 0 || len(goalSession.goalCompactionSteering()) != 1 {
 				t.Fatalf("active goal projection=(%q,%d,%v)", status, iterations, ok)
 			}
@@ -275,7 +275,7 @@ func FuzzSessionGoalCompactState(f *testing.F) {
 				t.Fatalf("active continuation=(%q,%v)", prompt, ok)
 			}
 			goalSession.ClearGoal()
-			if _, _, _, ok := goalSession.GoalStatus(); ok {
+			if _, _, ok := goalSession.GoalStatus(); ok {
 				t.Fatal("cleared goal remained visible")
 			}
 		}

@@ -188,7 +188,6 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		beforeCommit()
 	}
 	s.appServer.CommitProjection(func() []appserver.SequencedNotification {
-		var committed []appserver.SequencedNotification
 		// A test-only park INSIDE the commit, where projectionMu is actually
 		// held. beforeAppProjectionCommit above cannot serve that purpose: it
 		// runs before CommitProjection takes the gate, so a goroutine parked
@@ -208,7 +207,6 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 		}
 		s.ensureAppProjectorLocked(event.SessionID)
 		projected := s.appProjector.Project(event)
-		snapshot := s.appTurns
 		s.appActiveTurnID = s.appProjector.ActiveTurnID()
 		threadID := s.appThreadID
 		if threadID == "" {
@@ -222,15 +220,46 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			sourceID = "local"
 		}
 		ref := appwire.Ref{SourceID: sourceID, ThreadID: threadID}.String()
+		start, _ := event.Data.(events.SessionStartData)
+		pending := make([]pendingAppNotification, 0, len(projected))
+		for _, item := range projected {
+			switch params := item.Params.(type) {
+			case appwire.ThreadStartedParams:
+				mergeStartCurrentWork(&params.Thread.Evener, s.appEnvelope.Tasks, s.appEnvelope.Goal, start.CurrentWork)
+				s.appEnvelope.Tasks = cloneTaskAggregate(params.Thread.Evener.Tasks)
+				s.appEnvelope.Goal = cloneGoalState(params.Thread.Evener.Goal)
+				if item.TaskStoreOwnerSessionID != "" {
+					s.appEnvelope.TaskStoreOwnerSessionID = item.TaskStoreOwnerSessionID
+				}
+				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: params, snapshot: s.appTurns})
+			case appwire.TaskUpdatedParams:
+				if item.TaskStoreOwnerSessionID != "" {
+					s.appEnvelope.TaskStoreOwnerSessionID = item.TaskStoreOwnerSessionID
+				}
+				for _, target := range s.taskCarrierTargetsLocked(threadID, item.TaskStoreOwnerSessionID) {
+					targetParams := params
+					targetParams.ThreadID = target.threadID
+					targetParams.Ref = target.ref
+					s.applyTaskCarrierLocked(target.threadID, targetParams)
+					pending = append(pending, pendingAppNotification{threadID: target.threadID, ref: target.ref, method: item.Method, params: targetParams, snapshot: target.snapshot})
+				}
+			case appwire.GoalUpdatedParams:
+				s.appEnvelope.Goal = goalPatch(params)
+				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: params, snapshot: s.appTurns})
+			default:
+				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: item.Params, snapshot: s.appTurns})
+			}
+		}
 		s.mu.Unlock()
 
-		for _, item := range projected {
-			params := s.stampFailureCountOnStatusChange(item.Method, item.Params)
-			params = s.stampCapabilitiesOnStatusChange(item.Method, params)
-			params = s.stampFailureCountOnItemCompleted(item.Method, params)
-			params = stampAppNotificationTarget(params, threadID, ref)
-			record := s.appNotifier.Record(threadID, item.Method, params)
-			snapshot.Apply([]appserver.SequencedNotification{record})
+		committed := make([]appserver.SequencedNotification, 0, len(pending))
+		for _, item := range pending {
+			params := s.stampFailureCountOnStatusChange(item.method, item.params)
+			params = s.stampCapabilitiesOnStatusChange(item.method, params)
+			params = s.stampFailureCountOnItemCompleted(item.method, params)
+			params = stampAppNotificationTarget(params, item.threadID, item.ref)
+			record := s.appNotifier.Record(item.threadID, item.method, params)
+			item.snapshot.Apply([]appserver.SequencedNotification{record})
 			committed = append(committed, record)
 		}
 		return committed
@@ -289,13 +318,34 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 		}
 		projected := projection.projector.Project(event)
 		projection.activeTurnID = projection.projector.ActiveTurnID()
+		start, _ := event.Data.(events.SessionStartData)
+		pending := make([]pendingAppNotification, 0, len(projected))
 		for _, item := range projected {
 			switch params := item.Params.(type) {
 			case appwire.ThreadStartedParams:
+				mergeStartCurrentWork(&params.Thread.Evener, projection.thread.Evener.Tasks, projection.thread.Evener.Goal, start.CurrentWork)
 				projection.thread = params.Thread
 				projection.thread.Evener.Kind = "subagent"
+				projection.thread.Evener.Tasks = cloneTaskAggregate(params.Thread.Evener.Tasks)
+				projection.thread.Evener.Goal = cloneGoalState(params.Thread.Evener.Goal)
+				params.Thread = projection.thread
+				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params, snapshot: projection.turns})
 			case appwire.ThreadStatusChangedParams:
 				projection.thread.Status = params.Status
+				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params, snapshot: projection.turns})
+			case appwire.TaskUpdatedParams:
+				for _, target := range s.taskCarrierTargetsLocked(threadID, item.TaskStoreOwnerSessionID) {
+					targetParams := params
+					targetParams.ThreadID = target.threadID
+					targetParams.Ref = target.ref
+					s.applyTaskCarrierLocked(target.threadID, targetParams)
+					pending = append(pending, pendingAppNotification{threadID: target.threadID, ref: target.ref, method: item.Method, params: targetParams, snapshot: target.snapshot})
+				}
+			case appwire.GoalUpdatedParams:
+				projection.thread.Evener.Goal = goalPatch(params)
+				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params, snapshot: projection.turns})
+			default:
+				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: item.Params, snapshot: projection.turns})
 			}
 		}
 		ref := projection.thread.Evener.Ref
@@ -303,18 +353,127 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 			ref = appwire.Ref{SourceID: projection.thread.Source, ThreadID: threadID}.String()
 			projection.thread.Evener.Ref = ref
 		}
-		snapshot := projection.turns
+		for i := range pending {
+			if pending[i].ref == "" {
+				pending[i].ref = appwire.Ref{SourceID: sourceIDForProjection(s.appSourceID), ThreadID: pending[i].threadID}.String()
+			}
+		}
 		s.mu.Unlock()
 
-		committed := make([]appserver.SequencedNotification, 0, len(projected))
-		for _, item := range projected {
-			params := stampAppNotificationTarget(item.Params, threadID, ref)
-			record := s.appNotifier.Record(threadID, item.Method, params)
-			snapshot.Apply([]appserver.SequencedNotification{record})
+		committed := make([]appserver.SequencedNotification, 0, len(pending))
+		for _, item := range pending {
+			params := stampAppNotificationTarget(item.params, item.threadID, item.ref)
+			record := s.appNotifier.Record(item.threadID, item.method, params)
+			item.snapshot.Apply([]appserver.SequencedNotification{record})
 			committed = append(committed, record)
 		}
 		return committed
 	})
+}
+
+type pendingAppNotification struct {
+	threadID string
+	ref      string
+	method   string
+	params   any
+	snapshot *appTurnSnapshot
+}
+
+type taskCarrierTarget struct {
+	threadID string
+	ref      string
+	snapshot *appTurnSnapshot
+}
+
+func (p *appDescendantProjection) taskStoreOwnerSessionID() string {
+	if p == nil || p.projector == nil {
+		return ""
+	}
+	return p.projector.TaskStoreOwnerSessionID()
+}
+
+func sourceIDForProjection(sourceID string) string {
+	if sourceID == "" {
+		return "local"
+	}
+	return sourceID
+}
+
+// taskCarrierTargetsLocked computes one deterministic task-store fanout while
+// s.mu is held. The root, when selected, precedes lexically sorted descendants;
+// the source is always present exactly once, including for old ownerless events.
+func (s *Server) taskCarrierTargetsLocked(sourceThreadID, ownerSessionID string) []taskCarrierTarget {
+	rootID := s.appThreadID
+	sourceID := sourceIDForProjection(s.appSourceID)
+	includeRoot := sourceThreadID == rootID || (ownerSessionID != "" && s.appEnvelope.TaskStoreOwnerSessionID == ownerSessionID)
+	targets := make([]taskCarrierTarget, 0, 1+len(s.appDescendants))
+	if includeRoot && rootID != "" {
+		targets = append(targets, taskCarrierTarget{threadID: rootID, ref: appwire.Ref{SourceID: sourceID, ThreadID: rootID}.String(), snapshot: s.appTurns})
+	}
+	descendantIDs := make([]string, 0, len(s.appDescendants))
+	for id, projection := range s.appDescendants {
+		if id == sourceThreadID || (ownerSessionID != "" && projection.taskStoreOwnerSessionID() == ownerSessionID) {
+			descendantIDs = append(descendantIDs, id)
+		}
+	}
+	sort.Strings(descendantIDs)
+	for _, id := range descendantIDs {
+		projection := s.appDescendants[id]
+		targets = append(targets, taskCarrierTarget{threadID: id, ref: appwire.Ref{SourceID: sourceID, ThreadID: id}.String(), snapshot: projection.turns})
+	}
+	return targets
+}
+
+func mergeStartCurrentWork(target *appwire.EvenerThread, cachedTasks *appwire.TaskAggregate, cachedGoal *appwire.GoalState, seed *events.CurrentWorkSeedData) {
+	if seed == nil {
+		target.Tasks = cloneTaskAggregate(cachedTasks)
+		target.Goal = cloneGoalState(cachedGoal)
+		return
+	}
+	if seed.Tasks == nil {
+		target.Tasks = cloneTaskAggregate(cachedTasks)
+	}
+	// A present seed's Goal is authoritative, including nil clear. The projector
+	// already converted it into target.Goal.
+	target.Goal = cloneGoalState(target.Goal)
+}
+
+func taskPatch(params appwire.TaskUpdatedParams) *appwire.TaskAggregate {
+	return cloneTaskAggregate(&appwire.TaskAggregate{Total: params.Total, Done: params.Done, Current: params.Current})
+}
+
+func goalPatch(params appwire.GoalUpdatedParams) *appwire.GoalState {
+	return cloneGoalState(params.Goal)
+}
+
+func cloneTaskAggregate(value *appwire.TaskAggregate) *appwire.TaskAggregate {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	if value.Current != nil {
+		current := *value.Current
+		clone.Current = &current
+	}
+	return &clone
+}
+
+func cloneGoalState(value *appwire.GoalState) *appwire.GoalState {
+	if value == nil {
+		return nil
+	}
+	clone := *value
+	return &clone
+}
+
+func (s *Server) applyTaskCarrierLocked(threadID string, params appwire.TaskUpdatedParams) {
+	if threadID == s.appThreadID {
+		s.appEnvelope.Tasks = taskPatch(params)
+		return
+	}
+	if projection := s.appDescendants[threadID]; projection != nil {
+		projection.thread.Evener.Tasks = taskPatch(params)
+	}
 }
 
 func stampAppNotificationTarget(params any, threadID, ref string) any {
@@ -977,17 +1136,9 @@ func (s *Server) handleAppGoalSet(_ context.Context, params appwire.GoalSetParam
 	if err != nil {
 		return appwire.GoalSetResponse{}, err
 	}
-	// The goal store has no event handle: SetGoal emits nothing when a turn is
-	// running, no kick is wired, or an ask is pending, and Clear emits nothing
-	// ever. So no event in facetsByEvent can observe this change, and without
-	// this refresh a cleared goal would stay on every thread/read for the life
-	// of the identity -- the status bar still reporting an objective the user
-	// explicitly abandoned.
-	//
-	// This handler is the change point, so the refresh belongs here. It uses the
-	// same sampler the bridge uses, so the goal has one source of truth either
-	// way.
-	s.refreshFacets(facetGoal)
+	// The callback emits EventGoalUpdated after its successful store mutation.
+	// That typed carrier is committed into the cached snapshot with its
+	// notification; pulling here would race it with a second, stale authority.
 	return appwire.GoalSetResponse{Started: started}, nil
 }
 

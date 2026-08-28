@@ -25,7 +25,9 @@ func BridgeWithObserver(srv *Server, eventCh <-chan events.SessionEvent, observe
 }
 
 // BridgeEvent applies one session event to the server: the observer tee, then
-// the status write, the envelope refresh, and the projection commit.
+// the status write, any checkpoint/legacy envelope refresh, and the projection
+// commit. Typed task/goal carriers intentionally skip the source refresh and
+// patch cached state inside that final commit.
 //
 // Everything it does is bounded, in-memory work plus at most one jobs.jsonl
 // read per turn, and that is load-bearing rather than incidental. This runs on
@@ -120,9 +122,9 @@ func BridgeEvent(srv *Server, ev events.SessionEvent, observer func(events.Sessi
 		return
 	}
 	srv.applySessionEventStatus(ev)
-	// Sample the envelope facets this event can have moved, before the
-	// commit that publishes the event announcing them. Same ordering, and
-	// for the same reason, as applySessionEventStatus above.
+	// Sample checkpoint/legacy facets before the commit that publishes their
+	// announcement. Direct task/goal carriers name no facets: RecordAppEvent
+	// installs their typed state atomically with the notification instead.
 	srv.refreshThreadEnvelopeForEvent(ev)
 	srv.RecordAppEvent(ev)
 }

@@ -20,10 +20,13 @@ import (
 // which put a transcript fsync, a synchronous jobs.jsonl read, and the session's
 // own mutex under the gate; now the read copies this value and reaches nothing.
 //
-// THE ONE RULE: a field here has exactly one writing FUNCTION, refreshFacets,
-// and exactly one reader, the copy in appThread. Never wire a
-// callback beside a field as a fallback: a field with two sources is how a
-// stale value survives a refactor while still reading as correct.
+// THE ONE RULE: ordinary sampled fields are written only by refreshFacets.
+// Tasks and Goal are initialized by the pre-bridge root seed and a self-contained
+// SessionStart CurrentWork seed, then accept typed event carriers inside
+// CommitProjection. The carrier path never calls the source callback; session
+// and turn checkpoints still sample those fields for old-producer recovery.
+// appThread remains the only reader. Never add a callback fallback
+// beside a direct carrier.
 //
 // One writing function is not one serialized writer, and the gap is real rather
 // than pedantic. refreshFacets samples outside s.mu, deliberately, and runs
@@ -39,13 +42,20 @@ import (
 // refreshFacets always stores a freshly sampled value and never mutates one in
 // place, so a reader that copies the struct can hand the slices straight out.
 type threadEnvelope struct {
-	ContextPressure       float64
-	ContextMetrics        ContextMetrics
-	Detailed              *DetailedStatus
-	Queue                 appwire.QueueState
-	PendingMutations      []appwire.PendingMutation
-	Tasks                 *appwire.TaskAggregate
-	Goal                  *appwire.GoalState
+	ContextPressure  float64
+	ContextMetrics   ContextMetrics
+	Detailed         *DetailedStatus
+	Queue            appwire.QueueState
+	PendingMutations []appwire.PendingMutation
+	Tasks            *appwire.TaskAggregate
+	// TaskStoreOwnerSessionID is projection routing state. It never enters
+	// EvenerThread or any other public AppWire shape.
+	TaskStoreOwnerSessionID string
+	Goal                    *appwire.GoalState
+	// Carrier generations are internal per-identity fences. A sampled checkpoint
+	// captures them before leaving s.mu and cannot overwrite a newer direct patch.
+	taskCarrierGeneration uint64
+	goalCarrierGeneration uint64
 	Usage                 *appwire.EvenerUsage
 	WorkMillis            int64
 	ActiveTurnStartedAt   int64
@@ -71,8 +81,10 @@ type threadEnvelope struct {
 // ThreadEnvelopeSource supplies the live session values the thread envelope
 // reports. cmd/evener/serve.go implements it over the running agent.Session.
 //
-// The bridge samples it at the moments those values change -- never on a read.
-// That is the whole point of the interface: it collapses sixteen separately
+// The root is seeded through it before the bridge starts, and the bridge samples
+// it at retained checkpoint/legacy moments -- never on a read. Direct task/goal
+// carriers bypass it and patch cached projections. That is the whole point of
+// the interface: it collapses sixteen separately
 // injected read-time callbacks into one seam with one caller, so a reader can
 // see at a glance where session state enters the daemon's projection and can be
 // sure it is not the read path.
@@ -90,7 +102,6 @@ type ThreadEnvelopeSource interface {
 	DetailedStatus() DetailedStatus
 	ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation)
 	TaskAggregate() *appwire.TaskAggregate
-	GoalStatus() (objective, status string, iterations int, ok bool)
 	WorkMetrics() (workMillis int64, usage *appwire.EvenerUsage, activeTurnStartedAt int64)
 	FailedToolCalls() (count int, measured bool)
 	AskPending() bool
@@ -101,8 +112,9 @@ type ThreadEnvelopeSource interface {
 }
 
 // envelopeFacet names one independently sampled group of envelope fields. A
-// facet is the unit the event map works in: an event declares which facets it
-// can have moved, and only those are re-sampled.
+// facet is the unit the checkpoint/legacy event map works in: an event declares
+// which sampled facets it can have moved, and only those are re-sampled. Typed
+// task/goal updates are intentionally handled outside this map.
 //
 // The grouping follows what one call to the source returns, so a facet can
 // never be half-written.
@@ -143,11 +155,12 @@ const facetAll = facetContext | facetDiagnostics | facetQueue | facetTasks |
 // compiler net over it, where a forgotten site yields a wire field that is
 // permanently stale and still reads as plausible.
 //
-// The cost of that choice, stated plainly: sampling here is a pull relocated
-// from read time to change time, not a value carried on the event. Five facets
-// (queue, tasks, meta, escalations, and reasoning's level/support half) already
-// have events carrying their values today and could be converted to true
-// carriers one at a time later, without touching the read path.
+// The cost of that choice, stated plainly: most sampling here is a pull
+// relocated from read time to change time. Tasks and goals are the deliberate
+// exceptions: their direct typed events patch the cache in CommitProjection,
+// while this table retains only checkpoint/legacy recovery for them. Queue,
+// meta, escalations, and reasoning's level/support half could be converted one
+// at a time later without touching the read path.
 var facetsByEvent = map[events.EventKind]envelopeFacet{
 	// THE THREE CHECKPOINTS. A session opening or closing restates everything
 	// about it, and so does a turn boundary.
@@ -215,8 +228,7 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	events.EventContextCompaction: facetContext | facetMeta,
 	events.EventCompactionTurn:    facetContext,
 
-	// Values whose events carry them today.
-	events.EventTaskUpdated:            facetTasks,
+	// Values whose events are not direct task/goal carriers.
 	events.EventSessionNameChanged:     facetMeta,
 	events.EventModelChanged:           facetReasoning | facetContext | facetDiagnostics,
 	events.EventReasoningEffortChanged: facetReasoning,
@@ -225,7 +237,6 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	// Goal state. GOAL_UPDATED is the direct structured carrier for every mutation.
 	// The older lifecycle events remain refresh triggers for compatibility with
 	// producers that predate the structured update.
-	events.EventGoalUpdated:      facetGoal,
 	events.EventGoalContinuation: facetGoal | facetQueue | facetAsk,
 	events.EventGoalEnded:        facetGoal,
 
@@ -255,21 +266,22 @@ func (s *Server) SetThreadEnvelopeSource(src ThreadEnvelopeSource) {
 	s.mu.Unlock()
 }
 
-// RefreshThreadEnvelope re-samples every facet. It is the seed: the one moment
-// every envelope value changes together is the moment the session behind them
-// changes, and that is not something any single event announces.
+// RefreshThreadEnvelope re-samples every facet for the root's pre-bridge seed.
+// SessionStart subsequently reaffirms or replaces current work from its
+// self-contained seed inside the first projection commit.
 func (s *Server) RefreshThreadEnvelope() {
 	s.refreshFacets(facetAll)
 }
 
-// refreshThreadEnvelopeForEvent samples the facets ev can have moved.
+// refreshThreadEnvelopeForEvent samples the checkpoint/legacy facets ev can
+// have moved. Direct task and goal carriers are absent by design and patch the
+// cache inside RecordAppEvent's projection commit.
 //
-// It runs in the bridge, BEFORE RecordAppEvent projects ev. That ordering is
-// the same one applySessionEventStatus relies on and it is what makes the
-// response cut correct: where a session writes its state before emitting the
-// event that announces it, an envelope refreshed here can only lead its own
-// notification, never lag it. Refreshing after the commit would invert exactly
-// the invariant this work exists to protect.
+// For events that retain sampling, it runs in the bridge BEFORE RecordAppEvent
+// projects ev. Where a session writes its state before emitting the checkpoint,
+// the sampled envelope can only lead that notification, never lag it. Direct
+// task/goal updates instead obtain the stronger guarantee by installing their
+// typed state in the projection commit itself.
 //
 // That write-then-emit guarantee is the session's, not this function's, and it
 // does not hold everywhere -- see the facetFailures note on TOOL_CALL_END. Where
@@ -293,6 +305,8 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	src := s.appEnvelopeSource
 	threadID := s.appThreadID
 	sourceID := s.appSourceID
+	taskCarrierGeneration := s.appEnvelope.taskCarrierGeneration
+	goalCarrierGeneration := s.appEnvelope.goalCarrierGeneration
 	s.mu.RUnlock()
 	if src == nil {
 		return
@@ -317,11 +331,7 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	}
 	if facets&facetTasks != 0 {
 		next.Tasks = src.TaskAggregate()
-	}
-	if facets&facetGoal != 0 {
-		if objective, status, iterations, ok := src.GoalStatus(); ok {
-			next.Goal = &appwire.GoalState{Objective: objective, Status: status, Iterations: iterations}
-		}
+		next.TaskStoreOwnerSessionID = threadID
 	}
 	if facets&facetWork != 0 {
 		next.WorkMillis, next.Usage, next.ActiveTurnStartedAt = src.WorkMetrics()
@@ -354,10 +364,15 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	if facets&facetVision != 0 {
 		next.VisionModel = src.VisionModel()
 	}
-	if facets&facetMeta != 0 {
+	if facets&(facetMeta|facetGoal) != 0 {
 		meta := src.SessionMeta()
-		next.Name = strings.TrimSpace(meta.Name)
-		next.Preview = strings.TrimSpace(schema.SessionDisplayName(meta))
+		if facets&facetMeta != 0 {
+			next.Name = strings.TrimSpace(meta.Name)
+			next.Preview = strings.TrimSpace(schema.SessionDisplayName(meta))
+		}
+		if facets&facetGoal != 0 && meta.Goal != nil {
+			next.Goal = &appwire.GoalState{Objective: meta.Goal.Objective, Status: meta.Goal.Status, Iterations: meta.Goal.Iterations}
+		}
 	}
 
 	s.mu.Lock()
@@ -375,7 +390,14 @@ func (s *Server) refreshFacets(facets envelopeFacet) {
 	// nothing afterwards to correct it. The fix is NOT to sample under the gate:
 	// that is the I/O this change exists to move off it.
 	if s.appThreadID == threadID && s.appSourceID == sourceID {
-		s.appEnvelope.assign(facets, next)
+		assignFacets := facets
+		if assignFacets&facetTasks != 0 && s.appEnvelope.taskCarrierGeneration != taskCarrierGeneration {
+			assignFacets &^= facetTasks
+		}
+		if assignFacets&facetGoal != 0 && s.appEnvelope.goalCarrierGeneration != goalCarrierGeneration {
+			assignFacets &^= facetGoal
+		}
+		s.appEnvelope.assign(assignFacets, next)
 	}
 	s.mu.Unlock()
 }
@@ -399,6 +421,7 @@ func (e *threadEnvelope) assign(facets envelopeFacet, next threadEnvelope) {
 	}
 	if facets&facetTasks != 0 {
 		e.Tasks = next.Tasks
+		e.TaskStoreOwnerSessionID = next.TaskStoreOwnerSessionID
 	}
 	if facets&facetGoal != 0 {
 		e.Goal = next.Goal

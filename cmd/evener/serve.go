@@ -1514,10 +1514,6 @@ func (l liveThreadEnvelopeSource) TaskAggregate() *appwire.TaskAggregate {
 	return aggregate
 }
 
-func (l liveThreadEnvelopeSource) GoalStatus() (string, string, int, bool) {
-	return l.session().GoalStatus()
-}
-
 func (l liveThreadEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int64) {
 	sess := l.session()
 	return sess.WorkMillisSnapshot(), evenerUsageFromLLM(sess.CumulativeUsageSnapshot()), sess.ActiveTurnStartedAtMillis()
