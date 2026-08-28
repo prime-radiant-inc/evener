@@ -54,9 +54,6 @@ func (s wireProbeEnvelopeSource) ClientMutationProjection() (appwire.QueueState,
 	return appwire.QueueState{}, nil
 }
 func (s wireProbeEnvelopeSource) TaskAggregate() *appwire.TaskAggregate { return nil }
-func (s wireProbeEnvelopeSource) GoalStatus() (string, string, int, bool) {
-	return "", "", 0, false
-}
 func (s wireProbeEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int64) {
 	return 0, nil, 0
 }

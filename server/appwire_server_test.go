@@ -945,10 +945,301 @@ func TestServerAppWireGoalUpdatedFanoutToEverySubscribedClient(t *testing.T) {
 	})
 	awaitGoalUpdated("first", first, wantSet)
 	awaitGoalUpdated("second", second, wantSet)
+	for _, reader := range []struct {
+		name   string
+		client *appwire.Client
+	}{{"first", first}, {"second", second}} {
+		read, err := reader.client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: "local:th_1"})
+		if err != nil {
+			t.Fatalf("%s thread/read after goal update: %v", reader.name, err)
+		}
+		if read.Thread.Evener.Goal == nil || *read.Thread.Evener.Goal != *wantSet {
+			t.Fatalf("%s read goal = %+v, want %+v", reader.name, read.Thread.Evener.Goal, wantSet)
+		}
+	}
 
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "th_1", Data: events.GoalUpdatedData{Goal: nil}})
 	awaitGoalUpdated("first", first, nil)
 	awaitGoalUpdated("second", second, nil)
+}
+
+func newTask2SubscribedClient(t *testing.T, srv *Server, name string, refs ...string) *appwire.Client {
+	t.Helper()
+	httpServer := httptest.NewServer(http.HandlerFunc(srv.AppServer().ServeWebSocket))
+	t.Cleanup(httpServer.Close)
+	ctx := context.Background()
+	transport, err := appwire.DialWebSocket(ctx, "ws"+httpServer.URL[len("http"):], httpServer.Client())
+	if err != nil {
+		t.Fatalf("%s dial: %v", name, err)
+	}
+	t.Cleanup(func() { _ = transport.Close() })
+	client := appwire.NewClient(transport)
+	client.Start(ctx)
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}); err != nil {
+		t.Fatalf("%s initialize: %v", name, err)
+	}
+	for _, ref := range refs {
+		if _, err := client.ThreadRead(ctx, appwire.ThreadReadParams{Ref: ref, Subscribe: true, ReplaceSubscription: false}); err != nil {
+			t.Fatalf("%s subscribe %s: %v", name, ref, err)
+		}
+	}
+	return client
+}
+
+func awaitTask2Notification(t *testing.T, client *appwire.Client, method string) appwire.Notification {
+	t.Helper()
+	deadline := time.NewTimer(time.Second)
+	defer deadline.Stop()
+	for {
+		select {
+		case notification := <-client.Notifications():
+			if notification.Method == method {
+				return notification
+			}
+		case <-deadline.C:
+			t.Fatalf("timed out waiting for %s", method)
+		}
+	}
+}
+
+func TestServerAppWireTaskAndGoalPatchesAreInSnapshotBeforeNotificationDelivery(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	source := publishEnvelope(srv, &stubThreadEnvelopeSource{
+		tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "stale source task"}},
+		meta:  schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "stale source goal", Status: "active"}},
+	})
+	client := newTask2SubscribedClient(t, srv, "atomic", "local:root")
+
+	feedBridge(srv, events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
+		TaskStateData:           events.TaskStateData{Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "carrier task"}},
+		TaskStoreOwnerSessionID: "root",
+	}})
+	awaitTask2Notification(t, client, appwire.NotifyEvenerTaskUpdated)
+	read, err := client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.Thread.Evener.Tasks == nil || read.Thread.Evener.Tasks.Current == nil || read.Thread.Evener.Tasks.Current.Description != "carrier task" {
+		t.Fatalf("snapshot after delivered task notification = %+v", read.Thread.Evener.Tasks)
+	}
+
+	goal := &events.GoalStateData{Objective: "carrier goal", Status: "active", Iterations: 2}
+	feedBridge(srv, events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "root", Data: events.GoalUpdatedData{Goal: goal}})
+	awaitTask2Notification(t, client, appwire.NotifyEvenerGoalUpdated)
+	read, err = client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:root"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if read.Thread.Evener.Goal == nil || read.Thread.Evener.Goal.Objective != goal.Objective || read.Thread.Evener.Goal.Status != goal.Status || read.Thread.Evener.Goal.Iterations != goal.Iterations {
+		t.Fatalf("snapshot after delivered goal notification = %+v", read.Thread.Evener.Goal)
+	}
+	if source.tasks.Current.Description != "stale source task" || source.meta.Goal.Objective != "stale source goal" {
+		t.Fatal("fixture source changed; test no longer proves carrier-first projection")
+	}
+}
+
+func TestServerAppWireTaskAndGoalUpdatesHaveOneOrderForEveryClient(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	publishEnvelope(srv, &stubThreadEnvelopeSource{})
+	first := newTask2SubscribedClient(t, srv, "ordered-first", "local:root")
+	second := newTask2SubscribedClient(t, srv, "ordered-second", "local:root")
+
+	insideCommit := make(chan struct{})
+	release := make(chan struct{})
+	var parked sync.Once
+	srv.mu.Lock()
+	srv.insideAppProjectionCommit = func() {
+		parked.Do(func() {
+			close(insideCommit)
+			<-release
+		})
+	}
+	srv.mu.Unlock()
+
+	taskDone := make(chan struct{})
+	go func() {
+		defer close(taskDone)
+		srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
+			TaskStateData:           events.TaskStateData{Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "first carrier"}},
+			TaskStoreOwnerSessionID: "root",
+		}})
+	}()
+	<-insideCommit
+
+	goalReached := make(chan struct{})
+	var reached sync.Once
+	srv.mu.Lock()
+	srv.beforeAppProjectionCommit = func() { reached.Do(func() { close(goalReached) }) }
+	srv.mu.Unlock()
+	goalDone := make(chan struct{})
+	go func() {
+		defer close(goalDone)
+		srv.RecordAppEvent(events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "root", Data: events.GoalUpdatedData{
+			Goal: &events.GoalStateData{Objective: "second carrier", Status: "active", Iterations: 1},
+		}})
+	}()
+	<-goalReached
+	close(release)
+	<-taskDone
+	<-goalDone
+
+	for _, receiver := range []struct {
+		name   string
+		client *appwire.Client
+	}{{"first", first}, {"second", second}} {
+		methods := []string{
+			awaitTask2Notification(t, receiver.client, appwire.NotifyEvenerTaskUpdated).Method,
+			awaitTask2Notification(t, receiver.client, appwire.NotifyEvenerGoalUpdated).Method,
+		}
+		if methods[0] != appwire.NotifyEvenerTaskUpdated || methods[1] != appwire.NotifyEvenerGoalUpdated {
+			t.Fatalf("%s methods = %v, want task then goal", receiver.name, methods)
+		}
+		read, err := receiver.client.ThreadRead(context.Background(), appwire.ThreadReadParams{Ref: "local:root"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if read.Thread.Evener.Tasks == nil || read.Thread.Evener.Tasks.Current == nil || read.Thread.Evener.Tasks.Current.Description != "first carrier" ||
+			read.Thread.Evener.Goal == nil || read.Thread.Evener.Goal.Objective != "second carrier" {
+			t.Fatalf("%s final state = tasks:%+v goal:%+v", receiver.name, read.Thread.Evener.Tasks, read.Thread.Evener.Goal)
+		}
+	}
+}
+
+func TestServerAppWireDescendantSessionStartSeedsCurrentTaskAndGoal(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "child",
+		CurrentWork: &events.CurrentWorkSeedData{
+			Tasks: &events.TaskStateData{Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "descendant seed"}},
+			Goal:  &events.GoalStateData{Objective: "descendant objective", Status: "active", Iterations: 3},
+		},
+	}})
+	thread := readThreadOverWire(t, srv, "local:child")
+	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "descendant seed" {
+		t.Fatalf("descendant start tasks = %+v", thread.Evener.Tasks)
+	}
+	if thread.Evener.Goal == nil || thread.Evener.Goal.Objective != "descendant objective" || thread.Evener.Goal.Iterations != 3 {
+		t.Fatalf("descendant start goal = %+v", thread.Evener.Goal)
+	}
+}
+
+func TestServerAppWireDescendantSessionStartExplicitlyClearsGoal(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	seed := events.SessionStartData{TaskStoreOwnerSessionID: "child", CurrentWork: &events.CurrentWorkSeedData{
+		Goal: &events.GoalStateData{Objective: "cached descendant goal", Status: "active", Iterations: 2},
+	}}
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: seed})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{}})
+	if got := readThreadOverWire(t, srv, "local:child").Evener.Goal; got == nil || got.Objective != "cached descendant goal" {
+		t.Fatalf("legacy descendant start cleared cached goal: %+v", got)
+	}
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "child", CurrentWork: &events.CurrentWorkSeedData{Goal: nil},
+	}})
+	if got := readThreadOverWire(t, srv, "local:child").Evener.Goal; got != nil {
+		t.Fatalf("present descendant start did not clear goal: %+v", got)
+	}
+}
+
+func TestServerAppWireDescendantCarriersReplaceSeedAndClearGoal(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	publishEnvelope(srv, &stubThreadEnvelopeSource{
+		tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "root task"}},
+		meta:  schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "root goal", Status: "active"}},
+	})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "child", CurrentWork: &events.CurrentWorkSeedData{
+			Tasks: &events.TaskStateData{Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "child old task"}},
+			Goal:  &events.GoalStateData{Objective: "child old goal", Status: "active"},
+		},
+	}})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "child", Data: events.TaskUpdatedData{
+		TaskStateData:           events.TaskStateData{Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "child replacement"}},
+		TaskStoreOwnerSessionID: "child",
+	}})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "child", Data: events.GoalUpdatedData{Goal: nil}})
+	child := readThreadOverWire(t, srv, "local:child")
+	if child.Evener.Tasks == nil || child.Evener.Tasks.Current == nil || child.Evener.Tasks.Current.Description != "child replacement" || child.Evener.Goal != nil {
+		t.Fatalf("child carriers = tasks:%+v goal:%+v", child.Evener.Tasks, child.Evener.Goal)
+	}
+	root := readThreadOverWire(t, srv, "local:root")
+	if root.Evener.Tasks == nil || root.Evener.Tasks.Current == nil || root.Evener.Tasks.Current.Description != "root task" || root.Evener.Goal == nil || root.Evener.Goal.Objective != "root goal" {
+		t.Fatalf("child carriers changed root = tasks:%+v goal:%+v", root.Evener.Tasks, root.Evener.Goal)
+	}
+}
+
+func TestServerAppWireSharedTaskOwnerFansOutInOneCommit(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	publishEnvelope(srv, &stubThreadEnvelopeSource{tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "root old"}}})
+	for _, start := range []struct{ id, owner, task string }{
+		{"matching-child", "root", "matching old"},
+		{"unrelated-child", "unrelated-child", "unrelated old"},
+	} {
+		srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: start.id, Data: events.SessionStartData{
+			TaskStoreOwnerSessionID: start.owner,
+			CurrentWork:             &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: start.task}}},
+		}})
+	}
+	cursor := srv.appNotifier.CurrentSequence()
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "matching-child", Data: events.TaskUpdatedData{
+		TaskStateData:           events.TaskStateData{Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "shared replacement"}},
+		TaskStoreOwnerSessionID: "root",
+	}})
+	for _, id := range []string{"root", "matching-child"} {
+		thread := readThreadOverWire(t, srv, "local:"+id)
+		if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "shared replacement" {
+			t.Fatalf("%s tasks = %+v, want shared replacement", id, thread.Evener.Tasks)
+		}
+		notifications := srv.AppNotificationsAfter(cursor, id)
+		if len(notifications) != 1 || notifications[0].Notification.Method != appwire.NotifyEvenerTaskUpdated {
+			t.Fatalf("%s notifications = %+v, want one task update", id, notifications)
+		}
+		var params appwire.TaskUpdatedParams
+		if err := json.Unmarshal(notifications[0].Notification.Params, &params); err != nil {
+			t.Fatal(err)
+		}
+		if params.ThreadID != id || params.Ref != "local:"+id {
+			t.Fatalf("%s notification target = %+v", id, params)
+		}
+	}
+	unrelated := readThreadOverWire(t, srv, "local:unrelated-child")
+	if unrelated.Evener.Tasks == nil || unrelated.Evener.Tasks.Current == nil || unrelated.Evener.Tasks.Current.Description != "unrelated old" {
+		t.Fatalf("unrelated tasks changed: %+v", unrelated.Evener.Tasks)
+	}
+	if got := srv.AppNotificationsAfter(cursor, "unrelated-child"); len(got) != 0 {
+		t.Fatalf("unrelated child received shared update: %+v", got)
+	}
+}
+
+func TestServerAppWireOldTaskProducerUpdatesOnlySource(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	publishEnvelope(srv, &stubThreadEnvelopeSource{tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "root old"}}})
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "root",
+		CurrentWork:             &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "child old"}}},
+	}})
+	cursor := srv.appNotifier.CurrentSequence()
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "child", Data: events.TaskUpdatedData{
+		TaskStateData: events.TaskStateData{Total: 1, Current: &events.TaskSummaryData{ID: 2, Description: "legacy source only"}},
+	}})
+	child := readThreadOverWire(t, srv, "local:child")
+	if child.Evener.Tasks == nil || child.Evener.Tasks.Current == nil || child.Evener.Tasks.Current.Description != "legacy source only" {
+		t.Fatalf("legacy source tasks = %+v", child.Evener.Tasks)
+	}
+	root := readThreadOverWire(t, srv, "local:root")
+	if root.Evener.Tasks == nil || root.Evener.Tasks.Current == nil || root.Evener.Tasks.Current.Description != "root old" {
+		t.Fatalf("legacy producer changed root: %+v", root.Evener.Tasks)
+	}
+	if got := srv.AppNotificationsAfter(cursor, "root"); len(got) != 0 {
+		t.Fatalf("legacy producer notified root: %+v", got)
+	}
 }
 
 func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {

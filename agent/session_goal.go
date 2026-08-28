@@ -87,17 +87,16 @@ func (s *Session) ClearGoal() {
 	s.goalUpdateMu.Unlock()
 }
 
-// GoalStatus reports the session's current /goal state for status surfaces (the
-// appwire EvenerThread.Goal field, `/goal status`). ok is false when no goal is
-// set. It returns primitives rather than the internal goal.Snapshot so callers
-// outside the agent module (which cannot import agent/internal/goal) can consume
-// it.
-func (s *Session) GoalStatus() (objective, status string, iterations int, ok bool) {
+// GoalStatus reports the session's current /goal lifecycle state. The objective
+// is persisted and projected through Meta().Goal; this positional API remains
+// only for callers that need status and iteration count. ok is false when no
+// goal is set.
+func (s *Session) GoalStatus() (status string, iterations int, ok bool) {
 	snap, ok := s.getOrCreateGoalStore().Snapshot()
 	if !ok {
-		return "", "", 0, false
+		return "", 0, false
 	}
-	return snap.Objective, string(snap.Status), snap.Iterations, true
+	return string(snap.Status), snap.Iterations, true
 }
 
 // goalCompactionSteering returns the active goal's rendered objective as a

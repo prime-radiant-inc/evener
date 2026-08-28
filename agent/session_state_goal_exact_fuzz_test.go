@@ -63,7 +63,7 @@ func fuzzExactGoal(t *testing.T) {
 	shutdown.terminateGoalOnError(context.WithValue(context.Background(), queuedInputDrainContextKey{}, queuedInputDrainConfig{rootCtx: root}), context.Canceled)
 	failed := active()
 	failed.terminateGoalOnError(context.Background(), errors.New("failed"))
-	if _, status, _, _ := failed.GoalStatus(); status != string(goal.StatusBlocked) {
+	if status, _, _ := failed.GoalStatus(); status != string(goal.StatusBlocked) {
 		t.Fatalf("failed goal status = %q", status)
 	}
 }

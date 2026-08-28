@@ -60,7 +60,7 @@ type EnvelopeSampling interface {
 	DetailedStatus() DetailedStatus
 	ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation)
 	TasksWithError() ([]task.Task, error)
-	GoalStatus() (objective, status string, iterations int, ok bool)
+	GoalStatus() (status string, iterations int, ok bool)
 	WorkMillisSnapshot() int64
 	CumulativeUsageSnapshot() llm.Usage
 	ActiveTurnStartedAtMillis() int64

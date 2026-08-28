@@ -175,9 +175,8 @@ func TestProject_TaskUpdated(t *testing.T) {
 	out := p.Project(events.SessionEvent{
 		Kind: events.EventTaskUpdated,
 		Data: events.TaskUpdatedData{
-			Total:   3,
-			Done:    1,
-			Current: &events.TaskSummaryData{ID: 2, Description: "live current task"},
+			TaskStateData:           events.TaskStateData{Total: 3, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "live current task"}},
+			TaskStoreOwnerSessionID: "owner-session",
 		},
 	})
 	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerTaskUpdated {
@@ -186,6 +185,62 @@ func TestProject_TaskUpdated(t *testing.T) {
 	params, ok := out[0].Params.(appwire.TaskUpdatedParams)
 	if !ok || params.Total != 3 || params.Done != 1 || params.Current == nil || params.Current.ID != 2 || params.Current.Description != "live current task" {
 		t.Fatalf("params = %+v, want Total=3 Done=1 Current={ID:2 Description:live current task}", out[0].Params)
+	}
+	if out[0].TaskStoreOwnerSessionID != "owner-session" {
+		t.Fatalf("notification owner = %q, want owner-session", out[0].TaskStoreOwnerSessionID)
+	}
+	wired, err := json.Marshal(params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(wired), "owner") || strings.Contains(string(wired), "taskStoreOwnerSessionId") {
+		t.Fatalf("public task params leaked internal owner metadata: %s", wired)
+	}
+}
+
+func TestProject_SessionStartCarriesCurrentWorkSeed(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{Kind: events.EventSessionStart, Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: "owner-session",
+		CurrentWork: &events.CurrentWorkSeedData{
+			Tasks: &events.TaskStateData{Total: 3, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "seeded task"}},
+			Goal:  &events.GoalStateData{Objective: "seeded objective", Status: "active", Iterations: 2},
+		},
+	}})
+
+	thread := notificationThread(t, out, appwire.NotifyThreadStarted)
+	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Total != 3 || thread.Evener.Tasks.Done != 1 ||
+		thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "seeded task" {
+		t.Fatalf("started tasks = %+v, want complete current-work seed", thread.Evener.Tasks)
+	}
+	if thread.Evener.Goal == nil || thread.Evener.Goal.Objective != "seeded objective" || thread.Evener.Goal.Status != "active" || thread.Evener.Goal.Iterations != 2 {
+		t.Fatalf("started goal = %+v, want complete current-work seed", thread.Evener.Goal)
+	}
+	if out[0].TaskStoreOwnerSessionID != "owner-session" {
+		t.Fatalf("started notification owner = %q, want owner-session", out[0].TaskStoreOwnerSessionID)
+	}
+}
+
+func TestProject_SessionStartExplicitNoGoalSeed(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{Kind: events.EventSessionStart, Data: events.SessionStartData{
+		CurrentWork: &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{}},
+	}})
+	thread := notificationThread(t, out, appwire.NotifyThreadStarted)
+	if thread.Evener.Tasks == nil {
+		t.Fatal("started tasks = nil, want authoritative present zero")
+	}
+	if thread.Evener.Goal != nil {
+		t.Fatalf("started goal = %+v, want explicit nil", thread.Evener.Goal)
+	}
+}
+
+func TestProject_SessionStartWithoutCurrentWorkRemainsCompatible(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{Kind: events.EventSessionStart, Data: events.SessionStartData{}})
+	thread := notificationThread(t, out, appwire.NotifyThreadStarted)
+	if thread.Evener.Tasks != nil || thread.Evener.Goal != nil {
+		t.Fatalf("legacy started current work = tasks:%+v goal:%+v, want both unknown", thread.Evener.Tasks, thread.Evener.Goal)
 	}
 }
 

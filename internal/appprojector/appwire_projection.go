@@ -18,9 +18,10 @@ import (
 )
 
 type AppNotification struct {
-	ThreadID string
-	Method   string
-	Params   any
+	ThreadID                string
+	Method                  string
+	Params                  any
+	TaskStoreOwnerSessionID string
 }
 
 type skillActivationCandidate struct {
@@ -37,6 +38,9 @@ var marshalContextCompaction = json.Marshal
 type AppEventProjector struct {
 	threadID string
 	ref      string
+	// taskStoreOwnerSessionID is routing metadata for the server's cached
+	// descendant projection. It never enters an AppWire params shape.
+	taskStoreOwnerSessionID string
 
 	nextTurn       int
 	nextItem       int
@@ -161,6 +165,12 @@ func (p *AppEventProjector) SeedPersistedTurns(persistedEntries int) {
 	}
 }
 
+// TaskStoreOwnerSessionID returns internal routing metadata learned from typed
+// task carriers. It is not part of any public AppWire params shape.
+func (p *AppEventProjector) TaskStoreOwnerSessionID() string {
+	return p.taskStoreOwnerSessionID
+}
+
 func (p *AppEventProjector) clearSkillCandidate() {
 	p.skillCandidate = skillActivationCandidate{}
 }
@@ -173,6 +183,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	switch event.Kind {
 	case events.EventSessionStart:
 		data := eventData[events.SessionStartData](event.Data)
+		if data.TaskStoreOwnerSessionID != "" {
+			p.taskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
+		}
 		// A resumed session's turn ids must not reuse the "turn_%d" namespace
 		// the transcript projection (internal/apptranscript) already assigned by
 		// entry index to the session's persisted entries (kata eptj). The
@@ -192,7 +205,13 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		case appwire.ThreadStatusIdle:
 			status = appwire.ThreadStatusIdle
 		}
-		return []AppNotification{
+		var tasks *appwire.TaskAggregate
+		var goal *appwire.GoalState
+		if data.CurrentWork != nil {
+			tasks = taskAggregate(data.CurrentWork.Tasks)
+			goal = goalState(data.CurrentWork.Goal)
+		}
+		out := []AppNotification{
 			p.notification(appwire.NotifyThreadStarted, appwire.ThreadStartedParams{
 				ThreadID: p.threadID,
 				Ref:      p.ref,
@@ -205,11 +224,17 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 					Evener: appwire.EvenerThread{
 						Ref:     p.ref,
 						Profile: data.Profile,
+						Tasks:   tasks,
+						Goal:    goal,
 					},
 				},
 			}),
 			p.threadStatus(status),
 		}
+		for i := range out {
+			out[i].TaskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
+		}
+		return out
 	case events.EventTurnStarted:
 		// The one boundary for turns that carry no content event of their own.
 		// It owes its subscribers three things, and a notification turn needs
@@ -936,13 +961,18 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	case events.EventTaskUpdated:
 		p.clearSkillCandidate()
 		data := eventData[events.TaskUpdatedData](event.Data)
-		return []AppNotification{p.notification(appwire.NotifyEvenerTaskUpdated, appwire.TaskUpdatedParams{
+		if data.TaskStoreOwnerSessionID != "" {
+			p.taskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
+		}
+		notification := p.notification(appwire.NotifyEvenerTaskUpdated, appwire.TaskUpdatedParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
 			Total:    data.Total,
 			Done:     data.Done,
 			Current:  taskSummary(data.Current),
-		})}
+		})
+		notification.TaskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
+		return []AppNotification{notification}
 	case events.EventSandboxEscalationRequested:
 		// A harness-raised sandbox-exemption approval card (M7). It rides the event
 		// stream ONLY — it is never appended to the transcript, so the model can
@@ -1170,6 +1200,20 @@ func taskSummary(data *events.TaskSummaryData) *appwire.TaskSummary {
 		return nil
 	}
 	return &appwire.TaskSummary{ID: data.ID, Description: data.Description}
+}
+
+func taskAggregate(data *events.TaskStateData) *appwire.TaskAggregate {
+	if data == nil {
+		return nil
+	}
+	return &appwire.TaskAggregate{Total: data.Total, Done: data.Done, Current: taskSummary(data.Current)}
+}
+
+func goalState(data *events.GoalStateData) *appwire.GoalState {
+	if data == nil {
+		return nil
+	}
+	return &appwire.GoalState{Objective: data.Objective, Status: data.Status, Iterations: data.Iterations}
 }
 
 func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.EvenerDelegateInfo {

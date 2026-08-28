@@ -375,15 +375,19 @@ func TestClearGoalRemovesGoal(t *testing.T) {
 	}
 }
 
-func TestGoalStatusReturnsObjectiveWithStatusAndIterations(t *testing.T) {
+func TestGoalStatusReturnsStatusAndIterations(t *testing.T) {
 	t.Parallel()
 	sess := newGoalMethodSession(t)
 	defer sess.Close()
 
 	sess.getOrCreateGoalStore().Set("ship the footer", time.Now())
-	objective, status, iterations, ok := sess.GoalStatus()
-	if !ok || objective != "ship the footer" || status != "active" || iterations != 0 {
-		t.Fatalf("GoalStatus() = %q, %q, %d, %v", objective, status, iterations, ok)
+	status, iterations, ok := sess.GoalStatus()
+	if !ok || status != "active" || iterations != 0 {
+		t.Fatalf("GoalStatus() = %q, %d, %v", status, iterations, ok)
+	}
+	meta := sess.Meta()
+	if meta.Goal == nil || meta.Goal.Objective != "ship the footer" {
+		t.Fatalf("Meta().Goal = %+v, want persisted objective", meta.Goal)
 	}
 }
 

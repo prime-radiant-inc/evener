@@ -118,7 +118,7 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 		{
 			name: "goal on GOAL_UPDATED",
 			move: func(e *stubThreadEnvelopeSource) {
-				e.goalObjective, e.goalStatus, e.goalIterations, e.goalSet = "ship focus sentence", "active", 1, true
+				e.meta.Goal = &schema.GoalSnapshot{Objective: "stale sampled objective", Status: "blocked", Iterations: 9}
 			},
 			event: events.SessionEvent{
 				Kind: events.EventGoalUpdated, SessionID: "th_1",
@@ -200,7 +200,7 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 		{
 			name: "goal on GOAL_ENDED",
 			move: func(e *stubThreadEnvelopeSource) {
-				e.goalStatus, e.goalIterations, e.goalSet = "completed", 3, true
+				e.meta.Goal = &schema.GoalSnapshot{Objective: "checkpoint objective", Status: "completed", Iterations: 3}
 			},
 			event: events.SessionEvent{Kind: events.EventGoalEnded, SessionID: "th_1", Data: events.GoalEndedData{}},
 			want: func(t *testing.T, thread appwire.Thread) {
@@ -341,7 +341,7 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 	}
 }
 
-func TestThreadEnvelopeProjectsCurrentTaskAndGoalObjective(t *testing.T) {
+func TestThreadEnvelopeSeedUsesTaskAggregateAndStructuredMetaGoal(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	source := &stubThreadEnvelopeSource{}
@@ -349,17 +349,112 @@ func TestThreadEnvelopeProjectsCurrentTaskAndGoalObjective(t *testing.T) {
 		Total:   2,
 		Current: &appwire.TaskSummary{ID: 2, Description: "wire current work"},
 	}
-	source.goalObjective = "wire goal objective"
-	source.goalStatus = "active"
-	source.goalSet = true
+	source.meta.Goal = &schema.GoalSnapshot{Objective: "wire goal objective", Status: "active", Iterations: 2}
 	publishEnvelope(srv, source)
 
 	thread := readThreadOverWire(t, srv, "local:th_1")
 	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.ID != 2 || thread.Evener.Tasks.Current.Description != "wire current work" {
 		t.Fatalf("thread.Evener.Tasks.Current = %+v, want task 2", thread.Evener.Tasks)
 	}
-	if thread.Evener.Goal == nil || thread.Evener.Goal.Objective != "wire goal objective" {
-		t.Fatalf("thread.Evener.Goal = %+v, want objective", thread.Evener.Goal)
+	if thread.Evener.Goal == nil || thread.Evener.Goal.Objective != "wire goal objective" || thread.Evener.Goal.Status != "active" || thread.Evener.Goal.Iterations != 2 {
+		t.Fatalf("thread.Evener.Goal = %+v, want wire goal objective/active/2", thread.Evener.Goal)
+	}
+}
+
+func TestSessionStartSeedTriStatePreservesUnknownAndAppliesExplicitClear(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "legacy-root")
+	source := publishEnvelope(srv, &stubThreadEnvelopeSource{
+		tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "pre-bridge task"}},
+		meta:  schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "pre-bridge goal", Status: "active", Iterations: 4}},
+	})
+
+	feedBridge(srv, events.SessionEvent{Kind: events.EventSessionStart, SessionID: "legacy-root", Data: events.SessionStartData{}})
+	legacy := readThreadOverWire(t, srv, "local:legacy-root")
+	if legacy.Evener.Tasks == nil || legacy.Evener.Tasks.Current == nil || legacy.Evener.Tasks.Current.Description != "pre-bridge task" {
+		t.Fatalf("legacy start tasks = %+v, want pre-bridge seed preserved", legacy.Evener.Tasks)
+	}
+	if legacy.Evener.Goal == nil || legacy.Evener.Goal.Objective != "pre-bridge goal" {
+		t.Fatalf("legacy start goal = %+v, want pre-bridge seed preserved", legacy.Evener.Goal)
+	}
+
+	srv.SetAppIdentity("local", "seeded-root")
+	source.tasks = &appwire.TaskAggregate{Total: 2, Current: &appwire.TaskSummary{ID: 2, Description: "replacement pre-seed"}}
+	source.meta = schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "goal to clear", Status: "active", Iterations: 1}}
+	srv.RefreshThreadEnvelope()
+	feedBridge(srv, events.SessionEvent{Kind: events.EventSessionStart, SessionID: "seeded-root", Data: events.SessionStartData{
+		CurrentWork: &events.CurrentWorkSeedData{Tasks: nil, Goal: nil},
+	}})
+	seeded := readThreadOverWire(t, srv, "local:seeded-root")
+	if seeded.Evener.Tasks == nil || seeded.Evener.Tasks.Current == nil || seeded.Evener.Tasks.Current.Description != "replacement pre-seed" {
+		t.Fatalf("present seed with nil Tasks replaced task state: %+v", seeded.Evener.Tasks)
+	}
+	if seeded.Evener.Goal != nil {
+		t.Fatalf("present seed with nil Goal did not clear: %+v", seeded.Evener.Goal)
+	}
+}
+
+func TestTaskAndGoalCarrierEventsDoNotRepullEnvelopeStores(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	source := publishEnvelope(srv, &stubThreadEnvelopeSource{
+		tasks: &appwire.TaskAggregate{Total: 1},
+		meta:  schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "stale goal", Status: "active"}},
+	})
+	taskCalls, metaCalls := source.taskCalls, source.metaCalls
+
+	feedBridge(srv,
+		events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "th_1", Data: events.TaskUpdatedData{
+			TaskStateData: events.TaskStateData{Total: 2, Done: 1}, TaskStoreOwnerSessionID: "th_1",
+		}},
+		events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "th_1", Data: events.GoalUpdatedData{
+			Goal: &events.GoalStateData{Objective: "carrier goal", Status: "active", Iterations: 2},
+		}},
+	)
+	if source.taskCalls != taskCalls || source.metaCalls != metaCalls {
+		t.Fatalf("carrier events re-pulled stores: task calls %d→%d, meta calls %d→%d", taskCalls, source.taskCalls, metaCalls, source.metaCalls)
+	}
+}
+
+func TestTaskAndGoalCarriersReplaceSeededRootState(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	publishEnvelope(srv, &stubThreadEnvelopeSource{
+		tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "old task"}},
+		meta:  schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "old goal", Status: "active", Iterations: 1}},
+	})
+
+	feedBridge(srv,
+		events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "th_1", Data: events.TaskUpdatedData{
+			TaskStateData:           events.TaskStateData{Total: 3, Done: 2, Current: &events.TaskSummaryData{ID: 3, Description: "new carrier task"}},
+			TaskStoreOwnerSessionID: "th_1",
+		}},
+		events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "th_1", Data: events.GoalUpdatedData{Goal: nil}},
+	)
+	thread := readThreadOverWire(t, srv, "local:th_1")
+	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Total != 3 || thread.Evener.Tasks.Done != 2 || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "new carrier task" {
+		t.Fatalf("root carrier tasks = %+v, want complete replacement", thread.Evener.Tasks)
+	}
+	if thread.Evener.Goal != nil {
+		t.Fatalf("root carrier goal = %+v, want explicit clear", thread.Evener.Goal)
+	}
+}
+
+func TestSessionTurnCheckpointRecoversOldTaskAndGoalProducer(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	source := publishEnvelope(srv, &stubThreadEnvelopeSource{})
+	// An old producer changes its stores without emitting structured carriers.
+	source.tasks = &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "checkpoint task"}}
+	source.meta.Goal = &schema.GoalSnapshot{Objective: "checkpoint goal", Status: "active", Iterations: 5}
+	feedBridge(srv, events.SessionEvent{Kind: events.EventTurnEnded, SessionID: "th_1", Data: events.TurnEndedData{}})
+
+	thread := readThreadOverWire(t, srv, "local:th_1")
+	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "checkpoint task" {
+		t.Fatalf("checkpoint tasks = %+v", thread.Evener.Tasks)
+	}
+	if thread.Evener.Goal == nil || thread.Evener.Goal.Objective != "checkpoint goal" || thread.Evener.Goal.Status != "active" || thread.Evener.Goal.Iterations != 5 {
+		t.Fatalf("checkpoint goal = %+v", thread.Evener.Goal)
 	}
 }
 
@@ -627,10 +722,6 @@ func (c *countingThreadEnvelopeSource) SessionMeta() schema.SessionMeta {
 	c.hit()
 	return schema.SessionMeta{}
 }
-func (c *countingThreadEnvelopeSource) GoalStatus() (string, string, int, bool) {
-	c.hit()
-	return "", "", 0, false
-}
 func (c *countingThreadEnvelopeSource) FailedToolCalls() (int, bool) { c.hit(); return 0, false }
 func (c *countingThreadEnvelopeSource) ReasoningInfo() (string, []string, bool) {
 	c.hit()
@@ -651,34 +742,21 @@ func (c *countingThreadEnvelopeSource) ClientMutationProjection() (appwire.Queue
 	return appwire.QueueState{}, nil
 }
 
-// TestClearingTheGoalClearsItOnTheWire pins the one state change that reaches
-// the daemon through a handler rather than through the session's event stream.
-//
-// goal/set with an empty objective is the documented clear path, and the web
-// palette offers it as one ("objective... (empty to clear)"). It runs
-// Session.ClearGoal -> goal.Store.Clear, which nils the goal and emits nothing:
-// the goal store has no event handle at all. Nothing in facetsByEvent can
-// therefore observe a clear, so without a refresh at the handler a cleared goal
-// stays on every thread/read for the life of the identity, and the status bar
-// keeps reporting an objective the user explicitly abandoned.
-//
-// Setting a goal is silent for the same reason (SetGoal returns without an event
-// whenever a turn is running, no kick is wired, or an ask is pending), so the
-// refresh covers both directions of the one handler.
+// TestClearingTheGoalClearsItOnTheWire pins the successful callback's structured
+// carrier as the authority for goal/set. The handler must not perform a second
+// source pull after the callback emits the update.
 func TestClearingTheGoalClearsItOnTheWire(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "th_1")
 	src := publishEnvelope(srv, &stubThreadEnvelopeSource{
-		goalStatus: "active", goalIterations: 2, goalSet: true,
+		meta: schema.SessionMeta{Goal: &schema.GoalSnapshot{Objective: "old goal", Status: "active", Iterations: 2}},
 	})
-	// The daemon's goal callback is the session's; here it stands in for
-	// ClearGoal/SetGoal, which both mutate the store and emit nothing.
 	srv.SetGoalFunc(func(objective string) (bool, error) {
 		if objective == "" {
-			src.goalStatus, src.goalIterations, src.goalSet = "", 0, false
+			feedBridge(srv, events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "th_1", Data: events.GoalUpdatedData{Goal: nil}})
 			return false, nil
 		}
-		src.goalStatus, src.goalIterations, src.goalSet = "active", 0, true
+		feedBridge(srv, events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "th_1", Data: events.GoalUpdatedData{Goal: &events.GoalStateData{Objective: objective, Status: "active"}}})
 		return true, nil
 	})
 
@@ -696,14 +774,7 @@ func TestClearingTheGoalClearsItOnTheWire(t *testing.T) {
 		t.Fatalf("goal/set: %v", resp.Kind())
 	}
 
-	// Traffic keeps flowing afterwards. None of these events samples facetGoal,
-	// which is what makes the staleness permanent rather than transient.
-	//
-	// The events are chosen deliberately: a turn boundary WOULD rescue the goal,
-	// because TURN_ENDED re-reads every facet. But clearing a goal is something
-	// you do when you have stopped, and an idle session produces no turn
-	// boundary at all -- so leaning on one here would prove the handler refresh
-	// unnecessary when it is exactly what that session depends on.
+	// Leave the source deliberately stale: the direct carrier must win.
 	feedBridge(srv,
 		events.SessionEvent{Kind: events.EventAssistantTextStart, SessionID: "th_1"},
 		events.SessionEvent{Kind: events.EventAssistantTextDelta, SessionID: "th_1", Data: events.AssistantTextDeltaData{Delta: "x"}},
@@ -712,6 +783,9 @@ func TestClearingTheGoalClearsItOnTheWire(t *testing.T) {
 
 	if got := readThreadOverWire(t, srv, "local:th_1").Evener.Goal; got != nil {
 		t.Fatalf("thread/read still carries goal %+v after goal/set cleared it", got)
+	}
+	if src.meta.Goal == nil {
+		t.Fatal("fixture source unexpectedly changed; test no longer proves carrier-first behavior")
 	}
 }
 

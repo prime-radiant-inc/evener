@@ -196,7 +196,6 @@ func (s sessionTaskEnvelopeSource) DetailedStatus() server.DetailedStatus {
 }
 func (s sessionTaskEnvelopeSource) AskPending() bool                        { return false }
 func (s sessionTaskEnvelopeSource) SessionMeta() schema.SessionMeta         { return schema.SessionMeta{} }
-func (s sessionTaskEnvelopeSource) GoalStatus() (string, string, int, bool) { return "", "", 0, false }
 func (s sessionTaskEnvelopeSource) FailedToolCalls() (int, bool)            { return 0, false }
 func (s sessionTaskEnvelopeSource) ReasoningInfo() (string, []string, bool) { return "", nil, false }
 func (s sessionTaskEnvelopeSource) VisionModel() string                     { return "" }

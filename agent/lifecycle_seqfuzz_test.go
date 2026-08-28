@@ -678,7 +678,7 @@ func applyOp(sess *Session, clk *agenttest.FakeClock, op opRecord, cancelAt *int
 	case opObserve:
 		_ = sess.State()
 		_ = sess.QueueDepth()
-		_, _, _, _ = sess.GoalStatus()
+		_, _, _ = sess.GoalStatus()
 	case opClose:
 		sess.Close()
 	}

@@ -145,7 +145,7 @@ func stpRun(t *testing.T, program []byte) stpTrace {
 		}
 	}
 
-	_, status, iterations, _ := s.GoalStatus()
+	status, iterations, _ := s.GoalStatus()
 	s.mu.Lock()
 	forcePending := s.forceRequested
 	instructions := s.pendingInstructions
@@ -251,7 +251,7 @@ func stpExercisePinnedContracts(t *testing.T, s *Session, env *agenttest.DenyEnv
 		t.Fatalf("SetGoal returned started=%v err=%v without a kick callback", started, err)
 	}
 	goal := stpCall(t, s, env, ctx, "goal-complete", "update_goal", map[string]any{"status": "complete"})
-	_, status, _, ok := s.GoalStatus()
+	status, _, ok := s.GoalStatus()
 	if goal.IsError || !ok || status != "complete" {
 		t.Fatalf("update_goal did not terminalize active goal: result=%#v status=%q ok=%v", goal, status, ok)
 	}

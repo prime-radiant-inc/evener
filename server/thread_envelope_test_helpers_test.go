@@ -19,7 +19,10 @@ type stubThreadEnvelopeSource struct {
 	queue            appwire.QueueState
 	pendingMutations []appwire.PendingMutation
 	tasks            *appwire.TaskAggregate
-	goalObjective    string
+	taskCalls        int
+	metaCalls        int
+	// Retained only for older fuzz fixtures that mutate the historical fields.
+	// Goal projection reads meta.Goal exclusively.
 	goalStatus       string
 	goalIterations   int
 	goalSet          bool
@@ -40,13 +43,17 @@ type stubThreadEnvelopeSource struct {
 	parkOnMeta func()
 }
 
-func (s *stubThreadEnvelopeSource) ContextPressure() float64              { return s.contextPressure }
-func (s *stubThreadEnvelopeSource) ContextMetrics() ContextMetrics        { return s.contextMetrics }
-func (s *stubThreadEnvelopeSource) DetailedStatus() DetailedStatus        { return s.detailedStatus }
-func (s *stubThreadEnvelopeSource) TaskAggregate() *appwire.TaskAggregate { return s.tasks }
-func (s *stubThreadEnvelopeSource) AskPending() bool                      { return s.askPending }
+func (s *stubThreadEnvelopeSource) ContextPressure() float64       { return s.contextPressure }
+func (s *stubThreadEnvelopeSource) ContextMetrics() ContextMetrics { return s.contextMetrics }
+func (s *stubThreadEnvelopeSource) DetailedStatus() DetailedStatus { return s.detailedStatus }
+func (s *stubThreadEnvelopeSource) TaskAggregate() *appwire.TaskAggregate {
+	s.taskCalls++
+	return s.tasks
+}
+func (s *stubThreadEnvelopeSource) AskPending() bool { return s.askPending }
 
 func (s *stubThreadEnvelopeSource) SessionMeta() schema.SessionMeta {
+	s.metaCalls++
 	if s.parkOnMeta != nil {
 		s.parkOnMeta()
 	}
@@ -55,10 +62,6 @@ func (s *stubThreadEnvelopeSource) SessionMeta() schema.SessionMeta {
 
 func (s *stubThreadEnvelopeSource) ClientMutationProjection() (appwire.QueueState, []appwire.PendingMutation) {
 	return s.queue, s.pendingMutations
-}
-
-func (s *stubThreadEnvelopeSource) GoalStatus() (string, string, int, bool) {
-	return s.goalObjective, s.goalStatus, s.goalIterations, s.goalSet
 }
 
 func (s *stubThreadEnvelopeSource) WorkMetrics() (int64, *appwire.EvenerUsage, int64) {
