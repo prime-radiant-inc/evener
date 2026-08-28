@@ -423,8 +423,22 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 	// /fork drops into browse mode with the fork prompt and footer hint.
 	app.TypeLine("/fork")
 	app.WaitFor("Select a user message, then press f to fork.", "f: fork selected user message")
+	// The browse→compose transition must be synced on the DISAPPEARANCE of
+	// the browse action bar, not on "enter send": the browse footer keeps the
+	// composer panel — and with it the compose-mode "enter send" hint — on
+	// screen (hub_session_view.go's scrollMode branch), so a plain
+	// WaitFor("enter send") returns while the "i" can still be sitting
+	// unread in the pty. If "/help" is then written before the TUI's input
+	// reader consumes "i", tmux coalesces the two writes into one pty read,
+	// bubbletea reports "i/help" as a single KeyMsg, and browse mode drops
+	// it into the composer as draft text (kata fazd; fall-through pinned by
+	// kata 7hh0) — the TUI never leaves browse mode and /help never runs,
+	// which is the issue #540 flake. A frame showing "enter send" WITHOUT
+	// the browse action bar can only have been rendered from the post-"i"
+	// model, so this wait is a real happens-before edge: the "i" is provably
+	// consumed before "/help" is written.
 	app.SendKeys("i")
-	app.WaitFor("enter send")
+	app.WaitForWithout([]string{"esc/i/q: compose"}, "enter send")
 
 	// /help lists the slash commands and the browse keybindings.
 	app.TypeLine("/help")
@@ -491,8 +505,13 @@ func TestTUITmuxE2E_SessionCommandsAndNavigation(t *testing.T) {
 
 	app.TypeLine("/details")
 	app.WaitFor("Session:  01LIVE", "Dir:      "+tuiE2EProjectDir)
+	// Same sync rule as the /fork exit above: overlays do not change the
+	// footer, so "enter send" stays on screen while the details panel is
+	// open and cannot prove the Escape was consumed. Sync on the panel
+	// content's disappearance — a frame without it comes only from the
+	// post-Escape model.
 	app.SendKeys("Escape")
-	app.WaitFor("enter send")
+	app.WaitForWithout([]string{"Session:  01LIVE"}, "enter send")
 
 	app.TypeLine("/interrupt")
 	app.WaitFor("Interrupt sent.")
