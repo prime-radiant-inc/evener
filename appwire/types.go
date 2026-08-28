@@ -58,6 +58,7 @@ const (
 	MethodEvenerGitHead               = "evener/git/head"
 	MethodEvenerNavigationRead        = "evener/navigation/read"
 	MethodEvenerFavoriteSet           = "evener/favorite/set"
+	MethodEvenerArchiveSet            = "evener/archive/set"
 	MethodEvenerSearch                = "evener/search"
 	MethodEvenerHarnessesList         = "evener/harnesses/list"
 	MethodEvenerUpgrade               = "evener/upgrade"
@@ -273,6 +274,32 @@ func (mutation NavigationMutation) MarshalJSON() ([]byte, error) {
 		GenerationID string                         `json:"generation_id"` //nolint:tagliatelle // wire field uses the established snake_case name
 		Targets      []NavigationInvalidationTarget `json:"targets"`
 	}{GenerationID: mutation.GenerationID, Targets: targets})
+}
+
+// ArchiveTargetKind identifies the hub-owned object whose explicit archive
+// decision is being changed.
+type ArchiveTargetKind string
+
+const (
+	ArchiveTargetSession ArchiveTargetKind = "session"
+	ArchiveTargetProject ArchiveTargetKind = "project"
+)
+
+// ArchiveParams sets or clears an explicit archive decision. Project targets
+// must include the working directory used to resolve and verify their
+// canonical project ID; session targets omit it.
+type ArchiveParams struct {
+	Kind       ArchiveTargetKind `json:"kind"`
+	ID         string            `json:"id"`
+	WorkingDir string            `json:"workingDir,omitempty"`
+	Archived   bool              `json:"archived"`
+}
+
+// ArchiveResponse confirms the durable decision and returns the navigation
+// receipt committed by the same refresh that publishes its invalidation.
+type ArchiveResponse struct {
+	OK         bool               `json:"ok"`
+	Navigation NavigationMutation `json:"navigation"`
 }
 
 // SearchParams selects matching live and past sessions for the hub command

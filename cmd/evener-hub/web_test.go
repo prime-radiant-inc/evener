@@ -30,6 +30,12 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
+// timeNowForTest is a fixed clock for tests that need deterministic timestamps
+// without depending on wall-clock time.
+func timeNowForTest() time.Time {
+	return time.Unix(1_700_000_000, 0)
+}
+
 // TestAssetsInvalidPathIs404 pins that the static asset handler maps an
 // unreadable path — an invalid-UTF-8 byte that fs.ValidPath rejects — to a 404
 // rather than the 500 a bare http.FileServer returns for fs.ErrInvalid. A

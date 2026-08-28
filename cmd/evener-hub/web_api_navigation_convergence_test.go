@@ -2,12 +2,9 @@ package hub
 
 import (
 	"context"
-	"encoding/json"
-	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
-	"strings"
 	"testing"
 	"time"
 
@@ -16,7 +13,7 @@ import (
 	"primeradiant.com/evener/identifier"
 )
 
-func TestRESTNavigationTicketConvergesWithPublisherBroadcast(t *testing.T) {
+func TestAppWireArchiveNavigationTicketConvergesWithPublisherBroadcast(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
@@ -49,14 +46,14 @@ func TestRESTNavigationTicketConvergesWithPublisherBroadcast(t *testing.T) {
 		close(done)
 	}()
 	source.changeTitle("changed")
-	body := `{"kind":"project","id":"` + project.ID + `","working_dir":"` + project.CanonicalPath + `","archived":true}`
-	rr := postJSON(t, web.Handler(), "/api/archive", body)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rr.Code, rr.Body.String())
-	}
-	var response archiveMutationResponse
-	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
-		t.Fatal(err)
+	response, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind:       appwire.ArchiveTargetProject,
+		ID:         project.ID,
+		WorkingDir: project.CanonicalPath,
+		Archived:   true,
+	})
+	if err != nil {
+		t.Fatalf("archive project: %v", err)
 	}
 	waitNavigationSignal(t, recorder.seen, "archive navigation broadcast")
 	methods, payloads := recorder.snapshot()
@@ -81,7 +78,7 @@ func TestRESTNavigationTicketConvergesWithPublisherBroadcast(t *testing.T) {
 	waitNavigationSignal(t, done, "navigation publisher shutdown")
 }
 
-func TestNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
+func TestAppWireArchiveNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	dir := t.TempDir()
 	web := NewWebServer(hubcore.WebConfig{
@@ -118,13 +115,16 @@ func TestNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
 	// both the precise project and the wildcard target; requiring wildcard
 	// alone would incorrectly weaken the target assertion.
 	source.changeTitle("unknown-session-check")
-	rr := postJSON(t, web.Handler(), "/api/archive", `{"kind":"session","id":"unknown-session","archived":true}`)
-	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"ok":true`) {
-		t.Fatalf("unknown status/body=%d %s", rr.Code, rr.Body.String())
+	response, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind:     appwire.ArchiveTargetSession,
+		ID:       "unknown-session",
+		Archived: true,
+	})
+	if err != nil {
+		t.Fatalf("archive session: %v", err)
 	}
-	var response archiveMutationResponse
-	if err := json.Unmarshal(rr.Body.Bytes(), &response); err != nil {
-		t.Fatal(err)
+	if !response.OK {
+		t.Fatalf("unknown response = %+v, want success", response)
 	}
 	published := web.navigation.DrainPublications()
 	responseTargets := append([]appwire.NavigationInvalidationTarget(nil), response.Navigation.Targets...)
@@ -142,16 +142,16 @@ func TestNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
 		t.Fatalf("second unknown-session target=%+v, want all_loaded_projects revision 0", wildcardTarget)
 	}
 
-	// Repeating the same real handler request without another source change is
+	// Repeating the same AppWire request without another source change is
 	// an independent no-op flight: the successful response remains R39-empty
 	// and no second typed event is published.
-	rr = postJSON(t, web.Handler(), "/api/archive", `{"kind":"session","id":"unknown-session","archived":true}`)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("repeat status=%d body=%s", rr.Code, rr.Body.String())
-	}
-	var repeat archiveMutationResponse
-	if err := json.Unmarshal(rr.Body.Bytes(), &repeat); err != nil {
-		t.Fatal(err)
+	repeat, err := dispatchArchiveSet(t, web, appwire.ArchiveParams{
+		Kind:     appwire.ArchiveTargetSession,
+		ID:       "unknown-session",
+		Archived: true,
+	})
+	if err != nil {
+		t.Fatalf("repeat archive session: %v", err)
 	}
 	if repeat.Navigation.GenerationID != response.Navigation.GenerationID || len(repeat.Navigation.Targets) != 0 {
 		t.Fatalf("repeat response targets=%+v, want empty", repeat.Navigation.Targets)

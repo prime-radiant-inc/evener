@@ -366,13 +366,13 @@ test("v1 shutdown cancels the invalidation waiter on RPC failure", async () => {
 // --- onToggleArchive error (lines 207-208) ---
 
 test("archive toggle failure toasts an error", async () => {
-  const fetchMock = vi.fn();
-  fetchMock.mockResolvedValue(failResponse(500, { error: "archive failed" }));
-  vi.stubGlobal("fetch", fetchMock);
-
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_archive"));
+  fake.on("evener/archive/set", (params) => {
+    expect(params).toEqual({ kind: "session", id: "sess_ref_archive", archived: true });
+    throw new Error("archive failed");
+  });
   await threadsStore.getState().ensureThread("ref_archive");
   setLocation("ref_archive");
 
@@ -381,13 +381,6 @@ test("archive toggle failure toasts an error", async () => {
   await user.click(screen.getByRole("menuitem", { name: "Archive" }));
 
   expect(await screen.findByText("Couldn't update archive state: archive failed")).toBeTruthy();
-  expect(fetchMock).toHaveBeenCalledWith(
-    "/api/archive",
-    expect.objectContaining({
-      method: "POST",
-      body: JSON.stringify({ kind: "session", id: "sess_ref_archive", archived: true }),
-    }),
-  );
 });
 
 // --- onDelete error (lines 221-222) ---
