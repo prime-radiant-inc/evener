@@ -195,7 +195,7 @@ export function createConversationService(
   // resolving after close/reopen) no-ops against the live pair.
   let openEpoch = 0;
 
-  function beginOpen(_threadRef: string): number {
+  function beginOpen(): number {
     // Starting a new open invalidates the prior epoch and clears BOTH ref
     // and capabilities before the await, so the service is truly fail-closed
     // while the read is in flight: no mutation or requireRef-only operation
@@ -275,7 +275,7 @@ export function createConversationService(
       // lives exclusively in thread/turns/list. beginOpen clears BOTH ref
       // and capabilities before the await so the service is fail-closed
       // during the read; the pair is installed together only on success.
-      const epoch = beginOpen(threadRef);
+      const epoch = beginOpen();
       const response: ThreadReadResponse = await client.request("thread/read", {
         ref: threadRef,
         includeTurns: true,
@@ -296,7 +296,7 @@ export function createConversationService(
     },
 
     async readProjection(threadRef) {
-      const epoch = beginOpen(threadRef);
+      const epoch = beginOpen();
       const response: ThreadReadResponse = await client.request("thread/read", {
         ref: threadRef,
         includeTurns: true,

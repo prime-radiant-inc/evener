@@ -305,9 +305,6 @@ interface CollectedEntry {
   rawId: string | null;
   existingKey: string | undefined;
   parentIndex: number; // -1 for root
-  // The parent node in the EXISTING registry (read-only, from before this
-  // projection). May be undefined if the scope or path doesn't exist yet.
-  existingParentNode: HierarchyNode | undefined;
   // The child node in the EXISTING registry for this entry's children to
   // look up against (read-only).
   existingChildNode: HierarchyNode | undefined;
@@ -361,7 +358,7 @@ export function createLiveActivityProjector(options?: {
             // The parent's existing hierarchy node (for read-only lookup).
             parentExistingNode: HierarchyNode | undefined;
           }
-        | { type: "leave"; entry: WorkEntry; index: number };
+        | { type: "leave"; entry: WorkEntry };
 
       const stack: Frame[] = [];
       for (let i = view.work.length - 1; i >= 0; i--) {
@@ -455,7 +452,6 @@ export function createLiveActivityProjector(options?: {
             rawId: effectiveRawId,
             existingKey,
             parentIndex: frame.parentIndex,
-            existingParentNode: frame.parentExistingNode,
             existingChildNode,
             childIndices: [],
           });
@@ -470,7 +466,7 @@ export function createLiveActivityProjector(options?: {
           }
 
           // Push leave frame, then children (reverse for correct order).
-          stack.push({ type: "leave", entry: frame.entry, index });
+          stack.push({ type: "leave", entry: frame.entry });
           const childEntries = frame.entry.children ?? [];
           for (let i = childEntries.length - 1; i >= 0; i--) {
             const child = childEntries[i];
