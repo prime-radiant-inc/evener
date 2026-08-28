@@ -8,6 +8,7 @@ import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { WireError } from "../../../protocol/errors";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
+import { ClientProvider } from "../../../shell/clientContext";
 import { paletteStore } from "../../../shell/palette/paletteController";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
 import { connectionStore } from "../../../stores/connection";
@@ -232,10 +233,10 @@ async function mountComposerWithHandle(ref: string, overrides: Partial<Thread> =
   fake.on("thread/read", () => readResponse(ref, overrides));
   await threadsStore.getState().ensureThread(ref);
   const view = render(
-    <>
+    <ClientProvider client={fake}>
       <Toast />
       <Composer ref={ref} />
-    </>,
+    </ClientProvider>,
   );
   return { fake, ...view };
 }

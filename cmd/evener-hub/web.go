@@ -93,6 +93,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 	web.appRPC = newHubAppServerWithNavigation(web.cfg, sources, web.navigation)
 	registerArchiveHandler(web.appRPC, web.cfg, func() *NavigationService { return web.navigation })
 	registerProjectDeleteHandler(web.appRPC, web)
+	registerSessionDeleteHandler(web.appRPC, web.sessionDelete)
 	if deletionStoreErr == nil {
 		_ = web.resumeProjectDeletions()
 	}

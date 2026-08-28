@@ -261,6 +261,9 @@ func (s *relaySession) read(ctx context.Context, params appwire.ThreadReadParams
 	response, err := connection.client.ThreadRead(ctx, readParams)
 	if err != nil {
 		s.cancelCapture(capture)
+		if callerErr := ctx.Err(); callerErr != nil {
+			return RelayReadResult{}, callerErr
+		}
 		return RelayReadResult{}, localDaemonSubscribeReadError(err)
 	}
 

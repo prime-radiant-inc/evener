@@ -124,6 +124,7 @@ no router (reserved).
 | `evener/favorite/set` | hub | `FavoriteSetParams` | `FavoriteSetResponse` | Sets or clears a project favorite and returns the committed navigation invalidation targets. |
 | `evener/archive/set` | hub | `ArchiveParams` | `ArchiveResponse` | Sets or clears an explicit project or session archive decision and returns its committed navigation receipt. |
 | `evener/project/delete` | hub | `ProjectDeleteParams` | `ProjectDeleteResponse` | Deletes every removable session in one path-validated local project and returns detailed outcomes plus its committed navigation receipt. |
+| `evener/session/delete` | hub | `SessionDeleteParams` | `SessionDeleteResponse` | Deletes one ended or confirmed-crashed local session; live or concurrently reserved targets are returned in skipped, and successful cleanup includes its committed navigation receipt. |
 | `evener/search` | hub | `SearchParams` | `SearchResponse` | Searches live and persisted sessions for the hub command palette. |
 | `evener/harnesses/list` | hub | `HarnessListParams` | `HarnessListResponse` | Lists available harness descriptors. |
 | `evener/upgrade` | hub | `UpgradeParams` | `UpgradeResponse` | Performs or reports a evener binary upgrade. |
@@ -1238,6 +1239,22 @@ _(no fields)_
 |-------|---------|-----------|----------|
 | `live` | `[]appwire.SearchResult` |  |  |
 | `past` | `[]appwire.SearchResult` |  |  |
+
+
+### `SessionDeleteParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `ref` | `string` |  |  |
+
+
+### `SessionDeleteResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `deleted` | `[]string` |  |  |
+| `skipped` | `[]appwire.DeletionSkip` |  |  |
+| `navigation` | `appwire.NavigationMutation` |  |  |
 
 
 ### `SettingsOverviewResponse`

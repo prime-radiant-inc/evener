@@ -1071,7 +1071,7 @@ describe("session row", () => {
 
   // Delete (kata n15j) is a decision about a TOP-LEVEL LOCAL session: it
   // targets a stable local session ref (identifier.ValidateSessionID via
-  // cmd/evener-hub/web_api_session_delete.go), so it is offered unconditionally
+  // cmd/evener-hub/app_session_delete.go), so it is offered unconditionally
   // for a top-level local row - including a live one, which the server
   // refuses via the same skipped/toast path deleteProject already uses for a
   // session that raced back to live (no client-side liveness gate to

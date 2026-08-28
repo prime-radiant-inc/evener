@@ -11,6 +11,7 @@ import { createRoot } from "react-dom/client";
 import { SessionChrome } from "../panes/session/chrome/SessionChrome";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
+import { ClientProvider } from "../shell/clientContext";
 import "../styles/tokens.css";
 import "../styles/global.css";
 import { connectionStore } from "../stores/connection";
@@ -107,4 +108,8 @@ function PaneContent() {
   return <SessionChrome ref={REF} />;
 }
 
-createRoot(root).render(<Harness />);
+createRoot(root).render(
+  <ClientProvider client={fake}>
+    <Harness />
+  </ClientProvider>,
+);

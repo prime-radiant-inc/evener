@@ -13,6 +13,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { MethodTypes, Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
+import { ClientProvider } from "../../../shell/clientContext";
 import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
 import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } from "../../../stores/threads";
@@ -144,10 +145,10 @@ async function mountComposer(ref: string, overrides: Partial<Thread> = {}): Prom
   fake.on("thread/read", () => readResponse(ref, overrides));
   await threadsStore.getState().ensureThread(ref);
   render(
-    <>
+    <ClientProvider client={fake}>
       <Toast />
       <Composer ref={ref} />
-    </>,
+    </ClientProvider>,
   );
   return fake;
 }
@@ -597,10 +598,10 @@ test("relay recovery refreshes stale queue capability without reconnecting or re
   }));
   await threadsStore.getState().ensureThread("ref_a");
   render(
-    <>
+    <ClientProvider client={fake}>
       <Toast />
       <Composer ref="ref_a" />
-    </>,
+    </ClientProvider>,
   );
 
   await user.type(textarea() as HTMLTextAreaElement, "follow up");

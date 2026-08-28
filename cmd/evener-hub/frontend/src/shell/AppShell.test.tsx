@@ -45,15 +45,6 @@ const ALL_FEATURES_OFF = {
   auth: false,
 };
 
-function jsonResponse(body: unknown, status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    statusText: status === 200 ? "OK" : "Error",
-    json: () => (body === undefined ? Promise.reject(new Error("no body")) : Promise.resolve(body)),
-  } as Response;
-}
-
 const TREE_SESSION = {
   row_id: "project:proj1:local:s1",
   ref: "local:s1",
@@ -1292,17 +1283,16 @@ test("rail activation updates the URL and a later Settings activation returns Se
 // for it the instant the rail closes it - "Loading transcript…" forever, for a
 // session whose files are gone. The rail's delete path leaves that dead route
 // for welcome, which is where DockHost's own relaunch already puts the emptied
-// main slot. Driven through the REAL rail delete (menu, confirmation, POST,
-// refetch) against the real AppShell + DockHost, because the re-open only
+// main slot. Driven through the REAL rail delete (menu, confirmation, typed
+// mutation, refetch) against the real AppShell + DockHost, because the re-open only
 // happens with the route effect and the dock host both live.
 test("deleting the session the address bar names lands on welcome instead of re-opening its pane", async () => {
   const client = navClient();
-  vi.stubGlobal("fetch", (url: string) => {
-    if (url === "/api/sessions/local%3As1/delete") {
-      return Promise.resolve(jsonResponse({ deleted: ["s1"], skipped: [] }));
-    }
-    throw new Error(`unexpected fetch in AppShell test: ${url}`);
-  });
+  client.on("evener/session/delete", () => ({
+    deleted: ["s1"],
+    skipped: [],
+    navigation: { generation_id: "generation_test", targets: [] },
+  }));
 
   const user = userEvent.setup();
   window.history.pushState({}, "", "/s/local:s1");

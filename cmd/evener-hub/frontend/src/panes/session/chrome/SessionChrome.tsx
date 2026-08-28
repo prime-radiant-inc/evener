@@ -24,6 +24,7 @@
 import { useRef } from "react";
 import { sessionActionError } from "../../../protocol/errors";
 import type { NavigationSessionLocation } from "../../../protocol/types.gen";
+import { useClient } from "../../../shell/clientContext";
 import { closePanesForDeletedSessions } from "../../../shell/deletedSessionPanes";
 import { assignSessionPin, deleteSession, setArchived, unpinSession } from "../../../shell/rail/actions";
 import { SessionMenu } from "../../../shell/sessionMenu/SessionMenu";
@@ -67,6 +68,7 @@ const CLASS = {
 const EMPTY_FRAME_TIMES: number[] = [];
 
 export function SessionChrome({ ref: sessionRef, placement = "footer" }: SessionChromeProps) {
+  const client = useClient();
   const model = useThreadsStore((s) => s.threads.get(sessionRef));
   const isMobile = useIsMobile();
   const toasts = useToasts();
@@ -260,7 +262,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer" }: Session
             },
             onDelete: async () => {
               try {
-                const result = await deleteSession(sessionRef);
+                const result = await deleteSession(client, sessionRef);
                 if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
                 closePanesForDeletedSessions(result.deleted);
                 if (result.skipped.length > 0) {

@@ -2,8 +2,7 @@ package hub
 
 import (
 	"encoding/json"
-	"net/http"
-	"net/http/httptest"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -16,26 +15,34 @@ import (
 	"primeradiant.com/evener/rendezvous"
 )
 
-// sessionDeleteResponse mirrors handleAPISessionDelete's JSON envelope, which
-// retains the deleted/skipped outcome shape used by projectDelete, just for a
-// target set of at most one.
-type sessionDeleteResponse struct {
-	Deleted []string            `json:"deleted"`
-	Skipped []projectDeleteSkip `json:"skipped"`
+func dispatchSessionDelete(t *testing.T, web *WebServer, params appwire.SessionDeleteParams) (appwire.SessionDeleteResponse, error) {
+	t.Helper()
+	raw, err := json.Marshal(params)
+	if err != nil {
+		t.Fatalf("marshal session delete params: %v", err)
+	}
+	result, err := web.appRPC.Router().Dispatch(t.Context(), appwire.Request{
+		ID:     appwire.NewIntID(1),
+		Method: appwire.MethodEvenerSessionDelete,
+		Params: raw,
+	})
+	if err != nil {
+		return appwire.SessionDeleteResponse{}, err
+	}
+	response, ok := result.(appwire.SessionDeleteResponse)
+	if !ok {
+		t.Fatalf("response type = %T, want appwire.SessionDeleteResponse", result)
+	}
+	return response, nil
 }
 
-func postSessionDelete(t *testing.T, web *WebServer, id string) (*httptest.ResponseRecorder, sessionDeleteResponse) {
+func mustDeleteSession(t *testing.T, web *WebServer, id string) appwire.SessionDeleteResponse {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:"+id+"/delete", nil)
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	var resp sessionDeleteResponse
-	if rec.Body.Len() > 0 {
-		if err := json.Unmarshal(rec.Body.Bytes(), &resp); err != nil {
-			t.Fatalf("decode response: %v, body=%s", err, rec.Body.String())
-		}
+	response, err := dispatchSessionDelete(t, web, appwire.SessionDeleteParams{Ref: "local:" + id})
+	if err != nil {
+		t.Fatalf("delete session: %v", err)
 	}
-	return rec, resp
+	return response
 }
 
 // TestSessionDeleteRemovesOnlyTarget covers n15j's verification #1: deleting
@@ -68,10 +75,7 @@ func TestSessionDeleteRemovesOnlyTarget(t *testing.T) {
 		StateDir: root, Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries(),
 	})
 
-	rec, resp := postSessionDelete(t, web, targetID)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
+	resp := mustDeleteSession(t, web, targetID)
 	if len(resp.Deleted) != 1 || resp.Deleted[0] != targetID || len(resp.Skipped) != 0 {
 		t.Fatalf("want only the target deleted: %+v", resp)
 	}
@@ -128,10 +132,7 @@ func TestSessionDeleteRefusesLiveTarget(t *testing.T) {
 	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{SessionID: webTestSessionID, Status: "active"})
 	web := NewWebServer(hubcore.WebConfig{StateDir: root, Past: past, Roster: roster})
 
-	rec, resp := postSessionDelete(t, web, webTestSessionID)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
+	resp := mustDeleteSession(t, web, webTestSessionID)
 	if len(resp.Deleted) != 0 || len(resp.Skipped) != 1 || resp.Skipped[0].ID != webTestSessionID {
 		t.Fatalf("live target must be refused via skipped, not deleted: %+v", resp)
 	}
@@ -171,10 +172,7 @@ func TestSessionDeleteRefusesWhenAlreadyReserved(t *testing.T) {
 		t.Fatalf("simulate a resume's reservation: %v", err)
 	}
 
-	rec, resp := postSessionDelete(t, web, webTestSessionID)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
+	resp := mustDeleteSession(t, web, webTestSessionID)
 	if len(resp.Deleted) != 0 || len(resp.Skipped) != 1 || resp.Skipped[0].ID != webTestSessionID {
 		t.Fatalf("reserved target must be refused via skipped, not deleted: %+v", resp)
 	}
@@ -185,16 +183,7 @@ func TestSessionDeleteRefusesWhenAlreadyReserved(t *testing.T) {
 	}
 }
 
-// A spawned session writes its own daemon log under <run-dir>/logs
-// (spawn_daemonlog.go). Nothing removed it, ever: rendezvous.List skips that
-// subdirectory and hubcore.Roster prunes rendezvous entries only, so a machine
-// that had spawned sessions for months kept every daemon log it ever wrote
-// (kata dd8d). Deleting the session is the one moment the hub knows for
-// certain that nobody owns the file, which makes it the only place it can go
-// without inventing an age policy — an operator reads these after a crash.
-//
-// The unrelated session's log is the other half: this reaps the target's file
-// and only the target's.
+// Deleting a session removes only that session's daemon log.
 func TestSessionDeleteRemovesTheSessionsDaemonLog(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")
@@ -231,10 +220,7 @@ func TestSessionDeleteRemovesTheSessionsDaemonLog(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{
 		StateDir: root, RunDir: runDir, Past: past, Roster: hubcore.NewRosterWithEntries(),
 	})
-	rec, resp := postSessionDelete(t, web, targetID)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
+	resp := mustDeleteSession(t, web, targetID)
 	if len(resp.Deleted) != 1 || resp.Deleted[0] != targetID {
 		t.Fatalf("session should have been deleted: %+v", resp)
 	}
@@ -280,10 +266,7 @@ func TestSessionDeleteRemovesCrashedSessionAndRendezvous(t *testing.T) {
 	})
 	web := NewWebServer(hubcore.WebConfig{StateDir: root, RunDir: runDir, Past: past, Roster: roster})
 
-	rec, resp := postSessionDelete(t, web, webTestSessionID)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s, want a crash marker to be deletable", rec.Code, rec.Body.String())
-	}
+	resp := mustDeleteSession(t, web, webTestSessionID)
 	if len(resp.Deleted) != 1 || resp.Deleted[0] != webTestSessionID || len(resp.Skipped) != 0 {
 		t.Fatalf("crashed session must be deleted outright: %+v", resp)
 	}
@@ -331,20 +314,17 @@ func TestSessionDeleteIsIdempotent(t *testing.T) {
 		StateDir: root, Past: past, Archive: archive, Favorite: favorite, Roster: hubcore.NewRosterWithEntries(),
 	})
 
-	firstRec, firstResp := postSessionDelete(t, web, targetID)
-	if firstRec.Code != http.StatusOK {
-		t.Fatalf("first delete status=%d body=%s", firstRec.Code, firstRec.Body.String())
-	}
+	firstResp := mustDeleteSession(t, web, targetID)
 	if len(firstResp.Deleted) != 1 || firstResp.Deleted[0] != targetID {
 		t.Fatalf("first delete must remove the target: %+v", firstResp)
 	}
 
-	secondRec, secondResp := postSessionDelete(t, web, targetID)
-	if secondRec.Code != http.StatusOK {
-		t.Fatalf("second delete status=%d body=%s, want a clean no-op", secondRec.Code, secondRec.Body.String())
-	}
+	secondResp := mustDeleteSession(t, web, targetID)
 	if len(secondResp.Deleted) != 0 || len(secondResp.Skipped) != 0 {
 		t.Fatalf("repeated delete must be a safe no-op: %+v", secondResp)
+	}
+	if secondResp.Deleted == nil || secondResp.Skipped == nil {
+		t.Fatalf("repeated delete must preserve array response fields: %+v", secondResp)
 	}
 
 	assertArchiveDecisionPresent(t, archive, "session", unrelatedID, true)
@@ -364,11 +344,10 @@ func TestSessionDeleteRejectsRemoteSource(t *testing.T) {
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	web := NewWebServer(hubcore.WebConfig{StateDir: root, Past: past, Roster: hubcore.NewRosterWithEntries()})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/codex:"+webTestSessionID+"/delete", nil)
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("remote-source delete must be rejected 400, got %d body=%s", rec.Code, rec.Body.String())
+	_, err := dispatchSessionDelete(t, web, appwire.SessionDeleteParams{Ref: "codex:" + webTestSessionID})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		t.Fatalf("remote-source delete error = %v, want invalid params", err)
 	}
 }
 
@@ -383,15 +362,72 @@ func TestSessionDeleteRejectsInvalidSessionID(t *testing.T) {
 	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
 	web := NewWebServer(hubcore.WebConfig{StateDir: root, Past: past, Roster: hubcore.NewRosterWithEntries()})
 
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/local:not-a-real-session-id/delete", nil)
-	rec := httptest.NewRecorder()
-	web.Handler().ServeHTTP(rec, req)
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("malformed session ID must be rejected 400, got %d body=%s", rec.Code, rec.Body.String())
+	_, err := dispatchSessionDelete(t, web, appwire.SessionDeleteParams{Ref: "local:not-a-real-session-id"})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		t.Fatalf("malformed session ID error = %v, want invalid params", err)
 	}
 }
 
-func TestAPISessionDeleteRemovesPinAssignmentButKeepsEmptySection(t *testing.T) {
+func TestSessionDeleteRejectsMalformedRef(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{Past: hubcore.NewPastIndex("")})
+
+	_, err := dispatchSessionDelete(t, web, appwire.SessionDeleteParams{})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInvalidParams {
+		t.Fatalf("empty-ref delete error = %v, want invalid params", err)
+	}
+}
+
+func TestSessionDeleteFailsWithoutPastIndex(t *testing.T) {
+	web := NewWebServer(hubcore.WebConfig{})
+
+	_, err := dispatchSessionDelete(t, web, appwire.SessionDeleteParams{Ref: "local:" + webTestSessionID})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeInternalError {
+		t.Fatalf("missing-past delete error = %v, want internal error", err)
+	}
+}
+
+func TestSessionDeleteReportsNavigationFailureAfterCommittedCleanup(t *testing.T) {
+	root := t.TempDir()
+	projectDir := filepath.Join(root, "project")
+	if err := os.MkdirAll(projectDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(root, "projects", "session-delete-0123456789")
+	project, err := identifier.ResolveProject(projectDir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeSession(t, stateDir, webTestSessionID, project.CanonicalPath)
+	past := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	web := NewWebServer(hubcore.WebConfig{StateDir: root, Past: past, Roster: hubcore.NewRosterWithEntries()})
+	failingSource := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	failingSource.err = errors.New("capture failed")
+	web.navigation = newTestNavigationService(t, failingSource)
+
+	_, err = dispatchSessionDelete(t, web, appwire.SessionDeleteParams{Ref: "local:" + webTestSessionID})
+	var wireErr appwire.WireError
+	if !errors.As(err, &wireErr) || wireErr.Code != appwire.CodeUnavailable {
+		t.Fatalf("navigation failure error = %v, want action unavailable", err)
+	}
+	data, ok := wireErr.Data.(appwire.ErrorData)
+	if !ok || data.EvenerErrorInfo != appwire.ErrorActionUnavailable {
+		t.Fatalf("navigation failure data = %#v, want actionUnavailable", wireErr.Data)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, "sessions", webTestSessionID+".meta.json")); !os.IsNotExist(err) {
+		t.Fatalf("cleanup must remain committed when the navigation receipt fails: %v", err)
+	}
+	if _, ok := past.Find(webTestSessionID); ok {
+		t.Fatal("past index must reflect committed cleanup when the navigation receipt fails")
+	}
+}
+
+func TestSessionDeleteRemovesPinAssignmentButKeepsEmptySection(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
@@ -418,9 +454,9 @@ func TestAPISessionDeleteRemovesPinAssignmentButKeepsEmptySection(t *testing.T) 
 		StateDir: root, Past: past, PinSections: pinStore, Roster: hubcore.NewRosterWithEntries(),
 	})
 
-	rec, response := postSessionDelete(t, web, targetID)
-	if rec.Code != http.StatusOK || len(response.Deleted) != 1 {
-		t.Fatalf("delete = %d: %s", rec.Code, rec.Body.String())
+	response := mustDeleteSession(t, web, targetID)
+	if len(response.Deleted) != 1 {
+		t.Fatalf("delete response = %+v", response)
 	}
 	pins, err := pinStore.Assignments()
 	if err != nil || len(pins) != 0 {
@@ -432,7 +468,7 @@ func TestAPISessionDeleteRemovesPinAssignmentButKeepsEmptySection(t *testing.T) 
 	}
 }
 
-func TestAPISessionDeleteRetryScrubsPinAfterArtifactsAreAlreadyGone(t *testing.T) {
+func TestSessionDeleteRetryScrubsPinAfterArtifactsAreAlreadyGone(t *testing.T) {
 	root := t.TempDir()
 	projectDir := filepath.Join(root, "project")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
@@ -476,9 +512,10 @@ func TestAPISessionDeleteRetryScrubsPinAfterArtifactsAreAlreadyGone(t *testing.T
 		return nil
 	}
 
-	firstRec, _ := postSessionDelete(t, web, targetID)
-	if firstRec.Code != http.StatusInternalServerError {
-		t.Fatalf("first delete status=%d body=%s, want pin-store failure", firstRec.Code, firstRec.Body.String())
+	_, firstErr := dispatchSessionDelete(t, web, appwire.SessionDeleteParams{Ref: "local:" + targetID})
+	var wireErr appwire.WireError
+	if !errors.As(firstErr, &wireErr) || wireErr.Code != appwire.CodeInternalError {
+		t.Fatalf("first delete error = %v, want internal pin-store failure", firstErr)
 	}
 	if !corrupted {
 		t.Fatal("test did not inject the pin-store failure after artifact removal")
@@ -491,10 +528,7 @@ func TestAPISessionDeleteRetryScrubsPinAfterArtifactsAreAlreadyGone(t *testing.T
 	}
 	removeProjectSessionFile = oldRemove
 
-	secondRec, secondResp := postSessionDelete(t, web, targetID)
-	if secondRec.Code != http.StatusOK {
-		t.Fatalf("retry status=%d body=%s", secondRec.Code, secondRec.Body.String())
-	}
+	secondResp := mustDeleteSession(t, web, targetID)
 	if len(secondResp.Deleted) != 0 || len(secondResp.Skipped) != 0 {
 		t.Fatalf("retry should preserve the idempotent no-op response: %+v", secondResp)
 	}
@@ -554,10 +588,7 @@ func TestSessionDeleteRefreshesRosterAndBustsTreeMemo(t *testing.T) {
 	})
 	before := inputs.Load()
 
-	rec, resp := postSessionDelete(t, web, webTestSessionID)
-	if rec.Code != http.StatusOK {
-		t.Fatalf("status=%d body=%s", rec.Code, rec.Body.String())
-	}
+	resp := mustDeleteSession(t, web, webTestSessionID)
 	if len(resp.Deleted) != 1 || resp.Deleted[0] != webTestSessionID {
 		t.Fatalf("session should have been deleted: %+v", resp)
 	}

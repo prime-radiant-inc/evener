@@ -347,12 +347,17 @@ whole verb list is:
 | `/api/sessions/local:$SID/fork` | POST | |
 | `/api/sessions/local:$SID/model` | POST | |
 | `/api/sessions/local:$SID/reasoning-effort` | POST | |
-| `/api/sessions/local:$SID/delete` | POST | |
+
 | `/api/sessions/local:$SID/tasks` | GET | |
 
 Rename is AppWire-only: send `evener/thread/name/set` with
 `{"ref":"local:<SID>","name":"<new name>"}` on the authenticated `/rpc`
 connection described below.
+
+Deleting one session is not part of this REST namespace. The WebUI uses the
+hub-scoped typed AppWire method `evener/session/delete` with
+`{"ref":"local:$SID"}`; live or concurrently reserved targets are returned in
+the response's `skipped` array.
 
 **The old `/s/<id>/<action>` form-POST shim is gone** — commit
 `660376f78` deleted it along with the vanilla-JS frontend, and

@@ -33,6 +33,7 @@ import { IDBFactory } from "fake-indexeddb";
 import { afterEach, beforeAll, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
+import { ClientProvider } from "../../../shell/clientContext";
 import { connectionStore } from "../../../stores/connection";
 import { resetPrefsStoreForTests } from "../../../stores/prefs";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
@@ -131,10 +132,10 @@ async function mountComposer(status: string, capabilities: ThreadCapabilities): 
   fake.on("thread/read", () => ({ thread: thread(status, capabilities) }) as ThreadReadResponse);
   await threadsStore.getState().ensureThread(REF);
   render(
-    <>
+    <ClientProvider client={fake}>
       <Toast />
       <Composer ref={REF} />
-    </>,
+    </ClientProvider>,
   );
   return fake;
 }
@@ -295,7 +296,11 @@ test("a working session drawn with no Stop leaves a sighting naming the frame th
       .getState()
       .ensureThread(REF)
       .then(() => {
-        render(<Composer ref={REF} />);
+        render(
+          <ClientProvider client={fake}>
+            <Composer ref={REF} />
+          </ClientProvider>,
+        );
         act(() => {
           fake.emitNotification({
             method: "thread/status/changed",

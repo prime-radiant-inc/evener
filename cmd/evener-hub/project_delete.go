@@ -327,7 +327,7 @@ func (s *WebServer) acquireProjectDeletionOwnership(
 // decisions on success. A failed artifact removal reports skip (with a
 // reason) and never touches decisions, so a retried delete finds them intact.
 // Shared by whole-project deletion (cleanupProjectDeletion, below) and
-// single-session deletion (handleAPISessionDelete) so both apply the exact
+// single-session deletion (sessionDelete) so both apply the exact
 // same per-target contract instead of two copies of it.
 func (s *WebServer) cleanupProjectDeletionTargetAndDecisions(stateDir, threadID string) (deleted bool, skip *projectDeleteSkip, decisionErrors []string) {
 	if err := s.cleanupProjectDeletionTarget(stateDir, threadID); err != nil {

@@ -2,7 +2,6 @@ package hub
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -526,64 +525,6 @@ func TestCovHandleAPIPinSectionsNotConfigured(t *testing.T) {
 	req := httptest.NewRequest(http.MethodGet, "/api/pin-sections", nil)
 	rec := httptest.NewRecorder()
 	web.handleAPIPinSections(rec, req)
-	if rec.Code != http.StatusInternalServerError {
-		t.Fatalf("expected 500, got %d", rec.Code)
-	}
-}
-
-// --- web_api_session_delete.go: handleAPISessionDelete ---
-
-// TestCovHandleAPISessionDeleteMethodNotAllowed covers the method-not-allowed
-// branch (web_api_session_delete.go:38-39).
-func TestCovHandleAPISessionDeleteMethodNotAllowed(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	req := httptest.NewRequest(http.MethodGet, "/api/sessions/s1/delete", nil)
-	rec := httptest.NewRecorder()
-	web.handleAPISessionDelete(rec, req, "s1")
-	if rec.Code != http.StatusMethodNotAllowed {
-		t.Fatalf("expected 405, got %d", rec.Code)
-	}
-}
-
-// TestCovHandleAPISessionDeleteNonLocal covers the non-local-id branch
-// (web_api_session_delete.go:42-43).
-func TestCovHandleAPISessionDeleteNonLocal(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/remote:s1/delete", nil)
-	rec := httptest.NewRecorder()
-	web.handleAPISessionDelete(rec, req, "remote:s1")
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", rec.Code)
-	}
-}
-
-// TestCovHandleAPISessionDeleteInvalidIDShortCircuit pins the route guard: an
-// invalid bare ID is rejected before the Past-index configuration is read.
-func TestCovHandleAPISessionDeleteInvalidIDShortCircuit(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/invalid-id/delete", nil)
-	rec := httptest.NewRecorder()
-	web.handleAPISessionDelete(rec, req, "invalid-id")
-	if rec.Code != http.StatusBadRequest {
-		t.Fatalf("expected 400, got %d", rec.Code)
-	}
-	var got hubapi.ErrorResponse
-	if err := json.NewDecoder(rec.Body).Decode(&got); err != nil {
-		t.Fatalf("decode invalid-ID response: %v", err)
-	}
-	want := hubapi.ErrorResponse{Error: "only local sessions can be deleted"}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("invalid-ID response = %#v, want %#v", got, want)
-	}
-}
-
-// TestCovHandleAPISessionDeleteNoPast covers the no-past-index branch
-// (web_api_session_delete.go:51-52).
-func TestCovHandleAPISessionDeleteNoPast(t *testing.T) {
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	req := httptest.NewRequest(http.MethodPost, "/api/sessions/02wMz5Txv1C3Hut0M8GCeB/delete", nil)
-	rec := httptest.NewRecorder()
-	web.handleAPISessionDelete(rec, req, "02wMz5Txv1C3Hut0M8GCeB")
 	if rec.Code != http.StatusInternalServerError {
 		t.Fatalf("expected 500, got %d", rec.Code)
 	}

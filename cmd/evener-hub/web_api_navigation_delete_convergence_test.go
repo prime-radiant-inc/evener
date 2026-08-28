@@ -1,9 +1,7 @@
 package hub
 
 import (
-	"encoding/json"
 	"errors"
-	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -265,13 +263,9 @@ func TestDeleteNavigationConvergence(t *testing.T) {
 			t.Fatal(err)
 		}
 		source.changeTitle("session-changed")
-		rec, resp := postSessionDelete(t, web, webTestSessionID)
-		if rec.Code != http.StatusOK || len(resp.Deleted) != 1 {
-			t.Fatalf("changed status/body=%d %+v", rec.Code, resp)
-		}
-		var decoded sessionNavigationDeleteResponse
-		if err := json.Unmarshal(rec.Body.Bytes(), &decoded); err != nil {
-			t.Fatal(err)
+		decoded := mustDeleteSession(t, web, webTestSessionID)
+		if len(decoded.Deleted) != 1 {
+			t.Fatalf("changed response=%+v", decoded)
 		}
 		events := web.navigation.DrainPublications()
 		decodedTargets := decoded.Navigation.Targets
@@ -285,14 +279,7 @@ func TestDeleteNavigationConvergence(t *testing.T) {
 			t.Fatalf("session scoped target has zero revision: %+v", events[0].Targets[0])
 		}
 		changedGeneration := decoded.Navigation.GenerationID
-		rec, _ = postSessionDelete(t, web, webTestSessionID)
-		if rec.Code != http.StatusOK {
-			t.Fatal(rec.Code)
-		}
-		var repeat sessionNavigationDeleteResponse
-		if err := json.Unmarshal(rec.Body.Bytes(), &repeat); err != nil {
-			t.Fatal(err)
-		}
+		repeat := mustDeleteSession(t, web, webTestSessionID)
 		if len(repeat.Deleted) != 0 || len(repeat.Navigation.Targets) != 0 || repeat.Navigation.GenerationID != changedGeneration || len(web.navigation.DrainPublications()) != 0 {
 			t.Fatalf("session repeat=%+v", repeat)
 		}
