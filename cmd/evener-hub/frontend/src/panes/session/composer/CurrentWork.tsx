@@ -1,4 +1,5 @@
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { GoalGlyph } from "../GoalGlyph";
 import styles from "./currentwork.module.css";
 
 export interface CurrentWorkProps {
@@ -16,14 +17,6 @@ const CLASS = {
   value: requireClass(styles.value, "currentwork.module.css", "value"),
   divider: requireClass(styles.divider, "currentwork.module.css", "divider"),
 };
-
-function Flag() {
-  return (
-    <svg className={CLASS.flag} viewBox="0 0 16 16" aria-hidden="true" focusable="false">
-      <path d="M4 2 V14 M4 3 L11 5 L4 7" />
-    </svg>
-  );
-}
 
 export function CurrentWork({ task, goal }: CurrentWorkProps) {
   const currentTask = task?.trim() ?? "";
@@ -58,7 +51,7 @@ export function CurrentWork({ task, goal }: CurrentWorkProps) {
       )}
       {currentGoal && (
         <div className={CLASS.goal} data-testid="current-work-goal">
-          <Flag />
+          <GoalGlyph className={CLASS.flag} />
           <span className={CLASS.label}>Goal</span>
           <span className={CLASS.value} data-testid="current-work-goal-value" title={goal}>
             {currentGoal}

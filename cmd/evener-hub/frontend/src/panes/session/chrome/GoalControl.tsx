@@ -28,6 +28,7 @@ import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
 import { Button, Chip, Popover, useToasts } from "../../../widgets";
 import { requireClass } from "../../../widgets/internal/requireClass";
+import { GoalGlyph } from "../GoalGlyph";
 import styles from "./goalcontrol.module.css";
 
 export interface GoalControlProps {
@@ -43,29 +44,6 @@ const CLASS = {
   popover: requireClass(styles.popover, "goalcontrol.module.css", "popover"),
   status: requireClass(styles.status, "goalcontrol.module.css", "status"),
 };
-
-// The compact trigger's glyph: evener has no dedicated goal icon (widgets/
-// toolicon is a closed enum of tool-row kinds, not extended here per the
-// approved design). A small flag on a pole reads as "goal"/milestone at
-// 16px and follows widgets/toolicon's own grammar exactly (see that
-// widget's header comment) - stroke currentColor, 1.75 width, round caps/
-// joins, fill none, square 16x16 block box - so it reads as one icon
-// family with the rest of the app even though it isn't drawn through that
-// widget.
-function GoalGlyph() {
-  return (
-    <svg viewBox="0 0 16 16" width={14} height={14} aria-hidden="true" focusable="false" style={{ display: "block" }}>
-      <path
-        d="M4 2 V14 M4 3 L11 5 L4 7"
-        stroke="currentColor"
-        strokeWidth="1.75"
-        strokeLinecap="round"
-        strokeLinejoin="round"
-        fill="none"
-      />
-    </svg>
-  );
-}
 
 function iterationsLabel(iterations: number): string {
   return `${iterations} iteration${iterations === 1 ? "" : "s"}`;

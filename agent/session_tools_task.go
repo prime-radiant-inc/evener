@@ -167,11 +167,12 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				// task is announced via a separate SYSTEM-REMINDER steering
 				// message when the agent actually transitions one to
 				// in_progress, either manually or via auto-advance.
-				taskUpdate := taskUpdatedData(store.View())
+				tasks := store.View()
+				taskUpdate := taskUpdatedData(tasks)
 				deps.emit(events.EventTaskUpdated, taskUpdate)
 				return tool.StateResult{
 					Output: fmt.Sprintf("Added %d task(s). Progress: %d/%d tasks complete.", len(added), taskUpdate.Done, taskUpdate.Total),
-					State:  store.View(),
+					State:  tasks,
 				}, nil
 			case "update":
 				raw, ok := args["updates"].([]any)
