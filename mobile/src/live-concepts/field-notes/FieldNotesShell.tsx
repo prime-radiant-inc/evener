@@ -80,6 +80,7 @@ export function FieldNotesShell({
         className="fn-scroll-owner"
         data-surface={surface}
         data-pushed-route={pushed ? "true" : undefined}
+        data-live-concept-scroller="true"
       >
         <header
           className="fn-topbar"

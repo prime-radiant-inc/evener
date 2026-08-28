@@ -82,7 +82,11 @@ export function StillwaterRenderer({
       data-thread-key={state.conversation?.threadKey}
       aria-label={conceptRootAxLabel(state)}
     >
-      <main className="sw-scroll" data-route={meta.route}>
+      <main
+        className="sw-scroll"
+        data-route={meta.route}
+        data-live-concept-scroller="true"
+      >
         <header className="sw-topbar">
           <div className="sw-topbar__leading">
             {meta.pushed ? (

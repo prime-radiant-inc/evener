@@ -22,6 +22,7 @@ import { WireError } from "../../../cmd/evener-hub/frontend/src/protocol/errors"
 import type {
   AnyNotification,
   InputItem,
+  MutationReceipt,
   ThreadCapabilities,
   ThreadItem,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
@@ -68,7 +69,7 @@ export interface ConversationMutationState {
 /** Display-safe local acknowledgement of a completed production mutation. */
 export interface AcceptedConversationMutation {
   readonly kind: "send" | "steer" | "queue" | "interrupt";
-  readonly receipt: number;
+  readonly receipt: MutationReceipt;
 }
 
 interface DrainScheduler {
@@ -1682,7 +1683,7 @@ export function createConversationStore() {
         // it.
         const entryErrorRev = errorOwnerRev;
         try {
-          await service.send(input);
+          const receipt = await service.send(input);
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
           // F4: Check mutationId — out-of-order completion cannot clear a
@@ -1696,14 +1697,14 @@ export function createConversationStore() {
               set({
                 pendingSend: null,
                 pendingMutation: null,
-                lastAcceptedMutation: { kind: "send", receipt: mutationId },
+                lastAcceptedMutation: { kind: "send", receipt },
                 error: null,
               });
             } else {
               set({
                 pendingSend: null,
                 pendingMutation: null,
-                lastAcceptedMutation: { kind: "send", receipt: mutationId },
+                lastAcceptedMutation: { kind: "send", receipt },
               });
             }
             // I1: mutation settled (success) — drain deferred trailing reread.
@@ -1766,7 +1767,7 @@ export function createConversationStore() {
         // I1: Capture error-owner revision AFTER installing pending+error-clear.
         const entryErrorRev = errorOwnerRev;
         try {
-          await service.steer(input);
+          const receipt = await service.steer(input);
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
           if (get().pendingMutation?.mutationId === mutationId) {
@@ -1775,13 +1776,13 @@ export function createConversationStore() {
             if (entryErrorRev === errorOwnerRev) {
               set({
                 pendingMutation: null,
-                lastAcceptedMutation: { kind: "steer", receipt: mutationId },
+                lastAcceptedMutation: { kind: "steer", receipt },
                 error: null,
               });
             } else {
               set({
                 pendingMutation: null,
-                lastAcceptedMutation: { kind: "steer", receipt: mutationId },
+                lastAcceptedMutation: { kind: "steer", receipt },
               });
             }
             // I1: mutation settled (success) — drain deferred trailing reread.
@@ -1843,7 +1844,7 @@ export function createConversationStore() {
         // I1: Capture error-owner revision AFTER installing pending+error-clear.
         const entryErrorRev = errorOwnerRev;
         try {
-          await service.queue(input);
+          const receipt = await service.queue(input);
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
           if (get().pendingMutation?.mutationId === mutationId) {
@@ -1852,13 +1853,13 @@ export function createConversationStore() {
             if (entryErrorRev === errorOwnerRev) {
               set({
                 pendingMutation: null,
-                lastAcceptedMutation: { kind: "queue", receipt: mutationId },
+                lastAcceptedMutation: { kind: "queue", receipt },
                 error: null,
               });
             } else {
               set({
                 pendingMutation: null,
-                lastAcceptedMutation: { kind: "queue", receipt: mutationId },
+                lastAcceptedMutation: { kind: "queue", receipt },
               });
             }
             // I1: mutation settled (success) — drain deferred trailing reread.
@@ -1920,7 +1921,7 @@ export function createConversationStore() {
         // I1: Capture error-owner revision AFTER installing pending+error-clear.
         const entryErrorRev = errorOwnerRev;
         try {
-          await service.interrupt();
+          const receipt = await service.interrupt();
           // C1: Recheck the exact operation binding after the await.
           if (!isBindingCurrent(opBinding)) return;
           if (get().pendingMutation?.mutationId === mutationId) {
@@ -1931,7 +1932,7 @@ export function createConversationStore() {
                 pendingMutation: null,
                 lastAcceptedMutation: {
                   kind: "interrupt",
-                  receipt: mutationId,
+                  receipt,
                 },
                 error: null,
               });
@@ -1940,7 +1941,7 @@ export function createConversationStore() {
                 pendingMutation: null,
                 lastAcceptedMutation: {
                   kind: "interrupt",
-                  receipt: mutationId,
+                  receipt,
                 },
               });
             }

@@ -44,7 +44,7 @@ const sampleDraft: QuestionDraft = {
   resolution: "answer",
 };
 
-const sampleAnchor: ScrollAnchor = { itemKey: "item-1", offset: 120 };
+const sampleAnchor: ScrollAnchor = { scrollTop: 120 };
 
 describe("live concept UI store — persistence", () => {
   it("loads a valid persisted concept from storage", () => {
@@ -151,8 +151,8 @@ describe("live concept UI store — scroll anchors", () => {
     const storage = createMemoryStorage(null);
     const store = createLiveConceptUiStore(storage);
 
-    const anchor1: ScrollAnchor = { itemKey: "item-a", offset: 0 };
-    const anchor2: ScrollAnchor = { itemKey: "item-b", offset: 50 };
+    const anchor1: ScrollAnchor = { scrollTop: 0 };
+    const anchor2: ScrollAnchor = { scrollTop: 50 };
 
     store.getState().setScrollAnchor("stillwater:sessions:thread-a", anchor1);
     store

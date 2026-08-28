@@ -167,6 +167,99 @@ function extractCapabilities(raw: unknown): ThreadCapabilities {
   return caps;
 }
 
+type MutationKind = "send" | "steer" | "queue" | "interrupt";
+
+function exactObject(
+  raw: unknown,
+  keys: readonly string[],
+  label: string,
+): Record<string, unknown> {
+  if (raw === null || typeof raw !== "object" || Array.isArray(raw)) {
+    throw new Error(`ConversationService: ${label} is not an object`);
+  }
+  const object = raw as Record<string, unknown>;
+  const actual = Object.keys(object).sort();
+  const expected = [...keys].sort();
+  if (
+    actual.length !== expected.length ||
+    actual.some((key, index) => key !== expected[index])
+  ) {
+    throw new Error(`ConversationService: ${label} has unexpected keys`);
+  }
+  return object;
+}
+
+function nonemptyString(raw: unknown, label: string): string {
+  if (typeof raw !== "string" || raw.trim() === "") {
+    throw new Error(`ConversationService: ${label} is empty or invalid`);
+  }
+  return raw;
+}
+
+function decodeMutationResult(
+  kind: MutationKind,
+  raw: unknown,
+  clientMutationId: string,
+): MutationReceipt {
+  const resultKeys = kind === "send" ? ["receipt", "turn"] : ["receipt"];
+  const result = exactObject(raw, resultKeys, `${kind} result`);
+  if (kind === "send") {
+    const turn = result.turn;
+    if (turn === null || typeof turn !== "object" || Array.isArray(turn)) {
+      throw new Error("ConversationService: send result turn is not an object");
+    }
+    nonemptyString((turn as Record<string, unknown>).id, "send turn id");
+  }
+
+  const requiredReceiptKeys = [
+    "clientMutationId",
+    "disposition",
+    "threadId",
+    "projectionState",
+  ];
+  if (kind === "send" || kind === "steer") requiredReceiptKeys.push("turnId");
+  if (kind === "queue") requiredReceiptKeys.push("queueEntryIds");
+  const receipt = exactObject(
+    result.receipt,
+    requiredReceiptKeys,
+    `${kind} receipt`,
+  );
+  if (receipt.clientMutationId !== clientMutationId) {
+    throw new Error(
+      `ConversationService: ${kind} receipt correlation mismatch`,
+    );
+  }
+  if (receipt.disposition !== "accepted") {
+    throw new Error(`ConversationService: ${kind} receipt was not accepted`);
+  }
+  const decoded: MutationReceipt = {
+    clientMutationId,
+    disposition: "accepted",
+    threadId: nonemptyString(receipt.threadId, `${kind} thread id`),
+    projectionState: nonemptyString(
+      receipt.projectionState,
+      `${kind} projection state`,
+    ),
+  };
+  if (kind === "send" || kind === "steer") {
+    decoded.turnId = nonemptyString(receipt.turnId, `${kind} turn id`);
+  }
+  if (kind === "queue") {
+    const ids = receipt.queueEntryIds;
+    if (
+      !Array.isArray(ids) ||
+      ids.length === 0 ||
+      ids.some((id) => typeof id !== "string" || id.trim() === "")
+    ) {
+      throw new Error(
+        "ConversationService: queue entry ids are empty or invalid",
+      );
+    }
+    decoded.queueEntryIds = [...ids];
+  }
+  return decoded;
+}
+
 export function createConversationService(
   client: ConversationClientLike | AppwireClient,
   options: ConversationServiceOptions = {},
@@ -357,51 +450,55 @@ export function createConversationService(
       requireCap("send", "send");
       const threadRef = requireRef();
       const clientMutationId = idFactory();
-      return withCapabilityRefresh("send", () =>
+      const result = await withCapabilityRefresh("send", () =>
         client.request("turn/start", {
           ref: threadRef,
           clientMutationId,
           input,
         }),
-      ).then((r) => (r as { receipt: MutationReceipt }).receipt);
+      );
+      return decodeMutationResult("send", result, clientMutationId);
     },
 
     async steer(input) {
       requireCap("steer", "steer");
       const threadRef = requireRef();
       const clientMutationId = idFactory();
-      return withCapabilityRefresh("steer", () =>
+      const result = await withCapabilityRefresh("steer", () =>
         client.request("turn/steer", {
           ref: threadRef,
           clientMutationId,
           input,
         }),
-      ).then((r) => (r as { receipt: MutationReceipt }).receipt);
+      );
+      return decodeMutationResult("steer", result, clientMutationId);
     },
 
     async queue(input) {
       requireCap("queue", "queue");
       const threadRef = requireRef();
       const clientMutationId = idFactory();
-      return withCapabilityRefresh("queue", () =>
+      const result = await withCapabilityRefresh("queue", () =>
         client.request("turn/queue", {
           ref: threadRef,
           clientMutationId,
           input,
         }),
-      ).then((r) => (r as { receipt: MutationReceipt }).receipt);
+      );
+      return decodeMutationResult("queue", result, clientMutationId);
     },
 
     async interrupt() {
       requireCap("interrupt", "interrupt");
       const threadRef = requireRef();
       const clientMutationId = idFactory();
-      return withCapabilityRefresh("interrupt", () =>
+      const result = await withCapabilityRefresh("interrupt", () =>
         client.request("turn/interrupt", {
           ref: threadRef,
           clientMutationId,
         }),
-      ).then((r) => (r as { receipt: MutationReceipt }).receipt);
+      );
+      return decodeMutationResult("interrupt", result, clientMutationId);
     },
 
     async compact() {

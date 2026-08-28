@@ -453,7 +453,10 @@ export function LiveConceptHost({
       ? false
       : (mobileConversation?.capabilities.interrupt ?? false),
     pending: profileBlocked ? null : projectPendingMutation(pendingMutation),
-    accepted: profileBlocked ? null : acceptedMutation,
+    accepted:
+      profileBlocked || acceptedMutation === null
+        ? null
+        : { kind: acceptedMutation.kind },
     error: profileBlocked
       ? null
       : conversationResult.failed
@@ -492,6 +495,31 @@ export function LiveConceptHost({
   };
   const Renderer = liveConceptRegistry[concept].Renderer;
   const connectionLabel = connectionStatusAxLabel(state.connection);
+  const scrollIdentity = conversation?.threadKey ?? "roster";
+  const scrollAnchorKey = `${concept}:${surface}:${scrollIdentity}`;
+  useLayoutEffect(() => {
+    const scroller = document.querySelector<HTMLElement>(
+      "[data-live-concept-scroller='true']",
+    );
+    if (scroller === null) return;
+    let restoring = true;
+    let observedScroll = false;
+    const saved = uiStore.getState().scrollAnchors[scrollAnchorKey];
+    scroller.scrollTop = saved?.scrollTop ?? 0;
+    restoring = false;
+    const capture = (): void => {
+      if (restoring) return;
+      observedScroll = true;
+      uiStore
+        .getState()
+        .setScrollAnchor(scrollAnchorKey, { scrollTop: scroller.scrollTop });
+    };
+    scroller.addEventListener("scroll", capture, { passive: true });
+    return () => {
+      scroller.removeEventListener("scroll", capture);
+      if (observedScroll || saved !== undefined) capture();
+    };
+  }, [scrollAnchorKey, uiStore]);
   return (
     <>
       <p

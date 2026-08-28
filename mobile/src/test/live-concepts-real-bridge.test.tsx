@@ -681,14 +681,15 @@ function receiptFor(
   kind: "send" | "steer" | "queue" | "interrupt",
 ): MutationReceipt {
   const params = request.params as { clientMutationId: string };
-  return {
+  const receipt: MutationReceipt = {
     clientMutationId: params.clientMutationId,
     disposition: "accepted",
     threadId: ATTENTION_THREAD_ID,
-    turnId: kind === "send" ? "turn-receipt" : undefined,
-    queueEntryIds: kind === "queue" ? ["queue-entry-live"] : undefined,
     projectionState: "current",
   };
+  if (kind === "send" || kind === "steer") receipt.turnId = "turn-receipt";
+  if (kind === "queue") receipt.queueEntryIds = ["queue-entry-live"];
+  return receipt;
 }
 
 function clientMutationId(request: ServerFrame): string {
@@ -708,7 +709,8 @@ function expectReceiptCorrelation(
   expect(receipt.disposition).toBe("accepted");
   expect(receipt.threadId).toBe(ATTENTION_THREAD_ID);
   expect(receipt.projectionState).toBe("current");
-  if (kind === "send") expect(receipt.turnId).toBe("turn-receipt");
+  if (kind === "send" || kind === "steer")
+    expect(receipt.turnId).toBe("turn-receipt");
   else expect(receipt.turnId).toBeUndefined();
   if (kind === "queue") {
     expect(receipt.queueEntryIds).toEqual(["queue-entry-live"]);

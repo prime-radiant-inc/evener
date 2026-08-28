@@ -75,7 +75,7 @@ function receipt(kind, suffix) {
   return {
     kind,
     status: "accepted",
-    receipt: Number(suffix),
+    receipt: `sha256:${String.fromCharCode(96 + Number(suffix)).repeat(64)}`,
     pendingTreeDigest: SHA_A,
     acceptedTreeDigest: suffix === 1 ? SHA_B : SHA_C,
   };
@@ -130,6 +130,7 @@ function evidenceFor(milestone) {
       return {
         activeThreadId: "thread-opaque",
         titleDigest: SHA_A,
+        selectedTitle: "Field Notes current conversation",
         transcriptIds: ["item-a"],
         readLimit: 50,
         expectedSequence: expected("read"),
@@ -151,6 +152,7 @@ function evidenceFor(milestone) {
       return {
         rosterIds: ["row-a", "row-b"],
         activeThreadId: "thread-opaque",
+        selectedTitle: "Field Notes current conversation",
         draftBefore: "draft-sentinel",
         draftAfter: "draft-sentinel",
         beforeTreeDigest: SHA_A,
@@ -165,6 +167,7 @@ function evidenceFor(milestone) {
       return {
         rosterIds: ["row-a", "row-b"],
         activeThreadId: "thread-opaque",
+        selectedTitle: "Field Notes current conversation",
         draftBefore: "draft-sentinel",
         draftAfter: "draft-sentinel",
         beforeTreeDigest: SHA_A,
@@ -180,7 +183,7 @@ function evidenceFor(milestone) {
         tasks: [{ id: "task-a", digest: SHA_A }],
         jobs: [{ id: "job-a", digest: SHA_A }],
         delegates: [{ id: "delegate-a", digest: SHA_A }],
-        usage: { digest: SHA_B },
+        usage: { digest: SHA_B, tokenCount: 4096, valueCount: 3 },
       };
     case "background-foreground":
       return {
@@ -199,6 +202,7 @@ function evidenceFor(milestone) {
         reopened: true,
         activeThreadId: "thread-opaque",
         titleDigest: SHA_A,
+        selectedTitle: "Field Notes current conversation",
         transcriptDigest: SHA_B,
         connectionTreeDigest: SHA_C,
       };
@@ -209,6 +213,7 @@ function evidenceFor(milestone) {
         labAbsent: true,
         activeThreadId: "thread-opaque",
         titleDigest: SHA_A,
+        selectedTitle: "Field Notes current conversation",
         hubVersion: "hub-1",
         protocolVersion: "evener-appwire-v3",
       };
@@ -264,6 +269,14 @@ test("exports the exact milestone and explicitly expected wire sequence contract
     "fixture-absence",
   ]);
   assert.equal(EXPECTED_LIVE_SEQUENCE.classification, "expected-task4-proven");
+  assert.deepEqual(EXPECTED_LIVE_SEQUENCE.send.requests, ["turn/start"]);
+  assert.deepEqual(EXPECTED_LIVE_SEQUENCE.steerQueue.requests, [
+    "turn/steer",
+    "turn/queue",
+  ]);
+  assert.deepEqual(EXPECTED_LIVE_SEQUENCE.interrupt.requests, [
+    "turn/interrupt",
+  ]);
   assert.doesNotThrow(() => assertCompleteLiveSmoke(validObserved()));
 });
 
@@ -351,9 +364,10 @@ test("validator rejects synthesized physical outcomes and empty expected sequenc
   );
   await t.test("duplicate receipt sequence", () =>
     rejects((rows) => {
-      rows[5].evidence.receipts[1].receipt = 2;
+      rows[5].evidence.receipts[1].receipt =
+        rows[5].evidence.receipts[0].receipt;
       rows[5].positiveMarker.markerDigest = derivePositiveMarker(rows[5]);
-    }, /receipt.*distinct|ordered/i),
+    }, /status digests.*distinct/i),
   );
   await t.test("unchanged background tree", () =>
     rejects((rows) => {
@@ -465,10 +479,12 @@ test("parseCli keeps exactly four flags and environment carries sensitive prereq
     readSmokeEnvironment({
       EVENER_SMOKE_APP_PATH: "/tmp/Evener.app",
       EVENER_SMOKE_THREAD_REF: "raw-sensitive-ref",
+      EVENER_SMOKE_THREAD_TITLE: "Other live session",
     }),
     {
       appPath: "/tmp/Evener.app",
       threadRef: "raw-sensitive-ref",
+      threadTitle: "Other live session",
     },
   );
   assert.throws(
@@ -970,9 +986,11 @@ test("staged install uses exact IDB receipt and companion-only devicectl fallbac
 test("pollSemanticTree shares one overall monotonic budget", async () => {
   let now = 0;
   let calls = 0;
+  const remainingBudgets = [];
   await assert.rejects(
     pollSemanticTree({
-      readTree: async () => {
+      readTree: async (remainingMs) => {
+        remainingBudgets.push(remainingMs);
         calls += 1;
         now += 4_000;
         return { nodes: [] };
@@ -983,6 +1001,7 @@ test("pollSemanticTree shares one overall monotonic budget", async () => {
     /semantic tripwire/i,
   );
   assert.equal(calls, 3);
+  assert.deepEqual(remainingBudgets, [10_000, 6_000, 2_000]);
 });
 
 test("evidence publication creates exclusive roots, hashes exact raw bytes, and refuses overwrite", async () => {
@@ -1729,7 +1748,7 @@ class StatefulIdbFake {
     const title = `${this.mutation.kind[0].toUpperCase()}${this.mutation.kind.slice(1)}`;
     return this.mutation.phase === 0
       ? `${title} pending`
-      : `${title} accepted; update ${this.mutation.receipt}`;
+      : `${title} accepted by Hub`;
   }
 
   conversationNodes() {
@@ -1738,8 +1757,8 @@ class StatefulIdbFake {
       axNode(`${this.concept} conversation`, "AXGroup"),
       axNode(
         this.finalPhase && this.finalFault === "wrong-thread"
-          ? "Session Other live session"
-          : "Session Known live session",
+          ? "Session Known live session"
+          : "Session Other live session",
         "AXGroup",
       ),
       axNode("Message", "AXTextArea", this.draft),
@@ -1789,7 +1808,16 @@ class StatefulIdbFake {
       axNode("Task Fix auth; status running", "AXGroup"),
       axNode("Delegate Investigate; status running", "AXGroup"),
       axNode("Job Run tests; status idle", "AXGroup"),
-      axNode("Usage summary", "AXGroup"),
+      {
+        label: "Usage summary",
+        type: "AXGroup",
+        children: [
+          axNode("Tokens"),
+          axNode("4096"),
+          axNode("Cost"),
+          axNode("$0.42"),
+        ],
+      },
       axNode("Close", "AXButton"),
     ];
   }
@@ -1826,6 +1854,7 @@ async function runStatefulSmoke(options = {}) {
       env: {
         EVENER_SMOKE_APP_PATH: app,
         EVENER_SMOKE_THREAD_REF: "raw-sensitive-thread-ref",
+        EVENER_SMOKE_THREAD_TITLE: "Other live session",
       },
       sentinels: {
         send: "smoke-send",
@@ -1905,7 +1934,6 @@ test("final absence remains bound to the reopened production app", async (t) => 
     "wrong-concept",
     "wrong-thread",
     "wrong-hub",
-    "descendant-contamination",
     "forbidden-control",
   ]) {
     await t.test(fault, async () => {
@@ -1915,4 +1943,9 @@ test("final absence remains bound to the reopened production app", async (t) => 
       );
     });
   }
+  await t.test("transcript words are not fixture landmarks", async () => {
+    await assert.doesNotReject(
+      runStatefulSmoke({ finalFault: "descendant-contamination" }),
+    );
+  });
 });
