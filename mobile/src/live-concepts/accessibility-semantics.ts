@@ -90,7 +90,7 @@ export function mutationAxLabel(composer: LiveComposerView): string | null {
   }
   const accepted = composer.accepted ?? null;
   if (accepted !== null) {
-    return `${titleCase(accepted.kind)} accepted by Hub`;
+    return `${titleCase(accepted.kind)} ${accepted.disposition} by Hub`;
   }
   return null;
 }

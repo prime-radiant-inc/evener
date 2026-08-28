@@ -74,7 +74,7 @@ function expected(kind) {
 function receipt(kind, suffix) {
   return {
     kind,
-    status: "accepted",
+    disposition: kind === "queue" ? "replayed" : "applied",
     receipt: `sha256:${String.fromCharCode(96 + Number(suffix)).repeat(64)}`,
     pendingTreeDigest: SHA_A,
     acceptedTreeDigest: suffix === 1 ? SHA_B : SHA_C,
@@ -368,6 +368,12 @@ test("validator rejects synthesized physical outcomes and empty expected sequenc
         rows[5].evidence.receipts[0].receipt;
       rows[5].positiveMarker.markerDigest = derivePositiveMarker(rows[5]);
     }, /status digests.*distinct/i),
+  );
+  await t.test("invented accepted disposition", () =>
+    rejects((rows) => {
+      rows[3].evidence.receipt.disposition = "accepted";
+      rows[3].positiveMarker.markerDigest = derivePositiveMarker(rows[3]);
+    }, /applied or replayed/i),
   );
   await t.test("unchanged background tree", () =>
     rejects((rows) => {
@@ -1386,10 +1392,14 @@ class StatefulIdbFake {
     appendDraft = false,
     reuseBaselineForStreaming = false,
     finalFault = null,
+    rosterMode = "second",
+    usageMode = "real",
   } = {}) {
     this.appendDraft = appendDraft;
     this.reuseBaselineForStreaming = reuseBaselineForStreaming;
     this.finalFault = finalFault;
+    this.rosterMode = rosterMode;
+    this.usageMode = usageMode;
     this.calls = [];
     this.concept = "Stillwater";
     this.surface = "sessions";
@@ -1632,7 +1642,12 @@ class StatefulIdbFake {
 
   startMutation(kind) {
     this.receipt += 1;
-    this.mutation = { kind, phase: 0, receipt: this.receipt };
+    this.mutation = {
+      kind,
+      phase: 0,
+      receipt: this.receipt,
+      disposition: kind === "queue" ? "replayed" : "applied",
+    };
     this.reasoningOpen = false;
     this.toolOpen = false;
   }
@@ -1683,13 +1698,21 @@ class StatefulIdbFake {
   }
 
   rosterNodes() {
+    const titles =
+      this.rosterMode === "first"
+        ? ["Other live session", "Known live session"]
+        : this.rosterMode === "duplicate"
+          ? ["Other live session", "Other live session"]
+          : this.rosterMode === "missing"
+            ? ["Known live session", "Another live session"]
+            : ["Known live session", "Other live session"];
     return [
       ...this.connectionNodes(),
       axNode("laptop active server reachable", "AXButton"),
       axNode(`${this.concept} sessions`, "AXGroup"),
       axNode(`${this.concept} sessions; 2 sessions; complete list`),
-      axNode("Open Known live session; status running", "AXButton"),
-      axNode("Open Other live session; status idle", "AXButton"),
+      axNode(`Open ${titles[0]}; status running`, "AXButton"),
+      axNode(`Open ${titles[1]}; status idle`, "AXButton"),
       axNode("Switch concept", "AXButton"),
     ];
   }
@@ -1748,7 +1771,7 @@ class StatefulIdbFake {
     const title = `${this.mutation.kind[0].toUpperCase()}${this.mutation.kind.slice(1)}`;
     return this.mutation.phase === 0
       ? `${title} pending`
-      : `${title} accepted by Hub`;
+      : `${title} ${this.mutation.disposition} by Hub`;
   }
 
   conversationNodes() {
@@ -1792,6 +1815,19 @@ class StatefulIdbFake {
     if (this.finalPhase && this.finalFault === "forbidden-control") {
       nodes.push(axNode("Search", "AXButton"));
     }
+    if (this.finalPhase && this.finalFault === "fixture-control") {
+      nodes.push(axNode("Prototype controls", "AXButton"));
+    }
+    if (this.finalPhase && this.finalFault === "static-forbidden") {
+      for (const label of [
+        "Search",
+        "Prototype controls",
+        "Scenario selector",
+        "Fixture mode",
+      ]) {
+        nodes.push(axNode(label, "AXStaticText"));
+      }
+    }
     return nodes;
   }
 
@@ -1802,6 +1838,18 @@ class StatefulIdbFake {
   }
 
   workNodes() {
+    const usageChildren =
+      this.usageMode === "tokens-only"
+        ? [axNode("Tokens"), axNode("4096")]
+        : this.usageMode === "labels-only"
+          ? [
+              axNode("Tokens"),
+              axNode("4096"),
+              axNode("Cost"),
+              axNode("Duration"),
+              axNode("Context"),
+            ]
+          : [axNode("Tokens"), axNode("4096"), axNode("Cost"), axNode("$0.42")];
     return [
       ...this.connectionNodes(),
       axNode("Field Notes work", "AXGroup"),
@@ -1811,12 +1859,7 @@ class StatefulIdbFake {
       {
         label: "Usage summary",
         type: "AXGroup",
-        children: [
-          axNode("Tokens"),
-          axNode("4096"),
-          axNode("Cost"),
-          axNode("$0.42"),
-        ],
+        children: usageChildren,
       },
       axNode("Close", "AXButton"),
     ];
@@ -1831,12 +1874,12 @@ async function runStatefulSmoke(options = {}) {
   await mkdir(app);
   await writeFile(path.join(app, "Info.plist"), "plist");
   await writeFile(path.join(app, "Evener"), "binary");
-  const fake = new StatefulIdbFake(options);
+  const fake = options.fake ?? new StatefulIdbFake(options);
   let monotonic = 0;
   const now = () => {
     monotonic +=
-      (options.fastFailure || options.finalFault !== undefined) &&
-      fake.finalPhase
+      options.fastFailure ||
+      (options.finalFault !== undefined && fake.finalPhase)
         ? 4_000
         : 1;
     return monotonic;
@@ -1910,6 +1953,54 @@ test("physical orchestration uses staged install, stateful set-value, and causal
         call[0] === "idb" && call[1] === "ui" && call[2] === "set-value",
     ).length >= 4,
   );
+  const tappedLabels = fake.calls
+    .filter(
+      (call) => call[0] === "idb" && call[1] === "ui" && call[2] === "tap",
+    )
+    .map((call) => call[3]);
+  assert.equal(
+    tappedLabels.includes("Open Other live session; status idle"),
+    true,
+  );
+  assert.equal(
+    tappedLabels.includes("Open Known live session; status running"),
+    false,
+  );
+});
+
+test("unique preflight title is selected safely in either roster position", async () => {
+  const { fake } = await runStatefulSmoke({ rosterMode: "first" });
+  assert.equal(
+    fake.calls.some(
+      (call) =>
+        call[0] === "idb" &&
+        call[1] === "ui" &&
+        call[2] === "tap" &&
+        call[3] === "Open Other live session; status running",
+    ),
+    true,
+  );
+});
+
+test("duplicate or missing preflight title blocks before mutation", async () => {
+  for (const rosterMode of ["duplicate", "missing"]) {
+    const fake = new StatefulIdbFake({ rosterMode });
+    await assert.rejects(
+      runStatefulSmoke({ fake, fastFailure: true }),
+      /semantic tripwire|selected roster title|live workflow failed/i,
+    );
+    assert.equal(fake.mutation, null);
+    assert.equal(fake.receipt, 0);
+  }
+});
+
+test("usage requires tokens plus a populated value rather than field labels", async () => {
+  for (const usageMode of ["tokens-only", "labels-only"]) {
+    await assert.rejects(
+      runStatefulSmoke({ usageMode, fastFailure: true }),
+      /semantic tripwire|usage values|live workflow failed/i,
+    );
+  }
 });
 
 test("stateful fake proves set-value replaces rather than appends", async () => {
@@ -1934,6 +2025,7 @@ test("final absence remains bound to the reopened production app", async (t) => 
     "wrong-concept",
     "wrong-thread",
     "wrong-hub",
+    "fixture-control",
     "forbidden-control",
   ]) {
     await t.test(fault, async () => {
@@ -1948,4 +2040,12 @@ test("final absence remains bound to the reopened production app", async (t) => 
       runStatefulSmoke({ finalFault: "descendant-contamination" }),
     );
   });
+  await t.test(
+    "exact forbidden words in static content are allowed",
+    async () => {
+      await assert.doesNotReject(
+        runStatefulSmoke({ finalFault: "static-forbidden" }),
+      );
+    },
+  );
 });

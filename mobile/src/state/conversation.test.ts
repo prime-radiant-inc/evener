@@ -131,9 +131,10 @@ function makeConversation(
 function makeReceipt(over: Partial<MutationReceipt> = {}): MutationReceipt {
   return {
     clientMutationId: "cmid-1",
-    disposition: "accepted",
+    disposition: "applied",
     threadId: "thread-1",
-    projectionState: "current",
+    turnId: "turn-1",
+    projectionState: "pending",
     ...over,
   };
 }
@@ -338,6 +339,24 @@ describe("ConversationStore", () => {
       expect(store.getState().draft).toBe("");
     });
 
+    it("publishes a replayed Hub receipt as success without retry or failure", async () => {
+      const service = new FakeConversationService();
+      service.receipt = makeReceipt({ disposition: "replayed" });
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      store.getState().setDraft("idempotent retry");
+
+      await store.getState().send(service, textInput("idempotent retry"));
+
+      expect(service.sendCallCount).toBe(1);
+      expect(store.getState().pendingMutation).toBeNull();
+      expect(store.getState().error).toBeNull();
+      expect(store.getState().lastAcceptedMutation).toEqual({
+        kind: "send",
+        receipt: expect.objectContaining({ disposition: "replayed" }),
+      });
+    });
+
     it("restores draft on conflict and shows error", async () => {
       const service = new FakeConversationService();
       service.sendShouldReject = new Error("conflict");
@@ -452,7 +471,7 @@ describe("ConversationStore", () => {
         expect(store.getState().pendingMutation).toBeNull();
         expect(store.getState().lastAcceptedMutation).toEqual({
           kind,
-          receipt: expect.objectContaining({ disposition: "accepted" }),
+          receipt: expect.objectContaining({ disposition: "applied" }),
         });
       });
 

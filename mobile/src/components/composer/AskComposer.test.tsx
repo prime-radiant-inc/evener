@@ -42,7 +42,7 @@ const ALL_TRUE_CAPS: MobileCapabilities = {
 function makeReceipt(): MutationReceipt {
   return {
     clientMutationId: "cmid-1",
-    disposition: "accepted",
+    disposition: "applied",
     threadId: "thread-1",
     projectionState: "current",
   };

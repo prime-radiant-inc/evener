@@ -269,7 +269,7 @@ function buildState(
       canQueue: true,
       canInterrupt: false,
       pending: null,
-      accepted: { kind: "send" },
+      accepted: { kind: "send", disposition: "applied" },
       error: null,
     },
     ui: {

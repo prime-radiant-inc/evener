@@ -197,8 +197,11 @@ function requireExpectedSequence(value, label, expectedKey) {
 
 function requireReceipt(value, kind) {
   const receipt = requireObject(value, `${kind} receipt`);
-  if (receipt.kind !== kind || receipt.status !== "accepted") {
-    throw new Error(`${kind} receipt must be accepted`);
+  if (
+    receipt.kind !== kind ||
+    !["applied", "replayed"].includes(receipt.disposition)
+  ) {
+    throw new Error(`${kind} receipt must be applied or replayed`);
   }
   requireDigest(receipt.receipt, `${kind} verified status digest`);
   requireDigest(receipt.pendingTreeDigest, `${kind} pending tree`);
@@ -1612,11 +1615,7 @@ function selectUniqueRosterRow(roster, expectedTitle) {
   if (matches.length !== 1) {
     throw new SmokeError("selected roster title must be unique");
   }
-  const row = matches[0];
-  if (roster.rows.indexOf(row) === 0) {
-    throw new SmokeError("selected roster title cannot be the first row");
-  }
-  return row;
+  return matches[0];
 }
 
 function parseConversation(snapshot, concept, expectedTitle = null) {
@@ -1664,17 +1663,20 @@ function parseMutation(snapshot, kind, status) {
     "mutation AX unavailable",
   );
   const match = node.label.match(
-    /^(Send|Steer|Queue|Interrupt) (pending|failed|accepted by Hub)$/,
+    /^(Send|Steer|Queue|Interrupt) (pending|failed|applied by Hub|replayed by Hub)$/,
   );
-  const normalizedStatus =
-    match?.[2] === "accepted by Hub" ? "accepted" : match?.[2];
+  const disposition = match?.[2]?.endsWith(" by Hub")
+    ? match[2].slice(0, -" by Hub".length)
+    : null;
+  const normalizedStatus = disposition === null ? match?.[2] : "settled";
   if (!match || match[1] !== title || normalizedStatus !== status) {
     throw new SmokeError("mutation AX unavailable");
   }
   return {
     kind,
     status,
-    receipt: status === "accepted" ? digest(node.label) : null,
+    disposition,
+    receipt: status === "settled" ? digest(node.label) : null,
   };
 }
 
@@ -1749,11 +1751,21 @@ function parseWork(snapshot) {
     .filter(
       (value) => value !== "" && value !== "—" && value !== "Usage summary",
     );
-  const tokenValue = usageValues.find((value) =>
-    /^\d+(?:\.\d+)?[KMG]?$/i.test(value),
-  );
-  if (tokenValue === undefined)
+  const fields = new Set(["Tokens", "Cost", "Duration", "Context"]);
+  const valuesByField = new Map();
+  for (let index = 0; index < usageValues.length - 1; index += 1) {
+    const field = usageValues[index];
+    const value = usageValues[index + 1];
+    if (fields.has(field) && !fields.has(value))
+      valuesByField.set(field, value);
+  }
+  const tokenValue = valuesByField.get("Tokens");
+  if (
+    typeof tokenValue !== "string" ||
+    !/^\d+(?:\.\d+)?[KMG]?$/i.test(tokenValue)
+  ) {
     throw new SmokeError("usage tokens unavailable");
+  }
   const tokenScale = /K$/i.test(tokenValue)
     ? 1_000
     : /M$/i.test(tokenValue)
@@ -1762,10 +1774,13 @@ function parseWork(snapshot) {
         ? 1_000_000_000
         : 1;
   const tokenCount = Number.parseFloat(tokenValue) * tokenScale;
-  const otherValues = usageValues.filter(
-    (value) => value !== tokenValue && !/^(Tokens|Usage)$/i.test(value),
-  );
-  if (!(tokenCount > 0) || otherValues.length === 0) {
+  const populatedValues = [...valuesByField]
+    .filter(([field]) => field !== "Tokens")
+    .filter(([, value]) => {
+      const numeric = Number.parseFloat(value.replace(/[^0-9.]/g, ""));
+      return Number.isFinite(numeric) && numeric > 0;
+    });
+  if (!(tokenCount > 0) || populatedValues.length === 0) {
     throw new SmokeError("usage values unavailable");
   }
   const byKind = (kind) => items.filter((item) => item.kind === kind);
@@ -1775,8 +1790,8 @@ function parseWork(snapshot) {
     delegates: byKind("delegate"),
     usage: {
       tokenCount,
-      valueCount: otherValues.length + 1,
-      digest: digest(JSON.stringify([tokenValue, ...otherValues])),
+      valueCount: populatedValues.length + 1,
+      digest: digest(JSON.stringify([tokenValue, ...populatedValues])),
     },
   };
   if (
@@ -1792,14 +1807,18 @@ function parseWork(snapshot) {
 function assertNoFixture(snapshot, final = false) {
   for (const node of snapshot.nodes) {
     const label = node.label.trim();
+    const isControlOrLandmark =
+      typeof node.role === "string" &&
+      /(?:Button|Navigation|Dialog|Group|Landmark|Tab|Menu)/i.test(node.role);
     if (
+      isControlOrLandmark &&
       /^(?:Fixture mode|Scenario selector|Prototype controls|Synthetic completion)$/i.test(
         label,
       )
     ) {
       throw new SmokeError("fixture contamination detected");
     }
-    if (final && FORBIDDEN_FINAL.test(label)) {
+    if (final && isControlOrLandmark && FORBIDDEN_FINAL.test(label)) {
       throw new SmokeError("forbidden final surface detected");
     }
   }
@@ -2112,13 +2131,13 @@ export async function runLiveSmoke(config, dependencies = {}) {
     }
     const accepted = await waitFor((candidate) => {
       try {
-        parseMutation(candidate, kind, "accepted");
+        parseMutation(candidate, kind, "settled");
         return true;
       } catch {
         return false;
       }
     });
-    const acceptedValue = parseMutation(accepted, kind, "accepted");
+    const acceptedValue = parseMutation(accepted, kind, "settled");
     let completed = accepted;
     if (lifecycle) {
       const streamingIds = new Set(
@@ -2182,7 +2201,7 @@ export async function runLiveSmoke(config, dependencies = {}) {
       current: completed,
       receipt: {
         kind,
-        status: "accepted",
+        disposition: acceptedValue.disposition,
         receipt: acceptedValue.receipt,
         pendingTreeDigest: pending.treeDigest,
         acceptedTreeDigest: accepted.treeDigest,

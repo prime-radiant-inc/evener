@@ -12,6 +12,8 @@
 // - Conflict restores draft
 // - No automatic retry
 
+import { readFileSync } from "node:fs";
+import path from "node:path";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { WireError } from "../../../cmd/evener-hub/frontend/src/protocol/errors";
 import type {
@@ -146,11 +148,12 @@ function makeReceipt(
 ): MutationReceipt {
   const receipt: MutationReceipt = {
     clientMutationId: "cmid-1",
-    disposition: "accepted",
+    disposition: "applied",
     threadId: "thread-1",
-    projectionState: "current",
+    projectionState: kind === "interrupt" ? "reflected" : "pending",
   };
-  if (kind === "send" || kind === "steer") receipt.turnId = "turn-1";
+  if (kind === "send" || kind === "steer" || kind === "interrupt")
+    receipt.turnId = "turn-1";
   if (kind === "queue") receipt.queueEntryIds = ["queue-1"];
   return { ...receipt, ...over };
 }
@@ -174,6 +177,34 @@ function setup(options: { thread?: Thread; olderCursor?: string } = {}) {
   });
   return { client, service, thread };
 }
+
+describe("canonical Go mutation receipt schema guard", () => {
+  it("binds the decoder literals and optional fields to appwire/types.go", () => {
+    const source = readFileSync(
+      path.resolve(process.cwd(), "../appwire/types.go"),
+      "utf8",
+    );
+    expect(source).toContain(
+      'MutationDispositionApplied  MutationDisposition = "applied"',
+    );
+    expect(source).toContain(
+      'MutationDispositionReplayed MutationDisposition = "replayed"',
+    );
+    expect(source).not.toMatch(
+      /MutationDisposition\w*\s+MutationDisposition = "accepted"/,
+    );
+    for (const field of [
+      'ClientMutationID string                  `json:"clientMutationId"`',
+      'Disposition      MutationDisposition     `json:"disposition"`',
+      'ThreadID         string                  `json:"threadId"`',
+      'TurnID           string                  `json:"turnId,omitempty"`',
+      'QueueEntryIDs    []string                `json:"queueEntryIds,omitempty"`',
+      'ProjectionState  MutationProjectionState `json:"projectionState"`',
+    ]) {
+      expect(source).toContain(field);
+    }
+  });
+});
 
 function textInput(text: string): InputItem[] {
   return [{ type: "text", text }];
@@ -362,7 +393,7 @@ describe("ConversationService", () => {
         },
         {
           turn: validTurn,
-          receipt: { ...validReceipt, disposition: "replayed" },
+          receipt: { ...validReceipt, disposition: "accepted" },
         },
         {
           turn: validTurn,
@@ -411,7 +442,10 @@ describe("ConversationService", () => {
           method: "turn/interrupt" as const,
           invoke: (service: LiveConversationService) => service.interrupt(),
           invalid: {
-            receipt: { ...makeReceipt("interrupt"), turnId: "forbidden" },
+            receipt: {
+              ...makeReceipt("interrupt"),
+              queueEntryIds: ["forbidden"],
+            },
           },
         },
       ];
@@ -423,6 +457,25 @@ describe("ConversationService", () => {
           /ConversationService/,
         );
       }
+    });
+
+    it("treats a correlated canonical replay as a successful idempotent result", async () => {
+      const { client, service } = setup();
+      client.on(
+        "turn/start",
+        () =>
+          ({
+            turn: { id: "t1", itemsView: "default", status: "running" },
+            receipt: makeReceipt("send", { disposition: "replayed" }),
+          }) as TurnStartResponse,
+      );
+      await service.open("ref-1");
+      await expect(service.send(textInput("retry"))).resolves.toMatchObject({
+        clientMutationId: "cmid-1",
+        disposition: "replayed",
+        turnId: "turn-1",
+        projectionState: "pending",
+      });
     });
 
     it("compact calls thread/compact/start", async () => {

@@ -673,6 +673,33 @@ describe("RootShell — live connection evidence", () => {
       replaceSubscription: true,
       turnLimit: 50,
     });
+    act(() => {
+      client?.emit({
+        method: "item/started",
+        params: {
+          threadId: "thread-a",
+          ref: "ref-a",
+          turnId: "reconnect-turn",
+          item: {
+            type: "agentMessage",
+            id: "reconnect-item",
+            text: "Recovered",
+            status: "inProgress",
+          },
+        },
+      } as AnyNotification);
+      client?.emit({
+        method: "item/agentMessage/delta",
+        params: {
+          threadId: "thread-a",
+          ref: "ref-a",
+          turnId: "reconnect-turn",
+          itemId: "reconnect-item",
+          delta: " after reconnect",
+        },
+      } as AnyNotification);
+    });
+    expect(await screen.findByText("Recovered after reconnect")).toBeVisible();
   });
 
   it("ignores handshake results from a deactivated profile graph", async () => {
@@ -708,6 +735,20 @@ describe("RootShell — live connection evidence", () => {
 
     act(() => {
       harness.clients[0]?.emitHandshake(handshakeVersion("9.9.9", "stale-hub"));
+      harness.clients[0]?.emit({
+        method: "item/started",
+        params: {
+          threadId: "thread-p1",
+          ref: "ref-p1",
+          turnId: "stale-turn",
+          item: {
+            type: "agentMessage",
+            id: "stale-item",
+            text: "stale old client delta",
+            status: "inProgress",
+          },
+        },
+      } as AnyNotification);
     });
     expect(
       screen.queryByRole("status", { name: /stale-hub|9\.9\.9/ }),
@@ -715,6 +756,7 @@ describe("RootShell — live connection evidence", () => {
     expect(
       screen.getByRole("status", { name: /current-hub 2\.0\.0/ }),
     ).toBeVisible();
+    expect(screen.queryByText("stale old client delta")).toBeNull();
   });
 
   it("subscribes once and publishes one initial handshake under StrictMode", async () => {
