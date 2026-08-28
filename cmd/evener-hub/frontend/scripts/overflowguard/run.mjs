@@ -580,7 +580,11 @@ function assertDetail(result, width) {
   }
   const switchLabels = detail?.targets?.filter((target) => target.kind === "switch-label") ?? [];
   if (switchLabels.length !== 9) failures.push(`Verbosity mounted ${switchLabels.length} Switch label targets, expected 9`);
-  if (!detail?.dialogCentered && !mobile) failures.push("Desktop Verbosity Dialog is not centered in the viewport");
+  if (!detail?.dialogCentered && !mobile) {
+    failures.push(
+      `Desktop Verbosity Dialog is not centered in the layout viewport: ${JSON.stringify({ panel: detail?.panel, viewport: result.viewport })}`,
+    );
+  }
   if (!detail?.sheetBottomAnchored && mobile) failures.push("Mobile Verbosity Sheet is not bottom-anchored");
   if (!result.trigger) failures.push("Session actions trigger geometry is missing");
   const overlayScroll = detail?.overlayScroll;
