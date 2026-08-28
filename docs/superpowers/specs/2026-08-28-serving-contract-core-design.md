@@ -18,7 +18,7 @@ The first release solves request-shape safety for every retained adapter surface
 
 - Resolve exactly one serving surface before every model request. A launch may name the surface explicitly; otherwise resolution must follow the deterministic default rule defined below.
 - Represent one wire model on multiple surfaces without sharing surface-specific fields or state.
-- Resolve provider, model, surface, adapter, endpoint path, authentication scope, and request contract before network dispatch.
+- Resolve provider, model, surface, adapter, operation endpoint, authentication scope, and request contract before network dispatch.
 - Represent capability and field support as `supported`, `unsupported`, `unknown`, or `conflict`.
 - Omit optional fields only when omission preserves caller semantics. If a requested semantic feature cannot be represented, fail before dispatch.
 - Support provider-, model-, and surface-specific reasoning, tool, role, history, output-limit, modality, and streaming rules.
@@ -26,6 +26,7 @@ The first release solves request-shape safety for every retained adapter surface
 - Fail closed on invalid, ambiguous, or conflicting configuration.
 - Bind credentials to the selected trusted origin and instance. A custom origin must never inherit a first-party provider credential by adapter type alone.
 - Preserve provenance on provider-native history artifacts so a surface cannot replay another surface's raw state without validation.
+- Reject untyped provider options and any attempt to overwrite core request fields.
 
 ### Operational requirements
 
@@ -278,14 +279,30 @@ The semantic request remains separate from the serving variant. The adapter tran
 - unsupported or unknown requested structured output fails before transport;
 - unsupported or unknown requested tools, stop sequences, output caps, or continuation state fail before transport unless the contract defines an equivalent;
 - optional optimizations may be omitted;
-- persisted provider-native artifacts are validated against their source and target surfaces before replay.
+- persisted provider-native artifacts are validated against their full source and target variants before replay;
+- provider-side token counting and model listing use their own operation contracts.
+
+The untyped `Request.ProviderOptions` escape hatch is removed. Provider-specific
+options are typed, surface-scoped contract fields. Core fields such as model,
+input, tools, operation, and endpoint cannot be overwritten by extensions.
+Unknown option keys or values fail before transport.
 
 The first release removes the existing implicit Responses-to-Chat fallback path
 from the OpenAI adapter. An empty Responses stream, a generic provider error, or
 a transport failure produces one surfaced failure and exactly one recorded
 attempt. No alternate endpoint is tried.
 
-The API-attempt record includes the variant identity and effective-contract revision. Contract resolution, validation, and serialization are separate observable phases so a future failure identifies the boundary.
+The first release also removes generic model fallback for model calls. A fallback
+model cannot silently select another surface or contract. Any future fallback is
+the separate provider-specific project described below.
+
+The HTTP client rejects all redirects in v1. It does not follow 301, 302, 307,
+or 308 responses, even on the same origin. The selected endpoint, method, body,
+and headers therefore remain the ones validated by the contract.
+
+The API-attempt record includes the complete variant identity, operation, and
+effective-contract revision. Contract resolution, validation, and serialization
+are separate observable phases so a future failure identifies the boundary.
 
 ### Session identity
 
@@ -294,15 +311,32 @@ Session metadata persists:
 - instance name;
 - wire model ID and canonical model ID;
 - selected surface and API version;
+- normalized origin/configuration fingerprint;
+- adapter ID and implementation revision;
 - effective-contract revision;
 - credential-scope fingerprint, never the credential;
 - continuation/state compatibility marker.
 
-Resume requires the exact variant and contract revision to remain available. If they do not, resume fails with an explicit migration/recovery error. A curated-code upgrade may invalidate a revision only through a declared revision transition; it cannot silently reinterpret old provider state.
+The effective-contract revision is the hash of a canonical serialization of the
+adapter implementation revision, surface/API version, curated profile revision,
+operation contracts, and every wire- or response-affecting resolved override.
+Behavior changes implemented in code require an adapter revision bump.
+
+Resume requires equality of the persisted variant, normalized origin/configuration
+fingerprint, credential-scope fingerprint, adapter revision, and effective
+contract revision. If any component differs or is unavailable, resume fails with
+an explicit migration/recovery error before dispatch. A curated-code upgrade may
+invalidate a revision only through a declared transition; it cannot silently
+reinterpret old provider state.
 
 ### History provenance
 
-Provider-native content parts that carry raw wire artifacts, including server-tool calls and encrypted reasoning, carry their source variant or an equivalent provenance marker. Before replay, the target contract either:
+Provider-native content parts that carry raw wire artifacts, including server-tool
+calls, encrypted reasoning, response IDs, item IDs, and thought signatures, carry
+their complete source variant or an equivalent provenance marker. By default,
+replay requires equality of instance, normalized origin, credential scope, wire
+model, surface/API version, adapter revision, contract revision, and operation
+family. Before replay, the target contract either:
 
 - accepts the artifact's source and target shape;
 - applies a typed, documented translation; or
@@ -316,9 +350,13 @@ This project intentionally has no backward-compatibility requirement.
 
 - The provider configuration schema may move from instance-wide API style to model/surface variants.
 - Existing configuration files may require explicit reauthoring.
+- Schema 1, a missing schema, or any unsupported schema version is rejected before
+  provider adapter construction with an explicit reauthoring error.
 - Internal adapter/profile interfaces may require a resolved serving variant.
 - Duplicated provider-conditional decisions in agent and adapters are removed in favor of the shared resolver.
 - Existing tests and fixtures are rewritten to the new schema.
+- Legacy session, fork, and resume metadata without a complete serving-variant
+  identity is rejected before adapter construction or transport.
 - Providers without a v1 serving contract are rejected rather than run through an implicit legacy path.
 
 A compatibility shim may be added later if migration cost warrants it, but it is not part of this project.
@@ -335,11 +373,13 @@ All tests use fake transports or pure functions. No provider credentials or netw
 - typed allowlist validation;
 - supported, unsupported, unknown, and conflict states for both capabilities and fields;
 - same-layer conflict versus higher-priority override;
+- operation selection and distinct generation, streaming, token-count, and model-list contracts;
 - unknown surface and unknown adapter fail before dispatch;
 - unknown model on a known surface uses only its defined core contract;
 - alias exact-match precedence, one-way mapping, duplicate/cycle rejection, and wire-ID recording;
 - custom-origin credential binding, credential mismatch, symlink/permission rejection, and cross-origin redirect rejection;
-- persisted variant identity and resume failure when the revision is unavailable.
+- default-path and explicit-path trust checks;
+- persisted variant identity, origin/auth/adapter comparison, and resume failure when any revision is unavailable.
 
 ### Request-shape tests
 
@@ -350,10 +390,15 @@ Golden request tests cover every retained adapter/surface in the table above. Th
 - Groq Responses with `store`, `include`, and OpenAI `web_search` absent;
 - Groq function tools and reasoning controls in their documented shape;
 - unknown-model Requests on known surfaces with optional fields omitted;
+- untyped provider options and core-field overrides are rejected with zero dispatch;
 - no automatic Responses-to-Chat request after an empty Responses stream or provider error;
+- no generic model fallback request after an ordinary model error;
 - surface-switch history containing a prior server-tool artifact;
+- same-surface history from a different instance, model, credential scope, or contract revision is rejected;
 - image, document, and audio requests on unsupported/unknown surfaces fail with zero transport dispatch;
 - explicit structured-output, tool, stop, output-cap, and continuation requests fail rather than being silently weakened when unavailable;
+- token-count and model-list operations use their declared endpoints and contracts;
+- 301/302/307/308 redirects produce no request to the redirect target;
 - response and error parsing for each retained adapter.
 
 ### Cross-layer tests
