@@ -12,8 +12,6 @@ import (
 // fetchStatus reads the daemon's bounded typed thread snapshot, returning nil
 // on any error so workspace hydration retains its roster-backed fallback.
 func (s *WebServer) fetchStatus(le hubcore.LiveEntry) *daemonStatus {
-	ctx, cancel := context.WithTimeout(context.Background(), 1*time.Second)
-	defer cancel()
 	if s == nil || s.sources == nil {
 		return nil
 	}
@@ -25,6 +23,8 @@ func (s *WebServer) fetchStatus(le hubcore.LiveEntry) *daemonStatus {
 	if threadID == "" {
 		return nil
 	}
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
 	resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: localAppRef(threadID)})
 	if err != nil {
 		return nil

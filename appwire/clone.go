@@ -186,7 +186,7 @@ func cloneEvenerDiagnostics(d *EvenerDiagnostics) *EvenerDiagnostics {
 	cp.Skills = append([]EvenerSkillInfo(nil), d.Skills...)
 	cp.Plugins = append([]EvenerPluginInfo(nil), d.Plugins...)
 	cp.HookEvents = append([]EvenerHookEventStatus(nil), d.HookEvents...)
-	cp.Jobs = cloneEvenerJobs(d.Jobs)
+	cp.Jobs = CloneEvenerJobs(d.Jobs)
 	cp.Delegates = cloneDelegateInfos(d.Delegates)
 	if d.TurnSlots != nil {
 		ts := *d.TurnSlots
@@ -196,7 +196,8 @@ func cloneEvenerDiagnostics(d *EvenerDiagnostics) *EvenerDiagnostics {
 	return &cp
 }
 
-func cloneEvenerJobs(jobs []EvenerJobInfo) []EvenerJobInfo {
+// CloneEvenerJobs returns a defensive copy of typed job diagnostics.
+func CloneEvenerJobs(jobs []EvenerJobInfo) []EvenerJobInfo {
 	if jobs == nil {
 		return nil
 	}

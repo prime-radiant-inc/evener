@@ -134,4 +134,3 @@ change requires it, then `make lint`, `make vet`, `make test`, and the canonical
 `make merge-approval-gate`. This is Go/protocol work with no touched frontend
 `src/` files, so `make test-web-browser` is not a claimed gate unless the final
 diff expands into browser behavior.
-

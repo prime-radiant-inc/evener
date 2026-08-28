@@ -76,21 +76,7 @@ func cloneSubagentStates(in map[string]string) map[string]string {
 }
 
 func cloneRunningJobs(in []appwire.EvenerJobInfo) []appwire.EvenerJobInfo {
-	if in == nil {
-		return nil
-	}
-	out := append([]appwire.EvenerJobInfo(nil), in...)
-	for i := range out {
-		if out[i].Resumable != nil {
-			resumable := *out[i].Resumable
-			out[i].Resumable = &resumable
-		}
-		if out[i].ExitCode != nil {
-			exitCode := *out[i].ExitCode
-			out[i].ExitCode = &exitCode
-		}
-	}
-	return out
+	return appwire.CloneEvenerJobs(in)
 }
 
 // crashedFileRetention is how long Refresh keeps a dead PID's rendezvous file
@@ -255,7 +241,7 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 			_, _ = h.Write([]byte(bySess[id].RunningSubagentStates[childID]))
 			_, _ = h.Write([]byte{0})
 		}
-		runningJobs := cloneRunningJobs(bySess[id].RunningJobs)
+		runningJobs := append([]appwire.EvenerJobInfo(nil), bySess[id].RunningJobs...)
 		sort.Slice(runningJobs, func(i, j int) bool {
 			if runningJobs[i].JobID != runningJobs[j].JobID {
 				return runningJobs[i].JobID < runningJobs[j].JobID
