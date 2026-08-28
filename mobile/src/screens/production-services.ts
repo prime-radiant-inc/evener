@@ -17,8 +17,8 @@ import { createNativeBridge } from "../native/client";
 import { createAppwireClient } from "../services/appwireSocket";
 import {
   type ConversationClientLike,
-  type ConversationService,
   createConversationService,
+  type LiveConversationService,
 } from "../services/conversation";
 import type {
   ProfileRedacted,
@@ -45,7 +45,7 @@ export interface ProfileScopedServices {
   readonly rosterService: RosterService;
   readonly rosterStore: ReturnType<typeof createRosterStore>;
   readonly newSessionService: NewSessionService;
-  readonly conversationService: ConversationService;
+  readonly conversationService: LiveConversationService;
 }
 
 export type ProfileClientFactory = (
