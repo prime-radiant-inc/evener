@@ -12,10 +12,6 @@ import (
 	"primeradiant.com/evener/hubapi"
 )
 
-var ensureAPIActionAvailable = func(s *WebServer, id, action string) error {
-	return s.ensureSessionActionAvailable(id, action)
-}
-
 func writeAPIJSON(w http.ResponseWriter, status int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
