@@ -4,7 +4,7 @@ import { fileURLToPath } from "node:url";
 import { act, cleanup, render as renderUI, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import type { ReactElement } from "react";
-import { afterEach, beforeEach, expect, test } from "vitest";
+import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type {
   NavigationSessionLocation,
@@ -329,6 +329,67 @@ test("menu offers Pin/Archive/Delete when the session is in the tree; omits them
   expect(screen.queryByRole("menuitem", { name: "Pin this session…" })).toBeNull();
   expect(screen.queryByRole("menuitem", { name: "Archive" })).toBeNull();
   expect(screen.queryByRole("menuitem", { name: "Delete…" })).toBeNull();
+});
+
+test("session-menu pin assignment uses typed AppWire and converges its navigation receipt", async () => {
+  const user = userEvent.setup();
+  const fake = connectFakeClient();
+  fake.on("thread/read", () => readResponse("ref_pin"));
+  fake.on("evener/session-pin/assign", (params) => {
+    expect(params).toEqual({ session_ref: "ref_pin", section_id: "research" });
+    return {
+      ok: true,
+      changed: true,
+      assignment: {
+        session_ref: "local:sess_ref_pin",
+        section: { id: "research", name: "Research", member_count: 1 },
+      },
+      navigation: { generation_id: "generation_test", targets: [] },
+    };
+  });
+  await threadsStore.getState().ensureThread("ref_pin");
+  setLocation("ref_pin");
+  const pinKey = { kind: "pin_catalog", offset: 0, limit: 100 } as const;
+  const pinCatalog = {
+    key: pinKey,
+    data: {
+      generation_id: "generation_test",
+      revision: 1,
+      pin_sections: [{ id: "research", name: "Research", count: 0 }],
+      remaining: 0,
+    },
+    loadedRevision: 1,
+    targetRevision: null,
+    forceToken: 0,
+    etag: "etag-pins",
+    loading: false,
+    stale: false,
+    error: null,
+    generationID: "generation_test",
+  };
+  const applyNavigationMutation = vi.fn().mockResolvedValue(undefined);
+  navigationStore.setState((state) => {
+    const resources = new Map(state.resources);
+    resources.set(keyID(pinKey), pinCatalog);
+    return {
+      resources,
+      loadPinCatalog: vi.fn().mockResolvedValue(pinCatalog),
+      applyNavigationMutation,
+    };
+  });
+
+  render(<SessionChrome ref="ref_pin" />);
+  await user.click(screen.getByRole("button", { name: /session actions/i }));
+  await user.click(screen.getByRole("menuitem", { name: "Pin this session…" }));
+  await user.click(await screen.findByRole("button", { name: "Research" }));
+
+  await waitFor(() =>
+    expect(fake.calls).toContainEqual({
+      method: "evener/session-pin/assign",
+      params: { session_ref: "ref_pin", section_id: "research" },
+    }),
+  );
+  expect(applyNavigationMutation).toHaveBeenCalledWith({ generation_id: "generation_test", targets: [] });
 });
 
 test("menu Shut down is gated on capabilities.shutdown", async () => {

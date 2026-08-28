@@ -631,12 +631,16 @@ describe("resource-backed Rail", () => {
       ),
     ]);
     navigationStore.setState({ applyNavigationMutation });
-    const fetchMock = vi
-      .fn()
-      .mockResolvedValueOnce(
-        jsonResponse({ ok: true, changed: true, navigation: { generation_id: "g1", targets: [] } }),
-      );
-    vi.stubGlobal("fetch", fetchMock);
+    const client = new FakeClient();
+    client.on("evener/session-pin/unpin", (params) => {
+      expect(params).toEqual({ session_ref: row.ref });
+      return {
+        ok: true,
+        changed: true,
+        assignment: { session_ref: row.ref },
+        navigation: { generation_id: "g1", targets: [] },
+      };
+    });
     const client = new FakeClient();
     client.on("evener/session/delete", () => ({
       deleted: ["a"],
@@ -647,10 +651,7 @@ describe("resource-backed Rail", () => {
     fireEvent.click(screen.getByRole("button", { name: /actions for pinned delete/i }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Unpin" }));
     await act(async () => undefined);
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/api/session-pin?ref="),
-      expect.objectContaining({ method: "DELETE" }),
-    );
+    expect(client.calls).toContainEqual({ method: "evener/session-pin/unpin", params: { session_ref: row.ref } });
     fireEvent.click(screen.getByRole("button", { name: /actions for pinned delete/i }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Delete…" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
@@ -722,25 +723,39 @@ describe("resource-backed Rail", () => {
         { generation_id: "g1", revision: 1, sessions: [summary({ title: "Pinned" })], remaining: 0, truncated: false },
       ),
     ]);
-    navigationStore.setState({ applyNavigationMutation });
-    const fetchMock = vi.fn(async (_url: string, init?: RequestInit) => {
-      if (!init?.method) return jsonResponse([{ id: "pins", name: "Pins", member_count: 3 }]);
-      if (init.method === "PATCH")
-        return jsonResponse({
-          ok: true,
-          changed: true,
-          section: { id: "pins", name: "Renamed", member_count: 3 },
-          navigation: { generation_id: "g1", targets: [] },
-        });
-      return jsonResponse({
+    const durableCatalog = resource(
+      { kind: "pin_catalog", offset: 0, limit: 100 },
+      { generation_id: "g1", revision: 2, pin_sections: [{ id: "pins", name: "Pins", count: 3 }], remaining: 0 },
+    );
+    const loadPinCatalog = vi.fn(async () => {
+      navigationStore.setState((state) => {
+        const resources = new Map(state.resources);
+        resources.set(keyID(durableCatalog.key), durableCatalog);
+        return { resources };
+      });
+      return durableCatalog;
+    });
+    navigationStore.setState({ applyNavigationMutation, loadPinCatalog });
+    const client = new FakeClient();
+    client.on("evener/pin-section/rename", (params) => {
+      expect(params).toEqual({ section_id: "pins", name: "Renamed" });
+      return {
+        ok: true,
+        changed: true,
+        section: { id: "pins", name: "Renamed", member_count: 3 },
+        navigation: { generation_id: "g1", targets: [] },
+      };
+    });
+    client.on("evener/pin-section/delete", (params) => {
+      expect(params).toEqual({ section_id: "pins" });
+      return {
         ok: true,
         changed: true,
         member_count: 3,
         navigation: { generation_id: "g1", targets: [] },
-      });
+      };
     });
-    vi.stubGlobal("fetch", fetchMock);
-    render(<Rail />);
+    render(<Rail />, client);
     fireEvent.click(screen.getByRole("button", { name: /actions for pins/i }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
     fireEvent.change(screen.getByLabelText("Section name"), { target: { value: "Renamed" } });
@@ -752,7 +767,11 @@ describe("resource-backed Rail", () => {
     expect(screen.getByText(/unpin 3 sessions/i)).toBeTruthy();
     fireEvent.click(screen.getByRole("button", { name: "Delete section" }));
     await act(async () => undefined);
-    expect(fetchMock).toHaveBeenCalledWith("/api/pin-sections/pins", expect.objectContaining({ method: "DELETE" }));
+    expect(loadPinCatalog).toHaveBeenCalledTimes(1);
+    expect(client.calls).toEqual([
+      { method: "evener/pin-section/rename", params: { section_id: "pins", name: "Renamed" } },
+      { method: "evener/pin-section/delete", params: { section_id: "pins" } },
+    ]);
     expect(applyNavigationMutation).toHaveBeenCalledTimes(2);
   });
   test("shows a project root retry while retaining the summary row after a load error", async () => {

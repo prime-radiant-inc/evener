@@ -8,10 +8,9 @@ import { resetToastStoreForTests } from "../../widgets/toast/store";
 import type { NavigationSessionModel } from "./SessionMenu";
 import { SessionMenu, type SessionMenuActions, type SessionMenuProps } from "./SessionMenu";
 
-// "Pin this session…" mounts the real PinSectionPicker, which now reads
+// "Pin this session…" mounts the real PinSectionPicker, which reads
 // pin sections from the navigation store's bounded pin-catalog resource
-// (loadPinCatalog + selectPinSections) instead of the legacy unbounded
-// GET /api/pin-sections. Seed the store with a pin_catalog resource and
+// (loadPinCatalog + selectPinSections). Seed the store with a pin_catalog resource and
 // stub loadPinCatalog so the picker's mount effect resolves without a
 // real network fetch.
 const generation = "generation_test";

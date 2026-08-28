@@ -6,7 +6,7 @@ import { navigationStore } from "../../stores/navigation/store";
 import { Button, Dialog, Input, Sheet } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
 import { useIsMobile } from "../useIsMobile";
-import { isRailRequestStatus, type PinSectionSummary } from "./actions";
+import { isPinSectionNotFound, type PinSectionSummary } from "./actions";
 import styles from "./railDialog.module.css";
 
 export interface PinSectionPickerProps {
@@ -70,7 +70,7 @@ export function PinSectionPicker({ session, onAssign, onClose }: PinSectionPicke
       await onAssign({ section_id: section.id }, section);
     } catch (err) {
       setError(errorText(err));
-      if (isRailRequestStatus(err, 404)) {
+      if (isPinSectionNotFound(err)) {
         try {
           await navigationStore.getState().loadPinCatalog();
           const summaries: PinSectionSummary[] = selectPinSections(navigationStore.getState()).map((section) => ({

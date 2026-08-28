@@ -1,17 +1,16 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { WireError } from "../../protocol/errors";
 import type { NavigationPinSectionCatalog, NavigationSessionSummary } from "../../protocol/types.gen";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { keyID, type ResourceState } from "../../stores/navigation/types";
 import sheetStyles from "../../widgets/sheet/sheet.module.css";
 import type { PinSectionSummary } from "./actions";
-import { RailRequestError } from "./actions";
 import { PinSectionPicker, type PinSectionPickerProps } from "./PinSectionPicker";
 
-// PinSectionPicker now reads pin sections from the navigation store's
-// bounded pin-catalog resource (loadPinCatalog + selectPinSections) instead
-// of the legacy unbounded GET /api/pin-sections. Each test seeds the store
+// PinSectionPicker reads pin sections from the navigation store's bounded
+// pin-catalog resource (loadPinCatalog + selectPinSections). Each test seeds the store
 // with a pin_catalog resource and stubs loadPinCatalog so the picker's mount
 // effect resolves without a real network fetch.
 const generation = "generation_test";
@@ -148,7 +147,7 @@ describe("PinSectionPicker", () => {
 
   test("refreshes stale section choices when assigning a concurrently deleted section returns not-found", async () => {
     const fn = navigationStore.getState().loadPinCatalog as ReturnType<typeof vi.fn<LoadPinCatalog>>;
-    const notFound = new RailRequestError("pin section not found", 404);
+    const notFound = new WireError("pin section not found", -32602, { evenerErrorInfo: "resourceNotFound" });
     const onAssign = vi.fn().mockRejectedValue(notFound);
     render(<PinSectionPicker {...props({ onAssign })} />);
 

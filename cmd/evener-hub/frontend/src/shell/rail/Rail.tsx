@@ -38,7 +38,6 @@ import {
   deletePinSection,
   deleteProject,
   deleteSession,
-  listPinSections,
   type NavigationMutationReceipt,
   renamePinSection,
   setArchived,
@@ -805,7 +804,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
     },
     onPinSession: (session, target, section) =>
       runAction(
-        () => assignSessionPin(session.ref, target),
+        () => assignSessionPin(client, session.ref, target),
         "Couldn't assign pinned session",
         section
           ? {
@@ -814,17 +813,20 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
               source: session,
               section: { ...section, member_count: section.member_count },
             }
-          : (result) => ({
-              kind: "sessionPin",
-              ref: session.ref,
-              source: session,
-              section: { ...result.assignment.section },
-            }),
+          : (result) => {
+              if (!result.assignment.section) throw new Error("pin assignment response omitted its section");
+              return {
+                kind: "sessionPin",
+                ref: session.ref,
+                source: session,
+                section: { ...result.assignment.section },
+              };
+            },
         true,
       ),
     onUnpinRequest: (session) =>
       runAction(
-        () => unpinSession(session.ref),
+        () => unpinSession(client, session.ref),
         "Couldn't unpin session",
         { kind: "sessionUnpin", ref: session.ref },
         true,
@@ -939,7 +941,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
     setSectionRenameSubmitting(true);
     try {
       await runAction(
-        () => renamePinSection(target.id, name),
+        () => renamePinSection(client, target.id, name),
         "Couldn't rename pin section",
         (section) => ({ kind: "pinSectionRename", id: target.id, name: section.section.name }),
         true,
@@ -959,8 +961,9 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
   async function requestSectionDelete(section: RailPinSection) {
     const token = ++sectionDeleteRequestToken.current;
     try {
-      const summaries = await listPinSections();
+      await navigationStore.getState().loadPinCatalog();
       if (token !== sectionDeleteRequestToken.current) return;
+      const summaries = selectPinSections(navigationStore.getState());
       const durable = summaries.find((candidate) => candidate.id === section.id);
       if (!durable) throw new Error("pin section not found");
       setSectionDeleteTarget({ section, memberCount: durable.member_count });
@@ -973,7 +976,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
     const target = sectionDeleteTarget;
     if (!target) return;
     setSectionDeleteTarget(null);
-    await runAction(() => deletePinSection(target.section.id), "Couldn't delete pin section", {
+    await runAction(() => deletePinSection(client, target.section.id), "Couldn't delete pin section", {
       kind: "pinSectionDelete",
       id: target.section.id,
     });
