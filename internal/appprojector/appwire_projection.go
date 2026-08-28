@@ -285,6 +285,21 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			p.threadStatus(appwire.ThreadStatusActive),
 		)
 		return out
+	case events.EventGoalUpdated:
+		data := eventData[events.GoalUpdatedData](event.Data)
+		var state *appwire.GoalState
+		if data.Goal != nil {
+			state = &appwire.GoalState{
+				Objective:  data.Goal.Objective,
+				Status:     data.Goal.Status,
+				Iterations: data.Goal.Iterations,
+			}
+		}
+		return []AppNotification{p.notification(appwire.NotifyEvenerGoalUpdated, appwire.GoalUpdatedParams{
+			ThreadID: p.threadID,
+			Ref:      p.ref,
+			Goal:     state,
+		})}
 	case events.EventAssistantTextStart:
 		p.skillCandidate = skillActivationCandidate{}
 		out := p.ensureTurn(event.Timestamp)

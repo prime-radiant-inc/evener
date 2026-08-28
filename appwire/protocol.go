@@ -261,6 +261,7 @@ var Notifications = []NotificationSpec{
 	{NotifyEvenerPluginUpdated, EmptyParams{}, "Broadcast after a plugin mutation (install/upgrade/remove/enable/disable/setAutoUpgrade); no payload. Clients refresh the plugin list."},
 	{NotifyEvenerThreadResync, ThreadResyncParams{}, "Hub-originated hint asking clients to re-read one thread after relay recovery."},
 	{NotifyEvenerTaskUpdated, TaskUpdatedParams{}, "The session's task-list progress (total/done) changed."},
+	{NotifyEvenerGoalUpdated, GoalUpdatedParams{}, "The session's complete structured goal state changed; null clears it."},
 	{NotifyEvenerSandboxEscalationRequested, SandboxEscalationRequested{}, "A harness-raised, human-gated sandbox-exemption approval card (M7); the tool-exec goroutine blocks until answered via evener/sandbox/escalation/resolve."},
 	{NotifyEvenerSandboxEscalationResolved, SandboxEscalationResolved{}, "A previously-raised sandbox escalation left the pending set — resolved, turn-interrupted, or cleared by session close (M7); every OTHER subscribed client clears its now-stale copy of the card."},
 	{NotifyEvenerSettingsTranscriptDisplayChanged, TranscriptDisplayChangedParams{}, "Broadcast after a transcript-display default changes; carries the layout, revision, and canonical configuration."},

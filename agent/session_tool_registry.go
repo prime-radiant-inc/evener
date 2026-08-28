@@ -63,7 +63,7 @@ type toolDeps struct {
 	// Background delegates and terminal delegates are intentionally excluded.
 	blockingDelegateIDs func() []string
 
-	// goalGuard exposes goal-store access. The goal store has its own mutex.
+	// goalGuard exposes goal-store access and the ordered terminal mutation.
 	goalGuard goalGuard
 
 	// worktreeGuard exposes the native worktree lifecycle plumbing (env swap,
@@ -181,10 +181,26 @@ func (g taskGuard) MarkUsed() { g.markUsed() }
 // The goal store carries its own mutex (unlike taskGuard which uses s.mu).
 type goalGuard struct {
 	getOrCreateGoalStore func() *goal.Store
+	setTerminal          func(goal.Status, string) (goal.Snapshot, bool)
 }
 
 // Store returns the session's goal store, initializing it if needed.
 func (g goalGuard) Store() *goal.Store { return g.getOrCreateGoalStore() }
+
+// SetTerminal commits through the owning Session when available, keeping the
+// mutation and its GOAL_UPDATED event ordered. Direct test constructions fall
+// back to the store-only behavior they had before live goal updates.
+func (g goalGuard) SetTerminal(status goal.Status, reason string, now time.Time) (goal.Snapshot, bool) {
+	if g.setTerminal != nil {
+		return g.setTerminal(status, reason)
+	}
+	store := g.Store()
+	if !store.SetTerminal(status, reason, now) {
+		return goal.Snapshot{}, false
+	}
+	snap, _ := store.Snapshot()
+	return snap, true
+}
 
 // webDeps holds the bound web tool functions. The profile and client stay
 // hidden inside the closures captured here.
@@ -230,6 +246,7 @@ func newToolDeps(s *Session) *toolDeps {
 		},
 		goalGuard: goalGuard{
 			getOrCreateGoalStore: s.getOrCreateGoalStore,
+			setTerminal:          s.setGoalTerminal,
 		},
 		worktreeGuard: worktreeGuard{
 			state:         s.worktreeStateSnapshot,

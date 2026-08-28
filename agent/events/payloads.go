@@ -750,6 +750,19 @@ type GoalEndedData struct {
 	Iterations int    `json:"iterations"`
 }
 
+// GoalStateData is the complete client-facing state of a session goal.
+type GoalStateData struct {
+	Objective  string `json:"objective"`
+	Status     string `json:"status"`
+	Iterations int    `json:"iterations"`
+}
+
+// GoalUpdatedData is the payload for EventGoalUpdated. Goal is deliberately
+// not omitempty: nil is an explicit clear and must serialize as "goal":null.
+type GoalUpdatedData struct {
+	Goal *GoalStateData `json:"goal"`
+}
+
 // TurnEndedData is the payload for an EventTurnEnded event.
 type TurnEndedData struct {
 	TurnDurationMS int64 `json:"turn_duration_ms"`

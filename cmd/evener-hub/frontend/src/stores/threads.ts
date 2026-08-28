@@ -174,12 +174,8 @@ export interface ThreadsStoreState {
   // Sets or clears the session's /goal objective (an empty objective
   // clears it). Returns whether the goal loop started immediately (false
   // when cleared, or when a turn is already running and the goal picks up
-  // after it) - the goal is set either way. No live push exists for goal
-  // state (appwire/protocol.go's Notifications catalog has no goal-changed
-  // entry): reflecting this locally is left to the caller (T5 owns that
-  // "snapshot + optimistic local update" per the wave plan), not this
-  // store, which stays a plain fire-and-report wire call like setModel/
-  // setReasoningEffort/rename/compact/shutdown above.
+  // after it). A successful response commits the known goal state locally;
+  // the structured goal update push keeps every other client synchronized.
   setGoal(ref: string, objective: string): Promise<GoalSetResponse>;
   rename(ref: string, name: string): Promise<void>;
   compact(ref: string): Promise<void>;
@@ -1593,6 +1589,18 @@ async function requireReadyClient(timeoutMs = REQUIRE_READY_TIMEOUT_MS): Promise
   return client;
 }
 
+function replaceThread(
+  models: Map<string, ThreadModel>,
+  ref: string,
+  update: (model: ThreadModel) => ThreadModel,
+): Map<string, ThreadModel> {
+  const current = models.get(ref);
+  if (!current) return models;
+  const next = new Map(models);
+  next.set(ref, update(current));
+  return next;
+}
+
 export const threadsStore = createStore<ThreadsStoreState>(() => ({
   threads: new Map(),
   frameTimes: new Map(),
@@ -1987,7 +1995,15 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
   async setGoal(ref, objective) {
     const client = requireClient();
     try {
-      return await client.request("goal/set", { ref, objective });
+      const response = await client.request("goal/set", { ref, objective });
+      const goal = objective === "" ? null : { objective, status: "active", iterations: 0 };
+      threadsStore.setState((state) => {
+        const threads = replaceThread(state.threads, ref, (model) => ({ ...model, goal }));
+        const watchedThreads = replaceThread(state.watchedThreads, ref, (model) => ({ ...model, goal }));
+        if (threads === state.threads && watchedThreads === state.watchedThreads) return state;
+        return { threads, watchedThreads };
+      });
+      return response;
     } catch (err) {
       throw mapConflict(err);
     }

@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"sync"
 	"testing"
@@ -13,6 +14,124 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/llm"
 )
+
+func nextGoalUpdated(t *testing.T, sess *Session) events.GoalUpdatedData {
+	t.Helper()
+	// TRIPWIRE: mutations emit synchronously; one second only bounds a wedged regression.
+	timer := time.NewTimer(time.Second)
+	defer timer.Stop()
+	for {
+		select {
+		case ev, ok := <-sess.Events():
+			if !ok {
+				t.Fatal("session event stream closed before GOAL_UPDATED")
+			}
+			if ev.Kind != events.EventGoalUpdated {
+				continue
+			}
+			data, ok := ev.Data.(events.GoalUpdatedData)
+			if !ok {
+				t.Fatalf("GOAL_UPDATED payload = %T, want events.GoalUpdatedData", ev.Data)
+			}
+			return data
+		case <-timer.C:
+			t.Fatal("timed out waiting for GOAL_UPDATED")
+		}
+	}
+}
+
+func assertNoGoalUpdated(t *testing.T, sess *Session) {
+	t.Helper()
+	for {
+		select {
+		case ev, ok := <-sess.Events():
+			if !ok {
+				return
+			}
+			if ev.Kind == events.EventGoalUpdated {
+				t.Fatalf("unexpected extra GOAL_UPDATED: %+v", ev.Data)
+			}
+		default:
+			return
+		}
+	}
+}
+
+func assertGoalUpdatedMatchesStore(t *testing.T, sess *Session, data events.GoalUpdatedData) {
+	t.Helper()
+	snap, ok := sess.getOrCreateGoalStore().Snapshot()
+	if !ok {
+		if data.Goal != nil {
+			t.Fatalf("GOAL_UPDATED goal = %+v, want nil clear matching empty store", data.Goal)
+		}
+		return
+	}
+	if data.Goal == nil {
+		t.Fatalf("GOAL_UPDATED goal = nil, want %+v", snap)
+	}
+	if data.Goal.Objective != snap.Objective || data.Goal.Status != string(snap.Status) || data.Goal.Iterations != snap.Iterations {
+		t.Fatalf("GOAL_UPDATED goal = %+v, want store snapshot %+v", data.Goal, snap)
+	}
+}
+
+func TestGoalUpdatedEventSetClearAndContinuation(t *testing.T) {
+	sess := newGoalMethodSession(t)
+	defer sess.Close()
+
+	if _, err := sess.SetGoal(context.Background(), "ship focus sentence"); err != nil {
+		t.Fatalf("SetGoal: %v", err)
+	}
+	assertGoalUpdatedMatchesStore(t, sess, nextGoalUpdated(t, sess))
+	assertNoGoalUpdated(t, sess)
+
+	if _, continued := sess.armGoalContinuation(true, true); !continued {
+		t.Fatal("active progressing goal should continue")
+	}
+	assertGoalUpdatedMatchesStore(t, sess, nextGoalUpdated(t, sess))
+	assertNoGoalUpdated(t, sess)
+
+	sess.ClearGoal()
+	assertGoalUpdatedMatchesStore(t, sess, nextGoalUpdated(t, sess))
+	assertNoGoalUpdated(t, sess)
+}
+
+func TestGoalUpdatedEventErrorBlocking(t *testing.T) {
+	sess := newGoalMethodSession(t)
+	defer sess.Close()
+
+	if _, err := sess.SetGoal(context.Background(), "survive failure"); err != nil {
+		t.Fatalf("SetGoal: %v", err)
+	}
+	_ = nextGoalUpdated(t, sess)
+
+	sess.terminateGoalOnError(context.Background(), errors.New("provider failed"))
+	assertGoalUpdatedMatchesStore(t, sess, nextGoalUpdated(t, sess))
+	assertNoGoalUpdated(t, sess)
+}
+
+func TestGoalUpdatedEmissionDoesNotHoldSessionMutex(t *testing.T) {
+	sess := newGoalMethodSession(t)
+	defer sess.Close()
+
+	checked := make(chan bool, 1)
+	sess.descendantEvent = func(ev events.SessionEvent) {
+		if ev.Kind != events.EventGoalUpdated {
+			return
+		}
+		unlocked := sess.mu.TryLock()
+		if unlocked {
+			sess.mu.Unlock()
+		}
+		checked <- unlocked
+	}
+
+	if _, err := sess.SetGoal(context.Background(), "check lock boundary"); err != nil {
+		t.Fatalf("SetGoal: %v", err)
+	}
+	if unlocked := <-checked; !unlocked {
+		t.Fatal("GOAL_UPDATED was emitted while Session.mu was held")
+	}
+}
 
 // newGoalMethodSession builds an idle session (no events drained) for testing the
 // SetGoal/ClearGoal Session methods directly.
