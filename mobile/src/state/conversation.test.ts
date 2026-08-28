@@ -44,6 +44,10 @@ class FakeLiveActivitySink implements LiveActivitySink {
     identity: ActivityIdentity;
     n: AnyNotification;
   }[] = [];
+  setLiveCapabilitiesCalls: {
+    identity: ActivityIdentity;
+    capabilities: ThreadCapabilities;
+  }[] = [];
   resetCalls = 0;
   // Override per-notification return value. If set, called for each n.
   notificationOutcome?: (
@@ -53,6 +57,11 @@ class FakeLiveActivitySink implements LiveActivitySink {
   setLiveViewResult?: (
     identity: ActivityIdentity,
     view: ActivityView,
+  ) => boolean;
+  // Override setLiveCapabilities return value. If set, called for each call.
+  setLiveCapabilitiesResult?: (
+    identity: ActivityIdentity,
+    capabilities: ThreadCapabilities,
   ) => boolean;
 
   setLiveView(view: ActivityView, identity: ActivityIdentity): boolean {
@@ -67,6 +76,15 @@ class FakeLiveActivitySink implements LiveActivitySink {
   ): "applied" | "rehydrate" | "ignored" {
     this.applyLiveNotificationCalls.push({ identity, n });
     return this.notificationOutcome ? this.notificationOutcome(n) : "applied";
+  }
+  setLiveCapabilities(
+    capabilities: ThreadCapabilities,
+    identity: ActivityIdentity,
+  ): boolean {
+    this.setLiveCapabilitiesCalls.push({ identity, capabilities });
+    return this.setLiveCapabilitiesResult
+      ? this.setLiveCapabilitiesResult(identity, capabilities)
+      : true;
   }
   reset(): void {
     this.resetCalls += 1;
@@ -1822,6 +1840,12 @@ describe("ConversationStore", () => {
           applyCalls.push({ n, identity });
           return "applied" as const;
         },
+        setLiveCapabilities(
+          _capabilities: ThreadCapabilities,
+          _identity: ActivityIdentity,
+        ) {
+          return true;
+        },
         reset() {
           resetCalls.push(1);
         },
@@ -3249,6 +3273,9 @@ describe("ConversationStore", () => {
         applyLiveNotification(n, identity) {
           return realState.applyLiveNotification(n, identity);
         },
+        setLiveCapabilities(capabilities, identity) {
+          return realState.setLiveCapabilities(capabilities, identity);
+        },
         reset() {
           realState.reset();
         },
@@ -4527,6 +4554,30 @@ describe("ConversationStore", () => {
         capabilities: ALL_TRUE_CAPS as MobileCapabilities,
       },
       olderCursor: null,
+    };
+  }
+
+  // Helper: wrap a real ActivityStore as a LiveActivitySink.
+  function wrapActivityStoreAsSink(
+    activityStore: ReturnType<typeof createActivityStore>,
+  ): LiveActivitySink {
+    const state = activityStore.getState();
+    return {
+      setLiveView(view: ActivityView, identity: ActivityIdentity) {
+        return state.setLiveView(view, identity);
+      },
+      applyLiveNotification(n: AnyNotification, identity: ActivityIdentity) {
+        return state.applyLiveNotification(n, identity);
+      },
+      setLiveCapabilities(
+        caps: ThreadCapabilities,
+        identity: ActivityIdentity,
+      ) {
+        return state.setLiveCapabilities(caps, identity);
+      },
+      reset() {
+        state.reset();
+      },
     };
   }
 
@@ -10179,6 +10230,684 @@ describe("ConversationStore", () => {
       expect(xDelta?.kind === "assistant" && xDelta.markdown).toBe(
         "short-page appended",
       );
+    });
+  });
+  // --- C1: Service-specific operation binding ---------------------------------------
+
+  describe("C1: wrong service at entry => zero request/state change", () => {
+    it("wrong-service loadOlder => zero service calls, zero state change", async () => {
+      const serviceA = new FakeConversationService();
+      const store = createConversationStore();
+      await store.getState().open(serviceA, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      const serviceB = new FakeConversationService();
+      serviceB.olderItems = { items: [{ kind: "user", id: "old", text: "x" }] };
+      const convBefore = store.getState().conversation;
+      const cursorBefore = store.getState().olderCursor;
+      await store.getState().loadOlder(serviceB);
+      // C1: wrong service (B after A bound) => zero state change.
+      expect(store.getState().conversation).toBe(convBefore);
+      expect(store.getState().olderCursor).toBe(cursorBefore);
+      expect(store.getState().loadingOlder).toBe(false);
+    });
+
+    it("correct-service loadOlder still works after binding", async () => {
+      const service = new FakeConversationService();
+      service.olderItems = { items: [{ kind: "user", id: "old", text: "x" }] };
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+      await store.getState().loadOlder(service);
+      expect(
+        store.getState().conversation?.items.some((i) => i.id === "old"),
+      ).toBe(true);
+    });
+  });
+
+  describe("C1: wrong-service send/steer/queue/interrupt => zero A calls", () => {
+    for (const kind of ["send", "steer", "queue", "interrupt"] as const) {
+      it(`wrong-service ${kind} => zero B calls, zero state change`, async () => {
+        const serviceA = new FakeConversationService();
+        const store = createConversationStore();
+        await store
+          .getState()
+          .openProjected(serviceA, createFakeSink(), "ref-1");
+        const pendingBefore = store.getState().pendingMutation;
+        const draftBefore = store.getState().draft;
+        const errorBefore = store.getState().error;
+        const serviceB = new FakeConversationService();
+        // Call with wrong serviceB — rejected at the boundary.
+        if (kind === "send")
+          await store.getState().send(serviceB, textInput("x"));
+        else if (kind === "steer")
+          await store.getState().steer(serviceB, textInput("x"));
+        else if (kind === "queue")
+          await store.getState().queue(serviceB, textInput("x"));
+        else await store.getState().interrupt(serviceB);
+        // C1: zero state change — pending/draft/error unchanged.
+        expect(store.getState().pendingMutation).toBe(pendingBefore);
+        expect(store.getState().draft).toBe(draftBefore);
+        expect(store.getState().error).toBe(errorBefore);
+        // C1: serviceB mutation method was never called.
+        if (kind === "send") expect(serviceB.sendCallCount).toBe(0);
+        else if (kind === "steer") expect(serviceB.steerCallCount).toBe(0);
+        else if (kind === "queue") expect(serviceB.queueCallCount).toBe(0);
+        else expect(serviceB.interruptCallCount).toBe(0);
+      });
+    }
+  });
+
+  // --- I1: Error ownership — revision equality ONLY --------------------------------
+
+  describe("I1: newer clear-to-null and ABA-null own error", () => {
+    it("page failure after newer clear-to-null: page settles loading, preserves null (no write)", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      await store.getState().openProjected(service, sink, "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+
+      // Start loadOlder that will fail (hangs first). It captures entryErrorRev.
+      const rejectOlderHolder: { fn?: (e: Error) => void } = {};
+      const hangOlder = new Promise<{
+        items: MobileConversation["items"];
+        nextCursor?: string;
+      }>((_, reject) => {
+        rejectOlderHolder.fn = reject;
+      });
+      service.olderItems = hangOlder as never;
+      const olderP = store.getState().loadOlder(service);
+      expect(store.getState().loadingOlder).toBe(true);
+
+      // While L is in-flight, a send fails (sets error, increments errorOwnerRev),
+      // then another send succeeds (clears error to null, increments errorOwnerRev
+      // again). Now errorOwnerRev has advanced past L's captured entryErrorRev.
+      // Error is null — this is a newer clear-to-null that owns the error.
+      service.sendShouldReject = new Error("initial error");
+      await store.getState().send(service, textInput("x"));
+      expect(store.getState().error).toBe("initial error");
+      service.sendShouldReject = null;
+      await store.getState().send(service, textInput("y"));
+      expect(store.getState().error).toBeNull();
+
+      // Now L fails — it must settle loadingOlder but NOT write error
+      // (errorOwnerRev changed during the await — the send's clear-to-null
+      // is a newer error owner).
+      rejectOlderHolder.fn?.(new Error("page boom"));
+      await olderP.catch(() => {});
+      expect(store.getState().loadingOlder).toBe(false);
+      // Error stays null — the send's clear-to-null owns it.
+      expect(store.getState().error).toBeNull();
+    });
+
+    it("mutation success after newer clear-to-null: clears pending, preserves null", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // Set an error via a failed send, then clear with a succeeding send.
+      service.sendShouldReject = new Error("initial error");
+      await store.getState().send(service, textInput("x"));
+      expect(store.getState().error).toBe("initial error");
+      service.sendShouldReject = null;
+      await store.getState().send(service, textInput("clear"));
+      expect(store.getState().error).toBeNull();
+
+      // Start a send that hangs.
+      const resolveSendHolder: { fn?: (r: MutationReceipt) => void } = {};
+      const hangSend = new Promise<MutationReceipt>((r) => {
+        resolveSendHolder.fn = r;
+      });
+      service.send = async () => hangSend;
+      const sendP = store.getState().send(service, textInput("y"));
+      expect(store.getState().pendingMutation?.status).toBe("pending");
+
+      // While send is in-flight, a rehydrate with SAME sink clears error.
+      // Error is already null — rehydrate does NOT increment errorOwnerRev.
+      await store.getState().rehydrate(service, sink);
+      expect(store.getState().error).toBeNull();
+
+      // Now the send succeeds. Since errorOwnerRev did NOT change (rehydrate
+      // didn't clear a non-null error), the send CAN clear error (to null).
+      resolveSendHolder.fn?.(makeReceipt());
+      await sendP;
+      expect(store.getState().pendingMutation).toBeNull();
+      expect(store.getState().error).toBeNull();
+    });
+
+    it("mutation failure after newer ABA-null: installs failed pending, preserves null", async () => {
+      const service = new FakeConversationService();
+      const sink = createFakeSink();
+      const store = createConversationStore();
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      // Set an error via a failed send, then clear with a succeeding send.
+      service.sendShouldReject = new Error("boom");
+      await store.getState().send(service, textInput("x"));
+      expect(store.getState().error).toBe("boom");
+      service.sendShouldReject = null;
+      await store.getState().send(service, textInput("clear"));
+      expect(store.getState().error).toBeNull();
+
+      // Start a send that hangs then fails.
+      const rejectSendHolder: { fn?: (e: Error) => void } = {};
+      const hangFail = new Promise<MutationReceipt>((_, reject) => {
+        rejectSendHolder.fn = reject;
+      });
+      service.send = async () => hangFail;
+      const sendP = store.getState().send(service, textInput("y"));
+
+      // While send is in-flight, set error via a page failure, then rehydrate
+      // clears it to null — this is a real ABA-null (error was non-null).
+      store.setState({ olderCursor: "cursor-1" });
+      service.olderItems = Promise.reject(new Error("page boom")) as never;
+      await store
+        .getState()
+        .loadOlder(service)
+        .catch(() => {});
+      expect(store.getState().error).toBe("page boom");
+      // Rehydrate with SAME sink clears the non-null error — increments
+      // errorOwnerRev. This is a real newer error owner (clear of non-null).
+      await store.getState().rehydrate(service, sink);
+      expect(store.getState().error).toBeNull();
+
+      // Now the send fails — it must install failed pending but NOT write
+      // error (errorOwnerRev changed — the rehydrate's clear owns it).
+      rejectSendHolder.fn?.(new Error("mutation boom"));
+      await sendP.catch(() => {});
+      expect(store.getState().pendingMutation?.status).toBe("failed");
+      // Error stays null — the rehydrate's clear owns it.
+      expect(store.getState().error).toBeNull();
+    });
+
+    it("held page failure after newer mutation error: page settles loading, preserves mutation error", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+
+      // Start loadOlder that will fail (hangs first).
+      const rejectOlderHolder: { fn?: (e: Error) => void } = {};
+      const hangOlder = new Promise<{
+        items: MobileConversation["items"];
+        nextCursor?: string;
+      }>((_, reject) => {
+        rejectOlderHolder.fn = reject;
+      });
+      service.olderItems = hangOlder as never;
+      const olderP = store.getState().loadOlder(service);
+
+      // While L is in-flight, a send fails with a non-null error.
+      service.sendShouldReject = new Error("mutation boom");
+      await store.getState().send(service, textInput("x"));
+      expect(store.getState().error).toBe("mutation boom");
+
+      // Now L fails — it must settle loadingOlder but NOT overwrite the error.
+      rejectOlderHolder.fn?.(new Error("page boom"));
+      await olderP.catch(() => {});
+      expect(store.getState().loadingOlder).toBe(false);
+      expect(store.getState().error).toBe("mutation boom");
+    });
+
+    it("held mutation failure after newer page error: installs failed pending, preserves page error", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      store.setState({ olderCursor: "cursor-1" });
+
+      // Start a send that hangs then fails.
+      const rejectSendHolder: { fn?: (e: Error) => void } = {};
+      const hangFail = new Promise<MutationReceipt>((_, reject) => {
+        rejectSendHolder.fn = reject;
+      });
+      service.sendShouldReject = null;
+      service.send = async () => hangFail;
+      const sendP = store.getState().send(service, textInput("x"));
+
+      // While send is in-flight, loadOlder fails with a non-null error.
+      service.olderItems = Promise.reject(new Error("page boom")) as never;
+      await store
+        .getState()
+        .loadOlder(service)
+        .catch(() => {});
+      expect(store.getState().error).toBe("page boom");
+
+      // Now the send fails — it must install failed pending but NOT overwrite.
+      rejectSendHolder.fn?.(new Error("mutation boom"));
+      await sendP.catch(() => {});
+      expect(store.getState().pendingMutation?.status).toBe("failed");
+      expect(store.getState().error).toBe("page boom");
+    });
+  });
+
+  // --- I5: Binding safety — full state snapshot comparison -------------------------
+
+  describe("I5: rebind A->B then late A completion => zero state change (full snapshot)", () => {
+    // Helper: snapshot the entire public state for comparison.
+    function snapshotState(store: ReturnType<typeof createConversationStore>) {
+      const s = store.getState();
+      return {
+        ref: s.ref,
+        profileId: s.profileId,
+        connectionGeneration: s.connectionGeneration,
+        conversationGeneration: s.conversationGeneration,
+        conversation: s.conversation,
+        olderCursor: s.olderCursor,
+        loadingOlder: s.loadingOlder,
+        status: s.status,
+        error: s.error,
+        draft: s.draft,
+        pendingSend: s.pendingSend,
+        pendingMutation: s.pendingMutation,
+      };
+    }
+
+    it("page: controlled A->B then late A success => entire state unchanged", async () => {
+      const serviceA = new FakeConversationService();
+      serviceA.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-A" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: "cursor-A",
+      };
+      const sinkA = createFakeSink();
+      const store = createConversationStore();
+      await store.getState().openProjected(serviceA, sinkA, "ref-A");
+      store.setState({ olderCursor: "cursor-A" });
+
+      // Start loadOlder on A that hangs (success).
+      const resolveOlderHolder: { fn?: () => void } = {};
+      const hangOlder = new Promise<{
+        items: MobileConversation["items"];
+        nextCursor?: string;
+      }>((r) => {
+        resolveOlderHolder.fn = () =>
+          r({ items: [{ kind: "user", id: "old-A", text: "old" }] });
+      });
+      serviceA.olderItems = hangOlder as never;
+      const olderP = store.getState().loadOlder(serviceA);
+
+      // Rebind to B via rehydrate.
+      const serviceB = new FakeConversationService();
+      serviceB.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-B" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      const sinkB = createFakeSink();
+      await store.getState().rehydrate(serviceB, sinkB);
+
+      // Snapshot state after rebind.
+      const stateAfterRebind = snapshotState(store);
+      const readsA = serviceA.readProjectionCalls.length;
+      const writesA = sinkA.setLiveViewCalls.length;
+
+      // Now A's loadOlder resolves — zero state change.
+      resolveOlderHolder.fn?.();
+      await olderP;
+
+      // C1/I5: entire public state must be identical.
+      expect(snapshotState(store)).toEqual(stateAfterRebind);
+      // No additional A reads or sink writes.
+      expect(serviceA.readProjectionCalls.length).toBe(readsA);
+      expect(sinkA.setLiveViewCalls.length).toBe(writesA);
+    });
+
+    it("page: controlled A->B then late A failure => entire state unchanged", async () => {
+      const serviceA = new FakeConversationService();
+      serviceA.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-A" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: "cursor-A",
+      };
+      const sinkA = createFakeSink();
+      const store = createConversationStore();
+      await store.getState().openProjected(serviceA, sinkA, "ref-A");
+      store.setState({ olderCursor: "cursor-A" });
+
+      // Start loadOlder on A that hangs (will fail).
+      const rejectOlderHolder: { fn?: (e: Error) => void } = {};
+      const hangOlder = new Promise<{
+        items: MobileConversation["items"];
+        nextCursor?: string;
+      }>((_, reject) => {
+        rejectOlderHolder.fn = reject;
+      });
+      serviceA.olderItems = hangOlder as never;
+      const olderP = store.getState().loadOlder(serviceA);
+
+      // Rebind to B.
+      const serviceB = new FakeConversationService();
+      serviceB.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-B" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      const sinkB = createFakeSink();
+      await store.getState().rehydrate(serviceB, sinkB);
+
+      const stateAfterRebind = snapshotState(store);
+
+      // A's loadOlder fails — zero state change.
+      rejectOlderHolder.fn?.(new Error("A page boom"));
+      await olderP.catch(() => {});
+
+      expect(snapshotState(store)).toEqual(stateAfterRebind);
+    });
+
+    // Table: late A failure for send/steer/queue/interrupt
+    for (const kind of ["send", "steer", "queue", "interrupt"] as const) {
+      it(`mutation: controlled A->B then late A ${kind} failure => entire state unchanged`, async () => {
+        const serviceA = new FakeConversationService();
+        serviceA.readProjectionResult = {
+          conversation: makeConversation({ id: "thread-A" }),
+          activity: {
+            tasks: [],
+            work: [],
+            usage: {},
+            capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          },
+          olderCursor: null,
+        };
+        const sinkA = createFakeSink();
+        const store = createConversationStore();
+        await store.getState().openProjected(serviceA, sinkA, "ref-A");
+
+        // Start a mutation on A that hangs then fails.
+        const rejectMutationHolder: { fn?: (e: Error) => void } = {};
+        const hangFail = new Promise<MutationReceipt>((_, reject) => {
+          rejectMutationHolder.fn = reject;
+        });
+        if (kind === "send") {
+          serviceA.sendShouldReject = null;
+          serviceA.send = async () => hangFail;
+        } else if (kind === "steer") {
+          serviceA.steer = async () => hangFail;
+        } else if (kind === "queue") {
+          serviceA.queue = async () => hangFail;
+        } else {
+          serviceA.interrupt = async () => hangFail;
+        }
+
+        let mutationP: Promise<void>;
+        if (kind === "send")
+          mutationP = store.getState().send(serviceA, textInput("x"));
+        else if (kind === "steer")
+          mutationP = store.getState().steer(serviceA, textInput("x"));
+        else if (kind === "queue")
+          mutationP = store.getState().queue(serviceA, textInput("x"));
+        else mutationP = store.getState().interrupt(serviceA);
+
+        // Rebind to B.
+        const serviceB = new FakeConversationService();
+        serviceB.readProjectionResult = {
+          conversation: makeConversation({ id: "thread-B" }),
+          activity: {
+            tasks: [],
+            work: [],
+            usage: {},
+            capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+          },
+          olderCursor: null,
+        };
+        const sinkB = createFakeSink();
+        await store.getState().rehydrate(serviceB, sinkB);
+
+        const stateAfterRebind = snapshotState(store);
+        const callsA =
+          serviceA.sendCallCount +
+          serviceA.steerCallCount +
+          serviceA.queueCallCount +
+          serviceA.interruptCallCount;
+
+        // A's mutation fails — zero state change.
+        rejectMutationHolder.fn?.(new Error("A mutation boom"));
+        await mutationP.catch(() => {});
+
+        expect(snapshotState(store)).toEqual(stateAfterRebind);
+        // No additional A mutation calls after rebind.
+        const callsAAfter =
+          serviceA.sendCallCount +
+          serviceA.steerCallCount +
+          serviceA.queueCallCount +
+          serviceA.interruptCallCount;
+        expect(callsAAfter).toBe(callsA);
+      });
+    }
+  });
+
+  // --- I3: Defense-in-depth question filter at state boundary -----------------------
+
+  describe("I3: state loadOlder filters question rows (defense-in-depth)", () => {
+    it("inject question row into page items => omitted, other items/order/cursor retained, askPending unchanged", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-1", askPending: false }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: "cursor-1",
+      };
+      await store.getState().openProjected(service, createFakeSink(), "ref-1");
+      expect(store.getState().conversation?.askPending).toBe(false);
+
+      // Inject a question row directly into olderItems — simulates a scenario
+      // where the service filter missed it. The state boundary must filter it.
+      service.olderItems = {
+        items: [
+          {
+            kind: "question",
+            id: "q-old",
+            batch: { callId: "c1", questions: [] },
+          } as never,
+          {
+            kind: "assistant",
+            id: "msg-old",
+            markdown: "old message",
+            streaming: false,
+          },
+        ],
+        nextCursor: "cursor-2",
+      };
+      await store.getState().loadOlder(service);
+
+      // askPending must remain false.
+      expect(store.getState().conversation?.askPending).toBe(false);
+      // No question items in the conversation.
+      const items = store.getState().conversation?.items ?? [];
+      expect(items.some((i) => i.kind === "question")).toBe(false);
+      // Other content retained.
+      expect(items.some((i) => i.id === "msg-old")).toBe(true);
+      // Cursor retained.
+      expect(store.getState().olderCursor).toBe("cursor-2");
+    });
+  });
+
+  // --- D (I2): setLiveCapabilities sink publication ---------------------------------
+
+  describe("D: requestCapabilityRefresh publishes to sink before conversation caps", () => {
+    it("real activity store: caps synchronized, tasks/work/usage/reasoning preserved", async () => {
+      const activityStore = createActivityStore();
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      const activityView: ActivityView = {
+        tasks: [{ status: "done", count: 3 }],
+        work: [{ kind: "job", label: "shell", tone: "terminal" }],
+        usage: { totalTokens: 42 },
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        reasoningEffort: "high",
+      };
+      service.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-1" }),
+        activity: activityView,
+        olderCursor: null,
+      };
+      const sink = wrapActivityStoreAsSink(activityStore);
+      await store.getState().openProjected(service, sink, "ref-1");
+
+      const rejectErr = new WireError("action unavailable", -32000, {
+        evenerErrorInfo: "actionUnavailable",
+      });
+      service.sendShouldReject = rejectErr as Error;
+      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
+      await store.getState().send(service, textInput("x"));
+
+      expect(store.getState().conversation?.capabilities.send).toBe(false);
+      const updatedView = activityStore.getState().view;
+      expect(updatedView?.capabilities.send).toBe(false);
+      expect(updatedView?.tasks).toEqual(activityView.tasks);
+      expect(updatedView?.work).toEqual(activityView.work);
+      expect(updatedView?.usage.totalTokens).toBe(42);
+      expect(updatedView?.reasoningEffort).toBe("high");
+    });
+
+    it("stale/rebound sink suppresses conversation cap publication", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      service.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-1" }),
+        activity: {
+          tasks: [],
+          work: [],
+          usage: {},
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      const rejectingSink: LiveActivitySink = {
+        setLiveView() {
+          return true;
+        },
+        applyLiveNotification() {
+          return "applied" as const;
+        },
+        setLiveCapabilities() {
+          return false;
+        },
+        reset() {},
+      };
+      await store.getState().openProjected(service, rejectingSink, "ref-1");
+
+      const rejectErr = new WireError("action unavailable", -32000, {
+        evenerErrorInfo: "actionUnavailable",
+      });
+      service.sendShouldReject = rejectErr as Error;
+      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
+      await store.getState().send(service, textInput("x"));
+
+      expect(store.getState().error).not.toBeNull();
+      expect(store.getState().conversation?.capabilities.send).toBe(true);
+    });
+
+    it("plain-open path with no sink still updates conversation caps", async () => {
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      await store.getState().open(service, "ref-1");
+      const rejectErr = new WireError("action unavailable", -32000, {
+        evenerErrorInfo: "actionUnavailable",
+      });
+      service.sendShouldReject = rejectErr as Error;
+      service.refreshCapsResult = { ...ALL_TRUE_CAPS, send: false };
+      await store.getState().send(service, textInput("x"));
+      expect(store.getState().error).not.toBeNull();
+      expect(store.getState().conversation?.capabilities.send).toBe(false);
+    });
+  });
+
+  // --- Cross-store I4 regression ---------------------------------------------------
+
+  describe("I4 cross-store: activity reset + conversation reset => next openProjected accepts", () => {
+    it("separate activity reset + conversation reset, then openProjected; both views commit, late notification rejected", async () => {
+      const activityStore = createActivityStore();
+      const service = new FakeConversationService();
+      const store = createConversationStore();
+      const activityView: ActivityView = {
+        tasks: [{ status: "done", count: 5 }],
+        work: [],
+        usage: { totalTokens: 100 },
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+      };
+      service.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-1" }),
+        activity: activityView,
+        olderCursor: null,
+      };
+      const sink = wrapActivityStoreAsSink(activityStore);
+      await store.getState().openProjected(service, sink, "ref-1");
+      expect(activityStore.getState().view).not.toBeNull();
+      expect(store.getState().conversation?.id).toBe("thread-1");
+
+      // Simulate RootShell-required separate activity reset.
+      activityStore.getState().reset();
+      expect(activityStore.getState().view).toBeNull();
+
+      // Simulate conversation reset.
+      store.getState().reset();
+      expect(store.getState().conversation).toBeNull();
+
+      // Next openProjected — sink.reset() called internally, then setLiveView.
+      service.readProjectionResult = {
+        conversation: makeConversation({ id: "thread-2" }),
+        activity: {
+          tasks: [{ status: "open", count: 2 }],
+          work: [],
+          usage: { totalTokens: 50 },
+          capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        },
+        olderCursor: null,
+      };
+      const sink2 = wrapActivityStoreAsSink(activityStore);
+      await store.getState().openProjected(service, sink2, "ref-2");
+
+      // Both views commit under the new identity.
+      expect(activityStore.getState().view).not.toBeNull();
+      expect(activityStore.getState().view?.tasks[0]?.status).toBe("open");
+      expect(store.getState().conversation?.id).toBe("thread-2");
+
+      // Late prior-generation notification rejected by both stores.
+      const lateNotification = {
+        method: "thread/status/changed" as const,
+        params: {
+          threadId: "thread-1",
+          ref: "ref-1",
+          status: { type: "running" },
+        },
+      } as AnyNotification;
+      const outcome = activityStore
+        .getState()
+        .applyLiveNotification(lateNotification, {
+          threadId: "thread-1",
+          ref: "ref-1",
+          generation: 1,
+        });
+      expect(outcome).toBe("ignored");
+      const convBefore = store.getState().conversation;
+      store.getState().applyNotification(lateNotification);
+      expect(store.getState().conversation).toBe(convBefore);
     });
   });
 });

@@ -25,6 +25,7 @@ import type {
   ThreadCapabilities,
   ThreadReadResponse,
   ThreadTurnsListResponse,
+  Turn,
   TurnCancelQueuedResponse,
   TurnInterruptResponse,
   TurnQueueResponse,
@@ -2373,6 +2374,56 @@ describe("ConversationService", () => {
       const startCall = client.calls.find((c) => c.method === "turn/start");
       expect(startCall).toBeDefined();
       expect(startCall?.params).toMatchObject({ ref: "ref-1" });
+    });
+  });
+
+  // I3: projectOlderTurns must never emit actionable kind:'question' rows
+  // from historical pages. A pending ask cannot legitimately be older than
+  // newer continuation turns, and page-local projection otherwise resurrects
+  // settled calls. All other projected page items/order/dedupe/cursor are
+  // preserved — only question rows are omitted.
+  describe("I3: projectOlderTurns omits question rows from historical pages", () => {
+    it("completed ask_user + agentMessage => question omitted, other content retained", async () => {
+      const { client, service } = setup();
+      // Build turns with a completed ask_user + agentMessage.
+      const askUserTurn: Turn = {
+        id: "t-old-1",
+        items: [
+          {
+            type: "commandExecution",
+            id: "ask-old",
+            toolName: "ask_user",
+            status: "completed",
+            argumentsJson:
+              '{"questions":[{"header":"Choose","question":"Pick one","options":[{"label":"A","detail":"da"},{"label":"B","detail":"db"}],"multi_select":false}]}',
+          },
+          {
+            type: "agentMessage",
+            id: "msg-old",
+            text: "old message",
+            status: "completed",
+          },
+        ],
+        itemsView: "default",
+        status: "completed",
+      };
+      client.on(
+        "thread/turns/list",
+        () =>
+          ({
+            data: [askUserTurn],
+            nextCursor: undefined,
+          }) as ThreadTurnsListResponse,
+      );
+
+      await service.open("ref-1");
+      const result = await service.loadOlder("cursor-1");
+      const items = result.items;
+
+      // No question items — the completed ask_user must not be resurrected.
+      expect(items.some((i) => i.kind === "question")).toBe(false);
+      // Other content retained — agentMessage projected as assistant.
+      expect(items.some((i) => i.kind === "assistant")).toBe(true);
     });
   });
 });
