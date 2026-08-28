@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
 import {
   chmod,
@@ -202,7 +203,15 @@ function evidenceFor(milestone) {
         connectionTreeDigest: SHA_C,
       };
     case "fixture-absence":
-      return { fixtureAbsent: true, searchAbsent: true, labAbsent: true };
+      return {
+        fixtureAbsent: true,
+        searchAbsent: true,
+        labAbsent: true,
+        activeThreadId: "thread-opaque",
+        titleDigest: SHA_A,
+        hubVersion: "hub-1",
+        protocolVersion: "evener-appwire-v3",
+      };
     default:
       throw new Error(`unknown milestone ${milestone}`);
   }
@@ -212,7 +221,10 @@ function validObserved() {
   const rows = REQUIRED_LIVE_MILESTONES.map((milestone, index) => ({
     milestone,
     concept: CONCEPTS[milestone],
-    threadIdentity: THREAD_MILESTONES.has(milestone) ? "thread-opaque" : null,
+    threadIdentity:
+      THREAD_MILESTONES.has(milestone) || milestone === "fixture-absence"
+        ? "thread-opaque"
+        : null,
     fixtureAbsent: true,
     source: {
       tool: "idb",
@@ -307,6 +319,18 @@ test("validator rejects order, concept, identity, time, fixture, and arbitrary m
 });
 
 test("validator rejects synthesized physical outcomes and empty expected sequences", async (t) => {
+  await t.test("missing final app identity", () =>
+    rejects((rows) => {
+      delete rows[11].evidence.activeThreadId;
+      rows[11].positiveMarker.markerDigest = derivePositiveMarker(rows[11]);
+    }, /final.*identity|active thread/i),
+  );
+  await t.test("wrong final Hub", () =>
+    rejects((rows) => {
+      rows[11].evidence.hubVersion = "other-hub";
+      rows[11].positiveMarker.markerDigest = derivePositiveMarker(rows[11]);
+    }, /final.*Hub|Hub.*match/i),
+  );
   await t.test("missing roster list limit", () =>
     rejects((rows) => {
       delete rows[1].evidence.listLimit;
@@ -516,51 +540,74 @@ test("parseCli rejects unknown flags", () => {
   );
 });
 
-test("parseAxDocument accepts the real complete object and rejects invented wrappers", () => {
-  const parsed = parseAxDocument({
+function completeAxDocument(elements, overrides = {}) {
+  return {
     backend: "axbridge-persistent",
-    target: { name: "Evener" },
-    bounds: { x: 0, y: 0, width: 390, height: 844 },
-    accessibility: {
-      AXLabel: "Stillwater sessions",
-      role: "AXGroup",
-      children: [
-        {
-          AXLabel: "Message",
-          AXValue: "draft-sentinel",
-          role: "AXTextArea",
-        },
-      ],
+    target: {
+      kind: "frontmost",
+      pid: null,
+      x: null,
+      y: null,
+      value: null,
+      match_key: null,
     },
-  });
+    screen: { width: 390, height: 844, coordinate_space: "screen" },
+    truncated: false,
+    modal: null,
+    elements,
+    profile: null,
+    coverage: null,
+    interaction: null,
+    frames: null,
+    automation: null,
+    ...overrides,
+  };
+}
+
+test("parseAxDocument accepts only complete unblocked physical documents", () => {
+  const parsed = parseAxDocument(
+    completeAxDocument([
+      {
+        label: "Stillwater sessions",
+        type: "Group",
+        children: [
+          {
+            label: "Message",
+            value: "draft-sentinel",
+            type: "TextArea",
+          },
+        ],
+      },
+    ]),
+  );
   assert.deepEqual(parsed.nodes, [
     {
       label: "Stillwater sessions",
       value: null,
-      role: "AXGroup",
+      role: "Group",
       descendants: ["Message", "draft-sentinel"],
     },
     {
       label: "Message",
       value: "draft-sentinel",
-      role: "AXTextArea",
+      role: "TextArea",
       descendants: [],
     },
   ]);
   assert.throws(
     () =>
       parseAxDocument({
+        ...completeAxDocument([]),
         backend: "ax",
-        accessibility: { "data-thread-key": "not-AX" },
+        elements: [{ "data-thread-key": "not-AX" }],
       }),
     /AX node/i,
   );
   assert.throws(
     () =>
       parseAxDocument({
+        ...completeAxDocument([axNode("Stillwater sessions")]),
         format: "complete",
-        backend: "invented",
-        elements: [axNode("Stillwater sessions")],
       }),
     /complete AX document/i,
   );
@@ -568,6 +615,33 @@ test("parseAxDocument accepts the real complete object and rejects invented wrap
     () => parseAxDocument([axNode("Stillwater sessions")]),
     /complete AX document/i,
   );
+  for (const invalid of [
+    completeAxDocument([axNode("Stillwater sessions")], { truncated: true }),
+    completeAxDocument([axNode("Stillwater sessions")], { omitted_count: 1 }),
+    completeAxDocument([axNode("Stillwater sessions")], {
+      modal: { kind: "system", label: "Permission" },
+    }),
+    (() => {
+      const value = completeAxDocument([axNode("Stillwater sessions")]);
+      delete value.screen;
+      return value;
+    })(),
+    completeAxDocument([axNode("Stillwater sessions")], {
+      target: {
+        kind: "application",
+        pid: 123,
+        x: null,
+        y: null,
+        value: null,
+        match_key: null,
+      },
+    }),
+  ]) {
+    assert.throws(
+      () => parseAxDocument(invalid),
+      /complete|truncat|modal|target/i,
+    );
+  }
 });
 
 test("stages and re-verifies one immutable app artifact inside evidence root", async () => {
@@ -957,7 +1031,7 @@ test("evidence publication creates exclusive roots, hashes exact raw bytes, and 
         tools: {},
         device: {},
         app: {},
-        hub: {},
+        hub: { originDigest: SHA_B },
         observations: [],
       },
       raw,
@@ -1237,17 +1311,12 @@ test("runtime IDB capability preflight fails when complete AX support is absent"
 
 function axNode(label, role = "AXStaticText", value = undefined) {
   return value === undefined
-    ? { AXLabel: label, role }
-    : { AXLabel: label, AXValue: value, role };
+    ? { label, type: role }
+    : { label, value, type: role };
 }
 
-function axOutput(nodes) {
-  return JSON.stringify({
-    backend: "axbridge-persistent",
-    target: { name: "Evener" },
-    bounds: { x: 0, y: 0, width: 390, height: 844 },
-    accessibility: { children: nodes },
-  });
+function axOutput(nodes, overrides = {}) {
+  return JSON.stringify(completeAxDocument(nodes, overrides));
 }
 
 const HELP_OUTPUTS = new Map([
@@ -1294,9 +1363,14 @@ const HELP_OUTPUTS = new Map([
 ]);
 
 class StatefulIdbFake {
-  constructor({ appendDraft = false, reuseBaselineForStreaming = false } = {}) {
+  constructor({
+    appendDraft = false,
+    reuseBaselineForStreaming = false,
+    finalFault = null,
+  } = {}) {
     this.appendDraft = appendDraft;
     this.reuseBaselineForStreaming = reuseBaselineForStreaming;
+    this.finalFault = finalFault;
     this.calls = [];
     this.concept = "Stillwater";
     this.surface = "sessions";
@@ -1314,6 +1388,8 @@ class StatefulIdbFake {
     this.reasoningOpen = false;
     this.toolOpen = false;
     this.stagedPath = null;
+    this.afterReconnect = false;
+    this.finalPhase = false;
   }
 
   async run(program, argv) {
@@ -1385,6 +1461,7 @@ class StatefulIdbFake {
         this.pid = 202;
         this.surface = "sessions";
         this.terminated = false;
+        this.afterReconnect = true;
       } else if (foreground) {
         assert.equal(this.background, true);
         this.background = false;
@@ -1433,7 +1510,14 @@ class StatefulIdbFake {
         "--udid",
         "phone",
       ]);
-      const output = axOutput(this.nodes());
+      const output = axOutput(this.nodes(), this.documentOverrides());
+      if (
+        this.afterReconnect &&
+        this.surface === "conversation" &&
+        !this.finalPhase
+      ) {
+        this.finalPhase = true;
+      }
       this.advanceMutation();
       return ok(output);
     }
@@ -1482,6 +1566,7 @@ class StatefulIdbFake {
     }
     if (label.startsWith("Open ")) {
       this.surface = "conversation";
+      if (this.afterReconnect) this.finalPhase = false;
       return;
     }
     if (label.startsWith("Use ")) {
@@ -1540,6 +1625,20 @@ class StatefulIdbFake {
   }
 
   nodes() {
+    if (this.finalPhase && this.finalFault !== null) {
+      if (this.finalFault === "springboard") {
+        return [axNode("SpringBoard", "AXApplication")];
+      }
+      if (this.finalFault === "another-app") {
+        return [axNode("Other Application", "AXApplication")];
+      }
+      if (this.finalFault === "wrong-concept") {
+        return [
+          ...this.connectionNodes(),
+          axNode("Stillwater sessions", "AXGroup"),
+        ];
+      }
+    }
     if (this.background) return [axNode("SpringBoard", "AXApplication")];
     if (this.serverSheet) {
       return [
@@ -1556,7 +1655,9 @@ class StatefulIdbFake {
   connectionNodes() {
     return [
       axNode(
-        "Connected to test-hub hub-1; protocol evener-appwire-v3; app version 0.1.0",
+        this.finalPhase && this.finalFault === "wrong-hub"
+          ? "Connected to other-hub hub-9; protocol wrong-v9; app version 0.1.0"
+          : "Connected to test-hub hub-1; protocol evener-appwire-v3; app version 0.1.0",
         "AXStaticText",
       ),
     ];
@@ -1632,10 +1733,15 @@ class StatefulIdbFake {
   }
 
   conversationNodes() {
-    return [
+    const nodes = [
       ...this.connectionNodes(),
       axNode(`${this.concept} conversation`, "AXGroup"),
-      axNode("Session Known live session", "AXGroup"),
+      axNode(
+        this.finalPhase && this.finalFault === "wrong-thread"
+          ? "Session Other live session"
+          : "Session Known live session",
+        "AXGroup",
+      ),
       axNode("Message", "AXTextArea", this.draft),
       axNode("Use send mode", "AXButton"),
       axNode("Use steer mode", "AXButton"),
@@ -1657,6 +1763,23 @@ class StatefulIdbFake {
         : [axNode(this.mutationLabel(), "AXStaticText")]),
       ...this.transcriptNodes(),
     ];
+    if (this.finalPhase && this.finalFault === "descendant-contamination") {
+      nodes.push({
+        label: "Transcript container",
+        type: "AXGroup",
+        children: [{ value: "synthetic_completion" }],
+      });
+    }
+    if (this.finalPhase && this.finalFault === "forbidden-control") {
+      nodes.push(axNode("Search", "AXButton"));
+    }
+    return nodes;
+  }
+
+  documentOverrides() {
+    return this.finalPhase && this.finalFault === "modal"
+      ? { modal: { kind: "system", label: "Permission" } }
+      : {};
   }
 
   workNodes() {
@@ -1682,6 +1805,14 @@ async function runStatefulSmoke(options = {}) {
   await writeFile(path.join(app, "Evener"), "binary");
   const fake = new StatefulIdbFake(options);
   let monotonic = 0;
+  const now = () => {
+    monotonic +=
+      (options.fastFailure || options.finalFault !== undefined) &&
+      fake.finalPhase
+        ? 4_000
+        : 1;
+    return monotonic;
+  };
   const result = await runLiveSmoke(
     {
       udid: "phone",
@@ -1691,7 +1822,7 @@ async function runStatefulSmoke(options = {}) {
     },
     {
       run: fake.run.bind(fake),
-      now: options.fastFailure ? () => (monotonic += 4_000) : () => ++monotonic,
+      now,
       env: {
         EVENER_SMOKE_APP_PATH: app,
         EVENER_SMOKE_THREAD_REF: "raw-sensitive-thread-ref",
@@ -1712,6 +1843,8 @@ test("physical orchestration uses staged install, stateful set-value, and causal
   assert.equal(result.summary.status, "passed");
   const summaryText = await readFile(result.paths.summaryPath, "utf8");
   const rawEvidence = JSON.parse(await readFile(result.paths.rawPath, "utf8"));
+  const origin = "https://hub.example.test";
+  const originDigest = `sha256:${createHash("sha256").update(origin).digest("hex")}`;
   assert.equal(result.summary.observations.length, 12);
   assert.equal(rawEvidence.observations.length, 12);
   assert.equal(rawEvidence.operational.threadRef, "raw-sensitive-thread-ref");
@@ -1719,6 +1852,9 @@ test("physical orchestration uses staged install, stateful set-value, and causal
   assert.equal(summaryText.includes(app), false);
   assert.equal(summaryText.includes("tool output"), false);
   assert.equal(summaryText.includes("partial"), false);
+  assert.equal(result.summary.hub.originDigest, originDigest);
+  assert.equal(JSON.stringify(rawEvidence).includes(origin), true);
+  assert.equal(summaryText.includes(origin), false);
   assert.equal(
     fake.calls.some((call) => call[0] === "xcrun"),
     false,
@@ -1759,4 +1895,24 @@ test("stateful fake rejects a historical completed item transitioning backward",
     runStatefulSmoke({ reuseBaselineForStreaming: true, fastFailure: true }),
     /semantic tripwire|item lifecycle|live workflow failed/i,
   );
+});
+
+test("final absence remains bound to the reopened production app", async (t) => {
+  for (const fault of [
+    "springboard",
+    "modal",
+    "another-app",
+    "wrong-concept",
+    "wrong-thread",
+    "wrong-hub",
+    "descendant-contamination",
+    "forbidden-control",
+  ]) {
+    await t.test(fault, async () => {
+      await assert.rejects(
+        runStatefulSmoke({ finalFault: fault }),
+        /semantic tripwire/i,
+      );
+    });
+  }
 });
