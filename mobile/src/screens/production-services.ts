@@ -12,6 +12,7 @@
  */
 
 import { rpcURLFromLocation } from "../../../cmd/evener-hub/frontend/src/protocol/transport";
+import type { ConceptStorage } from "../live-concepts/live-ui-store";
 import type { NativeBridge } from "../native/client";
 import { createNativeBridge } from "../native/client";
 import { createAppwireClient } from "../services/appwireSocket";
@@ -33,6 +34,8 @@ import { createRosterService, type RosterService } from "../services/roster";
 import { createTauriBridge } from "../services/tauri";
 import { createRosterStore } from "../state/roster";
 import { createTauriNativeTransport } from "./production-transport";
+
+const CONCEPT_STORAGE_KEY = "evener.live-concept";
 
 export interface ProfileAppwireClient extends ConversationClientLike {
   connect(): Promise<unknown>;
@@ -75,6 +78,7 @@ export function createProfileScopedServices(
 export interface ProductionServices {
   readonly profile: ProfileService;
   readonly native: NativeBridge;
+  readonly conceptStorage: ConceptStorage;
   readonly createProfileScopedServices: (
     profile: ProfileRedacted,
   ) => ProfileScopedServices;
@@ -100,7 +104,29 @@ export function createProductionServices(): ProductionServices {
   return {
     profile,
     native,
+    conceptStorage: createBrowserConceptStorage(),
     createProfileScopedServices: (profileSummary) =>
       createProfileScopedServices(profileSummary, createClient),
   };
+}
+
+function createBrowserConceptStorage(): ConceptStorage {
+  return {
+    read: () => localStorageOrNull()?.getItem(CONCEPT_STORAGE_KEY) ?? null,
+    write: (conceptId) => {
+      localStorageOrNull()?.setItem(CONCEPT_STORAGE_KEY, conceptId);
+    },
+    remove: () => {
+      localStorageOrNull()?.removeItem(CONCEPT_STORAGE_KEY);
+    },
+  };
+}
+
+function localStorageOrNull(): Storage | null {
+  if (typeof window === "undefined") return null;
+  try {
+    return window.localStorage ?? null;
+  } catch {
+    return null;
+  }
 }

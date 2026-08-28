@@ -71,13 +71,6 @@ const TABS: readonly BottomTab[] = [
 ];
 
 const PANEL_ID = "evener-tab-panel";
-const CONCEPT_STORAGE_KEY = "evener.live-concept";
-
-const conceptStorage: ConceptStorage = {
-  read: () => readLocalStorage(CONCEPT_STORAGE_KEY),
-  write: (conceptId) => writeLocalStorage(CONCEPT_STORAGE_KEY, conceptId),
-  remove: () => removeLocalStorage(CONCEPT_STORAGE_KEY),
-};
 
 interface OwnedProfileScope {
   readonly profileId: string | null;
@@ -132,7 +125,9 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
   // retains the canonical attachment store identity for its existing viewer.
   const [_attachmentStore] = useState(createAttachmentStore);
   const [conceptUiStore] = useState(() =>
-    createLiveConceptUiStore(conceptStorage),
+    createLiveConceptUiStore(
+      services.conceptStorage ?? createMemoryConceptStorage(),
+    ),
   );
   const selectedConcept = conceptUiStore((state) => state.concept);
   const workOpen = conceptUiStore((state) => state.workOpen);
@@ -658,23 +653,15 @@ function sameProfileScope(
   );
 }
 
-function localStorageOrNull(): Storage | null {
-  if (typeof window === "undefined") return null;
-  try {
-    return window.localStorage ?? null;
-  } catch {
-    return null;
-  }
-}
-
-function readLocalStorage(key: string): string | null {
-  return localStorageOrNull()?.getItem(key) ?? null;
-}
-
-function writeLocalStorage(key: string, value: string): void {
-  localStorageOrNull()?.setItem(key, value);
-}
-
-function removeLocalStorage(key: string): void {
-  localStorageOrNull()?.removeItem(key);
+function createMemoryConceptStorage(): ConceptStorage {
+  let value: string | null = null;
+  return {
+    read: () => value,
+    write: (conceptId) => {
+      value = conceptId;
+    },
+    remove: () => {
+      value = null;
+    },
+  };
 }
