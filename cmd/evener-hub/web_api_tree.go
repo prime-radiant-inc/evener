@@ -19,11 +19,7 @@ import (
 )
 
 func (s *WebServer) emptyNavigationMutation() hubapi.NavigationMutation {
-	mutation := hubapi.NavigationMutation{Targets: hubapi.NavigationArray[appwire.NavigationInvalidationTarget]{}}
-	if capability := s.navigation.Capability(); capability != nil {
-		mutation.GenerationID = capability.GenerationID
-	}
-	return mutation
+	return s.navigation.EmptyMutation()
 }
 
 func projectKeyForStateDir(stateDir string) string {

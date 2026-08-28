@@ -151,7 +151,7 @@ func TestWriteSessionActionErrorWireError(t *testing.T) {
 // TestFavoriteSessionIDMatchesLocalNonLocal covers the case where actual is
 // not a local ref.
 func TestFavoriteSessionIDMatchesLocalNonLocal(t *testing.T) {
-	if favoriteSessionIDMatches("local:s1", "remote:s2") {
+	if sessionRefMatchesID("local:s1", "remote:s2") {
 		t.Fatal("different sessions should not match")
 	}
 }

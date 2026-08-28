@@ -206,6 +206,7 @@ func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Reg
 	registerFavoriteHandler(server, cfg, navigation)
 	registerArchiveHandler(server, cfg, func() *NavigationService { return navigation })
 	registerSessionDeleteHandler(server, nil)
+	registerPinSectionHandlers(server, cfg, navigation, nil)
 	registerMiscHandlers(server, cfg, sources)
 	registerPluginAutoUpgradeHandlers(server, plugins.NewManager(cfg.PluginRoot))
 	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)

@@ -536,7 +536,7 @@ func TestCovHandleAPIPinSectionsNotConfigured(t *testing.T) {
 // rejection (web_api_pin_section.go).
 func TestCovTopLevelFavoriteSessionIDClusterPrefix(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
-	if _, ok := web.topLevelFavoriteSessionID(context.TODO(), "cluster:foo"); ok {
+	if _, ok := web.resolveTopLevelSessionRef(context.TODO(), "cluster:foo"); ok {
 		t.Fatal("cluster: prefix should return false")
 	}
 }

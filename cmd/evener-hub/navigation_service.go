@@ -261,6 +261,16 @@ func (s *NavigationService) Capability() *appwire.NavigationCapability {
 	return &appwire.NavigationCapability{Version: 1, GenerationID: s.generation, Sequence: s.sequence}
 }
 
+// EmptyMutation returns the current navigation generation with no invalidation
+// targets for an idempotent mutation that changed no durable state.
+func (s *NavigationService) EmptyMutation() appwire.NavigationMutation {
+	mutation := appwire.NavigationMutation{Targets: []appwire.NavigationInvalidationTarget{}}
+	if capability := s.Capability(); capability != nil {
+		mutation.GenerationID = capability.GenerationID
+	}
+	return mutation
+}
+
 func (s *NavigationService) Stats() NavigationServiceStats {
 	s.mu.Lock()
 	stats := navigationServiceStats{CoreBuilds: s.coreBuilds}

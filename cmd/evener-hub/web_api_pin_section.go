@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -32,46 +31,6 @@ type sessionPinNavigationResponse struct {
 	Changed    bool                        `json:"changed"`
 	Assignment hubapi.SessionPinAssignment `json:"assignment"`
 	Navigation hubapi.NavigationMutation   `json:"navigation"`
-}
-
-func (s *WebServer) topLevelFavoriteSessionID(ctx context.Context, requested string) (string, bool) {
-	if strings.HasPrefix(requested, "cluster:") {
-		return "", false
-	}
-	metas, live, _ := s.navigationTreeInputs(ctx)
-	ids := hubcore.TopLevelSessionIDs(metas)
-	metaIDs := make(map[string]struct{}, len(metas))
-	for _, meta := range metas {
-		metaIDs[meta.ID] = struct{}{}
-	}
-	// A live session can be visible in the tree before its metadata reaches
-	// PastIndex. Such a session is a top-level root by construction; sessions
-	// with metadata are classified by the same helper as tree construction.
-	for _, entry := range live {
-		if entry.SessionID == "" {
-			continue
-		}
-		if _, known := metaIDs[entry.SessionID]; !known {
-			ids[entry.SessionID] = struct{}{}
-		}
-	}
-	for id := range ids {
-		if favoriteSessionIDMatches(requested, id) {
-			return id, true
-		}
-	}
-	return "", false
-}
-
-func favoriteSessionIDMatches(requested, actual string) bool {
-	if requested == actual {
-		return true
-	}
-	actualRef := hubRefFromTreeNodeID(actual)
-	if requestedRef, err := hubapi.ParseRef(requested); err == nil && requestedRef == actualRef {
-		return true
-	}
-	return actualRef.HostID == "local" && requested == actualRef.SessionID
 }
 
 func (s *WebServer) handleAPIPinSections(w http.ResponseWriter, r *http.Request) {
@@ -185,7 +144,7 @@ func (s *WebServer) handleAPISessionPin(w http.ResponseWriter, r *http.Request) 
 		writeAPIError(w, http.StatusBadRequest, "exactly one of section_id or section_name is required")
 		return
 	}
-	sessionID, ok := s.topLevelFavoriteSessionID(r.Context(), body.SessionRef)
+	sessionID, ok := s.resolveTopLevelSessionRef(r.Context(), body.SessionRef)
 	if !ok {
 		writeAPIError(w, http.StatusBadRequest, "session_ref must name a real top-level session")
 		return
@@ -221,7 +180,7 @@ func (s *WebServer) handleAPISessionPin(w http.ResponseWriter, r *http.Request) 
 
 func (s *WebServer) handleAPISessionUnpin(w http.ResponseWriter, r *http.Request) {
 	requested := r.URL.Query().Get("ref")
-	sessionID, ok := s.topLevelFavoriteSessionID(r.Context(), requested)
+	sessionID, ok := s.resolveTopLevelSessionRef(r.Context(), requested)
 	if !ok {
 		writeAPIError(w, http.StatusBadRequest, "ref must name a real top-level session")
 		return
