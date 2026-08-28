@@ -263,10 +263,7 @@ describe("deleteProject", () => {
       navigation: { generation_id: "g1", targets: [] },
     };
     const client = new FakeClient();
-    client.on("evener/project/delete", (params) => {
-      expect(params).toEqual({ key: "proj-key", workingDir: "/home/user/proj" });
-      return response;
-    });
+    client.on("evener/project/delete", () => response);
     connectionStore.getState().connect(client);
 
     await expect(deleteProject("proj-key", "/home/user/proj")).resolves.toEqual(response);

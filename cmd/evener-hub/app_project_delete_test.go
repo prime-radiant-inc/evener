@@ -2,7 +2,6 @@ package hub
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 
@@ -31,15 +30,7 @@ func TestHubProjectDeleteAppWireRejectsMissingKey(t *testing.T) {
 
 func dispatchProjectDelete(t *testing.T, web *WebServer, params appwire.ProjectDeleteParams) (appwire.ProjectDeleteResponse, error) {
 	t.Helper()
-	raw, err := json.Marshal(params)
-	if err != nil {
-		t.Fatalf("marshal project delete params: %v", err)
-	}
-	result, err := web.appRPC.Router().Dispatch(context.Background(), appwire.Request{
-		ID:     appwire.NewIntID(1),
-		Method: appwire.MethodEvenerProjectDelete,
-		Params: raw,
-	})
+	result, err := exactDispatch(context.Background(), t, web.appRPC, appwire.MethodEvenerProjectDelete, params)
 	if err != nil {
 		return appwire.ProjectDeleteResponse{}, err
 	}
