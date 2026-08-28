@@ -437,6 +437,22 @@ function scrollOverflowCount(root: Element): number {
   return scrollOverflowElements(root).length;
 }
 
+function effectiveTargetElement(element: HTMLElement): HTMLElement {
+  if (element.getAttribute("role") === "switch") {
+    return element.parentElement ?? element;
+  }
+  if (element.tagName === "SELECT") {
+    return element.parentElement?.parentElement ?? element;
+  }
+  return element;
+}
+
+function popoverGap(panel: ReturnType<typeof geometryOf>, trigger: ReturnType<typeof geometryOf>): number {
+  if (panel.bottom <= trigger.top) return trigger.top - panel.bottom;
+  if (panel.top >= trigger.bottom) return panel.top - trigger.bottom;
+  return 0;
+}
+
 function horizontalOverflowElements(root: Element): HTMLElement[] {
   return [root, ...Array.from(root.querySelectorAll<HTMLElement>("*"))].filter(
     (element): element is HTMLElement =>
@@ -810,16 +826,11 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
   const fieldsetColumns = columnLefts.length;
   const rootRemPx = Number.parseFloat(getComputedStyle(document.documentElement).fontSize);
   const effectiveTargets = controls.map((element) => {
-    const effectiveElement =
-      element.getAttribute("role") === "switch"
-        ? element.parentElement
-        : element.tagName === "SELECT"
-          ? element.parentElement?.parentElement
-          : element;
+    const effectiveElement = effectiveTargetElement(element);
     return {
       kind: element === trigger ? "trigger" : (element.getAttribute("role") ?? element.tagName.toLowerCase()),
       label: accessibleName(element),
-      height: effectiveElement?.getBoundingClientRect().height ?? element.getBoundingClientRect().height,
+      height: effectiveElement.getBoundingClientRect().height,
     };
   });
   const fieldsetStacked =
@@ -893,11 +904,7 @@ async function inspectDetail(includeAdvanced = true): Promise<DetailGeometry> {
       !mobile &&
       panelBox.left <= finalTriggerBox.right + 1 &&
       panelBox.right >= finalTriggerBox.left - 1 &&
-      (panelBox.bottom <= finalTriggerBox.top
-        ? finalTriggerBox.top - panelBox.bottom
-        : panelBox.top >= finalTriggerBox.bottom
-          ? panelBox.top - finalTriggerBox.bottom
-          : 0) <= 24,
+      popoverGap(panelBox, finalTriggerBox) <= 24,
     popoverScroll,
   };
 }
@@ -1132,7 +1139,7 @@ function measure() {
   const liveEditorElement = Array.from(
     document.querySelectorAll<HTMLElement>('section[aria-label="Transcript detail editor"]'),
   ).find((editor) => !editor.closest('[data-testid^="transcript-display-card-"]'));
-  const fieldsets = liveEditorElement?.querySelectorAll<HTMLElement>("fieldset")
+  const fieldsets = liveEditorElement
     ? Array.from(liveEditorElement.querySelectorAll<HTMLElement>("fieldset")).map(geometryOf)
     : [];
   const triggerElement = Array.from(document.querySelectorAll<HTMLButtonElement>("button")).find((button) =>
@@ -1145,18 +1152,19 @@ function measure() {
   ];
   const scrollContainers = Array.from(new Set(scrollRoots.flatMap((root) => actualScrollContainers(root))));
   const quoteFontSize = subagentQuote ? Number.parseFloat(getComputedStyle(subagentQuote).fontSize) : 0;
-  const statusGeometry = (element: HTMLElement | null) =>
-    element === null
-      ? null
-      : {
-          ...geometryOf(element),
-          clientWidth: element.clientWidth,
-          scrollWidth: element.scrollWidth,
-          display: getComputedStyle(element).display,
-          flex: getComputedStyle(element).flex,
-          minWidth: getComputedStyle(element).minWidth,
-          overflow: getComputedStyle(element).overflow,
-        };
+  function statusGeometry(element: HTMLElement | null) {
+    if (element === null) return null;
+    const style = getComputedStyle(element);
+    return {
+      ...geometryOf(element),
+      clientWidth: element.clientWidth,
+      scrollWidth: element.scrollWidth,
+      display: style.display,
+      flex: style.flex,
+      minWidth: style.minWidth,
+      overflow: style.overflow,
+    };
+  }
   return {
     width,
     scrollers,

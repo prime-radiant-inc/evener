@@ -461,17 +461,18 @@ function nearlyEqual(actual, expected, tolerance = GEOMETRY_TOLERANCE) {
 function assertEditors(result, width, surface) {
   const failures = [];
   const editors = result.editors;
-  const expectedOwners =
-    surface === "settings"
-      ? new Set(["transcript-display-card-desktop", "transcript-display-card-mobile"])
-      : new Set(["transcript-detail-control"]);
-  const expectedLayouts =
-    surface === "settings"
-      ? new Map([
-          ["transcript-display-card-desktop", "desktop"],
-          ["transcript-display-card-mobile", "mobile"],
-        ])
-      : new Map([["transcript-detail-control", width < 900 ? "mobile" : "desktop"]]);
+  let expectedOwners;
+  let expectedLayouts;
+  if (surface === "settings") {
+    expectedOwners = new Set(["transcript-display-card-desktop", "transcript-display-card-mobile"]);
+    expectedLayouts = new Map([
+      ["transcript-display-card-desktop", "desktop"],
+      ["transcript-display-card-mobile", "mobile"],
+    ]);
+  } else {
+    expectedOwners = new Set(["transcript-detail-control"]);
+    expectedLayouts = new Map([["transcript-detail-control", width < 900 ? "mobile" : "desktop"]]);
+  }
   if (!Array.isArray(editors)) return [`${surface} editor measurements are missing`];
   if (editors.length !== expectedOwners.size) {
     failures.push(`${surface} editor measurement count is ${editors.length}, expected ${expectedOwners.size}`);

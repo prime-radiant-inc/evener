@@ -109,14 +109,15 @@ export function TranscriptSection() {
     Object.values(pending).some((state) => state?.state === "saving" || state?.state === "error");
   const serverIssue = hubError !== null && !layoutIssue;
   const disabled = hubSupport !== "supported" || hubLoading || serverIssue;
-  const status =
-    hubSupport === "unknown"
-      ? "Waiting for the hub connection to report transcript display support."
-      : hubSupport === "unsupported"
-        ? "This older hub does not support synced transcript defaults. Update the hub to edit Desktop and Mobile defaults."
-        : hubLoading
-          ? "Loading transcript display defaults from the hub."
-          : undefined;
+  let status: string | undefined;
+  if (hubSupport === "unknown") {
+    status = "Waiting for the hub connection to report transcript display support.";
+  } else if (hubSupport === "unsupported") {
+    status =
+      "This older hub does not support synced transcript defaults. Update the hub to edit Desktop and Mobile defaults.";
+  } else if (hubLoading) {
+    status = "Loading transcript display defaults from the hub.";
+  }
 
   return (
     <div className={CLASS.root}>
