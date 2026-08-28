@@ -201,6 +201,27 @@ test("offers Clear goal in the popover only when a goal is currently set", async
   expect(within(popover).getByRole("button", { name: /clear goal/i })).toBeTruthy();
 });
 
+test("GoalControl closes an open popover when the goal clears and a later goal starts closed", async () => {
+  const user = userEvent.setup();
+  const firstGoal = { objective: "first objective", status: "active" as const, iterations: 1 };
+  const laterGoal = { objective: "later objective", status: "active" as const, iterations: 2 };
+  const { rerender } = render(<GoalControl sessionRef="ref_a" model={testModel({ goal: firstGoal })} />);
+
+  await openGoalPopover(user);
+  expect(screen.getByTestId("goal-popover")).toBeTruthy();
+
+  rerender(<GoalControl sessionRef="ref_a" model={testModel({ goal: null })} />);
+  expect(screen.queryByTestId("goal-popover")).toBeNull();
+
+  rerender(<GoalControl sessionRef="ref_a" model={testModel({ goal: laterGoal })} />);
+  expect(screen.queryByTestId("goal-popover")).toBeNull();
+  await openGoalPopover(user);
+  expect(within(screen.getByTestId("goal-popover")).getByText(/2 iterations/i)).toBeTruthy();
+
+  rerender(<GoalControl sessionRef="ref_b" model={testModel({ ref: "ref_b", goal: laterGoal })} />);
+  await waitFor(() => expect(screen.queryByTestId("goal-popover")).toBeNull());
+});
+
 test("disables Clear goal when the thread's goal capability is unavailable", async () => {
   const user = userEvent.setup();
   render(
