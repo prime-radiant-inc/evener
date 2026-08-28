@@ -42,11 +42,6 @@
   width: 14px;
   height: 14px;
   color: var(--ink-mid);
-  fill: none;
-  stroke: currentColor;
-  stroke-linecap: round;
-  stroke-linejoin: round;
-  stroke-width: 1.75;
 }
 
 .label {
