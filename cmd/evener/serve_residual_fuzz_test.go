@@ -17,6 +17,7 @@ import (
 	"primeradiant.com/evener/agent/execenv"
 	"primeradiant.com/evener/agent/provider"
 	"primeradiant.com/evener/agent/schema"
+	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
 	"primeradiant.com/evener/cmdutil"
@@ -133,6 +134,34 @@ func exerciseResidualCallbacks(s *residualServeServer, sessionID string) {
 	_ = s.tasks()
 	_, _ = s.jobs(appwire.JobsListParams{Ref: "local:" + sessionID})
 	_, _, _ = s.jobOutput("job_1", 0, 1024)
+}
+
+type residualTaskEnvelopeSampling struct {
+	agent.EnvelopeSampling
+	tasks []taskpkg.Task
+}
+
+func (s residualTaskEnvelopeSampling) TasksWithError() ([]taskpkg.Task, error) {
+	return s.tasks, nil
+}
+
+func TestLiveThreadEnvelopeTaskAggregateProjectsTaskSummary(t *testing.T) {
+	sample := residualTaskEnvelopeSampling{tasks: []taskpkg.Task{
+		{ID: 1, Description: "done", Status: taskpkg.TaskDone},
+		{ID: 2, Description: "first current", Status: taskpkg.TaskInProgress},
+		{ID: 3, Description: "later current", Status: taskpkg.TaskInProgress},
+		{ID: 4, Description: "open", Status: taskpkg.TaskOpen},
+	}}
+
+	got := (liveThreadEnvelopeSource{session: func() agent.EnvelopeSampling { return sample }}).TaskAggregate()
+	want := &appwire.TaskAggregate{
+		Total:   4,
+		Done:    1,
+		Current: &appwire.TaskSummary{ID: 2, Description: "first current"},
+	}
+	if got == nil || got.Total != want.Total || got.Done != want.Done || got.Current == nil || *got.Current != *want.Current {
+		t.Fatalf("live task aggregate = %+v, want %+v", got, want)
+	}
 }
 
 func TestRunServeResidualCoverage(t *testing.T) {

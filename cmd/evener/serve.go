@@ -1500,17 +1500,11 @@ func (l liveThreadEnvelopeSource) TaskAggregate() *appwire.TaskAggregate {
 	if err != nil {
 		return nil
 	}
-	done := 0
-	aggregate := &appwire.TaskAggregate{Total: len(tasks)}
-	for _, task := range tasks {
-		if task.Status == taskpkg.TaskDone {
-			done++
-		}
-		if aggregate.Current == nil && task.Status == taskpkg.TaskInProgress {
-			aggregate.Current = &appwire.TaskSummary{ID: task.ID, Description: task.Description}
-		}
+	summary := taskpkg.Summarize(tasks)
+	aggregate := &appwire.TaskAggregate{Total: summary.Total, Done: summary.Done}
+	if summary.Current != nil {
+		aggregate.Current = &appwire.TaskSummary{ID: summary.Current.ID, Description: summary.Current.Description}
 	}
-	aggregate.Done = done
 	return aggregate
 }
 

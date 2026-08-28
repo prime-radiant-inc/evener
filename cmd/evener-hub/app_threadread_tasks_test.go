@@ -130,7 +130,9 @@ func TestTaskAggregateMalformedPersistedStoreMatchesLiveAndColdUnknown(t *testin
 	workDir := t.TempDir()
 	client := llm.NewClient()
 	client.Register(taskAggregateScriptedAdapter{})
-	sess, err := agent.NewSession(client, provider.NewOpenAIProfile("gpt-5.2"), execenv.NewLocalExecutionEnvironment(workDir), agent.SessionConfig{
+	profile := provider.NewOpenAIProfile("gpt-5.2")
+	environment := execenv.NewLocalExecutionEnvironment(workDir)
+	sess, err := agent.NewSession(client, profile, environment, agent.SessionConfig{
 		StateDir:         stateDir,
 		NoProjectPrompts: true,
 	})
@@ -140,11 +142,17 @@ func TestTaskAggregateMalformedPersistedStoreMatchesLiveAndColdUnknown(t *testin
 	t.Cleanup(func() { sess.Close() })
 
 	tasksPath := filepath.Join(stateDir, "tasks", sess.ID()+".json")
+	meta := sess.Meta()
+	sess.Close()
 	if err := os.MkdirAll(filepath.Dir(tasksPath), 0o755); err != nil {
 		t.Fatalf("mkdir task store: %v", err)
 	}
 	if err := os.WriteFile(tasksPath, []byte("{malformed task JSON"), 0o644); err != nil {
 		t.Fatalf("write malformed task store: %v", err)
+	}
+	sess, err = agent.RestoreSessionFromMeta(client, profile, environment, meta, stateDir)
+	if err != nil {
+		t.Fatalf("restore session with malformed task store: %v", err)
 	}
 	if _, err := sess.TasksWithError(); err == nil {
 		t.Fatal("malformed task store load unexpectedly succeeded")
@@ -216,11 +224,10 @@ func (s sessionTaskEnvelopeSource) TaskAggregate() *appwire.TaskAggregate {
 	if err != nil {
 		return nil
 	}
-	done := 0
-	for _, item := range tasks {
-		if item.Status == task.TaskDone {
-			done++
-		}
+	summary := task.Summarize(tasks)
+	aggregate := &appwire.TaskAggregate{Total: summary.Total, Done: summary.Done}
+	if summary.Current != nil {
+		aggregate.Current = &appwire.TaskSummary{ID: summary.Current.ID, Description: summary.Current.Description}
 	}
-	return &appwire.TaskAggregate{Total: len(tasks), Done: done}
+	return aggregate
 }
