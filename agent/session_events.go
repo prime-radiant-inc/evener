@@ -142,7 +142,7 @@ func (s *Session) ConsumeEventsLossless(consume func(events.SessionEvent), onDra
 // hookRunner exists.
 func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, promptSources []promptSource) {
 	store := s.getOrCreateTaskStore()
-	_ = store.MutateAndPublish(func(revision uint64) error {
+	_ = store.MutateAndPublish(func(epoch, revision uint64) error {
 		// Sample current work only after entering the shared store's publication
 		// order. Otherwise a newer mutation could publish between the sample and
 		// this start seed, giving an old snapshot a newer revision.
@@ -152,6 +152,7 @@ func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, prompt
 		if start.TaskStoreOwnerSessionID == "" {
 			start.TaskStoreOwnerSessionID = s.taskStoreOwnerSessionID()
 		}
+		start.TaskPublicationEpoch = epoch
 		start.TaskPublicationRevision = revision
 		s.emit(events.EventSessionStart, start)
 		return nil

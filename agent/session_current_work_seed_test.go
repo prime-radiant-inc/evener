@@ -85,6 +85,9 @@ func TestRootSessionStartSeedsPostTemplateCurrentTask(t *testing.T) {
 	if start.TaskPublicationRevision == 0 {
 		t.Fatal("SessionStart publication revision = 0, want new-producer revision")
 	}
+	if start.TaskPublicationEpoch == 0 {
+		t.Fatal("SessionStart publication epoch = 0, want TaskStore incarnation")
+	}
 }
 
 func TestFreshChildStartThenTemplatePopulationEmitsTaskCorrection(t *testing.T) {
@@ -141,6 +144,9 @@ func TestFreshChildStartThenTemplatePopulationEmitsTaskCorrection(t *testing.T) 
 	if start.TaskPublicationRevision == 0 || update.TaskPublicationRevision <= start.TaskPublicationRevision {
 		t.Fatalf("child start/update publication revisions = %d/%d, want increasing nonzero", start.TaskPublicationRevision, update.TaskPublicationRevision)
 	}
+	if update.TaskPublicationEpoch != start.TaskPublicationEpoch {
+		t.Fatalf("child start/update publication epochs = %d/%d, want same store incarnation", start.TaskPublicationEpoch, update.TaskPublicationEpoch)
+	}
 }
 
 func TestSharedChildStartAndTaskUpdateNameRootOwner(t *testing.T) {
@@ -184,6 +190,9 @@ func TestSharedChildStartAndTaskUpdateNameRootOwner(t *testing.T) {
 	if start.TaskPublicationRevision == 0 {
 		t.Fatal("shared child start publication revision = 0")
 	}
+	if start.TaskPublicationEpoch == 0 {
+		t.Fatal("shared child start publication epoch = 0")
+	}
 	if start.CurrentWork == nil || start.CurrentWork.Tasks == nil || start.CurrentWork.Tasks.Current == nil || start.CurrentWork.Tasks.Current.Description != "Shared root task" {
 		t.Fatalf("shared child start task state = %+v", start.CurrentWork)
 	}
@@ -218,6 +227,9 @@ func TestSharedChildStartAndTaskUpdateNameRootOwner(t *testing.T) {
 	}
 	if update.TaskPublicationRevision <= start.TaskPublicationRevision {
 		t.Fatalf("shared child start/update publication revisions = %d/%d, want increasing", start.TaskPublicationRevision, update.TaskPublicationRevision)
+	}
+	if update.TaskPublicationEpoch != start.TaskPublicationEpoch {
+		t.Fatalf("shared child start/update publication epochs = %d/%d, want shared store incarnation", start.TaskPublicationEpoch, update.TaskPublicationEpoch)
 	}
 }
 

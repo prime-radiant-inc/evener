@@ -177,6 +177,7 @@ func TestProject_TaskUpdated(t *testing.T) {
 		Data: events.TaskUpdatedData{
 			TaskStateData:           events.TaskStateData{Total: 3, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "live current task"}},
 			TaskStoreOwnerSessionID: "owner-session",
+			TaskPublicationEpoch:    7,
 			TaskPublicationRevision: 42,
 		},
 	})
@@ -190,14 +191,15 @@ func TestProject_TaskUpdated(t *testing.T) {
 	if out[0].TaskStoreOwnerSessionID != "owner-session" {
 		t.Fatalf("notification owner = %q, want owner-session", out[0].TaskStoreOwnerSessionID)
 	}
-	if out[0].TaskPublicationRevision != 42 || p.TaskPublicationRevision() != 42 {
-		t.Fatalf("notification/projector revision = %d/%d, want 42", out[0].TaskPublicationRevision, p.TaskPublicationRevision())
+	if out[0].TaskPublicationEpoch != 7 || out[0].TaskPublicationRevision != 42 ||
+		p.TaskPublicationEpoch() != 7 || p.TaskPublicationRevision() != 42 {
+		t.Fatalf("notification/projector publication = %d:%d/%d:%d, want 7:42", out[0].TaskPublicationEpoch, out[0].TaskPublicationRevision, p.TaskPublicationEpoch(), p.TaskPublicationRevision())
 	}
 	wired, err := json.Marshal(params)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(wired), "owner") || strings.Contains(string(wired), "revision") || strings.Contains(string(wired), "taskStoreOwnerSessionId") {
+	if strings.Contains(string(wired), "owner") || strings.Contains(string(wired), "revision") || strings.Contains(string(wired), "epoch") || strings.Contains(string(wired), "taskStoreOwnerSessionId") {
 		t.Fatalf("public task params leaked internal routing metadata: %s", wired)
 	}
 }
@@ -206,6 +208,7 @@ func TestProject_SessionStartCarriesCurrentWorkSeed(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
 	out := p.Project(events.SessionEvent{Kind: events.EventSessionStart, Data: events.SessionStartData{
 		TaskStoreOwnerSessionID: "owner-session",
+		TaskPublicationEpoch:    7,
 		TaskPublicationRevision: 41,
 		CurrentWork: &events.CurrentWorkSeedData{
 			Tasks: &events.TaskStateData{Total: 3, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "seeded task"}},
@@ -224,14 +227,15 @@ func TestProject_SessionStartCarriesCurrentWorkSeed(t *testing.T) {
 	if out[0].TaskStoreOwnerSessionID != "owner-session" {
 		t.Fatalf("started notification owner = %q, want owner-session", out[0].TaskStoreOwnerSessionID)
 	}
-	if out[0].TaskPublicationRevision != 41 || p.TaskPublicationRevision() != 41 {
-		t.Fatalf("started notification/projector revision = %d/%d, want 41", out[0].TaskPublicationRevision, p.TaskPublicationRevision())
+	if out[0].TaskPublicationEpoch != 7 || out[0].TaskPublicationRevision != 41 ||
+		p.TaskPublicationEpoch() != 7 || p.TaskPublicationRevision() != 41 {
+		t.Fatalf("started notification/projector publication = %d:%d/%d:%d, want 7:41", out[0].TaskPublicationEpoch, out[0].TaskPublicationRevision, p.TaskPublicationEpoch(), p.TaskPublicationRevision())
 	}
 	wired, err := json.Marshal(out[0].Params)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(wired), "taskPublication") || strings.Contains(string(wired), "task_publication") ||
+	if strings.Contains(string(wired), "taskPublication") || strings.Contains(string(wired), "task_publication") || strings.Contains(string(wired), "epoch") ||
 		strings.Contains(string(wired), `"revision":41`) || strings.Contains(string(wired), "owner") {
 		t.Fatalf("public thread-start params leaked internal routing metadata: %s", wired)
 	}

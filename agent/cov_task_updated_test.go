@@ -153,7 +153,7 @@ func TestTaskUpdatedDataUsesFirstInProgressTask(t *testing.T) {
 		{ID: 1, Status: taskpkg.TaskDone},
 		{ID: 2, Status: taskpkg.TaskInProgress, Description: "first current task"},
 		{ID: 3, Status: taskpkg.TaskInProgress, Description: "later current task"},
-	}), "owner-session", 9)
+	}), "owner-session", 7, 9)
 	if data.Total != 3 || data.Done != 1 || data.Current == nil || data.Current.ID != 2 || data.Current.Description != "first current task" {
 		t.Fatalf("taskUpdatedData() = %+v", data)
 	}
@@ -162,5 +162,8 @@ func TestTaskUpdatedDataUsesFirstInProgressTask(t *testing.T) {
 	}
 	if data.TaskPublicationRevision != 9 {
 		t.Fatalf("taskUpdatedData() revision = %d, want 9", data.TaskPublicationRevision)
+	}
+	if data.TaskPublicationEpoch != 7 {
+		t.Fatalf("taskUpdatedData() epoch = %d, want 7", data.TaskPublicationEpoch)
 	}
 }

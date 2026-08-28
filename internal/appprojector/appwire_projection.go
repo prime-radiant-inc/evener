@@ -22,6 +22,7 @@ type AppNotification struct {
 	Method                  string
 	Params                  any
 	TaskStoreOwnerSessionID string
+	TaskPublicationEpoch    uint64
 	TaskPublicationRevision uint64
 }
 
@@ -44,6 +45,7 @@ type AppEventProjector struct {
 	taskStoreOwnerSessionID string
 	// taskPublicationRevision is the newest internal task publication observed
 	// by this source projector. It never enters an AppWire params shape.
+	taskPublicationEpoch    uint64
 	taskPublicationRevision uint64
 
 	nextTurn       int
@@ -175,10 +177,23 @@ func (p *AppEventProjector) TaskStoreOwnerSessionID() string {
 	return p.taskStoreOwnerSessionID
 }
 
+// TaskPublicationEpoch returns the newest process-local TaskStore incarnation
+// observed by this projector. It is not part of any public AppWire params shape.
+func (p *AppEventProjector) TaskPublicationEpoch() uint64 {
+	return p.taskPublicationEpoch
+}
+
 // TaskPublicationRevision returns the newest internal task publication learned
 // from typed task carriers. It is not part of any public AppWire params shape.
 func (p *AppEventProjector) TaskPublicationRevision() uint64 {
 	return p.taskPublicationRevision
+}
+
+func (p *AppEventProjector) observeTaskPublication(epoch, revision uint64) {
+	if epoch > p.taskPublicationEpoch || (epoch == p.taskPublicationEpoch && revision > p.taskPublicationRevision) {
+		p.taskPublicationEpoch = epoch
+		p.taskPublicationRevision = revision
+	}
 }
 
 func (p *AppEventProjector) clearSkillCandidate() {
@@ -196,9 +211,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		if data.TaskStoreOwnerSessionID != "" {
 			p.taskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
 		}
-		if data.TaskPublicationRevision > p.taskPublicationRevision {
-			p.taskPublicationRevision = data.TaskPublicationRevision
-		}
+		p.observeTaskPublication(data.TaskPublicationEpoch, data.TaskPublicationRevision)
 		// A resumed session's turn ids must not reuse the "turn_%d" namespace
 		// the transcript projection (internal/apptranscript) already assigned by
 		// entry index to the session's persisted entries (kata eptj). The
@@ -246,6 +259,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}
 		for i := range out {
 			out[i].TaskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
+			out[i].TaskPublicationEpoch = data.TaskPublicationEpoch
 			out[i].TaskPublicationRevision = data.TaskPublicationRevision
 		}
 		return out
@@ -978,9 +992,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		if data.TaskStoreOwnerSessionID != "" {
 			p.taskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
 		}
-		if data.TaskPublicationRevision > p.taskPublicationRevision {
-			p.taskPublicationRevision = data.TaskPublicationRevision
-		}
+		p.observeTaskPublication(data.TaskPublicationEpoch, data.TaskPublicationRevision)
 		notification := p.notification(appwire.NotifyEvenerTaskUpdated, appwire.TaskUpdatedParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
@@ -989,6 +1001,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Current:  taskSummary(data.Current),
 		})
 		notification.TaskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
+		notification.TaskPublicationEpoch = data.TaskPublicationEpoch
 		notification.TaskPublicationRevision = data.TaskPublicationRevision
 		return []AppNotification{notification}
 	case events.EventSandboxEscalationRequested:

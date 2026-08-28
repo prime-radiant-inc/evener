@@ -17,6 +17,7 @@ func TestTaskStoreMutationPublicationSerializesSharedProducers(t *testing.T) {
 	childWaiting := make(chan struct{})
 	releaseRoot := make(chan struct{})
 	type publication struct {
+		epoch    uint64
 		revision uint64
 		summary  ListSummary
 	}
@@ -29,14 +30,14 @@ func TestTaskStoreMutationPublicationSerializesSharedProducers(t *testing.T) {
 
 	rootDone := make(chan error, 1)
 	go func() {
-		rootDone <- store.MutateAndPublish(func(revision uint64) error {
+		rootDone <- store.MutateAndPublish(func(epoch, revision uint64) error {
 			if _, err := store.Append([]TaskInput{{Description: "root mutation", Prompt: "root"}}); err != nil {
 				return err
 			}
 			summary := Summarize(store.View())
 			close(rootCommitted)
 			<-releaseRoot
-			emitted <- publication{revision: revision, summary: summary}
+			emitted <- publication{epoch: epoch, revision: revision, summary: summary}
 			return nil
 		})
 	}()
@@ -44,11 +45,11 @@ func TestTaskStoreMutationPublicationSerializesSharedProducers(t *testing.T) {
 
 	childDone := make(chan error, 1)
 	go func() {
-		childDone <- store.MutateAndPublish(func(revision uint64) error {
+		childDone <- store.MutateAndPublish(func(epoch, revision uint64) error {
 			if _, err := store.Append([]TaskInput{{Description: "child mutation", Prompt: "child"}}); err != nil {
 				return err
 			}
-			emitted <- publication{revision: revision, summary: Summarize(store.View())}
+			emitted <- publication{epoch: epoch, revision: revision, summary: Summarize(store.View())}
 			return nil
 		})
 	}()
@@ -69,7 +70,31 @@ func TestTaskStoreMutationPublicationSerializesSharedProducers(t *testing.T) {
 	if first.revision != 1 || second.revision != 2 {
 		t.Fatalf("publication revisions = [%d, %d], want [1, 2]", first.revision, second.revision)
 	}
+	if first.epoch == 0 || second.epoch != first.epoch {
+		t.Fatalf("publication epochs = [%d, %d], want same nonzero store epoch", first.epoch, second.epoch)
+	}
 	if final := Summarize(store.View()); final.Total != 2 {
 		t.Fatalf("final total = %d, want 2", final.Total)
+	}
+}
+
+func TestTaskStorePublicationEpochDistinguishesIncarnations(t *testing.T) {
+	first := newTestStore(t)
+	second := newTestStore(t)
+	var firstEpoch, secondEpoch uint64
+	if err := first.MutateAndPublish(func(epoch, _ uint64) error {
+		firstEpoch = epoch
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := second.MutateAndPublish(func(epoch, _ uint64) error {
+		secondEpoch = epoch
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if firstEpoch == 0 || secondEpoch <= firstEpoch {
+		t.Fatalf("store epochs = [%d, %d], want process-monotonic nonzero incarnations", firstEpoch, secondEpoch)
 	}
 }

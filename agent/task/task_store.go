@@ -8,11 +8,14 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/llm"
 )
+
+var nextPublicationEpoch atomic.Uint64
 
 // TaskTemplate defines a default task in an agent's workflow. When a session
 // starts from such an agent, its templates seed the initial task list.
@@ -165,6 +168,7 @@ func cloneTasks(tasks []Task) []Task {
 type TaskStore struct {
 	mu                    sync.Mutex
 	mutationPublicationMu sync.Mutex
+	publicationEpoch      uint64
 	publicationRevision   uint64
 	tasks                 []Task
 	nextID                int
@@ -180,20 +184,22 @@ type TaskStore struct {
 // Each session (parent or subagent) gets its own task file, ensuring isolation.
 func NewTaskStore(stateDir, sessionID string) *TaskStore {
 	return &TaskStore{
-		nextID: 1,
-		path:   filepath.Join(stateDir, "tasks", sessionID+".json"),
-		now:    time.Now,
-		fs:     afero.NewOsFs(),
+		publicationEpoch: nextPublicationEpoch.Add(1),
+		nextID:           1,
+		path:             filepath.Join(stateDir, "tasks", sessionID+".json"),
+		now:              time.Now,
+		fs:               afero.NewOsFs(),
 	}
 }
 
 // MutateAndPublish serializes one logical mutation through publication of the
 // resulting state. The serializer belongs to the store so sessions sharing one
-// TaskStore also share publication order. revision is monotonic for the lifetime
-// of this store and is internal routing metadata; failed publications may leave
-// gaps. The store's data mutex remains scoped to individual data operations
-// inside fn and is never held by this method.
-func (s *TaskStore) MutateAndPublish(fn func(revision uint64) error) error {
+// TaskStore also share publication order. epoch identifies this process-local
+// TaskStore incarnation; revision is monotonic within it. Both are internal
+// routing metadata, and failed publications may leave safe revision gaps. The
+// store's data mutex remains scoped to individual data operations inside fn and
+// is never held by this method.
+func (s *TaskStore) MutateAndPublish(fn func(epoch, revision uint64) error) error {
 	if !s.mutationPublicationMu.TryLock() {
 		if s.beforeMutationPublicationWait != nil {
 			s.beforeMutationPublicationWait()
@@ -202,7 +208,7 @@ func (s *TaskStore) MutateAndPublish(fn func(revision uint64) error) error {
 	}
 	defer s.mutationPublicationMu.Unlock()
 	s.publicationRevision++
-	return fn(s.publicationRevision)
+	return fn(s.publicationEpoch, s.publicationRevision)
 }
 
 // SetClock overrides the store's time source. Used by tests for deterministic

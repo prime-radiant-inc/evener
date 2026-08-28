@@ -115,7 +115,7 @@ func (s *Server) ReplaceAppIdentity(prepared PreparedAppIdentity, activate func(
 			oldDescendantIDs = append(oldDescendantIDs, threadID)
 		}
 		s.appDescendants = make(map[string]*appDescendantProjection)
-		s.appTaskPublicationRevisions = make(map[string]uint64)
+		s.appTaskPublications = make(map[string]taskPublicationCursor)
 		s.appActiveTurnID = ""
 		s.appReservedTurnID = ""
 		s.appLastStampedFailedToolCalls = nil
@@ -227,7 +227,7 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 			switch params := item.Params.(type) {
 			case appwire.ThreadStartedParams:
 				startSeed := start.CurrentWork
-				if !s.acceptTaskPublicationLocked(item.TaskStoreOwnerSessionID, item.TaskPublicationRevision) {
+				if !s.acceptTaskStartPublicationLocked(item.TaskStoreOwnerSessionID, item.TaskPublicationEpoch, item.TaskPublicationRevision) {
 					startSeed = currentWorkSeedWithoutTasks(startSeed)
 				}
 				mergeStartCurrentWork(&params.Thread.Evener, s.appEnvelope.Tasks, s.appEnvelope.Goal, startSeed)
@@ -244,14 +244,14 @@ func (s *Server) RecordAppEvent(event events.SessionEvent) {
 				}
 				pending = append(pending, pendingAppNotification{threadID: threadID, ref: ref, method: item.Method, params: params, snapshot: s.appTurns})
 			case appwire.TaskUpdatedParams:
-				if !s.acceptTaskPublicationLocked(item.TaskStoreOwnerSessionID, item.TaskPublicationRevision) {
+				if !s.acceptTaskUpdatePublicationLocked(item.TaskStoreOwnerSessionID, item.TaskPublicationEpoch, item.TaskPublicationRevision) {
 					continue
 				}
 				if item.TaskStoreOwnerSessionID != "" {
 					s.appEnvelope.TaskStoreOwnerSessionID = item.TaskStoreOwnerSessionID
 				}
 				routeOwner := item.TaskStoreOwnerSessionID
-				if item.TaskPublicationRevision == 0 {
+				if item.TaskPublicationEpoch == 0 || item.TaskPublicationRevision == 0 {
 					routeOwner = ""
 				}
 				for _, target := range s.taskCarrierTargetsLocked(threadID, routeOwner) {
@@ -344,7 +344,7 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 			case appwire.ThreadStartedParams:
 				startSeed := start.CurrentWork
 				cachedTasks := projection.thread.Evener.Tasks
-				if !s.acceptTaskPublicationLocked(item.TaskStoreOwnerSessionID, item.TaskPublicationRevision) {
+				if !s.acceptTaskStartPublicationLocked(item.TaskStoreOwnerSessionID, item.TaskPublicationEpoch, item.TaskPublicationRevision) {
 					if sharedTasks := s.taskAggregateForOwnerLocked(item.TaskStoreOwnerSessionID); sharedTasks != nil {
 						cachedTasks = sharedTasks
 					}
@@ -361,11 +361,11 @@ func (s *Server) RecordDescendantAppEvent(ownerThreadID string, event events.Ses
 				projection.thread.Status = params.Status
 				pending = append(pending, pendingAppNotification{threadID: threadID, method: item.Method, params: params, snapshot: projection.turns})
 			case appwire.TaskUpdatedParams:
-				if !s.acceptTaskPublicationLocked(item.TaskStoreOwnerSessionID, item.TaskPublicationRevision) {
+				if !s.acceptTaskUpdatePublicationLocked(item.TaskStoreOwnerSessionID, item.TaskPublicationEpoch, item.TaskPublicationRevision) {
 					continue
 				}
 				routeOwner := item.TaskStoreOwnerSessionID
-				if item.TaskPublicationRevision == 0 {
+				if item.TaskPublicationEpoch == 0 || item.TaskPublicationRevision == 0 {
 					routeOwner = ""
 				}
 				for _, target := range s.taskCarrierTargetsLocked(threadID, routeOwner) {
@@ -433,21 +433,49 @@ func sourceIDForProjection(sourceID string) string {
 	return sourceID
 }
 
-// acceptTaskPublicationLocked advances the per-owner task publication fence.
-// Revision zero is the compatibility path for old producers and is deliberately
-// never compared or recorded; those events remain source-only at the call site.
-func (s *Server) acceptTaskPublicationLocked(ownerSessionID string, revision uint64) bool {
-	if ownerSessionID == "" || revision == 0 {
+func legacyTaskPublication(ownerSessionID string, epoch, revision uint64) bool {
+	return ownerSessionID == "" || epoch == 0 || revision == 0
+}
+
+// acceptTaskStartPublicationLocked establishes an owner's active TaskStore
+// incarnation. A larger process-local epoch replaces the old incarnation even
+// when its revision restarts at one; a delayed start from a retired epoch cannot
+// replace it back. A start from the same shared store retains ordinary revision
+// ordering rather than resetting the fence.
+func (s *Server) acceptTaskStartPublicationLocked(ownerSessionID string, epoch, revision uint64) bool {
+	if legacyTaskPublication(ownerSessionID, epoch, revision) {
 		return true
 	}
-	if latest := s.appTaskPublicationRevisions[ownerSessionID]; revision < latest {
+	if s.appTaskPublications == nil {
+		s.appTaskPublications = make(map[string]taskPublicationCursor)
+	}
+	current, exists := s.appTaskPublications[ownerSessionID]
+	if !exists || epoch > current.epoch {
+		s.appTaskPublications[ownerSessionID] = taskPublicationCursor{epoch: epoch, revision: revision}
+		return true
+	}
+	if epoch < current.epoch || revision < current.revision {
 		return false
 	}
-	if s.appTaskPublicationRevisions == nil {
-		s.appTaskPublicationRevisions = make(map[string]uint64)
+	if revision > current.revision {
+		s.appTaskPublications[ownerSessionID] = taskPublicationCursor{epoch: epoch, revision: revision}
 	}
-	if revision > s.appTaskPublicationRevisions[ownerSessionID] {
-		s.appTaskPublicationRevisions[ownerSessionID] = revision
+	return true
+}
+
+// acceptTaskUpdatePublicationLocked accepts revisioned updates only from the
+// active incarnation established by SessionStart. Zero metadata remains the
+// old-producer compatibility path and is routed source-only by the caller.
+func (s *Server) acceptTaskUpdatePublicationLocked(ownerSessionID string, epoch, revision uint64) bool {
+	if legacyTaskPublication(ownerSessionID, epoch, revision) {
+		return true
+	}
+	current, exists := s.appTaskPublications[ownerSessionID]
+	if !exists || epoch != current.epoch || revision < current.revision {
+		return false
+	}
+	if revision > current.revision {
+		s.appTaskPublications[ownerSessionID] = taskPublicationCursor{epoch: epoch, revision: revision}
 	}
 	return true
 }

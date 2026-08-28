@@ -13,6 +13,7 @@ func TestTaskUpdatedData_CurrentJSON(t *testing.T) {
 			Done:    1,
 			Current: &TaskSummaryData{ID: 2, Description: "live current task"},
 		},
+		TaskPublicationEpoch:    11,
 		TaskPublicationRevision: 17,
 	})
 	if err != nil {
@@ -21,8 +22,8 @@ func TestTaskUpdatedData_CurrentJSON(t *testing.T) {
 	if !strings.Contains(string(withCurrent), `"current":{"id":2,"description":"live current task"}`) {
 		t.Fatalf("TaskUpdatedData JSON = %s", withCurrent)
 	}
-	if strings.Contains(string(withCurrent), "revision") {
-		t.Fatalf("TaskUpdatedData JSON leaked internal publication revision: %s", withCurrent)
+	if strings.Contains(string(withCurrent), "revision") || strings.Contains(string(withCurrent), "epoch") {
+		t.Fatalf("TaskUpdatedData JSON leaked internal publication identity: %s", withCurrent)
 	}
 
 	withoutCurrent, err := json.Marshal(TaskUpdatedData{TaskStateData: TaskStateData{Total: 3, Done: 1}})
@@ -92,13 +93,14 @@ func TestSessionStartInternalTaskRevisionDoesNotLeakToJSON(t *testing.T) {
 	encoded, err := json.Marshal(SessionStartData{
 		Profile:                 "openai",
 		Model:                   "gpt-5",
+		TaskPublicationEpoch:    19,
 		TaskPublicationRevision: 23,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(encoded), "revision") {
-		t.Fatalf("SessionStartData JSON leaked internal publication revision: %s", encoded)
+	if strings.Contains(string(encoded), "revision") || strings.Contains(string(encoded), "epoch") {
+		t.Fatalf("SessionStartData JSON leaked internal publication identity: %s", encoded)
 	}
 }
 
