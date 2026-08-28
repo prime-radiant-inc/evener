@@ -161,7 +161,7 @@ export function StatusRow({ sessionRef, model, now }: StatusRowProps) {
       <span className={CLASS.identity} data-testid="status-row-identity">
         <ModelSwitch sessionRef={sessionRef} model={model} />
         <ReasoningEffortControl sessionRef={sessionRef} model={model} />
-        {"changeVisionModel" in model.capabilities && <VisionModelSwitch sessionRef={sessionRef} model={model} />}
+        <VisionModelSwitch sessionRef={sessionRef} model={model} />
       </span>
       {hasContext && (
         <>
