@@ -351,8 +351,11 @@ func taskStateData(summary taskpkg.ListSummary) events.TaskStateData {
 }
 
 func taskUpdatedData(summary taskpkg.ListSummary, taskStoreOwnerSessionID string, publicationEpoch, publicationRevision uint64) events.TaskUpdatedData {
+	state := taskStateData(summary)
 	return events.TaskUpdatedData{
-		TaskStateData:           taskStateData(summary),
+		Total:                   state.Total,
+		Done:                    state.Done,
+		Current:                 state.Current,
 		TaskStoreOwnerSessionID: taskStoreOwnerSessionID,
 		TaskPublicationEpoch:    publicationEpoch,
 		TaskPublicationRevision: publicationRevision,

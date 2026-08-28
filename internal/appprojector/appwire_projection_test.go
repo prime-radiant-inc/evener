@@ -175,7 +175,7 @@ func TestProject_TaskUpdated(t *testing.T) {
 	out := p.Project(events.SessionEvent{
 		Kind: events.EventTaskUpdated,
 		Data: events.TaskUpdatedData{
-			TaskStateData:           events.TaskStateData{Total: 3, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "live current task"}},
+			Total: 3, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "live current task"},
 			TaskStoreOwnerSessionID: "owner-session",
 			TaskPublicationEpoch:    7,
 			TaskPublicationRevision: 42,

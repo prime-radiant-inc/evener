@@ -405,7 +405,7 @@ func TestTaskAndGoalCarrierEventsDoNotRepullEnvelopeStores(t *testing.T) {
 
 	feedBridge(srv,
 		events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "th_1", Data: events.TaskUpdatedData{
-			TaskStateData: events.TaskStateData{Total: 2, Done: 1}, TaskStoreOwnerSessionID: "th_1",
+			Total: 2, Done: 1, TaskStoreOwnerSessionID: "th_1",
 		}},
 		events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "th_1", Data: events.GoalUpdatedData{
 			Goal: &events.GoalStateData{Objective: "carrier goal", Status: "active", Iterations: 2},
@@ -426,7 +426,7 @@ func TestTaskAndGoalCarriersReplaceSeededRootState(t *testing.T) {
 
 	feedBridge(srv,
 		events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "th_1", Data: events.TaskUpdatedData{
-			TaskStateData:           events.TaskStateData{Total: 3, Done: 2, Current: &events.TaskSummaryData{ID: 3, Description: "new carrier task"}},
+			Total: 3, Done: 2, Current: &events.TaskSummaryData{ID: 3, Description: "new carrier task"},
 			TaskStoreOwnerSessionID: "th_1",
 		}},
 		events.SessionEvent{Kind: events.EventGoalUpdated, SessionID: "th_1", Data: events.GoalUpdatedData{Goal: nil}},
