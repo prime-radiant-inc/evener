@@ -9,8 +9,6 @@ import (
 	"os"
 	"path/filepath"
 	"time"
-
-	"primeradiant.com/evener/internal/legacypaths"
 )
 
 var (
@@ -59,29 +57,7 @@ func (m *Manager) loadMarketplaces() (Marketplaces, error) {
 	if mk == nil {
 		mk = Marketplaces{}
 	}
-	m.rerootLegacyInstallLocations(mk)
 	return mk, nil
-}
-
-// rerootLegacyInstallLocations rewrites any MarketplaceRef.InstallLocation
-// still rooted under the pre-rename legacy plugins root (see legacyRootFor)
-// to live under m.Root. A no-op when m.Root doesn't have the DefaultRoot
-// shape, or no ref has a legacy path. This self-heals a
-// known_marketplaces.json written before a Serf→Evener migration — e.g. the
-// "refreshing marketplace ...: chdir .../serf/plugins/marketplaces/name: no
-// such file or directory" failure — without requiring a fresh evener-migrate
-// run.
-func (m *Manager) rerootLegacyInstallLocations(mk Marketplaces) {
-	legacy := legacyRootFor(m.Root)
-	if legacy == "" {
-		return
-	}
-	for name, ref := range mk {
-		if rewritten, n := legacypaths.Rewrite(ref.InstallLocation, legacy, m.Root); n > 0 {
-			ref.InstallLocation = rewritten
-			mk[name] = ref
-		}
-	}
 }
 
 func (m *Manager) saveMarketplaces(mk Marketplaces) error {
