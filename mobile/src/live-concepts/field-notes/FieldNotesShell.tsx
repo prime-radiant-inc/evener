@@ -65,6 +65,7 @@ export function FieldNotesShell({
       data-appearance={appearance}
       data-text-scale={textScale}
       data-reduced-motion={reducedMotion}
+      data-thread-key={state.conversation?.threadKey}
       data-motion={
         reducedMotion ||
         document.documentElement.dataset.reducedMotion === "true"

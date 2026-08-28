@@ -431,7 +431,11 @@ export function LiveConceptHost({
       : (reachabilityByProfile[runtime.profileId] ?? "unknown");
   const conversation = conversationResult.projection?.view ?? null;
   const composer: LiveComposerView = {
-    draft: profileBlocked ? "" : draft,
+    // The store clears its mutable draft at submit so failure recovery can use
+    // revision ownership. Keep the exact submitted snapshot visible (disabled)
+    // while that mutation is pending; an accepted receipt removes pending and
+    // only then does the already-cleared draft become visible.
+    draft: profileBlocked ? "" : (pendingMutation?.draftSnapshot ?? draft),
     canSend: profileBlocked
       ? false
       : (mobileConversation?.capabilities.send ?? false),
