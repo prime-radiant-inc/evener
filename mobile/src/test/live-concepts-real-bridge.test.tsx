@@ -1040,7 +1040,7 @@ async function expectConcurrentRawOpenRejected(
 
 async function expectRawServerFrameRejected(
   bridge: RustHarnessBridge,
-  frame: ServerFrame,
+  frame: JsonObject,
   expected: RegExp,
 ): Promise<void> {
   await expect(bridge.control("serverFrame", { frame })).rejects.toThrow(
@@ -1339,6 +1339,13 @@ describe("production App live concepts over the real native AppWire bridge", () 
         params: {},
       });
       const ping = await bridge.waitForServerRequest("ping", pingCount);
+      for (const invalidMethod of [7, null, {}, []]) {
+        await expectRawServerFrameRejected(
+          bridge,
+          { id: 50, method: invalidMethod, result: {} },
+          /shape|method/i,
+        );
+      }
       await expectRawServerFrameRejected(
         bridge,
         { id: 50, result: {}, error: { code: -1, message: "both" } },

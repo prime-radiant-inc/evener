@@ -287,10 +287,10 @@ impl ManualProtocol {
             return Err("manual server has no active protocol connection".to_owned());
         }
         let raw_id = frame.get("id");
-        let method = frame.get("method").and_then(Value::as_str);
+        let raw_method = frame.get("method");
         let has_result = frame.get("result").is_some();
         let has_error = frame.get("error").is_some();
-        if let (Some(raw_id), None) = (raw_id, method) {
+        if let (Some(raw_id), None) = (raw_id, raw_method) {
             if has_result == has_error {
                 return Err(
                     "manual server response must contain exactly one of result or error".to_owned(),
@@ -315,7 +315,8 @@ impl ManualProtocol {
             }
             return Ok(ManualServerFrame::Response(id));
         }
-        if raw_id.is_none() && method.is_some() && !has_result && !has_error {
+        if raw_id.is_none() && raw_method.is_some_and(Value::is_string) && !has_result && !has_error
+        {
             if self.phase != ManualProtocolPhase::Ready {
                 return Err(
                     "notifications are unavailable before initialized is observed".to_owned(),
