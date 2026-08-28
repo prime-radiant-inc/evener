@@ -291,16 +291,15 @@ export function ToolRow({
   // ride the DISCLOSURE line - the one line it has (see the grammar above).
   // The disclosure trigger is a <button>, so the control cannot nest inside
   // it: the slot follows the trigger as a sibling flex item of the row, and
-  // the stylesheet (data-purpose-trailing) drops the trigger's full-width
-  // basis so the two share line 1, the trigger's own grow springing the
-  // control to the line's end - the placement the notification card's head
-  // gives "Open subagent".
+  // data-purpose-trailing on the row is the stylesheet's hook for letting the
+  // two share line 1.
   const purposeLineTrailing =
     hasPurpose && !hasSummary && anchorSplit === undefined && trailing !== undefined && trailing !== null ? (
       <span className={CLASS.purposeTrailing} data-testid="tool-row-purpose-trailing">
         {trailing}
       </span>
     ) : null;
+  const showPurposeTrailing = purposeLineTrailing !== null;
   // The collapsed second line's middle-truncation, WITH the inline-affordance
   // variant: when anchorSplit places the trailing control mid-summary, the
   // control becomes a flex item of the clamped line between the anchor's end
@@ -445,7 +444,11 @@ export function ToolRow({
           ) : null}
         </span>
       )}
-      {(!hasPurpose || !hasSummary) && anchorSplit === undefined ? trailing : null}
+      {/* Rows with no purpose trail the control at the summary line's end. A
+          purpose-only row never reaches this fallback: its control rides the
+          disclosure line via purposeLineTrailing (the summaryLine div below
+          only mounts when there is no such slot). */}
+      {!hasPurpose && anchorSplit === undefined ? trailing : null}
     </>
   );
   const triggerLabel = !hasPurpose
@@ -463,7 +466,7 @@ export function ToolRow({
       className={CLASS.row}
       data-testid="tool-row"
       data-purpose={hasPurpose ? "true" : undefined}
-      data-purpose-trailing={purposeLineTrailing !== null ? "true" : undefined}
+      data-purpose-trailing={showPurposeTrailing ? "true" : undefined}
       title={title}
     >
       {hasPurpose ? (
@@ -505,7 +508,7 @@ export function ToolRow({
           {chevron}
         </button>
       )}
-      {hasPurpose && purposeLineTrailing === null && <div className={CLASS.summaryLine}>{summaryContent}</div>}
+      {hasPurpose && !showPurposeTrailing && <div className={CLASS.summaryLine}>{summaryContent}</div>}
     </div>
   );
 }

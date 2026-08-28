@@ -59,15 +59,9 @@ export function OpenTranscriptButton({
   transcriptRef: string;
   parentRef?: string;
   label?: string;
-  // iconOnly is the dense-row form: just the glyph with the accessible name,
-  // for surfaces (the activity tree's first line) with no room for the word.
   iconOnly?: boolean;
-  // tabIndex forwards to the underlying button: the activity tree rows are
-  // their own tab stop, so their nested open glyph takes -1 there.
   tabIndex?: number;
 }) {
-  // The presentation is the standard open affordance (widgets/openbutton);
-  // this wrapper only wires it to transcript navigation.
   return (
     <OpenButton
       label={label}

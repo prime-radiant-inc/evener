@@ -19,14 +19,15 @@ const CLASS = {
 
 // The traditional "open out of the box" glyph - a box with its top-right
 // corner open and an arrow leaving through it - in the app's 16x16 stroke
-// grammar (same geometry as PopoutHeaderAction.tsx's PopoutIcon, at this
-// control's 14px size), currentColor so it inherits the Button/IconButton
-// variant colour exactly as the text label it replaced did (kata 3qnd - the
-// surrounding pane chrome, Pop out/Fork from here, is all icons; this was
-// the one text label left).
-export function OpenIcon() {
+// grammar, currentColor so it inherits the Button/IconButton variant colour
+// exactly as the text label it replaced did (kata 3qnd - the surrounding
+// pane chrome, Pop out/Fork from here, is all icons; this was the one text
+// label left). Defaults to this control's 14px; the pane header's pop-out
+// action (shell/PopoutHeaderAction.tsx) renders it at 16px, the geometry
+// mobile/StackHost's BackIcon shares.
+export function OpenIcon({ size = 14 }: { size?: number }) {
   return (
-    <svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true">
+    <svg viewBox="0 0 16 16" width={size} height={size} aria-hidden="true">
       <path
         d="M12.5 8.5V12.5H3.5V3.5H7.5"
         stroke="currentColor"
@@ -62,8 +63,11 @@ export interface OpenButtonProps {
    * Button sm. */
   size?: "xs" | "sm";
   /** An external target renders an <a> (new tab, no opener access) instead
-   * of a <button> - the settings "open in editor" case. */
+   * of a <button> - the settings "open in editor" case. The anchor is the
+   * word form: it ignores iconOnly, size, and onClick. */
   href?: string;
+  /** Click handler for the button forms. An href anchor navigates instead
+   * and only stopPropagates. */
   onClick?: (event: MouseEvent<HTMLButtonElement>) => void;
   /** Forwards to the underlying control: activity-tree rows are their own
    * tab stop, so their nested open glyph takes -1 there. */
@@ -105,11 +109,12 @@ export function OpenButton({
     event.stopPropagation();
     onClick?.(event);
   }
+  const name = label ?? word;
   if (iconOnly) {
     return (
       <IconButton
-        label={label ?? word}
-        title={title ?? label ?? word}
+        label={name}
+        title={title ?? name}
         tabIndex={tabIndex}
         icon={<OpenIcon />}
         variant="quiet"
@@ -119,14 +124,7 @@ export function OpenButton({
     );
   }
   return (
-    <Button
-      variant="quiet"
-      size="sm"
-      aria-label={label ?? word}
-      title={title}
-      tabIndex={tabIndex}
-      onClick={handleClick}
-    >
+    <Button variant="quiet" size="sm" aria-label={name} title={title} tabIndex={tabIndex} onClick={handleClick}>
       {word}
       <OpenIcon />
     </Button>

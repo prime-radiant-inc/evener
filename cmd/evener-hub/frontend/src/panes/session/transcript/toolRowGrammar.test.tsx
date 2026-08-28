@@ -645,11 +645,8 @@ test("with a purpose, a trailing affordance rides the tool-call line, not the ra
 });
 
 // A purpose-only row (the delegate card: purpose, no summary) has no
-// tool-call line, so its affordance rides the DISCLOSURE line - a sibling
-// flex item AFTER the trigger button (never nested inside it - a button in a
-// button is not valid), sprung to the line's end by the trigger's own
-// flex-grow. The same placement the notification card's head gives "Open
-// subagent"; before this, the control dropped onto a second line of its own.
+// tool-call line, so its affordance rides the disclosure line (ToolRow's
+// grammar). Regression guard: it used to drop onto a second line of its own.
 test("a purpose-only row trails its affordance on the disclosure line, not a line of its own", () => {
   render(
     <ToolRow
