@@ -20,7 +20,7 @@ import (
 )
 
 // LiveEntry is the hub's view of a single live daemon, combining
-// rendezvous-file metadata with the dynamic SessionID resolved via /status.
+// rendezvous-file metadata with dynamic state resolved via AppWire.
 type LiveEntry struct {
 	rendezvous.Entry
 	SessionID          string
@@ -36,7 +36,11 @@ type LiveEntry struct {
 	// active. Keyed by child session ID; a defensive copy rides every
 	// List/Find like the IDs slice.
 	RunningSubagentStates map[string]string
-	Project               identifier.Project // canonical identity resolved at hub ingestion, when available
+	// RunningJobs contains non-terminal, non-agent work reported by the daemon,
+	// such as shell and watch jobs. Delegate jobs stay represented by the
+	// descendant fields above so consumers do not render duplicate agent rows.
+	RunningJobs []appwire.EvenerJobInfo
+	Project     identifier.Project // canonical identity resolved at hub ingestion, when available
 }
 
 // ProbeResult is the dynamic session state returned by a daemon liveness probe.
@@ -47,6 +51,7 @@ type ProbeResult struct {
 	PendingEscalation     bool
 	RunningSubagentIDs    []string
 	RunningSubagentStates map[string]string
+	RunningJobs           []appwire.EvenerJobInfo
 	OK                    bool
 }
 
@@ -67,6 +72,24 @@ func cloneSubagentStates(in map[string]string) map[string]string {
 	}
 	out := make(map[string]string, len(in))
 	maps.Copy(out, in)
+	return out
+}
+
+func cloneRunningJobs(in []appwire.EvenerJobInfo) []appwire.EvenerJobInfo {
+	if in == nil {
+		return nil
+	}
+	out := append([]appwire.EvenerJobInfo(nil), in...)
+	for i := range out {
+		if out[i].Resumable != nil {
+			resumable := *out[i].Resumable
+			out[i].Resumable = &resumable
+		}
+		if out[i].ExitCode != nil {
+			exitCode := *out[i].ExitCode
+			out[i].ExitCode = &exitCode
+		}
+	}
 	return out
 }
 
@@ -117,7 +140,7 @@ type Roster struct {
 	// refresh attempt, while allowing probes to run without holding mu.
 	refreshGen uint64
 
-	// procAlive reports whether a daemon PID is still running. A failed /status
+	// procAlive reports whether a daemon PID is still running. A failed AppWire
 	// probe to a live process means the daemon is busy, not gone, so its session
 	// is kept; injectable for tests.
 	procAlive func(pid int) bool
@@ -182,6 +205,7 @@ func NewRosterWithEntries(entries ...LiveEntry) *Roster {
 	for _, e := range entries {
 		e.RunningSubagentIDs = append([]string(nil), e.RunningSubagentIDs...)
 		e.RunningSubagentStates = cloneSubagentStates(e.RunningSubagentStates)
+		e.RunningJobs = cloneRunningJobs(e.RunningJobs)
 		r.byPID[e.PID] = e
 		if e.SessionID != "" {
 			r.bySess[e.SessionID] = e
@@ -229,6 +253,24 @@ func rosterFingerprint(bySess map[string]LiveEntry) uint64 {
 			// fingerprint just like its arrival or departure: it changes what
 			// the sidebar renders for that child.
 			_, _ = h.Write([]byte(bySess[id].RunningSubagentStates[childID]))
+			_, _ = h.Write([]byte{0})
+		}
+		runningJobs := cloneRunningJobs(bySess[id].RunningJobs)
+		sort.Slice(runningJobs, func(i, j int) bool {
+			if runningJobs[i].JobID != runningJobs[j].JobID {
+				return runningJobs[i].JobID < runningJobs[j].JobID
+			}
+			if runningJobs[i].JobType != runningJobs[j].JobType {
+				return runningJobs[i].JobType < runningJobs[j].JobType
+			}
+			return runningJobs[i].Status < runningJobs[j].Status
+		})
+		for _, job := range runningJobs {
+			_, _ = h.Write([]byte(job.JobID))
+			_, _ = h.Write([]byte{0})
+			_, _ = h.Write([]byte(job.JobType))
+			_, _ = h.Write([]byte{0})
+			_, _ = h.Write([]byte(job.Status))
 			_, _ = h.Write([]byte{0})
 		}
 		_, _ = h.Write([]byte{0})
@@ -351,6 +393,7 @@ func (r *Roster) Refresh() {
 			PendingEscalation:     res.PendingEscalation,
 			RunningSubagentIDs:    append([]string(nil), res.RunningSubagentIDs...),
 			RunningSubagentStates: cloneSubagentStates(res.RunningSubagentStates),
+			RunningJobs:           cloneRunningJobs(res.RunningJobs),
 		}
 		if res.SessionID != "" {
 			if prev, ok := bySess[res.SessionID]; !ok || preferLiveEntry(live, prev) {
@@ -400,6 +443,7 @@ func (r *Roster) List() []LiveEntry {
 	for _, e := range r.byPID {
 		e.RunningSubagentIDs = append([]string(nil), e.RunningSubagentIDs...)
 		e.RunningSubagentStates = cloneSubagentStates(e.RunningSubagentStates)
+		e.RunningJobs = cloneRunningJobs(e.RunningJobs)
 		sessionID := envvars.FirstNonEmpty(e.SessionID, e.Entry.SessionID, e.ThreadID)
 		if sessionID == "" {
 			out = append(out, e)
@@ -465,6 +509,7 @@ func (r *Roster) Find(sessionID string) (LiveEntry, bool) {
 	e, ok := r.bySess[sessionID]
 	e.RunningSubagentIDs = append([]string(nil), e.RunningSubagentIDs...)
 	e.RunningSubagentStates = cloneSubagentStates(e.RunningSubagentStates)
+	e.RunningJobs = cloneRunningJobs(e.RunningJobs)
 	return e, ok
 }
 

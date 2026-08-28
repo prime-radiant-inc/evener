@@ -523,6 +523,40 @@ func TestRosterRunningSubagentStates(t *testing.T) {
 	fuzzScenarioRoster_CarriesRunningSubagentStates(t)
 }
 
+func TestRosterCarriesRunningJobsDefensively(t *testing.T) {
+	dir := t.TempDir()
+	writeRendezvous(t, dir, rendezvous.Entry{PID: 1001, Address: "127.0.0.1:50001"})
+	resumable := true
+	prober := &runningSubagentProber{result: ProbeResult{
+		SessionID: "01PARENT",
+		Status:    "active",
+		RunningJobs: []appwire.EvenerJobInfo{{
+			JobID: "job_shell", JobType: "shell", Status: "running", Resumable: &resumable,
+		}},
+		OK: true,
+	}}
+	r := NewRoster(dir, prober)
+	r.Refresh()
+
+	prober.result.RunningJobs[0].Status = "mutated"
+	*prober.result.RunningJobs[0].Resumable = false
+	listed := r.List()
+	if len(listed) != 1 || len(listed[0].RunningJobs) != 1 {
+		t.Fatalf("roster entries = %+v, want one running shell job", listed)
+	}
+	job := listed[0].RunningJobs[0]
+	if job.JobID != "job_shell" || job.JobType != "shell" || job.Status != "running" || job.Resumable == nil || !*job.Resumable {
+		t.Fatalf("roster running job = %+v, want original identity and status", job)
+	}
+
+	listed[0].RunningJobs[0].Status = "changed"
+	*listed[0].RunningJobs[0].Resumable = false
+	found, ok := r.Find("01PARENT")
+	if !ok || found.RunningJobs[0].Status != "running" || found.RunningJobs[0].Resumable == nil || !*found.RunningJobs[0].Resumable {
+		t.Fatalf("List must return a defensive copy of running jobs; Find = %+v, ok %v", found.RunningJobs, ok)
+	}
+}
+
 func TestRosterSubagentUnresolvedOwner(t *testing.T) {
 	r := NewRosterWithEntries(LiveEntry{
 		RunningSubagentIDs: []string{"child-unresolved-owner"},
@@ -561,6 +595,18 @@ func fuzzScenarioRoster_FingerprintIncludesRunningIDs(t *testing.T) {
 }
 
 func TestRosterFingerprint(t *testing.T) { fuzzScenarioRoster_FingerprintIncludesRunningIDs(t) }
+
+func TestRosterFingerprintIncludesRunningJobIdentityAndStatus(t *testing.T) {
+	base := map[string]LiveEntry{"parent": {RunningJobs: []appwire.EvenerJobInfo{{JobID: "job_shell", JobType: "shell", Status: "running"}}}}
+	statusChanged := map[string]LiveEntry{"parent": {RunningJobs: []appwire.EvenerJobInfo{{JobID: "job_shell", JobType: "shell", Status: "awaiting"}}}}
+	identityChanged := map[string]LiveEntry{"parent": {RunningJobs: []appwire.EvenerJobInfo{{JobID: "job_watch", JobType: "watch", Status: "running"}}}}
+	if rosterFingerprint(base) == rosterFingerprint(statusChanged) {
+		t.Fatal("roster fingerprint must change when a running job status changes")
+	}
+	if rosterFingerprint(base) == rosterFingerprint(identityChanged) {
+		t.Fatal("roster fingerprint must change when running job identity changes")
+	}
+}
 
 type overlappingRefreshProber struct {
 	calls         atomic.Int32

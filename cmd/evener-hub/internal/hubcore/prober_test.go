@@ -1,8 +1,7 @@
 package hubcore
 
 import (
-	"encoding/json"
-	"io"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -10,53 +9,79 @@ import (
 	"testing"
 	"time"
 
+	"github.com/coder/websocket"
+	"primeradiant.com/evener/agent/events"
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/rendezvous"
+	"primeradiant.com/evener/server"
 )
 
-type statusStub struct {
-	SessionID string `json:"session_id"`
-	State     string `json:"state"`
+type probeDaemonConfig struct {
+	sessionID   string
+	state       string
+	hubToken    string
+	source      wireProbeEnvelopeSource
+	descendants map[string]string
 }
 
-type roundTripFunc func(*http.Request) (*http.Response, error)
-
-func (f roundTripFunc) RoundTrip(req *http.Request) (*http.Response, error) { return f(req) }
+func startProbeDaemon(t *testing.T, cfg probeDaemonConfig) (*StatusProber, rendezvous.Entry) {
+	t.Helper()
+	srv := server.NewServer(server.ServerConfig{HubToken: cfg.hubToken})
+	srv.SetAppIdentity("local", cfg.sessionID)
+	srv.SetState(cfg.state)
+	srv.SetThreadEnvelopeSource(cfg.source)
+	for id, state := range cfg.descendants {
+		srv.RecordDescendantAppEvent(cfg.sessionID, events.SessionEvent{
+			Kind:      events.EventUserInput,
+			SessionID: id,
+			Data:      events.UserInputData{Text: "probe fixture"},
+		})
+		if state != appwire.ThreadStatusActive {
+			srv.RecordDescendantAppEvent(cfg.sessionID, events.SessionEvent{
+				Kind:      events.EventSessionEnd,
+				SessionID: id,
+				Data:      events.SessionEndData{Reason: "input_complete", State: state},
+			})
+		}
+	}
+	srv.RefreshThreadEnvelope()
+	httpSrv := httptest.NewServer(srv)
+	t.Cleanup(httpSrv.Close)
+	return &StatusProber{client: httpSrv.Client()}, rendezvous.Entry{
+		Endpoint: "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/rpc",
+		HubToken: cfg.hubToken,
+	}
+}
 
 func TestHubProberStableDelegateUsesDescendantSessionsNotDetailedJobs(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
-		_, _ = io.WriteString(w, `{
-			"session_id":"root","state":"idle",
-			"descendant_session_ids":["child_stable"],
-			"descendant_states":{"child_stable":"active"},
-			"detailed":{"jobs":[{"job_type":"delegate","status":"running","transcript_ref":"local:child_legacy"}]}
-		}`)
-	}))
-	defer srv.Close()
-	got := (&StatusProber{Timeout: time.Second}).Probe(rendezvous.Entry{Address: srv.Listener.Addr().String()})
+	prober, entry := startProbeDaemon(t, probeDaemonConfig{
+		sessionID: "root",
+		state:     appwire.ThreadStatusIdle,
+		descendants: map[string]string{
+			"child_stable": appwire.ThreadStatusActive,
+		},
+		source: wireProbeEnvelopeSource{detailed: server.DetailedStatus{Jobs: []server.JobStatusInfo{{
+			JobID: "job_delegate", JobType: "delegate", Status: "running", TranscriptRef: "local:child_legacy",
+		}}}},
+	})
+	got := prober.Probe(entry)
 	if !got.OK {
 		t.Fatal("probe failed")
 	}
 	if !reflect.DeepEqual(got.RunningSubagentIDs, []string{"child_stable"}) {
-		t.Fatalf("descendants = %v, want stable status fields only", got.RunningSubagentIDs)
+		t.Fatalf("descendants = %v, want typed thread/list descendants only", got.RunningSubagentIDs)
 	}
 	if !reflect.DeepEqual(got.RunningSubagentStates, map[string]string{"child_stable": "active"}) {
 		t.Fatalf("descendant states = %#v", got.RunningSubagentStates)
 	}
+	if len(got.RunningJobs) != 0 {
+		t.Fatalf("delegate job was duplicated as a running non-agent job: %+v", got.RunningJobs)
+	}
 }
 
 func fuzzScenarioStatusProber_Success(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/status" {
-			http.NotFound(w, r)
-			return
-		}
-		_ = json.NewEncoder(w).Encode(statusStub{SessionID: "01SESS001", State: "idle"})
-	}))
-	defer srv.Close()
-
-	addr := srv.Listener.Addr().String()
-	p := &StatusProber{Timeout: 500 * time.Millisecond}
-	got := p.Probe(rendezvous.Entry{Address: addr})
+	prober, entry := startProbeDaemon(t, probeDaemonConfig{sessionID: "01SESS001", state: appwire.ThreadStatusIdle})
+	got := prober.Probe(entry)
 	if !got.OK {
 		t.Fatal("expected ok=true")
 	}
@@ -70,37 +95,46 @@ func fuzzScenarioStatusProber_Success(t *testing.T) {
 
 func fuzzScenarioStatusProber_NetworkFailure(t *testing.T) {
 	p := &StatusProber{Timeout: 100 * time.Millisecond}
-	if p.Probe(rendezvous.Entry{Address: "127.0.0.1:1"}).OK { // port 1 not listening
+	if p.Probe(rendezvous.Entry{Endpoint: "ws://127.0.0.1:1/rpc"}).OK { // port 1 not listening
 		t.Fatal("expected ok=false on closed port")
 	}
 }
 
 func fuzzScenarioStatusProber_BadJSON(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		_, _ = w.Write([]byte("{not json"))
+		conn, err := websocket.Accept(w, r, nil)
+		if err != nil {
+			return
+		}
+		defer conn.CloseNow()
+		_ = conn.Write(context.Background(), websocket.MessageText, []byte("{not json"))
 	}))
 	defer srv.Close()
-	p := &StatusProber{Timeout: 100 * time.Millisecond}
-	if p.Probe(rendezvous.Entry{Address: srv.Listener.Addr().String()}).OK {
-		t.Fatal("expected ok=false on bad JSON")
+	p := &StatusProber{Timeout: 100 * time.Millisecond, client: srv.Client()}
+	if p.Probe(rendezvous.Entry{Endpoint: "ws" + strings.TrimPrefix(srv.URL, "http")}).OK {
+		t.Fatal("expected ok=false on malformed AppWire frame")
 	}
 }
 
 func fuzzScenarioStatusProberSendsHubTokenBearer(t *testing.T) {
+	const token = "secret-token"
+	srv := server.NewServer(server.ServerConfig{HubToken: token})
+	srv.SetAppIdentity("local", "01SESS001")
+	srv.SetState(appwire.ThreadStatusIdle)
 	gotAuth := make(chan string, 1)
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		gotAuth <- r.Header.Get("Authorization")
-		_ = json.NewEncoder(w).Encode(statusStub{SessionID: "01SESS001", State: "idle"})
+		srv.ServeHTTP(w, r)
 	}))
-	defer srv.Close()
-
-	p := &StatusProber{Timeout: 500 * time.Millisecond}
-	if !p.Probe(rendezvous.Entry{Address: srv.Listener.Addr().String(), HubToken: "secret-token"}).OK {
+	defer httpSrv.Close()
+	p := &StatusProber{Timeout: 500 * time.Millisecond, client: httpSrv.Client()}
+	entry := rendezvous.Entry{Endpoint: "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/rpc", HubToken: token}
+	if !p.Probe(entry).OK {
 		t.Fatal("expected ok=true")
 	}
 	select {
 	case auth := <-gotAuth:
-		if auth != "Bearer secret-token" {
+		if auth != "Bearer "+token {
 			t.Fatalf("Authorization=%q, want bearer token", auth)
 		}
 	default:
@@ -109,70 +143,50 @@ func fuzzScenarioStatusProberSendsHubTokenBearer(t *testing.T) {
 }
 
 func fuzzScenarioStatusProber_NonOKStatus(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		// Valid JSON body so ok=false can only come from the status guard,
-		// not a JSON-decode failure (which TestStatusProber_BadJSON covers).
-		w.WriteHeader(http.StatusNotFound)
-		_ = json.NewEncoder(w).Encode(statusStub{SessionID: "01SESS001", State: "idle"})
-	}))
+	srv := httptest.NewServer(http.NotFoundHandler())
 	defer srv.Close()
-	p := &StatusProber{Timeout: 100 * time.Millisecond}
-	got := p.Probe(rendezvous.Entry{Address: srv.Listener.Addr().String()})
-	if got.OK {
-		t.Fatal("expected ok=false on non-200 status")
-	}
-	if got.SessionID != "" {
-		t.Errorf("session_id: got %q, want empty on non-200", got.SessionID)
-	}
-	if got.Status != "" {
-		t.Errorf("state: got %q, want empty on non-200", got.Status)
+	p := &StatusProber{Timeout: 100 * time.Millisecond, client: srv.Client()}
+	got := p.Probe(rendezvous.Entry{Endpoint: "ws" + strings.TrimPrefix(srv.URL, "http") + "/rpc"})
+	if got.OK || got.SessionID != "" || got.Status != "" {
+		t.Fatalf("non-101 AppWire handshake produced status: %+v", got)
 	}
 }
 
 func fuzzScenarioStatusProber_DecodesPendingAsk(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{"session_id": "01A", "state": "awaiting", "pending_ask": true})
-	}))
-	defer srv.Close()
-	p := &StatusProber{}
-	entry := rendezvous.Entry{Address: strings.TrimPrefix(srv.URL, "http://")}
-	got := p.Probe(entry)
+	prober, entry := startProbeDaemon(t, probeDaemonConfig{
+		sessionID: "01A", state: appwire.ThreadStatusAwaiting,
+		source: wireProbeEnvelopeSource{askPending: true},
+	})
+	got := prober.Probe(entry)
 	if !got.OK || got.SessionID != "01A" || got.Status != "awaiting" || !got.PendingAsk {
 		t.Fatalf("Probe() = %+v; want 01A, awaiting, pending ask, ok", got)
 	}
 }
 
 func fuzzScenarioStatusProber_DecodesPendingEscalation(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{"session_id": "01A", "state": "active", "pending_escalation": true})
-	}))
-	defer srv.Close()
-	p := &StatusProber{}
-	entry := rendezvous.Entry{Address: strings.TrimPrefix(srv.URL, "http://")}
-	got := p.Probe(entry)
+	prober, entry := startProbeDaemon(t, probeDaemonConfig{
+		sessionID: "01A", state: appwire.ThreadStatusActive,
+		source: wireProbeEnvelopeSource{escalations: []appwire.SandboxEscalationRequested{{EscalationID: "esc_1"}}},
+	})
+	got := prober.Probe(entry)
 	if !got.OK || got.SessionID != "01A" || got.Status != "active" || !got.PendingEscalation {
 		t.Fatalf("Probe() pendingEscalation path = %+v; want 01A, active, pending escalation, ok", got)
 	}
 }
 
 func fuzzScenarioStatusProber_AbsentPendingAskDecodesFalse(t *testing.T) {
-	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		json.NewEncoder(w).Encode(map[string]any{"session_id": "01A", "state": "active"})
-	}))
-	defer srv.Close()
-	p := &StatusProber{}
-	entry := rendezvous.Entry{Address: strings.TrimPrefix(srv.URL, "http://")}
-	if p.Probe(entry).PendingAsk {
-		t.Fatal("absent pending_ask (old daemon / Codex thread) must decode as false")
+	prober, entry := startProbeDaemon(t, probeDaemonConfig{sessionID: "01A", state: appwire.ThreadStatusActive})
+	if prober.Probe(entry).PendingAsk {
+		t.Fatal("absent AppWire ask state must project false")
 	}
 }
 
 func fuzzScenarioStatusProber_DecodesRunningSubagentIDs(t *testing.T) {
-	payload := `{"session_id":"parent","state":"idle","descendant_session_ids":["child-b","child-a","child-a",""]}`
-	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(payload)), Header: make(http.Header)}, nil
-	})}
-	result := (&StatusProber{client: client}).Probe(rendezvous.Entry{Address: "status.test"})
+	prober, entry := startProbeDaemon(t, probeDaemonConfig{
+		sessionID: "parent", state: appwire.ThreadStatusIdle,
+		descendants: map[string]string{"child-b": appwire.ThreadStatusActive, "child-a": appwire.ThreadStatusActive},
+	})
+	result := prober.Probe(entry)
 	if !result.OK {
 		t.Fatal("expected successful status probe")
 	}
@@ -184,19 +198,12 @@ func fuzzScenarioStatusProber_DecodesRunningSubagentIDs(t *testing.T) {
 
 func TestProbeRunningSubagent(t *testing.T) { fuzzScenarioStatusProber_DecodesRunningSubagentIDs(t) }
 
-// The daemon's descendant_session_ids list is a liveness set (every non-closed
-// in-process descendant); descendant_states carries each one's own projected
-// status so the hub can render a settled, resumable delegate as idle instead
-// of working. Retired Detailed.Jobs delegate rows are ignored.
 func fuzzScenarioStatusProber_DecodesRunningSubagentStates(t *testing.T) {
-	payload := `{"session_id":"parent","state":"idle",` +
-		`"descendant_session_ids":["child-a","child-b"],` +
-		`"descendant_states":{"child-a":"idle","child-b":"awaiting"},` +
-		`"detailed":{"jobs":[{"job_type":"delegate","status":"running","transcript_ref":"local:child-c"}]}}`
-	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(payload)), Header: make(http.Header)}, nil
-	})}
-	result := (&StatusProber{client: client}).Probe(rendezvous.Entry{Address: "status.test"})
+	prober, entry := startProbeDaemon(t, probeDaemonConfig{
+		sessionID: "parent", state: appwire.ThreadStatusIdle,
+		descendants: map[string]string{"child-a": appwire.ThreadStatusIdle, "child-b": appwire.ThreadStatusAwaiting},
+	})
+	result := prober.Probe(entry)
 	if !result.OK {
 		t.Fatal("expected successful status probe")
 	}
@@ -207,16 +214,6 @@ func fuzzScenarioStatusProber_DecodesRunningSubagentStates(t *testing.T) {
 	if !reflect.DeepEqual(result.RunningSubagentStates, wantStates) {
 		t.Fatalf("running subagent states = %v, want %v", result.RunningSubagentStates, wantStates)
 	}
-
-	// An old daemon (no descendant_states field) decodes as no known states.
-	oldPayload := `{"session_id":"parent","state":"idle","descendant_session_ids":["child-a"]}`
-	oldClient := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(oldPayload)), Header: make(http.Header)}, nil
-	})}
-	oldResult := (&StatusProber{client: oldClient}).Probe(rendezvous.Entry{Address: "status.test"})
-	if len(oldResult.RunningSubagentStates) != 0 {
-		t.Fatalf("old-daemon running subagent states = %v, want none", oldResult.RunningSubagentStates)
-	}
 }
 
 func TestProbeRunningSubagentStates(t *testing.T) {
@@ -224,12 +221,14 @@ func TestProbeRunningSubagentStates(t *testing.T) {
 }
 
 func TestProbeIgnoresRetiredDetailedJobType(t *testing.T) {
-	payload := `{"session_id":"parent","state":"idle","detailed":{"jobs":[{"type":"delegate","status":"running","transcript_ref":"local:child-type"}]}}`
-	client := &http.Client{Transport: roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(payload)), Header: make(http.Header)}, nil
-	})}
-	result := (&StatusProber{client: client}).Probe(rendezvous.Entry{Address: "status.test"})
-	if len(result.RunningSubagentIDs) != 0 {
-		t.Fatalf("retired detailed job inferred descendants: %v", result.RunningSubagentIDs)
+	prober, entry := startProbeDaemon(t, probeDaemonConfig{
+		sessionID: "parent", state: appwire.ThreadStatusIdle,
+		source: wireProbeEnvelopeSource{detailed: server.DetailedStatus{Jobs: []server.JobStatusInfo{{
+			JobID: "job_delegate", JobType: "delegate", Status: "running", TranscriptRef: "local:child-type",
+		}}}},
+	})
+	result := prober.Probe(entry)
+	if len(result.RunningSubagentIDs) != 0 || len(result.RunningJobs) != 0 {
+		t.Fatalf("delegate job inferred consumer status: %+v", result)
 	}
 }

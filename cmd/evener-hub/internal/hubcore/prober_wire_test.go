@@ -1,6 +1,8 @@
 package hubcore
 
 import (
+	"context"
+	"net/http"
 	"net/http/httptest"
 	"reflect"
 	"strings"
@@ -9,6 +11,7 @@ import (
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/internal/appserver"
 	"primeradiant.com/evener/rendezvous"
 	"primeradiant.com/evener/server"
 )
@@ -21,6 +24,25 @@ type wireProbeEnvelopeSource struct {
 	askPending  bool
 	escalations []appwire.SandboxEscalationRequested
 	detailed    server.DetailedStatus
+}
+
+func TestStatusProberRejectsMismatchedRootSnapshots(t *testing.T) {
+	rpc := appserver.NewServer(appserver.ServerConfig{ServerName: "status-test", SourceID: "local"})
+	appserver.HandleTyped(rpc.Router(), appwire.MethodThreadRead, func(context.Context, appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
+		return appwire.ThreadReadResponse{Thread: appwire.Thread{ID: "root-a", SessionID: "root-a", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}, nil
+	})
+	appserver.HandleTyped(rpc.Router(), appwire.MethodThreadList, func(context.Context, appwire.ThreadListParams) (appwire.ThreadListResponse, error) {
+		return appwire.ThreadListResponse{Data: []appwire.Thread{{ID: "root-b", SessionID: "root-b", Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}}}}, nil
+	})
+	httpSrv := httptest.NewServer(http.HandlerFunc(rpc.ServeWebSocket))
+	defer httpSrv.Close()
+
+	got := (&StatusProber{client: httpSrv.Client()}).Probe(rendezvous.Entry{
+		Endpoint: "ws" + strings.TrimPrefix(httpSrv.URL, "http"),
+	})
+	if got.OK {
+		t.Fatalf("mismatched thread/read and thread/list roots produced a live probe: %+v", got)
+	}
 }
 
 func (s wireProbeEnvelopeSource) ContextPressure() float64 { return 0 }
@@ -45,26 +67,11 @@ func (s wireProbeEnvelopeSource) ReasoningInfo() (string, []string, bool) { retu
 func (s wireProbeEnvelopeSource) VisionModel() string                     { return "" }
 func (s wireProbeEnvelopeSource) SessionMeta() schema.SessionMeta         { return schema.SessionMeta{} }
 
-// TestStatusProberAgreesWithServerStatusInfoAcrossTheWire decodes a REAL
-// server.Server's /status response through the REAL StatusProber -- no
-// hand-authored JSON on either end.
-//
-// server.StatusInfo (server/server.go) and this package's statusInfo
-// (prober.go) are two independent declarations of the same wire contract by
-// design (see prober.go's comment); nothing merges them. Every other pin
-// proves just one side against a literal string authored IN THAT SAME
-// PACKAGE: TestStatusWirePinsFailedToolCallsAndPendingEscalationJSONKeys
-// (server package) decodes the server's own encode into an untyped map, and
-// fuzzScenarioStatusProber_DecodesPendingAsk/_DecodesPendingEscalation (this
-// package) feed the prober a hand-rolled literal. Both catch an uncoordinated
-// rename, but neither catches a coordinated one: an edit that renames a tag
-// in one declaration and "fixes" that same package's adjacent literal to
-// match still passes both pins while the cross-process contract breaks,
-// because neither literal is ever checked against the other declaration.
-// This test removes the hand-authored literal from both ends, so a rename on
-// EITHER declaration with no matching change on the other fails here
-// regardless of which adjacent test the author remembered to update.
-func TestStatusProberAgreesWithServerStatusInfoAcrossTheWire(t *testing.T) {
+// TestStatusProberReadsAppWireStatusIncludingNonAgentJobs drives a real daemon
+// AppWire server through the real typed client. The shell row proves status is
+// not inferred only from delegate descendants; the legacy delegate job row
+// proves descendants remain the sole agent projection and are not duplicated.
+func TestStatusProberReadsAppWireStatusIncludingNonAgentJobs(t *testing.T) {
 	srv := server.NewServer(server.ServerConfig{})
 	srv.SetAppIdentity("local", "th_wire_1")
 	srv.SetState("active")
@@ -72,7 +79,9 @@ func TestStatusProberAgreesWithServerStatusInfoAcrossTheWire(t *testing.T) {
 		askPending:  true,
 		escalations: []appwire.SandboxEscalationRequested{{EscalationID: "esc_1", Tool: "read_file"}},
 		detailed: server.DetailedStatus{Jobs: []server.JobStatusInfo{
-			{JobType: "delegate", Status: "running", TranscriptRef: "local:child-1"},
+			{JobID: "job_shell", JobType: "shell", Status: "running", OutputBytes: 17},
+			{JobID: "job_done", JobType: "shell", Status: "completed"},
+			{JobID: "job_delegate", JobType: "delegate", Status: "running", TranscriptRef: "local:child-1"},
 		}},
 	})
 	srv.RefreshThreadEnvelope()
@@ -107,10 +116,20 @@ func TestStatusProberAgreesWithServerStatusInfoAcrossTheWire(t *testing.T) {
 		Data:      events.SessionEndData{Reason: "shutdown", State: "closed"},
 	})
 
-	httpSrv := httptest.NewServer(srv)
+	httpSrv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/status" {
+			http.NotFound(w, r)
+			return
+		}
+		srv.ServeHTTP(w, r)
+	}))
 	defer httpSrv.Close()
 
-	got := (&StatusProber{}).Probe(rendezvous.Entry{Address: strings.TrimPrefix(httpSrv.URL, "http://")})
+	got := (&StatusProber{client: httpSrv.Client()}).Probe(rendezvous.Entry{
+		Address:  strings.TrimPrefix(httpSrv.URL, "http://"),
+		Protocol: appwire.ProtocolVersion,
+		Endpoint: "ws" + strings.TrimPrefix(httpSrv.URL, "http") + "/rpc",
+	})
 
 	if !got.OK {
 		t.Fatal("expected ok=true probing a real server")
@@ -132,6 +151,13 @@ func TestStatusProberAgreesWithServerStatusInfoAcrossTheWire(t *testing.T) {
 	}
 	wantStates := map[string]string{"child-1": "active", "child-2": "idle", "grandchild-1": "active"}
 	if !reflect.DeepEqual(got.RunningSubagentStates, wantStates) {
-		t.Errorf("running subagent states = %v, want %v: server.StatusInfo.DescendantStates and the prober's descendant_states tag no longer agree", got.RunningSubagentStates, wantStates)
+		t.Errorf("running subagent states = %v, want %v", got.RunningSubagentStates, wantStates)
+	}
+	if len(got.RunningJobs) != 1 {
+		t.Fatalf("running jobs = %+v, want only the non-agent shell job", got.RunningJobs)
+	}
+	job := got.RunningJobs[0]
+	if job.JobID != "job_shell" || job.JobType != "shell" || job.Status != "running" || job.OutputBytes != 17 {
+		t.Fatalf("running job = %+v, want shell identity and status from Evener.Diagnostics.Jobs", job)
 	}
 }
