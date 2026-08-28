@@ -920,7 +920,9 @@ async function submitMutation(
   const count =
     bridge.serverRequests.filter((request) => request.method === method)
       .length + 1;
-  fireEvent.click(screen.getByRole("button", { name: mode }));
+  fireEvent.click(
+    screen.getByRole("button", { name: `Use ${mode.toLowerCase()} mode` }),
+  );
   fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
     target: { value: text },
   });
@@ -1663,7 +1665,7 @@ describe("production App live concepts over the real native AppWire bridge", () 
         ({ cmd }) => cmd === "appwire_open",
       ).length;
       const sendCount = methodCount(bridge, "turn/start") + 1;
-      fireEvent.click(screen.getByRole("button", { name: "Send" }));
+      fireEvent.click(screen.getByRole("button", { name: "Use send mode" }));
       fireEvent.click(screen.getByRole("button", { name: /submit/i }));
       const pendingSend = await bridge.waitForServerRequest(
         "turn/start",
