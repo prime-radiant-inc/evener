@@ -1,6 +1,8 @@
 // ActivityStore — Zustand state. Owns the current ActivityView projection
 // (never the raw wire Thread). Exposes ONLY the strict LiveActivityState
-// surface: setLiveView / applyLiveNotification / reset / generationForTest.
+// surface: setLiveView / applyLiveNotification / setLiveCapabilities / reset /
+// generationForTest. No identity-free fail-open API — no setView,
+// applyNotification, or project.
 // No identity-free fail-open API — no setView, applyNotification, or project.
 //
 // Identity safety (CRITICAL — live methods):
@@ -66,7 +68,8 @@ export type NotificationOutcome = "applied" | "rehydrate" | "ignored";
 
 // Strict live state: the ONLY surface createActivityStore exposes. No
 // unbound mode — setLiveView and applyLiveNotification always carry an
-// ActivityIdentity. No identity-free fail-open methods exist.
+// ActivityIdentity. setLiveCapabilities always carries an ActivityIdentity.
+// No identity-free fail-open methods exist.
 export interface LiveActivityState {
   readonly view: ActivityView | null;
   readonly status: ActivityStatus;

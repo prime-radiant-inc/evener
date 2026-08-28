@@ -1,7 +1,8 @@
 // ActivityStore (Zustand) tests. The store owns the current ActivityView
 // projection (never the raw wire Thread) and exposes ONLY the strict
-// LiveActivityState surface: setLiveView / applyLiveNotification / reset /
-// generationForTest. No identity-free fail-open API exists.
+// LiveActivityState surface: setLiveView / applyLiveNotification /
+// setLiveCapabilities / reset / generationForTest. No identity-free fail-open
+// API exists.
 //
 // Identity safety (CRITICAL): the store tracks an ActivityIdentity
 // { threadId, ref, generation }. setLiveView installs view + identity
@@ -1619,15 +1620,62 @@ describe("ActivityStore", () => {
       expect(store.getState().view).toBeNull();
     });
 
-    it("returns false after reset (stale identity)", () => {
+    it("returns false after reset for stale identity even after reopening gen6", () => {
       const store = createActivityStore();
-      store.getState().setLiveView(emptyView(), identity({ generation: 5 }));
+      // Open at gen5 with known capabilities, then reset (invalidates gen5).
+      const capsGen5: ThreadCapabilities = {
+        send: true,
+        steer: true,
+        interrupt: true,
+        compact: true,
+        clear: true,
+        forkFromTurn: true,
+        shutdown: true,
+        changeModel: true,
+        queue: true,
+        goal: true,
+        rename: true,
+      };
+      store
+        .getState()
+        .setLiveView(
+          { ...emptyView(), capabilities: capsGen5 as MobileCapabilities },
+          identity({ generation: 5 }),
+        );
       store.getState().reset();
+      // Reopen a new view at gen6 with different capabilities.
+      const capsGen6: ThreadCapabilities = {
+        send: true,
+        steer: false,
+        interrupt: true,
+        compact: false,
+        clear: true,
+        forkFromTurn: false,
+        shutdown: true,
+        changeModel: false,
+        queue: true,
+        goal: false,
+        rename: true,
+      };
+      store
+        .getState()
+        .setLiveView(
+          { ...emptyView(), capabilities: capsGen6 as MobileCapabilities },
+          identity({ generation: 6 }),
+        );
+      // A stale gen5 identity must be rejected even though a view is now open
+      // at gen6 — the sink must not mutate the open view's capabilities.
       const ok = store
         .getState()
-        .setLiveCapabilities(ALL_TRUE_CAPS, identity({ generation: 5 }));
+        .setLiveCapabilities(
+          { ...ALL_TRUE_CAPS, queue: false },
+          identity({ generation: 5 }),
+        );
       expect(ok).toBe(false);
-      expect(store.getState().view).toBeNull();
+      // The open gen6 view's capabilities are untouched.
+      expect(store.getState().view?.capabilities).toEqual(
+        capsGen6 as MobileCapabilities,
+      );
     });
   });
 
@@ -1670,22 +1718,6 @@ describe("ActivityStore", () => {
         .getState()
         .setLiveView(emptyView(), identity({ generation: 1 }));
       expect(ok).toBe(true);
-    });
-
-    it("set gen5 -> reset -> reset -> set gen6 accepted; stale gen5 rejected", () => {
-      const store = createActivityStore();
-      store.getState().setLiveView(emptyView(), identity({ generation: 5 }));
-      store.getState().reset();
-      store.getState().reset();
-      // Stale gen5 rejected.
-      expect(
-        store.getState().setLiveView(emptyView(), identity({ generation: 5 })),
-      ).toBe(false);
-      // gen6 accepted — strictly newer than the single invalidated boundary.
-      expect(
-        store.getState().setLiveView(emptyView(), identity({ generation: 6 })),
-      ).toBe(true);
-      expect(store.getState().generationForTest()).toBe(6);
     });
 
     it("open reset accepts next strictly newer identity; then reset is idempotent again", () => {
