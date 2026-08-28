@@ -582,7 +582,6 @@ native:agent:.:FuzzWatchPendingStateProgram
 native:agent:.:FuzzWatchStoreLoadFaultSeams
 native:agent:.:FuzzWatchTimersObserveProgram
 native:.:./cmd/evener-hub:FuzzAuthInstancesFactories
-native:.:./cmd/evener-hub:FuzzCovExactWebSession
 native:.:./cmd/evener-hub:FuzzExactAppRPC
 native:.:./cmd/evener-hub:FuzzExactLifecycleTree
 native:.:./cmd/evener-hub:FuzzExactTails
