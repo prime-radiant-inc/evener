@@ -1,3 +1,7 @@
+import {
+  mutationAxLabel,
+  transcriptItemAxLabel,
+} from "../accessibility-semantics";
 import type {
   LiveConceptIntent,
   LiveConceptState,
@@ -6,7 +10,6 @@ import type {
 import type { LiveQuestionView, LiveTranscriptItem } from "../model";
 import { Icon } from "../shared/Icon";
 import { StatusLabel } from "../shared/StatusLabel";
-import { mutationAxLabel, transcriptItemAxLabel } from "../smoke-semantics";
 import { StatusDisclosure } from "./StatusDisclosure";
 
 // Live adaptation of the Field Notes conversation surface. Preserves the
@@ -273,7 +276,7 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
 
       <section
         className="fn-session-summary"
-        aria-label="Record summary"
+        aria-label={`Session ${conversation.title}`}
         data-conversation-tone={conversation.tone}
       >
         <div>
@@ -361,9 +364,7 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
           aria-label={mutationAxLabel(composer) ?? undefined}
           aria-live="polite"
         >
-          <span>
-            {composer.pending.kind} is {composer.pending.status}…
-          </span>
+          <span>{mutationAxLabel(composer)}</span>
         </section>
       ) : null}
 
@@ -373,7 +374,7 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
           role="status"
           aria-label={mutationAxLabel(composer) ?? undefined}
         >
-          {composer.accepted.kind} accepted
+          {mutationAxLabel(composer)}
         </section>
       ) : null}
 
