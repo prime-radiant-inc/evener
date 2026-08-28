@@ -1062,10 +1062,41 @@ describe("createLiveConversationProjector", () => {
     });
     const item = view.items.find((i) => i.kind === "assistant");
     expect(item?.truncated).toBe(true);
-    expect(utf8Bytes(item?.body ?? "")).toBeLessThanOrEqual(65536);
-    const body = item?.body ?? "";
-    const count = body.split(marker).length - 1;
-    expect(count).toBe(1);
+    // Exact body must be the capped text unchanged — the projector does not
+    // re-truncate within-cap content, and the marker is already present.
+    expect(item?.body).toBe(cappedText);
+    // Exactly one marker in the body.
+    expect((item?.body ?? "").split(marker).length - 1).toBe(1);
+  });
+
+  it("within-cap tool/activity with ID in truncatedItemIds => truncated true, exact body unchanged", () => {
+    // A tool/activity item whose output is within the cap but whose ID is in
+    // the store's truncatedItemIds set must be marked truncated:true with the
+    // exact body unchanged. If the tool membership is deleted from the set,
+    // this test fails — proving the set membership arm is load-bearing.
+    const p = createLiveConversationProjector();
+    const toolBody = "tool output that is short";
+    const conv = makeConversation({
+      items: [
+        {
+          kind: "activity",
+          id: "tool-frozen",
+          label: "shell",
+          family: "tool",
+          state: "completed",
+          detail: { output: toolBody },
+        },
+      ],
+    });
+    const { view } = p.project(conv, {
+      ...OPTS,
+      truncatedItemIds: new Set(["tool-frozen"]),
+    });
+    const item = view.items.find((i) => i.kind === "tool");
+    expect(item).toBeDefined();
+    expect(item?.truncated).toBe(true);
+    // Exact body unchanged — projector does not modify within-cap content.
+    expect(item?.body).toBe(toolBody);
   });
 
   it("projector-oversized input => truncated true and exactly one marker regardless of set", () => {

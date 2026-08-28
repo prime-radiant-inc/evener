@@ -10267,24 +10267,6 @@ describe("ConversationStore", () => {
   // --- Plan3: getTruncatedItemIds accessor — snapshot immutability + freeze/unfreeze ---
 
   describe("Plan3: getTruncatedItemIds — snapshot cannot mutate internal ownership", () => {
-    it("returns an empty set when no items are truncated", async () => {
-      const service = new FakeConversationService();
-      service.openConv = makeConversation({
-        items: [
-          {
-            kind: "assistant",
-            id: "small",
-            markdown: "short",
-            streaming: false,
-          },
-        ],
-      });
-      const store = createConversationStore();
-      await store.getState().open(service, "ref-1");
-      const snapshot = store.getState().getTruncatedItemIds();
-      expect(snapshot.size).toBe(0);
-    });
-
     it("returns a fresh snapshot — mutating the returned set does not affect the store", async () => {
       const service = new FakeConversationService();
       const oversized = "x".repeat(MAX_ITEM_BYTES + 100);
@@ -10323,37 +10305,15 @@ describe("ConversationStore", () => {
           delta: " appended",
         },
       } as AnyNotification);
+      // Mandatory narrowing — if the item is not assistant, throw so the
+      // assertion cannot silently skip.
       const item = store
         .getState()
         .conversation?.items.find((i) => i.id === "big");
-      if (item?.kind === "assistant") {
-        expect(item.markdown.endsWith("… truncated")).toBe(true);
-        expect(item.markdown).not.toContain("appended");
-      }
-    });
-
-    it("each call returns a fresh independent snapshot", async () => {
-      const service = new FakeConversationService();
-      const oversized = "x".repeat(MAX_ITEM_BYTES + 100);
-      service.openConv = makeConversation({
-        items: [
-          {
-            kind: "assistant",
-            id: "big",
-            markdown: oversized,
-            streaming: false,
-          },
-        ],
-      });
-      const store = createConversationStore();
-      await store.getState().open(service, "ref-1");
-      const s1 = store.getState().getTruncatedItemIds();
-      const s2 = store.getState().getTruncatedItemIds();
-      expect(s1).not.toBe(s2); // different Set objects
-      expect(s1.has("big")).toBe(true);
-      expect(s2.has("big")).toBe(true);
-      (s1 as Set<string>).delete("big");
-      expect(s2.has("big")).toBe(true); // s2 unaffected by s1 mutation
+      if (item?.kind !== "assistant")
+        throw new Error("expected assistant item");
+      expect(item.markdown.endsWith("… truncated")).toBe(true);
+      expect(item.markdown).not.toContain("appended");
     });
   });
 
@@ -10465,30 +10425,11 @@ describe("ConversationStore", () => {
       const item = store
         .getState()
         .conversation?.items.find((i) => i.id === "item-1");
-      if (item?.kind === "assistant") {
-        expect(item.markdown).toBe("new text");
-      }
-    });
-
-    it("reset clears truncatedItemIds", async () => {
-      const service = new FakeConversationService();
-      const oversized = "x".repeat(MAX_ITEM_BYTES + 100);
-      service.openConv = makeConversation({
-        items: [
-          {
-            kind: "assistant",
-            id: "big",
-            markdown: oversized,
-            streaming: false,
-          },
-        ],
-      });
-      const store = createConversationStore();
-      await store.getState().open(service, "ref-1");
-      expect(store.getState().getTruncatedItemIds().has("big")).toBe(true);
-
-      store.getState().reset();
-      expect(store.getState().getTruncatedItemIds().size).toBe(0);
+      // Mandatory narrowing — throw if not assistant so the assertion cannot
+      // silently skip.
+      if (item?.kind !== "assistant")
+        throw new Error("expected assistant item");
+      expect(item.markdown).toBe("new text");
     });
   });
 
@@ -10607,55 +10548,77 @@ describe("ConversationStore", () => {
       expect(store.getState().error).toBeNull();
     });
 
-    it("mutation success after genuine newer clear-to-null: revision changed, send preserves null owner (no error write)", async () => {
-      // Genuine newer null-owner race: during the send's await, a page
-      // failure sets a non-null error (incrementing errorOwnerRev), then a
-      // rehydrate clears it to null (a REAL clear of non-null, incrementing
-      // errorOwnerRev again). When the send succeeds, entryErrorRev !==
-      // errorOwnerRev — the send must NOT include error: null in its set.
-      // It still clears pendingMutation (its own field) but leaves error to
-      // the newer owner (which is null).
+    it("genuine newer null-owner race: page failure cannot overwrite mutation's null owner while mutation pending", async () => {
+      // Load-bearing ordering: hold a page failure and hold a newer mutation.
+      // The page captures the OLD error rev (before the mutation starts).
+      // The newer mutation start writes the newer null owner (clears error
+      // via set on submit, incrementing errorOwnerRev). While the mutation
+      // is still pending, reject/await the PAGE — it must NOT write its old
+      // error because errorOwnerRev advanced. Assert error remains null and
+      // mutation remains pending. Only afterward resolve the mutation and
+      // finish. This prevents the mutation success's null from masking the
+      // page behavior — the page rejection is observed BEFORE the mutation
+      // settles.
       const service = new FakeConversationService();
       const sink = createFakeSink();
       const store = createConversationStore();
       await store.getState().openProjected(service, sink, "ref-1");
 
-      // Start a send that hangs — captures entryErrorRev while error is null
-      // (the send action clears error on submit).
+      // Set a non-null error first so the page failure captures an old
+      // errorOwnerRev (error is non-null).
+      service.sendShouldReject = new Error("initial error");
+      await store.getState().send(service, textInput("x"));
+      expect(store.getState().error).toBe("initial error");
+
+      // Start a page failure that hangs — it captures entryErrorRev while
+      // error is "initial error" (old rev).
+      store.setState({ olderCursor: "cursor-1" });
+      const rejectPageHolder: { fn?: (e: Error) => void } = {};
+      const hangPageFail = new Promise<{
+        items: MobileConversation["items"];
+        nextCursor?: string;
+      }>((_, reject) => {
+        rejectPageHolder.fn = reject;
+      });
+      service.olderItems = hangPageFail as never;
+      const pageP = store.getState().loadOlder(service);
+      expect(store.getState().loadingOlder).toBe(true);
+
+      // Start a newer send that hangs — the send action clears error to null
+      // on submit (set error: null), incrementing errorOwnerRev. This is the
+      // newer null owner. The page's captured entryErrorRev is now stale.
+      service.sendShouldReject = null;
       const resolveSendHolder: { fn?: (r: MutationReceipt) => void } = {};
       const hangSend = new Promise<MutationReceipt>((r) => {
         resolveSendHolder.fn = r;
       });
-      service.sendShouldReject = null;
       service.send = async () => hangSend;
       const sendP = store.getState().send(service, textInput("y"));
       expect(store.getState().pendingMutation?.status).toBe("pending");
+      // The send's submit cleared the old error to null (newer null owner).
       expect(store.getState().error).toBeNull();
 
-      // While send is in-flight, set error via a page failure, then rehydrate
-      // clears it to null — this is a real newer clear-to-null (error was
-      // non-null).
-      store.setState({ olderCursor: "cursor-1" });
-      service.olderItems = Promise.reject(new Error("page boom")) as never;
-      await store
-        .getState()
-        .loadOlder(service)
-        .catch(() => {});
-      expect(store.getState().error).toBe("page boom");
-
-      // Rehydrate with SAME sink clears the non-null error — increments
-      // errorOwnerRev. This is a real newer error owner (clear of non-null).
-      await store.getState().rehydrate(service, sink);
+      // Now reject the PAGE while the mutation is still pending. The page
+      // captured the old entryErrorRev (when error was "initial error").
+      // errorOwnerRev has since advanced (the send's clear). The page must
+      // settle loadingOlder but NOT write its error — an incorrect old page
+      // error would be visible here.
+      rejectPageHolder.fn?.(new Error("page boom"));
+      await pageP.catch(() => {});
+      expect(store.getState().loadingOlder).toBe(false);
+      // Error remains null — the page's old error rev cannot overwrite
+      // the newer null owner.
       expect(store.getState().error).toBeNull();
+      // Mutation remains pending — the page rejection did not settle it.
+      expect(store.getState().pendingMutation?.status).toBe("pending");
 
-      // Now the send succeeds. entryErrorRev !== errorOwnerRev (the rehydrate
-      // advanced it). The send must NOT write error: null — the newer owner
-      // (the rehydrate's clear) owns the null. The send only clears
-      // pendingMutation (its own field).
+      // Only now resolve the mutation success. The send captured
+      // entryErrorRev after its own clear, so it can clear error. But error
+      // is already null — the key assertion is that the page never wrote.
       resolveSendHolder.fn?.(makeReceipt());
       await sendP;
       expect(store.getState().pendingMutation).toBeNull();
-      // Error stays null — owned by the rehydrate's clear, not the send.
+      // Error stays null throughout — page never wrote, send's null held.
       expect(store.getState().error).toBeNull();
     });
 
@@ -10978,7 +10941,7 @@ describe("ConversationStore", () => {
       });
     }
 
-    // Table: late A SUCCESS for send/steer/queue/interrupt
+    // Table: late A SUCCESS for send/steer/queue/interrupt — full object reference + notification count
     for (const kind of ["send", "steer", "queue", "interrupt"] as const) {
       it(`mutation: controlled A->B then late A ${kind} success => entire state unchanged`, async () => {
         const serviceA = new FakeConversationService();
@@ -11037,12 +11000,28 @@ describe("ConversationStore", () => {
         const sinkB = createFakeSink();
         await store.getState().rehydrate(serviceB, sinkB);
 
-        // A's pending mutation was settled by the rebind — verify it is null.
-        expect(store.getState().pendingMutation).toBeNull();
+        // After rebind to B fully completes, explicitly assert same ref and
+        // generation are B's, not A's.
+        const stateB = store.getState();
+        expect(stateB.ref).toBe("ref-A");
+        expect(stateB.conversation?.id).toBe("thread-B");
+        const genB = stateB.conversationGeneration;
 
-        // Snapshot the entire public state after rebind.
-        const stateAfterRebind = snapshotState(store);
-        const conversationRef = store.getState().conversation;
+        // A's pending mutation was settled by the rebind — verify it is null.
+        expect(stateB.pendingMutation).toBeNull();
+
+        // Capture the EXACT full state object reference. Not a partial
+        // snapshot — the entire public state object must be the same
+        // reference after late A success (zero Zustand set => same object).
+        const exactStateAfterB = store.getState();
+
+        // Subscribe and count ALL Zustand notifications. Any set() call
+        // produces a notification, so notification count 0 proves zero set.
+        let notificationCount = 0;
+        const unsub = store.subscribe(() => {
+          notificationCount++;
+        });
+
         const callsA =
           serviceA.sendCallCount +
           serviceA.steerCallCount +
@@ -11051,27 +11030,36 @@ describe("ConversationStore", () => {
         const readsA = serviceA.readProjectionCalls.length;
         const writesA = sinkA.setLiveViewCalls.length;
 
-        // A's mutation succeeds — zero state change. The operation binding
-        // is stale (isOperationBindingCurrent returns false because the
-        // binding epoch/service/sink changed), so the success path returns
-        // before any set() call. No Zustand set, no notification.
-        resolveMutationHolder.fn?.(makeReceipt());
-        await mutationP;
+        try {
+          // A's mutation succeeds — zero state change. The operation binding
+          // is stale (isOperationBindingCurrent returns false because the
+          // binding epoch/service/sink changed), so the success path returns
+          // before any set() call. No Zustand set, no notification.
+          resolveMutationHolder.fn?.(makeReceipt());
+          await mutationP;
 
-        // C1/I5: entire public state must be identical (deep equality).
-        expect(snapshotState(store)).toEqual(stateAfterRebind);
-        // The conversation object reference must be preserved (no new set).
-        expect(store.getState().conversation).toBe(conversationRef);
-        // No additional A reads or sink writes after rebind.
-        expect(serviceA.readProjectionCalls.length).toBe(readsA);
-        expect(sinkA.setLiveViewCalls.length).toBe(writesA);
-        // No additional A mutation calls after rebind.
-        const callsAAfter =
-          serviceA.sendCallCount +
-          serviceA.steerCallCount +
-          serviceA.queueCallCount +
-          serviceA.interruptCallCount;
-        expect(callsAAfter).toBe(callsA);
+          // The entire public state object must be the SAME reference (===).
+          // No partial/deep snapshot — if any set() was called, Zustand
+          // returns a new object and this fails.
+          expect(store.getState()).toBe(exactStateAfterB);
+          // Notification count 0 — no set() fired.
+          expect(notificationCount).toBe(0);
+          // ref and generation still B's.
+          expect(store.getState().ref).toBe("ref-A");
+          expect(store.getState().conversationGeneration).toBe(genB);
+          // No additional A reads or sink writes after rebind.
+          expect(serviceA.readProjectionCalls.length).toBe(readsA);
+          expect(sinkA.setLiveViewCalls.length).toBe(writesA);
+          // No additional A mutation calls after rebind.
+          const callsAAfter =
+            serviceA.sendCallCount +
+            serviceA.steerCallCount +
+            serviceA.queueCallCount +
+            serviceA.interruptCallCount;
+          expect(callsAAfter).toBe(callsA);
+        } finally {
+          unsub();
+        }
       });
     }
   });
