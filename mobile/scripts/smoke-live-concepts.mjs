@@ -351,6 +351,19 @@ function validateMilestoneEvidence(observation, shared) {
           "background/foreground must rehydrate the same active thread",
         );
       }
+      exactDigest(
+        evidence.backgroundTreeDigest,
+        "background semantic tree digest",
+      );
+      exactDigest(
+        evidence.foregroundTreeDigest,
+        "foreground semantic tree digest",
+      );
+      if (evidence.backgroundTreeDigest === evidence.foregroundTreeDigest) {
+        throw new Error(
+          "background and foreground semantic trees must be distinct",
+        );
+      }
       break;
     case "reconnect":
       positiveInteger(
@@ -640,11 +653,17 @@ function isIdbCompanionLoss(error) {
 }
 
 export async function launchProductionBundle(
-  { udid, bundleId },
+  { udid, bundleId, foregroundIfRunning = false },
   { run = runSpawned } = {},
 ) {
   try {
-    await run("idb", ["launch", "--udid", udid, bundleId]);
+    await run("idb", [
+      "launch",
+      ...(foregroundIfRunning ? ["--foreground-if-running"] : []),
+      "--udid",
+      udid,
+      bundleId,
+    ]);
     return { tool: "idb", status: 0 };
   } catch (error) {
     if (!isIdbCompanionLoss(error)) throw error;
@@ -1444,8 +1463,17 @@ export async function runLiveSmoke(config, dependencies = {}) {
     );
 
     const generation = 1;
-    await run("idb", ["terminate", "--udid", config.udid, config.bundleId]);
-    await launchProductionBundle(config, { run });
+    await run("idb", ["ui", "button", "HOME", "--udid", config.udid]);
+    const background = await waitFor(
+      (snapshot) =>
+        values(snapshot, "data-thread-key").length === 0 &&
+        snapshot.digest !== work.digest,
+    );
+    raw.semanticTrees.push(background.tree);
+    await launchProductionBundle(
+      { ...config, foregroundIfRunning: true },
+      { run },
+    );
     const foreground = await waitFor(
       (snapshot) =>
         values(snapshot, "data-thread-key")[0] === threadIdentity &&
@@ -1464,8 +1492,10 @@ export async function runLiveSmoke(config, dependencies = {}) {
           foregroundGeneration,
           activeThreadId: threadIdentity,
           rehydrated: true,
+          backgroundTreeDigest: background.digest,
+          foregroundTreeDigest: foreground.digest,
         },
-        { kind: "lifecycle", label: "terminate then foreground launch" },
+        { kind: "lifecycle", label: "HOME then foreground existing process" },
       ),
     );
 
