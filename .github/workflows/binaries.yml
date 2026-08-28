@@ -22,7 +22,7 @@ jobs:
       # job keeps a full clone for its own template needs.
       - uses: actions/checkout@v7
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       - uses: ./.github/actions/setup-toolchain
 
