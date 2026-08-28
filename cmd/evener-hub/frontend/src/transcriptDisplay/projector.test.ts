@@ -52,10 +52,72 @@ function entriesFor(model: ThreadModel, config: TranscriptDisplayConfigV1) {
 }
 
 describe("transcript projector", () => {
+  test("Chat projects ordinary commands as intent proxies (catches toolIntent=false)", () => {
+    const model = threadWith(item("tool-1", "commandExecution", { description: "Inspect the tree" }));
+
+    expect(entriesFor(model, preset("chat"))).toEqual([
+      expect.objectContaining({
+        kind: "intent",
+        id: "intent:tool-1",
+        sourceItemId: "tool-1",
+        rationale: "Inspect the tree",
+        failed: false,
+      }),
+    ]);
+  });
+
+  test("intent-only vectors keep failed and active ordinary calls as proxies (catches critical escalation)", () => {
+    const model = threadWith(
+      item("failed-tool", "commandExecution", {
+        toolName: "shell",
+        description: "Run checks",
+        error: "denied",
+      }),
+      item("active-tool", "commandExecution", {
+        toolName: "shell",
+        description: "Keep checking",
+        status: "inProgress",
+      }),
+      item("blank-tool", "commandExecution", {
+        toolName: "shell",
+        description: "   ",
+        status: "failed",
+      }),
+    );
+    const intentOnly = custom({ toolIntent: true, toolCalls: false, reasoning: false, expandByDefault: false });
+
+    expect(entriesFor(model, intentOnly)).toEqual([
+      expect.objectContaining({ kind: "intent", id: "intent:failed-tool", rationale: "Run checks", failed: true }),
+      expect.objectContaining({ kind: "intent", id: "intent:active-tool", rationale: "Keep checking", failed: false }),
+      expect.objectContaining({
+        kind: "intent",
+        id: "intent:blank-tool",
+        rationale: "Action summary unavailable",
+        failed: true,
+      }),
+    ]);
+  });
+
+  test("Tools and above keep ordinary failed and active calls as full items", () => {
+    const model = threadWith(
+      item("failed-tool", "commandExecution", { description: "Run checks", status: "failed" }),
+      item("active-tool", "commandExecution", { description: "Keep checking", status: "inProgress" }),
+    );
+
+    for (const level of ["tools", "activity", "full"] as const) {
+      expect(entriesFor(model, preset(level))).toEqual([
+        expect.objectContaining({ kind: "item", id: "failed-tool" }),
+        expect.objectContaining({ kind: "item", id: "active-tool" }),
+      ]);
+    }
+  });
+
   test("uses an intent proxy until the real tool row supersedes it", () => {
     const model = threadWith(item("tool-1", "commandExecution", { description: "Inspect the tree" }));
 
-    expect(entriesFor(model, preset("chat"))).toEqual([]);
+    expect(entriesFor(model, preset("chat"))).toEqual([
+      expect.objectContaining({ kind: "intent", id: "intent:tool-1", rationale: "Inspect the tree" }),
+    ]);
     expect(entriesFor(model, preset("intent"))).toEqual([
       expect.objectContaining({ kind: "intent", id: "intent:tool-1", rationale: "Inspect the tree" }),
     ]);
@@ -63,7 +125,7 @@ describe("transcript projector", () => {
   });
 
   test.each([
-    ["chat", ["user", "agent"]],
+    ["chat", ["user", "intent:tool", "agent"]],
     ["intent", ["user", "intent:tool", "agent"]],
     ["tools", ["user", "tool", "agent"]],
     ["activity", ["user", "tool", "think", "agent"]],
@@ -112,7 +174,7 @@ describe("transcript projector", () => {
   });
 
   test.each(["chat", "intent", "tools", "activity", "full"] as const)(
-    "keeps critical interaction and failure rows at the %s level",
+    "keeps interactions and non-tool failures critical at the %s level",
     (level) => {
       const model = threadWith(
         item("ask", "commandExecution", { toolName: "ask_user", description: "Ask for a choice" }),
@@ -132,21 +194,19 @@ describe("transcript projector", () => {
         item("turn-error", "systemMessage", { eventKind: "error", text: "Failure" }),
       );
       const entries = entriesFor(model, preset(level));
-      expect(entries.map((entry) => entry.id)).toEqual([
-        "ask",
-        "failed-tool",
-        "active-tool",
-        "hook-failure",
-        "warning",
-        "steer",
-        "turn-error",
-      ]);
-      expect(entries.find((entry) => entry.id === "ask")?.kind).toBe("critical");
-      expect(entries.find((entry) => entry.id === "failed-tool")?.kind).toBe(
-        level === "chat" || level === "intent" ? "critical" : "item",
+      expect(entries.map((entry) => entry.id)).toEqual(
+        level === "chat" || level === "intent"
+          ? ["ask", "intent:failed-tool", "intent:active-tool", "hook-failure", "warning", "steer", "turn-error"]
+          : ["ask", "failed-tool", "active-tool", "hook-failure", "warning", "steer", "turn-error"],
       );
-      expect(entries.find((entry) => entry.id === "active-tool")?.kind).toBe(
-        level === "chat" || level === "intent" ? "critical" : "item",
+      expect(entries.find((entry) => entry.id === "ask")?.kind).toBe("critical");
+      const failedId = level === "chat" || level === "intent" ? "intent:failed-tool" : "failed-tool";
+      const activeId = level === "chat" || level === "intent" ? "intent:active-tool" : "active-tool";
+      expect(entries.find((entry) => entry.id === failedId)?.kind).toBe(
+        level === "chat" || level === "intent" ? "intent" : "item",
+      );
+      expect(entries.find((entry) => entry.id === activeId)?.kind).toBe(
+        level === "chat" || level === "intent" ? "intent" : "item",
       );
       expect(entries.find((entry) => entry.id === "hook-failure")?.kind).toBe("critical");
       for (const id of ["warning", "steer", "turn-error"]) {
@@ -167,7 +227,11 @@ describe("transcript projector", () => {
       }),
     ]);
     expect(entriesFor(model, preset("chat"))).toEqual([
-      expect.objectContaining({ kind: "critical", id: "blank-tool", summary: "Action summary unavailable" }),
+      expect.objectContaining({
+        kind: "intent",
+        id: "intent:blank-tool",
+        rationale: "Action summary unavailable",
+      }),
     ]);
     for (const level of ["tools", "activity", "full"] as const) {
       expect(entriesFor(model, preset(level))).toEqual([
@@ -282,7 +346,7 @@ describe("transcript projector", () => {
       turns: [turn([item("status-only-active", "commandExecution", { toolName: "shell" })], { status: "inProgress" })],
     } as ThreadModel;
     expect(entriesFor(turnStillOpening, preset("chat"))).toEqual([
-      expect.objectContaining({ kind: "critical", id: "status-only-active" }),
+      expect.objectContaining({ kind: "intent", id: "intent:status-only-active", failed: false }),
     ]);
   });
 
@@ -318,8 +382,11 @@ describe("transcript projector", () => {
     const model = { ...threadWith(), turns: [terminalTurn] } as ThreadModel;
 
     const projection = projectThread(model, preset("chat"));
-    expect(projection.turns[0]?.entries.map((entry) => entry.id)).toEqual(["failed-command", "failed-reasoning"]);
-    expect(projection.turns[0]?.entries.every((entry) => entry.kind === "critical")).toBe(true);
+    expect(projection.turns[0]?.entries.map((entry) => entry.id)).toEqual([
+      "intent:failed-command",
+      "failed-reasoning",
+    ]);
+    expect(projection.turns[0]?.entries.map((entry) => entry.kind)).toEqual(["intent", "critical"]);
     expect(projection.turns[0]?.source).toBe(terminalTurn);
     expect(projection.turns[0]?.source.status).toBe("failed");
     expect(projection.turns[0]?.source.error).toEqual({ message: "structured turn failure" });
@@ -406,8 +473,8 @@ describe("transcript projector", () => {
       "warning",
       "agent",
     ]);
-    expect(projected?.visibleItems.map((item) => item.id)).toEqual(["user", "warning", "agent"]);
-    expect(projected?.entries.map((entry) => entry.id)).toEqual(["user", "warning", "agent"]);
+    expect(projected?.visibleItems.map((item) => item.id)).toEqual(["user", "hidden-tool", "warning", "agent"]);
+    expect(projected?.entries.map((entry) => entry.id)).toEqual(["user", "intent:hidden-tool", "warning", "agent"]);
   });
 
   test("preserves source turns and does not mutate the input model or items", () => {

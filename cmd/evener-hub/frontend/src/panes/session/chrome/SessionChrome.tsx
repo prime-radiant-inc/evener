@@ -9,10 +9,11 @@
 // (mirrors Session.tsx's own model lookup).
 //
 // The menu is the shared SessionMenu (2026-08-05-unified-session-context-
-// menu-design): Details/Tasks/Activity lead it at every width (there are no
-// inline triggers and no narrow-collapse - the status row's container-query
-// variants own compression inside .body instead), followed by Rename, the
-// tree-gated Pin/Archive/Delete organization group, and Shut down. The three
+// menu-design): Details/Tasks/Activity and pane-only Verbosity lead it at every
+// width (there are no inline triggers and no narrow-collapse - the status
+// row's container-query variants own compression inside .body instead),
+// followed by Rename, the tree-gated Pin/Archive/Delete organization group,
+// and Shut down. The three
 // panels stay mounted triggerless so their imperative handles still open the
 // mobile Sheets; ActivityPanel's refreshWhenHidden is unconditional because
 // the menu's "Activity · N" label reads the summary that refresh maintains.

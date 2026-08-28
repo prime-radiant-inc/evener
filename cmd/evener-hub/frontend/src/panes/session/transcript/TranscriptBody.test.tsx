@@ -362,7 +362,7 @@ describe("TranscriptBody", () => {
     expect(captureTranscriptViews().size).toBe(0);
   });
 
-  test("focuses the stable transcript region when a view change removes the focused row", async () => {
+  test("moves focus from a Tools row to its Chat intent proxy", async () => {
     const announce = vi.fn();
     const listRef = createRef<VirtualListHandle>();
     let showChat: () => void = () => {
@@ -398,8 +398,59 @@ describe("TranscriptBody", () => {
       });
     });
 
-    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("region", { name: "Transcript" })));
+    const group = await screen.findByTestId("intent-group");
+    const summary = group.querySelector(":scope > summary");
+    if (!(summary instanceof HTMLElement)) throw new Error("Chat intent group summary did not render");
+    await waitFor(() => expect(document.activeElement).toBe(summary));
+    expect(group.hasAttribute("open")).toBe(false);
     expect(announce).toHaveBeenCalledWith("Chat");
+  });
+
+  test("focuses the Transcript region when a view change removes the focused row", async () => {
+    const announce = vi.fn();
+    const listRef = createRef<VirtualListHandle>();
+    const hiddenTools = makeTranscriptDisplayConfig({
+      kind: "custom",
+      toolIntent: false,
+      toolCalls: false,
+      reasoning: false,
+      expandByDefault: false,
+    });
+    let hideTools: () => void = () => {
+      throw new Error("focus fallback harness did not mount");
+    };
+    function FocusFallbackHarness() {
+      const [config, setConfig] = useState(preset("tools"));
+      hideTools = () => setConfig(hiddenTools);
+      return (
+        <TranscriptBody
+          model={fixture}
+          config={config}
+          surface="live"
+          disclosureScope="live:focus-region-fallback"
+          viewId="focus-region-fallback"
+          listRef={listRef}
+          onAnnounceViewChange={announce}
+        />
+      );
+    }
+    render(<FocusFallbackHarness />);
+    const tool = await screen.findByTestId("tool-row-trigger");
+    tool.focus();
+    expect(document.activeElement).toBe(tool);
+    expect(captureTranscriptViews().get("focus-region-fallback")?.focusedEntryId).toBe("tool_1");
+
+    act(() => {
+      transitionTranscriptViews(hideTools, "Custom content", {
+        fingerprint: "custom-without-tools",
+      });
+    });
+
+    await waitFor(() => expect(document.activeElement).toBe(screen.getByRole("region", { name: "Transcript" })));
+    expect(document.body.contains(tool)).toBe(false);
+    expect(screen.queryByTestId("tool-call-item")).toBeNull();
+    expect(screen.queryByTestId("intent-group")).toBeNull();
+    expect(announce).toHaveBeenCalledWith("Custom content");
   });
 
   test("uses normal page flow for preview without an inner virtual scroller", () => {
@@ -687,12 +738,12 @@ describe("TranscriptBody", () => {
     );
     const crossGroup = screen.getAllByTestId("intent-group").at(-1);
     if (crossGroup === undefined) throw new Error("cross-turn intent group did not render");
-    expect(crossGroup?.getAttribute("data-transcript-row-id")).toBe("intent-group:intent:tool_a:intent:tool_c");
-    expect(crossGroup?.hasAttribute("open")).toBe(false);
+    expect(crossGroup?.getAttribute("data-transcript-row-id")).toBe("intent-group:intent:tool_a");
+    expect(crossGroup?.hasAttribute("open")).toBe(true);
     const crossSummary = crossGroup.querySelector("summary");
     if (crossSummary === null) throw new Error("cross-turn intent summary did not render");
     fireEvent.click(crossSummary);
-    expect(crossGroup?.hasAttribute("open")).toBe(true);
+    expect(crossGroup?.hasAttribute("open")).toBe(false);
     expect(single.hasAttribute("open")).toBe(true);
   });
 
@@ -714,9 +765,7 @@ describe("TranscriptBody", () => {
     expect(group[0]?.textContent).toContain("Three");
     expect(screen.queryAllByTestId("tool-call-item")).toHaveLength(0);
     expect(screen.getAllByTestId("transcript-row")).toHaveLength(2);
-    expect(screen.getAllByTestId("transcript-row")[0]?.getAttribute("data-row-id")).toBe(
-      "intent-group:intent:tool_a:intent:tool_c",
-    );
+    expect(screen.getAllByTestId("transcript-row")[0]?.getAttribute("data-row-id")).toBe("intent-group:intent:tool_a");
     expect(
       document.querySelector('[data-view-anchor-id="intent:tool_b"]')?.getAttribute("data-view-anchor-turn-id"),
     ).toBe("turn_b");
@@ -731,6 +780,230 @@ describe("TranscriptBody", () => {
       />,
     );
     expect(screen.getAllByTestId("transcript-row").map((row) => row.getAttribute("data-row-id"))).toEqual(rowIds);
+  });
+
+  test("a growing cross-turn group keeps its first-action row identity and manually closed state (catches last-id row key)", () => {
+    const config = makeTranscriptDisplayConfig({
+      kind: "custom",
+      toolIntent: true,
+      toolCalls: false,
+      reasoning: false,
+      expandByDefault: true,
+    });
+    const initial = { ...crossTurnFixture, turns: crossTurnFixture.turns.slice(0, 2) } as ThreadModel;
+    const finalTurn = crossTurnFixture.turns[2];
+    if (finalTurn === undefined || finalTurn.items[0] === undefined)
+      throw new Error("cross-turn stream fixture is incomplete");
+    const streamed = {
+      ...crossTurnFixture,
+      turns: [...initial.turns, { ...finalTurn, items: [finalTurn.items[0]] }],
+    } as ThreadModel;
+    const { rerender } = render(
+      <TranscriptBody model={initial} config={config} surface="preview" disclosureScope="preview:cross-stream" />,
+    );
+    const row = screen.getByTestId("transcript-row");
+    const rowId = row.getAttribute("data-row-id");
+    const group = screen.getByTestId("intent-group");
+    const summary = group.querySelector("summary");
+    if (summary === null) throw new Error("cross-turn streaming summary did not render");
+    expect(group.hasAttribute("open")).toBe(true);
+    fireEvent.click(summary);
+    expect(group.hasAttribute("open")).toBe(false);
+
+    rerender(
+      <TranscriptBody model={streamed} config={config} surface="preview" disclosureScope="preview:cross-stream" />,
+    );
+
+    expect(screen.getByTestId("transcript-row")).toBe(row);
+    expect(row.getAttribute("data-row-id")).toBe(rowId);
+    expect(screen.getByTestId("intent-group")).toBe(group);
+    expect(group.textContent).toContain("3 actions");
+    expect(group.hasAttribute("open")).toBe(false);
+  });
+
+  test("a terminal one-turn intent row extends across a streamed second turn without remounting", () => {
+    const initialTurn = crossTurnFixture.turns[0];
+    const streamedTurn = crossTurnFixture.turns[1];
+    if (initialTurn === undefined || streamedTurn === undefined) throw new Error("streaming fixture is incomplete");
+    const initial = { ...crossTurnFixture, turns: [{ ...initialTurn, durationMs: 1500 }] } as ThreadModel;
+    const streamed = {
+      ...crossTurnFixture,
+      turns: [
+        { ...initialTurn, durationMs: 1500 },
+        { ...streamedTurn, durationMs: 2500 },
+      ],
+    } as ThreadModel;
+    const config = makeTranscriptDisplayConfig({ kind: "preset", level: "chat" }, { roundTimings: true });
+    const { rerender } = render(
+      <TranscriptBody
+        model={initial}
+        config={config}
+        surface="live"
+        disclosureScope="live:one-to-two-turns"
+        showSeenDividerTurnId="turn_a"
+      />,
+    );
+    const row = screen.getByTestId("transcript-row");
+    const group = screen.getByTestId("intent-group");
+    const divider = screen.getByTestId("seen-divider");
+    const separator = screen.getByTestId("turn-separator");
+    const firstAnchor = document.querySelector('[data-view-anchor-id="intent:tool_a"]');
+    if (!(firstAnchor instanceof HTMLElement)) throw new Error("first streaming intent anchor did not render");
+    const summary = group.querySelector(":scope > summary");
+    if (!(summary instanceof HTMLElement)) throw new Error("one-turn intent summary did not render");
+    expect(row.getAttribute("data-row-id")).toBe("intent-group:intent:tool_a");
+    expect(divider.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(group.compareDocumentPosition(separator) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(separator.textContent).toContain("1.5s");
+    expect(firstAnchor.getAttribute("data-view-anchor-source-index")).toBe("0");
+    expect(group.hasAttribute("open")).toBe(false);
+    fireEvent.click(summary);
+    expect(group.hasAttribute("open")).toBe(true);
+
+    rerender(
+      <TranscriptBody
+        model={streamed}
+        config={config}
+        surface="live"
+        disclosureScope="live:one-to-two-turns"
+        showSeenDividerTurnId="turn_a"
+      />,
+    );
+
+    expect(screen.getByTestId("transcript-row")).toBe(row);
+    expect(row.getAttribute("data-row-id")).toBe("intent-group:intent:tool_a");
+    expect(screen.getByTestId("intent-group")).toBe(group);
+    expect(group.textContent).toContain("2 actions");
+    expect(group.hasAttribute("open")).toBe(true);
+    expect(group.getAttribute("data-transcript-source-turn-ids")).toBe("turn_a,turn_b");
+    expect(screen.getByTestId("seen-divider")).toBe(divider);
+    expect(divider.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(screen.getByTestId("turn-separator")).toBe(separator);
+    expect(group.compareDocumentPosition(separator) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(separator.textContent).toContain("2.5s");
+    expect(document.querySelector('[data-view-anchor-id="intent:tool_a"]')).toBe(firstAnchor);
+    expect(firstAnchor.getAttribute("data-view-anchor-source-index")).toBe("0");
+    expect(
+      document.querySelector('[data-view-anchor-id="intent:tool_b"]')?.getAttribute("data-view-anchor-source-index"),
+    ).toBe("1");
+  });
+
+  test("an actions-only failed turn renders one end cap after its terminal intent group", () => {
+    const failed = {
+      ...fixture,
+      turns: [
+        {
+          id: "failed_actions_only",
+          status: "failed",
+          error: { message: "Actions-only turn failed" },
+          items: [
+            {
+              id: "failed_action",
+              turnId: "failed_actions_only",
+              type: "commandExecution",
+              toolName: "shell",
+              description: "Run the failing action",
+              status: "completed",
+            },
+          ],
+        },
+      ],
+    } as unknown as ThreadModel;
+    render(
+      <TranscriptBody model={failed} config={preset("chat")} surface="preview" disclosureScope="failure:actions" />,
+    );
+
+    const group = screen.getByTestId("intent-group");
+    const failures = screen.getAllByTestId("turn-failure");
+    expect(failures).toHaveLength(1);
+    const failure = failures[0];
+    if (failure === undefined) throw new Error("actions-only failure end cap did not render");
+    expect(group.compareDocumentPosition(failure) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  });
+
+  test("a failed turn with earlier visible content renders one end cap after its terminal intent group", () => {
+    const failed = {
+      ...fixture,
+      turns: [
+        {
+          id: "failed_with_message",
+          status: "failed",
+          error: { message: "Message turn failed" },
+          items: [
+            {
+              id: "failed_message",
+              turnId: "failed_with_message",
+              type: "agentMessage",
+              text: "Visible before the action",
+              status: "completed",
+            },
+            {
+              id: "failed_after_message",
+              turnId: "failed_with_message",
+              type: "commandExecution",
+              toolName: "shell",
+              description: "Run after the message",
+              status: "completed",
+            },
+          ],
+        },
+      ],
+    } as unknown as ThreadModel;
+    render(
+      <TranscriptBody model={failed} config={preset("chat")} surface="preview" disclosureScope="failure:message" />,
+    );
+
+    const message = screen.getByText("Visible before the action");
+    const group = screen.getByTestId("intent-group");
+    const failures = screen.getAllByTestId("turn-failure");
+    expect(failures).toHaveLength(1);
+    const failure = failures[0];
+    if (failure === undefined) throw new Error("message failure end cap did not render");
+    expect(message.compareDocumentPosition(group) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(group.compareDocumentPosition(failure) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+  });
+
+  test("a renderable failed-turn end cap is a grouping boundary between adjacent intent runs", () => {
+    const action = (id: string, turnId: string, description: string) => ({
+      id,
+      turnId,
+      type: "commandExecution",
+      toolName: "shell",
+      description,
+      status: "completed",
+    });
+    const failedBoundary = {
+      ...fixture,
+      turns: [
+        { id: "clean_before", status: "completed", items: [action("clean_action", "clean_before", "Before")] },
+        {
+          id: "failed_boundary",
+          status: "failed",
+          error: { message: "Boundary turn failed" },
+          items: [action("boundary_action", "failed_boundary", "Boundary")],
+        },
+        { id: "clean_after", status: "completed", items: [action("after_action", "clean_after", "After")] },
+      ],
+    } as unknown as ThreadModel;
+    render(
+      <TranscriptBody
+        model={failedBoundary}
+        config={preset("chat")}
+        surface="preview"
+        disclosureScope="failure:boundary"
+      />,
+    );
+
+    const groups = screen.getAllByTestId("intent-group");
+    expect(groups).toHaveLength(3);
+    expect(groups.map((group) => group.textContent)).toEqual(["1 actionBefore", "1 actionBoundary", "1 actionAfter"]);
+    const boundaryGroup = groups[1];
+    const afterGroup = groups[2];
+    if (boundaryGroup === undefined || afterGroup === undefined)
+      throw new Error("failure boundary groups did not render");
+    const failure = screen.getByTestId("turn-failure");
+    expect(boundaryGroup.compareDocumentPosition(failure) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+    expect(failure.compareDocumentPosition(afterGroup) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
   });
 
   test("does not merge intents across visible message or critical boundaries", () => {

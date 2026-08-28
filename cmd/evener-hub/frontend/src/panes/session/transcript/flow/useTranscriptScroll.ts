@@ -253,20 +253,33 @@ function focusNodeMatches(candidate: HTMLElement, metadata: CapturedFocusMetadat
   return metadata.sourceIndex === undefined || sourceIndex === undefined || sourceIndex === metadata.sourceIndex;
 }
 
-function focusAnchor(anchor: HTMLElement, metadata: CapturedFocusMetadata): void {
+function closedIntentSummary(anchor: HTMLElement): HTMLElement | undefined {
+  if (!anchor.dataset.viewAnchorId?.startsWith("intent:")) return undefined;
+  const details = anchor.closest<HTMLDetailsElement>('details[data-testid="intent-group"]:not([open])');
+  const summary = details?.querySelector(":scope > summary");
+  return summary instanceof HTMLElement ? summary : undefined;
+}
+
+function focusAnchor(anchor: HTMLElement, metadata: CapturedFocusMetadata): boolean {
+  const summary = closedIntentSummary(anchor);
+  if (summary) {
+    summary.focus();
+    if (summary.ownerDocument.activeElement === summary) return true;
+  }
   if (metadata.element.isConnected && anchor.contains(metadata.element)) {
     metadata.element.focus();
-    return;
+    if (metadata.element.ownerDocument.activeElement === metadata.element) return true;
   }
   const descendant = descendantAtPath(anchor, metadata.descendantPath);
   if (descendant && isFocusableDescendant(descendant)) {
     descendant.focus();
-    return;
+    if (descendant.ownerDocument.activeElement === descendant) return true;
   }
   // Production anchors are divs. Make only this programmatic fallback
   // focusable; tab order remains unchanged because -1 is not tabbable.
   anchor.tabIndex = -1;
   anchor.focus();
+  return anchor.ownerDocument.activeElement === anchor;
 }
 
 type FocusRestoreResult = "not-focused" | "restored" | "waiting" | "missing";
@@ -291,8 +304,7 @@ function focusCapturedEntry(
     focusNodeMatches(candidate, metadata),
   );
   if (focused) {
-    focusAnchor(focused, metadata);
-    return "restored";
+    return focusAnchor(focused, metadata) ? "restored" : "missing";
   }
 
   const logicalFocus = candidates.find((candidate) => focusCandidateMatches(candidate, metadata));
@@ -333,10 +345,6 @@ interface PendingTranscriptViewRestore {
   focusScrollRequested: boolean;
 }
 
-function focusFallbackForOptions(options: UseTranscriptViewRegistrationOptions): void {
-  options.focusFallback?.();
-}
-
 /**
  * Registers the shared body with the transition registry without taking
  * ownership of ordinary append/prepend scrolling. The body calls the result
@@ -367,7 +375,7 @@ export function useTranscriptViewRegistration(
       if (count > 0) currentOptions.listRef?.current?.scrollToIndex(count - 1, { align: "end" });
       const focusResult = focusCapturedEntry(el, pending.captured, candidates, currentOptions.listRef, pending);
       if (focusResult === "waiting") return;
-      if (focusResult === "missing") focusFallbackForOptions(currentOptions);
+      if (focusResult === "missing") currentOptions.focusFallback?.();
       pendingRef.current = null;
       return;
     }
@@ -404,7 +412,7 @@ export function useTranscriptViewRegistration(
 
     const focusResult = focusCapturedEntry(el, pending.captured, candidates, currentOptions.listRef, pending);
     if (focusResult === "waiting") return;
-    if (focusResult === "missing") focusFallbackForOptions(currentOptions);
+    if (focusResult === "missing") currentOptions.focusFallback?.();
     pendingRef.current = null;
   }, []);
 
