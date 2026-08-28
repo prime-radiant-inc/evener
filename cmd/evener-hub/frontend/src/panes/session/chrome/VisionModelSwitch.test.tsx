@@ -133,6 +133,11 @@ test("unset uses the session model label and Current model sends an empty wire r
   await waitFor(() => expect(called).toEqual({ ref: "ref_a", visionModel: "" }));
 });
 
+test("the vision trigger names its distinct action for assistive technology", () => {
+  render(<VisionModelSwitch sessionRef="ref_a" model={testModel()} />);
+  expect(screen.getByRole("button", { name: "anthropic/claude-sonnet-4-5 — change vision model" })).toBe(trigger());
+});
+
 test("off renders an Off trigger label", () => {
   render(<VisionModelSwitch sessionRef="ref_a" model={testModel({ visionModel: "off" })} />);
   expect(screen.getByTestId("vision-model-switch-value").textContent).toBe("Off");

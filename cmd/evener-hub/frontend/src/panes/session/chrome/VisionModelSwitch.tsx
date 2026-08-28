@@ -61,6 +61,7 @@ export function VisionModelSwitch({ sessionRef, model }: VisionModelSwitchProps)
       disabled={disabled}
       loadCatalog={loadCatalog}
       onPick={(entry) => void handlePick(entry)}
+      actionLabel="change vision model"
       data-testid="vision-model-switch-trigger"
       valueTestId="vision-model-switch-value"
     />
