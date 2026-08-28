@@ -23,6 +23,7 @@ import {
   derivePositiveMarker,
   EXPECTED_LIVE_SEQUENCE,
   inspectLocalAppBundle,
+  installStagedBundle,
   launchProductionBundle,
   ProcessRegistry,
   parseAxDocument,
@@ -56,10 +57,16 @@ const CONCEPTS = {
 const THREAD_MILESTONES = new Set(REQUIRED_LIVE_MILESTONES.slice(2, 11));
 
 function expected(kind) {
+  const source =
+    kind === "list"
+      ? EXPECTED_LIVE_SEQUENCE.roster
+      : kind === "read"
+        ? EXPECTED_LIVE_SEQUENCE.conversation
+        : EXPECTED_LIVE_SEQUENCE[kind];
   return {
-    classification: "expected-task4-proven",
-    requests: [`thread/${kind}`],
-    notifications: [`${kind} notification`],
+    classification: EXPECTED_LIVE_SEQUENCE.classification,
+    requests: [...source.requests],
+    notifications: [...source.notifications],
   };
 }
 
@@ -89,6 +96,16 @@ function evidenceFor(milestone) {
           hash: SHA_A,
           codesignVerified: true,
         },
+        stagedBundle: {
+          id: "com.primeradiant.evener",
+          version: "0.1.0",
+          hash: SHA_A,
+          codesignVerified: true,
+        },
+        installReceipt: {
+          bundleId: "com.primeradiant.evener",
+          digest: SHA_C,
+        },
         hub: {
           expectedVersion: "hub-1",
           observedVersion: "hub-1",
@@ -97,9 +114,6 @@ function evidenceFor(milestone) {
         },
         connection: {
           status: "connected",
-          profileGeneration: 7,
-          lifecycleGeneration: 1,
-          handshakeGeneration: 2,
         },
       };
     case "stillwater-roster":
@@ -108,6 +122,7 @@ function evidenceFor(milestone) {
         retainedCount: 2,
         hasMore: false,
         completeness: "complete",
+        listLimit: 501,
         expectedSequence: expected("list"),
       };
     case "stillwater-conversation":
@@ -115,11 +130,13 @@ function evidenceFor(milestone) {
         activeThreadId: "thread-opaque",
         titleDigest: SHA_A,
         transcriptIds: ["item-a"],
+        readLimit: 50,
         expectedSequence: expected("read"),
       };
     case "stillwater-send":
       return {
         receipt: receipt("send", 1),
+        baselineTranscriptIds: ["baseline-a"],
         lifecycle: {
           itemId: "assistant-a",
           streamingTreeDigest: SHA_A,
@@ -141,11 +158,7 @@ function evidenceFor(milestone) {
     case "constellation-steer-queue":
       return {
         receipts: [receipt("steer", 2), receipt("queue", 3)],
-        expectedSequence: {
-          classification: "expected-task4-proven",
-          requests: ["thread/steer", "thread/queue"],
-          notifications: ["steer notification", "queue notification"],
-        },
+        expectedSequence: expected("steerQueue"),
       };
     case "field-notes-preserved":
       return {
@@ -172,12 +185,6 @@ function evidenceFor(milestone) {
       return {
         processIdBefore: 101,
         processIdAfter: 101,
-        lifecycleGenerationBefore: 1,
-        lifecycleGenerationAfter: 2,
-        profileGenerationBefore: 7,
-        profileGenerationAfter: 7,
-        handshakeGenerationBefore: 2,
-        handshakeGenerationAfter: 2,
         activeThreadId: "thread-opaque",
         draftBefore: "draft-sentinel",
         draftAfter: "draft-sentinel",
@@ -300,6 +307,36 @@ test("validator rejects order, concept, identity, time, fixture, and arbitrary m
 });
 
 test("validator rejects synthesized physical outcomes and empty expected sequences", async (t) => {
+  await t.test("missing roster list limit", () =>
+    rejects((rows) => {
+      delete rows[1].evidence.listLimit;
+      rows[1].positiveMarker.markerDigest = derivePositiveMarker(rows[1]);
+    }, /list limit/i),
+  );
+  await t.test("missing conversation read limit", () =>
+    rejects((rows) => {
+      delete rows[2].evidence.readLimit;
+      rows[2].positiveMarker.markerDigest = derivePositiveMarker(rows[2]);
+    }, /read limit/i),
+  );
+  await t.test("altered nonempty expected sequence", () =>
+    rejects((rows) => {
+      rows[3].evidence.expectedSequence.requests = ["thread/not-send"];
+      rows[3].positiveMarker.markerDigest = derivePositiveMarker(rows[3]);
+    }, /expected.*requests|sequence/i),
+  );
+  await t.test("duplicate receipt sequence", () =>
+    rejects((rows) => {
+      rows[5].evidence.receipts[1].receipt = 2;
+      rows[5].positiveMarker.markerDigest = derivePositiveMarker(rows[5]);
+    }, /receipt.*distinct|ordered/i),
+  );
+  await t.test("unchanged background tree", () =>
+    rejects((rows) => {
+      rows[9].evidence.foregroundTreeDigest = SHA_A;
+      rows[9].positiveMarker.markerDigest = derivePositiveMarker(rows[9]);
+    }, /background.*foreground|trees must differ/i),
+  );
   await t.test("roster count", () =>
     rejects((rows) => {
       rows[1].evidence.retainedCount = 500;
@@ -479,47 +516,85 @@ test("parseCli rejects unknown flags", () => {
   );
 });
 
-test("parseAxDocument recursively accepts plausible complete AX nodes and rejects DOM attributes", () => {
+test("parseAxDocument accepts the real complete object and rejects invented wrappers", () => {
   const parsed = parseAxDocument({
-    format: "complete",
     backend: "axbridge-persistent",
-    elements: [
-      {
-        AXLabel:
-          "Evener concept; concept Stillwater; surface sessions; session none",
-        role: "AXGroup",
-        children: [
-          {
-            AXLabel: "Message",
-            AXValue: "draft-sentinel",
-            role: "AXTextArea",
-          },
-        ],
-      },
-    ],
+    target: { name: "Evener" },
+    bounds: { x: 0, y: 0, width: 390, height: 844 },
+    accessibility: {
+      AXLabel: "Stillwater sessions",
+      role: "AXGroup",
+      children: [
+        {
+          AXLabel: "Message",
+          AXValue: "draft-sentinel",
+          role: "AXTextArea",
+        },
+      ],
+    },
   });
   assert.deepEqual(parsed.nodes, [
     {
-      label:
-        "Evener concept; concept Stillwater; surface sessions; session none",
+      label: "Stillwater sessions",
       value: null,
       role: "AXGroup",
+      descendants: ["Message", "draft-sentinel"],
     },
-    { label: "Message", value: "draft-sentinel", role: "AXTextArea" },
+    {
+      label: "Message",
+      value: "draft-sentinel",
+      role: "AXTextArea",
+      descendants: [],
+    },
   ]);
   assert.throws(
     () =>
       parseAxDocument({
-        format: "complete",
         backend: "ax",
-        elements: [{ "data-thread-key": "not-AX" }],
+        accessibility: { "data-thread-key": "not-AX" },
       }),
     /AX node/i,
   );
   assert.throws(
-    () => parseAxDocument({ format: "default", elements: [] }),
+    () =>
+      parseAxDocument({
+        format: "complete",
+        backend: "invented",
+        elements: [axNode("Stillwater sessions")],
+      }),
     /complete AX document/i,
   );
+  assert.throws(
+    () => parseAxDocument([axNode("Stillwater sessions")]),
+    /complete AX document/i,
+  );
+});
+
+test("stages and re-verifies one immutable app artifact inside evidence root", async () => {
+  const module = await import("./smoke-live-concepts.mjs");
+  assert.equal(typeof module.stageAppBundle, "function");
+  const parent = await mkdtemp(path.join(os.tmpdir(), "evener-stage-test-"));
+  const source = path.join(parent, "Evener.app");
+  await mkdir(source);
+  await writeFile(path.join(source, "Info.plist"), "plist");
+  await writeFile(path.join(source, "Evener"), "signed-binary");
+  const paths = await createEvidenceRoot(path.join(parent, "evidence"));
+  const run = async (program, argv) => {
+    if (program === "codesign") return ok();
+    return ok(
+      argv[1] === "CFBundleIdentifier"
+        ? "com.primeradiant.evener\n"
+        : "0.1.0\n",
+    );
+  };
+  const staged = await module.stageAppBundle(paths, source, { run });
+  assert.equal(path.dirname(staged.path), paths.stageDir);
+  assert.equal((await stat(paths.stageDir)).mode & 0o777, 0o700);
+  assert.equal(staged.bundle.id, "com.primeradiant.evener");
+  assert.match(staged.bundle.hash, /^sha256:/);
+  await writeFile(path.join(source, "Evener"), "changed-source");
+  const reverified = await inspectLocalAppBundle(staged.path, { run });
+  assert.equal(reverified.hash, staged.bundle.hash);
 });
 
 test("strict IDB decoders use real device and app-listing fields", () => {
@@ -730,6 +805,94 @@ test("generic IDB launch failure never invokes devicectl", async () => {
   ]);
 });
 
+test("staged install uses exact IDB receipt and companion-only devicectl fallback", async (t) => {
+  const staged = {
+    path: "/safe/output/staged-app/Evener.app",
+    bundle: { id: "com.example.app", version: "1.0.0", hash: SHA_A },
+  };
+  await t.test("healthy", async () => {
+    const calls = [];
+    const result = await installStagedBundle(
+      { udid: "u", bundleId: "com.example.app" },
+      staged,
+      async (program, argv) => {
+        calls.push([program, ...argv]);
+        return ok(
+          argv[0] === "install"
+            ? JSON.stringify({
+                installedAppBundleId: "com.example.app",
+                uuid: "install-uuid",
+              })
+            : "",
+        );
+      },
+    );
+    assert.equal(result.tool, "idb");
+    assert.deepEqual(calls, [
+      ["idb", "install", "--udid", "u", "--json", staged.path],
+      ["idb", "launch", "--udid", "u", "com.example.app"],
+    ]);
+  });
+  await t.test("companion loss", async () => {
+    const calls = [];
+    const result = await installStagedBundle(
+      { udid: "u", bundleId: "com.example.app" },
+      staged,
+      async (program, argv) => {
+        calls.push([program, ...argv]);
+        if (program === "idb") {
+          const error = new Error("companion unavailable");
+          error.code = "IDB_COMPANION_LOST";
+          throw error;
+        }
+        return ok("installed");
+      },
+    );
+    assert.equal(result.tool, "devicectl");
+    assert.deepEqual(calls, [
+      ["idb", "install", "--udid", "u", "--json", staged.path],
+      [
+        "xcrun",
+        "devicectl",
+        "device",
+        "install",
+        "app",
+        "--device",
+        "u",
+        staged.path,
+      ],
+      [
+        "xcrun",
+        "devicectl",
+        "device",
+        "process",
+        "launch",
+        "--device",
+        "u",
+        "com.example.app",
+      ],
+    ]);
+  });
+  await t.test("generic failure", async () => {
+    const calls = [];
+    await assert.rejects(
+      installStagedBundle(
+        { udid: "u", bundleId: "com.example.app" },
+        staged,
+        async (program, argv) => {
+          calls.push([program, ...argv]);
+          throw new Error("generic");
+        },
+      ),
+      /generic/,
+    );
+    assert.equal(
+      calls.some((call) => call[0] === "xcrun"),
+      false,
+    );
+  });
+});
+
 test("pollSemanticTree shares one overall monotonic budget", async () => {
   let now = 0;
   let calls = 0;
@@ -761,7 +924,7 @@ test("evidence publication creates exclusive roots, hashes exact raw bytes, and 
     paths,
     {
       status: "passed",
-      tools: { idb: { versionDigest: SHA_A, capabilitiesDigest: SHA_B } },
+      tools: { idb: { helpDigest: SHA_A, capabilitiesDigest: SHA_B } },
       device: { model: "iPhone 17 Pro", modelDigest: SHA_A, os: "20.0" },
       app: { id: "com.primeradiant.evener", version: "0.1.0", hash: SHA_A },
       hub: { version: "hub-1", protocol: "v3", originDigest: SHA_B },
@@ -865,6 +1028,71 @@ test("evidence publication cleans exclusive temp files after an injected write f
   assert.equal((await readdir(paths.outputDir)).includes(".tmp"), false);
 });
 
+test("evidence root rejects unsafe parent and publication rolls back a partial link", async () => {
+  const unsafeParent = await mkdtemp(
+    path.join(os.tmpdir(), "evener-evidence-unsafe-"),
+  );
+  await chmod(unsafeParent, 0o777);
+  await assert.rejects(
+    createEvidenceRoot(path.join(unsafeParent, "output")),
+    /parent.*mode|unsafe.*parent/i,
+  );
+
+  const safeParent = await mkdtemp(
+    path.join(os.tmpdir(), "evener-evidence-partial-"),
+  );
+  const paths = await createEvidenceRoot(path.join(safeParent, "output"));
+  let writes = 0;
+  await assert.rejects(
+    publishEvidence(
+      paths,
+      {
+        status: "failed",
+        tools: {},
+        device: {},
+        app: {},
+        hub: {},
+        observations: [],
+      },
+      { raw: true },
+      {
+        async writeBytes(handle, bytes) {
+          writes += 1;
+          if (writes === 2) throw new Error("second publication failed");
+          await handle.writeFile(bytes);
+          await handle.sync();
+        },
+      },
+    ),
+    /evidence write failed/i,
+  );
+  assert.deepEqual(await readdir(paths.scratchDir), []);
+  assert.equal(
+    (await readdir(paths.outputDir)).includes("live-smoke-summary.json"),
+    false,
+  );
+
+  const { rename } = await import("node:fs/promises");
+  const movedParent = `${safeParent}-moved`;
+  await rename(safeParent, movedParent);
+  await mkdir(safeParent, { mode: 0o700 });
+  await assert.rejects(
+    publishEvidence(
+      paths,
+      {
+        status: "failed",
+        tools: {},
+        device: {},
+        app: {},
+        hub: {},
+        observations: [],
+      },
+      { raw: true },
+    ),
+    /path changed/i,
+  );
+});
+
 test("ProcessRegistry cleans every child", () => {
   const registry = new ProcessRegistry();
   const first = new FakeChild({ closeOnKill: false });
@@ -901,59 +1129,87 @@ const ok = (stdout = "") => ({ status: 0, stdout, stderr: "" });
 
 test("exact command script rejects reordered argv", async () => {
   const script = new ExactCommandScript([
-    { argv: ["idb", "--version"], result: ok("v") },
+    { argv: ["idb", "--help"], result: ok("help") },
   ]);
   await assert.rejects(script.run("idb", ["describe"]), /Expected values/);
 });
 
 test("exact command script rejects a missing command", () => {
   const script = new ExactCommandScript([
-    { argv: ["idb", "--version"], result: ok("v") },
+    { argv: ["idb", "--help"], result: ok("help") },
   ]);
   assert.throws(() => script.assertDone());
 });
 
 test("runtime IDB capability preflight uses exact installed syntax and never invokes xcrun", async () => {
   const script = new ExactCommandScript([
-    { argv: ["idb", "--version"], result: ok("idb 1.5.0\n") },
+    {
+      argv: ["idb", "--help"],
+      result: ok(
+        "Usage: idb [OPTIONS] COMMAND\nOptions:\n  --help\nCommands:\n  install\n",
+      ),
+    },
     {
       argv: ["idb", "ui", "describe-all", "--help"],
-      result: ok("--format {default,nested,complete} --json --udid"),
+      result: ok(
+        "Usage: idb ui describe-all [OPTIONS]\nOptions:\n  --format {default,nested,complete}  complete is a consolidated object\n  --json\n  --udid TEXT",
+      ),
     },
     {
       argv: ["idb", "ui", "tap", "--help"],
-      result: ok("target --match-key {AXLabel,AXValue} --udid"),
+      result: ok(
+        "Usage: idb ui tap [OPTIONS] TARGET\nOptions:\n  --match-key {AXLabel,AXValue}\n  --udid TEXT",
+      ),
     },
     {
-      argv: ["idb", "ui", "text", "--help"],
-      result: ok("text --udid"),
+      argv: ["idb", "ui", "set-value", "--help"],
+      result: ok(
+        "Usage: idb ui set-value [OPTIONS] TARGET\nOptions:\n  --value TEXT\n  --match-key {AXLabel,AXValue}\n  --udid TEXT",
+      ),
     },
     {
       argv: ["idb", "ui", "button", "--help"],
-      result: ok("{HOME,LOCK} --udid"),
+      result: ok(
+        "Usage: idb ui button [OPTIONS] BUTTON\nOptions:\n  --udid TEXT",
+      ),
     },
     {
       argv: ["idb", "launch", "--help"],
-      result: ok("--foreground-if-running --udid bundle_id"),
+      result: ok(
+        "Usage: idb launch [OPTIONS] BUNDLE_ID\nOptions:\n  -f, --foreground-if-running\n  --udid TEXT",
+      ),
     },
     {
       argv: ["idb", "terminate", "--help"],
-      result: ok("--udid bundle_id"),
+      result: ok(
+        "Usage: idb terminate [OPTIONS] BUNDLE_ID\nOptions:\n  --udid TEXT",
+      ),
+    },
+    {
+      argv: ["idb", "install", "--help"],
+      result: ok(
+        "Usage: idb install [OPTIONS] BUNDLE_PATH\nOptions:\n  --udid TEXT\n  --json",
+      ),
     },
     {
       argv: ["idb", "describe", "--help"],
-      result: ok("--diagnostics --json --udid"),
+      result: ok(
+        "Usage: idb describe [OPTIONS]\nOptions:\n  --diagnostics\n  --json\n  --udid TEXT",
+      ),
     },
     {
       argv: ["idb", "list-apps", "--help"],
-      result: ok("--fetch-process-state --json --udid"),
+      result: ok(
+        "Usage: idb list-apps [OPTIONS]\nOptions:\n  --fetch-process-state\n  --json\n  --udid TEXT",
+      ),
     },
   ]);
   const evidence = await verifyIdbCapabilities({
     run: script.run.bind(script),
   });
   script.assertDone();
-  assert.match(evidence.versionDigest, /^sha256:/);
+  assert.equal(Object.hasOwn(evidence, "versionDigest"), false);
+  assert.match(evidence.helpDigest, /^sha256:/);
   assert.match(evidence.capabilitiesDigest, /^sha256:/);
   assert.equal(
     script.calls.some((call) => call[0] === "xcrun"),
@@ -967,7 +1223,11 @@ test("runtime IDB capability preflight fails when complete AX support is absent"
     verifyIdbCapabilities({
       run: async () => {
         call += 1;
-        return ok(call === 2 ? "--json --udid" : "all required tokens");
+        return ok(
+          call === 1
+            ? "Usage: idb [OPTIONS] COMMAND\nOptions:\n  --help"
+            : "Usage: idb ui describe-all [OPTIONS]\nOptions:\n  --json\n  --udid TEXT",
+        );
       },
     }),
     /IDB capability unavailable/,
@@ -983,146 +1243,436 @@ function axNode(label, role = "AXStaticText", value = undefined) {
 
 function axOutput(nodes) {
   return JSON.stringify({
-    format: "complete",
     backend: "axbridge-persistent",
-    elements: nodes,
+    target: { name: "Evener" },
+    bounds: { x: 0, y: 0, width: 390, height: 844 },
+    accessibility: { children: nodes },
   });
 }
 
-function connectionLabel({
-  lifecycle = 1,
-  phase = "active",
-  handshake = 1,
-} = {}) {
-  return `Evener connection; status connected; server hub-1; protocol evener-appwire-v3; profile-generation 7; lifecycle-phase ${phase}; lifecycle-generation ${lifecycle}; handshake-generation ${handshake}; app com.primeradiant.evener@0.1.0; origin ${SHA_B}`;
+const HELP_OUTPUTS = new Map([
+  [
+    "--help",
+    "Usage: idb [OPTIONS] COMMAND\nOptions:\n  --help\nCommands:\n  install",
+  ],
+  [
+    "ui describe-all --help",
+    "Usage: idb ui describe-all [OPTIONS]\nOptions:\n  --format {default,nested,complete}  complete is a consolidated object\n  --json\n  --udid TEXT",
+  ],
+  [
+    "ui tap --help",
+    "Usage: idb ui tap [OPTIONS] TARGET\nOptions:\n  --match-key {AXLabel,AXValue}\n  --udid TEXT",
+  ],
+  [
+    "ui set-value --help",
+    "Usage: idb ui set-value [OPTIONS] TARGET\nOptions:\n  --value TEXT\n  --match-key {AXLabel,AXValue}\n  --udid TEXT",
+  ],
+  [
+    "ui button --help",
+    "Usage: idb ui button [OPTIONS] BUTTON\nOptions:\n  --udid TEXT",
+  ],
+  [
+    "launch --help",
+    "Usage: idb launch [OPTIONS] BUNDLE_ID\nOptions:\n  -f, --foreground-if-running\n  --udid TEXT",
+  ],
+  [
+    "terminate --help",
+    "Usage: idb terminate [OPTIONS] BUNDLE_ID\nOptions:\n  --udid TEXT",
+  ],
+  [
+    "install --help",
+    "Usage: idb install [OPTIONS] BUNDLE_PATH\nOptions:\n  --udid TEXT\n  --json",
+  ],
+  [
+    "describe --help",
+    "Usage: idb describe [OPTIONS]\nOptions:\n  --diagnostics\n  --json\n  --udid TEXT",
+  ],
+  [
+    "list-apps --help",
+    "Usage: idb list-apps [OPTIONS]\nOptions:\n  --fetch-process-state\n  --json\n  --udid TEXT",
+  ],
+]);
+
+class StatefulIdbFake {
+  constructor({ appendDraft = false, reuseBaselineForStreaming = false } = {}) {
+    this.appendDraft = appendDraft;
+    this.reuseBaselineForStreaming = reuseBaselineForStreaming;
+    this.calls = [];
+    this.concept = "Stillwater";
+    this.surface = "sessions";
+    this.draft = "existing-draft";
+    this.mode = "send";
+    this.pid = 101;
+    this.running = false;
+    this.installed = false;
+    this.background = false;
+    this.terminated = false;
+    this.serverSheet = false;
+    this.switcher = false;
+    this.mutation = null;
+    this.receipt = 0;
+    this.reasoningOpen = false;
+    this.toolOpen = false;
+    this.stagedPath = null;
+  }
+
+  async run(program, argv) {
+    this.calls.push([program, ...argv]);
+    if (program === "codesign") {
+      assert.deepEqual(argv.slice(0, 2), ["--verify", "--strict"]);
+      return ok();
+    }
+    if (program === "plutil") {
+      assert.equal(argv[0], "-extract");
+      return ok(
+        argv[1] === "CFBundleIdentifier"
+          ? "com.primeradiant.evener\n"
+          : "0.1.0\n",
+      );
+    }
+    assert.equal(program, "idb", `healthy fake forbids ${program}`);
+    const help = HELP_OUTPUTS.get(argv.join(" "));
+    if (help !== undefined) return ok(help);
+    if (argv[0] === "describe") {
+      assert.deepEqual(argv, [
+        "describe",
+        "--diagnostics",
+        "--json",
+        "--udid",
+        "phone",
+      ]);
+      return ok(
+        JSON.stringify({
+          name: "Jesse iPhone",
+          udid: "phone",
+          state: "Booted",
+          type: "device",
+          os_version: "20.0",
+          architecture: "arm64",
+          device: { model: "iPhone 17 Pro" },
+        }),
+      );
+    }
+    if (argv[0] === "install") {
+      assert.deepEqual(argv.slice(0, 4), [
+        "install",
+        "--udid",
+        "phone",
+        "--json",
+      ]);
+      assert.match(argv[4], /\/staged-app\/Evener\.app$/);
+      this.stagedPath = argv[4];
+      this.installed = true;
+      return ok(
+        JSON.stringify({
+          installedAppBundleId: "com.primeradiant.evener",
+          uuid: "install-uuid",
+        }),
+      );
+    }
+    if (argv[0] === "launch") {
+      const foreground = argv[1] === "-f";
+      assert.deepEqual(argv, [
+        "launch",
+        ...(foreground ? ["-f"] : []),
+        "--udid",
+        "phone",
+        "com.primeradiant.evener",
+      ]);
+      assert.equal(this.installed, true);
+      this.running = true;
+      if (this.terminated) {
+        this.pid = 202;
+        this.surface = "sessions";
+        this.terminated = false;
+      } else if (foreground) {
+        assert.equal(this.background, true);
+        this.background = false;
+        this.surface = "conversation";
+      }
+      return ok();
+    }
+    if (argv[0] === "terminate") {
+      assert.deepEqual(argv, [
+        "terminate",
+        "--udid",
+        "phone",
+        "com.primeradiant.evener",
+      ]);
+      this.running = false;
+      this.terminated = true;
+      return ok();
+    }
+    if (argv[0] === "list-apps") {
+      assert.deepEqual(argv, [
+        "list-apps",
+        "--fetch-process-state",
+        "--json",
+        "--udid",
+        "phone",
+      ]);
+      return ok(
+        `${JSON.stringify({
+          bundle_id: "com.primeradiant.evener",
+          name: "Evener",
+          install_type: "user",
+          architectures: ["arm64"],
+          process_state: this.running ? "Running" : "Not running",
+          debuggable: true,
+          pid: this.running ? this.pid : 0,
+        })}\n`,
+      );
+    }
+    if (argv[0] === "ui" && argv[1] === "describe-all") {
+      assert.deepEqual(argv, [
+        "ui",
+        "describe-all",
+        "--format",
+        "complete",
+        "--json",
+        "--udid",
+        "phone",
+      ]);
+      const output = axOutput(this.nodes());
+      this.advanceMutation();
+      return ok(output);
+    }
+    if (argv[0] === "ui" && argv[1] === "set-value") {
+      assert.deepEqual(argv, [
+        "ui",
+        "set-value",
+        "Message",
+        "--value",
+        argv[4],
+        "--match-key",
+        "AXLabel",
+        "--udid",
+        "phone",
+      ]);
+      this.draft = this.appendDraft ? `${this.draft}${argv[4]}` : argv[4];
+      return ok();
+    }
+    if (argv[0] === "ui" && argv[1] === "tap") {
+      assert.deepEqual(argv.slice(2), [
+        argv[2],
+        "--match-key",
+        "AXLabel",
+        "--udid",
+        "phone",
+      ]);
+      this.tap(argv[2]);
+      return ok();
+    }
+    if (argv[0] === "ui" && argv[1] === "button") {
+      assert.deepEqual(argv, ["ui", "button", "HOME", "--udid", "phone"]);
+      this.background = true;
+      return ok();
+    }
+    throw new Error(`unexpected command idb ${argv.join(" ")}`);
+  }
+
+  tap(label) {
+    if (/ active server /.test(label)) {
+      this.serverSheet = true;
+      return;
+    }
+    if (label === "Done") {
+      this.serverSheet = false;
+      return;
+    }
+    if (label.startsWith("Open ")) {
+      this.surface = "conversation";
+      return;
+    }
+    if (label.startsWith("Use ")) {
+      this.mode = label.split(" ")[1];
+      return;
+    }
+    if (label === "Submit message") {
+      this.startMutation(this.mode);
+      return;
+    }
+    if (label === "Interrupt") {
+      this.startMutation("interrupt");
+      return;
+    }
+    if (label === "Reasoning") {
+      this.reasoningOpen = true;
+      return;
+    }
+    if (label === "exec_command") {
+      this.toolOpen = true;
+      return;
+    }
+    if (label === "Switch concept") {
+      this.switcher = true;
+      return;
+    }
+    if (label.startsWith("Switch to ")) {
+      this.concept = label.slice("Switch to ".length);
+      this.switcher = false;
+      return;
+    }
+    if (label === "Back" && this.surface === "conversation") {
+      this.surface = "sessions";
+      return;
+    }
+    if (label === "Work") {
+      this.surface = "work";
+      return;
+    }
+    if (label === "Close") {
+      this.surface = "conversation";
+    }
+  }
+
+  startMutation(kind) {
+    this.receipt += 1;
+    this.mutation = { kind, phase: 0, receipt: this.receipt };
+    this.reasoningOpen = false;
+    this.toolOpen = false;
+  }
+
+  advanceMutation() {
+    if (this.mutation === null) return;
+    const maximum = this.mutation.kind === "send" ? 2 : 1;
+    if (this.mutation.phase < maximum) this.mutation.phase += 1;
+  }
+
+  nodes() {
+    if (this.background) return [axNode("SpringBoard", "AXApplication")];
+    if (this.serverSheet) {
+      return [
+        axNode("Servers", "AXDialog"),
+        axNode("https://hub.example.test", "AXStaticText"),
+        axNode("Done", "AXButton"),
+      ];
+    }
+    if (this.surface === "sessions") return this.rosterNodes();
+    if (this.surface === "work") return this.workNodes();
+    return this.conversationNodes();
+  }
+
+  connectionNodes() {
+    return [
+      axNode(
+        "Connected to test-hub hub-1; protocol evener-appwire-v3; app version 0.1.0",
+        "AXStaticText",
+      ),
+    ];
+  }
+
+  rosterNodes() {
+    return [
+      ...this.connectionNodes(),
+      axNode("laptop active server reachable", "AXButton"),
+      axNode(`${this.concept} sessions`, "AXGroup"),
+      axNode(`${this.concept} sessions; 2 sessions; complete list`),
+      axNode("Open Known live session; status running", "AXButton"),
+      axNode("Open Other live session; status idle", "AXButton"),
+      axNode("Switch concept", "AXButton"),
+    ];
+  }
+
+  transcriptNodes() {
+    const baseline = [
+      axNode("Your message; completed", "AXGroup", "baseline question"),
+      axNode(
+        this.reuseBaselineForStreaming && this.mutation?.kind === "send"
+          ? "Assistant response; streaming"
+          : "Assistant response; completed",
+        "AXGroup",
+        "baseline response",
+      ),
+    ];
+    if (this.mutation?.kind !== "send" || this.reuseBaselineForStreaming) {
+      return baseline;
+    }
+    if (this.mutation.phase === 1) {
+      return [
+        ...baseline,
+        axNode(
+          "Assistant response; streaming",
+          "AXGroup",
+          "partial smoke-send",
+        ),
+      ];
+    }
+    if (this.mutation.phase >= 2) {
+      return [
+        ...baseline,
+        axNode(
+          "Assistant response; completed",
+          "AXGroup",
+          "complete response to smoke-send",
+        ),
+        axNode(
+          "Reasoning; completed",
+          "AXGroup",
+          this.reasoningOpen ? "route summary" : "",
+        ),
+        axNode(
+          "Tool exec_command; completed",
+          "AXGroup",
+          this.toolOpen ? "tool output" : "",
+        ),
+        axNode("Reasoning", "AXButton"),
+        axNode("exec_command", "AXButton"),
+      ];
+    }
+    return baseline;
+  }
+
+  mutationLabel() {
+    if (this.mutation === null) return null;
+    const title = `${this.mutation.kind[0].toUpperCase()}${this.mutation.kind.slice(1)}`;
+    return this.mutation.phase === 0
+      ? `${title} pending`
+      : `${title} accepted; update ${this.mutation.receipt}`;
+  }
+
+  conversationNodes() {
+    return [
+      ...this.connectionNodes(),
+      axNode(`${this.concept} conversation`, "AXGroup"),
+      axNode("Session Known live session", "AXGroup"),
+      axNode("Message", "AXTextArea", this.draft),
+      axNode("Use send mode", "AXButton"),
+      axNode("Use steer mode", "AXButton"),
+      axNode("Use queue mode", "AXButton"),
+      axNode("Submit message", "AXButton"),
+      axNode("Interrupt", "AXButton"),
+      axNode("Work", "AXButton"),
+      axNode("Back", "AXButton"),
+      axNode("Switch concept", "AXButton"),
+      ...(this.switcher
+        ? [
+            axNode("Switch to Stillwater", "AXButton"),
+            axNode("Switch to Constellation", "AXButton"),
+            axNode("Switch to Field Notes", "AXButton"),
+          ]
+        : []),
+      ...(this.mutationLabel() === null
+        ? []
+        : [axNode(this.mutationLabel(), "AXStaticText")]),
+      ...this.transcriptNodes(),
+    ];
+  }
+
+  workNodes() {
+    return [
+      ...this.connectionNodes(),
+      axNode("Field Notes work", "AXGroup"),
+      axNode("Task Fix auth; status running", "AXGroup"),
+      axNode("Delegate Investigate; status running", "AXGroup"),
+      axNode("Job Run tests; status idle", "AXGroup"),
+      axNode("Usage summary", "AXGroup"),
+      axNode("Close", "AXButton"),
+    ];
+  }
 }
 
-function conceptLabel(concept, surface, session = "none") {
-  return `Evener concept; concept ${concept}; surface ${surface}; session ${session}`;
-}
-
-const ROW_LABEL =
-  "Session row-a; Known live session; project evener/mobile; status running";
-
-function rosterNodes(concept, connection = connectionLabel()) {
-  return [
-    axNode(connection, "AXGroup"),
-    axNode(conceptLabel(concept, "sessions"), "AXGroup"),
-    axNode(
-      `Evener roster; concept ${concept}; retained 2; has-more false`,
-      "AXStaticText",
-    ),
-    axNode(ROW_LABEL, "AXButton"),
-    axNode(
-      "Session row-b; Other live session; project evener/core; status idle",
-      "AXButton",
-    ),
-    axNode("Switch concept", "AXButton"),
-  ];
-}
-
-function conversationNodes({
-  concept,
-  draft = "",
-  mutation = null,
-  transcript = [],
-  connection = connectionLabel(),
-}) {
-  return [
-    axNode(connection, "AXGroup"),
-    axNode(conceptLabel(concept, "conversation", "thread-opaque"), "AXGroup"),
-    axNode("Conversation title Known live session", "AXHeading"),
-    axNode("Message", "AXTextArea", draft),
-    axNode("Use send mode", "AXButton"),
-    axNode("Use steer mode", "AXButton"),
-    axNode("Use queue mode", "AXButton"),
-    axNode("Submit message", "AXButton"),
-    axNode("Interrupt", "AXButton"),
-    axNode("Work", "AXButton"),
-    axNode("Back", "AXButton"),
-    axNode("Switch concept", "AXButton"),
-    ...(mutation === null ? [] : [axNode(mutation, "AXStaticText")]),
-    ...transcript.map((label) => axNode(label, "AXGroup")),
-  ];
-}
-
-function appLine(pid) {
-  return `${JSON.stringify({
-    bundle_id: "com.primeradiant.evener",
-    name: "Evener",
-    install_type: "user",
-    architectures: ["arm64"],
-    process_state: "Running",
-    debuggable: true,
-    pid,
-  })}\n`;
-}
-
-function describeEntry(nodes) {
-  return {
-    argv: [
-      "idb",
-      "ui",
-      "describe-all",
-      "--format",
-      "complete",
-      "--json",
-      "--udid",
-      "phone",
-    ],
-    result: ok(axOutput(nodes)),
-  };
-}
-
-function tapEntry(label) {
-  return {
-    argv: [
-      "idb",
-      "ui",
-      "tap",
-      label,
-      "--match-key",
-      "AXLabel",
-      "--udid",
-      "phone",
-    ],
-    result: ok(),
-  };
-}
-
-function textEntry(value) {
-  return {
-    argv: ["idb", "ui", "text", value, "--udid", "phone"],
-    result: ok(),
-  };
-}
-
-function mutationEntries(kind, acceptedReceipt, finalTranscript = []) {
-  const mode = `Use ${kind} mode`;
-  return [
-    tapEntry("Message"),
-    textEntry(`smoke-${kind}`),
-    ...(kind === "interrupt"
-      ? []
-      : [tapEntry(mode), tapEntry("Submit message")]),
-    ...(kind === "interrupt" ? [tapEntry("Interrupt")] : []),
-    describeEntry(
-      conversationNodes({
-        concept: kind === "send" ? "Stillwater" : "Constellation",
-        mutation: `Evener mutation; kind ${kind}; status pending; receipt none`,
-      }),
-    ),
-    describeEntry(
-      conversationNodes({
-        concept: kind === "send" ? "Stillwater" : "Constellation",
-        mutation: `Evener mutation; kind ${kind}; status accepted; receipt ${acceptedReceipt}`,
-        transcript: finalTranscript,
-      }),
-    ),
-  ];
-}
-
-test("physical orchestration consumes an exact AX/argv script with distinct lifecycle and reconnect phases", async () => {
+async function runStatefulSmoke(options = {}) {
   const parent = await mkdtemp(
     path.join(os.tmpdir(), "evener-full-smoke-test-"),
   );
@@ -1130,344 +1680,18 @@ test("physical orchestration consumes an exact AX/argv script with distinct life
   await mkdir(app);
   await writeFile(path.join(app, "Info.plist"), "plist");
   await writeFile(path.join(app, "Evener"), "binary");
-  const outputDir = path.join(parent, "evidence");
-  const device = JSON.stringify({
-    name: "Jesse iPhone",
-    udid: "phone",
-    state: "Booted",
-    type: "device",
-    os_version: "20.0",
-    architecture: "arm64",
-    device: { model: "iPhone 17 Pro" },
-  });
-  const completedTranscript = [
-    "Evener transcript item; id assistant-a; kind assistant; status completed; label Assistant; content complete response",
-    "Evener transcript item; id reason-a; kind reasoning; status completed; label Reasoning; content route summary",
-    "Evener transcript item; id tool-a; kind tool; status completed; label exec_command; content tool output",
-  ];
-  const script = new ExactCommandScript([
-    { argv: ["idb", "--version"], result: ok("idb 1.5.0\n") },
-    {
-      argv: ["idb", "ui", "describe-all", "--help"],
-      result: ok("--format complete --json --udid"),
-    },
-    {
-      argv: ["idb", "ui", "tap", "--help"],
-      result: ok("target --match-key AXLabel --udid"),
-    },
-    { argv: ["idb", "ui", "text", "--help"], result: ok("text --udid") },
-    { argv: ["idb", "ui", "button", "--help"], result: ok("HOME --udid") },
-    {
-      argv: ["idb", "launch", "--help"],
-      result: ok("--foreground-if-running --udid bundle_id"),
-    },
-    { argv: ["idb", "terminate", "--help"], result: ok("--udid bundle_id") },
-    {
-      argv: ["idb", "describe", "--help"],
-      result: ok("--diagnostics --json --udid"),
-    },
-    {
-      argv: ["idb", "list-apps", "--help"],
-      result: ok("--fetch-process-state --json --udid"),
-    },
-    { argv: ["codesign", "--verify", "--strict", app], result: ok() },
-    {
-      argv: [
-        "plutil",
-        "-extract",
-        "CFBundleIdentifier",
-        "raw",
-        "-o",
-        "-",
-        path.join(app, "Info.plist"),
-      ],
-      result: ok("com.primeradiant.evener\n"),
-    },
-    {
-      argv: [
-        "plutil",
-        "-extract",
-        "CFBundleShortVersionString",
-        "raw",
-        "-o",
-        "-",
-        path.join(app, "Info.plist"),
-      ],
-      result: ok("0.1.0\n"),
-    },
-    {
-      argv: ["idb", "describe", "--diagnostics", "--json", "--udid", "phone"],
-      result: ok(device),
-    },
-    {
-      argv: [
-        "idb",
-        "list-apps",
-        "--fetch-process-state",
-        "--json",
-        "--udid",
-        "phone",
-      ],
-      result: ok(appLine(101)),
-    },
-    {
-      argv: ["idb", "launch", "--udid", "phone", "com.primeradiant.evener"],
-      result: ok(),
-    },
-    {
-      argv: [
-        "idb",
-        "list-apps",
-        "--fetch-process-state",
-        "--json",
-        "--udid",
-        "phone",
-      ],
-      result: ok(appLine(101)),
-    },
-    describeEntry(rosterNodes("Stillwater")),
-    describeEntry(rosterNodes("Stillwater")),
-    tapEntry(ROW_LABEL),
-    describeEntry(
-      conversationNodes({
-        concept: "Stillwater",
-        transcript: completedTranscript,
-      }),
-    ),
-    ...mutationEntries("send", 1, [
-      "Evener transcript item; id assistant-a; kind assistant; status streaming; label Assistant; content partial",
-    ]).slice(0, -1),
-    describeEntry(
-      conversationNodes({
-        concept: "Stillwater",
-        mutation: "Evener mutation; kind send; status pending; receipt none",
-        transcript: [
-          "Evener transcript item; id assistant-a; kind assistant; status streaming; label Assistant; content partial",
-        ],
-      }),
-    ),
-    describeEntry(
-      conversationNodes({
-        concept: "Stillwater",
-        mutation: "Evener mutation; kind send; status accepted; receipt 1",
-        transcript: completedTranscript,
-      }),
-    ),
-    tapEntry("Message"),
-    textEntry("draft-preserve"),
-    describeEntry(
-      conversationNodes({
-        concept: "Stillwater",
-        draft: "draft-preserve",
-        transcript: completedTranscript,
-      }),
-    ),
-    tapEntry("Switch concept"),
-    tapEntry("Switch to Constellation"),
-    describeEntry(
-      conversationNodes({
-        concept: "Constellation",
-        draft: "draft-preserve",
-        transcript: completedTranscript,
-      }),
-    ),
-    tapEntry("Back"),
-    describeEntry(rosterNodes("Constellation")),
-    tapEntry(ROW_LABEL),
-    describeEntry(
-      conversationNodes({
-        concept: "Constellation",
-        transcript: completedTranscript,
-      }),
-    ),
-    ...mutationEntries("steer", 2),
-    ...mutationEntries("queue", 3),
-    tapEntry("Message"),
-    textEntry("draft-preserve"),
-    describeEntry(
-      conversationNodes({
-        concept: "Constellation",
-        draft: "draft-preserve",
-        transcript: completedTranscript,
-      }),
-    ),
-    tapEntry("Switch concept"),
-    tapEntry("Switch to Field Notes"),
-    describeEntry(
-      conversationNodes({
-        concept: "Field Notes",
-        draft: "draft-preserve",
-        transcript: completedTranscript,
-      }),
-    ),
-    tapEntry("Back"),
-    describeEntry(rosterNodes("Field Notes")),
-    tapEntry(ROW_LABEL),
-    describeEntry(
-      conversationNodes({
-        concept: "Field Notes",
-        transcript: completedTranscript,
-      }),
-    ),
-    tapEntry("Interrupt"),
-    describeEntry(
-      conversationNodes({
-        concept: "Field Notes",
-        mutation:
-          "Evener mutation; kind interrupt; status pending; receipt none",
-        transcript: completedTranscript,
-      }),
-    ),
-    describeEntry(
-      conversationNodes({
-        concept: "Field Notes",
-        mutation: "Evener mutation; kind interrupt; status accepted; receipt 4",
-        transcript: completedTranscript,
-      }),
-    ),
-    tapEntry("Message"),
-    textEntry("draft-preserve"),
-    describeEntry(
-      conversationNodes({
-        concept: "Field Notes",
-        draft: "draft-preserve",
-        transcript: completedTranscript,
-      }),
-    ),
-    tapEntry("Work"),
-    describeEntry([
-      axNode(connectionLabel(), "AXGroup"),
-      axNode(conceptLabel("Field Notes", "work", "thread-opaque"), "AXGroup"),
-      axNode(
-        "Evener work item; id task-a; kind task; status running; title Task",
-        "AXGroup",
-      ),
-      axNode(
-        "Evener work item; id delegate-a; kind delegate; status running; title Delegate",
-        "AXGroup",
-      ),
-      axNode(
-        "Evener work item; id job-a; kind job; status success; title Job",
-        "AXGroup",
-      ),
-      axNode(
-        "Evener usage; tokens 100; cost none; duration 1s; context 20%",
-        "AXGroup",
-      ),
-      axNode("Close", "AXButton"),
-    ]),
-    tapEntry("Close"),
-    describeEntry(
-      conversationNodes({
-        concept: "Field Notes",
-        draft: "draft-preserve",
-        transcript: completedTranscript,
-      }),
-    ),
-    {
-      argv: [
-        "idb",
-        "list-apps",
-        "--fetch-process-state",
-        "--json",
-        "--udid",
-        "phone",
-      ],
-      result: ok(appLine(101)),
-    },
-    { argv: ["idb", "ui", "button", "HOME", "--udid", "phone"], result: ok() },
-    describeEntry([axNode("SpringBoard", "AXApplication")]),
-    {
-      argv: [
-        "idb",
-        "launch",
-        "--foreground-if-running",
-        "--udid",
-        "phone",
-        "com.primeradiant.evener",
-      ],
-      result: ok(),
-    },
-    {
-      argv: [
-        "idb",
-        "list-apps",
-        "--fetch-process-state",
-        "--json",
-        "--udid",
-        "phone",
-      ],
-      result: ok(appLine(101)),
-    },
-    describeEntry(
-      conversationNodes({
-        concept: "Field Notes",
-        draft: "draft-preserve",
-        transcript: completedTranscript,
-        connection: connectionLabel({ lifecycle: 2, phase: "foreground" }),
-      }),
-    ),
-    {
-      argv: [
-        "idb",
-        "list-apps",
-        "--fetch-process-state",
-        "--json",
-        "--udid",
-        "phone",
-      ],
-      result: ok(appLine(101)),
-    },
-    {
-      argv: ["idb", "terminate", "--udid", "phone", "com.primeradiant.evener"],
-      result: ok(),
-    },
-    {
-      argv: ["idb", "launch", "--udid", "phone", "com.primeradiant.evener"],
-      result: ok(),
-    },
-    {
-      argv: [
-        "idb",
-        "list-apps",
-        "--fetch-process-state",
-        "--json",
-        "--udid",
-        "phone",
-      ],
-      result: ok(appLine(202)),
-    },
-    describeEntry(
-      rosterNodes("Field Notes", connectionLabel({ handshake: 1 })),
-    ),
-    tapEntry(ROW_LABEL),
-    describeEntry(
-      conversationNodes({
-        concept: "Field Notes",
-        transcript: completedTranscript,
-        connection: connectionLabel({ handshake: 1 }),
-      }),
-    ),
-    describeEntry(
-      conversationNodes({
-        concept: "Field Notes",
-        transcript: completedTranscript,
-        connection: connectionLabel({ handshake: 1 }),
-      }),
-    ),
-  ]);
-
+  const fake = new StatefulIdbFake(options);
   let monotonic = 0;
   const result = await runLiveSmoke(
     {
       udid: "phone",
       bundleId: "com.primeradiant.evener",
-      outputDir,
+      outputDir: path.join(parent, "evidence"),
       hubVersion: "hub-1",
     },
     {
-      run: script.run.bind(script),
-      now: () => ++monotonic,
+      run: fake.run.bind(fake),
+      now: options.fastFailure ? () => (monotonic += 4_000) : () => ++monotonic,
       env: {
         EVENER_SMOKE_APP_PATH: app,
         EVENER_SMOKE_THREAD_REF: "raw-sensitive-thread-ref",
@@ -1480,12 +1704,15 @@ test("physical orchestration consumes an exact AX/argv script with distinct life
       },
     },
   );
-  script.assertDone();
+  return { result, fake, app };
+}
+
+test("physical orchestration uses staged install, stateful set-value, and causal post-send AX", async () => {
+  const { result, fake, app } = await runStatefulSmoke();
   assert.equal(result.summary.status, "passed");
   const summaryText = await readFile(result.paths.summaryPath, "utf8");
-  const summary = JSON.parse(summaryText);
   const rawEvidence = JSON.parse(await readFile(result.paths.rawPath, "utf8"));
-  assert.equal(summary.observations.length, 12);
+  assert.equal(result.summary.observations.length, 12);
   assert.equal(rawEvidence.observations.length, 12);
   assert.equal(rawEvidence.operational.threadRef, "raw-sensitive-thread-ref");
   assert.equal(summaryText.includes("raw-sensitive-thread-ref"), false);
@@ -1493,7 +1720,43 @@ test("physical orchestration consumes an exact AX/argv script with distinct life
   assert.equal(summaryText.includes("tool output"), false);
   assert.equal(summaryText.includes("partial"), false);
   assert.equal(
-    script.calls.some((call) => call[0] === "xcrun"),
+    fake.calls.some((call) => call[0] === "xcrun"),
     false,
+  );
+  assert.equal(
+    fake.calls.some((call) => call[0] === "idb" && call[1] === "--version"),
+    false,
+  );
+  assert.equal(
+    fake.calls.some(
+      (call) => call[0] === "idb" && call[1] === "ui" && call[2] === "text",
+    ),
+    false,
+  );
+  const install = fake.calls.find(
+    (call) =>
+      call[0] === "idb" && call[1] === "install" && call[2] === "--udid",
+  );
+  assert.ok(install);
+  assert.match(install.at(-1), /\/staged-app\/Evener\.app$/);
+  assert.ok(
+    fake.calls.filter(
+      (call) =>
+        call[0] === "idb" && call[1] === "ui" && call[2] === "set-value",
+    ).length >= 4,
+  );
+});
+
+test("stateful fake proves set-value replaces rather than appends", async () => {
+  await assert.rejects(
+    runStatefulSmoke({ appendDraft: true, fastFailure: true }),
+    /semantic tripwire|draft.*append|live workflow failed/i,
+  );
+});
+
+test("stateful fake rejects a historical completed item transitioning backward", async () => {
+  await assert.rejects(
+    runStatefulSmoke({ reuseBaselineForStreaming: true, fastFailure: true }),
+    /semantic tripwire|item lifecycle|live workflow failed/i,
   );
 });
