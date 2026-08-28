@@ -793,17 +793,27 @@ describe("7C lane D — system and explicit theme variables on html", () => {
 describe("7C lane D — conversation participates in shell flex geometry", () => {
   it("real RootShell conversation has one scroller beside a top bar", () => {
     const container = renderRootStructure("conversation");
-    const conversation = container.querySelector(".evener-conversation");
-    expect(conversation).not.toBeNull();
-    // ConversationScreen renders a top bar header and the Timeline scroller
-    // as direct children of the conversation main element.
-    expect(
-      conversation?.querySelectorAll(":scope > .evener-conversation__topbar")
-        .length,
-    ).toBe(1);
-    expect(
-      conversation?.querySelectorAll(".evener-timeline__scroll").length,
-    ).toBe(1);
+    const conversation = container.querySelector<HTMLElement>(
+      '[data-concept-root][data-surface="conversation"]',
+    );
+    if (conversation === null) {
+      throw new Error("missing live conversation concept root");
+    }
+    const scroller = conversation.querySelector<HTMLElement>(
+      ':scope > .sw-scroll[data-route="conversation"]',
+    );
+    if (scroller === null)
+      throw new Error("missing live conversation scroller");
+
+    // The production Stillwater Host renders one route scroller. Its sticky
+    // top bar and route content are direct children of that scroller, preserving
+    // the canonical shell's single-scroll-owner geometry.
+    expect(conversation.querySelectorAll(":scope > .sw-scroll").length).toBe(1);
+    expect(conversation.querySelectorAll(".sw-scroll").length).toBe(1);
+    expect(scroller.querySelectorAll(":scope > .sw-topbar").length).toBe(1);
+    expect(scroller.querySelectorAll(":scope > .sw-route-content").length).toBe(
+      1,
+    );
     expect(container.querySelectorAll(".evener-bottombar").length).toBe(0);
   });
 
