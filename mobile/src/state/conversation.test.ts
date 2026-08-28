@@ -11301,16 +11301,22 @@ describe("ConversationStore", () => {
       const ref = store.getState().ref;
       const gen = store.getState().conversationGeneration;
       expect(ref).toBe("ref-1");
+      const readsAfterOpen = service.readProjectionCalls.length;
 
       // Start a rehydrate (R) that hangs — it captures errorOwnerRev at entry
-      // (before the external error is published).
+      // (before the external error is published). Use the controlled read's
+      // level-triggered barriers, not microtask guesses: started(1) confirms
+      // the read began; ready(1) confirms orig(ref) resolved and the read is
+      // parked at the release gate, so R's entry errorOwnerRev is captured.
       const ctrl = makeControlledRead(service);
       store.getState().applyNotification({
         method: "evener/thread/resync",
         params: { threadId: "thread-1", ref: "ref-1" },
       } as AnyNotification);
       await ctrl.started(1);
-      await yieldMicrotask();
+      await ctrl.ready(1);
+      expect(ctrl.getStartedCount()).toBe(1);
+      expect(ctrl.getDoneCount()).toBe(0);
 
       // While R is in-flight, publish the external error against the exact
       // current owner. This goes through the wrapped set, advancing
@@ -11318,11 +11324,32 @@ describe("ConversationStore", () => {
       store.getState().publishExternalError("external failure", ref, gen);
       expect(store.getState().error).toBe("external failure");
 
-      // Now complete R — it must NOT clear the newer external error because
-      // the error-owner revision advanced during the await.
+      // Before release, capture the pre-reconcile conversation and install a
+      // subscription barrier that resolves only when the conversation identity
+      // changes (the rehydrate commit). The subscription is installed BEFORE
+      // release so it cannot miss a synchronous commit during release, and it
+      // unsubscribes synchronously on match so cleanup never leaves a blocked
+      // read. Then release, await exact completed(1), and await the reconcile
+      // barrier — no yieldMicrotask/sleeps/polling.
+      const preReleaseConv = store.getState().conversation;
+      const reconcileP =
+        store.getState().conversation !== preReleaseConv
+          ? Promise.resolve()
+          : new Promise<void>((resolve) => {
+              const unsub = store.subscribe((s) => {
+                if (s.conversation !== preReleaseConv) {
+                  unsub();
+                  resolve();
+                }
+              });
+            });
       ctrl.release();
       await ctrl.completed(1);
-      await yieldMicrotask();
+      await reconcileP;
+      expect(ctrl.getStartedCount()).toBe(1);
+      expect(ctrl.getDoneCount()).toBe(1);
+      // Exactly one rehydrate read ran (the initial open read is excluded).
+      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
 
       // The external error survives the rehydrate.
       expect(store.getState().error).toBe("external failure");
