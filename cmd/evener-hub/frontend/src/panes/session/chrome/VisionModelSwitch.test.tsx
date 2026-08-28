@@ -1,6 +1,6 @@
 import { cleanup, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, beforeEach, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, expect, test } from "vitest";
 import type { ThreadModel } from "../../../protocol/model";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { ModelListResponse, ThreadCapabilities } from "../../../protocol/types.gen";
@@ -67,33 +67,11 @@ function connectFakeClient(): FakeClient {
 function modelListResponse(): ModelListResponse {
   return {
     data: [
-      { provider: "anthropic", model: "claude-sonnet-4-5" },
-      { provider: "openai", model: "gpt-5.5" },
-      { provider: "openai", model: "gpt-4o" },
+      { provider: "anthropic", model: "claude-sonnet-4-5", displayName: "Claude Sonnet 4.5", supportsVision: false },
+      { provider: "openai", model: "gpt-5.5", displayName: "GPT-5.5", supportsVision: true },
+      { provider: "openai", model: "gpt-4o", displayName: "GPT-4o", supportsVision: false },
     ],
   };
-}
-
-function stubCatalogFetch(): void {
-  vi.spyOn(globalThis, "fetch").mockResolvedValue(
-    new Response(
-      JSON.stringify({
-        models: [
-          {
-            provider: "anthropic",
-            model: "claude-sonnet-4-5",
-            display_name: "Claude Sonnet 4.5",
-            supports_vision: false,
-          },
-          { provider: "openai", model: "gpt-5.5", display_name: "GPT-5.5", supports_vision: true },
-          { provider: "openai", model: "gpt-4o", display_name: "GPT-4o", supports_vision: false },
-        ],
-        recent: [],
-        diagnostics: [],
-      }),
-      { status: 200, headers: { "Content-Type": "application/json" } },
-    ),
-  );
 }
 
 function trigger(): HTMLButtonElement {
@@ -104,12 +82,10 @@ beforeEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetToastStoreForTests();
-  stubCatalogFetch();
 });
 
 afterEach(() => {
   cleanup();
-  vi.restoreAllMocks();
   resetToastStoreForTests();
 });
 

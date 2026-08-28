@@ -6,8 +6,7 @@ import { sessionActionError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
 import { type ModelCatalog, type ModelCatalogEntry, useToasts } from "../../../widgets";
-import { fetchModelCatalog } from "../../../widgets/modelCatalog/catalogClient";
-import { mergeScopedCatalog } from "../../../widgets/modelCatalog/scopedCatalog";
+import { modelListToCatalog } from "../../../widgets/modelCatalog/catalogClient";
 import { ModelSwitchTrigger } from "./ModelSwitchTrigger";
 import { modelLabel } from "./statusFormat";
 
@@ -35,11 +34,7 @@ export function VisionModelSwitch({ sessionRef, model }: VisionModelSwitchProps)
         : model.visionModel;
 
   const loadCatalog = useCallback(async (): Promise<ModelCatalog> => {
-    const [scoped, enrichment] = await Promise.all([
-      threadsStore.getState().listModels(),
-      fetchModelCatalog().catch(() => null),
-    ]);
-    const merged = mergeScopedCatalog(scoped.data, enrichment);
+    const merged = modelListToCatalog(await threadsStore.getState().listModels());
     const visionModels = merged.models.filter((entry) => entry.supportsVision === true);
     const visionRecent = merged.recent.filter((entry) => entry.supportsVision === true);
     return { ...merged, models: visionModels, recent: [...PSEUDO_ENTRIES, ...visionRecent] };
