@@ -495,7 +495,6 @@ native:.:./cmd/evener-hub/internal/httpsec:FuzzCSPMiddleware
 native:.:./cmd/evener-hub/internal/hubedge:FuzzAuthGuard
 native:.:./cmd/evener-hub/internal/hubedge:FuzzHandleAuth
 native:.:./cmd/evener-hub/internal/hubedge:FuzzHubEdgeBehaviorProgram
-native:.:./cmd/evener-hub/internal/strutil:FuzzFirstNonEmpty
 native:.:./cmd/evener-fuzzcov:FuzzGapInputs
 native:.:./cmd/evener-internalcheck:FuzzWalkType
 native:.:./cmd/evener-internalcheck:FuzzInternalCheckCoverage
