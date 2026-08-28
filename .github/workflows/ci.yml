@@ -168,6 +168,12 @@ jobs:
       - name: Fuzz seed-corpus replay (committed crashers — no search, deterministic)
         run: make fuzz
 
+  # Packaging proof, not artifact production: a PR that breaks the goreleaser
+  # config, archive layout, or SPA-embedding before-hook must fail before merge.
+  # The build plus this inspection is the whole proof, so the job deliberately
+  # uploads nothing — no automated consumer reads a PR-run artifact (the main
+  # snapshot channel is fed by the Build Binaries workflow), and the check name
+  # is pinned by branch protection.
   snapshot-artifacts:
     name: Build snapshot artifacts
     if: github.event_name == 'pull_request'
@@ -188,14 +194,10 @@ jobs:
         env:
           BUILD_CHANNEL: snapshot
 
+      # tar -tzf proves each archive's member list; the checksums assertion
+      # carries the existence coverage the dropped upload's if-no-files-found
+      # used to provide.
       - name: Inspect archives
-        run: for f in dist/*.tar.gz; do echo "== $f"; tar -tzf "$f"; done
-
-      - name: Upload archives
-        uses: actions/upload-artifact@v7
-        with:
-          name: evener-snapshot-artifacts
-          path: |
-            dist/*.tar.gz
-            dist/checksums.txt
-          if-no-files-found: error
+        run: |
+          for f in dist/*.tar.gz; do echo "== $f"; tar -tzf "$f"; done
+          test -s dist/checksums.txt
