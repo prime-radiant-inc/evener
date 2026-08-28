@@ -11,7 +11,6 @@ func TestSource_UnmarshalObjectForms(t *testing.T) {
 		`{"source":"url","url":"https://x/y.git"}`:                   {Kind: SourceURL, URL: "https://x/y.git"},
 		`{"source":"directory","path":"/abs"}`:                       {Kind: SourceDirectory, Path: "/abs"},
 		`{"source":"git-subdir","url":"https://x.git","path":"a/b"}`: {Kind: SourceGitSubdir, URL: "https://x.git", Path: "a/b"},
-		`{"source":"git","url":"https://x/y.git"}`:                   {Kind: SourceURL, URL: "https://x/y.git"}, // legacy alias
 	}
 	for in, want := range cases {
 		var s Source
@@ -34,7 +33,7 @@ func TestSource_UnmarshalStringForm(t *testing.T) {
 	}
 }
 
-func TestSource_MarshalNeverWritesGit(t *testing.T) {
+func TestSource_MarshalWritesCanonicalKind(t *testing.T) {
 	b, _ := json.Marshal(Source{Kind: SourceURL, URL: "https://x/y.git"})
 	if got := string(b); got == `{"source":"git","url":"https://x/y.git"}` || !json.Valid(b) {
 		t.Fatalf("marshalled = %s", got)
@@ -47,9 +46,11 @@ func TestSource_MarshalNeverWritesGit(t *testing.T) {
 }
 
 func TestSource_UnmarshalRejectsUnknownKind(t *testing.T) {
-	var s Source
-	if err := json.Unmarshal([]byte(`{"source":"bogus"}`), &s); err == nil {
-		t.Fatal("Unmarshal accepted unknown source kind; want error")
+	for _, in := range []string{`{"source":"bogus"}`, `{"source":"git"}`} {
+		var s Source
+		if err := json.Unmarshal([]byte(in), &s); err == nil {
+			t.Fatalf("Unmarshal(%s) accepted unknown source kind; want error", in)
+		}
 	}
 }
 

@@ -11,8 +11,7 @@ import (
 // entry's custom source decoder (bare-string and object forms) — with
 // arbitrary bytes. Invariants: it never panics on any input, and every source
 // it accepts round-trips through MarshalJSON/UnmarshalJSON with a stable Kind
-// (the decode normalizes legacy aliases like "git" -> url, so re-decoding the
-// marshaled form must reproduce the same normalized Kind).
+// (re-decoding the marshaled form must reproduce the same Kind).
 func FuzzSourceUnmarshalJSON(f *testing.F) {
 	for _, s := range []string{
 		`"./subdir"`,
@@ -20,8 +19,7 @@ func FuzzSourceUnmarshalJSON(f *testing.F) {
 		`{"source":"url","url":"https://example.com/x.git"}`,
 		`{"source":"git-subdir","url":"https://example.com/x.git","path":"sub"}`,
 		`{"source":"directory","path":"./d","rel":true}`,
-		`{"source":"git","url":"https://example.com/x.git"}`, // legacy alias -> url
-		`{"source":"npm","package":"whatever"}`,              // unknown -> error
+		`{"source":"npm","package":"whatever"}`, // unknown -> error
 		`{}`,
 		``,
 		`null`,

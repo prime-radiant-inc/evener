@@ -74,9 +74,6 @@ func (s *Source) UnmarshalJSON(b []byte) error {
 		return err
 	}
 	kind := SourceKind(j.Source)
-	if kind == "git" { // read-only legacy alias
-		kind = SourceURL
-	}
 	switch kind {
 	case SourceDirectory, SourceGitHub, SourceURL, SourceGitSubdir:
 	default:
