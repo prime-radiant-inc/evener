@@ -27,6 +27,9 @@ type ServerFrame = JsonObject & {
   method?: string;
   params?: unknown;
 };
+type ClientFrameDisposition =
+  | { readonly kind: "accepted"; readonly frame: ServerFrame }
+  | { readonly kind: "rejected"; readonly error: string };
 
 const tauriHarness = vi.hoisted(() => ({
   bridge: null as TauriBridge | null,
@@ -127,6 +130,7 @@ class RustHarnessBridge implements TauriBridge {
   readonly invocations: Array<{ cmd: string; args: JsonObject }> = [];
   readonly channelEvents: JsonObject[] = [];
   readonly serverRequests: ServerFrame[] = [];
+  readonly protocolErrors: string[] = [];
   readonly profiles: readonly string[];
   private readonly child: ChildProcessWithoutNullStreams;
   private readonly pending = new Map<
@@ -142,6 +146,10 @@ class RustHarnessBridge implements TauriBridge {
     string,
     Array<{ resolve(): void; reject(cause: unknown): void }>
   >();
+  private readonly clientFrameDispositionWaiters: Array<{
+    resolve(value: ClientFrameDisposition): void;
+    reject(cause: unknown): void;
+  }> = [];
   private readonly deliveredFrameWaiters: Array<{
     predicate(frame: ServerFrame): boolean;
     resolve(): void;
@@ -324,6 +332,15 @@ class RustHarnessBridge implements TauriBridge {
     });
   }
 
+  waitForNextClientFrameDisposition(): Promise<ClientFrameDisposition> {
+    const done = deferred<ClientFrameDisposition>();
+    this.clientFrameDispositionWaiters.push({
+      resolve: done.resolve,
+      reject: done.reject,
+    });
+    return done.promise;
+  }
+
   async respond(request: ServerFrame, result: unknown): Promise<void> {
     if (!Number.isSafeInteger(request.id)) {
       throw new Error(`cannot respond to notification ${request.method ?? ""}`);
@@ -403,6 +420,10 @@ class RustHarnessBridge implements TauriBridge {
     if (message.kind === "serverRequest") {
       const frame = message.frame as ServerFrame;
       this.serverRequests.push(frame);
+      this.clientFrameDispositionWaiters.shift()?.resolve({
+        kind: "accepted",
+        frame,
+      });
       const waiter = this.requestWaiters.get(frame.method ?? "")?.shift();
       waiter?.resolve();
       if (
@@ -421,9 +442,13 @@ class RustHarnessBridge implements TauriBridge {
       return;
     }
     if (message.kind === "serverProtocolError") {
-      this.failPending(
-        new Error(String(message.error ?? "manual server protocol error")),
+      this.protocolErrors.push(
+        String(message.error ?? "manual server protocol error"),
       );
+      this.clientFrameDispositionWaiters.shift()?.resolve({
+        kind: "rejected",
+        error: this.protocolErrors.at(-1) ?? "manual server protocol error",
+      });
       return;
     }
     if (message.kind === "channel") {
@@ -464,6 +489,8 @@ class RustHarnessBridge implements TauriBridge {
       for (const waiter of waiters) waiter.reject(cause);
     }
     this.requestWaiters.clear();
+    const dispositions = this.clientFrameDispositionWaiters.splice(0);
+    for (const waiter of dispositions) waiter.reject(cause);
     const delivered = this.deliveredFrameWaiters.splice(0);
     for (const waiter of delivered) waiter.reject(cause);
   }
@@ -980,6 +1007,90 @@ async function sendRawClientFrame(
   });
 }
 
+async function expectRawClientFrameRejected(
+  bridge: RustHarnessBridge,
+  connection: RawHarnessConnection,
+  frame: ServerFrame,
+  expected: RegExp,
+): Promise<void> {
+  const disposition = bridge.waitForNextClientFrameDisposition();
+  await sendRawClientFrame(bridge, connection, frame);
+  const result = await disposition;
+  expect(result.kind).toBe("rejected");
+  if (result.kind === "rejected") expect(result.error).toMatch(expected);
+}
+
+async function expectConcurrentRawOpenRejected(
+  bridge: RustHarnessBridge,
+): Promise<void> {
+  const profileId = bridge.profiles[0];
+  if (profileId === undefined) throw new Error("harness profile missing");
+  const channel = bridge.createChannel<unknown>(() => undefined);
+  try {
+    await expect(
+      bridge.invoke("appwire_open", {
+        request: { profileId },
+        onEvent: channel,
+      }),
+    ).rejects.toThrow();
+  } finally {
+    channel.dispose();
+  }
+}
+
+async function expectRawServerFrameRejected(
+  bridge: RustHarnessBridge,
+  frame: ServerFrame,
+  expected: RegExp,
+): Promise<void> {
+  await expect(bridge.control("serverFrame", { frame })).rejects.toThrow(
+    expected,
+  );
+}
+
+async function completeRawHandshake(
+  bridge: RustHarnessBridge,
+  connection: RawHarnessConnection,
+  initializeId: number,
+): Promise<void> {
+  const initializeCount = methodCount(bridge, "initialize") + 1;
+  await sendRawClientFrame(bridge, connection, {
+    id: initializeId,
+    method: "initialize",
+    params: {
+      protocolVersion: "evener-appwire-v3",
+      clientInfo: { name: "guard-test", version: "1" },
+      capabilities: { experimentalApi: false },
+    },
+  });
+  const initialize = await bridge.waitForServerRequest(
+    "initialize",
+    initializeCount,
+  );
+  await bridge.respond(initialize, INITIALIZE_RESPONSE);
+  const initializedCount = methodCount(bridge, "initialized") + 1;
+  await sendRawClientFrame(bridge, connection, {
+    method: "initialized",
+    params: {},
+  });
+  await bridge.waitForServerRequest("initialized", initializedCount);
+}
+
+async function completeRawPing(
+  bridge: RustHarnessBridge,
+  connection: RawHarnessConnection,
+  id: number,
+): Promise<void> {
+  const count = methodCount(bridge, "ping") + 1;
+  await sendRawClientFrame(bridge, connection, {
+    id,
+    method: "ping",
+    params: {},
+  });
+  const ping = await bridge.waitForServerRequest("ping", count);
+  await bridge.respond(ping, {});
+}
+
 async function closeRawHarnessConnection(
   bridge: RustHarnessBridge,
   connection: RawHarnessConnection | null,
@@ -1016,15 +1127,45 @@ describe("production App live concepts over the real native AppWire bridge", () 
     ).rejects.toThrow();
   });
 
-  it("rejects invalid manual server protocol ordering and accepts the valid flow", async () => {
+  it("strictly validates manual protocol shape, phase, correlation, and connection ownership", async () => {
     const bridge = await RustHarnessBridge.start({ autoInitialize: false });
     let connection: RawHarnessConnection | null = null;
     try {
       connection = await openRawHarnessConnection(bridge);
-      await expect(
-        bridge.notify(notification("evener/tree/changed", {})),
-      ).rejects.toThrow(/initialized/i);
 
+      // AwaitInitialize: the first frame must be one exact initialize request.
+      await expectRawClientFrameRejected(
+        bridge,
+        connection,
+        { id: 1, method: "initialize", result: {} },
+        /shape|result/i,
+      );
+      await expectRawClientFrameRejected(
+        bridge,
+        connection,
+        { method: "evener/tree/changed", params: {} },
+        /first|initialize/i,
+      );
+      await expectRawClientFrameRejected(
+        bridge,
+        connection,
+        { method: "initialize", params: {} },
+        /request|initialize/i,
+      );
+      await expectRawClientFrameRejected(
+        bridge,
+        connection,
+        { id: 2, method: "initialized", params: {} },
+        /initialize request|first/i,
+      );
+      await expectRawClientFrameRejected(
+        bridge,
+        connection,
+        { id: 3, method: "ping", params: {} },
+        /initialize/i,
+      );
+
+      const initializeCount = methodCount(bridge, "initialize") + 1;
       await sendRawClientFrame(bridge, connection, {
         id: 41,
         method: "initialize",
@@ -1034,30 +1175,216 @@ describe("production App live concepts over the real native AppWire bridge", () 
           capabilities: { experimentalApi: false },
         },
       });
-      const initialize = await bridge.waitForServerRequest("initialize", 1);
-      await sendRawClientFrame(bridge, connection, {
-        id: 42,
-        method: "ping",
-        params: {},
-      });
-      const ping = await bridge.waitForServerRequest("ping", 1);
+      const initialize = await bridge.waitForServerRequest(
+        "initialize",
+        initializeCount,
+      );
 
-      await expect(bridge.respond({ id: 999 }, {})).rejects.toThrow(
+      // AwaitInitializeResponse: no second client frame is legal.
+      await expectRawClientFrameRejected(
+        bridge,
+        connection,
+        { id: 42, method: "initialize", params: {} },
+        /response|additional|initialize/i,
+      );
+      await expectRawClientFrameRejected(
+        bridge,
+        connection,
+        { id: 43, method: "ping", params: {} },
+        /response|additional/i,
+      );
+      await expectRawClientFrameRejected(
+        bridge,
+        connection,
+        { method: "evener/tree/changed", params: {} },
+        /response|additional/i,
+      );
+      await expectRawClientFrameRejected(
+        bridge,
+        connection,
+        { method: "initialized", params: {} },
+        /response|initialize/i,
+      );
+
+      // Server responses are mutually exclusive and must correlate.
+      await expectRawServerFrameRejected(
+        bridge,
+        { id: 41, result: {}, error: { code: -1, message: "both" } },
+        /exactly one|result.*error/i,
+      );
+      await expectRawServerFrameRejected(
+        bridge,
+        { id: 41, method: "initialize", result: {} },
+        /shape|method/i,
+      );
+      await expectRawServerFrameRejected(
+        bridge,
+        { id: 41 },
+        /exactly one|result|error/i,
+      );
+      await expectRawServerFrameRejected(
+        bridge,
+        { method: "evener/tree/changed", result: {} },
+        /shape|result/i,
+      );
+      await expectRawServerFrameRejected(
+        bridge,
+        { id: 999, result: {} },
         /unknown|unmatched/i,
       );
-      await expect(bridge.respond(ping, {})).rejects.toThrow(/initialize/i);
 
       await bridge.respond(initialize, INITIALIZE_RESPONSE);
+
+      // AwaitInitialized: only exact id-less initialized is legal from client.
+      await expectRawClientFrameRejected(
+        bridge,
+        connection,
+        { id: 44, method: "ping", params: {} },
+        /initialized/i,
+      );
+      await expectRawClientFrameRejected(
+        bridge,
+        connection,
+        { id: 45, method: "initialize", params: {} },
+        /initialized|repeat|reserved/i,
+      );
+      await expectRawClientFrameRejected(
+        bridge,
+        connection,
+        { id: 46, method: "initialized", params: {} },
+        /notification|initialized/i,
+      );
+      await expectRawClientFrameRejected(
+        bridge,
+        connection,
+        { method: "initialize", params: {} },
+        /initialized|initialize/i,
+      );
+      await expectRawClientFrameRejected(
+        bridge,
+        connection,
+        { method: "evener/tree/changed", params: {} },
+        /initialized/i,
+      );
       await expect(
         bridge.notify(notification("evener/tree/changed", {})),
       ).rejects.toThrow(/initialized/i);
 
+      const initializedCount = methodCount(bridge, "initialized") + 1;
       await sendRawClientFrame(bridge, connection, {
         method: "initialized",
         params: {},
       });
-      await bridge.waitForServerRequest("initialized", 1);
+      await bridge.waitForServerRequest("initialized", initializedCount);
+
+      // Ready rejects reserved/mixed client frames but accepts ordinary ones.
+      await expectRawClientFrameRejected(
+        bridge,
+        connection,
+        { id: 47, method: "initialize", params: {} },
+        /repeat|reserved|initialize/i,
+      );
+      await expectRawClientFrameRejected(
+        bridge,
+        connection,
+        { id: 48, method: "initialized", params: {} },
+        /reserved|notification|initialized/i,
+      );
+      await expectRawClientFrameRejected(
+        bridge,
+        connection,
+        { method: "initialize", params: {} },
+        /reserved|initialize/i,
+      );
+      await expectRawClientFrameRejected(
+        bridge,
+        connection,
+        { method: "initialized", params: {} },
+        /repeat|reserved|initialized/i,
+      );
+      await expectRawClientFrameRejected(
+        bridge,
+        connection,
+        { id: 49, result: {} },
+        /shape|method/i,
+      );
+      await expectRawClientFrameRejected(
+        bridge,
+        connection,
+        { id: 49, method: "ping", result: {} },
+        /shape|result/i,
+      );
+      await expectRawClientFrameRejected(
+        bridge,
+        connection,
+        { method: "evener/tree/changed", error: { code: -1 } },
+        /shape|error/i,
+      );
+
+      const clientNotificationCount =
+        methodCount(bridge, "evener/tree/changed") + 1;
+      await sendRawClientFrame(bridge, connection, {
+        method: "evener/tree/changed",
+        params: {},
+      });
+      await bridge.waitForServerRequest(
+        "evener/tree/changed",
+        clientNotificationCount,
+      );
+
+      const pingCount = methodCount(bridge, "ping") + 1;
+      await sendRawClientFrame(bridge, connection, {
+        id: 50,
+        method: "ping",
+        params: {},
+      });
+      const ping = await bridge.waitForServerRequest("ping", pingCount);
+      await expectRawServerFrameRejected(
+        bridge,
+        { id: 50, result: {}, error: { code: -1, message: "both" } },
+        /exactly one|result.*error/i,
+      );
+      await expectRawServerFrameRejected(
+        bridge,
+        { id: 50, method: "ping", result: {} },
+        /shape|method/i,
+      );
+      await expectRawServerFrameRejected(
+        bridge,
+        { id: 50 },
+        /exactly one|result|error/i,
+      );
+      await expectRawServerFrameRejected(
+        bridge,
+        { method: "evener/tree/changed", result: {} },
+        /shape|result/i,
+      );
+      await expectRawServerFrameRejected(
+        bridge,
+        { id: 999, result: {} },
+        /unknown|unmatched/i,
+      );
       await bridge.respond(ping, {});
+      await bridge.notify(notification("evener/tree/changed", {}));
+
+      // A second concurrent manual connection must not reset this owner.
+      await expectConcurrentRawOpenRejected(bridge);
+      await completeRawPing(bridge, connection, 51);
+
+      // Ending owner one drops only its pending IDs. A sequential connection
+      // may start a fresh phase and reuse the old owner's still-pending ID.
+      const abandonedPingCount = methodCount(bridge, "ping") + 1;
+      await sendRawClientFrame(bridge, connection, {
+        id: 70,
+        method: "ping",
+        params: {},
+      });
+      await bridge.waitForServerRequest("ping", abandonedPingCount);
+      await closeRawHarnessConnection(bridge, connection);
+      connection = null;
+      connection = await openRawHarnessConnection(bridge);
+      await completeRawHandshake(bridge, connection, 70);
+      await completeRawPing(bridge, connection, 71);
       await bridge.notify(notification("evener/tree/changed", {}));
     } finally {
       const closed = closeRawHarnessConnection(bridge, connection);

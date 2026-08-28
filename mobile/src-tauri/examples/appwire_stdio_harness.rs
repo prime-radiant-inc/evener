@@ -27,7 +27,8 @@ use tauri::webview::InvokeRequest;
 use tauri::WebviewWindowBuilder;
 use tokio::net::{TcpListener, TcpStream};
 use tokio::sync::mpsc;
-use tokio_tungstenite::tungstenite::handshake::server::{Request, Response};
+use tokio_tungstenite::tungstenite::handshake::server::{ErrorResponse, Request, Response};
+use tokio_tungstenite::tungstenite::http::StatusCode;
 use tokio_tungstenite::tungstenite::protocol::{CloseFrame, Message};
 use tokio_tungstenite::WebSocketStream;
 
@@ -129,6 +130,7 @@ type ActiveControl = Arc<Mutex<Option<(usize, mpsc::UnboundedSender<ConnectionCo
 enum ManualProtocolPhase {
     #[default]
     AwaitInitialize,
+    AwaitInitializeResponse,
     AwaitInitialized,
     Ready,
 }
@@ -137,8 +139,14 @@ enum ManualProtocolPhase {
 struct ManualProtocol {
     enabled: bool,
     connection_seen: bool,
+    active_connection_id: Option<usize>,
     phase: ManualProtocolPhase,
     pending: HashMap<u64, String>,
+}
+
+enum ManualClientFrame<'a> {
+    Request { id: u64, method: &'a str },
+    Notification { method: &'a str },
 }
 
 enum ManualServerFrame {
@@ -161,65 +169,142 @@ impl ManualProtocol {
         Ok(())
     }
 
-    fn connection_started(&mut self) {
+    fn connection_started(&mut self, connection_id: usize) -> Result<(), String> {
         self.connection_seen = true;
-        if self.enabled {
-            self.phase = ManualProtocolPhase::AwaitInitialize;
-            self.pending.clear();
+        if !self.enabled {
+            return Ok(());
+        }
+        if let Some(active) = self.active_connection_id {
+            return Err(format!(
+                "manual server rejects concurrent connection {connection_id}; connection {active} is active"
+            ));
+        }
+        self.active_connection_id = Some(connection_id);
+        self.phase = ManualProtocolPhase::AwaitInitialize;
+        self.pending.clear();
+        Ok(())
+    }
+
+    fn connection_finished(&mut self, connection_id: usize) {
+        if self.active_connection_id != Some(connection_id) {
+            return;
+        }
+        self.active_connection_id = None;
+        self.phase = ManualProtocolPhase::AwaitInitialize;
+        self.pending.clear();
+    }
+
+    fn classify_client_frame(frame: &Value) -> Result<ManualClientFrame<'_>, String> {
+        let id = frame.get("id");
+        let method = frame.get("method").and_then(Value::as_str);
+        let has_result = frame.get("result").is_some();
+        let has_error = frame.get("error").is_some();
+        match (id, method, has_result, has_error) {
+            (Some(raw_id), Some(method), false, false) => {
+                let id = raw_id.as_u64().ok_or_else(|| {
+                    "manual client request id must be an unsigned integer".to_owned()
+                })?;
+                Ok(ManualClientFrame::Request { id, method })
+            }
+            (None, Some(method), false, false) => {
+                Ok(ManualClientFrame::Notification { method })
+            }
+            _ => Err(
+                "manual client frame must have exact request shape (id + method, no result/error) or notification shape (method only, no id/result/error)"
+                    .to_owned(),
+            ),
         }
     }
 
-    fn observe_client_frame(&mut self, frame: &Value) -> Result<(), String> {
-        let method = frame
-            .get("method")
-            .and_then(Value::as_str)
-            .ok_or_else(|| "manual client frame is missing a method".to_owned())?;
-        if let Some(id) = frame.get("id") {
-            let id = id
-                .as_u64()
-                .ok_or_else(|| "manual client request id must be an unsigned integer".to_owned())?;
-            if self.pending.contains_key(&id) {
-                return Err(format!("manual client request id {id} is already pending"));
-            }
-            if method == "initialize" && self.phase != ManualProtocolPhase::AwaitInitialize {
-                return Err("initialize request is out of protocol order".to_owned());
-            }
-            self.pending.insert(id, method.to_owned());
-            return Ok(());
+    fn observe_client_frame(&mut self, connection_id: usize, frame: &Value) -> Result<(), String> {
+        if self.active_connection_id != Some(connection_id) {
+            return Err(format!(
+                "manual client frame belongs to inactive connection {connection_id}"
+            ));
         }
-        if method == "initialized" {
-            if self.phase != ManualProtocolPhase::AwaitInitialized {
-                return Err(
-                    "initialized notification arrived before initialize response".to_owned(),
-                );
-            }
-            self.phase = ManualProtocolPhase::Ready;
+        let frame = Self::classify_client_frame(frame)?;
+        match self.phase {
+            ManualProtocolPhase::AwaitInitialize => match frame {
+                ManualClientFrame::Request {
+                    id,
+                    method: "initialize",
+                } => {
+                    self.pending.insert(id, "initialize".to_owned());
+                    self.phase = ManualProtocolPhase::AwaitInitializeResponse;
+                    Ok(())
+                }
+                _ => Err(
+                    "manual client first frame must be exactly one ID-bearing initialize request"
+                        .to_owned(),
+                ),
+            },
+            ManualProtocolPhase::AwaitInitializeResponse => Err(
+                "manual client cannot send an additional frame before initialize response"
+                    .to_owned(),
+            ),
+            ManualProtocolPhase::AwaitInitialized => match frame {
+                ManualClientFrame::Notification {
+                    method: "initialized",
+                } => {
+                    self.phase = ManualProtocolPhase::Ready;
+                    Ok(())
+                }
+                _ => Err(
+                    "manual client must send exact ID-less initialized notification after initialize response"
+                        .to_owned(),
+                ),
+            },
+            ManualProtocolPhase::Ready => match frame {
+                ManualClientFrame::Request { id, method } => {
+                    if matches!(method, "initialize" | "initialized") {
+                        return Err(format!(
+                            "manual client reserved method {method} cannot repeat in Ready"
+                        ));
+                    }
+                    if self.pending.contains_key(&id) {
+                        return Err(format!("manual client request id {id} is already pending"));
+                    }
+                    self.pending.insert(id, method.to_owned());
+                    Ok(())
+                }
+                ManualClientFrame::Notification { method } => {
+                    if matches!(method, "initialize" | "initialized") {
+                        return Err(format!(
+                            "manual client reserved notification {method} cannot repeat in Ready"
+                        ));
+                    }
+                    Ok(())
+                }
+            },
         }
-        Ok(())
     }
 
     fn validate_server_frame(&self, frame: &Value) -> Result<ManualServerFrame, String> {
         if !self.enabled {
             return Err("manual server is not enabled".to_owned());
         }
-        if frame.get("id").is_some() && frame.get("method").is_some() {
-            return Err("manual server frame cannot be both response and notification".to_owned());
+        if self.active_connection_id.is_none() {
+            return Err("manual server has no active protocol connection".to_owned());
         }
-        if let Some(raw_id) = frame.get("id") {
+        let raw_id = frame.get("id");
+        let method = frame.get("method").and_then(Value::as_str);
+        let has_result = frame.get("result").is_some();
+        let has_error = frame.get("error").is_some();
+        if let (Some(raw_id), None) = (raw_id, method) {
+            if has_result == has_error {
+                return Err(
+                    "manual server response must contain exactly one of result or error".to_owned(),
+                );
+            }
             let id = raw_id.as_u64().ok_or_else(|| {
                 "manual server response id must be an unsigned integer".to_owned()
             })?;
-            if frame.get("result").is_none() && frame.get("error").is_none() {
-                return Err("manual server response must contain result or error".to_owned());
-            }
             let method = self
                 .pending
                 .get(&id)
                 .ok_or_else(|| format!("unknown or unmatched response id {id}"))?;
-            if self.phase == ManualProtocolPhase::AwaitInitialize {
-                if method != "initialize" {
-                    return Err("initialize response is required before other responses".to_owned());
-                }
+            if self.phase == ManualProtocolPhase::AwaitInitializeResponse && method == "initialize"
+            {
                 return Ok(ManualServerFrame::InitializeResponse(id));
             }
             if method == "initialize" {
@@ -230,13 +315,18 @@ impl ManualProtocol {
             }
             return Ok(ManualServerFrame::Response(id));
         }
-        if frame.get("method").and_then(Value::as_str).is_none() {
-            return Err("manual server notification is missing a method".to_owned());
+        if raw_id.is_none() && method.is_some() && !has_result && !has_error {
+            if self.phase != ManualProtocolPhase::Ready {
+                return Err(
+                    "notifications are unavailable before initialized is observed".to_owned(),
+                );
+            }
+            return Ok(ManualServerFrame::Notification);
         }
-        if self.phase != ManualProtocolPhase::Ready {
-            return Err("notifications are unavailable before initialized is observed".to_owned());
-        }
-        Ok(ManualServerFrame::Notification)
+        Err(
+            "manual server frame must have exact response shape (id + exactly one result/error, no method) or notification shape (method only, no id/result/error)"
+                .to_owned(),
+        )
     }
 
     fn commit_server_frame(&mut self, frame: ManualServerFrame) {
@@ -379,14 +469,24 @@ async fn run_scripted_hub(
             }
             accepted = listener.accept() => {
                 let (stream, _) = accepted.unwrap();
-                manual_protocol.lock().unwrap().connection_started();
                 let connection_id = {
                     let mut state = observations.lock().unwrap();
                     state.connection_count += 1;
-                    state.active_sockets += 1;
-                    state.max_active_sockets = state.max_active_sockets.max(state.active_sockets);
                     state.connection_count
                 };
+                if let Err(error) = manual_protocol
+                    .lock()
+                    .unwrap()
+                    .connection_started(connection_id)
+                {
+                    tokio::spawn(reject_connection(stream, error));
+                    continue;
+                }
+                {
+                    let mut state = observations.lock().unwrap();
+                    state.active_sockets += 1;
+                    state.max_active_sockets = state.max_active_sockets.max(state.active_sockets);
+                }
                 let (control_tx, control_rx) = mpsc::unbounded_channel();
                 *active_control.lock().unwrap() = Some((connection_id, control_tx));
                 tokio::spawn(run_connection(
@@ -402,6 +502,18 @@ async fn run_scripted_hub(
             }
         }
     }
+}
+
+async fn reject_connection(stream: TcpStream, error: String) {
+    let _ = tokio_tungstenite::accept_hdr_async(
+        stream,
+        move |_request: &Request, _response: Response| -> Result<Response, ErrorResponse> {
+            let mut response = ErrorResponse::new(Some(error.clone()));
+            *response.status_mut() = StatusCode::CONFLICT;
+            Err(response)
+        },
+    )
+    .await;
 }
 
 async fn run_connection(
@@ -426,7 +538,12 @@ async fn run_connection(
         })
         .await;
     let Ok(mut socket) = accepted else {
-        connection_finished(connection_id, &observations, &active_control);
+        connection_finished(
+            connection_id,
+            &observations,
+            &active_control,
+            &manual_protocol,
+        );
         return;
     };
 
@@ -453,6 +570,7 @@ async fn run_connection(
                 match message {
                     Some(Ok(Message::Text(text))) => {
                         if handle_client_frame(
+                            connection_id,
                             &mut socket,
                             &text,
                             &observations,
@@ -472,17 +590,27 @@ async fn run_connection(
             }
         }
     }
-    connection_finished(connection_id, &observations, &active_control);
+    connection_finished(
+        connection_id,
+        &observations,
+        &active_control,
+        &manual_protocol,
+    );
 }
 
 fn connection_finished(
     connection_id: usize,
     observations: &Arc<Mutex<ServerObservations>>,
     active_control: &ActiveControl,
+    manual_protocol: &Mutex<ManualProtocol>,
 ) {
     let mut state = observations.lock().unwrap();
     state.active_sockets = state.active_sockets.saturating_sub(1);
     drop(state);
+    manual_protocol
+        .lock()
+        .unwrap()
+        .connection_finished(connection_id);
     let mut current = active_control.lock().unwrap();
     if current
         .as_ref()
@@ -493,6 +621,7 @@ fn connection_finished(
 }
 
 async fn handle_client_frame(
+    connection_id: usize,
     socket: &mut WebSocketStream<TcpStream>,
     text: &str,
     observations: &Arc<Mutex<ServerObservations>>,
@@ -502,6 +631,16 @@ async fn handle_client_frame(
 ) -> Result<(), tokio_tungstenite::tungstenite::Error> {
     let frame: Value = serde_json::from_str(text).unwrap();
     let method = frame.get("method").and_then(Value::as_str).unwrap_or("");
+    if manual_server.load(Ordering::SeqCst) {
+        if let Err(error) = manual_protocol
+            .lock()
+            .unwrap()
+            .observe_client_frame(connection_id, &frame)
+        {
+            output.send(json!({ "kind": "serverProtocolError", "error": error }));
+            return Ok(());
+        }
+    }
     observations
         .lock()
         .unwrap()
@@ -519,10 +658,6 @@ async fn handle_client_frame(
         observations.lock().unwrap().initialized_count += 1;
     }
     if manual_server.load(Ordering::SeqCst) {
-        if let Err(error) = manual_protocol.lock().unwrap().observe_client_frame(&frame) {
-            output.send(json!({ "kind": "serverProtocolError", "error": error }));
-            return Ok(());
-        }
         output.send(json!({ "kind": "serverRequest", "frame": frame }));
         return Ok(());
     }
