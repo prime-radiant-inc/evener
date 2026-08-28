@@ -26,6 +26,12 @@ const INITIALIZE_RESULT = {
     modelList: true,
     directoryComplete: true,
     auth: true,
+    transcriptDisplaySettings: true,
+  },
+  navigation: {
+    version: 1,
+    generationId: "scripted-navigation-generation",
+    sequence: 0,
   },
 } as const;
 

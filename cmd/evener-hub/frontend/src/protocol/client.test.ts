@@ -69,6 +69,23 @@ describe("decodeInitializeResponse", () => {
     expect(decodeInitializeResponse(FAKE_INITIALIZE_RESULT)).toEqual(FAKE_INITIALIZE_RESULT);
   });
 
+  test("accepts and preserves known optional navigation and feature fields", () => {
+    const response = {
+      ...FAKE_INITIALIZE_RESULT,
+      features: {
+        ...FAKE_INITIALIZE_RESULT.features,
+        transcriptDisplaySettings: true,
+      },
+      navigation: {
+        version: 1,
+        generationId: "test-navigation-generation",
+        sequence: 0,
+      },
+    };
+
+    expect(decodeInitializeResponse(response)).toEqual(response);
+  });
+
   test.each([
     ["missing server version", { ...FAKE_INITIALIZE_RESULT, serverInfo: { name: "hub" } }],
     ["empty protocol", { ...FAKE_INITIALIZE_RESULT, protocolVersion: "" }],
@@ -80,6 +97,73 @@ describe("decodeInitializeResponse", () => {
       },
     ],
     ["extra top-level key", { ...FAKE_INITIALIZE_RESULT, bearerToken: "never" }],
+    [
+      "extra feature key",
+      {
+        ...FAKE_INITIALIZE_RESULT,
+        features: { ...FAKE_INITIALIZE_RESULT.features, futureFeature: true },
+      },
+    ],
+    [
+      "malformed optional feature",
+      {
+        ...FAKE_INITIALIZE_RESULT,
+        features: { ...FAKE_INITIALIZE_RESULT.features, transcriptDisplaySettings: "yes" },
+      },
+    ],
+    ["null navigation", { ...FAKE_INITIALIZE_RESULT, navigation: null }],
+    [
+      "incomplete navigation",
+      {
+        ...FAKE_INITIALIZE_RESULT,
+        navigation: { version: 1, generationId: "test-navigation-generation" },
+      },
+    ],
+    [
+      "navigation with an unknown key",
+      {
+        ...FAKE_INITIALIZE_RESULT,
+        navigation: {
+          version: 1,
+          generationId: "test-navigation-generation",
+          sequence: 0,
+          bearerToken: "never",
+        },
+      },
+    ],
+    [
+      "navigation with malformed version",
+      {
+        ...FAKE_INITIALIZE_RESULT,
+        navigation: {
+          version: "1",
+          generationId: "test-navigation-generation",
+          sequence: 0,
+        },
+      },
+    ],
+    [
+      "navigation with malformed generation ID",
+      {
+        ...FAKE_INITIALIZE_RESULT,
+        navigation: {
+          version: 1,
+          generationId: 7,
+          sequence: 0,
+        },
+      },
+    ],
+    [
+      "navigation with malformed sequence",
+      {
+        ...FAKE_INITIALIZE_RESULT,
+        navigation: {
+          version: 1,
+          generationId: "test-navigation-generation",
+          sequence: "0",
+        },
+      },
+    ],
   ])("rejects %s", (_name, value) => {
     expect(() => decodeInitializeResponse(value)).toThrow("invalid initialize response");
   });
