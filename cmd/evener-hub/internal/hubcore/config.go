@@ -77,14 +77,14 @@ type WebConfig struct {
 	RelayHooks RelayLifecycleHooks // test-only relay lifecycle seams; nil in production
 
 	// Sandbox seams. Each is nil in production (the real implementation runs);
-	// a fuzz/test sandbox sets them so the matching mutating handler runs without
+	// a fuzz/test sandbox sets them so the matching handler runs without
 	// shelling out, hitting the network, or mutating the real filesystem. These
-	// are the escapes a read-only harness cannot drive: the live-git probe
-	// (/api/git/head), the live-provider model query, and the directory creator
-	// (evener/dirs/create). See cmd/evener-hub's app_dirs_test.go.
-	GitHeadBranch func(ctx context.Context, dir string) (string, error) // nil → real `git`
-	LiveModels    func(ctx context.Context) []appwire.ModelDescriptor   // nil → real provider query
-	MkdirAll      func(path string, perm os.FileMode) error             // nil → os.MkdirAll
+	// are the escapes a read-only harness cannot drive: the git-head AppWire
+	// method, the live-provider model query, and the directory creator. See
+	// cmd/evener-hub's sandbox_test.go.
+	ResolveGitHead func(ctx context.Context, dir string) (string, error) // nil → real `git`
+	LiveModels     func(ctx context.Context) []appwire.ModelDescriptor   // nil → real provider query
+	MkdirAll       func(path string, perm os.FileMode) error             // nil → os.MkdirAll
 }
 
 // Spawner forks a evener serve subprocess and waits for its rendezvous file to appear.

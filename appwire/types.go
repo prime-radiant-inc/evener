@@ -55,6 +55,7 @@ const (
 	MethodEvenerDirsCreate            = "evener/dirs/create"
 	MethodEvenerProjectsRecent        = "evener/projects/recent"
 	MethodEvenerPathValidate          = "evener/path/validate"
+	MethodEvenerGitHead               = "evener/git/head"
 	MethodEvenerNavigationRead        = "evener/navigation/read"
 	MethodEvenerFavoriteSet           = "evener/favorite/set"
 	MethodEvenerSearch                = "evener/search"
@@ -1656,6 +1657,17 @@ type PathValidateResponse struct {
 	Path  string `json:"path"`
 	Valid bool   `json:"valid"`
 	Error string `json:"error,omitempty"`
+}
+
+// GitHeadParams selects the working directory whose git HEAD should be read.
+type GitHeadParams struct {
+	CWD string `json:"cwd"`
+}
+
+// GitHeadResponse reports a branch name, detached short SHA, or an empty
+// string when the working directory has no readable git HEAD.
+type GitHeadResponse struct {
+	Head string `json:"head"`
 }
 
 type HarnessListParams struct{}

@@ -366,12 +366,6 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     if (defaults.workingDir) setCwd(defaults.workingDir);
     if (defaults.accessMode) setAccessMode(defaults.accessMode);
     if (defaults.reasoningEffort) setReasoningEffort(defaults.reasoningEffort);
-    // The persisted branch is a fast first paint only - the HEAD resolution
-    // below always overrides it once it lands. Now that the readout is
-    // read-only, HEAD is the sole authority for what it says; a remembered
-    // value outliving the branch it named would be a lie in a field that
-    // presents itself as fact.
-    if (defaults.branch) setBranch(defaults.branch);
     // Writing the prompt is what starting an agent IS, so the caret starts
     // there rather than on whichever field happens to be first in the DOM.
     textareaRef.current?.focus();
@@ -472,13 +466,13 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
   useEffect(() => {
     if (cwd.trim() === "") return undefined;
     let active = true;
-    resolveHeadBranch(cwd).then((head) => {
+    resolveHeadBranch(client, cwd).then((head) => {
       if (active) setBranch(head);
     });
     return () => {
       active = false;
     };
-  }, [cwd]);
+  }, [client, cwd]);
 
   // Default-model preview (kata xgk8): thread/start resolves Model from the
   // SAME layered launch config this previews (app_threadlifecycle.go -
@@ -710,7 +704,6 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
       cwd,
       harness,
       model,
-      branch,
       accessMode,
       reasoningEffort,
       harnessUsesEvenerModels: usesEvenerModels,
@@ -720,7 +713,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
     // marker-counter reset). The spawn pane is a dockview singleton that can
     // still be mounted behind the session pane this navigates to, so without
     // this an already-sent prompt/image stays staged and re-sendable if the
-    // user returns to it. Sticky defaults (harness/model/cwd/branch/access
+    // user returns to it. Sticky defaults (harness/model/cwd/access
     // mode, floor §1.9-§1.10) are deliberately left untouched - only the
     // one-shot prompt/attachments reset.
     updatePrompt("");
@@ -983,8 +976,7 @@ export default function Spawn(_props: PaneProps<SpawnPaneParams>) {
             </FormRow>
             {/* Branch is a read-only HEAD readout, not a peer field: it rides
                 the directory row as a mono suffix ("~/code/evener · main") because
-                it is a PROPERTY of that directory, and the wire has nowhere to
-                send it anyway (startThread.ts's own branch comment). */}
+                it is a property of that directory. */}
             {branch !== "" && (
               <span className={CLASS.branch} data-testid="spawn-branch" title={`HEAD ${branch}`}>
                 <span className={CLASS.branchSeparator} aria-hidden="true">

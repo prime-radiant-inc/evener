@@ -107,6 +107,7 @@ function readyClient(configure?: (fake: FakeClient) => void): FakeClient {
   fake.on("evener/paths/complete", () => ({ data: [] }));
   fake.on("evener/path/validate", () => ({ path: "", valid: true }));
   fake.on("evener/dirs/create", ({ path }) => ({ path, created: true }));
+  fake.on("evener/git/head", () => ({ head: "main" }));
   fake.on("evener/plugin/preview", () => ({ plugins: [] }));
   fake.on("thread/start", () => startResponse("local:abc123"));
   configure?.(fake);
@@ -169,8 +170,6 @@ async function settled(): Promise<void> {
   await screen.findByRole("button", { name: "Advanced options" });
 }
 
-let fetchMock: ReturnType<typeof vi.fn>;
-
 beforeAll(() => {
   globalThis.localStorage = new MemoryStorage() as unknown as Storage;
 });
@@ -178,13 +177,6 @@ beforeAll(() => {
 beforeEach(() => {
   localStorage.clear();
   modelListOverride = null;
-  fetchMock = vi.fn((url: string) => {
-    if (url.startsWith("/api/git/head")) {
-      return Promise.resolve({ ok: true, status: 200, json: () => Promise.resolve({ branch: "main" }) } as Response);
-    }
-    return Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response);
-  });
-  vi.stubGlobal("fetch", fetchMock);
 });
 
 afterEach(() => {
@@ -417,21 +409,20 @@ test("branch renders as a suffix on the directory row, not as an editable peer f
   await settled();
 
   await waitFor(() => expect(screen.getByTestId("spawn-branch").textContent).toContain("main"));
-  // Not a text box: it is a readout of the directory's HEAD, and the wire has
-  // nowhere to send a branch anyway (startThread.ts's own branch note).
+  // Not a text box: it is a readout of the directory's HEAD.
   expect(screen.queryByLabelText("Branch")).toBeNull();
   expect(screen.getByTestId("spawn-branch").querySelector("input")).toBeNull();
 });
 
 test("the branch readout is absent when the working directory has no resolvable HEAD", async () => {
-  // The default fetch mock 404s everything except /api/git/head; override it so
-  // HEAD resolution fails soft to "" the way branch.ts documents.
-  vi.stubGlobal(
-    "fetch",
-    vi.fn(() => Promise.resolve({ ok: false, status: 404, json: () => Promise.resolve({}) } as Response)),
-  );
   localStorage.setItem("evener-hub.spawn-defaults.global.working_dir", "/tmp/plain");
-  renderSpawn(readyClient());
+  renderSpawn(
+    readyClient((fake) => {
+      fake.on("evener/git/head", () => {
+        throw new Error("git head unavailable");
+      });
+    }),
+  );
   await settled();
 
   await waitFor(() => expectWorkingDir("/tmp/plain"));

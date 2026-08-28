@@ -20,15 +20,14 @@ type mutRoute struct {
 }
 
 // mutatingRoutes are exactly the routes the Phase-4 read-only handler fuzz
-// excluded: the spawn POST and the live-git
-// seam reads, and the session/turn action verbs (clear/model/effort/interrupt/
-// compact/shutdown/send/fork under /api/sessions, and steer/queue/drain-as-steer
-// under /s). Under the B0 sandbox every one of these is contained: spawn hits
-// the recording spawner and git-head its
-// seams, and the action verbs resolve "not live" before any daemon dial.
+// excluded: the spawn POST, the live-models seam read, and the session/turn
+// action verbs (clear/model/effort/interrupt/compact/shutdown/send/fork under
+// /api/sessions, and steer/queue/drain-as-steer under /s). Under the B0 sandbox
+// every one of these is contained: spawn hits the recording spawner, models its
+// seam, and the action verbs resolve "not live" before any daemon dial.
 var mutatingRoutes = []mutRoute{
 	{http.MethodPost, "/api/spawn", true},
-	{http.MethodGet, "/api/git/head?cwd={id}", false},
+	{http.MethodGet, "/api/models?harness={id}", false},
 	{http.MethodPost, "/api/sessions/{id}/clear", false},
 	{http.MethodPost, "/api/sessions/{id}/model", true},
 	{http.MethodPost, "/api/sessions/{id}/reasoning-effort", true},
@@ -70,7 +69,7 @@ func isServerFault(code int) bool {
 //   - no server fault (isServerFault: a 500 or non-deliberate 5xx is a defect);
 //   - never serve the out-of-root secret (path-escape tripwire);
 //   - never dial the network (the deny-transport tripwire) — no spawn reaches a
-//     real subprocess, no model/git call reaches a provider.
+//     real subprocess and no model call reaches a provider.
 //
 // The recording spawner and recording mkdir guarantee no real process or
 // directory is ever materialized regardless of input, so those escapes need no
@@ -104,7 +103,8 @@ func FuzzWebMutatingHandler(f *testing.F) {
 		// otherwise reaches. Empty Data keeps the seed small (the per-image byte
 		// limit is 8 MiB, not worth a multi-MiB corpus entry).
 		{"/api/spawn", "", `{"harness":"evener","working_dir":"` + s.CWD + `","items":[{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"}]}`},
-		{"/api/git/head?cwd={id}", s.CWD, ""},
+		{"/api/models?harness={id}", "evener", ""},
+		{"/api/models?harness={id}", "codex", ""},
 		{"/api/sessions/{id}/clear", sandboxSessionID, ""},
 		{"/api/sessions/{id}/model", sandboxSessionID, `{"model":"openai/gpt-5.5"}`},
 		{"/api/sessions/{id}/reasoning-effort", sandboxSessionID, `{"reasoning_effort":"high"}`},

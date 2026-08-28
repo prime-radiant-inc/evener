@@ -547,6 +547,12 @@ func (c *Client) ProjectsRecent(ctx context.Context, params ProjectsRecentParams
 	return out, err
 }
 
+func (c *Client) GitHead(ctx context.Context, params GitHeadParams) (GitHeadResponse, error) {
+	var out GitHeadResponse
+	err := c.request(ctx, MethodEvenerGitHead, params, &out)
+	return out, err
+}
+
 func (c *Client) NavigationRead(ctx context.Context, params NavigationReadParams) (NavigationReadResponse, error) {
 	var out NavigationReadResponse
 	err := c.request(ctx, MethodEvenerNavigationRead, params, &out)
