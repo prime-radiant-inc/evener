@@ -451,7 +451,9 @@ describe("StillwaterRenderer conversation surface", () => {
 
   it("uses conversation.tone in the summary, never hardcoded running", () => {
     const baseConversation = buildState().conversation;
-    expect(baseConversation).not.toBeNull();
+    if (baseConversation === null) {
+      throw new Error("expected conversation fixture");
+    }
     const state = buildState({
       surface: "conversation",
       conversation: {
@@ -472,7 +474,9 @@ describe("StillwaterRenderer conversation surface", () => {
 
   it("displays updatedLabel in the summary when non-null", () => {
     const baseConversation = buildState().conversation;
-    expect(baseConversation).not.toBeNull();
+    if (baseConversation === null) {
+      throw new Error("expected conversation fixture");
+    }
     const state = buildState({
       surface: "conversation",
       conversation: {
@@ -486,7 +490,9 @@ describe("StillwaterRenderer conversation surface", () => {
 
   it("omits updatedLabel from the summary when null", () => {
     const baseConversation = buildState().conversation;
-    expect(baseConversation).not.toBeNull();
+    if (baseConversation === null) {
+      throw new Error("expected conversation fixture");
+    }
     const state = buildState({
       surface: "conversation",
       conversation: {
@@ -610,7 +616,9 @@ describe("StillwaterRenderer conversation surface", () => {
 
   it("handles missing question linkage visibly", () => {
     const baseConversation = buildState().conversation;
-    expect(baseConversation).not.toBeNull();
+    if (baseConversation === null) {
+      throw new Error("expected conversation fixture");
+    }
     const state = buildState({
       surface: "conversation",
       conversation: {
@@ -881,7 +889,9 @@ describe("StillwaterRenderer conversation surface", () => {
 
   it("omits the load-older button when olderAvailable is false", () => {
     const baseConversation = buildState().conversation;
-    expect(baseConversation).not.toBeNull();
+    if (baseConversation === null) {
+      throw new Error("expected conversation fixture");
+    }
     const state = buildState({
       surface: "conversation",
       conversation: {
