@@ -29,6 +29,7 @@ import {
   useToasts,
 } from "../../widgets";
 import { requireClass } from "../../widgets/internal/requireClass";
+import { useClient } from "../clientContext";
 import { closePanesForDeletedSessions } from "../deletedSessionPanes";
 import { navigate, paneToURL } from "../routing";
 import { workspaceStore } from "../workspace";
@@ -463,6 +464,7 @@ function isNavigationMutationReceipt(result: unknown): result is NavigationMutat
 }
 
 function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealConsumed }: RailProps = {}) {
+  const client = useClient();
   const navigationMode = useNavigationStore((state) => state.mode);
   const manifest = useNavigationStore((state) => state.manifest);
   const resourcesState = useNavigationStore((state) => state.resources);
@@ -859,7 +861,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
     },
     onToggleFavoriteProject: (project) => {
       const value = !project.favorite;
-      void runAction(() => setFavorite("project", project.key, value), "Couldn't update favorite", {
+      void runAction(() => setFavorite(client, "project", project.key, value), "Couldn't update favorite", {
         kind: "projectFavorite",
         key: project.key,
         value,

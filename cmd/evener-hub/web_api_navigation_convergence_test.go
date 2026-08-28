@@ -35,7 +35,7 @@ func TestRESTNavigationTicketConvergesWithPublisherBroadcast(t *testing.T) {
 	})
 	web.navigation = newTestNavigationService(t, source)
 
-	// Prime the retained snapshot, then make the real favorite handler observe
+	// Prime the retained snapshot, then make the real archive handler observe
 	// a changed navigation source. No scheduler or wall-clock synchronization
 	// is involved: Refresh owns the ticket and publication atomically.
 	if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
@@ -81,7 +81,7 @@ func TestRESTNavigationTicketConvergesWithPublisherBroadcast(t *testing.T) {
 	waitNavigationSignal(t, done, "navigation publisher shutdown")
 }
 
-func TestRESTNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
+func TestNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
 	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
 	dir := t.TempDir()
 	web := NewWebServer(hubcore.WebConfig{
@@ -89,6 +89,7 @@ func TestRESTNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
 		Archive:  hubcore.NewArchiveStore(dir + "/archive.db"),
 	})
 	web.navigation = newTestNavigationService(t, source)
+	web.appRPC = newHubAppServerWithNavigation(web.cfg, web.sources, web.navigation)
 	if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
 		t.Fatal(err)
 	}
@@ -97,24 +98,16 @@ func TestRESTNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
 	// The first request changes the favorite store but not navigation. This is
 	// the R39 no-op contract: an independent refresh flight returns empty and
 	// emits no typed invalidation.
-	rr := postJSON(t, web.Handler(), "/api/favorite", `{"kind":"project","id":"p1","favorited":true}`)
-	if rr.Code != http.StatusOK {
-		t.Fatalf("first status=%d body=%s", rr.Code, rr.Body.String())
-	}
-	var first favoriteMutationResponse
-	if err := json.Unmarshal(rr.Body.Bytes(), &first); err != nil {
-		t.Fatal(err)
+	first, err := dispatchFavoriteSet(t, web.appRPC, appwire.FavoriteSetParams{Kind: "project", ID: "p1", Favorited: true})
+	if err != nil {
+		t.Fatalf("first favorite: %v", err)
 	}
 	if first.Navigation.GenerationID != initialGeneration || len(first.Navigation.Targets) != 0 || len(web.navigation.DrainPublications()) != 0 {
 		t.Fatalf("no-op response/events: response=%+v events=%+v", first.Navigation, web.navigation.DrainPublications())
 	}
-	repeatFavorite := postJSON(t, web.Handler(), "/api/favorite", `{"kind":"project","id":"p1","favorited":true}`)
-	if repeatFavorite.Code != http.StatusOK {
-		t.Fatalf("repeat favorite status=%d body=%s", repeatFavorite.Code, repeatFavorite.Body.String())
-	}
-	var repeated favoriteMutationResponse
-	if err := json.Unmarshal(repeatFavorite.Body.Bytes(), &repeated); err != nil {
-		t.Fatal(err)
+	repeated, err := dispatchFavoriteSet(t, web.appRPC, appwire.FavoriteSetParams{Kind: "project", ID: "p1", Favorited: true})
+	if err != nil {
+		t.Fatalf("repeat favorite: %v", err)
 	}
 	if repeated.Navigation.GenerationID != initialGeneration || len(repeated.Navigation.Targets) != 0 || len(web.navigation.DrainPublications()) != 0 {
 		t.Fatalf("repeat favorite response/events: response=%+v events=%+v", repeated.Navigation, web.navigation.DrainPublications())
@@ -125,7 +118,7 @@ func TestRESTNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
 	// both the precise project and the wildcard target; requiring wildcard
 	// alone would incorrectly weaken the target assertion.
 	source.changeTitle("unknown-session-check")
-	rr = postJSON(t, web.Handler(), "/api/archive", `{"kind":"session","id":"unknown-session","archived":true}`)
+	rr := postJSON(t, web.Handler(), "/api/archive", `{"kind":"session","id":"unknown-session","archived":true}`)
 	if rr.Code != http.StatusOK || !strings.Contains(rr.Body.String(), `"ok":true`) {
 		t.Fatalf("unknown status/body=%d %s", rr.Code, rr.Body.String())
 	}

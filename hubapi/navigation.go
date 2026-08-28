@@ -165,9 +165,6 @@ type NavigationSessionSummary struct {
 	Children           NavigationArray[NavigationSessionSummary] `json:"children"`
 }
 
-// NavigationMutation is returned by hub-owned mutations after navigation state
-// has committed, so clients can converge before the matching AppWire event.
-type NavigationMutation struct {
-	GenerationID string                                                `json:"generation_id"`
-	Targets      NavigationArray[appwire.NavigationInvalidationTarget] `json:"targets"`
-}
+// NavigationMutation remains available to hubapi callers while the shared wire
+// shape is owned by appwire.
+type NavigationMutation = appwire.NavigationMutation

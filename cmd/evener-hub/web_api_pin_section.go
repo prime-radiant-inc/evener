@@ -1,6 +1,7 @@
 package hub
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -31,6 +32,46 @@ type sessionPinNavigationResponse struct {
 	Changed    bool                        `json:"changed"`
 	Assignment hubapi.SessionPinAssignment `json:"assignment"`
 	Navigation hubapi.NavigationMutation   `json:"navigation"`
+}
+
+func (s *WebServer) topLevelFavoriteSessionID(ctx context.Context, requested string) (string, bool) {
+	if strings.HasPrefix(requested, "cluster:") {
+		return "", false
+	}
+	metas, live, _ := s.navigationTreeInputs(ctx)
+	ids := hubcore.TopLevelSessionIDs(metas)
+	metaIDs := make(map[string]struct{}, len(metas))
+	for _, meta := range metas {
+		metaIDs[meta.ID] = struct{}{}
+	}
+	// A live session can be visible in the tree before its metadata reaches
+	// PastIndex. Such a session is a top-level root by construction; sessions
+	// with metadata are classified by the same helper as tree construction.
+	for _, entry := range live {
+		if entry.SessionID == "" {
+			continue
+		}
+		if _, known := metaIDs[entry.SessionID]; !known {
+			ids[entry.SessionID] = struct{}{}
+		}
+	}
+	for id := range ids {
+		if favoriteSessionIDMatches(requested, id) {
+			return id, true
+		}
+	}
+	return "", false
+}
+
+func favoriteSessionIDMatches(requested, actual string) bool {
+	if requested == actual {
+		return true
+	}
+	actualRef := hubRefFromTreeNodeID(actual)
+	if requestedRef, err := hubapi.ParseRef(requested); err == nil && requestedRef == actualRef {
+		return true
+	}
+	return actualRef.HostID == "local" && requested == actualRef.SessionID
 }
 
 func (s *WebServer) handleAPIPinSections(w http.ResponseWriter, r *http.Request) {

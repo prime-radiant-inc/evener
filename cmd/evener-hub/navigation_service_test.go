@@ -470,7 +470,7 @@ func TestNavigationServiceJoinedTicketsShareExactCommittedOutcome(t *testing.T) 
 		t.Fatalf("joined outcomes differ: %+v vs %+v", one, two)
 	}
 	publications := service.DrainPublications()
-	if len(publications) != 1 || !reflect.DeepEqual([]appwire.NavigationInvalidationTarget(one.Targets), publications[0].Targets) {
+	if len(publications) != 1 || !reflect.DeepEqual(one.Targets, publications[0].Targets) {
 		t.Fatalf("outcome/publication mismatch: %+v %+v", one, publications)
 	}
 	if len(service.DrainPublications()) != 0 {

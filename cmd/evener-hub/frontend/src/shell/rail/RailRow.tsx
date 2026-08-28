@@ -374,7 +374,7 @@ function ActionsMenu({ label, items }: { label: string; items: MenuItem[] }) {
 // web_api_project_delete.go). Offering menu items that are guaranteed to
 // fail server-side would be worse than offering none - kept as an
 // all-or-nothing exclusion (favorite included) rather than special-casing
-// per action, since POST /api/favorite's own project-kind validation is a
+// per action, since evener/favorite/set's own project-kind validation is a
 // separate, disclosed gap (unrelated to this row's own scope) that this
 // component has no reliable way to distinguish from "would actually work".
 const NO_PROJECT_KEY = "no-project";

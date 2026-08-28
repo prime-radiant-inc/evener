@@ -1,8 +1,10 @@
 // The rail surface: the REAL Rail component (shell/rail/Rail.tsx), fed by
 // seeding navigationStore directly with fixture navigation resources — a
 // plain zustand store, so the Rail renders from already-present data and
-// never issues a network request. No network, no FakeClient.
+// never issues a network request. A FakeClient supplies the production client
+// context without opening a socket.
 import { useEffect } from "react";
+import { FakeClient } from "../../protocol/testing/fakeClient";
 import type {
   NavigationManifest,
   NavigationProjectCatalog,
@@ -10,6 +12,7 @@ import type {
   NavigationSectionResource,
   NavigationSessionSummary,
 } from "../../protocol/types.gen";
+import { ClientProvider } from "../../shell/clientContext";
 import { Rail } from "../../shell/rail/Rail";
 import { navigationStore } from "../../stores/navigation/store";
 import { keyID, type ResourceState } from "../../stores/navigation/types";
@@ -159,7 +162,9 @@ export default function RailSurfaceSection() {
         project.
       </p>
       <ThemeFlip>
-        <Rail width={280} />
+        <ClientProvider client={new FakeClient()}>
+          <Rail width={280} />
+        </ClientProvider>
       </ThemeFlip>
     </section>
   );

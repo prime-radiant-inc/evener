@@ -1,9 +1,12 @@
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import { act, cleanup, fireEvent, render as renderUI, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import type { ReactElement } from "react";
 import { afterEach, beforeAll, beforeEach, describe, expect, test, vi } from "vitest";
+import { FakeClient } from "../../protocol/testing/fakeClient";
 import { navigationStore, resetNavigationStoreForTests } from "../../stores/navigation/store";
 import { manifest as navigationManifest } from "../../stores/navigation/testing";
 import { prefsStore, resetPrefsStoreForTests, SIDEBAR_WIDTH_MAX } from "../../stores/prefs";
+import { ClientProvider } from "../clientContext";
 import { resetWorkspaceStoreForTests } from "../workspace";
 import { RailHost } from "./RailHost";
 import { revealSessionInRail, setRailRevealHandler } from "./railController";
@@ -40,6 +43,10 @@ function emptyNavResponse(needsYou = 0) {
 
 function jsonResponse(body: unknown): Response {
   return { ok: true, status: 200, statusText: "OK", json: () => Promise.resolve(body) } as Response;
+}
+
+function render(ui: ReactElement, client = new FakeClient()) {
+  return renderUI(<ClientProvider client={client}>{ui}</ClientProvider>);
 }
 
 beforeAll(() => {
