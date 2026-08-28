@@ -8,9 +8,7 @@ import (
 	"io"
 	"net"
 	"net/http"
-	"net/http/httptest"
 	"os"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/cmd/evener/internal/rvreg"
@@ -104,15 +102,6 @@ func fuzzRunServeCallbacks(t *testing.T) {
 	}
 	d.newServer = func(cfg server.ServerConfig) serveServer { srv = server.NewServer(cfg); return srv }
 	d.serveHTTP = func(_ *http.Server, _ net.Listener) error {
-		requests := []struct{ method, path, body string }{
-			{"GET", "/tasks", ""},
-			{"POST", "/model", `{"model":"test2"}`},
-		}
-		for _, q := range requests {
-			req := httptest.NewRequest(q.method, q.path, strings.NewReader(q.body))
-			rec := httptest.NewRecorder()
-			srv.ServeHTTP(rec, req)
-		}
 		stop()
 		return http.ErrServerClosed
 	}

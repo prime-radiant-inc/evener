@@ -439,16 +439,7 @@ func NewServer(cfg ServerConfig) *Server {
 	}
 	s.registerAppWireHandlers()
 	s.mux.HandleFunc("/rpc", s.appServer.ServeWebSocket)
-	s.mux.HandleFunc("/interrupt", s.handleInterrupt)
-	s.mux.HandleFunc("/steer", s.handleSteer)
-	s.mux.HandleFunc("/queue", s.handleQueue)
-	s.mux.HandleFunc("/drain-as-steer", s.handleDrainAsSteer)
-	s.mux.HandleFunc("/compact", s.handleCompact)
-	s.mux.HandleFunc("/model", s.handleModel)
 	s.mux.HandleFunc("/clear", s.handleClear)
-	s.mux.HandleFunc("/input", s.handleInput)
-	s.mux.HandleFunc("/tasks", s.handleTasks)
-	s.mux.HandleFunc("/shutdown", s.handleShutdown)
 	return s
 }
 
@@ -514,7 +505,7 @@ func (s *Server) IncrementTurns() {
 	s.mu.Unlock()
 }
 
-// SetCancelFunc sets the cancel function called by POST /interrupt.
+// SetCancelFunc sets the cancel function used by turn/interrupt.
 // The session loop arms it per turn and clears it between turns, so it answers
 // "is a cancel armed right now" and nothing more durable than that.
 //
@@ -541,7 +532,7 @@ func (s *Server) SetSandboxEscalationResolveFunc(fn func(escalationID string, ap
 	s.mu.Unlock()
 }
 
-// SetSteerFunc sets the function called by POST /steer. It is invoked
+// SetSteerFunc sets the function called by turn/steer. It is invoked
 // regardless of whether the session is currently processing.
 func (s *Server) SetSteerFunc(fn func(string)) {
 	s.mu.Lock()
@@ -557,7 +548,7 @@ func (s *Server) SetSteerWithImagesFunc(fn func(string, []ImageAttachment)) {
 	s.mu.Unlock()
 }
 
-// SetQueueFunc sets the function called by POST /queue (kata 111a). The
+// SetQueueFunc sets the function called by turn/queue (kata 111a). The
 // callback should append the message to the underlying session's input
 // queue. Returns an error when the session refuses the message.
 func (s *Server) SetQueueFunc(fn func(string) error) {
@@ -588,7 +579,7 @@ func (s *Server) SetQueueWithImagesFunc(fn func(string, []ImageAttachment) error
 	s.mu.Unlock()
 }
 
-// SetDrainAsSteerFunc sets the function called by POST /drain-as-steer
+// SetDrainAsSteerFunc sets the function called by turn/drainAsSteer
 // (kata 0bq1). The callback should pop every queued message and inject
 // them as a single STEERING message to the in-flight turn.
 func (s *Server) SetDrainAsSteerFunc(fn func() error) {
@@ -631,7 +622,7 @@ func (s *Server) SetCancelQueuedFunc(fn func(int, string) (string, int, error)) 
 	s.mu.Unlock()
 }
 
-// SetCompactFunc sets the function called by POST /compact.
+// SetCompactFunc sets the function called by thread/compact/start.
 func (s *Server) SetCompactFunc(fn func(context.Context) error) {
 	s.mu.Lock()
 	s.compactFunc = fn
@@ -645,7 +636,7 @@ func (s *Server) SetClearFunc(fn func(context.Context) error) {
 	s.mu.Unlock()
 }
 
-// SetModelFunc sets the function called by POST /model.
+// SetModelFunc sets the function called by thread/model/set.
 func (s *Server) SetModelFunc(fn func(string) error) {
 	s.mu.Lock()
 	s.modelFunc = fn
@@ -674,18 +665,12 @@ func (s *Server) SetReasoningEffortFunc(fn func(string)) {
 	s.mu.Unlock()
 }
 
-// SetShutdownFunc sets the function called by POST /shutdown.
+// SetShutdownFunc sets the function called by thread/shutdown.
 // It must initiate graceful termination of the daemon process.
-// The handler returns 202 immediately after invoking the callback.
 func (s *Server) SetShutdownFunc(fn func()) {
 	s.mu.Lock()
 	s.shutdownFunc = fn
 	s.mu.Unlock()
-}
-
-// ModelRequest is the JSON body for POST /model.
-type ModelRequest struct {
-	Model string `json:"model"`
 }
 
 // SetListModelsFunc sets the function used by the typed model/list method.
@@ -695,7 +680,7 @@ func (s *Server) SetListModelsFunc(fn func(context.Context) ([]appwire.ModelDesc
 	s.mu.Unlock()
 }
 
-// SetTasksFunc sets the function called by GET /tasks. The function should
+// SetTasksFunc sets the function called by evener/tasks/list. The function should
 // return a JSON-serializable slice (typically []task.Task).
 func (s *Server) SetTasksFunc(fn func() any) {
 	s.mu.Lock()
@@ -721,12 +706,6 @@ func (s *Server) SetJobOutputFunc(fn func(jobID string, beforeBytes, maxBytes in
 	s.mu.Lock()
 	s.jobOutputFn = fn
 	s.mu.Unlock()
-}
-
-// InputRequest is the JSON body for POST /input.
-type InputRequest struct {
-	Text   string            `json:"text"`
-	Images []ImageAttachment `json:"images,omitempty"`
 }
 
 // SetProcessing marks whether the session is currently processing input. A
