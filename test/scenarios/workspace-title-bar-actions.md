@@ -78,11 +78,10 @@ The queued message must survive the interrupt — after the cancelled turn
 settles back to idle, the daemon's outer ProcessInput loop pops the queue
 head and runs it as a fresh user turn.
 
-   **There is no REST route for queue.** `handleAPISession`'s verb list
-   (`cmd/evener-hub/web_api_tree.go#handleAPISession`) has no `queue` case, and the
-   old `/s/<id>/queue` shim died with the vanilla frontend. `turn/queue`
-   lives only on the AppWire WebSocket (`appwire/types.go:26`), so this leg
-   needs one of:
+   **There is no REST route for queue.** The old `/s/<id>/queue` shim died
+   with the vanilla frontend, and the session REST namespace is gone.
+   `turn/queue` lives only on the AppWire WebSocket
+   (`appwire/types.go#MethodTurnQueue`), so this leg needs one of:
 
    - **[browser-free]** dial `ws://127.0.0.1:$PORT/rpc` with
      `Authorization: Bearer $TOKEN`, `initialize`, then call
