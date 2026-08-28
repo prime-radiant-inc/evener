@@ -240,6 +240,36 @@ class CountingRecoveryStorage extends MutationOutboxIndexedDB {
   }
 }
 
+class ControlledDiscardStorage extends MutationOutboxIndexedDB {
+  discardStarted: Promise<void> = Promise.resolve();
+  private pausedClientMutationId: string | null = null;
+  private markDiscardStarted: (() => void) | undefined;
+  private releaseDiscard: (() => void) | undefined;
+  private discardGate: Promise<void> = Promise.resolve();
+
+  pauseDiscard(clientMutationId: string): void {
+    this.pausedClientMutationId = clientMutationId;
+    this.discardStarted = new Promise((resolve) => {
+      this.markDiscardStarted = resolve;
+    });
+    this.discardGate = new Promise((resolve) => {
+      this.releaseDiscard = resolve;
+    });
+  }
+
+  release(): void {
+    this.releaseDiscard?.();
+  }
+
+  override async discardRecovery(clientMutationId: string, shouldDiscard?: () => boolean): Promise<boolean> {
+    if (clientMutationId === this.pausedClientMutationId) {
+      this.markDiscardStarted?.();
+      await this.discardGate;
+    }
+    return super.discardRecovery(clientMutationId, shouldDiscard);
+  }
+}
+
 async function mountComposerWithHandle(ref: string, overrides: Partial<Thread> = {}) {
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse(ref, overrides));
@@ -437,6 +467,17 @@ test("clicking the current goal confirms before replacing an existing draft", as
   expect(document.activeElement).toBe(textarea());
 });
 
+test("editing the goal confirms before replacing whitespace-only draft text", async () => {
+  const user = userEvent.setup();
+  await mountComposer("ref_a", { evener: currentWorkEvener({ goal: true }) });
+  fireEvent.change(textarea(), { target: { value: " \n\t" } });
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+
+  expect(screen.getByRole("dialog", { name: "Replace draft?" })).toBeTruthy();
+  expect(textarea().value).toBe(" \n\t");
+});
+
 test("editing the goal confirms before replacing a draft that contains only attachments", async () => {
   installStalledDecodeStub();
   const user = userEvent.setup();
@@ -506,6 +547,65 @@ test("confirmed goal replacement exits recovery without deleting its durable rec
   expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
   expect(await storage.getRecovery(recovered.clientMutationId)).toBeDefined();
   expect(screen.getByText("recover this later")).toBeTruthy();
+});
+
+test("goal replacement preserves a recovery row whose empty-draft discard is already pending", async () => {
+  const storage = new ControlledDiscardStorage();
+  setMutationStorageForTests(storage);
+  const recovered = await seedRejectedRecovery(storage, "ref_a", "clear me locally");
+  storage.pauseDiscard(recovered.clientMutationId);
+  const user = userEvent.setup();
+  await mountComposer("ref_a", {
+    status: { type: "idle" },
+    evener: currentWorkEvener({ goal: true }),
+  });
+  await flushPendingTurnsProjectionForTests();
+  await user.clear(textarea());
+  await storage.discardStarted;
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+  await user.click(screen.getByRole("button", { name: "Replace draft" }));
+  expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
+
+  storage.release();
+  await flushPendingTurnsProjectionForTests();
+
+  expect((await storage.listRecovery("ref_a")).map((row) => row.clientMutationId)).toEqual([
+    recovered.clientMutationId,
+  ]);
+  expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
+});
+
+test("goal replacement preserves both recovery rows while a merged source discard is pending", async () => {
+  const storage = new ControlledDiscardStorage();
+  setMutationStorageForTests(storage);
+  const owner = await seedRejectedRecovery(storage, "ref_a", "first recovery");
+  const source = await seedRejectedRecovery(storage, "ref_a", "second recovery");
+  storage.pauseDiscard(source.clientMutationId);
+  const user = userEvent.setup();
+  await mountComposer("ref_a", {
+    status: { type: "idle" },
+    evener: currentWorkEvener({ goal: true }),
+  });
+  await flushPendingTurnsProjectionForTests();
+  expect(textarea().value).toBe("first recovery");
+  const sourceRow = screen.getByText("second recovery").closest("li");
+  if (!sourceRow) throw new Error("missing second recovery row");
+  await user.click(within(sourceRow).getByRole("button", { name: "Edit message" }));
+  await storage.discardStarted;
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+  await user.click(screen.getByRole("button", { name: "Replace draft" }));
+  expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
+
+  storage.release();
+  await flushPendingTurnsProjectionForTests();
+
+  expect((await storage.listRecovery("ref_a")).map((row) => row.clientMutationId)).toEqual([
+    owner.clientMutationId,
+    source.clientMutationId,
+  ]);
+  expect(readDraft("ref_a")).toBe("/goal Keep the session focused");
 });
 
 test("goal replacement closes slash completion and resets selection", async () => {

@@ -536,10 +536,14 @@ export async function updateRecoveryMutation(
   return true;
 }
 
-export async function discardRecoveryMutation(clientMutationId: string, targetRef: string): Promise<boolean> {
+export async function discardRecoveryMutation(
+  clientMutationId: string,
+  targetRef: string,
+  shouldDiscard?: () => boolean,
+): Promise<boolean> {
   const runtime = requireMutationRuntime();
   await runtime.start;
-  const discarded = await runtime.storage.discardRecovery(clientMutationId);
+  const discarded = await runtime.storage.discardRecovery(clientMutationId, shouldDiscard);
   if (discarded) notifyMutationPersistence([targetRef]);
   return discarded;
 }

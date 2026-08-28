@@ -191,6 +191,10 @@ export function Composer({ ref }: ComposerProps) {
   const activeRecoveryIdRef = useRef<string | null>(null);
   const recoveryWrites = useRef<Promise<void>>(Promise.resolve());
   const recoveryWriteVersionRef = useRef(0);
+  // Unlike write versions, this changes only when canonical replacement exits
+  // recovery ownership. Durable delete predicates capture it so a discard
+  // already awaiting storage cannot remove a row after replacement.
+  const recoveryReplacementEpochRef = useRef(0);
   const recoveryOwnsLocalDraftRef = useRef(false);
   const [busyAction, setBusyAction] = useState<BusyAction>(null);
   const [pendingGoalReplacement, setPendingGoalReplacement] = useState<string | null>(null);
@@ -343,6 +347,7 @@ export function Composer({ ref }: ComposerProps) {
     // already beyond its initial owner check is prevented by this version from
     // clearing the ordinary draft written below when it eventually settles.
     recoveryWriteVersionRef.current += 1;
+    recoveryReplacementEpochRef.current += 1;
     recoveryOwnsLocalDraftRef.current = false;
     setActiveRecoveryId(null);
     attachments.reset();
@@ -357,11 +362,7 @@ export function Composer({ ref }: ComposerProps) {
   };
 
   const editGoal = (objective: string): void => {
-    if (
-      textRef.current.trim() !== "" ||
-      attachmentItemsRef.current.length > 0 ||
-      activeRecoveryIdRef.current !== null
-    ) {
+    if (textRef.current !== "" || attachmentItemsRef.current.length > 0 || activeRecoveryIdRef.current !== null) {
       setPendingGoalReplacement(objective);
       return;
     }
@@ -399,13 +400,22 @@ export function Composer({ ref }: ComposerProps) {
       nextAttachments: ReturnType<typeof attachments.toInputAttachments>,
     ): Promise<void> => {
       const version = ++recoveryWriteVersionRef.current;
+      const replacementEpoch = recoveryReplacementEpochRef.current;
       const operation = recoveryWrites.current
         .catch(() => undefined)
         .then(async () => {
           if (activeRecoveryIdRef.current !== clientMutationId) return;
           if (nextText.trim() === "" && nextAttachments.length === 0) {
             if (textRef.current.trim() !== "" || attachmentItemsRef.current.length > 0) return;
-            await discardRecoveryPendingTurn(clientMutationId, ref);
+            await discardRecoveryPendingTurn(
+              clientMutationId,
+              ref,
+              () =>
+                recoveryReplacementEpochRef.current === replacementEpoch &&
+                activeRecoveryIdRef.current === clientMutationId &&
+                textRef.current.trim() === "" &&
+                attachmentItemsRef.current.length === 0,
+            );
             if (
               activeRecoveryIdRef.current === clientMutationId &&
               textRef.current.trim() === "" &&
@@ -825,11 +835,16 @@ export function Composer({ ref }: ComposerProps) {
     textareaRef.current?.focus();
 
     const ownerId = currentRecoveryId ?? record.clientMutationId;
+    const replacementEpoch = recoveryReplacementEpochRef.current;
     const persistence = queueRecoveryPersistence(ownerId, merged.text, settledInputAttachments(merged.attachments));
     if (currentRecoveryId !== null && currentRecoveryId !== record.clientMutationId) {
       void persistence
         .then(async () => {
-          await discardRecoveryPendingTurn(record.clientMutationId, ref);
+          await discardRecoveryPendingTurn(
+            record.clientMutationId,
+            ref,
+            () => recoveryReplacementEpochRef.current === replacementEpoch,
+          );
         })
         .catch(() => undefined);
     }

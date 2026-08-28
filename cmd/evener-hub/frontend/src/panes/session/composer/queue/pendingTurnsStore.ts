@@ -324,8 +324,12 @@ export function updateRecoveryPendingTurn(
   return mutateThenRefresh(ref, () => updateRecoveryMutation(clientMutationId, ref, text, attachments));
 }
 
-export function discardRecoveryPendingTurn(clientMutationId: string, ref: string): Promise<boolean> {
-  return mutateThenRefresh(ref, () => discardRecoveryMutation(clientMutationId, ref));
+export function discardRecoveryPendingTurn(
+  clientMutationId: string,
+  ref: string,
+  shouldDiscard?: () => boolean,
+): Promise<boolean> {
+  return mutateThenRefresh(ref, () => discardRecoveryMutation(clientMutationId, ref, shouldDiscard));
 }
 
 export function resendRecoveryPendingTurn(
