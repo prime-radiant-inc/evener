@@ -3,7 +3,6 @@
 // surface: setLiveView / applyLiveNotification / setLiveCapabilities / reset /
 // generationForTest. No identity-free fail-open API — no setView,
 // applyNotification, or project.
-// No identity-free fail-open API — no setView, applyNotification, or project.
 //
 // Identity safety (CRITICAL — live methods):
 // - The store tracks an ActivityIdentity { threadId, ref, generation }.
