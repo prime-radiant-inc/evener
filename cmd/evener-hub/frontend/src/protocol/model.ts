@@ -281,9 +281,9 @@ export interface ThreadModel {
   // question about provenance it does not have.
   capabilitySource?: CapabilitySource;
   // Goal is null when no /goal objective is set (wire: EvenerThread.Goal
-  // *GoalState, omitempty). No live push exists (goal/set's response
-  // carries only {started}, and appwire/protocol.go's Notifications catalog
-  // has no goal-changed entry) - a future wave's wire-candidate.
+  // *GoalState, omitempty). Hydration and accepted evener/goal/updated pushes
+  // are authoritative. goal/set's response-derived value is only an immediate
+  // fallback until either authoritative path is accepted.
   goal: GoalState | null;
   contextUsed: number;
   contextWindow: number;
