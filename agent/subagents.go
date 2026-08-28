@@ -953,7 +953,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 	}
 	if len(defaultTasks) > 0 {
 		subStore := subSess.getOrCreateTaskStore()
-		populateErr := subStore.MutateAndPublish(func(revision uint64) error {
+		populateErr := subStore.MutateAndPublish(func(epoch, revision uint64) error {
 			err := subStore.PopulateFromTemplates(defaultTasks, parentTasks)
 			if fault := s.subagentPrepareFault("task_populate"); fault != nil {
 				err = fault
@@ -962,7 +962,7 @@ func (s *Session) prepareSubagentRunFromSelection(
 				return err
 			}
 			summary := taskpkg.Summarize(subStore.View())
-			subSess.emit(events.EventTaskUpdated, taskUpdatedData(summary, subSess.taskStoreOwnerSessionID(), revision))
+			subSess.emit(events.EventTaskUpdated, taskUpdatedData(summary, subSess.taskStoreOwnerSessionID(), epoch, revision))
 			return nil
 		})
 		if err := populateErr; err != nil {

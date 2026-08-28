@@ -18,6 +18,7 @@ import (
 	"primeradiant.com/evener/agent/diagnostic"
 	"primeradiant.com/evener/agent/events"
 	"primeradiant.com/evener/agent/schema"
+	taskpkg "primeradiant.com/evener/agent/task"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/llm"
@@ -1047,6 +1048,7 @@ func TestServerAppWireCheckpointCannotOverwriteDescendantSharedTaskCarrier(t *te
 	})
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
 		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    10,
 		TaskPublicationRevision: 1,
 		CurrentWork: &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{
 			Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "old sampled task"},
@@ -1075,6 +1077,7 @@ func TestServerAppWireCheckpointCannotOverwriteDescendantSharedTaskCarrier(t *te
 			Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "new shared-owner task"},
 		},
 		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    10,
 		TaskPublicationRevision: 2,
 	}})
 	notifications := srv.AppNotificationsAfter(0, "root")
@@ -1305,12 +1308,16 @@ func TestServerAppWireSharedTaskOwnerFansOutInOneCommit(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "root")
 	publishEnvelope(srv, &stubThreadEnvelopeSource{tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "root old"}}})
-	for _, start := range []struct{ id, owner, task string }{
-		{"matching-child", "root", "matching old"},
-		{"unrelated-child", "unrelated-child", "unrelated old"},
+	for _, start := range []struct {
+		id, owner, task string
+		epoch           uint64
+	}{
+		{"matching-child", "root", "matching old", 20},
+		{"unrelated-child", "unrelated-child", "unrelated old", 21},
 	} {
 		srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: start.id, Data: events.SessionStartData{
 			TaskStoreOwnerSessionID: start.owner,
+			TaskPublicationEpoch:    start.epoch,
 			TaskPublicationRevision: 1,
 			CurrentWork:             &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: start.task}}},
 		}})
@@ -1319,6 +1326,7 @@ func TestServerAppWireSharedTaskOwnerFansOutInOneCommit(t *testing.T) {
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "matching-child", Data: events.TaskUpdatedData{
 		TaskStateData:           events.TaskStateData{Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "shared replacement"}},
 		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    20,
 		TaskPublicationRevision: 2,
 	}})
 	for _, id := range []string{"root", "matching-child"} {
@@ -1353,6 +1361,7 @@ func TestServerAppWireTaskPublicationRevisionRejectsDelayedRootCarrier(t *testin
 	publishEnvelope(srv, &stubThreadEnvelopeSource{tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "base task"}}})
 	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "root", Data: events.SessionStartData{
 		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    30,
 		TaskPublicationRevision: 1,
 		CurrentWork: &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{
 			Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "base task"},
@@ -1360,6 +1369,7 @@ func TestServerAppWireTaskPublicationRevisionRejectsDelayedRootCarrier(t *testin
 	}})
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
 		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    30,
 		TaskPublicationRevision: 1,
 		CurrentWork: &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{
 			Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "base task"},
@@ -1371,6 +1381,7 @@ func TestServerAppWireTaskPublicationRevisionRejectsDelayedRootCarrier(t *testin
 			Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "newer child carrier"},
 		},
 		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    30,
 		TaskPublicationRevision: 3,
 	}})
 	afterChild := srv.appNotifier.CurrentSequence()
@@ -1383,6 +1394,7 @@ func TestServerAppWireTaskPublicationRevisionRejectsDelayedRootCarrier(t *testin
 			Total: 2, Current: &events.TaskSummaryData{ID: 1, Description: "delayed older root carrier"},
 		},
 		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    30,
 		TaskPublicationRevision: 2,
 	}})
 	for _, id := range []string{"root", "child"} {
@@ -1400,6 +1412,7 @@ func TestServerAppWireTaskPublicationRevisionRejectsDelayedRootCarrier(t *testin
 			Total: 3, Done: 2, Current: &events.TaskSummaryData{ID: 3, Description: "newest root carrier"},
 		},
 		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    30,
 		TaskPublicationRevision: 4,
 	}})
 	for _, id := range []string{"root", "child"} {
@@ -1420,6 +1433,7 @@ func TestServerAppWireOldTaskProducerUpdatesOnlySource(t *testing.T) {
 	publishEnvelope(srv, &stubThreadEnvelopeSource{tasks: &appwire.TaskAggregate{Total: 1, Current: &appwire.TaskSummary{ID: 1, Description: "root old"}}})
 	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: "child", Data: events.SessionStartData{
 		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    40,
 		TaskPublicationRevision: 5,
 		CurrentWork:             &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "child old"}}},
 	}})
@@ -1446,23 +1460,112 @@ func TestServerAppWireOldTaskProducerUpdatesOnlySource(t *testing.T) {
 func TestServerAppWireTaskPublicationRevisionResetsWithIdentity(t *testing.T) {
 	srv := NewServer(ServerConfig{})
 	srv.SetAppIdentity("local", "root")
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
-		TaskStateData:           events.TaskStateData{Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "old identity high revision"}},
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "root", Data: events.SessionStartData{
 		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    50,
 		TaskPublicationRevision: 10,
+		CurrentWork: &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{
+			Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "old identity high revision"},
+		}},
 	}})
 
 	// A restored/replaced identity can reuse the same durable session ID while
 	// owning a newly constructed TaskStore whose in-memory revision restarts.
 	srv.SetAppIdentity("local", "root")
-	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: "root", Data: events.TaskUpdatedData{
-		TaskStateData:           events.TaskStateData{Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "replacement low revision"}},
+	srv.RecordAppEvent(events.SessionEvent{Kind: events.EventSessionStart, SessionID: "root", Data: events.SessionStartData{
 		TaskStoreOwnerSessionID: "root",
+		TaskPublicationEpoch:    51,
 		TaskPublicationRevision: 1,
+		CurrentWork: &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{
+			Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "replacement low revision"},
+		}},
 	}})
 	thread := readThreadOverWire(t, srv, "local:root")
 	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "replacement low revision" {
 		t.Fatalf("replacement tasks = %+v, want reset revision fence", thread.Evener.Tasks)
+	}
+}
+
+func TestServerAppWireTaskPublicationEpochAllowsSameIDColdRestore(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "root")
+	publishEnvelope(srv, &stubThreadEnvelopeSource{})
+	ownerID := "stable-child"
+	nextPublication := func(store *taskpkg.TaskStore) (epoch, revision uint64) {
+		t.Helper()
+		if err := store.MutateAndPublish(func(gotEpoch, gotRevision uint64) error {
+			epoch, revision = gotEpoch, gotRevision
+			return nil
+		}); err != nil {
+			t.Fatalf("reserve task publication: %v", err)
+		}
+		return epoch, revision
+	}
+	oldStore := taskpkg.NewTaskStore(t.TempDir(), ownerID)
+	oldEpoch, oldStartRevision := nextPublication(oldStore)
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: ownerID, Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: ownerID,
+		TaskPublicationEpoch:    oldEpoch,
+		TaskPublicationRevision: oldStartRevision,
+		CurrentWork: &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{
+			Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "old incarnation start"},
+		}},
+	}})
+	var oldHighRevision uint64
+	for range 5 {
+		_, oldHighRevision = nextPublication(oldStore)
+	}
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: ownerID, Data: events.TaskUpdatedData{
+		TaskStateData:           events.TaskStateData{Total: 6, Done: 5, Current: &events.TaskSummaryData{ID: 6, Description: "old incarnation high revision"}},
+		TaskStoreOwnerSessionID: ownerID,
+		TaskPublicationEpoch:    oldEpoch,
+		TaskPublicationRevision: oldHighRevision,
+	}})
+
+	// Cold restore constructs a new non-shared TaskStore but reuses both root and
+	// child/owner IDs. Its first revision must establish the newer incarnation.
+	newStore := taskpkg.NewTaskStore(t.TempDir(), ownerID)
+	newEpoch, newStartRevision := nextPublication(newStore)
+	if newEpoch <= oldEpoch || newStartRevision != 1 {
+		t.Fatalf("cold restore publication = %d:%d after %d, want newer epoch revision 1", newEpoch, newStartRevision, oldEpoch)
+	}
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventSessionStart, SessionID: ownerID, Data: events.SessionStartData{
+		TaskStoreOwnerSessionID: ownerID,
+		TaskPublicationEpoch:    newEpoch,
+		TaskPublicationRevision: newStartRevision,
+		CurrentWork: &events.CurrentWorkSeedData{Tasks: &events.TaskStateData{
+			Total: 1, Current: &events.TaskSummaryData{ID: 1, Description: "restored incarnation start"},
+		}},
+	}})
+	thread := readThreadOverWire(t, srv, "local:"+ownerID)
+	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "restored incarnation start" {
+		t.Fatalf("cold-restored start tasks = %+v", thread.Evener.Tasks)
+	}
+
+	_, newUpdateRevision := nextPublication(newStore)
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: ownerID, Data: events.TaskUpdatedData{
+		TaskStateData:           events.TaskStateData{Total: 2, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "restored incarnation update"}},
+		TaskStoreOwnerSessionID: ownerID,
+		TaskPublicationEpoch:    newEpoch,
+		TaskPublicationRevision: newUpdateRevision,
+	}})
+	cursor := srv.appNotifier.CurrentSequence()
+
+	// A delayed carrier from the retired store has a numerically higher revision,
+	// but its older epoch must no longer be accepted.
+	_, delayedOldRevision := nextPublication(oldStore)
+	srv.RecordDescendantAppEvent("root", events.SessionEvent{Kind: events.EventTaskUpdated, SessionID: ownerID, Data: events.TaskUpdatedData{
+		TaskStateData:           events.TaskStateData{Total: 7, Done: 6, Current: &events.TaskSummaryData{ID: 7, Description: "delayed retired incarnation"}},
+		TaskStoreOwnerSessionID: ownerID,
+		TaskPublicationEpoch:    oldEpoch,
+		TaskPublicationRevision: delayedOldRevision,
+	}})
+	thread = readThreadOverWire(t, srv, "local:"+ownerID)
+	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.Description != "restored incarnation update" {
+		t.Fatalf("tasks after retired carrier = %+v", thread.Evener.Tasks)
+	}
+	if notifications := srv.AppNotificationsAfter(cursor, ownerID); len(notifications) != 0 {
+		t.Fatalf("retired incarnation produced notifications: %+v", notifications)
 	}
 }
 

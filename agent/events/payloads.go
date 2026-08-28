@@ -36,8 +36,10 @@ type SessionStartData struct {
 	State                   string               `json:"state,omitempty"`
 	CurrentWork             *CurrentWorkSeedData `json:"current_work,omitempty"`
 	TaskStoreOwnerSessionID string               `json:"task_store_owner_session_id,omitempty"`
-	// TaskPublicationRevision orders task snapshots from sessions that share one
-	// store. It is in-process routing metadata and never enters event JSON.
+	// TaskPublicationEpoch identifies the process-local TaskStore incarnation;
+	// TaskPublicationRevision orders its snapshots. Both are in-process routing
+	// metadata and never enter event JSON.
+	TaskPublicationEpoch    uint64 `json:"-"`
 	TaskPublicationRevision uint64 `json:"-"`
 }
 
@@ -459,8 +461,10 @@ type TaskStateData struct {
 type TaskUpdatedData struct {
 	TaskStateData
 	TaskStoreOwnerSessionID string `json:"task_store_owner_session_id,omitempty"`
-	// TaskPublicationRevision is internal ordering metadata assigned by the
-	// shared TaskStore publication serializer. It never enters event JSON.
+	// TaskPublicationEpoch and TaskPublicationRevision are internal ordering
+	// metadata assigned by the shared TaskStore publication serializer. They never
+	// enter event JSON.
+	TaskPublicationEpoch    uint64 `json:"-"`
 	TaskPublicationRevision uint64 `json:"-"`
 }
 
