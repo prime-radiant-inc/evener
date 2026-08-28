@@ -504,10 +504,10 @@ func TestCovHandleAPIReasoningEffortNotLive(t *testing.T) {
 	}
 }
 
-// --- web_api_pin_section.go: topLevelFavoriteSessionID ---
+// --- WebServer.resolveTopLevelSessionRef ---
 
 // TestCovTopLevelFavoriteSessionIDClusterPrefix covers the cluster-prefix
-// rejection (web_api_pin_section.go).
+// rejection in the top-level session resolver.
 func TestCovTopLevelFavoriteSessionIDClusterPrefix(t *testing.T) {
 	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180"})
 	if _, ok := web.resolveTopLevelSessionRef(context.TODO(), "cluster:foo"); ok {

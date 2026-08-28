@@ -10,13 +10,13 @@ import (
 	"primeradiant.com/evener/hubapi"
 )
 
-func TestFavoriteSessionIDMatchesExact(t *testing.T) {
+func TestSessionRefMatchesIDExact(t *testing.T) {
 	if !sessionRefMatchesID("local:s1", "local:s1") {
 		t.Fatal("exact match should return true")
 	}
 }
 
-func TestFavoriteSessionIDMatchesByRef(t *testing.T) {
+func TestSessionRefMatchesIDByRef(t *testing.T) {
 	// requested parses as a Ref that equals hubRefFromTreeNodeID(actual)
 	actual := "local:abc123"
 	// hubRefFromTreeNodeID("local:abc123") parses to {HostID:"local", SessionID:"abc123"}
@@ -26,7 +26,7 @@ func TestFavoriteSessionIDMatchesByRef(t *testing.T) {
 	}
 }
 
-func TestFavoriteSessionIDMatchesLocalShortForm(t *testing.T) {
+func TestSessionRefMatchesIDLocalShortForm(t *testing.T) {
 	// When actual's ref HostID is "local" and requested equals the SessionID
 	actual := "local:session-xyz"
 	if !sessionRefMatchesID("session-xyz", actual) {
@@ -34,14 +34,14 @@ func TestFavoriteSessionIDMatchesLocalShortForm(t *testing.T) {
 	}
 }
 
-func TestFavoriteSessionIDMatchesNoMatch(t *testing.T) {
+func TestSessionRefMatchesIDNoMatch(t *testing.T) {
 	if sessionRefMatchesID("local:s1", "local:s2") {
 		t.Fatal("different sessions should not match")
 	}
 }
 
-func TestFavoriteSessionIDMatchesClusterPrefix(t *testing.T) {
-	// topLevelFavoriteSessionID returns ("", false) for cluster: prefix
+func TestSessionRefMatchesIDClusterPrefix(t *testing.T) {
+	// The top-level session resolver returns ("", false) for a cluster prefix.
 	s := &WebServer{}
 	id, ok := s.resolveTopLevelSessionRef(context.Background(), "cluster:foo")
 	if ok || id != "" {
