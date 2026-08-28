@@ -87,6 +87,8 @@ interface ActiveProfileGraph {
   readonly scoped: ProfileScopedServices;
   active: boolean;
   disposed: boolean;
+  sourcesInvalidated: boolean;
+  invalidateSources: () => void;
   unsubscribeRoster: () => void;
   unsubscribeState: () => void;
 }
@@ -298,15 +300,17 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
       pendingProfileGraphDisposalRef.current = null;
     }
     if (currentGraph !== null) {
-      currentGraph.scoped.rosterStore.getState().reset();
+      invalidateProfileGraphSources(currentGraph);
       disposeProfileGraph(currentGraph);
       activeProfileGraphRef.current = null;
     }
 
     if (scopeChanged) {
       setLiveServices(null);
-      conversationStore.getState().reset();
-      activityStore.getState().reset();
+      if (currentGraph === null) {
+        conversationStore.getState().reset();
+        activityStore.getState().reset();
+      }
       conceptUiStore.getState().resetProfileScope();
       navigation.getState().clearConversations();
       setShowVoice(false);
@@ -343,6 +347,12 @@ export function RootShell({ services, stores }: RootShellProps): JSX.Element {
       scoped,
       active: true,
       disposed: false,
+      sourcesInvalidated: false,
+      invalidateSources: () => {
+        scoped.rosterStore.getState().reset();
+        conversationStore.getState().reset();
+        activityStore.getState().reset();
+      },
       unsubscribeRoster: () => {},
       unsubscribeState: () => {},
     };
@@ -745,11 +755,18 @@ function sameProfileScope(
 
 function disposeProfileGraph(graph: ActiveProfileGraph): void {
   if (graph.disposed) return;
+  invalidateProfileGraphSources(graph);
   deactivateProfileGraph(graph);
   graph.disposed = true;
   graph.unsubscribeRoster();
   graph.unsubscribeState();
   graph.scoped.client.close();
+}
+
+function invalidateProfileGraphSources(graph: ActiveProfileGraph): void {
+  if (graph.sourcesInvalidated) return;
+  graph.sourcesInvalidated = true;
+  graph.invalidateSources();
 }
 
 function deactivateProfileGraph(graph: ActiveProfileGraph): void {

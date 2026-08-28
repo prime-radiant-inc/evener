@@ -86,11 +86,22 @@ export function createProfileScopedServices(
 
 class LeaseAwareProfileClient implements ProfileAppwireClient {
   private active = true;
+  private disposed = false;
+  private readonly pendingSettlements = new Set<{
+    readonly deliver: () => void;
+    readonly suppress: () => void;
+  }>();
 
   constructor(private readonly transport: ProfileClientTransport) {}
 
   setActive(active: boolean): void {
+    if (this.disposed) return;
     this.active = active;
+    if (active) {
+      const pending = [...this.pendingSettlements];
+      this.pendingSettlements.clear();
+      for (const settlement of pending) settlement.deliver();
+    }
   }
 
   request<M extends MethodName>(
@@ -98,10 +109,31 @@ class LeaseAwareProfileClient implements ProfileAppwireClient {
     params: MethodTypes[M]["params"],
     opts?: { timeoutMs?: number },
   ): Promise<MethodTypes[M]["result"]> {
-    if (!this.active) {
+    if (!this.active || this.disposed) {
       return Promise.reject(new Error("profile scope is inactive"));
     }
-    return this.transport.request(method, params, opts);
+    let raw: Promise<MethodTypes[M]["result"]>;
+    try {
+      raw = this.transport.request(method, params, opts);
+    } catch (cause) {
+      return Promise.reject(cause);
+    }
+    return new Promise<MethodTypes[M]["result"]>((resolve, reject) => {
+      void raw.then(
+        (value) => {
+          this.settleRequest({
+            deliver: () => resolve(value),
+            suppress: () => reject(new Error("profile scope is inactive")),
+          });
+        },
+        (cause: unknown) => {
+          this.settleRequest({
+            deliver: () => reject(cause),
+            suppress: () => reject(new Error("profile scope is inactive")),
+          });
+        },
+      );
+    });
   }
 
   onNotification(handler: (notification: AnyNotification) => void): () => void {
@@ -115,13 +147,34 @@ class LeaseAwareProfileClient implements ProfileAppwireClient {
   }
 
   close(): void {
+    if (this.disposed) return;
+    this.active = false;
+    this.disposed = true;
     this.transport.close();
+    const pending = [...this.pendingSettlements];
+    this.pendingSettlements.clear();
+    for (const settlement of pending) settlement.suppress();
   }
 
   onStateChange(handler: (state: string) => void): () => void {
     return this.transport.onStateChange((state) => {
       if (this.active) handler(state);
     });
+  }
+
+  private settleRequest(settlement: {
+    readonly deliver: () => void;
+    readonly suppress: () => void;
+  }): void {
+    if (this.disposed) {
+      settlement.suppress();
+      return;
+    }
+    if (this.active) {
+      settlement.deliver();
+      return;
+    }
+    this.pendingSettlements.add(settlement);
   }
 }
 
