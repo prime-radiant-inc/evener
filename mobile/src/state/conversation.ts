@@ -378,6 +378,23 @@ export interface LiveConversationState extends ConversationState {
   // mark items truncated:true/false without suffix inference. The returned
   // Set is a copy — mutating it cannot affect the store's internal ownership.
   getTruncatedItemIds(): ReadonlySet<string>;
+  // Task3: store-owned external error publication seam. The dispatcher passes
+  // a generic sanitized message plus the exact ref and conversationGeneration
+  // it captured when deciding to publish. The store writes the error ONLY when
+  // the current ref and conversationGeneration exactly match the expected
+  // values; any mismatch (profile/thread switch, reset/open transition) makes
+  // zero set calls, leaves the full state object reference unchanged, and
+  // fires zero subscriber notifications. The write goes through the store's
+  // wrapped set so errorOwnerRev advances, which lets a subsequent rehydrate
+  // preserve the newer external error instead of clearing it. No
+  // service/display/raw IDs are accepted beyond the ref already privately held
+  // by the store; the dispatcher is responsible for passing only generic
+  // sanitized messages.
+  publishExternalError(
+    message: string,
+    expectedRef: string | null,
+    expectedGeneration: number,
+  ): void;
 }
 
 // Extract threadId/ref from a notification's params, returning null if the
@@ -2423,6 +2440,28 @@ export function createConversationStore() {
       // Returns a new Set so the caller cannot mutate internal ownership.
       getTruncatedItemIds() {
         return new Set(truncatedItemIds);
+      },
+
+      // Task3: store-owned external error publication seam. Writes the generic
+      // sanitized message as the conversation error ONLY when the current ref
+      // and conversationGeneration exactly match the expected values the
+      // dispatcher captured. Any mismatch — a profile/thread switch, a reset,
+      // or an open transition — makes zero set calls: the full state object
+      // reference is unchanged and no subscriber fires. The write goes through
+      // the wrapped set so errorOwnerRev advances; a subsequent rehydrate that
+      // captured the older revision must then preserve this newer external
+      // error rather than clearing it. expectedRef null matches a null current
+      // ref (e.g. an error published against the idle store) but never matches
+      // an active conversation's non-null ref.
+      publishExternalError(message, expectedRef, expectedGeneration) {
+        const state = get();
+        if (
+          state.ref !== expectedRef ||
+          state.conversationGeneration !== expectedGeneration
+        ) {
+          return;
+        }
+        set({ error: message });
       },
     };
   });
