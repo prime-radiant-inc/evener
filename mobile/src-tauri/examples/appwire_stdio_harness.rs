@@ -6,6 +6,7 @@
 use std::collections::{HashMap, VecDeque};
 use std::io::{BufRead as _, BufWriter, Write as _};
 use std::net::{IpAddr, Ipv4Addr};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 
 use app_lib::appwire_transport::AppwireManager;
@@ -115,6 +116,7 @@ struct ServerObservations {
 
 enum ConnectionControl {
     ServerClose,
+    ServerFrame(Value),
 }
 
 enum ServerControl {
@@ -127,18 +129,21 @@ struct ScriptedHub {
     origin: String,
     observations: Arc<Mutex<ServerObservations>>,
     active_control: ActiveControl,
+    manual_server: Arc<AtomicBool>,
     shutdown: mpsc::UnboundedSender<ServerControl>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
 
 impl ScriptedHub {
-    fn start() -> Self {
+    fn start(output: Output) -> Self {
         let observations = Arc::new(Mutex::new(ServerObservations::default()));
         let active_control = Arc::new(Mutex::new(None));
+        let manual_server = Arc::new(AtomicBool::new(false));
         let (shutdown, shutdown_rx) = mpsc::unbounded_channel();
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let observations_thread = observations.clone();
         let active_thread = active_control.clone();
+        let manual_thread = manual_server.clone();
         let thread = std::thread::Builder::new()
             .name("mobile-appwire-scripted-hub".to_owned())
             .spawn(move || {
@@ -148,8 +153,15 @@ impl ScriptedHub {
                     .build()
                     .unwrap();
                 runtime.block_on(async move {
-                    run_scripted_hub(observations_thread, active_thread, shutdown_rx, ready_tx)
-                        .await;
+                    run_scripted_hub(
+                        observations_thread,
+                        active_thread,
+                        manual_thread,
+                        output,
+                        shutdown_rx,
+                        ready_tx,
+                    )
+                    .await;
                 });
             })
             .unwrap();
@@ -158,9 +170,22 @@ impl ScriptedHub {
             origin: format!("http://hub.test:{port}"),
             observations,
             active_control,
+            manual_server,
             shutdown,
             thread: Some(thread),
         }
+    }
+
+    fn enable_manual_server(&self) {
+        self.manual_server.store(true, Ordering::SeqCst);
+    }
+
+    fn server_frame(&self, frame: Value) -> bool {
+        self.active_control
+            .lock()
+            .unwrap()
+            .as_ref()
+            .is_some_and(|(_, control)| control.send(ConnectionControl::ServerFrame(frame)).is_ok())
     }
 
     fn server_close(&self) -> bool {
@@ -192,6 +217,8 @@ impl Drop for ScriptedHub {
 async fn run_scripted_hub(
     observations: Arc<Mutex<ServerObservations>>,
     active_control: ActiveControl,
+    manual_server: Arc<AtomicBool>,
+    output: Output,
     mut shutdown: mpsc::UnboundedReceiver<ServerControl>,
     ready: std::sync::mpsc::SyncSender<u16>,
 ) {
@@ -220,6 +247,8 @@ async fn run_scripted_hub(
                     stream,
                     observations.clone(),
                     active_control.clone(),
+                    manual_server.clone(),
+                    output.clone(),
                     control_rx,
                 ));
             }
@@ -232,6 +261,8 @@ async fn run_connection(
     stream: TcpStream,
     observations: Arc<Mutex<ServerObservations>>,
     active_control: ActiveControl,
+    manual_server: Arc<AtomicBool>,
+    output: Output,
     mut control: mpsc::UnboundedReceiver<ConnectionControl>,
 ) {
     #[allow(clippy::result_large_err)]
@@ -261,13 +292,27 @@ async fn run_connection(
                         }))).await;
                         break;
                     }
+                    Some(ConnectionControl::ServerFrame(frame)) => {
+                        if socket.send(Message::Text(frame.to_string().into())).await.is_err() {
+                            break;
+                        }
+                    }
                     None => break,
                 }
             }
             message = socket.next() => {
                 match message {
                     Some(Ok(Message::Text(text))) => {
-                        if handle_client_frame(&mut socket, &text, &observations).await.is_err() {
+                        if handle_client_frame(
+                            &mut socket,
+                            &text,
+                            &observations,
+                            &manual_server,
+                            &output,
+                        )
+                        .await
+                        .is_err()
+                        {
                             break;
                         }
                     }
@@ -301,6 +346,8 @@ async fn handle_client_frame(
     socket: &mut WebSocketStream<TcpStream>,
     text: &str,
     observations: &Arc<Mutex<ServerObservations>>,
+    manual_server: &AtomicBool,
+    output: &Output,
 ) -> Result<(), tokio_tungstenite::tungstenite::Error> {
     let frame: Value = serde_json::from_str(text).unwrap();
     let method = frame.get("method").and_then(Value::as_str).unwrap_or("");
@@ -317,6 +364,14 @@ async fn handle_client_frame(
                 .client_infos
                 .push(client_info.clone());
         }
+    } else if method == "initialized" {
+        observations.lock().unwrap().initialized_count += 1;
+    }
+    if manual_server.load(Ordering::SeqCst) {
+        output.send(json!({ "kind": "serverRequest", "frame": frame }));
+        return Ok(());
+    }
+    if method == "initialize" {
         socket
             .send(Message::Text(
                 json!({
@@ -328,7 +383,6 @@ async fn handle_client_frame(
             ))
             .await?;
     } else if method == "initialized" {
-        observations.lock().unwrap().initialized_count += 1;
         socket
             .send(Message::Text(
                 json!({ "method": "thread/closed", "params": {} })
@@ -447,7 +501,7 @@ fn invoke(
 
 fn main() {
     let output = Output(Arc::new(Mutex::new(BufWriter::new(std::io::stdout()))));
-    let mut hub = ScriptedHub::start();
+    let mut hub = ScriptedHub::start(output.clone());
     let held_events = Arc::new(Mutex::new(VecDeque::new()));
     let app = build_app(hub.origin.clone(), output.clone(), held_events.clone());
     let webview = WebviewWindowBuilder::new(&app, "main", Default::default())
@@ -476,6 +530,18 @@ fn main() {
                 }
             }
             "control" => match request["action"].as_str().unwrap_or("") {
+                "manualServer" => {
+                    hub.enable_manual_server();
+                    output.send(json!({
+                        "kind": "response", "id": id, "ok": true, "value": null,
+                    }));
+                }
+                "serverFrame" => output.send(json!({
+                    "kind": "response",
+                    "id": id,
+                    "ok": hub.server_frame(request["frame"].clone()),
+                    "value": null,
+                })),
                 "serverClose" => output.send(json!({
                     "kind": "response", "id": id, "ok": hub.server_close(), "value": null,
                 })),
