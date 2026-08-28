@@ -1,6 +1,18 @@
+import { readFileSync } from "node:fs";
+import { dirname, join } from "node:path";
+import { fileURLToPath } from "node:url";
 import { cleanup, render, screen } from "@testing-library/react";
 import { afterEach, expect, test } from "vitest";
 import { CurrentWork } from "./CurrentWork";
+
+function currentWorkCssRule(selector: string): string {
+  const path = join(dirname(fileURLToPath(import.meta.url)), "currentwork.module.css");
+  // Source assertions must not pass by matching prose in a CSS comment.
+  const css = readFileSync(path, "utf8").replace(/\/\*[\s\S]*?\*\//g, "");
+  const rule = new RegExp(`\\.${selector}\\s*\\{([^}]*)\\}`).exec(css)?.[1];
+  if (!rule) throw new Error(`currentwork.module.css declares no .${selector} rule`);
+  return rule;
+}
 
 const states = [
   {
@@ -66,4 +78,15 @@ test("keeps long task and goal values in title attributes", () => {
 
   expect(screen.getByTestId("current-work-task-value").getAttribute("title")).toBe(task);
   expect(screen.getByTestId("current-work-goal-value").getAttribute("title")).toBe(goal);
+});
+
+test("uses the approved semantic green ring and uppercase micro-label treatment", () => {
+  const dot = currentWorkCssRule("dot");
+  expect(dot).toContain("border: 1px solid var(--alive)");
+  expect(dot).toContain("background: var(--alive-bg)");
+  expect(dot).not.toContain("var(--accent)");
+
+  const label = currentWorkCssRule("label");
+  expect(label).toContain("text-transform: uppercase");
+  expect(label).toContain("letter-spacing: var(--tracking-micro)");
 });

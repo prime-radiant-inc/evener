@@ -244,6 +244,14 @@ const refCounts = new Map<string, number>();
 // claims the ref. An ensure that fails after its pane lifecycle was retired
 // must not roll back a replacement lifecycle's claim.
 const ensureGenerations = new Map<string, number>();
+// A generation changes at every local goal request and every authoritative goal
+// notification. A request response may publish its derived local state only while
+// its generation is still current, so neither a later request nor a push that
+// arrived during the await can be overwritten by that delayed response. This is
+// independent of producer age: an older producer that sends no goal notification
+// leaves the request generation current and keeps the existing immediate local
+// commit behavior.
+const goalUpdateGenerations = new Map<string, number>();
 const inflightHydrates = new Map<string, Promise<ThreadModel | null>>();
 const inflightHydrateClients = new Map<string, AppwireClientLike>();
 const inflightHydrateEpochs = new Map<string, number>();
@@ -1068,6 +1076,10 @@ function handleNotification(n: AnyNotification): void {
   if (n.method === "evener/thread/resync") {
     if (wiredClient) void handleReady(wiredClient, readyEpoch, n.params.ref);
     return;
+  }
+  if (n.method === "evener/goal/updated") {
+    const ref = n.params.ref;
+    goalUpdateGenerations.set(ref, (goalUpdateGenerations.get(ref) ?? 0) + 1);
   }
   const mutationIdentities = notificationMutationIdentities(n);
   if (mutationIdentities.length > 0) {
@@ -1994,8 +2006,11 @@ export const threadsStore = createStore<ThreadsStoreState>(() => ({
 
   async setGoal(ref, objective) {
     const client = requireClient();
+    const generation = (goalUpdateGenerations.get(ref) ?? 0) + 1;
+    goalUpdateGenerations.set(ref, generation);
     try {
       const response = await client.request("goal/set", { ref, objective });
+      if (goalUpdateGenerations.get(ref) !== generation) return response;
       const goal = objective === "" ? null : { objective, status: "active", iterations: 0 };
       threadsStore.setState((state) => {
         const threads = replaceThread(state.threads, ref, (model) => ({ ...model, goal }));
@@ -2224,6 +2239,7 @@ export function resetThreadsStoreForTests(): void {
   dispatchReadyEpoch = -1;
   refCounts.clear();
   ensureGenerations.clear();
+  goalUpdateGenerations.clear();
   inflightHydrates.clear();
   inflightHydrateClients.clear();
   inflightHydrateEpochs.clear();

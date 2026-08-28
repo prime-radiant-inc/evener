@@ -29,10 +29,12 @@
 
 .dot {
   flex: none;
+  box-sizing: border-box;
   width: 6px;
   height: 6px;
+  border: 1px solid var(--alive);
   border-radius: 50%;
-  background: var(--accent);
+  background: var(--alive-bg);
 }
 
 .flag {
@@ -51,6 +53,8 @@
   flex: none;
   color: var(--ink-mid);
   font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: var(--tracking-micro);
 }
 
 .value {
