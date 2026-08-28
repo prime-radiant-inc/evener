@@ -46,8 +46,8 @@ func TestPinningWireShapes(t *testing.T) {
 	}{
 		{"rename params", PinSectionRenameParams{SectionID: "section-a", Name: "Research"}, `{"sectionId":"section-a","name":"Research"}`},
 		{"delete params", PinSectionDeleteParams{SectionID: "section-a"}, `{"sectionId":"section-a"}`},
-		{"assign by id", SessionPinAssignParams{SessionRef: "local:session-a", SectionID: stringPointer("section-a")}, `{"sessionRef":"local:session-a","sectionId":"section-a"}`},
-		{"assign by name", SessionPinAssignParams{SessionRef: "local:session-a", SectionName: stringPointer("Research")}, `{"sessionRef":"local:session-a","sectionName":"Research"}`},
+		{"assign by id", SessionPinAssignParams{SessionRef: "local:session-a", SectionID: new("section-a")}, `{"sessionRef":"local:session-a","sectionId":"section-a"}`},
+		{"assign by name", SessionPinAssignParams{SessionRef: "local:session-a", SectionName: new("Research")}, `{"sessionRef":"local:session-a","sectionName":"Research"}`},
 		{"unpin params", SessionPinUnpinParams{SessionRef: "local:session-a"}, `{"sessionRef":"local:session-a"}`},
 		{"rename response", PinSectionRenameResponse{OK: true, Changed: true, Section: PinSection{ID: "section-a", Name: "Research", MemberCount: 2}, Navigation: navigation}, `{"ok":true,"changed":true,"section":{"id":"section-a","name":"Research","memberCount":2},"navigation":{"generation_id":"generation-a","targets":[]}}`},
 		{"delete response", PinSectionDeleteResponse{OK: true, Changed: true, MemberCount: 2, Navigation: navigation}, `{"ok":true,"changed":true,"memberCount":2,"navigation":{"generation_id":"generation-a","targets":[]}}`},
@@ -65,8 +65,4 @@ func TestPinningWireShapes(t *testing.T) {
 			}
 		})
 	}
-}
-
-func stringPointer(value string) *string {
-	return &value
 }

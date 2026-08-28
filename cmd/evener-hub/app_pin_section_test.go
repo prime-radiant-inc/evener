@@ -248,7 +248,7 @@ func TestHubPinningErrorsPreserveTypedFailureKinds(t *testing.T) {
 	}{
 		{"assign neither selector", appwire.MethodEvenerSessionPinAssign, appwire.SessionPinAssignParams{SessionRef: "local:session-a"}, appwire.CodeInvalidParams, appwire.ErrorInvalidParams, "exactly one"},
 		{"assign both selectors", appwire.MethodEvenerSessionPinAssign, appwire.SessionPinAssignParams{SessionRef: "local:session-a", SectionID: &section.ID, SectionName: &name}, appwire.CodeInvalidParams, appwire.ErrorInvalidParams, "exactly one"},
-		{"assign unknown section", appwire.MethodEvenerSessionPinAssign, appwire.SessionPinAssignParams{SessionRef: "local:session-a", SectionID: stringPointerForHub("missing")}, appwire.CodeInvalidParams, appwire.ErrorResourceNotFound, hubcore.ErrPinSectionNotFound.Error()},
+		{"assign unknown section", appwire.MethodEvenerSessionPinAssign, appwire.SessionPinAssignParams{SessionRef: "local:session-a", SectionID: new("missing")}, appwire.CodeInvalidParams, appwire.ErrorResourceNotFound, hubcore.ErrPinSectionNotFound.Error()},
 		{"assign nested session", appwire.MethodEvenerSessionPinAssign, appwire.SessionPinAssignParams{SessionRef: "local:missing", SectionID: &section.ID}, appwire.CodeInvalidParams, appwire.ErrorInvalidParams, "real top-level session"},
 		{"rename conflict", appwire.MethodEvenerPinSectionRename, appwire.PinSectionRenameParams{SectionID: section.ID, Name: second.Name}, appwire.CodeConflict, appwire.ErrorConflict, hubcore.ErrPinSectionConflict.Error()},
 		{"rename missing", appwire.MethodEvenerPinSectionRename, appwire.PinSectionRenameParams{SectionID: "missing", Name: "Other"}, appwire.CodeInvalidParams, appwire.ErrorResourceNotFound, hubcore.ErrPinSectionNotFound.Error()},
@@ -273,5 +273,3 @@ func TestHubPinningRequiresConfiguredStore(t *testing.T) {
 	_, err := dispatchPinning[appwire.PinSectionDeleteResponse](t, web, appwire.MethodEvenerPinSectionDelete, appwire.PinSectionDeleteParams{SectionID: "missing"})
 	assertNavigationWireError(t, err, appwire.CodeInternalError, appwire.ErrorInternal)
 }
-
-func stringPointerForHub(value string) *string { return &value }
