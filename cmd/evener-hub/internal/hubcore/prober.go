@@ -2,45 +2,20 @@ package hubcore
 
 import (
 	"context"
-	"encoding/json"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
+	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/rendezvous"
 )
 
-// StatusProber checks daemon liveness by issuing GET <addr>/status and
-// parsing the session_id field from the response.
+// StatusProber checks daemon liveness through its typed AppWire thread
+// snapshots.
 type StatusProber struct {
 	Timeout time.Duration
 	client  *http.Client
-}
-
-// statusInfo is a partial mirror of server.StatusInfo containing the fields
-// the hub needs for session and in-process child lifecycle projection.
-//
-// It is declared independently rather than importing server.StatusInfo on
-// purpose: the hub is a long-running singleton (one flock-guarded process,
-// see docs/developing-evener/conventions/agent-fleets.md) that outlives any single daemon and
-// routinely probes daemons built from a different commit than its own --
-// this codebase decodes an old daemon's absent /status fields as their zero
-// value everywhere for exactly that reason (grep "old daemon"). Pinning the
-// hub's decode to server.StatusInfo's current shape would tie it to a
-// struct under frequent, daemon-internal-only change instead of the small,
-// stable subset the hub actually reads.
-// TestStatusProberAgreesWithServerStatusInfoAcrossTheWire (in
-// prober_wire_test.go) proves the two declarations still agree on the
-// fields listed here, without merging them.
-type statusInfo struct {
-	SessionID            string   `json:"session_id"`
-	State                string   `json:"state"`
-	PendingAsk           bool     `json:"pending_ask"`
-	PendingEscalation    bool     `json:"pending_escalation"`
-	DescendantSessionIDs []string `json:"descendant_session_ids"`
-	// DescendantStates is absent on old daemons; a listed descendant with no
-	// entry here has an UNKNOWN state, not an idle one.
-	DescendantStates map[string]string `json:"descendant_states"`
 }
 
 // Probe implements Prober.
@@ -55,50 +30,100 @@ func (p *StatusProber) Probe(entry rendezvous.Entry) ProbeResult {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, "http://"+entry.Address+"/status", nil)
+	header := http.Header{}
+	SetDaemonAuthorization(header, entry.HubToken)
+	transport, err := appwire.DialWebSocketWithHeaders(ctx, entry.Endpoint, client, header)
 	if err != nil {
 		return ProbeResult{}
 	}
-	SetDaemonAuthorization(req.Header, entry.HubToken)
-	resp, err := client.Do(req)
+	defer transport.Close() //nolint:errcheck // probe cleanup; error is not actionable
+	appClient := appwire.NewClient(transport)
+	appClient.Start(ctx)
+	if _, err := appClient.Initialize(ctx, appwire.InitializeParams{ClientInfo: appwire.ClientInfo{Name: "evener-hub"}}); err != nil {
+		return ProbeResult{}
+	}
+	rootResponse, err := appClient.ThreadRead(ctx, appwire.ThreadReadParams{})
 	if err != nil {
 		return ProbeResult{}
 	}
-	defer resp.Body.Close() //nolint:errcheck // response body close on read path; error is not actionable
-	if resp.StatusCode != http.StatusOK {
+	listResponse, err := appClient.ThreadList(ctx, appwire.ThreadListParams{IncludeSubagents: true})
+	if err != nil {
 		return ProbeResult{}
 	}
-	var s statusInfo
-	if err := json.NewDecoder(resp.Body).Decode(&s); err != nil {
+	root := rootResponse.Thread
+	rootID := statusThreadID(root)
+	if strings.TrimSpace(root.ID) == "" || rootID == "" {
 		return ProbeResult{}
 	}
+
 	seen := make(map[string]bool)
+	rootListed := false
 	var runningSubagentIDs []string
-	for _, id := range s.DescendantSessionIDs {
+	var runningSubagentStates map[string]string
+	for _, thread := range listResponse.Data {
+		if thread.ID == root.ID && statusThreadID(thread) == rootID {
+			rootListed = true
+			continue
+		}
+		if thread.Status.Type == appwire.ThreadStatusClosed {
+			continue
+		}
+		id := statusThreadID(thread)
 		if id == "" || seen[id] {
 			continue
 		}
 		seen[id] = true
 		runningSubagentIDs = append(runningSubagentIDs, id)
+		if state := strings.TrimSpace(thread.Status.Type); state != "" {
+			if runningSubagentStates == nil {
+				runningSubagentStates = make(map[string]string)
+			}
+			runningSubagentStates[id] = state
+		}
+	}
+	if !rootListed {
+		return ProbeResult{}
 	}
 	sort.Strings(runningSubagentIDs)
-	var runningSubagentStates map[string]string
-	for id, state := range s.DescendantStates {
-		if id == "" || state == "" || !seen[id] {
-			continue
-		}
-		if runningSubagentStates == nil {
-			runningSubagentStates = make(map[string]string, len(s.DescendantStates))
-		}
-		runningSubagentStates[id] = state
-	}
+
 	return ProbeResult{
-		SessionID:             s.SessionID,
-		Status:                s.State,
-		PendingAsk:            s.PendingAsk,
-		PendingEscalation:     s.PendingEscalation,
+		SessionID:             rootID,
+		Status:                root.Status.Type,
+		PendingAsk:            root.Evener.AskPending,
+		PendingEscalation:     len(root.Evener.PendingEscalations) > 0,
 		RunningSubagentIDs:    runningSubagentIDs,
 		RunningSubagentStates: runningSubagentStates,
+		RunningJobs:           runningNonAgentJobs(root.Evener.Diagnostics),
 		OK:                    true,
+	}
+}
+
+func statusThreadID(thread appwire.Thread) string {
+	if sessionID := strings.TrimSpace(thread.SessionID); sessionID != "" {
+		return sessionID
+	}
+	return strings.TrimSpace(thread.ID)
+}
+
+func runningNonAgentJobs(diagnostics *appwire.EvenerDiagnostics) []appwire.EvenerJobInfo {
+	if diagnostics == nil {
+		return nil
+	}
+	var jobs []appwire.EvenerJobInfo
+	for _, job := range diagnostics.Jobs {
+		if strings.TrimSpace(job.JobType) == "delegate" || terminalJobStatus(job.Status) {
+			continue
+		}
+		jobs = append(jobs, job)
+	}
+	return jobs
+}
+
+func terminalJobStatus(status string) bool {
+	switch strings.TrimSpace(status) {
+	case "completed", "failed", "cancelled", "stopped", "exhausted":
+		return true
+	default:
+		return false
 	}
 }
