@@ -127,6 +127,14 @@ export function WorkView({ state, dispatch }: WorkViewProps) {
         <p>Tasks, subagents, and jobs retain their canonical hierarchy.</p>
       </section>
 
+      <section className="co-work-tasks" aria-label="Task summary">
+        {activity.tasks.map((task) => (
+          <span key={task.status}>
+            {task.count} {task.status}
+          </span>
+        ))}
+      </section>
+
       <section className="co-work-list" aria-labelledby="co-work-list-title">
         <header>
           <h2 id="co-work-list-title">Work hierarchy</h2>

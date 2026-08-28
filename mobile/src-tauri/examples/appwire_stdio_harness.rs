@@ -125,11 +125,140 @@ enum ServerControl {
 
 type ActiveControl = Arc<Mutex<Option<(usize, mpsc::UnboundedSender<ConnectionControl>)>>>;
 
+#[derive(Default, PartialEq, Eq)]
+enum ManualProtocolPhase {
+    #[default]
+    AwaitInitialize,
+    AwaitInitialized,
+    Ready,
+}
+
+#[derive(Default)]
+struct ManualProtocol {
+    enabled: bool,
+    connection_seen: bool,
+    phase: ManualProtocolPhase,
+    pending: HashMap<u64, String>,
+}
+
+enum ManualServerFrame {
+    InitializeResponse(u64),
+    Response(u64),
+    Notification,
+}
+
+impl ManualProtocol {
+    fn enable(&mut self) -> Result<(), String> {
+        if self.enabled {
+            return Err("manual server is already enabled".to_owned());
+        }
+        if self.connection_seen {
+            return Err(
+                "manual server must be enabled before connection or protocol traffic".to_owned(),
+            );
+        }
+        self.enabled = true;
+        Ok(())
+    }
+
+    fn connection_started(&mut self) {
+        self.connection_seen = true;
+        if self.enabled {
+            self.phase = ManualProtocolPhase::AwaitInitialize;
+            self.pending.clear();
+        }
+    }
+
+    fn observe_client_frame(&mut self, frame: &Value) -> Result<(), String> {
+        let method = frame
+            .get("method")
+            .and_then(Value::as_str)
+            .ok_or_else(|| "manual client frame is missing a method".to_owned())?;
+        if let Some(id) = frame.get("id") {
+            let id = id
+                .as_u64()
+                .ok_or_else(|| "manual client request id must be an unsigned integer".to_owned())?;
+            if self.pending.contains_key(&id) {
+                return Err(format!("manual client request id {id} is already pending"));
+            }
+            if method == "initialize" && self.phase != ManualProtocolPhase::AwaitInitialize {
+                return Err("initialize request is out of protocol order".to_owned());
+            }
+            self.pending.insert(id, method.to_owned());
+            return Ok(());
+        }
+        if method == "initialized" {
+            if self.phase != ManualProtocolPhase::AwaitInitialized {
+                return Err(
+                    "initialized notification arrived before initialize response".to_owned(),
+                );
+            }
+            self.phase = ManualProtocolPhase::Ready;
+        }
+        Ok(())
+    }
+
+    fn validate_server_frame(&self, frame: &Value) -> Result<ManualServerFrame, String> {
+        if !self.enabled {
+            return Err("manual server is not enabled".to_owned());
+        }
+        if frame.get("id").is_some() && frame.get("method").is_some() {
+            return Err("manual server frame cannot be both response and notification".to_owned());
+        }
+        if let Some(raw_id) = frame.get("id") {
+            let id = raw_id.as_u64().ok_or_else(|| {
+                "manual server response id must be an unsigned integer".to_owned()
+            })?;
+            if frame.get("result").is_none() && frame.get("error").is_none() {
+                return Err("manual server response must contain result or error".to_owned());
+            }
+            let method = self
+                .pending
+                .get(&id)
+                .ok_or_else(|| format!("unknown or unmatched response id {id}"))?;
+            if self.phase == ManualProtocolPhase::AwaitInitialize {
+                if method != "initialize" {
+                    return Err("initialize response is required before other responses".to_owned());
+                }
+                return Ok(ManualServerFrame::InitializeResponse(id));
+            }
+            if method == "initialize" {
+                return Err("initialize response is out of protocol order".to_owned());
+            }
+            if self.phase != ManualProtocolPhase::Ready {
+                return Err("responses are unavailable before initialized is observed".to_owned());
+            }
+            return Ok(ManualServerFrame::Response(id));
+        }
+        if frame.get("method").and_then(Value::as_str).is_none() {
+            return Err("manual server notification is missing a method".to_owned());
+        }
+        if self.phase != ManualProtocolPhase::Ready {
+            return Err("notifications are unavailable before initialized is observed".to_owned());
+        }
+        Ok(ManualServerFrame::Notification)
+    }
+
+    fn commit_server_frame(&mut self, frame: ManualServerFrame) {
+        match frame {
+            ManualServerFrame::InitializeResponse(id) => {
+                self.pending.remove(&id);
+                self.phase = ManualProtocolPhase::AwaitInitialized;
+            }
+            ManualServerFrame::Response(id) => {
+                self.pending.remove(&id);
+            }
+            ManualServerFrame::Notification => {}
+        }
+    }
+}
+
 struct ScriptedHub {
     origin: String,
     observations: Arc<Mutex<ServerObservations>>,
     active_control: ActiveControl,
     manual_server: Arc<AtomicBool>,
+    manual_protocol: Arc<Mutex<ManualProtocol>>,
     shutdown: mpsc::UnboundedSender<ServerControl>,
     thread: Option<std::thread::JoinHandle<()>>,
 }
@@ -139,11 +268,13 @@ impl ScriptedHub {
         let observations = Arc::new(Mutex::new(ServerObservations::default()));
         let active_control = Arc::new(Mutex::new(None));
         let manual_server = Arc::new(AtomicBool::new(false));
+        let manual_protocol = Arc::new(Mutex::new(ManualProtocol::default()));
         let (shutdown, shutdown_rx) = mpsc::unbounded_channel();
         let (ready_tx, ready_rx) = std::sync::mpsc::sync_channel(1);
         let observations_thread = observations.clone();
         let active_thread = active_control.clone();
         let manual_thread = manual_server.clone();
+        let protocol_thread = manual_protocol.clone();
         let thread = std::thread::Builder::new()
             .name("mobile-appwire-scripted-hub".to_owned())
             .spawn(move || {
@@ -157,6 +288,7 @@ impl ScriptedHub {
                         observations_thread,
                         active_thread,
                         manual_thread,
+                        protocol_thread,
                         output,
                         shutdown_rx,
                         ready_tx,
@@ -171,21 +303,34 @@ impl ScriptedHub {
             observations,
             active_control,
             manual_server,
+            manual_protocol,
             shutdown,
             thread: Some(thread),
         }
     }
 
-    fn enable_manual_server(&self) {
+    fn enable_manual_server(&self) -> Result<(), String> {
+        let mut protocol = self.manual_protocol.lock().unwrap();
+        protocol.enable()?;
         self.manual_server.store(true, Ordering::SeqCst);
+        Ok(())
     }
 
-    fn server_frame(&self, frame: Value) -> bool {
-        self.active_control
+    fn server_frame(&self, frame: Value) -> Result<(), String> {
+        let mut protocol = self.manual_protocol.lock().unwrap();
+        let transition = protocol.validate_server_frame(&frame)?;
+        let sent = self
+            .active_control
             .lock()
             .unwrap()
             .as_ref()
-            .is_some_and(|(_, control)| control.send(ConnectionControl::ServerFrame(frame)).is_ok())
+            .ok_or_else(|| "manual server has no active socket".to_owned())?
+            .1
+            .send(ConnectionControl::ServerFrame(frame))
+            .map_err(|_| "manual server socket control is closed".to_owned());
+        sent?;
+        protocol.commit_server_frame(transition);
+        Ok(())
     }
 
     fn server_close(&self) -> bool {
@@ -218,6 +363,7 @@ async fn run_scripted_hub(
     observations: Arc<Mutex<ServerObservations>>,
     active_control: ActiveControl,
     manual_server: Arc<AtomicBool>,
+    manual_protocol: Arc<Mutex<ManualProtocol>>,
     output: Output,
     mut shutdown: mpsc::UnboundedReceiver<ServerControl>,
     ready: std::sync::mpsc::SyncSender<u16>,
@@ -233,6 +379,7 @@ async fn run_scripted_hub(
             }
             accepted = listener.accept() => {
                 let (stream, _) = accepted.unwrap();
+                manual_protocol.lock().unwrap().connection_started();
                 let connection_id = {
                     let mut state = observations.lock().unwrap();
                     state.connection_count += 1;
@@ -248,6 +395,7 @@ async fn run_scripted_hub(
                     observations.clone(),
                     active_control.clone(),
                     manual_server.clone(),
+                    manual_protocol.clone(),
                     output.clone(),
                     control_rx,
                 ));
@@ -262,6 +410,7 @@ async fn run_connection(
     observations: Arc<Mutex<ServerObservations>>,
     active_control: ActiveControl,
     manual_server: Arc<AtomicBool>,
+    manual_protocol: Arc<Mutex<ManualProtocol>>,
     output: Output,
     mut control: mpsc::UnboundedReceiver<ConnectionControl>,
 ) {
@@ -308,6 +457,7 @@ async fn run_connection(
                             &text,
                             &observations,
                             &manual_server,
+                            &manual_protocol,
                             &output,
                         )
                         .await
@@ -347,6 +497,7 @@ async fn handle_client_frame(
     text: &str,
     observations: &Arc<Mutex<ServerObservations>>,
     manual_server: &AtomicBool,
+    manual_protocol: &Mutex<ManualProtocol>,
     output: &Output,
 ) -> Result<(), tokio_tungstenite::tungstenite::Error> {
     let frame: Value = serde_json::from_str(text).unwrap();
@@ -368,6 +519,10 @@ async fn handle_client_frame(
         observations.lock().unwrap().initialized_count += 1;
     }
     if manual_server.load(Ordering::SeqCst) {
+        if let Err(error) = manual_protocol.lock().unwrap().observe_client_frame(&frame) {
+            output.send(json!({ "kind": "serverProtocolError", "error": error }));
+            return Ok(());
+        }
         output.send(json!({ "kind": "serverRequest", "frame": frame }));
         return Ok(());
     }
@@ -530,18 +685,22 @@ fn main() {
                 }
             }
             "control" => match request["action"].as_str().unwrap_or("") {
-                "manualServer" => {
-                    hub.enable_manual_server();
-                    output.send(json!({
+                "manualServer" => match hub.enable_manual_server() {
+                    Ok(()) => output.send(json!({
                         "kind": "response", "id": id, "ok": true, "value": null,
-                    }));
-                }
-                "serverFrame" => output.send(json!({
-                    "kind": "response",
-                    "id": id,
-                    "ok": hub.server_frame(request["frame"].clone()),
-                    "value": null,
-                })),
+                    })),
+                    Err(error) => output.send(json!({
+                        "kind": "response", "id": id, "ok": false, "error": error,
+                    })),
+                },
+                "serverFrame" => match hub.server_frame(request["frame"].clone()) {
+                    Ok(()) => output.send(json!({
+                        "kind": "response", "id": id, "ok": true, "value": null,
+                    })),
+                    Err(error) => output.send(json!({
+                        "kind": "response", "id": id, "ok": false, "error": error,
+                    })),
+                },
                 "serverClose" => output.send(json!({
                     "kind": "response", "id": id, "ok": hub.server_close(), "value": null,
                 })),

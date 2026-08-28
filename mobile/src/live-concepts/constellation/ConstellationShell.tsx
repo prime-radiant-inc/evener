@@ -48,6 +48,7 @@ export function ConstellationShell({
       data-reduced-motion={String(state.reducedMotion)}
       data-motion={reducedMotion ? "reduced" : "full"}
       data-surface={surface}
+      data-thread-key={state.conversation?.threadKey}
     >
       <main className="co-scroll" data-route={surface}>
         <header className="co-topbar">

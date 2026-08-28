@@ -83,13 +83,29 @@ vi.mock("@tauri-apps/api/event", () => ({
 }));
 
 function deferred<T>() {
+  let settled = false;
   let resolve!: (value: T) => void;
   let reject!: (cause: unknown) => void;
   const promise = new Promise<T>((res, rej) => {
-    resolve = res;
-    reject = rej;
+    resolve = (value) => {
+      if (settled) return;
+      settled = true;
+      res(value);
+    };
+    reject = (cause) => {
+      if (settled) return;
+      settled = true;
+      rej(cause);
+    };
   });
-  return { promise, resolve, reject };
+  return {
+    promise,
+    resolve,
+    reject,
+    get settled() {
+      return settled;
+    },
+  };
 }
 
 interface ServerSnapshot {
@@ -99,6 +115,12 @@ interface ServerSnapshot {
   readonly initializedCount: number;
   readonly clientInfos: Array<{ name: string; version: string }>;
   readonly requestMethods: string[];
+}
+
+interface HarnessStartOptions {
+  readonly manual?: boolean;
+  readonly binary?: string;
+  readonly autoInitialize?: boolean;
 }
 
 class RustHarnessBridge implements TauriBridge {
@@ -112,42 +134,63 @@ class RustHarnessBridge implements TauriBridge {
     { resolve(value: unknown): void; reject(cause: unknown): void }
   >();
   private readonly channels = new Map<number, TauriChannel<unknown>>();
-  private readonly commandWaiters = new Map<string, Array<() => void>>();
-  private readonly requestWaiters = new Map<string, Array<() => void>>();
+  private readonly commandWaiters = new Map<
+    string,
+    Array<{ resolve(): void; reject(cause: unknown): void }>
+  >();
+  private readonly requestWaiters = new Map<
+    string,
+    Array<{ resolve(): void; reject(cause: unknown): void }>
+  >();
   private readonly deliveredFrameWaiters: Array<{
     predicate(frame: ServerFrame): boolean;
     resolve(): void;
+    reject(cause: unknown): void;
   }> = [];
+  private readonly childClosed: Promise<void>;
+  private readonly autoInitialize: boolean;
   private nextRequestId = 1;
   private nextChannelId = 1;
   private stderr = "";
+  private exited = false;
+  private stopPromise: Promise<void> | null = null;
 
   private constructor(
     child: ChildProcessWithoutNullStreams,
     profiles: readonly string[],
+    childClosed: Promise<void>,
+    autoInitialize: boolean,
   ) {
     this.child = child;
     this.profiles = profiles;
+    this.childClosed = childClosed;
+    this.autoInitialize = autoInitialize;
   }
 
-  static async start(): Promise<RustHarnessBridge> {
-    const binary = path.join(
-      process.cwd(),
-      "src-tauri",
-      "target",
-      "debug",
-      "examples",
-      process.platform === "win32"
-        ? "appwire_stdio_harness.exe"
-        : "appwire_stdio_harness",
-    );
+  static async start(
+    options: HarnessStartOptions = {},
+  ): Promise<RustHarnessBridge> {
+    const binary =
+      options.binary ??
+      path.join(
+        process.cwd(),
+        "src-tauri",
+        "target",
+        "debug",
+        "examples",
+        process.platform === "win32"
+          ? "appwire_stdio_harness.exe"
+          : "appwire_stdio_harness",
+      );
     const child = spawn(binary, [], {
       cwd: process.cwd(),
       stdio: ["pipe", "pipe", "pipe"],
     });
     const ready = deferred<readonly string[]>();
+    const childClosed = deferred<void>();
     let bridge: RustHarnessBridge | undefined;
     let stderr = "";
+    child.once("close", () => childClosed.resolve(undefined));
     child.stderr.setEncoding("utf8");
     child.stderr.on("data", (chunk: string) => {
       stderr += chunk;
@@ -167,13 +210,32 @@ class RustHarnessBridge implements TauriBridge {
         `Rust harness exited (${code}): ${bridge?.stderr ?? stderr}`,
       );
       if (!bridge) ready.reject(cause);
-      else bridge.failPending(cause);
+      else {
+        bridge.exited = true;
+        bridge.failPending(cause);
+      }
     });
-    const profiles = await ready.promise;
-    bridge = new RustHarnessBridge(child, profiles);
-    bridge.stderr = stderr;
-    await bridge.control("manualServer");
-    return bridge;
+    try {
+      const profiles = await ready.promise;
+      bridge = new RustHarnessBridge(
+        child,
+        profiles,
+        childClosed.promise,
+        options.autoInitialize !== false,
+      );
+      bridge.stderr = stderr;
+      if (options.manual !== false) await bridge.control("manualServer");
+      return bridge;
+    } catch (cause) {
+      if (bridge !== undefined) {
+        await bridge.stop();
+      } else {
+        if (!child.stdin.destroyed) child.stdin.end();
+        if (!childClosed.settled) child.kill();
+        await childClosed.promise;
+      }
+      throw cause;
+    }
   }
 
   invoke<T = unknown>(
@@ -184,10 +246,18 @@ class RustHarnessBridge implements TauriBridge {
       return Promise.reject(new Error("AppWire harness accepts JSON commands"));
     }
     this.invocations.push({ cmd, args: rawArgs });
-    return this.send<T>({ kind: "invoke", cmd, args: rawArgs }).finally(() => {
-      const waiter = this.commandWaiters.get(cmd)?.shift();
-      waiter?.();
-    });
+    return this.send<T>({ kind: "invoke", cmd, args: rawArgs }).then(
+      (value) => {
+        const waiter = this.commandWaiters.get(cmd)?.shift();
+        waiter?.resolve();
+        return value;
+      },
+      (cause: unknown) => {
+        const waiter = this.commandWaiters.get(cmd)?.shift();
+        waiter?.reject(cause);
+        throw cause;
+      },
+    );
   }
 
   createChannel<T>(onMessage: (response: T) => void): TauriChannel<T> {
@@ -223,7 +293,10 @@ class RustHarnessBridge implements TauriBridge {
   waitForCommand(command: string): Promise<void> {
     const done = deferred<void>();
     const waiters = this.commandWaiters.get(command) ?? [];
-    waiters.push(() => done.resolve(undefined));
+    waiters.push({
+      resolve: () => done.resolve(undefined),
+      reject: done.reject,
+    });
     this.commandWaiters.set(command, waiters);
     return done.promise;
   }
@@ -235,7 +308,10 @@ class RustHarnessBridge implements TauriBridge {
     if (existing !== undefined) return Promise.resolve(existing);
     const done = deferred<void>();
     const waiters = this.requestWaiters.get(method) ?? [];
-    waiters.push(() => done.resolve(undefined));
+    waiters.push({
+      resolve: () => done.resolve(undefined),
+      reject: done.reject,
+    });
     this.requestWaiters.set(method, waiters);
     return done.promise.then(() => {
       const request = this.serverRequests.filter(
@@ -263,24 +339,40 @@ class RustHarnessBridge implements TauriBridge {
     return this.channels.size;
   }
 
-  async stop(): Promise<void> {
-    const exited = deferred<void>();
-    this.child.once("exit", () => exited.resolve(undefined));
-    await this.control("shutdown");
-    this.child.stdin.end();
-    await exited.promise;
+  stop(): Promise<void> {
+    if (this.stopPromise === null) this.stopPromise = this.stopOnce();
+    return this.stopPromise;
+  }
+
+  private async stopOnce(): Promise<void> {
+    if (this.exited) {
+      await this.childClosed;
+      return;
+    }
+    const shutdown = this.control("shutdown").catch(() => undefined);
+    if (!this.child.stdin.destroyed) this.child.stdin.end();
+    await this.childClosed;
+    await shutdown;
   }
 
   private async sendServerFrame(frame: ServerFrame): Promise<void> {
     const delivered = deferred<void>();
-    this.deliveredFrameWaiters.push({
-      predicate: (candidate) =>
+    const waiter = {
+      predicate: (candidate: ServerFrame) =>
         frame.id !== undefined
           ? candidate.id === frame.id
           : candidate.method === frame.method,
       resolve: () => delivered.resolve(undefined),
-    });
-    await this.control("serverFrame", { frame });
+      reject: delivered.reject,
+    };
+    this.deliveredFrameWaiters.push(waiter);
+    try {
+      await this.control("serverFrame", { frame });
+    } catch (cause) {
+      const index = this.deliveredFrameWaiters.indexOf(waiter);
+      if (index >= 0) this.deliveredFrameWaiters.splice(index, 1);
+      delivered.reject(cause);
+    }
     await delivered.promise;
   }
 
@@ -288,7 +380,22 @@ class RustHarnessBridge implements TauriBridge {
     const id = this.nextRequestId++;
     const completion = deferred<unknown>();
     this.pending.set(id, completion);
-    this.child.stdin.write(`${JSON.stringify({ id, ...request })}\n`);
+    if (this.exited || this.child.stdin.destroyed) {
+      const cause = new Error("Rust harness is closed");
+      this.pending.delete(id);
+      completion.reject(cause);
+      return completion.promise as Promise<T>;
+    }
+    this.child.stdin.write(
+      `${JSON.stringify({ id, ...request })}\n`,
+      (cause) => {
+        if (cause === null || cause === undefined) return;
+        const current = this.pending.get(id);
+        if (current !== completion) return;
+        this.pending.delete(id);
+        completion.reject(cause);
+      },
+    );
     return completion.promise as Promise<T>;
   }
 
@@ -297,8 +404,12 @@ class RustHarnessBridge implements TauriBridge {
       const frame = message.frame as ServerFrame;
       this.serverRequests.push(frame);
       const waiter = this.requestWaiters.get(frame.method ?? "")?.shift();
-      waiter?.();
-      if (frame.method === "initialize" && frame.id !== undefined) {
+      waiter?.resolve();
+      if (
+        this.autoInitialize &&
+        frame.method === "initialize" &&
+        frame.id !== undefined
+      ) {
         void this.respond(frame, INITIALIZE_RESPONSE).catch(
           (cause: unknown) => {
             this.failPending(
@@ -307,6 +418,12 @@ class RustHarnessBridge implements TauriBridge {
           },
         );
       }
+      return;
+    }
+    if (message.kind === "serverProtocolError") {
+      this.failPending(
+        new Error(String(message.error ?? "manual server protocol error")),
+      );
       return;
     }
     if (message.kind === "channel") {
@@ -339,6 +456,16 @@ class RustHarnessBridge implements TauriBridge {
   private failPending(cause: Error): void {
     for (const completion of this.pending.values()) completion.reject(cause);
     this.pending.clear();
+    for (const waiters of this.commandWaiters.values()) {
+      for (const waiter of waiters) waiter.reject(cause);
+    }
+    this.commandWaiters.clear();
+    for (const waiters of this.requestWaiters.values()) {
+      for (const waiter of waiters) waiter.reject(cause);
+    }
+    this.requestWaiters.clear();
+    const delivered = this.deliveredFrameWaiters.splice(0);
+    for (const waiter of delivered) waiter.reject(cause);
   }
 }
 
@@ -387,7 +514,13 @@ const RUNNING_REF = "live-running-ref";
 const DRAFT_SENTINEL = "draft-sentinel::production-appwire";
 const STREAMED_TEXT = "Scripted stream";
 const REASONING_TEXT = "Plan route";
-const TOOL_TEXT = "line done";
+const TOOL_STARTED_TEXT = "tool-start-only";
+const TOOL_DELTA_TEXT = "::delta-only";
+const TOOL_COMPLETED_TEXT = "tool-completed-authoritative";
+const AUTHORITATIVE_TEXT = "Authoritative assistant after resync";
+const AUTHORITATIVE_TOOL_TEXT = "authoritative tool after resync";
+const AUTHORITATIVE_NEW_TEXT = "Authoritative new item";
+const AUTHORITATIVE_REASONING_SETTLED = "Reasoning settled authoritatively";
 
 function makeThread(input: {
   id: string;
@@ -395,6 +528,8 @@ function makeThread(input: {
   name: string;
   status: "active" | "awaiting";
   items?: ThreadItem[];
+  tasks?: { total: number; done: number };
+  job?: { id: string; type: string; status: string; outputBytes: number };
 }): Thread {
   const turn: Turn = {
     id: "turn-live",
@@ -425,15 +560,15 @@ function makeThread(input: {
         tools: [{ name: "exec_command", source: "builtin" }],
         jobs: [
           {
-            jobId: "job-live",
-            jobType: "shell",
-            status: "running",
-            outputBytes: 2048,
+            jobId: input.job?.id ?? "job-live",
+            jobType: input.job?.type ?? "shell",
+            status: input.job?.status ?? "running",
+            outputBytes: input.job?.outputBytes ?? 2048,
           },
         ],
       },
       queue: { depth: 0, revision: 7, preview: [] },
-      tasks: { total: 3, done: 1 },
+      tasks: input.tasks ?? { total: 3, done: 1 },
       usage: {
         inputTokens: 3000,
         outputTokens: 1096,
@@ -481,24 +616,36 @@ function authoritativeThread(): Thread {
       {
         type: "agentMessage",
         id: "assistant-live",
-        text: STREAMED_TEXT,
+        text: AUTHORITATIVE_TEXT,
         status: "inProgress",
       },
       {
-        type: "reasoning",
+        type: "systemMessage",
         id: "reasoning-live",
-        text: REASONING_TEXT,
-        status: "inProgress",
+        text: AUTHORITATIVE_REASONING_SETTLED,
       },
       {
         type: "commandExecution",
         id: "tool-live",
         toolName: "exec_command",
         callId: "call-live",
-        output: TOOL_TEXT,
+        output: AUTHORITATIVE_TOOL_TEXT,
         status: "completed",
       },
+      {
+        type: "agentMessage",
+        id: "authoritative-new",
+        text: AUTHORITATIVE_NEW_TEXT,
+        status: "inProgress",
+      },
     ],
+    tasks: { total: 5, done: 4 },
+    job: {
+      id: "job-authoritative",
+      type: "authoritative_job",
+      status: "completed",
+      outputBytes: 4096,
+    },
   });
 }
 
@@ -515,6 +662,32 @@ function receiptFor(
     queueEntryIds: kind === "queue" ? ["queue-entry-live"] : undefined,
     projectionState: "current",
   };
+}
+
+function clientMutationId(request: ServerFrame): string {
+  const value = (request.params as { clientMutationId?: unknown })
+    .clientMutationId;
+  expect(typeof value).toBe("string");
+  expect(value).not.toBe("");
+  return value as string;
+}
+
+function expectReceiptCorrelation(
+  request: ServerFrame,
+  receipt: MutationReceipt,
+  kind: "send" | "steer" | "queue" | "interrupt",
+): void {
+  expect(receipt.clientMutationId).toBe(clientMutationId(request));
+  expect(receipt.disposition).toBe("accepted");
+  expect(receipt.threadId).toBe(ATTENTION_THREAD_ID);
+  expect(receipt.projectionState).toBe("current");
+  if (kind === "send") expect(receipt.turnId).toBe("turn-receipt");
+  else expect(receipt.turnId).toBeUndefined();
+  if (kind === "queue") {
+    expect(receipt.queueEntryIds).toEqual(["queue-entry-live"]);
+  } else {
+    expect(receipt.queueEntryIds).toBeUndefined();
+  }
 }
 
 function sessionKeys(): string[] {
@@ -535,9 +708,46 @@ function workKeys(): string[] {
   );
 }
 
+function activeThreadKey(): string {
+  return (
+    document
+      .querySelector<HTMLElement>("[data-concept-root]")
+      ?.getAttribute("data-thread-key") ?? ""
+  );
+}
+
+function expectUniqueOpaqueKeys(keys: readonly string[]): void {
+  expect(keys.every((key) => key.length > 0)).toBe(true);
+  expect(new Set(keys).size).toBe(keys.length);
+  for (const key of keys) {
+    expect(key).not.toContain(ATTENTION_REF);
+    expect(key).not.toContain(RUNNING_REF);
+  }
+}
+
+function expectRawRefsAbsentFromLiveConcept(): void {
+  const root = document.querySelector<HTMLElement>("[data-concept-root]");
+  expect(root).not.toBeNull();
+  if (root === null) return;
+  expect(root.textContent ?? "").not.toContain(ATTENTION_REF);
+  expect(root.textContent ?? "").not.toContain(RUNNING_REF);
+  const attributeValues = [root, ...root.querySelectorAll<HTMLElement>("*")]
+    .flatMap((element) =>
+      [...element.attributes].map(
+        (attribute) => `${attribute.name}=${attribute.value}`,
+      ),
+    )
+    .join("\n");
+  expect(attributeValues).not.toContain(ATTENTION_REF);
+  expect(attributeValues).not.toContain(RUNNING_REF);
+  expect(root.outerHTML).not.toContain(ATTENTION_REF);
+  expect(root.outerHTML).not.toContain(RUNNING_REF);
+}
+
 function expectConcept(className: string): void {
   expect(document.querySelectorAll("[data-concept-root]")).toHaveLength(1);
   expect(document.querySelector(`.${className}`)).not.toBeNull();
+  expectRawRefsAbsentFromLiveConcept();
 }
 
 function chooseConcept(name: "Stillwater" | "Constellation" | "Field Notes") {
@@ -547,29 +757,115 @@ function chooseConcept(name: "Stillwater" | "Constellation" | "Field Notes") {
 
 function expectConversationEvidence(
   expectedKeys: readonly string[],
+  expectedThreadKey: string,
   expectedDraft: string,
 ): void {
   expect(transcriptKeys()).toEqual(expectedKeys);
+  expectUniqueOpaqueKeys(transcriptKeys());
+  expect(activeThreadKey()).toBe(expectedThreadKey);
   expect(screen.getByText(STREAMED_TEXT)).toBeInTheDocument();
   expect(screen.getByText("Reasoning")).toBeInTheDocument();
   expect(screen.getByText(REASONING_TEXT)).toBeInTheDocument();
   expect(screen.getByText("exec_command")).toBeInTheDocument();
-  expect(screen.getByText(TOOL_TEXT)).toBeInTheDocument();
+  expect(screen.getByText(TOOL_COMPLETED_TEXT)).toBeInTheDocument();
+  expect(
+    screen.queryByText(`${TOOL_STARTED_TEXT}${TOOL_DELTA_TEXT}`),
+  ).toBeNull();
+  const completedTool = screen
+    .getByText("exec_command")
+    .closest<HTMLElement>("[data-transcript-item-id]");
+  expect(completedTool).not.toHaveAttribute("data-streaming", "true");
   expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue(
     expectedDraft,
   );
   expect(
     screen.getByRole("button", { name: /^Load older/ }),
   ).toBeInTheDocument();
+  expectRawRefsAbsentFromLiveConcept();
 }
 
-function expectWorkEvidence(expectedKeys: readonly string[]): void {
+function expectWorkEvidence(
+  expectedKeys: readonly string[],
+  expectedThreadKey: string,
+): void {
   expect(workKeys()).toEqual(expectedKeys);
+  expectUniqueOpaqueKeys(workKeys());
+  expect(activeThreadKey()).toBe(expectedThreadKey);
   expect(screen.getByText("shell")).toBeInTheDocument();
+  expect(screen.getByText("2 open")).toBeInTheDocument();
+  expect(screen.getByText("1 done")).toBeInTheDocument();
+  expect(screen.getByText("0 active")).toBeInTheDocument();
   const usage = document.querySelector("[data-work-usage]");
   expect(usage).not.toBeNull();
   expect(usage).toHaveTextContent("4.1K");
   expect(usage).toHaveTextContent("$0.42");
+  expectRawRefsAbsentFromLiveConcept();
+}
+
+function keyForRenderedText(text: string): string {
+  return (
+    screen
+      .getByText(text)
+      .closest<HTMLElement>("[data-transcript-item-id]")
+      ?.getAttribute("data-transcript-item-id") ?? ""
+  );
+}
+
+function expectAuthoritativeConversationEvidence(
+  expectedKeys: readonly string[],
+  expectedThreadKey: string,
+): void {
+  expect(transcriptKeys()).toEqual(expectedKeys);
+  expectUniqueOpaqueKeys(transcriptKeys());
+  expect(activeThreadKey()).toBe(expectedThreadKey);
+  expect(screen.getByText(AUTHORITATIVE_TEXT)).toBeInTheDocument();
+  expect(screen.getByText(AUTHORITATIVE_NEW_TEXT)).toBeInTheDocument();
+  expect(screen.getByText(AUTHORITATIVE_REASONING_SETTLED)).toBeInTheDocument();
+  expect(screen.getByText(AUTHORITATIVE_TOOL_TEXT)).toBeInTheDocument();
+  expect(screen.queryByText(STREAMED_TEXT)).toBeNull();
+  expect(screen.queryByText(REASONING_TEXT)).toBeNull();
+  expect(screen.queryByText(TOOL_COMPLETED_TEXT)).toBeNull();
+  expectRawRefsAbsentFromLiveConcept();
+}
+
+function expectAuthoritativeWorkEvidence(
+  expectedKeys: readonly string[],
+  expectedThreadKey: string,
+): void {
+  expect(workKeys()).toEqual(expectedKeys);
+  expectUniqueOpaqueKeys(workKeys());
+  expect(activeThreadKey()).toBe(expectedThreadKey);
+  expect(screen.getByText("authoritative_job")).toBeInTheDocument();
+  expect(screen.queryByText("shell")).toBeNull();
+  expect(screen.getByText("1 open")).toBeInTheDocument();
+  expect(screen.getByText("4 done")).toBeInTheDocument();
+  expect(screen.getByText("0 active")).toBeInTheDocument();
+  expectRawRefsAbsentFromLiveConcept();
+}
+
+function pendingMutationElement(): HTMLElement | null {
+  return document.querySelector<HTMLElement>(
+    "[data-composer-pending], [data-pending-mutation]",
+  );
+}
+
+function expectComposerPending(
+  kind: "send" | "steer" | "queue" | "interrupt",
+  expectedDraft: string,
+): void {
+  const pending = pendingMutationElement();
+  expect(pending).not.toBeNull();
+  expect(pending).toHaveTextContent(new RegExp(kind, "i"));
+  const textbox = screen.getByRole("textbox", { name: "Message" });
+  expect(textbox).toBeDisabled();
+  expect(textbox).toHaveValue(expectedDraft);
+}
+
+function expectComposerReady(expectedDraft: string): void {
+  expect(pendingMutationElement()).toBeNull();
+  const textbox = screen.getByRole("textbox", { name: "Message" });
+  expect(textbox).toBeEnabled();
+  expect(textbox).toHaveValue(expectedDraft);
 }
 
 function notification(
@@ -607,11 +903,16 @@ async function submitMutation(
     ref: ATTENTION_REF,
     input: [{ type: "text", text }],
   });
+  expectComposerPending(mode === "Steer" ? "steer" : "queue", text);
+  const kind = mode === "Steer" ? "steer" : "queue";
+  const receipt = receiptFor(request, kind);
+  expectReceiptCorrelation(request, receipt, kind);
   await act(async () => {
     await bridge.respond(request, {
-      receipt: receiptFor(request, mode === "Steer" ? "steer" : "queue"),
+      receipt,
     });
   });
+  expectComposerReady("");
   return request;
 }
 
@@ -644,6 +945,52 @@ function installMemoryLocalStorage(): void {
 
 let fakeTimersActive = false;
 
+interface RawHarnessConnection {
+  readonly connectionId: string;
+  readonly channel: TauriChannel<unknown>;
+}
+
+async function openRawHarnessConnection(
+  bridge: RustHarnessBridge,
+): Promise<RawHarnessConnection> {
+  const profileId = bridge.profiles[0];
+  if (profileId === undefined) throw new Error("harness profile missing");
+  const channel = bridge.createChannel<unknown>(() => undefined);
+  const opened = await bridge.invoke<{
+    connectionId: string;
+    profileId: string;
+    generation: number;
+  }>("appwire_open", {
+    request: { profileId },
+    onEvent: channel,
+  });
+  return { connectionId: opened.connectionId, channel };
+}
+
+async function sendRawClientFrame(
+  bridge: RustHarnessBridge,
+  connection: RawHarnessConnection,
+  frame: ServerFrame,
+): Promise<void> {
+  await bridge.invoke("appwire_send", {
+    request: {
+      connectionId: connection.connectionId,
+      frame: JSON.stringify(frame),
+    },
+  });
+}
+
+async function closeRawHarnessConnection(
+  bridge: RustHarnessBridge,
+  connection: RawHarnessConnection | null,
+): Promise<void> {
+  if (connection === null) return;
+  await bridge.invoke("appwire_close", {
+    request: { connectionId: connection.connectionId },
+  });
+  connection.channel.dispose();
+}
+
 afterEach(() => {
   cleanup();
   tauriHarness.bridge = null;
@@ -654,6 +1001,97 @@ afterEach(() => {
 });
 
 describe("production App live concepts over the real native AppWire bridge", () => {
+  it("rejects and reaps a missing harness process during startup", async () => {
+    await expect(
+      RustHarnessBridge.start({
+        binary: path.join(
+          process.cwd(),
+          "src-tauri",
+          "target",
+          "debug",
+          "examples",
+          "missing-appwire-stdio-harness",
+        ),
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("rejects invalid manual server protocol ordering and accepts the valid flow", async () => {
+    const bridge = await RustHarnessBridge.start({ autoInitialize: false });
+    let connection: RawHarnessConnection | null = null;
+    try {
+      connection = await openRawHarnessConnection(bridge);
+      await expect(
+        bridge.notify(notification("evener/tree/changed", {})),
+      ).rejects.toThrow(/initialized/i);
+
+      await sendRawClientFrame(bridge, connection, {
+        id: 41,
+        method: "initialize",
+        params: {
+          protocolVersion: "evener-appwire-v3",
+          clientInfo: { name: "guard-test", version: "1" },
+          capabilities: { experimentalApi: false },
+        },
+      });
+      const initialize = await bridge.waitForServerRequest("initialize", 1);
+      await sendRawClientFrame(bridge, connection, {
+        id: 42,
+        method: "ping",
+        params: {},
+      });
+      const ping = await bridge.waitForServerRequest("ping", 1);
+
+      await expect(bridge.respond({ id: 999 }, {})).rejects.toThrow(
+        /unknown|unmatched/i,
+      );
+      await expect(bridge.respond(ping, {})).rejects.toThrow(/initialize/i);
+
+      await bridge.respond(initialize, INITIALIZE_RESPONSE);
+      await expect(
+        bridge.notify(notification("evener/tree/changed", {})),
+      ).rejects.toThrow(/initialized/i);
+
+      await sendRawClientFrame(bridge, connection, {
+        method: "initialized",
+        params: {},
+      });
+      await bridge.waitForServerRequest("initialized", 1);
+      await bridge.respond(ping, {});
+      await bridge.notify(notification("evener/tree/changed", {}));
+    } finally {
+      const closed = closeRawHarnessConnection(bridge, connection);
+      const stopped = bridge.stop();
+      expect(bridge.stop()).toBe(stopped);
+      const [closeResult, stopResult] = await Promise.allSettled([
+        closed,
+        stopped,
+      ]);
+      expect(stopResult.status).toBe("fulfilled");
+      expect(closeResult.status).toBe("fulfilled");
+    }
+  });
+
+  it("refuses to switch a connected built-in server into manual mode", async () => {
+    const bridge = await RustHarnessBridge.start({ manual: false });
+    let connection: RawHarnessConnection | null = null;
+    try {
+      connection = await openRawHarnessConnection(bridge);
+      await expect(bridge.control("manualServer")).rejects.toThrow(
+        /before connection|traffic/i,
+      );
+    } finally {
+      const closed = closeRawHarnessConnection(bridge, connection);
+      const stopped = bridge.stop();
+      const [closeResult, stopResult] = await Promise.allSettled([
+        closed,
+        stopped,
+      ]);
+      expect(stopResult.status).toBe("fulfilled");
+      expect(closeResult.status).toBe("fulfilled");
+    }
+  });
+
   it("runs one deterministic composed graph through all concepts and controls", async () => {
     window.history.replaceState(null, "", "/");
     installMemoryLocalStorage();
@@ -686,8 +1124,7 @@ describe("production App live concepts over the real native AppWire bridge", () 
       expect(screen.getByText("Running vertical slice")).toBeInTheDocument();
       const stableRosterKeys = sessionKeys();
       expect(stableRosterKeys).toHaveLength(2);
-      expect(stableRosterKeys).not.toContain(ATTENTION_REF);
-      expect(stableRosterKeys).not.toContain(RUNNING_REF);
+      expectUniqueOpaqueKeys(stableRosterKeys);
 
       chooseConcept("Constellation");
       expectConcept("concept-constellation");
@@ -784,7 +1221,7 @@ describe("production App live concepts over the real native AppWire bridge", () 
             id: "tool-live",
             toolName: "exec_command",
             callId: "call-live",
-            output: "line ",
+            output: TOOL_STARTED_TEXT,
             status: "inProgress",
           },
         }),
@@ -795,9 +1232,17 @@ describe("production App live concepts over the real native AppWire bridge", () 
           ...common,
           itemId: "tool-live",
           callId: "call-live",
-          delta: "done",
+          delta: TOOL_DELTA_TEXT,
         }),
       );
+      fireEvent.click(screen.getByRole("button", { name: "exec_command" }));
+      expect(
+        screen.getByText(`${TOOL_STARTED_TEXT}${TOOL_DELTA_TEXT}`),
+      ).toBeInTheDocument();
+      const runningTool = screen
+        .getByText("exec_command")
+        .closest<HTMLElement>("[data-transcript-item-id]");
+      expect(runningTool).toHaveAttribute("data-streaming", "true");
       await sendNotification(
         bridge,
         notification("item/completed", {
@@ -807,45 +1252,78 @@ describe("production App live concepts over the real native AppWire bridge", () 
             id: "tool-live",
             toolName: "exec_command",
             callId: "call-live",
-            output: TOOL_TEXT,
+            output: TOOL_COMPLETED_TEXT,
             status: "completed",
           },
         }),
       );
       expect(methodCount(bridge, "thread/read")).toBe(1);
+      expect(screen.getByText(TOOL_COMPLETED_TEXT)).toBeInTheDocument();
+      expect(
+        screen.queryByText(`${TOOL_STARTED_TEXT}${TOOL_DELTA_TEXT}`),
+      ).toBeNull();
+      const completedTool = screen
+        .getByText("exec_command")
+        .closest<HTMLElement>("[data-transcript-item-id]");
+      expect(completedTool).toHaveAttribute("data-streaming", "false");
 
       fireEvent.click(screen.getByRole("button", { name: "Reasoning" }));
-      fireEvent.click(screen.getByRole("button", { name: "exec_command" }));
       fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
         target: { value: DRAFT_SENTINEL },
       });
       const stableTranscriptKeys = transcriptKeys();
       expect(stableTranscriptKeys).toHaveLength(4);
-      expect(stableTranscriptKeys).not.toContain(ATTENTION_REF);
-      expectConversationEvidence(stableTranscriptKeys, DRAFT_SENTINEL);
+      expectUniqueOpaqueKeys(stableTranscriptKeys);
+      const stableThreadKey = activeThreadKey();
+      expectUniqueOpaqueKeys([stableThreadKey]);
+      const notificationReasoningKey = keyForRenderedText(REASONING_TEXT);
+      expect(notificationReasoningKey).not.toBe("");
+      expectConversationEvidence(
+        stableTranscriptKeys,
+        stableThreadKey,
+        DRAFT_SENTINEL,
+      );
 
       chooseConcept("Constellation");
       expectConcept("concept-constellation");
-      expectConversationEvidence(stableTranscriptKeys, DRAFT_SENTINEL);
+      expectConversationEvidence(
+        stableTranscriptKeys,
+        stableThreadKey,
+        DRAFT_SENTINEL,
+      );
       chooseConcept("Field Notes");
       expectConcept("concept-field-notes");
-      expectConversationEvidence(stableTranscriptKeys, DRAFT_SENTINEL);
+      expectConversationEvidence(
+        stableTranscriptKeys,
+        stableThreadKey,
+        DRAFT_SENTINEL,
+      );
 
       fireEvent.click(screen.getByRole("button", { name: "Work" }));
       const stableWorkKeys = workKeys();
       expect(stableWorkKeys).toHaveLength(1);
-      expectWorkEvidence(stableWorkKeys);
+      expectWorkEvidence(stableWorkKeys, stableThreadKey);
       chooseConcept("Stillwater");
       expectConcept("concept-stillwater");
-      expectWorkEvidence(stableWorkKeys);
+      expectWorkEvidence(stableWorkKeys, stableThreadKey);
       chooseConcept("Constellation");
       expectConcept("concept-constellation");
-      expectWorkEvidence(stableWorkKeys);
+      expectWorkEvidence(stableWorkKeys, stableThreadKey);
       chooseConcept("Field Notes");
       expectConcept("concept-field-notes");
-      expectWorkEvidence(stableWorkKeys);
+      expectWorkEvidence(stableWorkKeys, stableThreadKey);
+      expectUniqueOpaqueKeys([
+        ...stableRosterKeys,
+        stableThreadKey,
+        ...stableTranscriptKeys,
+        ...stableWorkKeys,
+      ]);
       fireEvent.click(screen.getByRole("button", { name: "Close" }));
-      expectConversationEvidence(stableTranscriptKeys, DRAFT_SENTINEL);
+      expectConversationEvidence(
+        stableTranscriptKeys,
+        stableThreadKey,
+        DRAFT_SENTINEL,
+      );
 
       const opensBeforePendingSwitch = bridge.invocations.filter(
         ({ cmd }) => cmd === "appwire_open",
@@ -861,12 +1339,12 @@ describe("production App live concepts over the real native AppWire bridge", () 
         ref: ATTENTION_REF,
         input: [{ type: "text", text: DRAFT_SENTINEL }],
       });
-      expect(screen.getByRole("status")).toHaveTextContent(/send.*pending/i);
+      expectComposerPending("send", DRAFT_SENTINEL);
 
       chooseConcept("Stillwater");
-      expect(screen.getByRole("status")).toHaveTextContent(/send/i);
+      expectComposerPending("send", DRAFT_SENTINEL);
       chooseConcept("Constellation");
-      expect(screen.getByRole("status")).toHaveTextContent(/send/i);
+      expectComposerPending("send", DRAFT_SENTINEL);
       expect(methodCount(bridge, "turn/start")).toBe(1);
       expect(methodCount(bridge, "thread/read")).toBe(1);
       expect(
@@ -881,6 +1359,8 @@ describe("production App live concepts over the real native AppWire bridge", () 
       });
       expect(bridge.activeChannelCount()).toBe(1);
 
+      const sendReceipt = receiptFor(pendingSend, "send");
+      expectReceiptCorrelation(pendingSend, sendReceipt, "send");
       await act(async () => {
         await bridge.respond(pendingSend, {
           turn: {
@@ -888,22 +1368,28 @@ describe("production App live concepts over the real native AppWire bridge", () 
             itemsView: "full",
             status: "running",
           },
-          receipt: receiptFor(pendingSend, "send"),
+          receipt: sendReceipt,
         });
       });
+      expectComposerReady("");
 
-      await submitMutation(
+      const steer = await submitMutation(
         bridge,
         "Steer",
         "steer-sentinel::production-appwire",
         "turn/steer",
       );
-      await submitMutation(
+      const queue = await submitMutation(
         bridge,
         "Queue",
         "queue-sentinel::production-appwire",
         "turn/queue",
       );
+      const interruptDraft = "interrupt-draft::production-appwire";
+      fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
+        target: { value: interruptDraft },
+      });
+      expectComposerReady(interruptDraft);
       const interruptCount = methodCount(bridge, "turn/interrupt") + 1;
       fireEvent.click(screen.getByRole("button", { name: "Interrupt" }));
       const interrupt = await bridge.waitForServerRequest(
@@ -911,11 +1397,25 @@ describe("production App live concepts over the real native AppWire bridge", () 
         interruptCount,
       );
       expect(interrupt.params).toMatchObject({ ref: ATTENTION_REF });
+      expectComposerPending("interrupt", interruptDraft);
+      const interruptReceipt = receiptFor(interrupt, "interrupt");
+      expectReceiptCorrelation(interrupt, interruptReceipt, "interrupt");
       await act(async () => {
         await bridge.respond(interrupt, {
-          receipt: receiptFor(interrupt, "interrupt"),
+          receipt: interruptReceipt,
         });
       });
+      expectComposerReady(interruptDraft);
+      expectUniqueOpaqueKeys([
+        clientMutationId(pendingSend),
+        clientMutationId(steer),
+        clientMutationId(queue),
+        clientMutationId(interrupt),
+      ]);
+      fireEvent.change(screen.getByRole("textbox", { name: "Message" }), {
+        target: { value: "" },
+      });
+      expectComposerReady("");
 
       await sendNotification(
         bridge,
@@ -942,8 +1442,56 @@ describe("production App live concepts over the real native AppWire bridge", () 
         });
       });
       expect(methodCount(bridge, "thread/read")).toBe(2);
-      expect(transcriptKeys()).toEqual(stableTranscriptKeys);
-      expect(screen.getByText(STREAMED_TEXT)).toBeInTheDocument();
+      const authoritativeTranscriptKeys = transcriptKeys();
+      expect(authoritativeTranscriptKeys).toHaveLength(5);
+      expectUniqueOpaqueKeys(authoritativeTranscriptKeys);
+      expect(authoritativeTranscriptKeys).not.toEqual(stableTranscriptKeys);
+      expect(authoritativeTranscriptKeys).toContain(notificationReasoningKey);
+      expect(
+        authoritativeTranscriptKeys.filter((key) =>
+          stableTranscriptKeys.includes(key),
+        ),
+      ).toHaveLength(4);
+      expectAuthoritativeConversationEvidence(
+        authoritativeTranscriptKeys,
+        stableThreadKey,
+      );
+
+      chooseConcept("Field Notes");
+      expectConcept("concept-field-notes");
+      expectAuthoritativeConversationEvidence(
+        authoritativeTranscriptKeys,
+        stableThreadKey,
+      );
+      chooseConcept("Stillwater");
+      expectConcept("concept-stillwater");
+      expectAuthoritativeConversationEvidence(
+        authoritativeTranscriptKeys,
+        stableThreadKey,
+      );
+
+      fireEvent.click(screen.getByRole("button", { name: "Work" }));
+      const authoritativeWorkKeys = workKeys();
+      expect(authoritativeWorkKeys).toHaveLength(1);
+      expect(authoritativeWorkKeys).not.toEqual(stableWorkKeys);
+      expectAuthoritativeWorkEvidence(authoritativeWorkKeys, stableThreadKey);
+      chooseConcept("Constellation");
+      expectConcept("concept-constellation");
+      expectAuthoritativeWorkEvidence(authoritativeWorkKeys, stableThreadKey);
+      chooseConcept("Field Notes");
+      expectConcept("concept-field-notes");
+      expectAuthoritativeWorkEvidence(authoritativeWorkKeys, stableThreadKey);
+      expectUniqueOpaqueKeys([
+        ...stableRosterKeys,
+        stableThreadKey,
+        ...authoritativeTranscriptKeys,
+        ...authoritativeWorkKeys,
+      ]);
+      fireEvent.click(screen.getByRole("button", { name: "Close" }));
+      expectAuthoritativeConversationEvidence(
+        authoritativeTranscriptKeys,
+        stableThreadKey,
+      );
 
       fireEvent.click(screen.getByRole("button", { name: "Back" }));
       expect(sessionKeys()).toEqual(stableRosterKeys);
@@ -1014,12 +1562,30 @@ describe("production App live concepts over the real native AppWire bridge", () 
       ).toBe(true);
     } finally {
       if (mounted) {
-        const close = bridge.waitForCommand("appwire_close");
-        cleanup();
-        await close;
+        const closeCompleted = bridge.waitForCommand("appwire_close");
+        await act(async () => {
+          cleanup();
+        });
+        const closeInitiated = bridge.invocations.some(
+          ({ cmd }) => cmd === "appwire_close",
+        );
+        if (!closeInitiated) void closeCompleted.catch(() => undefined);
+        const stopped = bridge.stop();
+        if (closeInitiated) {
+          const [closeResult, stopResult] = await Promise.allSettled([
+            closeCompleted,
+            stopped,
+          ]);
+          expect(stopResult.status).toBe("fulfilled");
+          expect(closeResult.status).toBe("fulfilled");
+        } else {
+          await stopped;
+          expect(closeInitiated).toBe(true);
+        }
+      } else {
+        await bridge.stop();
       }
       tauriHarness.bridge = null;
-      await bridge.stop();
     }
   });
 });
