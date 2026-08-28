@@ -12,12 +12,113 @@ use std::sync::Arc;
 
 use futures_util::{SinkExt, StreamExt};
 use parking_lot::Mutex as SyncMutex;
+use rustls::pki_types::CertificateDer;
 use tokio::net::TcpStream;
 use tokio::sync::{mpsc, oneshot};
 use tokio_tungstenite::tungstenite::Message;
+use tokio_tungstenite::Connector;
 
 use crate::error::ReleaseMode;
 use crate::network_policy::{NetworkPolicy, PinnedOrigin};
+
+type AppwireStream =
+    tokio_tungstenite::WebSocketStream<tokio_tungstenite::MaybeTlsStream<tokio::net::TcpStream>>;
+
+/// One reusable AppWire connection boundary. It resolves through NetworkPolicy,
+/// connects only to a policy-approved socket, retains the original URL host for
+/// Host/TLS SNI/certificate identity, and injects the native-only bearer token
+/// into the WebSocket upgrade.
+#[derive(Clone)]
+pub(crate) struct PinnedAppwireBoundary {
+    policy: Arc<NetworkPolicy>,
+    mode: ReleaseMode,
+    extra_roots: Vec<Vec<u8>>,
+}
+
+impl PinnedAppwireBoundary {
+    pub(crate) fn new(policy: Arc<NetworkPolicy>, mode: ReleaseMode) -> Self {
+        Self {
+            policy,
+            mode,
+            extra_roots: Vec::new(),
+        }
+    }
+
+    pub(crate) fn with_root_certificate_der(mut self, certificate: Vec<u8>) -> Self {
+        self.extra_roots.push(certificate);
+        self
+    }
+
+    pub(crate) fn clone_with_mode(&self, mode: ReleaseMode) -> Self {
+        Self {
+            policy: self.policy.clone(),
+            mode,
+            extra_roots: self.extra_roots.clone(),
+        }
+    }
+
+    pub(crate) async fn connect(
+        &self,
+        url: &str,
+        token: &str,
+    ) -> Result<AppwireStream, AppwireError> {
+        let ws_url = url::Url::parse(url).map_err(|_| AppwireError::ConnectionFailed)?;
+        let pinned = self
+            .policy
+            .resolve(&ws_url, self.mode)
+            .map_err(|_| AppwireError::PolicyRejected)?;
+        let addr = pinned.addrs().first().ok_or(AppwireError::PolicyRejected)?;
+        let socket = TcpStream::connect((*addr, pinned.port()))
+            .await
+            .map_err(|_| AppwireError::ConnectionFailed)?;
+        socket
+            .set_nodelay(true)
+            .map_err(|_| AppwireError::ConnectionFailed)?;
+
+        let request = tokio_tungstenite::tungstenite::http::Request::builder()
+            .uri(ws_url.as_str())
+            .header("Host", host_with_port(&pinned))
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Origin", ws_url.origin().ascii_serialization())
+            .header("Sec-WebSocket-Version", "13")
+            .header("Connection", "Upgrade")
+            .header("Upgrade", "websocket")
+            .header(
+                "Sec-WebSocket-Key",
+                tokio_tungstenite::tungstenite::handshake::client::generate_key(),
+            )
+            .body(())
+            .map_err(|_| AppwireError::ConnectionFailed)?;
+
+        tokio_tungstenite::client_async_tls_with_config(
+            request,
+            socket,
+            None,
+            self.tls_connector()?,
+        )
+        .await
+        .map(|(stream, _)| stream)
+        .map_err(|_| AppwireError::ConnectionFailed)
+    }
+
+    fn tls_connector(&self) -> Result<Option<Connector>, AppwireError> {
+        if self.extra_roots.is_empty() {
+            return Ok(None);
+        }
+
+        let mut roots = rustls::RootCertStore::empty();
+        roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+        for certificate in &self.extra_roots {
+            roots
+                .add(CertificateDer::from(certificate.clone()))
+                .map_err(|_| AppwireError::ConnectionFailed)?;
+        }
+        let config = rustls::ClientConfig::builder()
+            .with_root_certificates(roots)
+            .with_no_client_auth();
+        Ok(Some(Connector::Rustls(Arc::new(config))))
+    }
+}
 
 /// A connection identifier. Profile and connection generation reject stale
 /// commands and events.
@@ -152,8 +253,7 @@ pub struct AppwireManager {
     reaped_connections: Arc<std::sync::atomic::AtomicU64>,
     state: Arc<SyncMutex<ManagerState>>,
     lifecycle: tokio::sync::Mutex<()>,
-    policy: Arc<NetworkPolicy>,
-    mode: ReleaseMode,
+    boundary: PinnedAppwireBoundary,
 }
 
 impl AppwireManager {
@@ -163,8 +263,7 @@ impl AppwireManager {
             reaped_connections: Arc::new(std::sync::atomic::AtomicU64::new(0)),
             state: Arc::new(SyncMutex::new(ManagerState::default())),
             lifecycle: tokio::sync::Mutex::new(()),
-            policy,
-            mode,
+            boundary: PinnedAppwireBoundary::new(policy, mode),
         }
     }
 
@@ -305,38 +404,7 @@ impl AppwireManager {
 
         let generation = self.next_generation();
         let conn_id = ConnectionId::new(profile_id.to_owned(), generation);
-        let ws_url = url::Url::parse(&url).map_err(|_| AppwireError::ConnectionFailed)?;
-        let pinned = self
-            .policy
-            .resolve(&ws_url, self.mode)
-            .map_err(|_| AppwireError::PolicyRejected)?;
-        let addr = pinned.addrs().first().ok_or(AppwireError::PolicyRejected)?;
-        let socket = TcpStream::connect((*addr, pinned.port()))
-            .await
-            .map_err(|_| AppwireError::ConnectionFailed)?;
-        socket
-            .set_nodelay(true)
-            .map_err(|_| AppwireError::ConnectionFailed)?;
-
-        let request = tokio_tungstenite::tungstenite::http::Request::builder()
-            .uri(ws_url.as_str())
-            .header("Host", host_with_port(&pinned))
-            .header("Authorization", format!("Bearer {token}"))
-            .header("Origin", ws_url.origin().ascii_serialization())
-            .header("Sec-WebSocket-Version", "13")
-            .header("Connection", "Upgrade")
-            .header("Upgrade", "websocket")
-            .header(
-                "Sec-WebSocket-Key",
-                tokio_tungstenite::tungstenite::handshake::client::generate_key(),
-            )
-            .body(())
-            .map_err(|_| AppwireError::ConnectionFailed)?;
-
-        let (ws_stream, _) =
-            tokio_tungstenite::client_async_tls_with_config(request, socket, None, None)
-                .await
-                .map_err(|_| AppwireError::ConnectionFailed)?;
+        let ws_stream = self.boundary.connect(&url, &token).await?;
         let (mut write, mut read) = ws_stream.split();
         let (command_tx, mut command_rx) = mpsc::unbounded_channel();
         let (start_tx, start_rx) = oneshot::channel();
