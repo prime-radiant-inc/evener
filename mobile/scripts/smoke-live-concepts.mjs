@@ -2,12 +2,14 @@ import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
   chmod,
+  cp,
   link,
   lstat,
   mkdir,
   open,
   readdir,
   readFile,
+  realpath,
   unlink,
 } from "node:fs/promises";
 import path from "node:path";
@@ -179,20 +181,15 @@ export function derivePositiveMarker(observation) {
   );
 }
 
-function requireExpectedSequence(value, label) {
+function requireExpectedSequence(value, label, expectedKey) {
   const sequence = requireObject(value, `${label} expected sequence`);
   if (sequence.classification !== "expected-task4-proven") {
     throw new Error(`${label} expected sequence classification is invalid`);
   }
+  const expected = EXPECTED_LIVE_SEQUENCE[expectedKey];
   for (const key of ["requests", "notifications"]) {
-    if (
-      !Array.isArray(sequence[key]) ||
-      sequence[key].length === 0 ||
-      sequence[key].some(
-        (entry) => typeof entry !== "string" || entry.trim() === "",
-      )
-    ) {
-      throw new Error(`${label} expected ${key} must be nonempty`);
+    if (!arraysEqual(sequence[key], expected[key])) {
+      throw new Error(`${label} expected ${key} sequence is invalid`);
     }
   }
 }
@@ -208,6 +205,7 @@ function requireReceipt(value, kind) {
   if (receipt.pendingTreeDigest === receipt.acceptedTreeDigest) {
     throw new Error(`${kind} pending and accepted trees must differ`);
   }
+  return receipt.receipt;
 }
 
 function requirePreservation(evidence, concept, shared, threadIdentity) {
@@ -241,18 +239,33 @@ function validateMilestoneEvidence(observation, shared) {
       requireNonempty(device.os, "device OS");
       const installed = requireObject(evidence.installedApp, "installed app");
       const local = requireObject(evidence.localBundle, "local bundle");
-      for (const app of [installed, local]) {
+      const staged = requireObject(evidence.stagedBundle, "staged bundle");
+      for (const app of [installed, local, staged]) {
         requireNonempty(app.id, "app ID");
         requireNonempty(app.version, "app version");
       }
-      if (installed.id !== local.id || installed.version !== local.version) {
-        throw new Error("installed and local app identity must match");
+      if (
+        installed.id !== staged.id ||
+        installed.version !== staged.version ||
+        local.id !== staged.id ||
+        local.version !== staged.version
+      ) {
+        throw new Error("installed, staged, and local app identity must match");
       }
       requirePositiveInteger(installed.pid, "installed app process ID");
       requireDigest(local.hash, "local bundle hash");
-      if (local.codesignVerified !== true) {
-        throw new Error("local bundle must be codesign verified");
+      requireDigest(staged.hash, "staged bundle hash");
+      if (
+        local.hash !== staged.hash ||
+        local.codesignVerified !== true ||
+        staged.codesignVerified !== true
+      ) {
+        throw new Error("staged bundle must match signed local bundle");
       }
+      const install = requireObject(evidence.installReceipt, "install receipt");
+      if (install.bundleId !== staged.id)
+        throw new Error("install receipt mismatch");
+      requireDigest(install.digest, "install receipt digest");
       const hub = requireObject(evidence.hub, "Hub evidence");
       requireNonempty(hub.expectedVersion, "expected Hub version");
       requireNonempty(hub.observedVersion, "observed Hub version");
@@ -267,13 +280,6 @@ function validateMilestoneEvidence(observation, shared) {
       );
       if (connection.status !== "connected") {
         throw new Error("profile must be connected");
-      }
-      for (const key of [
-        "profileGeneration",
-        "lifecycleGeneration",
-        "handshakeGeneration",
-      ]) {
-        requirePositiveInteger(connection[key], key, true);
       }
       shared.hubVersion = hub.observedVersion;
       shared.app = installed;
@@ -293,10 +299,10 @@ function validateMilestoneEvidence(observation, shared) {
       ) {
         throw new Error("roster completeness must match hasMore");
       }
-      if (evidence.listLimit !== undefined && evidence.listLimit !== 501) {
+      if (evidence.listLimit !== 501) {
         throw new Error("expected roster list limit must be 501");
       }
-      requireExpectedSequence(evidence.expectedSequence, "roster");
+      requireExpectedSequence(evidence.expectedSequence, "roster", "roster");
       shared.rosterIds = evidence.rosterIds;
       break;
     case "stillwater-conversation":
@@ -305,14 +311,18 @@ function validateMilestoneEvidence(observation, shared) {
       }
       requireDigest(evidence.titleDigest, "conversation title digest");
       requireIds(evidence.transcriptIds, "transcript IDs");
-      if (evidence.readLimit !== undefined && evidence.readLimit !== 50) {
+      if (evidence.readLimit !== 50) {
         throw new Error("expected read limit must be 50");
       }
-      requireExpectedSequence(evidence.expectedSequence, "conversation");
+      requireExpectedSequence(
+        evidence.expectedSequence,
+        "conversation",
+        "conversation",
+      );
       shared.titleDigest = evidence.titleDigest;
       break;
     case "stillwater-send": {
-      requireReceipt(evidence.receipt, "send");
+      shared.receipts.push(requireReceipt(evidence.receipt, "send"));
       const lifecycle = requireObject(evidence.lifecycle, "item lifecycle");
       requireNonempty(lifecycle.itemId, "lifecycle item ID");
       requireDigest(lifecycle.streamingTreeDigest, "streaming tree");
@@ -326,7 +336,15 @@ function validateMilestoneEvidence(observation, shared) {
       const tool = requireObject(evidence.tool, "tool evidence");
       requireNonempty(tool.itemId, "tool item ID");
       requireDigest(tool.contentDigest, "tool content");
-      requireExpectedSequence(evidence.expectedSequence, "send");
+      const baseline = new Set(evidence.baselineTranscriptIds ?? []);
+      if (
+        baseline.has(lifecycle.itemId) ||
+        baseline.has(reasoning.itemId) ||
+        baseline.has(tool.itemId)
+      ) {
+        throw new Error("post-send transcript evidence must be new");
+      }
+      requireExpectedSequence(evidence.expectedSequence, "send", "send");
       break;
     }
     case "constellation-preserved":
@@ -341,9 +359,13 @@ function validateMilestoneEvidence(observation, shared) {
       if (!Array.isArray(evidence.receipts) || evidence.receipts.length !== 2) {
         throw new Error("steer and queue receipts are required");
       }
-      requireReceipt(evidence.receipts[0], "steer");
-      requireReceipt(evidence.receipts[1], "queue");
-      requireExpectedSequence(evidence.expectedSequence, "steer/queue");
+      shared.receipts.push(requireReceipt(evidence.receipts[0], "steer"));
+      shared.receipts.push(requireReceipt(evidence.receipts[1], "queue"));
+      requireExpectedSequence(
+        evidence.expectedSequence,
+        "steer/queue",
+        "steerQueue",
+      );
       break;
     case "field-notes-preserved":
       requirePreservation(
@@ -354,8 +376,12 @@ function validateMilestoneEvidence(observation, shared) {
       );
       break;
     case "field-notes-interrupt":
-      requireReceipt(evidence.receipt, "interrupt");
-      requireExpectedSequence(evidence.expectedSequence, "interrupt");
+      shared.receipts.push(requireReceipt(evidence.receipt, "interrupt"));
+      requireExpectedSequence(
+        evidence.expectedSequence,
+        "interrupt",
+        "interrupt",
+      );
       break;
     case "work-activity-usage":
       for (const key of ["tasks", "jobs", "delegates"]) {
@@ -378,32 +404,6 @@ function validateMilestoneEvidence(observation, shared) {
       if (evidence.processIdBefore !== evidence.processIdAfter) {
         throw new Error("background/foreground must preserve the same process");
       }
-      requirePositiveInteger(
-        evidence.lifecycleGenerationBefore,
-        "lifecycle before",
-        true,
-      );
-      requirePositiveInteger(
-        evidence.lifecycleGenerationAfter,
-        "lifecycle after",
-        true,
-      );
-      if (
-        evidence.lifecycleGenerationAfter <= evidence.lifecycleGenerationBefore
-      ) {
-        throw new Error("lifecycle generation must advance");
-      }
-      for (const prefix of ["profile", "handshake"]) {
-        const before = evidence[`${prefix}GenerationBefore`];
-        const after = evidence[`${prefix}GenerationAfter`];
-        requirePositiveInteger(before, `${prefix} generation before`, true);
-        requirePositiveInteger(after, `${prefix} generation after`, true);
-        if (before !== after) {
-          throw new Error(
-            `${prefix} generation must stay on the same connection`,
-          );
-        }
-      }
       if (evidence.activeThreadId !== observation.threadIdentity) {
         throw new Error("foreground thread must match");
       }
@@ -413,6 +413,9 @@ function validateMilestoneEvidence(observation, shared) {
       }
       requireDigest(evidence.backgroundTreeDigest, "background tree");
       requireDigest(evidence.foregroundTreeDigest, "foreground tree");
+      if (evidence.backgroundTreeDigest === evidence.foregroundTreeDigest) {
+        throw new Error("background and foreground trees must differ");
+      }
       break;
     case "reconnect":
       requirePositiveInteger(evidence.processIdBefore, "reconnect PID before");
@@ -471,7 +474,12 @@ export function assertCompleteLiveSmoke(observed) {
     }
   }
 
-  const shared = { rosterIds: null, hubVersion: null, titleDigest: null };
+  const shared = {
+    rosterIds: null,
+    hubVersion: null,
+    titleDigest: null,
+    receipts: [],
+  };
   let threadIdentity = null;
   let priorTime = -Infinity;
   for (const observation of observed) {
@@ -512,6 +520,15 @@ export function assertCompleteLiveSmoke(observed) {
       throw new Error("positive marker is not derived from observation");
     }
     validateMilestoneEvidence(observation, shared);
+  }
+  if (
+    shared.receipts.length !== 4 ||
+    new Set(shared.receipts).size !== 4 ||
+    shared.receipts.some(
+      (receipt, index) => index > 0 && receipt <= shared.receipts[index - 1],
+    )
+  ) {
+    throw new Error("receipt numbers must be nonempty, distinct, and ordered");
   }
   return true;
 }
@@ -576,14 +593,37 @@ export function parseAxDocument(input) {
   }
   if (
     !isObject(document) ||
-    document.format !== "complete" ||
     typeof document.backend !== "string" ||
     document.backend.trim() === "" ||
-    !Array.isArray(document.elements)
+    Object.hasOwn(document, "format")
   ) {
     throw new SmokeError("malformed complete AX document");
   }
   const nodes = [];
+  const descendantStrings = (root) => {
+    const values = [];
+    const collect = (value, isRoot = false) => {
+      if (Array.isArray(value)) {
+        for (const child of value) collect(child);
+        return;
+      }
+      if (!isObject(value)) return;
+      if (!isRoot) {
+        for (const key of ["AXLabel", "AXValue"]) {
+          const entry = value[key];
+          if (
+            ["string", "number", "boolean"].includes(typeof entry) &&
+            String(entry).trim() !== ""
+          ) {
+            values.push(String(entry));
+          }
+        }
+      }
+      for (const child of Object.values(value)) collect(child);
+    };
+    collect(root, true);
+    return [...new Set(values)];
+  };
   const visit = (value) => {
     if (Array.isArray(value)) {
       for (const child of value) visit(child);
@@ -607,16 +647,16 @@ export function parseAxDocument(input) {
         label: value.AXLabel,
         value: rawValue == null ? null : String(rawValue),
         role,
+        descendants: descendantStrings(value),
       });
     }
     for (const child of Object.values(value)) {
       if (child !== value.AXLabel && child !== value.AXValue) visit(child);
     }
   };
-  visit(document.elements);
+  visit(document);
   if (nodes.length === 0) throw new SmokeError("missing AX node");
   return {
-    format: "complete",
     backend: document.backend,
     nodes,
     raw: document,
@@ -796,6 +836,36 @@ export async function inspectLocalAppBundle(appPath, { run }) {
   return { id, version, hash, codesignVerified: true };
 }
 
+export async function stageAppBundle(paths, appPath, { run }) {
+  await assertEvidenceRoots(paths);
+  const source = await inspectLocalAppBundle(appPath, { run });
+  const stagedPath = path.join(paths.stageDir, path.basename(appPath));
+  try {
+    await cp(appPath, stagedPath, {
+      recursive: true,
+      force: false,
+      errorOnExist: true,
+      dereference: false,
+    });
+  } catch {
+    throw new SmokeError("app staging failed");
+  }
+  await assertNoSymlinkComponents(stagedPath);
+  const first = await inspectLocalAppBundle(stagedPath, { run });
+  const second = await inspectLocalAppBundle(stagedPath, { run });
+  if (
+    source.id !== first.id ||
+    source.version !== first.version ||
+    first.id !== second.id ||
+    first.version !== second.version ||
+    first.hash !== second.hash
+  ) {
+    throw new SmokeError("staged app bundle changed");
+  }
+  await assertEvidenceRoots(paths);
+  return { path: stagedPath, source, bundle: second };
+}
+
 export class ProcessRegistry {
   #children = new Set();
   get size() {
@@ -958,7 +1028,22 @@ export async function createEvidenceRoot(outputDir) {
   if (!path.isAbsolute(outputDir)) {
     throw new SmokeError("evidence output must be absolute");
   }
-  await assertNoSymlinkComponents(path.dirname(outputDir));
+  const parentDir = path.dirname(outputDir);
+  await assertNoSymlinkComponents(parentDir);
+  const canonicalParent = await realpath(parentDir).catch(() => null);
+  const parentInfo = await lstat(parentDir).catch(() => null);
+  const currentUid =
+    typeof process.getuid === "function" ? process.getuid() : null;
+  if (
+    canonicalParent !== path.resolve(parentDir) ||
+    parentInfo === null ||
+    !parentInfo.isDirectory() ||
+    parentInfo.isSymbolicLink() ||
+    (currentUid !== null && parentInfo.uid !== currentUid) ||
+    (parentInfo.mode & 0o022) !== 0
+  ) {
+    throw new SmokeError("unsafe evidence parent mode or owner");
+  }
   try {
     await mkdir(outputDir, { mode: 0o700 });
   } catch (error) {
@@ -970,29 +1055,58 @@ export async function createEvidenceRoot(outputDir) {
   await chmod(outputDir, 0o700);
   await syncDirectory(path.dirname(outputDir));
   const scratchDir = path.join(outputDir, "sensitive-scratch");
+  const stageDir = path.join(outputDir, "staged-app");
   try {
     await mkdir(scratchDir, { mode: 0o700 });
   } catch {
     throw new SmokeError("evidence scratch creation failed");
   }
   await chmod(scratchDir, 0o700);
+  try {
+    await mkdir(stageDir, { mode: 0o700 });
+  } catch {
+    throw new SmokeError("evidence stage creation failed");
+  }
+  await chmod(stageDir, 0o700);
   await syncDirectory(outputDir);
   return {
+    parentDir,
     outputDir,
     scratchDir,
+    stageDir,
+    parentIdentity: await pathIdentity(parentDir, "directory"),
     outputIdentity: await pathIdentity(outputDir, "directory"),
     scratchIdentity: await pathIdentity(scratchDir, "directory"),
+    stageIdentity: await pathIdentity(stageDir, "directory"),
     rawPath: path.join(scratchDir, "raw-evidence.json"),
     summaryPath: path.join(outputDir, "live-smoke-summary.json"),
   };
 }
 
 async function assertEvidenceRoots(paths) {
+  const canonicalParent = await realpath(paths.parentDir).catch(() => null);
+  const parentInfo = await lstat(paths.parentDir).catch(() => null);
+  const currentUid =
+    typeof process.getuid === "function" ? process.getuid() : null;
+  if (
+    canonicalParent !== path.resolve(paths.parentDir) ||
+    parentInfo === null ||
+    !parentInfo.isDirectory() ||
+    parentInfo.isSymbolicLink() ||
+    (currentUid !== null && parentInfo.uid !== currentUid) ||
+    (parentInfo.mode & 0o022) !== 0
+  ) {
+    throw new SmokeError("evidence path changed");
+  }
+  const parent = await pathIdentity(paths.parentDir, "directory");
   const output = await pathIdentity(paths.outputDir, "directory");
   const scratch = await pathIdentity(paths.scratchDir, "directory");
+  const stage = await pathIdentity(paths.stageDir, "directory");
   if (
+    !sameIdentity(parent, paths.parentIdentity) ||
     !sameIdentity(output, paths.outputIdentity) ||
-    !sameIdentity(scratch, paths.scratchIdentity)
+    !sameIdentity(scratch, paths.scratchIdentity) ||
+    !sameIdentity(stage, paths.stageIdentity)
   ) {
     throw new SmokeError("evidence path changed");
   }
@@ -1086,7 +1200,7 @@ function buildSafeSummary(input, linkDigest) {
     linkDigest,
     tools: {
       idb: {
-        versionDigest: safeDigestOrNull(input.tools?.idb?.versionDigest),
+        helpDigest: safeDigestOrNull(input.tools?.idb?.helpDigest),
         capabilitiesDigest: safeDigestOrNull(
           input.tools?.idb?.capabilitiesDigest,
         ),
@@ -1123,6 +1237,7 @@ export async function publishEvidence(paths, summaryInput, raw, options = {}) {
     "utf8",
   );
   const writeBytes = options.writeBytes ?? defaultWriteBytes;
+  let rawPublished = false;
   try {
     await publishNoReplace(
       paths.scratchDir,
@@ -1130,6 +1245,7 @@ export async function publishEvidence(paths, summaryInput, raw, options = {}) {
       rawBytes,
       writeBytes,
     );
+    rawPublished = true;
     await assertEvidenceRoots(paths);
     await publishNoReplace(
       paths.outputDir,
@@ -1138,6 +1254,10 @@ export async function publishEvidence(paths, summaryInput, raw, options = {}) {
       writeBytes,
     );
   } catch (error) {
+    if (rawPublished) {
+      await unlink(paths.rawPath).catch(() => {});
+      await syncDirectory(paths.scratchDir).catch(() => {});
+    }
     if (error instanceof SmokeError) throw error;
     throw new SmokeError("evidence write failed");
   }
@@ -1147,51 +1267,115 @@ export async function publishEvidence(paths, summaryInput, raw, options = {}) {
 export async function verifyIdbCapabilities({ run }) {
   const checks = [
     {
-      argv: ["--version"],
-      tokens: [],
-      version: true,
+      argv: ["--help"],
+      usage: /^usage:\s+idb\b/i,
+      options: ["--help"],
+      validate: (_records, usage) =>
+        /\bCOMMAND\b/i.test(usage) || /\{[^}]*\binstall\b[^}]*\}/i.test(usage),
     },
     {
       argv: ["ui", "describe-all", "--help"],
-      tokens: ["--format", "complete", "--json", "--udid"],
+      usage: /^usage:\s+idb\s+ui\s+describe-all\b/i,
+      options: ["--format", "--json", "--udid"],
+      validate: (records) =>
+        records.some(
+          (line) =>
+            line.includes("--format") &&
+            /default.*nested.*complete/i.test(line) &&
+            /consolidated (?:object|document)/i.test(line),
+        ),
     },
     {
       argv: ["ui", "tap", "--help"],
-      tokens: ["target", "--match-key", "AXLabel", "--udid"],
+      usage: /^usage:\s+idb\s+ui\s+tap\b.*\btarget\b/i,
+      options: ["--match-key", "--udid"],
+      validate: (records) =>
+        records.some(
+          (line) => line.includes("--match-key") && line.includes("AXLabel"),
+        ),
     },
-    { argv: ["ui", "text", "--help"], tokens: ["text", "--udid"] },
-    { argv: ["ui", "button", "--help"], tokens: ["HOME", "--udid"] },
+    {
+      argv: ["ui", "set-value", "--help"],
+      usage: /^usage:\s+idb\s+ui\s+set-value\b.*\btarget\b/i,
+      options: ["--value", "--match-key", "--udid"],
+      validate: (records) =>
+        records.some(
+          (line) => line.includes("--match-key") && line.includes("AXLabel"),
+        ),
+    },
+    {
+      argv: ["ui", "button", "--help"],
+      usage: /^usage:\s+idb\s+ui\s+button\b.*(?:\bBUTTON\b|\bHOME\b)/i,
+      options: ["--udid"],
+    },
     {
       argv: ["launch", "--help"],
-      tokens: ["--foreground-if-running", "--udid", "bundle_id"],
+      usage: /^usage:\s+idb\s+launch\b.*\bbundle_id\b/i,
+      options: ["--foreground-if-running", "--udid"],
     },
-    { argv: ["terminate", "--help"], tokens: ["--udid", "bundle_id"] },
+    {
+      argv: ["terminate", "--help"],
+      usage: /^usage:\s+idb\s+terminate\b.*\bbundle_id\b/i,
+      options: ["--udid"],
+    },
+    {
+      argv: ["install", "--help"],
+      usage: /^usage:\s+idb\s+install\b.*\bbundle_path\b/i,
+      options: ["--udid", "--json"],
+    },
     {
       argv: ["describe", "--help"],
-      tokens: ["--diagnostics", "--json", "--udid"],
+      usage: /^usage:\s+idb\s+describe\b/i,
+      options: ["--diagnostics", "--json", "--udid"],
     },
     {
       argv: ["list-apps", "--help"],
-      tokens: ["--fetch-process-state", "--json", "--udid"],
+      usage: /^usage:\s+idb\s+list-apps\b/i,
+      options: ["--fetch-process-state", "--json", "--udid"],
     },
   ];
   const outputs = [];
-  let version = "";
   for (const check of checks) {
     const result = await run("idb", check.argv);
     if (typeof result.stdout !== "string" || result.stdout.trim() === "") {
-      throw new SmokeError("IDB capability unavailable");
+      throw new SmokeError(
+        `IDB capability unavailable: idb ${check.argv.join(" ")}`,
+      );
     }
-    if (check.version) version = result.stdout.trim();
-    for (const token of check.tokens) {
-      if (!result.stdout.includes(token)) {
-        throw new SmokeError("IDB capability unavailable");
+    const lines = result.stdout.split(/\r?\n/);
+    const firstBlank = lines.findIndex(
+      (line, index) =>
+        index > 0 && index < lines.length - 1 && line.trim() === "",
+    );
+    const usageEnd = firstBlank < 0 ? 1 : firstBlank;
+    const recordsStart = firstBlank < 0 ? 1 : firstBlank + 1;
+    const usage = lines
+      .slice(0, usageEnd)
+      .map((line) => line.trim())
+      .join(" ");
+    const optionRecords = [];
+    for (const line of lines.slice(recordsStart)) {
+      if (/^\s{2}-{1,2}[A-Za-z]/.test(line)) {
+        optionRecords.push(line.trim());
+      } else if (/^\s{4,}\S/.test(line) && optionRecords.length > 0) {
+        optionRecords[optionRecords.length - 1] += ` ${line.trim()}`;
       }
+    }
+    if (
+      !check.usage.test(usage) ||
+      check.options.some(
+        (option) => !optionRecords.some((line) => line.includes(option)),
+      ) ||
+      (check.validate !== undefined && !check.validate(optionRecords, usage))
+    ) {
+      throw new SmokeError(
+        `IDB capability unavailable: idb ${check.argv.join(" ")}`,
+      );
     }
     outputs.push(digest(result.stdout));
   }
   return {
-    versionDigest: digest(version),
+    helpDigest: outputs[0],
     capabilitiesDigest: digest(JSON.stringify(outputs)),
   };
 }
@@ -1235,77 +1419,35 @@ function findNode(snapshot, predicate, label) {
 }
 
 function parseConceptNode(snapshot, expectedConcept, expectedSurface) {
+  const expected = `${expectedConcept} ${expectedSurface}`;
   const node = findNode(
     snapshot,
-    (candidate) => candidate.label.startsWith("Evener concept;"),
+    (candidate) => candidate.label === expected,
     "concept AX unavailable",
   );
-  const match = node.label.match(
-    /^Evener concept; concept (Stillwater|Constellation|Field Notes); surface (sessions|conversation|work)(?:; connection (connecting|connected|offline|error))?(.*)$/,
-  );
-  if (!match || match[1] !== expectedConcept || match[2] !== expectedSurface) {
-    throw new SmokeError("wrong concept AX state");
-  }
-  const sessionMatch = match[4].match(/; session ([A-Za-z0-9._:-]+)/);
   return {
     node,
-    concept: match[1],
-    surface: match[2],
-    status: match[3] ?? null,
-    session: sessionMatch?.[1] ?? null,
+    concept: expectedConcept,
+    surface: expectedSurface,
   };
 }
 
 function parseConnection(snapshot) {
-  const separate = snapshot.nodes.find((node) =>
-    node.label.startsWith("Evener connection;"),
-  );
-  if (separate) {
-    const match = separate.label.match(
-      /^Evener connection; status (connected|connecting|offline|error); server ([^;]+); protocol ([^;]+); profile-generation (\d+); lifecycle-phase (active|inactive|background|foreground); lifecycle-generation (\d+); handshake-generation (\d+); app ([A-Za-z0-9.-]+)@([^;]+); origin (sha256:[a-f0-9]{64})$/,
-    );
-    if (!match) throw new SmokeError("connection AX unavailable");
-    const connection = {
-      status: match[1],
-      serverVersion: match[2],
-      protocolVersion: match[3],
-      profileGeneration: Number(match[4]),
-      lifecyclePhase: match[5],
-      lifecycleGeneration: Number(match[6]),
-      handshakeGeneration: Number(match[7]),
-      bundleId: match[8],
-      appVersion: match[9],
-      originDigest: match[10],
-    };
-    if (
-      !SAFE_VERSION.test(connection.serverVersion) ||
-      !SAFE_VERSION.test(connection.protocolVersion) ||
-      !SAFE_VERSION.test(connection.appVersion)
-    ) {
-      throw new SmokeError("connection AX unavailable");
-    }
-    return connection;
-  }
-  const concept = findNode(
+  const node = findNode(
     snapshot,
-    (node) => node.label.startsWith("Evener concept;"),
+    (candidate) => candidate.label.startsWith("Connected to "),
     "connection AX unavailable",
   );
-  const match = concept.label.match(
-    /; connection (connected|connecting|offline|error); server ([^;]+); protocol ([^;]+); profile generation (\d+); lifecycle (active|inactive|background|foreground) (\d+); handshake (\d+); app ([A-Za-z0-9.-]+) ([^;]+); origin (sha256:[a-f0-9]{64})/,
+  const match = node.label.match(
+    /^Connected to (.+) ([A-Za-z0-9][A-Za-z0-9._+:-]{0,127}); protocol ([^;]+); app version ([^;]+)$/,
   );
   if (!match) throw new SmokeError("connection AX unavailable");
   const connection = {
-    status: match[1],
+    status: "connected",
+    serverName: match[1],
     serverVersion: match[2],
     protocolVersion: match[3],
-    profileGeneration: Number(match[4]),
-    lifecyclePhase: match[5],
-    lifecycleGeneration: Number(match[6]),
-    handshakeGeneration: Number(match[7]),
-    bundleId: match[8],
-    appVersion: match[9],
-    originDigest: match[10],
+    appVersion: match[4],
   };
   if (
     !SAFE_VERSION.test(connection.serverVersion) ||
@@ -1321,25 +1463,24 @@ function parseRoster(snapshot, concept) {
   parseConceptNode(snapshot, concept, "sessions");
   const status = findNode(
     snapshot,
-    (node) => node.label.startsWith("Evener roster;"),
+    (node) => node.label.startsWith(`${concept} sessions;`),
     "roster AX unavailable",
   );
   const match = status.label.match(
-    /^Evener roster; concept (Stillwater|Constellation|Field Notes); retained (\d+); has-more (true|false)$/,
+    /^(Stillwater|Constellation|Field Notes) sessions; (\d+) sessions; (complete list|more available)$/,
   );
   if (!match || match[1] !== concept)
     throw new SmokeError("roster AX unavailable");
   const rows = snapshot.nodes
     .map((node) => {
       const row = node.label.match(
-        /^Session ([A-Za-z0-9._:-]+); (.+); project (.+); status (attention|running|success|failed|idle|unknown)$/,
+        /^Open (.+); status (attention|running|success|failed|idle|unknown)$/,
       );
       return row
         ? {
-            id: row[1],
-            title: row[2],
-            project: row[3],
-            status: row[4],
+            id: digest(node.label),
+            title: row[1],
+            status: row[2],
             label: node.label,
             role: node.role,
           }
@@ -1357,28 +1498,19 @@ function parseRoster(snapshot, concept) {
     rows,
     rosterIds: rows.map((row) => row.id),
     retainedCount: Number(match[2]),
-    hasMore: match[3] === "true",
+    hasMore: match[3] === "more available",
   };
 }
 
 function parseConversation(snapshot, concept, expectedTitle = null) {
-  const root = parseConceptNode(snapshot, concept, "conversation");
-  if (root.session === null) throw new SmokeError("thread AX unavailable");
-  const prefixedTitle = snapshot.nodes.find((node) =>
-    node.label.startsWith("Conversation title "),
+  parseConceptNode(snapshot, concept, "conversation");
+  const titleNode = snapshot.nodes.find(
+    (node) =>
+      node.label.startsWith("Session ") &&
+      (expectedTitle === null || node.label === `Session ${expectedTitle}`),
   );
-  const exactTitle =
-    expectedTitle === null
-      ? null
-      : snapshot.nodes.find(
-          (node) =>
-            node.label === expectedTitle && /Heading/i.test(node.role ?? ""),
-        );
-  const titleNode = prefixedTitle ?? exactTitle;
   if (!titleNode) throw new SmokeError("conversation title AX unavailable");
-  const title = prefixedTitle
-    ? prefixedTitle.label.slice("Conversation title ".length)
-    : titleNode.label;
+  const title = titleNode.label.slice("Session ".length);
   const draft = findNode(
     snapshot,
     (node) => node.label === "Message",
@@ -1386,7 +1518,7 @@ function parseConversation(snapshot, concept, expectedTitle = null) {
   ).value;
   if (draft === null) throw new SmokeError("draft AX unavailable");
   return {
-    threadId: root.session,
+    threadId: digest(title),
     title,
     titleDigest: digest(title),
     draft,
@@ -1395,42 +1527,69 @@ function parseConversation(snapshot, concept, expectedTitle = null) {
 }
 
 function parseMutation(snapshot, kind, status) {
+  const title = `${kind.charAt(0).toUpperCase()}${kind.slice(1)}`;
   const node = findNode(
     snapshot,
-    (candidate) => candidate.label.startsWith("Evener mutation;"),
+    (candidate) => candidate.label.startsWith(`${title} `),
     "mutation AX unavailable",
   );
   const match = node.label.match(
-    /^Evener mutation; kind (send|steer|queue|interrupt); status (pending|failed|accepted); receipt (none|\d+)$/,
+    /^(Send|Steer|Queue|Interrupt) (pending|failed|accepted)(?:; update (\d+))?$/,
   );
-  if (!match || match[1] !== kind || match[2] !== status) {
+  if (!match || match[1] !== title || match[2] !== status) {
     throw new SmokeError("mutation AX unavailable");
   }
-  if (status === "accepted" && match[3] === "none") {
+  if (status === "accepted" && match[3] === undefined) {
     throw new SmokeError("accepted receipt AX unavailable");
   }
   return {
     kind,
     status,
-    receipt: match[3] === "none" ? null : Number(match[3]),
+    receipt: match[3] === undefined ? null : Number(match[3]),
   };
 }
 
 function parseTranscript(snapshot) {
+  let ordinal = 0;
   return snapshot.nodes
     .map((node) => {
       const match = node.label.match(
-        /^Evener transcript item; id ([A-Za-z0-9._:-]+); kind (user|assistant|reasoning|tool|question|failure|attachment); status (streaming|completed); label ([^;]*); content ([\s\S]+)$/,
+        /^(Your message|Assistant response|Reasoning|Tool (.+)|Question|Error|Attachment); (streaming|completed)$/,
       );
-      return match
-        ? {
-            id: match[1],
-            kind: match[2],
-            status: match[3],
-            label: match[4],
-            content: match[5],
-          }
-        : null;
+      if (!match) return null;
+      const index = ordinal;
+      ordinal += 1;
+      const kind =
+        match[1] === "Your message"
+          ? "user"
+          : match[1] === "Assistant response"
+            ? "assistant"
+            : match[1] === "Reasoning"
+              ? "reasoning"
+              : match[1].startsWith("Tool ")
+                ? "tool"
+                : match[1] === "Question"
+                  ? "question"
+                  : match[1] === "Error"
+                    ? "failure"
+                    : "attachment";
+      return {
+        id: digest(`transcript:${index}:${kind}`),
+        kind,
+        status: match[3],
+        label: match[2] ?? match[1],
+        content:
+          node.value !== null && node.value.trim() !== ""
+            ? node.value
+            : node.descendants
+                .filter(
+                  (value) =>
+                    value !== match[1] &&
+                    value !== match[2] &&
+                    value !== "Reasoning",
+                )
+                .join("\n"),
+      };
     })
     .filter(Boolean);
 }
@@ -1440,16 +1599,20 @@ function parseWork(snapshot) {
   const items = snapshot.nodes
     .map((node) => {
       const match = node.label.match(
-        /^Evener work item; id ([A-Za-z0-9._:-]+); kind (task|delegate|job|watch); status (attention|running|success|failed|idle|unknown); title ([\s\S]+)$/,
+        /^(Task|Delegate|Job|Watch) (.+); status (attention|running|success|failed|idle|unknown)$/,
       );
       return match
-        ? { id: match[1], kind: match[2], digest: digest(node.label) }
+        ? {
+            id: digest(node.label),
+            kind: match[1].toLowerCase(),
+            digest: digest(node.label),
+          }
         : null;
     })
     .filter(Boolean);
   const usage = findNode(
     snapshot,
-    (node) => node.label.startsWith("Evener usage;"),
+    (node) => node.label === "Usage summary",
     "usage AX unavailable",
   );
   const byKind = (kind) => items.filter((item) => item.kind === kind);
@@ -1493,11 +1656,69 @@ function findInstalledApp(apps, bundleId, requireRunning = true) {
   return app;
 }
 
+function decodeInstallReceipt(stdout, bundleId) {
+  let value;
+  try {
+    value = JSON.parse(stdout);
+  } catch {
+    throw new SmokeError("invalid install receipt");
+  }
+  const observed = value?.installedAppBundleId;
+  if (
+    !isObject(value) ||
+    observed !== bundleId ||
+    typeof value.uuid !== "string" ||
+    value.uuid.trim() === ""
+  ) {
+    throw new SmokeError("invalid install receipt");
+  }
+  return { bundleId: observed, digest: digest(stdout) };
+}
+
+export async function installStagedBundle(config, staged, run) {
+  try {
+    const result = await run("idb", [
+      "install",
+      "--udid",
+      config.udid,
+      "--json",
+      staged.path,
+    ]);
+    const receipt = decodeInstallReceipt(result.stdout, staged.bundle.id);
+    await launchProductionBundle(config, run);
+    return { tool: "idb", receipt };
+  } catch (error) {
+    if (error?.code !== "IDB_COMPANION_LOST") throw error;
+    const install = await run("xcrun", [
+      "devicectl",
+      "device",
+      "install",
+      "app",
+      "--device",
+      config.udid,
+      staged.path,
+    ]);
+    await run("xcrun", [
+      "devicectl",
+      "device",
+      "process",
+      "launch",
+      "--device",
+      config.udid,
+      config.bundleId,
+    ]);
+    return {
+      tool: "devicectl",
+      receipt: { bundleId: staged.bundle.id, digest: digest(install.stdout) },
+    };
+  }
+}
+
 export async function launchProductionBundle(config, run, foreground = false) {
   try {
     await run("idb", [
       "launch",
-      ...(foreground ? ["--foreground-if-running"] : []),
+      ...(foreground ? ["-f"] : []),
       "--udid",
       config.udid,
       config.bundleId,
@@ -1609,8 +1830,18 @@ export async function runLiveSmoke(config, dependencies = {}) {
       config.udid,
     ]);
   };
-  const typeText = async (value) => {
-    await run("idb", ["ui", "text", value, "--udid", config.udid]);
+  const setValue = async (value) => {
+    await run("idb", [
+      "ui",
+      "set-value",
+      "Message",
+      "--value",
+      value,
+      "--match-key",
+      "AXLabel",
+      "--udid",
+      config.udid,
+    ]);
   };
   const readApps = async () => {
     const result = await run("idb", [
@@ -1637,17 +1868,50 @@ export async function runLiveSmoke(config, dependencies = {}) {
     observations: [],
   };
 
+  const replaceDraft = async (snapshot, concept, title, value) => {
+    let currentSnapshot = snapshot;
+    let prior = parseConversation(currentSnapshot, concept, title).draft;
+    if (prior === "") {
+      prior = `${value}-prior`;
+      await setValue(prior);
+      currentSnapshot = await waitFor((candidate) => {
+        try {
+          return parseConversation(candidate, concept, title).draft === prior;
+        } catch {
+          return false;
+        }
+      });
+    }
+    if (prior.trim() === "")
+      throw new SmokeError("draft replacement unavailable");
+    await setValue(value);
+    const replaced = await waitFor((candidate) => {
+      try {
+        return parseConversation(candidate, concept, title).draft === value;
+      } catch {
+        return false;
+      }
+    });
+    const actual = parseConversation(replaced, concept, title).draft;
+    if (actual !== value || actual === `${prior}${value}`) {
+      throw new SmokeError("draft was appended instead of replaced");
+    }
+    return replaced;
+  };
+
   const observeMutation = async ({
     kind,
     concept,
     current,
     text,
+    title,
     lifecycle = false,
   }) => {
-    const snapshot = current;
+    let snapshot = current;
+    let baselineTranscript = [];
     if (kind !== "interrupt") {
-      await tap("Message", snapshot);
-      await typeText(text);
+      snapshot = await replaceDraft(snapshot, concept, title, text);
+      baselineTranscript = parseTranscript(snapshot);
       await tap(`Use ${kind} mode`, snapshot);
       await tap("Submit message", snapshot);
     } else {
@@ -1663,10 +1927,14 @@ export async function runLiveSmoke(config, dependencies = {}) {
       }
     });
     let streaming = null;
+    const baselineIds = new Set(baselineTranscript.map((item) => item.id));
     if (lifecycle) {
       streaming = await waitFor((candidate) => {
         const items = parseTranscript(candidate).filter(
-          (item) => item.status === "streaming",
+          (item) =>
+            item.kind === "assistant" &&
+            item.status === "streaming" &&
+            !baselineIds.has(item.id),
         );
         return items.length > 0;
       });
@@ -1684,7 +1952,12 @@ export async function runLiveSmoke(config, dependencies = {}) {
     if (lifecycle) {
       const streamingIds = new Set(
         parseTranscript(streaming)
-          .filter((item) => item.status === "streaming")
+          .filter(
+            (item) =>
+              item.kind === "assistant" &&
+              item.status === "streaming" &&
+              !baselineIds.has(item.id),
+          )
           .map((item) => item.id),
       );
       const hasCompletedEvidence = (candidate) => {
@@ -1697,19 +1970,42 @@ export async function runLiveSmoke(config, dependencies = {}) {
             (item) =>
               item.kind === "reasoning" &&
               item.status === "completed" &&
-              item.content.trim() !== "",
+              !baselineIds.has(item.id),
           ) &&
           items.some(
             (item) =>
               item.kind === "tool" &&
               item.status === "completed" &&
-              item.content.trim() !== "",
+              !baselineIds.has(item.id),
           )
         );
       };
       if (!hasCompletedEvidence(accepted)) {
         completed = await waitFor(hasCompletedEvidence);
       }
+      const postItems = parseTranscript(completed);
+      const newReasoning = postItems.find(
+        (item) => item.kind === "reasoning" && !baselineIds.has(item.id),
+      );
+      const newTool = postItems.find(
+        (item) => item.kind === "tool" && !baselineIds.has(item.id),
+      );
+      if (!newReasoning || !newTool) {
+        throw new SmokeError("reasoning or tool AX unavailable");
+      }
+      await tap("Reasoning", completed);
+      await tap(newTool.label, completed);
+      completed = await waitFor((candidate) => {
+        const items = parseTranscript(candidate);
+        return (
+          items.some(
+            (item) => item.id === newReasoning.id && item.content.trim() !== "",
+          ) &&
+          items.some(
+            (item) => item.id === newTool.id && item.content.trim() !== "",
+          )
+        );
+      });
     }
     return {
       current: completed,
@@ -1724,14 +2020,14 @@ export async function runLiveSmoke(config, dependencies = {}) {
       streaming,
       accepted,
       completed,
+      baselineTranscript,
     };
   };
 
   try {
     const tools = await verifyIdbCapabilities({ run });
-    const localBundle = await inspectLocalAppBundle(environment.appPath, {
-      run,
-    });
+    const staged = await stageAppBundle(paths, environment.appPath, { run });
+    const localBundle = staged.source;
     if (localBundle.id !== config.bundleId) {
       throw new SmokeError("local bundle ID mismatch");
     }
@@ -1743,8 +2039,15 @@ export async function runLiveSmoke(config, dependencies = {}) {
       config.udid,
     ]);
     const device = decodeDeviceDescription(deviceResult.stdout, config.udid);
-    findInstalledApp(await readApps(), config.bundleId, false);
-    await launchProductionBundle(config, run);
+    const install = await installStagedBundle(config, staged, run);
+    const postInstallBundle = await inspectLocalAppBundle(staged.path, { run });
+    if (
+      postInstallBundle.id !== staged.bundle.id ||
+      postInstallBundle.version !== staged.bundle.version ||
+      postInstallBundle.hash !== staged.bundle.hash
+    ) {
+      throw new SmokeError("staged app changed during install");
+    }
     const initialApp = findInstalledApp(await readApps(), config.bundleId);
 
     const profile = await waitFor((snapshot) => {
@@ -1763,11 +2066,53 @@ export async function runLiveSmoke(config, dependencies = {}) {
       throw new SmokeError("stale Hub is blocked", "blocked");
     }
     if (
-      profileConnection.bundleId !== config.bundleId ||
-      profileConnection.appVersion !== localBundle.version
+      initialApp.bundleId !== staged.bundle.id ||
+      profileConnection.appVersion !== staged.bundle.version
     ) {
       throw new SmokeError("installed app identity mismatch");
     }
+    const serverAction = profile.nodes.find(
+      (node) =>
+        / active server (?:reachable|reconnecting|offline|unknown)$/.test(
+          node.label,
+        ) && /Button/i.test(node.role ?? ""),
+    );
+    if (!serverAction) throw new SmokeError("server management AX unavailable");
+    const activeServerName = serverAction.label.slice(
+      0,
+      serverAction.label.indexOf(" active server "),
+    );
+    await tap(serverAction.label, profile);
+    let serverSheet = await waitFor((snapshot) =>
+      snapshot.nodes.some((node) => node.label === "Servers"),
+    );
+    let originNodes = serverSheet.nodes.filter((node) =>
+      /^https?:\/\//.test(node.label),
+    );
+    if (originNodes.length !== 1) {
+      const activeRow = findNode(
+        serverSheet,
+        (node) =>
+          node.label.startsWith(`${activeServerName} `) &&
+          /Button/i.test(node.role ?? ""),
+        "active server row AX unavailable",
+      );
+      await tap(activeRow.label, serverSheet);
+      serverSheet = await waitFor(
+        (snapshot) =>
+          snapshot.nodes.filter((node) => /^https?:\/\//.test(node.label))
+            .length === 1,
+      );
+      originNodes = serverSheet.nodes.filter((node) =>
+        /^https?:\/\//.test(node.label),
+      );
+    }
+    const origin = findNode(
+      serverSheet,
+      (node) => /^https?:\/\//.test(node.label),
+      "server origin AX unavailable",
+    ).label;
+    await tap("Done", serverSheet);
     const installedApp = {
       id: initialApp.bundleId,
       version: profileConnection.appVersion,
@@ -1777,17 +2122,16 @@ export async function runLiveSmoke(config, dependencies = {}) {
       device,
       installedApp,
       localBundle,
+      stagedBundle: staged.bundle,
+      installReceipt: install.receipt,
       hub: {
         expectedVersion: config.hubVersion,
         observedVersion: profileConnection.serverVersion,
         protocolVersion: profileConnection.protocolVersion,
-        originDigest: profileConnection.originDigest,
+        originDigest: digest(origin),
       },
       connection: {
         status: profileConnection.status,
-        profileGeneration: profileConnection.profileGeneration,
-        lifecycleGeneration: profileConnection.lifecycleGeneration,
-        handshakeGeneration: profileConnection.handshakeGeneration,
       },
     };
     observed.push(
@@ -1870,6 +2214,7 @@ export async function runLiveSmoke(config, dependencies = {}) {
       concept: "Stillwater",
       current,
       text: sentinels.send,
+      title: selectedRow.title,
       lifecycle: true,
     });
     current = send.current;
@@ -1884,11 +2229,18 @@ export async function runLiveSmoke(config, dependencies = {}) {
       ),
     );
     if (!lifecycleItem) throw new SmokeError("item lifecycle AX unavailable");
+    const baselineIds = new Set(send.baselineTranscript.map((item) => item.id));
     const reasoning = completedItems.find(
-      (item) => item.kind === "reasoning" && item.content.trim() !== "",
+      (item) =>
+        item.kind === "reasoning" &&
+        !baselineIds.has(item.id) &&
+        item.content.trim() !== "",
     );
     const tool = completedItems.find(
-      (item) => item.kind === "tool" && item.content.trim() !== "",
+      (item) =>
+        item.kind === "tool" &&
+        !baselineIds.has(item.id) &&
+        item.content.trim() !== "",
     );
     if (!reasoning || !tool) {
       throw new SmokeError("reasoning or tool AX unavailable");
@@ -1900,6 +2252,7 @@ export async function runLiveSmoke(config, dependencies = {}) {
         threadIdentity,
         evidence: {
           receipt: send.receipt,
+          baselineTranscriptIds: [...baselineIds],
           lifecycle: {
             itemId: lifecycleItem.id,
             streamingTreeDigest: send.streaming.treeDigest,
@@ -1917,18 +2270,12 @@ export async function runLiveSmoke(config, dependencies = {}) {
     );
 
     const switchConcept = async (from, to, milestone) => {
-      await tap("Message", current);
-      await typeText(sentinels.preserve);
-      const before = await waitFor((snapshot) => {
-        try {
-          return (
-            parseConversation(snapshot, from, selectedRow.title).draft ===
-            sentinels.preserve
-          );
-        } catch {
-          return false;
-        }
-      });
+      const before = await replaceDraft(
+        current,
+        from,
+        selectedRow.title,
+        sentinels.preserve,
+      );
       await tap("Switch concept", before);
       await tap(`Switch to ${to}`, before, false);
       const after = await waitFor((snapshot) => {
@@ -2002,6 +2349,7 @@ export async function runLiveSmoke(config, dependencies = {}) {
       concept: "Constellation",
       current,
       text: sentinels.steer,
+      title: selectedRow.title,
     });
     current = steer.current;
     const queue = await observeMutation({
@@ -2009,6 +2357,7 @@ export async function runLiveSmoke(config, dependencies = {}) {
       concept: "Constellation",
       current,
       text: sentinels.queue,
+      title: selectedRow.title,
     });
     current = queue.current;
     observed.push(
@@ -2048,18 +2397,12 @@ export async function runLiveSmoke(config, dependencies = {}) {
       }),
     );
 
-    await tap("Message", current);
-    await typeText(sentinels.preserve);
-    const beforeWork = await waitFor((snapshot) => {
-      try {
-        return (
-          parseConversation(snapshot, "Field Notes", selectedRow.title)
-            .draft === sentinels.preserve
-        );
-      } catch {
-        return false;
-      }
-    });
+    const beforeWork = await replaceDraft(
+      current,
+      "Field Notes",
+      selectedRow.title,
+      sentinels.preserve,
+    );
     await tap("Work", beforeWork);
     const workSnapshot = await waitFor((snapshot) => {
       try {
@@ -2080,7 +2423,7 @@ export async function runLiveSmoke(config, dependencies = {}) {
       }),
     );
     await tap("Close", workSnapshot);
-    const beforeBackground = await waitFor((snapshot) => {
+    await waitFor((snapshot) => {
       try {
         const conversation = parseConversation(
           snapshot,
@@ -2095,7 +2438,6 @@ export async function runLiveSmoke(config, dependencies = {}) {
         return false;
       }
     });
-    const preBackgroundConnection = parseConnection(beforeBackground);
     const pidBeforeBackground = findInstalledApp(
       await readApps(),
       config.bundleId,
@@ -2105,7 +2447,9 @@ export async function runLiveSmoke(config, dependencies = {}) {
       (snapshot) =>
         snapshot.nodes.some((node) => node.label === "SpringBoard") &&
         !snapshot.nodes.some((node) =>
-          node.label.startsWith("Evener concept;"),
+          /^(Stillwater|Constellation|Field Notes) (sessions|conversation|work)$/.test(
+            node.label,
+          ),
         ),
     );
     await launchProductionBundle(config, run, true);
@@ -2122,17 +2466,15 @@ export async function runLiveSmoke(config, dependencies = {}) {
           selectedRow.title,
         );
         return (
-          connection.lifecyclePhase === "foreground" &&
-          connection.lifecycleGeneration >
-            preBackgroundConnection.lifecycleGeneration &&
+          connection.status === "connected" &&
           conversation.threadId === threadIdentity &&
-          conversation.draft === sentinels.preserve
+          conversation.draft === sentinels.preserve &&
+          snapshot.treeDigest !== background.treeDigest
         );
       } catch {
         return false;
       }
     });
-    const foregroundConnection = parseConnection(foreground);
     observed.push(
       makeObservation({
         milestone: "background-foreground",
@@ -2141,14 +2483,6 @@ export async function runLiveSmoke(config, dependencies = {}) {
         evidence: {
           processIdBefore: pidBeforeBackground,
           processIdAfter: pidAfterBackground,
-          lifecycleGenerationBefore:
-            preBackgroundConnection.lifecycleGeneration,
-          lifecycleGenerationAfter: foregroundConnection.lifecycleGeneration,
-          profileGenerationBefore: preBackgroundConnection.profileGeneration,
-          profileGenerationAfter: foregroundConnection.profileGeneration,
-          handshakeGenerationBefore:
-            preBackgroundConnection.handshakeGeneration,
-          handshakeGenerationAfter: foregroundConnection.handshakeGeneration,
           activeThreadId: threadIdentity,
           draftBefore: sentinels.preserve,
           draftAfter: parseConversation(
