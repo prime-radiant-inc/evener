@@ -939,6 +939,29 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 	}
 }
 
+func TestServerAppWireThreadReadCarriesTurnCountWithoutTurns(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	srv.SetStatus(StatusInfo{SessionID: "th_1", State: "idle", Turns: 37})
+
+	conn := srv.AppServer().NewConnection("test")
+	conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(1), appwire.MethodInitialize, appwire.InitializeParams{ProtocolVersion: appwire.ProtocolVersion}))
+	resp := conn.HandleMessage(context.Background(), appwire.RequestMessage(appwire.NewIntID(2), appwire.MethodThreadRead, appwire.ThreadReadParams{Ref: "local:th_1"}))
+	if resp.Kind() != appwire.MessageResponse {
+		t.Fatalf("resp=%v", resp.Kind())
+	}
+	data, ok := resp.Response.Result.(appwire.ThreadReadResponse)
+	if !ok {
+		t.Fatalf("result=%T", resp.Response.Result)
+	}
+	if data.Thread.Evener.TurnCount != 37 {
+		t.Fatalf("turnCount=%d, want 37", data.Thread.Evener.TurnCount)
+	}
+	if len(data.Thread.Turns) != 0 {
+		t.Fatalf("turns=%d, want none on a bounded status read", len(data.Thread.Turns))
+	}
+}
+
 // TestServerAppWireThreadReadIncludesWorkMetrics (WS2 A7) verifies appThread
 // populates EvenerThread.Usage/WorkMillis/ActiveTurnStartedAt from the
 // workMetricsFn pull callback, alongside the existing pressure/detailed-status

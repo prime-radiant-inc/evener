@@ -519,10 +519,13 @@ type TaskAggregate struct {
 }
 
 type EvenerThread struct {
-	Ref              string             `json:"ref"`
-	ParentRef        string             `json:"parentRef,omitempty"`
-	Kind             string             `json:"kind,omitempty"`
-	Profile          string             `json:"profile,omitempty"`
+	Ref       string `json:"ref"`
+	ParentRef string `json:"parentRef,omitempty"`
+	Kind      string `json:"kind,omitempty"`
+	Profile   string `json:"profile,omitempty"`
+	// TurnCount is the daemon's total completed model-response count. It stays
+	// independent of Turns so a bounded metadata read never loads the transcript.
+	TurnCount        int                `json:"turnCount,omitempty"`
 	ActiveTurnID     string             `json:"activeTurnId,omitempty"`
 	ContextPressure  float64            `json:"contextPressure,omitempty"`
 	ContextUsed      int                `json:"contextUsed,omitempty"`

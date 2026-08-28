@@ -350,6 +350,7 @@ export interface EvenerThread {
   parentRef?: string;
   kind?: string;
   profile?: string;
+  turnCount?: number;
   activeTurnId?: string;
   contextPressure?: number;
   contextUsed?: number;
