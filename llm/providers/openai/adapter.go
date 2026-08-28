@@ -662,19 +662,7 @@ func (a *Adapter) responsesEndpointFamily() llm.ResponsesEndpointFamily {
 }
 
 func (a *Adapter) apiLogCredentialMaterial(httpReq *http.Request) llm.APILogCredentialMaterial {
-	headerNames := []string{"Authorization"}
-	values := []string{a.APIKey}
-	for name, value := range a.CredentialHeaders {
-		headerNames = append(headerNames, name)
-		values = append(values, value)
-	}
-	if httpReq != nil && httpReq.URL != nil && httpReq.URL.User != nil {
-		values = append(values, httpReq.URL.User.Username())
-		if password, ok := httpReq.URL.User.Password(); ok {
-			values = append(values, password)
-		}
-	}
-	return llm.NewAPILogCredentialMaterial(headerNames, nil, values...)
+	return llm.BuildAPILogCredentialMaterial("Authorization", nil, a.APIKey, a.CredentialHeaders, httpReq)
 }
 
 func (a *Adapter) stampResponseIDHash(resp *llm.Response) {

@@ -222,19 +222,7 @@ func (a *Adapter) Complete(ctx context.Context, req llm.Request) (result llm.Res
 }
 
 func (a *Adapter) apiLogCredentialMaterial(httpReq *http.Request) llm.APILogCredentialMaterial {
-	headerNames := []string{"x-api-key"}
-	values := []string{a.APIKey}
-	for name, value := range a.CredentialHeaders {
-		headerNames = append(headerNames, name)
-		values = append(values, value)
-	}
-	if httpReq != nil && httpReq.URL != nil && httpReq.URL.User != nil {
-		values = append(values, httpReq.URL.User.Username())
-		if password, ok := httpReq.URL.User.Password(); ok {
-			values = append(values, password)
-		}
-	}
-	return llm.NewAPILogCredentialMaterial(headerNames, nil, values...)
+	return llm.BuildAPILogCredentialMaterial("x-api-key", nil, a.APIKey, a.CredentialHeaders, httpReq)
 }
 
 func (a *Adapter) CountInputTokens(ctx context.Context, req llm.Request) (llm.InputTokenCount, error) {
