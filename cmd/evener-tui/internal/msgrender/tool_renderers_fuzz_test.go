@@ -248,7 +248,7 @@ func replayRenderSurface() {
 			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "comm", Name: "communicate", Arguments: json.RawMessage(`{"output":{"message":"hello"}}`)}},
 			{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "tool", Name: "shell", Arguments: json.RawMessage(`{"command":"ls"}`)}},
 		}}},
-		{Kind: schema.TurnTool, Message: llm.ToolResult("tool", "failed", true)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResult("tool", "failed", true)},
 		{Kind: schema.TurnToolResults, Message: llm.ToolResult("other", "ok", false)},
 	}
 	_ = historyToMessages(turns)

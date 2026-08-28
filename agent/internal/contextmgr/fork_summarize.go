@@ -64,7 +64,7 @@ func buildSummarizePrompt(turns []schema.Turn) string {
 					fmt.Fprintf(&b, "  [tool_call: %s(%s)]\n", p.ToolCall.Name, truncate(string(p.ToolCall.Arguments), 200))
 				}
 			}
-		case schema.TurnTool, schema.TurnToolResults:
+		case schema.TurnToolResults:
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					content := fmt.Sprint(p.ToolResult.Content)

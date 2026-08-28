@@ -45,7 +45,7 @@ func cxjs_edgeTurns(sel uint8) []schema.Turn {
 		}))
 	}
 	if sel&0x04 != 0 {
-		turns = append(turns, schema.NewTurn(schema.TurnTool, llm.Message{
+		turns = append(turns, schema.NewTurn(schema.TurnToolResults, llm.Message{
 			Role: llm.RoleUser,
 			Content: []llm.ContentPart{{Kind: llm.ContentToolResult, ToolResult: &llm.ToolResultData{
 				Name:    "structured",

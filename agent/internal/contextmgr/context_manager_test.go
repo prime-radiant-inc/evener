@@ -17,7 +17,7 @@ import (
 	"primeradiant.com/evener/llm"
 )
 
-// toolResultContent extracts string content from a TurnTool.
+// toolResultContent extracts string content from a TurnToolResults.
 func toolResultContent(t schema.Turn) string {
 	for _, p := range t.Message.Content {
 		if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
@@ -56,7 +56,7 @@ func TestEstimateTokens_WithToolResults(t *testing.T) {
 	content := "file contents here with lots of text"
 	turns := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("read a file")},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", content, false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "read_file", content, false)},
 	}
 	got := estimateTokens(turns)
 	// messageCharCount counts: message.ToolCallID + part.ToolCallID + part.Name + content
@@ -287,9 +287,9 @@ func TestMaskObservations_PreservesRecentTurns(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("task")},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", bigContent, false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "read_file", bigContent, false)},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2", "read_file", `{"file_path":"b.go"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "read_file", bigContent, false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c2", "read_file", bigContent, false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
@@ -311,7 +311,7 @@ func TestMaskObservations_PreservesRecentTurns(t *testing.T) {
 func TestMaskObservations_SkipsAlreadyMasked(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("task")},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "[read_file: a.go, 10 lines]", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "read_file", "[read_file: a.go, 10 lines]", false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
@@ -325,7 +325,7 @@ func TestMaskObservations_SkipsAlreadyMasked(t *testing.T) {
 func TestMaskObservations_SkipsErrorResults(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("task")},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "shell", "command not found\nexit_code=127 duration_ms=1 timed_out=false\n", true)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "shell", "command not found\nexit_code=127 duration_ms=1 timed_out=false\n", true)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
@@ -339,7 +339,7 @@ func TestMaskObservations_SkipsErrorResults(t *testing.T) {
 func TestMaskObservations_PreservesCommunicate(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("task")},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "communicate", `{"delivered":true,"inbox":[]}`, false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "communicate", `{"delivered":true,"inbox":[]}`, false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
@@ -359,7 +359,7 @@ func TestMaskObservations_PreservesAssistantTurns(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("task")},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("thinking about it")},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "1 | content\n", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "read_file", "1 | content\n", false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
@@ -479,7 +479,7 @@ func TestClearThinking_MixedContent(t *testing.T) {
 				{Kind: llm.ContentToolCall, ToolCall: &llm.ToolCallData{ID: "c1", Name: "read_file", Arguments: json.RawMessage(`{"file_path":"a.go"}`)}},
 			},
 		}},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
@@ -514,16 +514,16 @@ func TestCheckpoint_CreatesValidMessage(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("Fix the auth bug in login.go")},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"login.go"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "1 | package main\n", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "read_file", "1 | package main\n", false)},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2", "edit_file", `{"file_path":"login.go","old_string":"old","new_string":"new"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "edit_file", "OK", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c2", "edit_file", "OK", false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	result := checkpoint(history, 2, nil, "communicate")
 
 	// Should have checkpoint message + preserved turns.
-	// safeCutoff may back up the cutoff to avoid orphaned TurnTool, so we
+	// safeCutoff may back up the cutoff to avoid orphaned TurnToolResults, so we
 	// may get more than 2 preserved turns.
 	if len(result) < 3 {
 		t.Fatalf("expected at least 3 turns, got %d", len(result))
@@ -559,11 +559,11 @@ func TestCheckpoint_TracksModifiedFiles(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("prompt")},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "edit_file", `{"file_path":"auth.go"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "edit_file", "OK", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "edit_file", "OK", false)},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2", "write_file", `{"file_path":"user.go"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "write_file", "OK", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c2", "write_file", "OK", false)},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c3", "apply_patch", `{"patch":"*** Begin Patch\n*** Update File: test.go\n*** End Patch"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c3", "apply_patch", "OK", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c3", "apply_patch", "OK", false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
@@ -583,11 +583,11 @@ func TestCheckpoint_SummarizesActions(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("task")},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2", "read_file", `{"file_path":"b.go"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "read_file", "content", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c2", "read_file", "content", false)},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c3", "shell", `{"command":"go test"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c3", "shell", "ok\nexit_code=0 duration_ms=1 timed_out=false\n", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c3", "shell", "ok\nexit_code=0 duration_ms=1 timed_out=false\n", false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
@@ -922,7 +922,7 @@ func makeBigHistory(targetTokens int) []schema.Turn {
 		id := fmt.Sprintf("c%d", len(turns))
 		turns = append(turns,
 			schema.Turn{Kind: schema.TurnAssistant, Message: assistantWithToolCall(id, "read_file", `{"file_path":"file.go"}`)},
-			schema.Turn{Kind: schema.TurnTool, Message: llm.ToolResultNamed(id, "read_file", strings.Repeat("x", 400), false)},
+			schema.Turn{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed(id, "read_file", strings.Repeat("x", 400), false)},
 		)
 	}
 	return turns
@@ -1070,7 +1070,7 @@ func TestMaybeCompact_RespectsSysPromptSize(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("task")},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", strings.Repeat("x", 400), false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "read_file", strings.Repeat("x", 400), false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent1")},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent2")},
 	}
@@ -1101,31 +1101,31 @@ func TestMaybeCompact_RespectsSysPromptSize(t *testing.T) {
 // --- Review fix tests ---
 
 // H1: checkpoint and summarizeWithLLM must not produce invalid message ordering.
-// If preserveRecent falls mid-pair (e.g., starts on a TurnTool), the cutoff must
+// If preserveRecent falls mid-pair (e.g., starts on a TurnToolResults), the cutoff must
 // be adjusted backward to include the preceding assistant turn.
 func TestCheckpoint_AdjustsCutoffToAvoidOrphanedToolTurn(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("fix the bug")},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2", "edit_file", `{"file_path":"b.go"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "edit_file", "OK", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c2", "edit_file", "OK", false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
 	// preserveRecent=3 → cutoff=3, preserved turns start at index 3 (TurnAssistant) — OK.
-	// preserveRecent=2 → cutoff=4, preserved turns start at index 4 (TurnTool) — BAD.
+	// preserveRecent=2 → cutoff=4, preserved turns start at index 4 (TurnToolResults) — BAD.
 	result := checkpoint(history, 2, nil, "communicate")
 
-	// First preserved turn after checkpoint must NOT be a TurnTool.
+	// First preserved turn after checkpoint must NOT be a TurnToolResults.
 	if len(result) < 2 {
 		t.Fatalf("expected at least 2 turns, got %d", len(result))
 	}
 	if result[0].Kind != schema.TurnCheckpoint {
 		t.Fatalf("first turn should be checkpoint (TurnCheckpoint), got %s", result[0].Kind)
 	}
-	if result[1].Kind == schema.TurnTool {
-		t.Fatalf("second turn must not be TurnTool — invalid message ordering for LLM APIs")
+	if result[1].Kind == schema.TurnToolResults {
+		t.Fatalf("second turn must not be TurnToolResults — invalid message ordering for LLM APIs")
 	}
 }
 
@@ -1145,13 +1145,13 @@ func TestSummarizeWithLLM_AdjustsCutoffToAvoidOrphanedToolTurn(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("task")},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2", "shell", `{"command":"go test"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "shell", "ok\nexit_code=0\n", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c2", "shell", "ok\nexit_code=0\n", false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
-	// preserveRecent=2 → cutoff=4, preserved starts at TurnTool — BAD.
+	// preserveRecent=2 → cutoff=4, preserved starts at TurnToolResults — BAD.
 	result, err := cm.summarizeWithLLM(context.Background(), history, 2)
 	if err != nil {
 		t.Fatalf("summarizeWithLLM: %v", err)
@@ -1160,8 +1160,8 @@ func TestSummarizeWithLLM_AdjustsCutoffToAvoidOrphanedToolTurn(t *testing.T) {
 	if len(result) < 2 {
 		t.Fatalf("expected at least 2 turns, got %d", len(result))
 	}
-	if result[1].Kind == schema.TurnTool {
-		t.Fatalf("second turn must not be TurnTool — invalid message ordering for LLM APIs")
+	if result[1].Kind == schema.TurnToolResults {
+		t.Fatalf("second turn must not be TurnToolResults — invalid message ordering for LLM APIs")
 	}
 }
 
@@ -1200,9 +1200,9 @@ func TestCheckpoint_ShellResultMatchesByToolCallID(t *testing.T) {
 			},
 		}},
 		// read_file result comes first
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "package main\n", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "read_file", "package main\n", false)},
 		// shell result comes second
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "shell", "PASS\nexit_code=0 duration_ms=100 timed_out=false\n", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c2", "shell", "PASS\nexit_code=0 duration_ms=100 timed_out=false\n", false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
@@ -1324,7 +1324,7 @@ func TestCheckpoint_RepeatedCheckpoint_PreservesOriginalPrompt(t *testing.T) {
 	history := []schema.Turn{
 		firstCheckpoint,
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c3", "read_file", `{"file_path":"auth.go"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c3", "read_file", "content", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c3", "read_file", "content", false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
@@ -1406,10 +1406,10 @@ func TestCheckpoint_ConversationInterleavesUserMessagesAndAgentResponses(t *test
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("first request")},
 		{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &reply1}}}},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "communicate", `{"delivered":true}`, false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "communicate", `{"delivered":true}`, false)},
 		{Kind: schema.TurnUserInput, Message: llm.User("second request")},
 		{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &reply2}}}},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "communicate", `{"delivered":true}`, false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c2", "communicate", `{"delivered":true}`, false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
 
@@ -1477,11 +1477,11 @@ func TestCheckpoint_ToolCountsAreDeterministic(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("task")},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"a.go"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2", "shell", `{"command":"go test"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "shell", "ok\nexit_code=0\n", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c2", "shell", "ok\nexit_code=0\n", false)},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c3", "edit_file", `{"file_path":"a.go"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c3", "edit_file", "OK", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c3", "edit_file", "OK", false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
@@ -1505,7 +1505,7 @@ func TestCheckpoint_TracksFilesFromApplyPatch(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("task")},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "apply_patch", `{"patch":"*** Begin Patch\n*** Update File: test.go\n*** End Patch"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "apply_patch", "OK", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "apply_patch", "OK", false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
@@ -1527,7 +1527,7 @@ func TestCheckpoint_IncludesWebSearchCount(t *testing.T) {
 				{Kind: llm.ContentText, Text: "Found the docs."},
 			},
 		}},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "file contents", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "read_file", "file contents", false)},
 		// Preserved recent turns:
 		{Kind: schema.TurnUserInput, Message: llm.User("next question")},
 		{Kind: schema.TurnAssistant, Message: llm.Message{
@@ -1655,12 +1655,12 @@ func TestSafeCutoff_NoAdjustmentNeeded(t *testing.T) {
 }
 
 func TestSafeCutoff_WalksToZero_ReturnsNegative(t *testing.T) {
-	// All turns after index 0 are TurnTool — walking back from any cutoff
+	// All turns after index 0 are TurnToolResults — walking back from any cutoff
 	// should reach 0, which is not a safe position.
 	history := []schema.Turn{
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "read_file", "content", false)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c3", "read_file", "content", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c2", "read_file", "content", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c3", "read_file", "content", false)},
 	}
 	got := safeCutoff(history, 2)
 	if got != -1 {
@@ -1669,7 +1669,7 @@ func TestSafeCutoff_WalksToZero_ReturnsNegative(t *testing.T) {
 }
 
 func TestSafeCutoff_SkipsSteering(t *testing.T) {
-	// TurnSteering at the cutoff position should be walked back, just like TurnTool.
+	// TurnSteering at the cutoff position should be walked back, just like TurnToolResults.
 	// Otherwise, preserved turns would start with a steering message that becomes
 	// a consecutive user-role message after the checkpoint's user-role message.
 	history := []schema.Turn{
@@ -1898,15 +1898,15 @@ func TestAttentionResolutionDoesNotConsumeCompactionLayerRecentSlots(t *testing.
 
 func TestCheckpoint_SafeCutoffNegative_ReturnsUnchanged(t *testing.T) {
 	// When safeCutoff returns -1, checkpoint should return history unchanged.
-	// Use preserveRecent=3 with 4 turns so cutoff=1, and history[1] is TurnTool
+	// Use preserveRecent=3 with 4 turns so cutoff=1, and history[1] is TurnToolResults
 	// which walks back to 0 → return -1.
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("task")},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("answer")},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
-	// preserveRecent=3 → cutoff=1 → TurnTool → walk to 0 → return -1
+	// preserveRecent=3 → cutoff=1 → TurnToolResults → walk to 0 → return -1
 	result := checkpoint(history, 3, nil, "communicate")
 	if len(result) != len(history) {
 		t.Fatalf("expected unchanged history (len %d), got len %d", len(history), len(result))
@@ -1930,7 +1930,7 @@ func TestSummarizeWithLLM_SafeCutoffNegative_ReturnsUnchanged(t *testing.T) {
 	// Same scenario as checkpoint test: cutoff walks to 0 → return -1.
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("task")},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("answer")},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("recent")},
 	}
@@ -1952,7 +1952,7 @@ func TestMaskObservations_SkipsShortResults(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("task")},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "edit_file", `{"file_path":"auth.go"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "edit_file", "OK", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "edit_file", "OK", false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 
@@ -1976,7 +1976,7 @@ func TestCheckpoint_OriginalPromptNotOverriddenByFollowup(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("[CONTEXT CHECKPOINT]\nOriginal task: Fix the auth bug\nFiles modified: auth.go\n[END CHECKPOINT]\n")},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"auth.go"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "read_file", "content", false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("I've analyzed the code")},
 		// Follow-up user message in preserved region:
 		{Kind: schema.TurnUserInput, Message: llm.User("Also update the tests")},

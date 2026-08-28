@@ -287,16 +287,6 @@ func TestRenderMarkdown_UnknownAndSystemTurns(t *testing.T) {
 		}
 	})
 
-	t.Run("deprecated TOOL turn renders as labeled note", func(t *testing.T) {
-		entries := []transcript.Entry{
-			makeEntry(schema.Turn{Kind: schema.TurnTool, Message: llm.User("tool result")}),
-		}
-		out := renderMarkdown(transcript.Header{}, entries, 0, renderOpts{})
-		if !strings.Contains(out, "> [TOOL turn omitted]") {
-			t.Errorf("expected deprecated TOOL turn note, got:\n%s", out)
-		}
-	})
-
 	t.Run("TOOL_RESULTS turn is not a standalone heading", func(t *testing.T) {
 		toolResultPart := llm.ContentPart{
 			Kind: llm.ContentToolResult,

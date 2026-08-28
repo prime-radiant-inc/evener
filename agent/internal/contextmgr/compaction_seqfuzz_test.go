@@ -175,14 +175,14 @@ func (m *compactionModel) applyOp(rt *rapid.T, op compactionOp, step int) {
 		path := "f" + m.nextID("p") + ".go"
 		m.history = append(m.history,
 			schema.Turn{Kind: schema.TurnAssistant, Message: assistantWithToolCall(id, "edit_file", `{"file_path":"`+path+`"}`)},
-			schema.Turn{Kind: schema.TurnTool, Message: llm.ToolResultNamed(id, "edit_file", "OK", false)},
+			schema.Turn{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed(id, "edit_file", "OK", false)},
 		)
 
 	case opAddRead:
 		id := m.nextID("call")
 		m.history = append(m.history,
 			schema.Turn{Kind: schema.TurnAssistant, Message: assistantWithToolCall(id, "read_file", `{"file_path":"r.go"}`)},
-			schema.Turn{Kind: schema.TurnTool, Message: llm.ToolResultNamed(id, "read_file", "1 | x\n", false)},
+			schema.Turn{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed(id, "read_file", "1 | x\n", false)},
 		)
 
 	case opAddCommunicate:
@@ -194,7 +194,7 @@ func (m *compactionModel) applyOp(rt *rapid.T, op compactionOp, step int) {
 				Role:    llm.RoleAssistant,
 				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &cc}},
 			}},
-			schema.Turn{Kind: schema.TurnTool, Message: llm.ToolResultNamed(id, "communicate", `{"delivered":true}`, false)},
+			schema.Turn{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed(id, "communicate", `{"delivered":true}`, false)},
 		)
 		m.agentTokens = append(m.agentTokens, tok)
 
@@ -249,7 +249,7 @@ func (m *compactionModel) compact(rt *rapid.T, step int) {
 	// (its tool call would be orphaned in the dropped prefix).
 	if len(tail) > 0 {
 		switch tail[0].Kind {
-		case schema.TurnTool, schema.TurnToolResults, schema.TurnSteering:
+		case schema.TurnToolResults, schema.TurnSteering:
 			rt.Fatalf("step %d: preserved tail starts with %s — its tool call was orphaned", step, tail[0].Kind)
 			return
 		}
@@ -285,7 +285,7 @@ func (m *compactionModel) checkInvariants(rt *rapid.T, step int) {
 				}
 			}
 		}
-		if t.Kind == schema.TurnTool || t.Kind == schema.TurnToolResults {
+		if t.Kind == schema.TurnToolResults {
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil && !seenCall[p.ToolResult.ToolCallID] {
 					rt.Fatalf("step %d: orphaned tool result %q (no preceding call)", step, p.ToolResult.ToolCallID)
@@ -298,7 +298,7 @@ func (m *compactionModel) checkInvariants(rt *rapid.T, step int) {
 	// I4: every tool call has a matching result somewhere in history.
 	resultIDs := map[string]bool{}
 	for _, t := range m.history {
-		if t.Kind == schema.TurnTool || t.Kind == schema.TurnToolResults {
+		if t.Kind == schema.TurnToolResults {
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					resultIDs[p.ToolResult.ToolCallID] = true

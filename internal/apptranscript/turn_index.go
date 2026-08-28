@@ -732,7 +732,7 @@ func toolProjectionState(entry transcript.Entry, names map[string]string) (map[s
 			changes = append(changes, toolNameChange{ID: part.ToolCall.ID, Name: part.ToolCall.Name})
 		}
 		return nil, changes
-	case schema.TurnTool, schema.TurnToolResults:
+	case schema.TurnToolResults:
 	default:
 		return nil, nil
 	}

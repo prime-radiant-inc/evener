@@ -824,9 +824,6 @@ func writeEntry(b *strings.Builder, seq int, e transcript.Entry, resultTool stri
 			b.WriteString("\n> [SYSTEM turn omitted]\n")
 		}
 
-	case schema.TurnTool: // deprecated
-		b.WriteString("\n> [TOOL turn omitted]\n")
-
 	default:
 		if wantFullTurn(opt, seq) {
 			fmt.Fprintf(b, "\n## Turn %d — %s\n", seq, e.Turn.Kind)

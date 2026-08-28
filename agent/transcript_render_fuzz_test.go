@@ -729,7 +729,7 @@ func trender_program(program []byte, payload string) (transcript.Header, []trans
 			entry(schema.TurnSummary, part(llm.ContentText, "summary")),
 			entry(schema.TurnCheckpoint),
 			entry(schema.TurnSystem),
-			entry(schema.TurnTool),
+			entry(schema.TurnToolResults),
 			entry(schema.TurnKind("FUTURE")),
 		}
 		return header, entries, "", opt

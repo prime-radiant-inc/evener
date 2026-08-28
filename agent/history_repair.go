@@ -57,7 +57,7 @@ func repairOrphanedToolResults(history []schema.Turn) ([]schema.Turn, int) {
 			flushPending()
 			out = append(out, turn)
 			pending = assistantToolCalls(turn.Message)
-		case schema.TurnTool, schema.TurnToolResults:
+		case schema.TurnToolResults:
 			out = append(out, turn)
 			for _, part := range turn.Message.Content {
 				if part.Kind == llm.ContentToolResult && part.ToolResult != nil {

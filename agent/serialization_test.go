@@ -54,7 +54,7 @@ func TestTurn_JSONRoundTrip(t *testing.T) {
 func TestTurn_JSONRoundTrip_ToolResult(t *testing.T) {
 	t.Parallel()
 	orig := schema.Turn{
-		Kind:    schema.TurnTool,
+		Kind:    schema.TurnToolResults,
 		Message: llm.ToolResultNamed("call-123", "read_file", "file contents here", false),
 	}
 	data, err := json.Marshal(orig)
@@ -65,8 +65,8 @@ func TestTurn_JSONRoundTrip_ToolResult(t *testing.T) {
 	if err := json.Unmarshal(data, &got); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
-	if got.Kind != schema.TurnTool {
-		t.Fatalf("kind: got %q want %q", got.Kind, schema.TurnTool)
+	if got.Kind != schema.TurnToolResults {
+		t.Fatalf("kind: got %q want %q", got.Kind, schema.TurnToolResults)
 	}
 	if got.Message.ToolCallID != "call-123" {
 		t.Fatalf("tool_call_id: got %q want %q", got.Message.ToolCallID, "call-123")

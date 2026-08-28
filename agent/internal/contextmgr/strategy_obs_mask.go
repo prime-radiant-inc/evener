@@ -133,7 +133,7 @@ func aggressiveMaskObservations(history []schema.Turn, preserveRecent int) {
 
 	for i := range cutoff {
 		t := &history[i]
-		if t.Kind != schema.TurnTool && t.Kind != schema.TurnToolResults {
+		if t.Kind != schema.TurnToolResults {
 			continue
 		}
 		for j := range t.Message.Content {

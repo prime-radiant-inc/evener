@@ -545,7 +545,7 @@ func turnRoleLabel(kind schema.TurnKind) string {
 		return "user"
 	case schema.TurnAssistant:
 		return "assistant"
-	case schema.TurnToolResults, schema.TurnTool:
+	case schema.TurnToolResults:
 		return "tool_result"
 	case schema.TurnSteering:
 		return "steering"

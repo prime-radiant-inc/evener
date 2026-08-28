@@ -199,7 +199,7 @@ func synthesizeLiveEvents(turn schema.Turn) ([]events.SessionEvent, bool) {
 		}
 		return out, true
 
-	case schema.TurnTool, schema.TurnToolResults:
+	case schema.TurnToolResults:
 		// This entry IS a round: the daemon writes one of these once every call
 		// in the round has ended, and announces right afterwards which of those
 		// calls a reader can now fetch images for (kata v3dv). Both halves are

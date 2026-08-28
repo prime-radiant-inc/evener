@@ -127,9 +127,9 @@ func ctxmgr_buildHistory(r *ctxmgr_reader) []schema.Turn {
 				{Kind: llm.ContentThinking, Thinking: &llm.ThinkingData{Text: r.str(200)}},
 			}}
 			history = append(history, schema.NewTurn(schema.TurnAssistant, msg))
-		case 11: // deprecated TurnTool with a plain tool result
+		case 11: // TurnToolResults with a plain tool result
 			cid := nextID()
-			history = append(history, schema.NewTurn(schema.TurnTool, llm.ToolResultNamed(cid, r.str(20), r.str(120), false)))
+			history = append(history, schema.NewTurn(schema.TurnToolResults, llm.ToolResultNamed(cid, r.str(20), r.str(120), false)))
 		}
 	}
 	return history

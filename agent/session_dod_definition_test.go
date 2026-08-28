@@ -2505,14 +2505,10 @@ func TestSession_ToolResults_AggregatedIntoSingleTurn(t *testing.T) {
 		t.Fatalf("ProcessInput: %v", err)
 	}
 
-	// After parallel tool calls, history should contain exactly one TurnToolResults turn (not two TurnTool turns).
+	// After parallel tool calls, history should contain exactly one TurnToolResults turn.
 	sess.mu.Lock()
-	var toolResultTurns int
 	var toolResultsTurns int
 	for _, turn := range sess.history {
-		if turn.Kind == schema.TurnTool {
-			toolResultTurns++
-		}
 		if turn.Kind == schema.TurnToolResults {
 			hasNonCommunicate := false
 			for _, p := range turn.Message.Content {
@@ -2529,9 +2525,6 @@ func TestSession_ToolResults_AggregatedIntoSingleTurn(t *testing.T) {
 	sess.mu.Unlock()
 	sess.Close()
 
-	if toolResultTurns != 0 {
-		t.Fatalf("expected 0 individual TurnTool turns, got %d", toolResultTurns)
-	}
 	if toolResultsTurns != 1 {
 		t.Fatalf("expected 1 TurnToolResults turn, got %d", toolResultsTurns)
 	}
@@ -2649,9 +2642,6 @@ func TestSession_ToolResults_SingleCallAlsoAggregated(t *testing.T) {
 	for _, turn := range sess.history {
 		if turn.Kind == schema.TurnToolResults {
 			foundToolResults = true
-		}
-		if turn.Kind == schema.TurnTool {
-			t.Fatalf("found individual TurnTool; expected TurnToolResults")
 		}
 	}
 	sess.mu.Unlock()

@@ -135,7 +135,6 @@ func TestS3Cov_OutlineRoleLabel(t *testing.T) {
 		schema.TurnEnvironment: "Environment",
 		schema.TurnSystem:      "System",
 		schema.TurnToolResults: "ToolResults",
-		schema.TurnTool:        "ToolResults",
 		schema.TurnKind("odd"): "odd",
 	}
 	for kind, want := range cases {

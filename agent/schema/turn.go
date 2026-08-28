@@ -18,8 +18,6 @@ const (
 	TurnSteering TurnKind = "STEERING"
 	// TurnAssistant is a turn carrying an assistant message.
 	TurnAssistant TurnKind = "ASSISTANT"
-	// TurnTool is a turn carrying tool output.
-	TurnTool TurnKind = "TOOL" // Deprecated: use TurnToolResults for new code.
 	// TurnToolResults is a turn carrying aggregated tool results from one round.
 	TurnToolResults TurnKind = "TOOL_RESULTS" // Aggregated tool results from one round.
 	// TurnSystem is a turn carrying a system message.

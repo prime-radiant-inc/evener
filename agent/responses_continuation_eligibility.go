@@ -83,7 +83,7 @@ func responsesContinuationDeltaIneligibleReason(anchor schema.Turn, delta []sche
 	for _, turn := range delta {
 		switch turn.Kind {
 		case schema.TurnUserInput, schema.TurnEnvironment:
-		case schema.TurnToolResults, schema.TurnTool:
+		case schema.TurnToolResults:
 			if reason := responsesContinuationToolResultsIneligibleReason(turn.Message, anchorToolCallIDs); reason != "" {
 				return reason
 			}

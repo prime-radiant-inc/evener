@@ -25,7 +25,7 @@ func TestRenderHistoryForElicit_IncludesToolContent(t *testing.T) {
 				}},
 			},
 		}},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("call-1", "read_file", "DEPLOY_TOKEN=OPAQUE-9X2Q\nREGION=eu-central-1", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("call-1", "read_file", "DEPLOY_TOKEN=OPAQUE-9X2Q\nREGION=eu-central-1", false)},
 	}
 
 	got := renderHistoryForElicit(history, 80_000)

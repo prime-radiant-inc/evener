@@ -143,14 +143,14 @@ func (m *fc1MaybeCompactModel) applyOp(rt *rapid.T, op fc1MaybeCompactOp, _ int)
 		path := "f" + m.nextID("p") + ".go"
 		m.history = append(m.history,
 			schema.Turn{Kind: schema.TurnAssistant, Message: assistantWithToolCall(id, "edit_file", `{"file_path":"`+path+`"}`)},
-			schema.Turn{Kind: schema.TurnTool, Message: llm.ToolResultNamed(id, "edit_file", "OK", false)},
+			schema.Turn{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed(id, "edit_file", "OK", false)},
 		)
 
 	case fc1OpAddRead:
 		id := m.nextID("call")
 		m.history = append(m.history,
 			schema.Turn{Kind: schema.TurnAssistant, Message: assistantWithToolCall(id, "read_file", `{"file_path":"r.go"}`)},
-			schema.Turn{Kind: schema.TurnTool, Message: llm.ToolResultNamed(id, "read_file", "1 | x\n", false)},
+			schema.Turn{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed(id, "read_file", "1 | x\n", false)},
 		)
 
 	case fc1OpAddCommunicate:
@@ -162,7 +162,7 @@ func (m *fc1MaybeCompactModel) applyOp(rt *rapid.T, op fc1MaybeCompactOp, _ int)
 				Role:    llm.RoleAssistant,
 				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &cc}},
 			}},
-			schema.Turn{Kind: schema.TurnTool, Message: llm.ToolResultNamed(id, "communicate", `{"delivered":true}`, false)},
+			schema.Turn{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed(id, "communicate", `{"delivered":true}`, false)},
 		)
 		m.agentTokens = append(m.agentTokens, tok)
 
@@ -203,7 +203,7 @@ func (m *fc1MaybeCompactModel) checkInvariants(rt *rapid.T, step int) {
 				}
 			}
 		}
-		if t.Kind == schema.TurnTool || t.Kind == schema.TurnToolResults {
+		if t.Kind == schema.TurnToolResults {
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil && !seenCall[p.ToolResult.ToolCallID] {
 					rt.Fatalf("step %d: orphaned tool result %q (no preceding call)", step, p.ToolResult.ToolCallID)
@@ -215,7 +215,7 @@ func (m *fc1MaybeCompactModel) checkInvariants(rt *rapid.T, step int) {
 	// I4: every tool call has a matching result somewhere in history.
 	resultIDs := map[string]bool{}
 	for _, t := range m.history {
-		if t.Kind == schema.TurnTool || t.Kind == schema.TurnToolResults {
+		if t.Kind == schema.TurnToolResults {
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					resultIDs[p.ToolResult.ToolCallID] = true

@@ -102,7 +102,7 @@ import (
 //	   the pure checkpoint() extractor is deterministic on identical input.
 //
 // Also unchanged: the safeCutoff tail-head guarantee (the preserved tail
-// never starts with a bare TurnTool/TurnToolResults/TurnSteering turn).
+// never starts with a bare TurnToolResults/TurnSteering turn).
 //
 // A final check outside the per-op loop asserts Layer 2 fired at least once
 // across the whole rapid.Check run, so a change that silently makes this test
@@ -221,14 +221,14 @@ func (m *doubleLayerModel) applyOp(rt *rapid.T, op dlOp, step int) {
 		path := "f" + m.nextID("p") + ".go"
 		m.history = append(m.history,
 			schema.Turn{Kind: schema.TurnAssistant, Message: assistantWithToolCall(id, "edit_file", `{"file_path":"`+path+`"}`)},
-			schema.Turn{Kind: schema.TurnTool, Message: llm.ToolResultNamed(id, "edit_file", "OK", false)},
+			schema.Turn{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed(id, "edit_file", "OK", false)},
 		)
 
 	case dlOpAddRead:
 		id := m.nextID("call")
 		m.history = append(m.history,
 			schema.Turn{Kind: schema.TurnAssistant, Message: assistantWithToolCall(id, "read_file", `{"file_path":"r.go"}`)},
-			schema.Turn{Kind: schema.TurnTool, Message: llm.ToolResultNamed(id, "read_file", "1 | x\n", false)},
+			schema.Turn{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed(id, "read_file", "1 | x\n", false)},
 		)
 
 	case dlOpAddCommunicate:
@@ -240,7 +240,7 @@ func (m *doubleLayerModel) applyOp(rt *rapid.T, op dlOp, step int) {
 				Role:    llm.RoleAssistant,
 				Content: []llm.ContentPart{{Kind: llm.ContentToolCall, ToolCall: &cc}},
 			}},
-			schema.Turn{Kind: schema.TurnTool, Message: llm.ToolResultNamed(id, "communicate", `{"delivered":true}`, false)},
+			schema.Turn{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed(id, "communicate", `{"delivered":true}`, false)},
 		)
 		m.agentTokens = append(m.agentTokens, tok)
 
@@ -351,7 +351,7 @@ func (m *doubleLayerModel) compact(rt *rapid.T, step int) {
 	// turn (its tool call would be orphaned in the dropped prefix).
 	if len(tail) > 0 {
 		switch tail[0].Kind {
-		case schema.TurnTool, schema.TurnToolResults, schema.TurnSteering:
+		case schema.TurnToolResults, schema.TurnSteering:
 			rt.Fatalf("step %d: preserved tail starts with %s — its tool call was orphaned", step, tail[0].Kind)
 			return
 		}
@@ -412,7 +412,7 @@ func (m *doubleLayerModel) checkInvariants(rt *rapid.T, step int) {
 				}
 			}
 		}
-		if t.Kind == schema.TurnTool || t.Kind == schema.TurnToolResults {
+		if t.Kind == schema.TurnToolResults {
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil && !seenCall[p.ToolResult.ToolCallID] {
 					rt.Fatalf("step %d: orphaned tool result %q (no preceding call)", step, p.ToolResult.ToolCallID)
@@ -425,7 +425,7 @@ func (m *doubleLayerModel) checkInvariants(rt *rapid.T, step int) {
 	// I4: every tool call has a matching result somewhere in history.
 	resultIDs := map[string]bool{}
 	for _, t := range m.history {
-		if t.Kind == schema.TurnTool || t.Kind == schema.TurnToolResults {
+		if t.Kind == schema.TurnToolResults {
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					resultIDs[p.ToolResult.ToolCallID] = true

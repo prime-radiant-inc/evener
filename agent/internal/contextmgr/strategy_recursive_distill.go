@@ -147,7 +147,7 @@ func (s *RecursiveDistillStrategy) microSummarize(ctx context.Context, history [
 			b.WriteString("Assistant: ")
 			b.WriteString(truncate(t.Message.Text(), 200))
 			b.WriteString("\n")
-		case schema.TurnTool, schema.TurnToolResults:
+		case schema.TurnToolResults:
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					content := fmt.Sprint(p.ToolResult.Content)

@@ -15,9 +15,9 @@ func TestCheckpoint_UsesTurnCheckpointKind(t *testing.T) {
 	history := []schema.Turn{
 		{Kind: schema.TurnUserInput, Message: llm.User("Fix the auth bug in login.go")},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c1", "read_file", `{"file_path":"login.go"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c1", "read_file", "1 | package main\n", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c1", "read_file", "1 | package main\n", false)},
 		{Kind: schema.TurnAssistant, Message: assistantWithToolCall("c2", "edit_file", `{"file_path":"login.go","old_string":"old","new_string":"new"}`)},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("c2", "edit_file", "OK", false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("c2", "edit_file", "OK", false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("done")},
 	}
 

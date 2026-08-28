@@ -101,7 +101,7 @@ func TestElicitNoteCapturesToolResult(t *testing.T) {
 				}},
 			},
 		}},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("call-tr", "run_shell", toolOutput, false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("call-tr", "run_shell", toolOutput, false)},
 		{Kind: schema.TurnAssistant, Message: llm.Assistant("Manifest read. Proceeding with the rollout.")},
 		{Kind: schema.TurnUserInput, Message: llm.User("Continue.")},
 	}

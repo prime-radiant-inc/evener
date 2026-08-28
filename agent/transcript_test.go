@@ -3345,7 +3345,7 @@ func TestReadSessionTranscriptExpansionLosslesslyReturnsEverySemanticTurn(t *tes
 			{Kind: llm.ContentText, Text: "user image"},
 			{Kind: llm.ContentImage, Image: &llm.ImageData{Data: []byte{0, 255, 1, 254}, MediaType: "image/png", Detail: "high"}},
 		}}),
-		turn(schema.TurnTool, llm.ToolResultNamed("legacy", "legacy_tool", map[string]any{"legacy": true}, false)),
+		turn(schema.TurnToolResults, llm.ToolResultNamed("legacy", "legacy_tool", map[string]any{"legacy": true}, false)),
 		turn(schema.TurnSteering, llm.User("steering")),
 		turn(schema.TurnSystem, llm.Message{Role: llm.RoleSystem, Content: []llm.ContentPart{{Kind: llm.ContentText, Text: "system"}}}),
 		turn(schema.TurnCheckpoint, llm.User("checkpoint")),

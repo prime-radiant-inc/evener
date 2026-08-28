@@ -176,7 +176,6 @@ func TestS3Cov_TurnRoleLabel(t *testing.T) {
 		schema.TurnUserInput:   "user",
 		schema.TurnAssistant:   "assistant",
 		schema.TurnToolResults: "tool_result",
-		schema.TurnTool:        "tool_result",
 		schema.TurnSteering:    "steering",
 		schema.TurnSummary:     "summary",
 		schema.TurnCheckpoint:  "checkpoint",

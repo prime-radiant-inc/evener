@@ -40,7 +40,7 @@ func FuzzProjectTurn(f *testing.F) {
 	f.Add([]byte(`{"kind":"USER_INPUT","message":{"content":[{"kind":"image","image":{"data":"AQ==","media_type":"image/png"}},{"kind":"audio","audio":{"media_type":"audio/wav","url":"audio"}},{"kind":"document","document":{"media_type":"text/plain","file_name":"a.txt","url":"doc"}}]}}`))
 	f.Add([]byte(`{"kind":"ASSISTANT","message":{"content":[{"kind":"text"},{"kind":"thinking"},{"kind":"redacted_thinking"},{"kind":"web_search"},{"kind":"tool_call"}]}}`))
 	f.Add([]byte(`{"kind":"ASSISTANT","message":{"content":[{"kind":"web_search","web_search":{"raw":{"action":{"query":"action"},"groundingChunks":[{"web":{"title":"","uri":"https://chunk"}}],"content":[{"type":"other","title":"skip","url":"skip"},{"title":"title"}]}}},{"kind":"tool_call","tool_call":{"id":"c3","name":"communicate","arguments":{"output":{"message":"sent"}}}}]}}`))
-	f.Add([]byte(`{"kind":"TOOL","message":{"content":[{"kind":"text"},{"kind":"tool_result"},{"kind":"tool_result","tool_result":{"tool_call_id":"c2","name":"communicate"}},{"kind":"tool_result","tool_result":{"tool_call_id":"c3","name":"shell","is_error":true,"content":{"error":"bad"}}}]}}`))
+	f.Add([]byte(`{"kind":"TOOL_RESULTS","message":{"content":[{"kind":"text"},{"kind":"tool_result"},{"kind":"tool_result","tool_result":{"tool_call_id":"c2","name":"communicate"}},{"kind":"tool_result","tool_result":{"tool_call_id":"c3","name":"shell","is_error":true,"content":{"error":"bad"}}}]}}`))
 
 	f.Fuzz(func(t *testing.T, raw []byte) {
 		var turn schema.Turn

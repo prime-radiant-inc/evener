@@ -516,7 +516,7 @@ func maskObservations(history []schema.Turn, preserveRecent int, resultToolName 
 	}
 	for i := range cutoff {
 		t := &history[i]
-		if t.Kind != schema.TurnTool && t.Kind != schema.TurnToolResults {
+		if t.Kind != schema.TurnToolResults {
 			continue
 		}
 		for j := range t.Message.Content {
@@ -815,7 +815,7 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 			}
 			data.conversation = append(data.conversation, checkpointConversationEntry{Role: "user", Text: text})
 
-		case schema.TurnTool, schema.TurnToolResults:
+		case schema.TurnToolResults:
 			// Extract terminal communicate results (agent responses to the user).
 			for _, p := range t.Message.Content {
 				if p.Kind != llm.ContentToolResult || p.ToolResult == nil {
@@ -879,7 +879,7 @@ func collectCheckpointData(history []schema.Turn, cutoff int, resultToolName str
 						}
 						exitCode := "?"
 						for j := i + 1; j < cutoff; j++ {
-							if history[j].Kind != schema.TurnTool && history[j].Kind != schema.TurnToolResults {
+							if history[j].Kind != schema.TurnToolResults {
 								continue
 							}
 							content := findToolResultByCallID(history[j], p.ToolCall.ID)
@@ -1021,7 +1021,7 @@ func formatCheckpoint(data checkpointData, meta *CompactionMeta, maxChars int) s
 	return b.String()
 }
 
-// findToolResultByCallID finds a tool result in a TurnTool by its ToolCallID
+// findToolResultByCallID finds a tool result in a TurnToolResults by its ToolCallID
 // and returns the string content, or "" if not found.
 func findToolResultByCallID(t schema.Turn, toolCallID string) string {
 	for _, p := range t.Message.Content {
@@ -1369,7 +1369,7 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 					}
 				}
 			}
-		case schema.TurnTool, schema.TurnToolResults:
+		case schema.TurnToolResults:
 			for _, p := range t.Message.Content {
 				if p.Kind == llm.ContentToolResult && p.ToolResult != nil {
 					content := fmt.Sprint(p.ToolResult.Content)
@@ -1408,11 +1408,11 @@ func (cm *Manager) summarizeWithLLMSteered(ctx context.Context, history []schema
 }
 
 // safeCutoff adjusts a cutoff index so the preserved turns don't start with a
-// TurnTool or TurnSteering, which would produce invalid message ordering.
+// TurnToolResults or TurnSteering, which would produce invalid message ordering.
 // While tracing a tool result back to its assistant tool call, the scan crosses
 // presentational markers and steering turns persisted inside that exchange; a
 // standalone marker remains a valid cutoff position unless the lookahead also
-// crosses steering. TurnTool without a preceding assistant tool_call is invalid.
+// crosses steering. TurnToolResults without a preceding assistant tool_call is invalid.
 // TurnSteering after a checkpoint/summary (both user-role) produces consecutive
 // user messages that some APIs reject.
 // Returns -1 if no safe position exists; callers should skip compaction.
@@ -1428,13 +1428,13 @@ func safeCutoff(history []schema.Turn, cutoff int) int {
 			crossedSteering = true
 			continue
 		}
-		tracingToolResult = k == schema.TurnTool || k == schema.TurnToolResults
+		tracingToolResult = k == schema.TurnToolResults
 		break
 	}
 
 	for cutoff > 0 && cutoff < len(history) {
 		k := history[cutoff].Kind
-		if k == schema.TurnTool || k == schema.TurnToolResults {
+		if k == schema.TurnToolResults {
 			tracingToolResult = true
 			cutoff--
 			continue

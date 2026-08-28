@@ -271,7 +271,7 @@ func auxFindExact(t *testing.T) {
 	_ = sessionKind(schema.SessionMeta{ParentSessionID: "p"})
 	_ = projectName(schema.SessionMeta{})
 	_ = projectName(schema.SessionMeta{EnvInfo: schema.EnvironmentInfo{WorkingDir: "/a/project"}})
-	for _, kind := range []schema.TurnKind{schema.TurnUserInput, schema.TurnAssistant, schema.TurnToolResults, schema.TurnTool, schema.TurnSteering, schema.TurnSummary, schema.TurnCheckpoint, schema.TurnSystem, schema.TurnKind("CUSTOM")} {
+	for _, kind := range []schema.TurnKind{schema.TurnUserInput, schema.TurnAssistant, schema.TurnToolResults, schema.TurnSteering, schema.TurnSummary, schema.TurnCheckpoint, schema.TurnSystem, schema.TurnKind("CUSTOM")} {
 		_ = turnRoleLabel(kind)
 	}
 	turn := schema.Turn{Message: llm.Message{Content: []llm.ContentPart{

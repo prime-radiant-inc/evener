@@ -313,7 +313,7 @@ func TestOODAStrategy_ManageContext_AppliesCompactionLayers(t *testing.T) {
 				}},
 			},
 		}},
-		{Kind: schema.TurnTool, Message: llm.ToolResultNamed("call1", "read_file", largeContent, false)},
+		{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("call1", "read_file", largeContent, false)},
 		{Kind: schema.TurnAssistant, Message: llm.Message{Role: llm.RoleAssistant, Content: []llm.ContentPart{
 			{Kind: llm.ContentText, Text: "Done reading"},
 		}}},

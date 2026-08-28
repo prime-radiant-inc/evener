@@ -1291,9 +1291,6 @@ func expandHistory(historyTurns []schema.Turn, scope replayScope) []llm.Message 
 				}
 			}
 			resolveToolResults(t.Message)
-		case schema.TurnTool:
-			history = append(history, scope.projectTurnMessage(t, inFlight))
-			resolveToolResults(t.Message)
 		case schema.TurnAssistant:
 			endToolRound()
 			message := scope.projectTurnMessage(t, inFlight)

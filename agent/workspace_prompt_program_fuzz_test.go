@@ -705,7 +705,7 @@ func wppOutline(t *testing.T, token string) {
 	for kind, want := range map[schema.TurnKind]string{
 		schema.TurnUserInput: "User", schema.TurnAssistant: "Assistant", schema.TurnSteering: "Steering",
 		schema.TurnSummary: "Summary", schema.TurnCheckpoint: "Checkpoint", schema.TurnSystem: "System",
-		schema.TurnToolResults: "ToolResults", schema.TurnTool: "ToolResults", schema.TurnKind("OTHER"): "OTHER",
+		schema.TurnToolResults: "ToolResults", schema.TurnKind("OTHER"): "OTHER",
 	} {
 		if got := outlineRoleLabel(kind); got != want {
 			t.Fatalf("role %q = %q, want %q", kind, got, want)

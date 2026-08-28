@@ -89,7 +89,7 @@ func fc1SyntheticHistory(n int) []schema.Turn {
 		case 1:
 			out = append(out, schema.Turn{Kind: schema.TurnAssistant, Message: llm.Assistant("assistant reply content")})
 		default:
-			out = append(out, schema.Turn{Kind: schema.TurnTool, Message: llm.ToolResultNamed("call", "read_file", "1 | x\n", false)})
+			out = append(out, schema.Turn{Kind: schema.TurnToolResults, Message: llm.ToolResultNamed("call", "read_file", "1 | x\n", false)})
 		}
 	}
 	return out

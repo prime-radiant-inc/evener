@@ -171,7 +171,7 @@ var (
 
 var transcriptGeneratorTurnKinds = []schema.TurnKind{
 	schema.TurnUserInput, schema.TurnSteering, schema.TurnAssistant,
-	schema.TurnTool, schema.TurnToolResults, schema.TurnSystem,
+	schema.TurnToolResults, schema.TurnSystem,
 	schema.TurnCheckpoint, schema.TurnSummary,
 }
 
@@ -260,7 +260,7 @@ func roleFor(k schema.TurnKind) llm.Role {
 		return llm.RoleUser
 	case schema.TurnAssistant, schema.TurnSummary, schema.TurnCheckpoint:
 		return llm.RoleAssistant
-	case schema.TurnTool, schema.TurnToolResults:
+	case schema.TurnToolResults:
 		return llm.RoleTool
 	case schema.TurnSystem:
 		return llm.RoleSystem
@@ -290,7 +290,7 @@ func (g *transcriptGen) message(kind schema.TurnKind) map[string]any {
 				parts = append(parts, g.toolCallPart())
 			}
 		}
-	case schema.TurnTool, schema.TurnToolResults:
+	case schema.TurnToolResults:
 		parts = g.toolResultParts()
 	default:
 		n := s.IntRange(0, 3, "msg_parts")

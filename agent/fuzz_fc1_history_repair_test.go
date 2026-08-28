@@ -204,7 +204,7 @@ func fc1HasRealResultBeforeRepairBoundary(history []schema.Turn, callID string) 
 	// repair boundaries.
 	for _, turn := range history {
 		switch turn.Kind {
-		case schema.TurnTool, schema.TurnToolResults:
+		case schema.TurnToolResults:
 			if fc1LaterResultCount([]schema.Turn{turn}, callID) > 0 {
 				return true
 			}
@@ -240,7 +240,7 @@ func fc1HasLaterResult(rest []schema.Turn, callID string) bool {
 func fc1LaterResultCount(rest []schema.Turn, callID string) int {
 	count := 0
 	for _, turn := range rest {
-		if turn.Kind != schema.TurnTool && turn.Kind != schema.TurnToolResults {
+		if turn.Kind != schema.TurnToolResults {
 			continue
 		}
 		for _, p := range turn.Message.Content {

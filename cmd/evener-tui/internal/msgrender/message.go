@@ -440,7 +440,7 @@ func historyToMessages(turns []schema.Turn) []transcript.ChatMessage {
 	// Collect tool results keyed by call ID for matching with tool calls.
 	toolResults := make(map[string]llm.ToolResultData)
 	for _, t := range turns {
-		if t.Kind != schema.TurnToolResults && t.Kind != schema.TurnTool {
+		if t.Kind != schema.TurnToolResults {
 			continue
 		}
 		for _, p := range t.Message.Content {

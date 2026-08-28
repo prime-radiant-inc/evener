@@ -518,7 +518,7 @@ func ProjectTurn(turnID string, turnIndex int, turn schema.Turn, toolNames map[s
 			}
 		}
 		return items
-	case schema.TurnTool, schema.TurnToolResults:
+	case schema.TurnToolResults:
 		var items []appwire.ThreadItem
 		for i, part := range turn.Message.Content {
 			if part.Kind != llm.ContentToolResult || part.ToolResult == nil {
