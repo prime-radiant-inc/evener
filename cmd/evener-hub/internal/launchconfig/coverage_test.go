@@ -205,7 +205,7 @@ func (fs *statFailureFS) Stat(name string) (os.FileInfo, error) {
 }
 
 func checkComputeTrustStateUnknownDecision(t *testing.T) {
-	meta := Meta{Trust: MetaTrust{Hash: "hash", Decision: "pending"}}
+	meta := Meta{Trust: MetaTrust{Hashes: []string{"hash"}, Decision: "pending"}}
 	if got := ComputeTrustState("hash", meta); got != TrustUntrusted {
 		t.Fatalf("ComputeTrustState = %q, want %q", got, TrustUntrusted)
 	}

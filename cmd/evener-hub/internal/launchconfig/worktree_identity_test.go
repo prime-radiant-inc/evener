@@ -125,7 +125,7 @@ func checkResolve_TrustFromMainRootAppliesInLinkedWorktree(t *testing.T) {
 	writeFile(t, mainPaths.Meta, `schema = 1
 cwd = "`+main+`"
 [trust]
-hash = "`+hash+`"
+hashes = ["`+hash+`"]
 decision = "trusted"
 `)
 
