@@ -72,6 +72,169 @@ function epochMsToISO(ms: number | undefined): string | undefined {
   return ms === undefined || Number.isNaN(ms) || ms <= 0 ? undefined : new Date(ms).toISOString();
 }
 
+// Streaming-delta chunk accumulation, in O(1) per delta.
+//
+// The pre-fix shape copied the whole accumulated chunk array on every delta
+// (pendingText: [...(item.pendingText ?? []), delta]) — O(current-length)
+// work per delta, O(n^2) total for an item streamed in n chunks; the
+// token-flood benchmark measured ~13x late/early per-delta cost growth at
+// 10k deltas (docs/superpowers/plans/wave4-report.md, "Token-flood
+// benchmark"). The public shape — ItemModel.pendingText: string[] of every
+// chunk, in arrival order, readable at any time mid-stream — is unchanged;
+// only the cost of producing the next state changed.
+//
+// Shape: a per-item append-only backing array plus, per fold state, an
+// IMMUTABLE fixed-length view of that backing (a Proxy over an empty array
+// target that presents backing[0..length) — real Array.prototype methods
+// work on it, Array.isArray is true, and every mutating trap throws). A
+// delta appends the chunk to the backing (O(1)) and mints a fresh view one
+// longer (O(1)) — no copy of any earlier chunk ever happens.
+//
+// Purity: the reducer's contract is immutable updates, and this preserves
+// it OBSERVATIONALLY. The one deliberate alias — new views share the
+// backing with the view they extend — is safe because a chunk is only ever
+// appended at the index one past the current view's fixed length: no view
+// already handed out can read that index (its length is frozen), so every
+// view ever returned reads the exact same bytes for its whole life. A fold
+// whose chunk history diverges from the backing's (a delta arriving on a
+// model state whose pendingText is not the backing's latest view — the
+// replay/branch/reset interleavings that would otherwise alias a future
+// push into an old view) takes copyChunkPrefix instead, detaching from the
+// shared backing entirely. So no output of applyNotification is ever
+// mutated by a later applyNotification — same inputs, same observable
+// outputs, which is the purity the file header promises.
+//
+// Why a Proxy view rather than "mutate the item's array in place": the
+// model is handed to React and tests that treat it as deeply immutable
+// (memo comparators, hydrate-vs-fold snapshots, expect(...).toEqual). A
+// bare mutable array would change observable content under an existing
+// reference after the fact, which is exactly the purity violation this
+// design exists to avoid; the view keeps each state's snapshot frozen.
+
+// Brands a view so appendDelta can recognize its own kind. Stored as a
+// non-enumerable symbol-keyed prop that ownKeys does not report, keeping
+// the view structurally identical to a plain string[] for every consumer
+// (toEqual, JSON.stringify, spread, iteration) while appendChunk still has
+// a way to check "is this one of mine" without an O(1)-breaking lookup.
+const CHUNK_VIEW = Symbol("evener.chunkView");
+
+interface ChunkView {
+  [CHUNK_VIEW]: { backing: string[]; length: number };
+}
+
+// "5" | "12" -> 5 | 12; anything else (including "length", symbols,
+// negatives, fractions) -> undefined. Canonical numeric-string form only.
+function chunkIndex(prop: string): number | undefined {
+  const n = Number(prop);
+  return Number.isInteger(n) && n >= 0 && String(n) === prop ? n : undefined;
+}
+
+// The backing a view reads. A view created by chunkView is read back here;
+// anything else (a plain array from tests or hydrate) returns undefined.
+function viewBacking(chunks: string[]): string[] | undefined {
+  return (chunks as string[] & Partial<ChunkView>)[CHUNK_VIEW]?.backing;
+}
+
+function viewLength(chunks: string[]): number | undefined {
+  return (chunks as string[] & Partial<ChunkView>)[CHUNK_VIEW]?.length;
+}
+
+// Returns a fresh immutable view of backing[0..length). Every trap below
+// mirrors the exact descriptor semantics of a real Array of that length so
+// structural equality with a plain string[] holds.
+function chunkView(backing: string[], length: number): string[] {
+  // A zero-length view has nothing to protect; an empty plain array is
+  // cheaper than a Proxy and toEqual-identical. Also keeps RawItemView's
+  // `chunks.length === 0` and AgentMessageItem's empty-array fallback on
+  // their existing code paths.
+  if (length === 0) return [];
+  const brand: ChunkView[typeof CHUNK_VIEW] = { backing, length };
+  const target: string[] = [];
+  return new Proxy(target, {
+    get(t, prop, receiver) {
+      if (prop === CHUNK_VIEW) return brand;
+      if (prop === "length") return length;
+      if (typeof prop === "string") {
+        const i = chunkIndex(prop);
+        if (i !== undefined) return i < length ? backing[i] : undefined;
+      }
+      return Reflect.get(t, prop, receiver);
+    },
+    has(t, prop) {
+      if (typeof prop === "string") {
+        const i = chunkIndex(prop);
+        if (i !== undefined) return i < length;
+      }
+      return Reflect.has(t, prop);
+    },
+    ownKeys() {
+      const keys: string[] = [];
+      for (let i = 0; i < length; i++) keys.push(String(i));
+      keys.push("length");
+      return keys;
+    },
+    getOwnPropertyDescriptor(t, prop) {
+      if (prop === "length") return { value: length, writable: true, enumerable: false, configurable: false };
+      if (typeof prop === "string") {
+        const i = chunkIndex(prop);
+        if (i !== undefined) {
+          if (i >= length) return undefined;
+          return { value: backing[i], writable: true, enumerable: true, configurable: true };
+        }
+      }
+      return Reflect.getOwnPropertyDescriptor(t, prop);
+    },
+    set() {
+      throw new TypeError("pendingText views are immutable (append via the reducer)");
+    },
+    deleteProperty() {
+      throw new TypeError("pendingText views are immutable (append via the reducer)");
+    },
+    defineProperty() {
+      throw new TypeError("pendingText views are immutable (append via the reducer)");
+    },
+    preventExtensions() {
+      throw new TypeError("pendingText views are immutable (append via the reducer)");
+    },
+  });
+}
+
+// The first chunk of an item. Owns a fresh backing — the item had no
+// chunks, so there is nothing to share.
+function firstChunkView(delta: string): string[] {
+  const backing: string[] = [delta];
+  return chunkView(backing, 1);
+}
+
+// Appends `delta` to `item.pendingText`, O(1). Fast path: the item's view
+// is the newest over its backing (the plain sequential-stream case, by far
+// the common one) — push and mint. Slow path (copy-on-branch): the item's
+// view is stale (a folded state that predates later pushes on the same
+// backing) or a plain array (hydrated/test-constructed). Copying is the
+// only correct option there: pushing onto the old view's backing would
+// overwrite a chunk some other view already reads, and pushing onto a plain
+// array would mutate an array the caller may still hold.
+function appendChunk(item: { pendingText?: string[] }, delta: string): string[] {
+  const current = item.pendingText;
+  if (current === undefined) return firstChunkView(delta);
+  const backing = viewBacking(current);
+  if (backing !== undefined && viewLength(current) === backing.length) {
+    backing.push(delta);
+    return chunkView(backing, backing.length);
+  }
+  return copyChunkPrefix(current, delta);
+}
+
+// Detached append: copies `chunks` (a plain array or a view) and appends.
+// O(length) — only ever reached when the item's chunk history has already
+// diverged from any shared backing, so the total work across a whole
+// divergent replay is still O(n) for n deltas (one copy per branch point,
+// not per delta).
+function copyChunkPrefix(chunks: string[], delta: string): string[] {
+  const backing = [...chunks, delta];
+  return chunkView(backing, backing.length);
+}
+
 // Thread.createdAt/updatedAt are the wire's only Unix-SECONDS stamps
 // (cmd/evener-hub's hubcore.UnixSeconds for a past session,
 // appsource/local_daemon.go's entry.StartedAt.Unix() for a live one), unlike
@@ -561,10 +724,18 @@ function foldNonActiveTurnCompleted(model: ThreadModel, turnId: string, stamp: T
 // in model.ts). `now` is the reducer's own now parameter, never a clock
 // read (purity).
 function appendReasoningDelta(item: ItemModel, summaryIndex: number, delta: string, now: number): ItemModel {
+  // O(1) per delta (was: summaries.slice() + [...chunks, delta], both
+  // O(current-length) copies per delta — the same quadratic the
+  // agentMessage case had). The outer array is a plain string[][] (its
+  // entries come from wireItemToModel/hydrate too, not just this append),
+  // so it copies per call — but that copy is O(#summaries), a small bound
+  // set by the wire's summary indices, not by stream length. The chunk
+  // list per summary is the unbounded one, and that one gets the O(1)
+  // shared-backing append.
   const summaries = item.reasoningSummaries ? item.reasoningSummaries.slice() : [];
   while (summaries.length <= summaryIndex) summaries.push([]);
   const chunks = summaries[summaryIndex] ?? [];
-  summaries[summaryIndex] = [...chunks, delta];
+  summaries[summaryIndex] = appendChunk({ pendingText: chunks }, delta);
   return { ...item, reasoningSummaries: summaries, observedStartedAt: item.observedStartedAt ?? epochMsToISO(now) };
 }
 
@@ -758,7 +929,12 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
           ...turn,
           items: mapItem(turn.items, params.itemId, (item) => ({
             ...item,
-            pendingText: [...(item.pendingText ?? []), params.delta],
+            // O(1): appends to the item's chunk backing without copying
+            // the accumulated chunks (appendChunk's copy-on-branch slow
+            // path handles the divergent-replay cases). The item spread
+            // above stays O(1) too: appendChunk returns a fresh view, and
+            // no other prop here reads pendingText.
+            pendingText: appendChunk(item, params.delta),
           })),
         })),
         lastFrameAt: now,

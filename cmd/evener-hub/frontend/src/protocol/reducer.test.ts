@@ -505,6 +505,166 @@ test("delta accumulates into pendingText chunks and joins on completion", () => 
   expect(settled.pendingText).toBeUndefined();
 });
 
+// --- O(1) per-delta accumulation (perf fix, PR3) ----------------------------
+//
+// The delta fold must not copy the accumulated chunks per delta (the
+// pre-fix [...chunks, delta] did, making an n-chunk item O(n^2) total —
+// see tokenFlood.bench.ts's growth-curve profile and the wave4 report).
+// These tests pin the ALGORITHMIC property deterministically, without a
+// wall-clock assertion (which would be flaky in CI): each delta's fold
+// must reuse the chunk STRINGS it was handed by reference — the previous
+// state's chunks all appear, reference-identical, in the next state — and
+// grow the chunk count by exactly one. A per-delta copy back (any spread
+// or slice of the accumulated array) would still pass the join/length
+// checks below, but reference identity is what makes the append O(1), and
+// only a copy breaks it.
+
+function streamingItem(): ThreadModel {
+  let model = testHydrate();
+  model = applyNotification(
+    model,
+    {
+      method: "turn/started",
+      params: { threadId: "thr_t", ref: "ref_t", turn: { id: "turn_1", status: "inProgress", itemsView: "" } },
+    },
+    1001,
+  );
+  model = applyNotification(
+    model,
+    {
+      method: "item/started",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        item: { type: "agentMessage", id: "item_1", turnId: "turn_1", status: "inProgress" },
+      },
+    },
+    1002,
+  );
+  return model;
+}
+
+function agentMessageDelta(delta: string): AnyNotification {
+  return {
+    method: "item/agentMessage/delta",
+    params: { threadId: "thr_t", ref: "ref_t", turnId: "turn_1", itemId: "item_1", delta },
+  };
+}
+
+test("every delta's fold reuses the previous chunks by reference and grows the count by one (O(1) append)", () => {
+  // 20,000 deltas matches the brief's scale. Reference identity is the
+  // property that makes the append O(1) — a per-delta copy ([...chunks,
+  // delta]) would still produce the right join and length but hands back
+  // fresh string references only if the strings themselves were rebuilt,
+  // which they are not; the copy that matters is the ARRAY copy, caught
+  // below by snapshotting the array reference across consecutive folds:
+  // a copied array is a different object than the one whose chunk at the
+  // same index we then read. Checking a FIXED set of sentinel positions
+  // (not every prior index per step) keeps the test O(n), not O(n^2) —
+  // the test must not recreate the very blowup it guards against.
+  const N = 20_000;
+  const SENTINELS = [0, 1, 2, 7, 100, 999, 5_000, 12_345, N - 2, N - 1];
+  let model = streamingItem();
+  const seenChunkRefs = new Map<number, string>();
+  for (let i = 0; i < N; i++) {
+    model = applyNotification(model, agentMessageDelta(`c${i} `), 1003 + i);
+    const chunks = itemAt(turnAt(model, 0), 0).pendingText;
+    expect(chunks).toHaveLength(i + 1);
+    // Record each sentinel chunk once, at the fold that produces it.
+    if (SENTINELS.includes(i)) {
+      const chunk = chunks?.[i];
+      expect(typeof chunk).toBe("string");
+      seenChunkRefs.set(i, chunk ?? "");
+    }
+    // After the sentinel exists, every later fold must still hand back
+    // THE SAME string reference at that index — an append, not a rebuild.
+    for (const s of SENTINELS) {
+      if (s <= i) {
+        expect(Object.is(chunks?.[s], seenChunkRefs.get(s))).toBe(true);
+      }
+    }
+  }
+  const chunks = itemAt(turnAt(model, 0), 0).pendingText;
+  expect(chunks?.length).toBe(N);
+  expect(chunks).toEqual(Array.from({ length: N }, (_, i) => `c${i} `));
+});
+
+test("a mid-stream model state stays observationally frozen while later deltas continue folding (view purity)", () => {
+  let model = streamingItem();
+  model = applyNotification(model, agentMessageDelta("Hel"), 1003);
+  model = applyNotification(model, agentMessageDelta("lo"), 1004);
+  const frozen = itemAt(turnAt(model, 0), 0);
+  const snapshot = [...(frozen.pendingText ?? [])];
+  // Snapshot the JOIN too — the most common read (settleItem, renderers).
+  const joined = frozen.pendingText?.join("");
+  // Keep folding well past the snapshotted state.
+  for (let i = 0; i < 500; i++) {
+    model = applyNotification(model, agentMessageDelta("x"), 1005 + i);
+  }
+  expect(frozen.pendingText?.length).toBe(2);
+  expect([...(frozen.pendingText ?? [])]).toEqual(snapshot);
+  expect(frozen.pendingText?.join("")).toBe(joined);
+  // And the live item carries all 502 chunks, first two unchanged.
+  const live = itemAt(turnAt(model, 0), 0);
+  expect(live.pendingText?.length).toBe(502);
+  expect(live.pendingText?.[0]).toBe("Hel");
+  expect(live.pendingText?.[1]).toBe("lo");
+  expect(live.pendingText?.slice(0, 2)).toEqual(["Hel", "lo"]);
+  // Mutating traps throw rather than corrupting the shared backing.
+  expect(() => (live.pendingText as string[]).push("y")).toThrow();
+  expect(() => {
+    (live.pendingText as string[])[0] = "z";
+  }).toThrow();
+  // Settling after the fold still joins exactly the streamed text.
+  model = applyNotification(
+    model,
+    {
+      method: "turn/completed",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        turnId: "turn_1",
+        turn: { id: "turn_1", status: "completed", itemsView: "" },
+      },
+    },
+    2000,
+  );
+  const settled = itemAt(turnAt(model, 0), 0);
+  expect(settled.text).toBe(`Hello${"x".repeat(500)}`);
+  expect(settled.pendingText).toBeUndefined();
+});
+
+test("a delta folded onto a STALE mid-stream state branches cleanly — no aliasing into the newer fold (copy-on-branch)", () => {
+  let base = streamingItem();
+  base = applyNotification(base, agentMessageDelta("a"), 1003);
+  base = applyNotification(base, agentMessageDelta("b"), 1004);
+  const branchedAt = base;
+
+  // One line of history continues from branchedAt...
+  let live = branchedAt;
+  for (let i = 0; i < 100; i++) {
+    live = applyNotification(live, agentMessageDelta("L"), 1100 + i);
+  }
+  const liveChunks = itemAt(turnAt(live, 0), 0).pendingText;
+  expect(liveChunks?.length).toBe(102);
+  expect(liveChunks?.join("")).toBe(`ab${"L".repeat(100)}`);
+
+  // ...and a second fold from the SAME stale state takes its own branch.
+  // The stale state's view is not the backing's newest, so this append
+  // must NOT push into the backing the live branch reads — it copies.
+  let fork = branchedAt;
+  for (let i = 0; i < 100; i++) {
+    fork = applyNotification(fork, agentMessageDelta("F"), 1200 + i);
+  }
+  const forkChunks = itemAt(turnAt(fork, 0), 0).pendingText;
+  expect(forkChunks?.length).toBe(102);
+  expect(forkChunks?.join("")).toBe(`ab${"F".repeat(100)}`);
+  // Neither branch saw the other's chunks.
+  expect(liveChunks?.join("")).toBe(`ab${"L".repeat(100)}`);
+  expect(liveChunks?.length).toBe(102);
+});
+
 test("item/completed inserts an item that had no preceding item/started", () => {
   // userMessage and systemMessage items go straight to item/completed with
   // no item/started (internal/appprojector/appwire_projection.go: a new user
