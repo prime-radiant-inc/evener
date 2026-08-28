@@ -7,15 +7,16 @@ import (
 )
 
 func TestTaskUpdatedData_CurrentJSON(t *testing.T) {
-	withCurrent, err := json.Marshal(TaskUpdatedData{
-		TaskStateData: {
-			Total:   3,
-			Done:    1,
-			Current: &TaskSummaryData{ID: 2, Description: "live current task"},
-		},
+	withCurrentData := TaskUpdatedData{
 		TaskPublicationEpoch:    11,
 		TaskPublicationRevision: 17,
-	})
+	}
+	withCurrentData.TaskStateData = TaskStateData{
+		Total:   3,
+		Done:    1,
+		Current: &TaskSummaryData{ID: 2, Description: "live current task"},
+	}
+	withCurrent, err := json.Marshal(withCurrentData)
 	if err != nil {
 		t.Fatalf("marshal TaskUpdatedData with current: %v", err)
 	}
@@ -26,7 +27,9 @@ func TestTaskUpdatedData_CurrentJSON(t *testing.T) {
 		t.Fatalf("TaskUpdatedData JSON leaked internal publication identity: %s", withCurrent)
 	}
 
-	withoutCurrent, err := json.Marshal(TaskUpdatedData{TaskStateData: {Total: 3, Done: 1}})
+	withoutCurrentData := TaskUpdatedData{}
+	withoutCurrentData.TaskStateData = TaskStateData{Total: 3, Done: 1}
+	withoutCurrent, err := json.Marshal(withoutCurrentData)
 	if err != nil {
 		t.Fatalf("marshal TaskUpdatedData without current: %v", err)
 	}
@@ -126,11 +129,11 @@ func TestSessionStartCurrentWorkSeedCarriesAuthoritativeEmptyTasks(t *testing.T)
 
 func TestTaskUpdatedDataCarriesTaskStoreOwnerSessionID(t *testing.T) {
 	want := TaskUpdatedData{
-		TaskStateData: {
-			Total:   1,
-			Current: &TaskSummaryData{ID: 4, Description: "current"},
-		},
 		TaskStoreOwnerSessionID: "root-session",
+	}
+	want.TaskStateData = TaskStateData{
+		Total:   1,
+		Current: &TaskSummaryData{ID: 4, Description: "current"},
 	}
 	encoded, err := json.Marshal(want)
 	if err != nil {
