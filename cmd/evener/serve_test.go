@@ -35,6 +35,29 @@ import (
 	"primeradiant.com/evener/server"
 )
 
+func shutdownServeTestDaemon(ctx context.Context, address, sessionID string) error {
+	transport, err := appwire.DialWebSocket(ctx, "ws://"+address+"/rpc", http.DefaultClient)
+	if err != nil {
+		return err
+	}
+	client := appwire.NewClient(transport)
+	defer client.Close()
+	client.Start(context.WithoutCancel(ctx))
+	if _, err := client.Initialize(ctx, appwire.InitializeParams{
+		ClientInfo: appwire.ClientInfo{Name: "serve-test-shutdown", Version: "test"},
+	}); err != nil {
+		return err
+	}
+	threads, err := client.ThreadList(ctx, appwire.ThreadListParams{})
+	if err != nil {
+		return err
+	}
+	if len(threads.Data) > 0 {
+		sessionID = threads.Data[0].ID
+	}
+	return client.ThreadShutdown(ctx, appwire.ThreadShutdownParams{Ref: appwire.Ref{SourceID: "local", ThreadID: sessionID}.String()})
+}
+
 func TestServePluginSelectionValidationPrecedesStartupHooks(t *testing.T) {
 	root := t.TempDir()
 	var order []string
@@ -408,16 +431,14 @@ func TestServe_WritesAndRemovesRendezvousFile(t *testing.T) {
 		t.Error("Address should not be empty")
 	}
 
-	resp, err := http.Post("http://"+entries[0].Address+"/shutdown", "", nil)
-	if err != nil {
-		t.Fatalf("post /shutdown: %v", err)
+	if err := shutdownServeTestDaemon(context.Background(), entries[0].Address, entries[0].SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
 	}
-	resp.Body.Close()
 
 	select {
 	case <-done:
 	case <-time.After(5 * time.Second):
-		t.Fatal("runServe did not exit after /shutdown")
+		t.Fatal("runServe did not exit after thread/shutdown")
 	}
 
 	if _, err := os.Stat(target); !os.IsNotExist(err) {
@@ -470,11 +491,9 @@ func TestRunServeNonInteractiveFlagControlsPromptAddendum(t *testing.T) {
 			}()
 
 			entry := waitForServeTestRendezvous(t, runDir)
-			resp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
-			if err != nil {
-				t.Fatalf("post /shutdown: %v", err)
+			if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
+				t.Fatalf("thread/shutdown: %v", err)
 			}
-			resp.Body.Close()
 
 			select {
 			case err := <-done:
@@ -482,7 +501,7 @@ func TestRunServeNonInteractiveFlagControlsPromptAddendum(t *testing.T) {
 					t.Fatalf("runServe: %v", err)
 				}
 			case <-time.After(5 * time.Second):
-				t.Fatal("runServe did not exit after /shutdown")
+				t.Fatal("runServe did not exit after thread/shutdown")
 			}
 
 			path := filepath.Join(stateDir, "sessions", entry.SessionID+".transcript.jsonl")
@@ -581,11 +600,9 @@ func TestRunServeShutdownWaitsForInFlightInput(t *testing.T) {
 		t.Fatal("fake adapter was not called")
 	}
 
-	resp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
-	if err != nil {
-		t.Fatalf("post /shutdown: %v", err)
+	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
 	}
-	resp.Body.Close()
 
 	select {
 	case <-adapter.cancelled:
@@ -776,9 +793,8 @@ func TestRunServeClearReleasesOldSessionAPILogRoute(t *testing.T) {
 
 	entry := waitForServeTestRendezvous(t, runDir)
 	t.Cleanup(func() {
-		resp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
-		if err == nil {
-			resp.Body.Close()
+		if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
+			return
 		}
 	})
 	if err := logger.ReserveSession(entry.SessionID); err != nil {
@@ -802,11 +818,9 @@ func TestRunServeClearReleasesOldSessionAPILogRoute(t *testing.T) {
 		t.Fatalf("old session API-log route remained owned after /clear: %v", err)
 	}
 
-	shutdownResp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
-	if err != nil {
-		t.Fatalf("POST /shutdown: %v", err)
+	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
 	}
-	shutdownResp.Body.Close()
 	select {
 	case err := <-done:
 		if err != nil {

@@ -204,14 +204,14 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 			t.Fatalf("TurnStart: %v", err)
 		}
 	} else {
-		body := strings.NewReader(`{"text":"run the foreground shell"}`)
-		resp, err := http.Post("http://"+entry.Address+"/input", "application/json", body)
-		if err != nil {
-			t.Fatalf("POST /input: %v", err)
-		}
-		resp.Body.Close()
-		if resp.StatusCode != http.StatusAccepted {
-			t.Fatalf("POST /input status = %d, want %d", resp.StatusCode, http.StatusAccepted)
+		client, _ = dialServeToolResultClient(ctx, t, entry.Address, string(mode), ref)
+		defer client.Close()
+		if _, err := client.TurnStart(ctx, appwire.TurnStartParams{
+			ClientMutationID: "foreground-shell-no-subscriber-turn",
+			Ref:              ref,
+			Input:            []appwire.InputItem{{Type: "text", Text: "run the foreground shell"}},
+		}); err != nil {
+			t.Fatalf("TurnStart: %v", err)
 		}
 	}
 
@@ -286,11 +286,9 @@ func runServeForegroundShellPersistenceCase(t *testing.T, mode foregroundShellSe
 		t.Fatalf("foreground shell turn never settled to awaiting: %v", ctx.Err())
 	}
 
-	shutdownResp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
-	if err != nil {
-		t.Fatalf("POST /shutdown: %v", err)
+	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
 	}
-	shutdownResp.Body.Close()
 	select {
 	case err := <-done:
 		if err != nil {

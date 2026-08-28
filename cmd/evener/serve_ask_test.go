@@ -250,11 +250,9 @@ func TestServeAsk_StatusAwaitingAtRest(t *testing.T) {
 		t.Fatalf("state after reply's turn completed = %q, want %q (inbox semantics: the reply's own clean, output-producing turn re-arms awaiting)", afterReply.State, "awaiting")
 	}
 
-	httpResp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
-	if err != nil {
-		t.Fatalf("post /shutdown: %v", err)
+	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
 	}
-	httpResp.Body.Close()
 
 	select {
 	case err := <-done:
@@ -262,7 +260,7 @@ func TestServeAsk_StatusAwaitingAtRest(t *testing.T) {
 			t.Fatalf("runServe returned error: %v", err)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("runServe did not exit after /shutdown")
+		t.Fatal("runServe did not exit after thread/shutdown")
 	}
 }
 
@@ -367,11 +365,9 @@ func TestServeAsk_NoFlickerOnJobCompletion(t *testing.T) {
 	}
 	t.Logf("status stayed %q across %d reads over %s; job completion observed mid-window", "awaiting", reads, pollWindow)
 
-	httpResp, err := http.Post("http://"+entry.Address+"/shutdown", "", nil)
-	if err != nil {
-		t.Fatalf("post /shutdown: %v", err)
+	if err := shutdownServeTestDaemon(context.Background(), entry.Address, entry.SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
 	}
-	httpResp.Body.Close()
 
 	select {
 	case err := <-done:
@@ -379,7 +375,7 @@ func TestServeAsk_NoFlickerOnJobCompletion(t *testing.T) {
 			t.Fatalf("runServe returned error: %v", err)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("runServe did not exit after /shutdown")
+		t.Fatal("runServe did not exit after thread/shutdown")
 	}
 }
 
@@ -452,18 +448,16 @@ func TestServeAsk_RestoreReportsAwaitingImmediately(t *testing.T) {
 	client.Close()
 
 	// Kill the daemon with the ask still pending at the transcript tail.
-	httpResp, err := http.Post("http://"+entry1.Address+"/shutdown", "", nil)
-	if err != nil {
-		t.Fatalf("post /shutdown: %v", err)
+	if err := shutdownServeTestDaemon(context.Background(), entry1.Address, entry1.SessionID); err != nil {
+		t.Fatalf("thread/shutdown: %v", err)
 	}
-	httpResp.Body.Close()
 	select {
 	case err := <-done1:
 		if err != nil {
 			t.Fatalf("first runServe returned error: %v", err)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("first runServe did not exit after /shutdown")
+		t.Fatal("first runServe did not exit after thread/shutdown")
 	}
 
 	// Restart, resuming the SAME session by ID from the SAME state dir.
@@ -494,17 +488,15 @@ func TestServeAsk_RestoreReportsAwaitingImmediately(t *testing.T) {
 		t.Fatalf("first thread/read after restore = %q, want %q (no idle-until-next-turn window)", first.State, "awaiting")
 	}
 
-	httpResp2, err := http.Post("http://"+entry2.Address+"/shutdown", "", nil)
-	if err != nil {
-		t.Fatalf("post /shutdown (second daemon): %v", err)
+	if err := shutdownServeTestDaemon(context.Background(), entry2.Address, entry2.SessionID); err != nil {
+		t.Fatalf("thread/shutdown (second daemon): %v", err)
 	}
-	httpResp2.Body.Close()
 	select {
 	case err := <-done2:
 		if err != nil {
 			t.Fatalf("second runServe returned error: %v", err)
 		}
 	case <-time.After(10 * time.Second):
-		t.Fatal("second runServe did not exit after /shutdown")
+		t.Fatal("second runServe did not exit after thread/shutdown")
 	}
 }
