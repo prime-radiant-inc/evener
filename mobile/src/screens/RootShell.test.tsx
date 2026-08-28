@@ -21,6 +21,7 @@ import type { LiveConceptRendererProps } from "../live-concepts/contract";
 import { liveConceptRegistry } from "../live-concepts/registry";
 import type { ProfileRedacted } from "../services/nativeProfiles";
 import { createConnectionStore } from "../state/connection";
+import * as conversationStateModule from "../state/conversation";
 import { createNavigationStore } from "../state/navigation";
 import { createPreferencesStore } from "../state/preferences";
 import type { FakeProfileService } from "../test/fakeProfileService";
@@ -414,6 +415,27 @@ function observeLoadingBoundary(): {
   });
   observer.observe(document.body, { childList: true, subtree: true });
   return { seen, disconnect: () => observer.disconnect() };
+}
+
+function captureNextConversationStore(): () => ReturnType<
+  typeof conversationStateModule.createConversationStore
+> {
+  const createRealStore = conversationStateModule.createConversationStore;
+  let captured: ReturnType<
+    typeof conversationStateModule.createConversationStore
+  > | null = null;
+  vi.spyOn(
+    conversationStateModule,
+    "createConversationStore",
+  ).mockImplementation(() => {
+    captured = createRealStore();
+    return captured;
+  });
+  return () => {
+    if (captured === null)
+      throw new Error("conversation store was not captured");
+    return captured;
+  };
 }
 
 async function preparePendingOlderTransition() {
@@ -994,6 +1016,142 @@ describe("RootShell — profile-scope ownership", () => {
     expect(client.stateUnsubscribes[0]).toHaveBeenCalledTimes(1);
     expect(client.close).toHaveBeenCalledTimes(1);
   });
+
+  it.each(["resolve", "reject"] as const)(
+    "invalidates an in-flight roster request before final-unmount %s settlement",
+    async (outcome) => {
+      const connect = createDeferred<unknown>();
+      const list = createDeferred<MethodTypes["thread/list"]["result"]>();
+      const thread = makeThread({
+        id: "thread-final-list",
+        ref: "ref-final-list",
+        name: "Late roster result",
+      });
+      const harness = renderProductionShell(
+        () => new ProductionClientFake(thread, { connect, list }),
+        { preseedConnection: true },
+      );
+      await act(async () => {
+        await harness.stores.connection.getState().refresh();
+      });
+      const client = harness.clients[0];
+      const scoped = harness.scopedServices[0];
+      if (client === undefined || scoped === undefined) {
+        throw new Error("missing final roster graph");
+      }
+      const refresh = vi.spyOn(scoped.rosterStore.getState(), "refresh");
+      await act(async () => {
+        connect.resolve({});
+        await connect.promise;
+      });
+      const refreshResult = refresh.mock.results[0]?.value;
+      if (!(refreshResult instanceof Promise)) {
+        throw new Error("missing in-flight roster refresh promise");
+      }
+      expect(scoped.rosterStore.getState().loading).toBe(true);
+
+      if (outcome === "resolve") {
+        list.resolve({ data: [thread] });
+      } else {
+        list.reject(new Error("controlled final roster rejection"));
+      }
+      harness.unmount();
+      await client.closed.promise;
+      await refreshResult;
+
+      expect(scoped.rosterStore.getState()).toMatchObject({
+        entries: [],
+        loading: false,
+        error: null,
+      });
+      expect(client.requests).toEqual([
+        { method: "thread/list", params: { limit: 501 } },
+      ]);
+      expect(client.notificationUnsubscribes[0]).toHaveBeenCalledTimes(1);
+      expect(client.stateUnsubscribes[0]).toHaveBeenCalledTimes(1);
+      expect(client.close).toHaveBeenCalledTimes(1);
+      expect(harness.container.childElementCount).toBe(0);
+    },
+  );
+
+  it.each(["resolve", "reject"] as const)(
+    "invalidates an in-flight conversation read before final-unmount %s settlement",
+    async (outcome) => {
+      const getConversationStore = captureNextConversationStore();
+      const connect = createDeferred<unknown>();
+      const list = createDeferred<MethodTypes["thread/list"]["result"]>();
+      const read = createDeferred<MethodTypes["thread/read"]["result"]>();
+      const thread = makeThread({
+        id: "thread-final-read",
+        ref: "ref-final-read",
+        name: "Late conversation result",
+      });
+      const harness = renderProductionShell(
+        () => new ProductionClientFake(thread, { connect, list, read }),
+        { preseedConnection: true },
+      );
+      await act(async () => {
+        await harness.stores.connection.getState().refresh();
+        connect.resolve({});
+        await connect.promise;
+        list.resolve({ data: [thread] });
+        await list.promise;
+      });
+      const client = harness.clients[0];
+      if (client === undefined) throw new Error("missing final read client");
+      const conversationStore = getConversationStore();
+      const openProjected = vi.spyOn(
+        conversationStore.getState(),
+        "openProjected",
+      );
+      fireEvent.click(
+        screen.getByRole("button", { name: /Late conversation result/i }),
+      );
+      const openResult = openProjected.mock.results[0]?.value;
+      if (!(openResult instanceof Promise)) {
+        throw new Error("missing in-flight conversation open promise");
+      }
+      expect(conversationStore.getState()).toMatchObject({
+        status: "opening",
+        ref: "ref-final-read",
+        conversation: null,
+        error: null,
+      });
+
+      if (outcome === "resolve") {
+        read.resolve({ thread });
+      } else {
+        read.reject(new Error("controlled final read rejection"));
+      }
+      harness.unmount();
+      await client.closed.promise;
+      await openResult;
+
+      expect(conversationStore.getState()).toMatchObject({
+        status: "idle",
+        ref: null,
+        conversation: null,
+        error: null,
+      });
+      expect(client.requests).toEqual([
+        { method: "thread/list", params: { limit: 501 } },
+        {
+          method: "thread/read",
+          params: {
+            ref: "ref-final-read",
+            includeTurns: true,
+            replaceSubscription: true,
+            subscribe: true,
+            turnLimit: 50,
+          },
+        },
+      ]);
+      expect(client.notificationUnsubscribes[0]).toHaveBeenCalledTimes(1);
+      expect(client.stateUnsubscribes[0]).toHaveBeenCalledTimes(1);
+      expect(client.close).toHaveBeenCalledTimes(1);
+      expect(harness.container.childElementCount).toBe(0);
+    },
+  );
 
   it("shows the fail-closed Loading boundary and ignores a late older-page success after every source resets", async () => {
     const scenario = await preparePendingOlderTransition();
