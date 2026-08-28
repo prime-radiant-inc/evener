@@ -9,6 +9,26 @@ import {
 } from "./appwireSocket";
 import type { TauriBridge, TauriChannel } from "./tauri";
 
+const INITIALIZE_RESULT = {
+  serverInfo: { name: "scripted-hub", version: "1.0.0" },
+  protocolVersion: "evener-appwire-v3",
+  sourceId: "scripted-source",
+  features: {
+    threadList: true,
+    threadTurnsList: true,
+    turnStart: true,
+    turnSteer: true,
+    threadClear: true,
+    threadShutdown: true,
+    forkFromTurn: true,
+    tasks: true,
+    transcriptList: true,
+    modelList: true,
+    directoryComplete: true,
+    auth: true,
+  },
+} as const;
+
 // ---------------------------------------------------------------------------
 // Fake TauriBridge — captures the event channel and scripts invoke results
 // ---------------------------------------------------------------------------
@@ -719,9 +739,7 @@ describe("appwireSocket — imported AppwireClient scripted Tauri integration", 
             if (frame.id !== undefined) {
               queueMicrotask(() => {
                 const result =
-                  frame.method === "initialize"
-                    ? { protocolVersion: "evener-appwire-v3" }
-                    : {};
+                  frame.method === "initialize" ? INITIALIZE_RESULT : {};
                 connection.channel.onmessage({
                   type: "text",
                   ...connection.identity,
