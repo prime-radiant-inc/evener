@@ -45,6 +45,10 @@ type turnCacheEntry struct {
 	// failedToolCalls memoizes FailedToolCallsFromFile's full-transcript
 	// failure count, on the same terms as usageTotal above.
 	failedToolCalls *failedToolCallsMemo
+	// derivedTotals memoizes DerivedTotalsFromFile's combined single-pass scan
+	// (usage sum and failure count together), on the same terms as usageTotal
+	// and failedToolCalls above.
+	derivedTotals *derivedTotalsMemo
 }
 
 // NewTurnCache returns a TurnCache bounded to a default number of transcripts.

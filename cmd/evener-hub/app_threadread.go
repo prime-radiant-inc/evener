@@ -32,8 +32,10 @@ func pastThreadForRead(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (
 	}
 	thread = attachPastThreadSkillCatalog(entry, thread)
 	// One thread, one transcript: this path can afford the full-transcript
-	// scans the per-entry list sweeps cannot (see stampDerivedSessionUsage).
-	return stampDerivedFailureCount(entry, stampDerivedSessionUsage(entry, thread)), true, nil
+	// scans the per-entry list sweeps cannot (see stampDerivedTotals).
+	// One combined scan answers both figures; two separate ones would read and
+	// decode the same immutable bytes twice.
+	return stampDerivedTotals(entry, thread), true, nil
 }
 
 func pastThreadReadResponse(cfg hubcore.WebConfig, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, bool, error) {
@@ -61,7 +63,7 @@ func pastThreadReadResponse(cfg hubcore.WebConfig, params appwire.ThreadReadPara
 	if err != nil {
 		return appwire.ThreadReadResponse{}, true, err
 	}
-	thread = stampDerivedFailureCount(entry, stampDerivedSessionUsage(entry, reconcileAndEnrichPastThread(entry, thread)))
+	thread = stampDerivedTotals(entry, reconcileAndEnrichPastThread(entry, thread))
 	return appwire.ThreadReadResponse{Thread: thread, OlderCursor: olderCursor}, true, nil
 }
 
@@ -357,7 +359,7 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 	// A meta without it leaves both absent HERE, because this function also
 	// runs once per entry on the list and transcript-target sweeps. The
 	// single-thread read paths recover the figure from the transcript instead —
-	// see stampDerivedSessionUsage.
+	// see stampDerivedTotals.
 	cumulativeUsage := evenerUsageFromCumulative(entry.Meta.CumulativeUsage)
 	thread := appwire.Thread{
 		ID:            entry.Meta.ID,
@@ -526,52 +528,68 @@ func windowedReadResponse(thread appwire.Thread, turnLimit int) appwire.ThreadRe
 // the whole transcript each page.
 var pastTranscriptCache = apptranscript.NewTurnCache()
 
-// stampDerivedSessionUsage fills in a session token total the meta does not
-// carry, by summing the session's own span of its FULL transcript.
+// stampDerivedTotals fills in a session token total the meta does not carry,
+// and the session's failed-tool-call count, by scanning the session's own span
+// of its FULL transcript ONCE.
 //
-// The gap is the common case, not an edge: agent/fork.go's writeForkChild builds
-// the child SessionMeta field by field and stamps no CumulativeUsage at all, so
-// every fork child arrives with the field unset, and evener.usage and evener.cost
-// both empty. The client can then only sum the turns it happens to hold, which
-// it must honestly label "tokens (loaded turns)". The transcript records
-// per-turn usage regardless, so summing it recovers the full-session figure —
-// and because it reads the whole file rather than the loaded window, the total
-// does not shrink with thread/read's turnLimit.
+// The usage gap is the common case, not an edge: agent/fork.go's writeForkChild
+// builds the child SessionMeta field by field and stamps no CumulativeUsage at
+// all, so every fork child arrives with the field unset, and evener.usage and
+// evener.cost both empty. The client can then only sum the turns it happens to
+// hold, which it must honestly label "tokens (loaded turns)". The transcript
+// records per-turn usage regardless, so summing it recovers the full-session
+// figure — and because it reads the whole file rather than the loaded window,
+// the total does not shrink with thread/read's turnLimit.
+//
+// The failure count is derived server-side because the client cannot derive it
+// honestly. A windowed thread/read hands the client a suffix of the session —
+// measured at about 47% of a long real session's document at load (kata hw2n) —
+// and a count over that suffix is a partial figure wearing a full-session
+// label. For failures that is worse than saying nothing: the harm the count
+// exists to fix is a reader concluding a run was clean because they had not yet
+// scrolled to the failure, and a "0 failed" computed from the loaded window
+// states exactly that conclusion in the session's own chrome.
 //
 // A fork child's transcript OPENS with a verbatim copy of the parent's prefix,
-// whose tokens the PARENT spent. DivergenceTurn marks where the child's own
-// history begins, and only that span is counted: charging the parent's spend to
-// the child would be fabrication.
+// whose tokens the PARENT spent and whose failures the PARENT made.
+// DivergenceTurn marks where the child's own history begins, and only that span
+// counts toward either figure: charging the parent's spend or failures to the
+// child would be fabrication.
 //
-// A present total is left alone: it is the daemon's own running count, and
-// re-deriving would invite a second, disagreeing figure.
+// A present usage total is left alone: it is the daemon's own running count, and
+// re-deriving would invite a second, disagreeing figure (the failure count is
+// still owed, so that case scans for failures alone).
 //
 // Applied only on the single-thread read paths. pastEntryThread also runs once
 // per entry on the thread-list and transcript-target sweeps, where a scan per
 // session would cost a read of every transcript in the state dir.
 //
-// A read error (a legacy format_version 1 transcript, a missing file) leaves the
-// total absent. "Unknown" is the honest report, the client already renders an
-// absent total as nothing rather than "↑0 ↓0", and a missing token figure is no
-// reason to fail the whole thread projection.
-func stampDerivedSessionUsage(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
+// A read error (a legacy format_version 1 transcript, a missing file) leaves
+// both figures absent. "Unknown" is the honest report, the client already
+// renders an absent total as nothing rather than "↑0 ↓0" and an absent count as
+// nothing rather than "clean", and a missing figure is no reason to fail the
+// whole thread projection.
+func stampDerivedTotals(entry hubcore.PastEntry, thread appwire.Thread) appwire.Thread {
 	if thread.Evener.Usage != nil {
+		return stampDerivedFailureCount(entry, thread)
+	}
+	total, failures, err := pastTranscriptCache.DerivedTotalsFromFile(pastTranscriptPath(entry), transcriptJSONLMaxLineBytes, entry.Meta.DivergenceTurn)
+	if err != nil {
 		return thread
 	}
-	total := derivedSessionUsage(entry)
-	if total == nil {
-		return thread
+	if total != nil {
+		thread.Evener.Usage = total
+		thread.Evener.Cost = appwire.EstimateCost(entry.Meta.Model, total)
 	}
-	thread.Evener.Usage = total
-	thread.Evener.Cost = appwire.EstimateCost(entry.Meta.Model, total)
+	thread.Evener.FailedToolCalls = &failures
 	return thread
 }
 
-// derivedSessionUsage is stampDerivedSessionUsage's sum, for the legacy web
-// surface that assembles its own WorkspaceData rather than an appwire.Thread.
-// Returns nil for an absent total, on the same terms.
-func derivedSessionUsage(entry hubcore.PastEntry) *appwire.EvenerUsage {
-	total, err := pastTranscriptCache.UsageTotalFromFile(pastTranscriptPath(entry), transcriptJSONLMaxLineBytes, entry.Meta.DivergenceTurn)
+// derivedWorkspaceUsage is stampDerivedTotals's usage-only view, for the legacy
+// web surface that assembles its own WorkspaceData rather than an appwire.Thread
+// and owes no failure count. Returns nil for an absent total, on the same terms.
+func derivedWorkspaceUsage(entry hubcore.PastEntry) *appwire.EvenerUsage {
+	total, _, err := pastTranscriptCache.DerivedTotalsFromFile(pastTranscriptPath(entry), transcriptJSONLMaxLineBytes, entry.Meta.DivergenceTurn)
 	if err != nil {
 		return nil
 	}
@@ -593,10 +611,10 @@ func derivedSessionUsage(entry hubcore.PastEntry) *appwire.EvenerUsage {
 // A fork child's transcript OPENS with a verbatim copy of the parent's prefix,
 // whose failures the PARENT made. DivergenceTurn marks where the child's own
 // history begins, and only that span is counted — the same attribution rule
-// stampDerivedSessionUsage applies to tokens.
+// stampDerivedTotals applies to tokens.
 //
 // Applied only on the single-thread read paths, for the reason
-// stampDerivedSessionUsage states: pastEntryThread also runs once per entry on
+// stampDerivedTotals states: pastEntryThread also runs once per entry on
 // the thread-list and transcript-target sweeps, where a scan per session costs a
 // read of every transcript in the state dir.
 //
