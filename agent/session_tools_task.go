@@ -42,11 +42,7 @@ func formatTaskList(tasks []taskpkg.Task) string {
 		return "No tasks."
 	}
 	var b strings.Builder
-	done := 0
 	for _, t := range tasks {
-		if t.Status == taskpkg.TaskDone {
-			done++
-		}
 		fmt.Fprintf(&b, "%d. [%s] %s — %s", t.ID, t.Status, t.Type, t.Description)
 		if len(t.DependsOn) > 0 {
 			parts := make([]string, len(t.DependsOn))
@@ -63,7 +59,8 @@ func formatTaskList(tasks []taskpkg.Task) string {
 			fmt.Fprintf(&b, "   note: %s\n", n)
 		}
 	}
-	fmt.Fprintf(&b, "\nProgress: %d/%d tasks complete.", done, len(tasks))
+	summary := taskpkg.Summarize(tasks)
+	fmt.Fprintf(&b, "\nProgress: %d/%d tasks complete.", summary.Done, summary.Total)
 	return b.String()
 }
 
@@ -168,7 +165,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				// message when the agent actually transitions one to
 				// in_progress, either manually or via auto-advance.
 				tasks := store.View()
-				taskUpdate := taskUpdatedData(tasks)
+				taskUpdate := taskUpdatedData(taskpkg.Summarize(tasks), "")
 				deps.emit(events.EventTaskUpdated, taskUpdate)
 				return tool.StateResult{
 					Output: fmt.Sprintf("Added %d task(s). Progress: %d/%d tasks complete.", len(added), taskUpdate.Done, taskUpdate.Total),
@@ -270,7 +267,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 				}
 
 				if !completedAny && manuallyStartedID == 0 {
-					deps.emit(events.EventTaskUpdated, taskUpdatedData(mutation.After))
+					deps.emit(events.EventTaskUpdated, taskUpdatedData(taskpkg.Summarize(mutation.After), ""))
 					return tool.StateResult{
 						Output: "Updated " + formatTaskUpdates(updates) + ".",
 						State:  taskToolStateSnapshot(mutation.After, inProgressUpdates, started),
@@ -315,7 +312,7 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 					}
 				}
 
-				taskUpdate := taskUpdatedData(finalTasks)
+				taskUpdate := taskUpdatedData(taskpkg.Summarize(finalTasks), "")
 				deps.emit(events.EventTaskUpdated, taskUpdate)
 				fmt.Fprintf(&msg, "Progress: %d/%d tasks complete.", taskUpdate.Done, taskUpdate.Total)
 				return tool.StateResult{Output: msg.String(), State: taskToolStateSnapshot(finalTasks, inProgressUpdates, started)}, nil
@@ -326,20 +323,24 @@ func registerTaskTools(reg *tool.Registry, deps *toolDeps) {
 	})
 }
 
-// taskUpdatedData derives the authoritative task progress and current task
-// from one post-mutation task snapshot. The first in-progress task is current,
-// matching the task store's list order.
-func taskUpdatedData(tasks []taskpkg.Task) events.TaskUpdatedData {
-	data := events.TaskUpdatedData{Total: len(tasks)}
-	for _, task := range tasks {
-		if task.Status == taskpkg.TaskDone {
-			data.Done++
-		}
-		if data.Current == nil && task.Status == taskpkg.TaskInProgress {
-			data.Current = &events.TaskSummaryData{ID: task.ID, Description: task.Description}
+// taskStateData is the single conversion from transport-neutral task semantics
+// to event task state, shared by start seeds and mutation carriers.
+func taskStateData(summary taskpkg.ListSummary) events.TaskStateData {
+	data := events.TaskStateData{Total: summary.Total, Done: summary.Done}
+	if summary.Current != nil {
+		data.Current = &events.TaskSummaryData{
+			ID:          summary.Current.ID,
+			Description: summary.Current.Description,
 		}
 	}
 	return data
+}
+
+func taskUpdatedData(summary taskpkg.ListSummary, taskStoreOwnerSessionID string) events.TaskUpdatedData {
+	return events.TaskUpdatedData{
+		TaskStateData:           taskStateData(summary),
+		TaskStoreOwnerSessionID: taskStoreOwnerSessionID,
+	}
 }
 
 func taskListAllDone(tasks []taskpkg.Task) bool {

@@ -149,12 +149,15 @@ func TestTaskTool_UpdateToInProgressEmitsTaskUpdated(t *testing.T) {
 }
 
 func TestTaskUpdatedDataUsesFirstInProgressTask(t *testing.T) {
-	data := taskUpdatedData([]taskpkg.Task{
+	data := taskUpdatedData(taskpkg.Summarize([]taskpkg.Task{
 		{ID: 1, Status: taskpkg.TaskDone},
 		{ID: 2, Status: taskpkg.TaskInProgress, Description: "first current task"},
 		{ID: 3, Status: taskpkg.TaskInProgress, Description: "later current task"},
-	})
+	}), "owner-session")
 	if data.Total != 3 || data.Done != 1 || data.Current == nil || data.Current.ID != 2 || data.Current.Description != "first current task" {
 		t.Fatalf("taskUpdatedData() = %+v", data)
+	}
+	if data.TaskStoreOwnerSessionID != "owner-session" {
+		t.Fatalf("taskUpdatedData() owner = %q, want owner-session", data.TaskStoreOwnerSessionID)
 	}
 }
