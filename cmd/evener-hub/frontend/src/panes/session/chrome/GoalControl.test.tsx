@@ -8,10 +8,10 @@ import type { ThreadModel } from "../../../protocol/model";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { ThreadCapabilities } from "../../../protocol/types.gen";
 import { connectionStore } from "../../../stores/connection";
-import { resetThreadsStoreForTests } from "../../../stores/threads";
+import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
-import { GoalControl, resetGoalOverridesForTests } from "./GoalControl";
+import { GoalControl } from "./GoalControl";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -136,7 +136,6 @@ beforeEach(() => {
   // earlier test in this file is still on screen, and an assertion that a
   // message is ABSENT matches the stale one instead.
   resetToastStoreForTests();
-  resetGoalOverridesForTests();
 });
 
 afterEach(() => {
@@ -219,7 +218,7 @@ test("disables Clear goal when the thread's goal capability is unavailable", asy
 
 // --- clearing a goal -----------------------------------------------------------
 
-test("Clear goal calls setGoal with an empty objective directly, no confirmation dialog", async () => {
+test("Clear goal commits through the threads store and display remains model-driven", async () => {
   const user = userEvent.setup();
   const fake = connectFakeClient();
   let called: unknown;
@@ -228,14 +227,21 @@ test("Clear goal calls setGoal with an empty objective directly, no confirmation
     return { started: false };
   });
 
-  render(<GoalControl sessionRef="ref_a" model={testModel({ goal: { status: "active", iterations: 4 } })} />);
+  const model = testModel({ goal: { objective: "ship focus sentence", status: "active", iterations: 4 } });
+  threadsStore.setState({ threads: new Map([["ref_a", model]]) });
+  const { rerender } = render(<GoalControl sessionRef="ref_a" model={model} />);
   const popover = await openGoalPopover(user);
   await user.click(within(popover).getByRole("button", { name: /clear goal/i }));
 
   await waitFor(() => expect(called).toEqual({ ref: "ref_a", objective: "" }));
   expect(screen.queryByRole("dialog")).toBeNull();
-  // Cleared: the optimistic override is null, so the chip is gone.
-  await waitFor(() => expect(screen.queryByRole("button", { name: /goal:/i })).toBeNull());
+  // GoalControl has no parallel override: the unchanged prop remains visible.
+  expect(screen.getByTestId("goal-chip-trigger")).toBeTruthy();
+  const committed = threadsStore.getState().threads.get("ref_a");
+  expect(committed?.goal).toBeNull();
+  if (!committed) throw new Error("tracked model disappeared");
+  rerender(<GoalControl sessionRef="ref_a" model={committed} />);
+  expect(screen.queryByRole("button", { name: /goal:/i })).toBeNull();
 });
 
 // --- dismissal (mirrors ModelSwitch.test.tsx's own Popover-dismissal tests,

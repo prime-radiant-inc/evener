@@ -116,6 +116,21 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 			},
 		},
 		{
+			name: "goal on GOAL_UPDATED",
+			move: func(e *stubThreadEnvelopeSource) {
+				e.goalObjective, e.goalStatus, e.goalIterations, e.goalSet = "ship focus sentence", "active", 1, true
+			},
+			event: events.SessionEvent{
+				Kind: events.EventGoalUpdated, SessionID: "th_1",
+				Data: events.GoalUpdatedData{Goal: &events.GoalStateData{Objective: "ship focus sentence", Status: "active", Iterations: 1}},
+			},
+			want: func(t *testing.T, thread appwire.Thread) {
+				if thread.Evener.Goal == nil || thread.Evener.Goal.Objective != "ship focus sentence" || thread.Evener.Goal.Status != "active" || thread.Evener.Goal.Iterations != 1 {
+					t.Fatalf("goal = %+v, want ship focus sentence/active/1", thread.Evener.Goal)
+				}
+			},
+		},
+		{
 			name: "escalations on SANDBOX_ESCALATION_REQUESTED",
 			move: func(e *stubThreadEnvelopeSource) {
 				e.escalations = []appwire.SandboxEscalationRequested{{EscalationID: "esc_1", DeniedPath: "/x"}}

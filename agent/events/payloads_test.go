@@ -28,6 +28,28 @@ func TestTaskUpdatedData_CurrentJSON(t *testing.T) {
 	}
 }
 
+func TestGoalUpdatedDataJSONPreservesExplicitClear(t *testing.T) {
+	set, err := json.Marshal(GoalUpdatedData{Goal: &GoalStateData{
+		Objective:  "ship focus sentence",
+		Status:     "active",
+		Iterations: 1,
+	}})
+	if err != nil {
+		t.Fatalf("marshal GoalUpdatedData with goal: %v", err)
+	}
+	if got, want := string(set), `{"goal":{"objective":"ship focus sentence","status":"active","iterations":1}}`; got != want {
+		t.Fatalf("GoalUpdatedData JSON = %s, want %s", got, want)
+	}
+
+	cleared, err := json.Marshal(GoalUpdatedData{Goal: nil})
+	if err != nil {
+		t.Fatalf("marshal GoalUpdatedData clear: %v", err)
+	}
+	if got, want := string(cleared), `{"goal":null}`; got != want {
+		t.Fatalf("GoalUpdatedData clear JSON = %s, want %s", got, want)
+	}
+}
+
 func TestJobFinishedData_ExhaustionMetadata(t *testing.T) {
 	t.Parallel()
 	resumable := false

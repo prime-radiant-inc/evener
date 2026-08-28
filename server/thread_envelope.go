@@ -222,9 +222,10 @@ var facetsByEvent = map[events.EventKind]envelopeFacet{
 	events.EventReasoningEffortChanged: facetReasoning,
 	events.EventVisionModelChanged:     facetVision,
 
-	// Goal state. Neither SetGoal nor Clear emits anything -- the goal store has
-	// no event handle at all -- so goal/set refreshes facetGoal at the handler
-	// (see handleAppGoalSet). These two cover the engine's own transitions.
+	// Goal state. GOAL_UPDATED is the direct structured carrier for every mutation.
+	// The older lifecycle events remain refresh triggers for compatibility with
+	// producers that predate the structured update.
+	events.EventGoalUpdated:      facetGoal,
 	events.EventGoalContinuation: facetGoal | facetQueue | facetAsk,
 	events.EventGoalEnded:        facetGoal,
 

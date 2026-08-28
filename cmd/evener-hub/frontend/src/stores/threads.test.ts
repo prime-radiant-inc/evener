@@ -3563,15 +3563,27 @@ describe("useThreadsStore session actions (setModel/setReasoningEffort/setGoal/r
     expect(call?.params).toEqual({ ref: "ref_a", reasoningEffort: "high" });
   });
 
-  test("setGoal sends goal/set with {ref, objective} and returns {started}", async () => {
+  test("setGoal sends goal/set and commits the successful result to the tracked model", async () => {
     const fake = connectFakeClient();
     fake.on("goal/set", () => ({ started: true }));
+
+    threadsStore.setState({
+      threads: new Map([["ref_a", hydrateThread(readResponse("ref_a"), "ref_a", 1000)]]),
+    });
 
     const result = await threadsStore.getState().setGoal("ref_a", "ship wave 5");
 
     const call = fake.calls.find((c) => c.method === "goal/set");
     expect(call?.params).toEqual({ ref: "ref_a", objective: "ship wave 5" });
     expect(result).toEqual({ started: true });
+    expect(threadsStore.getState().threads.get("ref_a")?.goal).toEqual({
+      objective: "ship wave 5",
+      status: "active",
+      iterations: 0,
+    });
+
+    await threadsStore.getState().setGoal("ref_a", "");
+    expect(threadsStore.getState().threads.get("ref_a")?.goal).toBeNull();
   });
 
   test("rename sends evener/thread/name/set with {ref, name}", async () => {

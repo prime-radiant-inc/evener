@@ -144,6 +144,7 @@ const (
 	NotifyEvenerThreadModelRetry      = "evener/thread/modelRetry"
 	NotifyEvenerThreadResync          = "evener/thread/resync"
 	NotifyEvenerTaskUpdated           = "evener/task/updated"
+	NotifyEvenerGoalUpdated           = "evener/goal/updated"
 	NotifyEvenerSteeringInjected      = "evener/steering/injected"
 	NotifyEvenerJobStarted            = "evener/job/started"
 	NotifyEvenerJobFinished           = "evener/job/finished"
@@ -698,6 +699,14 @@ type TaskUpdatedParams struct {
 	Total    int          `json:"total"`
 	Done     int          `json:"done"`
 	Current  *TaskSummary `json:"current,omitempty"`
+}
+
+// GoalUpdatedParams is the complete session goal state after a mutation. Goal
+// is deliberately not omitempty: nil explicitly clears a previously known goal.
+type GoalUpdatedParams struct {
+	ThreadID string     `json:"threadId"`
+	Ref      string     `json:"ref"`
+	Goal     *GoalState `json:"goal"`
 }
 
 // TurnCompletedParams is the payload of a turn/completed notification: the

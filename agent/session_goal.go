@@ -46,6 +46,7 @@ func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, 
 		return false, errors.New("goal objective must not be empty")
 	}
 	store := s.getOrCreateGoalStore()
+	s.goalUpdateMu.Lock()
 
 	// Set the goal and read the in-turn flag and pending-ask set under s.mu so
 	// the write is mutually exclusive with the gate's "clear flag + settle" step
@@ -60,6 +61,8 @@ func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, 
 	kick := s.kickFunc
 	pendingAsk := len(s.askPending) > 0
 	s.mu.Unlock()
+	s.emitCurrentGoalState()
+	s.goalUpdateMu.Unlock()
 
 	if inTurn || kick == nil || pendingAsk {
 		// A turn is running (its gate backs the goal), there is no way to kick an
@@ -76,9 +79,12 @@ func (s *Session) SetGoal(ctx context.Context, objective string) (started bool, 
 // extra unwanted continuation: the gate's terminal "clear flag + go idle" step
 // and this clear are mutually exclusive on s.mu (spec §7).
 func (s *Session) ClearGoal() {
+	s.goalUpdateMu.Lock()
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	s.getOrCreateGoalStore().Clear()
+	s.mu.Unlock()
+	s.emitCurrentGoalState()
+	s.goalUpdateMu.Unlock()
 }
 
 // GoalStatus reports the session's current /goal state for status surfaces (the
@@ -175,12 +181,15 @@ func (s *Session) callsMadeProgress(calls []llm.ToolCallData) bool {
 // runs until it is completed or the no-progress breaker fires. With no goal set
 // it is a no-op returning ("", false).
 func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string, bool) {
+	s.goalUpdateMu.Lock()
 	store := s.getOrCreateGoalStore()
 	snap, ok := store.Snapshot()
 	if !ok {
+		s.goalUpdateMu.Unlock()
 		return "", false // no goal
 	}
 	if snap.Status != goal.StatusActive {
+		s.goalUpdateMu.Unlock()
 		// Already terminal: update_goal complete/blocked set it this turn, or it
 		// finished on an earlier turn (a terminated goal lingers in the store until
 		// /goal clear, and the gate runs at every turn tail). reportGoalEnded emits
@@ -190,6 +199,7 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		return "", false
 	}
 	if !wasContinuation {
+		s.goalUpdateMu.Unlock()
 		// A user (or other non-continuation) turn completed while a goal is active:
 		// resume the goal, but do NOT fold the user's own turn into the no-progress
 		// streak or the iteration count — only the goal's own continuation turns
@@ -197,6 +207,8 @@ func (s *Session) armGoalContinuation(progressed, wasContinuation bool) (string,
 		return goal.Render(snap.Objective), true
 	}
 	snap, stillActive := store.RecordContinuation(progressed, s.sclock().Now())
+	s.emitGoalUpdated(snap)
+	s.goalUpdateMu.Unlock()
 	if !stillActive {
 		// The no-progress breaker fired this turn. Persist the terminal transition:
 		// it happens after processOneInput's defer-save, so without this a blocked
@@ -289,7 +301,7 @@ func (s *Session) terminateGoalOnError(ctx context.Context, err error) {
 		// persists terminal transitions (/par B3, surfaced once blocks are saved).
 		return
 	}
-	if store.SetTerminal(goal.StatusBlocked, err.Error(), s.sclock().Now()) {
+	if _, changed := s.setGoalTerminal(goal.StatusBlocked, err.Error()); changed {
 		s.reportGoalEnded()
 		// Persist the block: terminateGoalOnError runs after processOneInput's
 		// defer-save, so without this the goal is saved as still-active and would
@@ -322,4 +334,48 @@ func (s *Session) emitGoalEnded(snap goal.Snapshot) {
 		Reason:     snap.StopReason,
 		Iterations: snap.Iterations,
 	})
+}
+
+// goalStateData converts the internal goal snapshot into the public event
+// payload shared by every goal mutation boundary.
+func goalStateData(snap goal.Snapshot) events.GoalStateData {
+	return events.GoalStateData{
+		Objective:  snap.Objective,
+		Status:     string(snap.Status),
+		Iterations: snap.Iterations,
+	}
+}
+
+// emitGoalUpdated publishes one committed non-clear goal transition. Callers
+// invoke it only after the store mutation has released its own mutex.
+func (s *Session) emitGoalUpdated(snap goal.Snapshot) {
+	state := goalStateData(snap)
+	s.emit(events.EventGoalUpdated, events.GoalUpdatedData{Goal: &state})
+}
+
+// emitCurrentGoalState snapshots and publishes the current store state. A
+// missing snapshot deliberately carries a nil Goal so JSON encodes goal:null.
+// This helper must never be called while Session.mu is held because emit reads
+// session provenance through the same mutex.
+func (s *Session) emitCurrentGoalState() {
+	if snap, ok := s.getOrCreateGoalStore().Snapshot(); ok {
+		s.emitGoalUpdated(snap)
+		return
+	}
+	s.emit(events.EventGoalUpdated, events.GoalUpdatedData{Goal: nil})
+}
+
+// setGoalTerminal commits and announces a terminal transition as one ordered
+// unit. The goal store releases its own mutex before emission, and this helper
+// never takes Session.mu.
+func (s *Session) setGoalTerminal(status goal.Status, reason string) (goal.Snapshot, bool) {
+	s.goalUpdateMu.Lock()
+	defer s.goalUpdateMu.Unlock()
+	store := s.getOrCreateGoalStore()
+	if !store.SetTerminal(status, reason, s.sclock().Now()) {
+		return goal.Snapshot{}, false
+	}
+	snap, _ := store.Snapshot()
+	s.emitGoalUpdated(snap)
+	return snap, true
 }

@@ -450,6 +450,12 @@ export interface GoalState {
   iterations: number;
 }
 
+export interface GoalUpdatedParams {
+  threadId: string;
+  ref: string;
+  goal: GoalState | null;
+}
+
 export interface HarnessDescriptor {
   id: string;
   label: string;
@@ -2074,6 +2080,7 @@ export const NOTIFICATION_NAMES = [
   "evener/plugin/updated",
   "evener/thread/resync",
   "evener/task/updated",
+  "evener/goal/updated",
   "evener/sandbox/escalation/requested",
   "evener/sandbox/escalation/resolved",
   "evener/settings/transcriptDisplay/changed",
@@ -2246,6 +2253,7 @@ export interface NotificationTypes {
   "evener/plugin/updated": EmptyParams;
   "evener/thread/resync": ThreadResyncParams;
   "evener/task/updated": TaskUpdatedParams;
+  "evener/goal/updated": GoalUpdatedParams;
   "evener/sandbox/escalation/requested": SandboxEscalationRequested;
   "evener/sandbox/escalation/resolved": SandboxEscalationResolved;
   "evener/settings/transcriptDisplay/changed": TranscriptDisplayChangedParams;

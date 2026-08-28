@@ -162,6 +162,34 @@ function testHydrate(overrides: TestThreadOverrides = {}): ThreadModel {
   return hydrateThread({ thread }, thread.evener.ref, 1000);
 }
 
+test("evener/goal/updated replaces and explicitly clears model.goal", () => {
+  const initial = testHydrate({
+    evener: { goal: { objective: "old objective", status: "active", iterations: 3 } },
+  });
+  const updated = applyNotification(
+    initial,
+    {
+      method: "evener/goal/updated",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        goal: { objective: "ship focus sentence", status: "active", iterations: 1 },
+      },
+    },
+    2000,
+  );
+  expect(updated.goal).toEqual({ objective: "ship focus sentence", status: "active", iterations: 1 });
+  expect(updated.lastFrameAt).toBe(2000);
+
+  const cleared = applyNotification(
+    updated,
+    { method: "evener/goal/updated", params: { threadId: "thr_t", ref: "ref_t", goal: null } },
+    3000,
+  );
+  expect(cleared.goal).toBeNull();
+  expect(cleared.lastFrameAt).toBe(3000);
+});
+
 test("hydrateThread carries the snapshot plugin diagnostics into ThreadModel", () => {
   const model = testHydrate({
     evener: {

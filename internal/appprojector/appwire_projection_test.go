@@ -189,6 +189,39 @@ func TestProject_TaskUpdated(t *testing.T) {
 	}
 }
 
+func TestProject_GoalUpdated(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{
+		Kind: events.EventGoalUpdated,
+		Data: events.GoalUpdatedData{Goal: &events.GoalStateData{
+			Objective: "ship focus sentence", Status: "active", Iterations: 1,
+		}},
+	})
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerGoalUpdated {
+		t.Fatalf("want one evener/goal/updated notification, got %+v", out)
+	}
+	params, ok := out[0].Params.(appwire.GoalUpdatedParams)
+	if !ok || params.ThreadID != "th1" || params.Ref != "local:th1" || params.Goal == nil ||
+		params.Goal.Objective != "ship focus sentence" || params.Goal.Status != "active" || params.Goal.Iterations != 1 {
+		t.Fatalf("params = %+v, want active goal state", out[0].Params)
+	}
+}
+
+func TestProject_GoalUpdatedClear(t *testing.T) {
+	p := NewAppEventProjector("th1", "local:th1")
+	out := p.Project(events.SessionEvent{
+		Kind: events.EventGoalUpdated,
+		Data: events.GoalUpdatedData{Goal: nil},
+	})
+	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerGoalUpdated {
+		t.Fatalf("want one evener/goal/updated clear notification, got %+v", out)
+	}
+	params, ok := out[0].Params.(appwire.GoalUpdatedParams)
+	if !ok || params.ThreadID != "th1" || params.Ref != "local:th1" || params.Goal != nil {
+		t.Fatalf("params = %+v, want explicit nil goal", out[0].Params)
+	}
+}
+
 // A job lifecycle event projects ONE notification, not two. evener/job/started
 // already carries the (jobId, status) pair a jobs-panel client refetches on,
 // so a second lightweight notification at the same instant would duplicate a

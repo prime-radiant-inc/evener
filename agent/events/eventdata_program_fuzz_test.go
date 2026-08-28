@@ -121,6 +121,7 @@ func eventDataProgramCases(text string, n int, flag bool) []eventDataProgramCase
 		{ModelRetryData{Attempt: n, MaxAttempts: n, Message: text, Model: text}, EventModelRetry},
 		{GoalContinuationData{Text: text}, EventGoalContinuation},
 		{GoalEndedData{Status: text, Reason: text, Iterations: n}, EventGoalEnded},
+		{GoalUpdatedData{Goal: &GoalStateData{Objective: text, Status: text, Iterations: n}}, EventGoalUpdated},
 		{SandboxEscalationRequestedData{EscalationID: text, Mode: text, Tool: text, PartiallyRan: flag}, EventSandboxEscalationRequested},
 		{SandboxEscalationResolvedData{EscalationID: text}, EventSandboxEscalationResolved},
 	}

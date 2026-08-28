@@ -25,6 +25,8 @@ var notifyMethodsDeliberatelyIgnored = []string{
 	appwire.NotifyEvenerJobsTreeUpdated,
 	// Tasks render from fetchHubTasks, not from the push.
 	appwire.NotifyEvenerTaskUpdated,
+	// TUI goal status still comes from its own fetch/status surface.
+	appwire.NotifyEvenerGoalUpdated,
 	// The TUI surfaces escalation REQUESTS; a resolution simply removes the
 	// prompt it already cleared locally when the user answered.
 	appwire.NotifyEvenerSandboxEscalationResolved,

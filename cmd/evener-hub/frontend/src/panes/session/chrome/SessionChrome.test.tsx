@@ -23,7 +23,6 @@ import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../
 import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
 import "../../sessionPanels";
 import { ActivityPanelBody } from "./ActivityPanel";
-import { resetGoalOverridesForTests } from "./GoalControl";
 import { SessionChrome as SessionChromeView } from "./SessionChrome";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -155,7 +154,6 @@ beforeEach(() => {
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
   resetActivitySummaryStoreForTests();
-  resetGoalOverridesForTests();
   resetNavigationStoreForTests();
   resetTranscriptDisplayStoreForTests();
 });

@@ -49,6 +49,8 @@ func TestUpdateGoalTool_Complete(t *testing.T) {
 	if snap.Status != goal.StatusComplete {
 		t.Fatalf("status = %v, want complete", snap.Status)
 	}
+	assertGoalUpdatedMatchesStore(t, sess, nextGoalUpdated(t, sess))
+	assertNoGoalUpdated(t, sess)
 }
 
 func TestUpdateGoalTool_Blocked(t *testing.T) {
