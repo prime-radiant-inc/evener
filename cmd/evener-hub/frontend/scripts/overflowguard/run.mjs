@@ -1103,7 +1103,10 @@ async function main() {
       }
       if (
         !result.currentWork.found ||
+        !result.currentWork.composerCardFound ||
         !result.currentWork.controlsFound ||
+        !result.currentWork.controlsContained ||
+        !result.currentWork.controlsDoNotOverlap ||
         !result.currentWork.sharedPaneWithoutOverflow ||
         !result.currentWork.orderedAboveComposer
       ) {
