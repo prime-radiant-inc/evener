@@ -244,14 +244,19 @@ const refCounts = new Map<string, number>();
 // claims the ref. An ensure that fails after its pane lifecycle was retired
 // must not roll back a replacement lifecycle's claim.
 const ensureGenerations = new Map<string, number>();
-// A generation changes at every local goal request and every authoritative goal
-// notification. A request response may publish its derived local state only while
-// its generation is still current, so neither a later request nor a push that
-// arrived during the await can be overwritten by that delayed response. This is
-// independent of producer age: an older producer that sends no goal notification
-// leaves the request generation current and keeps the existing immediate local
-// commit behavior.
+// A generation changes at every local goal request and every accepted goal
+// authority (a matching notification or full hydration). A request response may
+// publish its derived local state only while its generation is still current, so
+// neither a later request nor accepted authoritative state that arrived during
+// the await can be overwritten by that delayed response. This is independent of
+// producer age: an older producer that sends no goal notification leaves the
+// request generation current and keeps the existing immediate local commit
+// behavior.
 const goalUpdateGenerations = new Map<string, number>();
+
+function invalidateGoalResponseFallback(ref: string): void {
+  goalUpdateGenerations.set(ref, (goalUpdateGenerations.get(ref) ?? 0) + 1);
+}
 const inflightHydrates = new Map<string, Promise<ThreadModel | null>>();
 const inflightHydrateClients = new Map<string, AppwireClientLike>();
 const inflightHydrateEpochs = new Map<string, number>();
@@ -981,6 +986,7 @@ function publishThreadHydration(ref: string, pending: PendingThreadHydration, mo
   const { model: hydrated, appliedAt } = replayHydrationNotifications(model, pending.notifications);
 
   pendingThreadHydrations.delete(ref);
+  invalidateGoalResponseFallback(ref);
   threadsStore.setState((s) => {
     const nextThreads = new Map(s.threads);
     nextThreads.set(ref, hydrated);
@@ -1057,29 +1063,27 @@ function applyToMap(
   n: AnyNotification,
   now: number,
   skippedRefs?: ReadonlySet<string>,
-): { next: Map<string, ThreadModel> | null; changedRefs: string[] } {
+): { next: Map<string, ThreadModel> | null; changedRefs: string[]; acceptedRefs: string[] } {
   let next: Map<string, ThreadModel> | null = null;
   const changedRefs: string[] = [];
+  const acceptedRefs: string[] = [];
   for (const [ref, model] of map) {
     if (skippedRefs?.has(ref)) continue;
     if (!notificationTargetsThread(n, model)) continue;
+    acceptedRefs.push(ref);
     const updated = applyNotification(model, n, now);
     if (updated === model) continue;
     next ??= new Map(map);
     next.set(ref, updated);
     changedRefs.push(ref);
   }
-  return { next, changedRefs };
+  return { next, changedRefs, acceptedRefs };
 }
 
 function handleNotification(n: AnyNotification): void {
   if (n.method === "evener/thread/resync") {
     if (wiredClient) void handleReady(wiredClient, readyEpoch, n.params.ref);
     return;
-  }
-  if (n.method === "evener/goal/updated") {
-    const ref = n.params.ref;
-    goalUpdateGenerations.set(ref, (goalUpdateGenerations.get(ref) ?? 0) + 1);
   }
   const mutationIdentities = notificationMutationIdentities(n);
   if (mutationIdentities.length > 0) {
@@ -1098,11 +1102,13 @@ function handleNotification(n: AnyNotification): void {
   }
   const now = Date.now();
   const { threads, frameTimes, watchedThreads } = threadsStore.getState();
+  const acceptedGoalRefs = new Set<string>();
   const pendingRefs = new Set<string>();
   for (const [ref, pending] of pendingThreadHydrations) {
     if (targetsPendingHydration(n, pending)) {
       bufferPendingNotification(pending, n);
       pendingRefs.add(ref);
+      if (n.method === "evener/goal/updated") acceptedGoalRefs.add(ref);
     } else if (notificationRef(n) === ref) {
       // Do not let a contradictory ref-targeted frame mutate the stale model
       // through applyToMap. It belongs to this subscription's identity space,
@@ -1115,12 +1121,27 @@ function handleNotification(n: AnyNotification): void {
     if (targetsPendingHydration(n, pending)) {
       bufferPendingNotification(pending, n);
       pendingWatchedRefs.add(ref);
+      if (n.method === "evener/goal/updated") acceptedGoalRefs.add(ref);
     } else if (notificationRef(n) === ref) {
       pendingWatchedRefs.add(ref);
     }
   }
-  const { next: nextThreads, changedRefs: changedThreads } = applyToMap(threads, n, now, pendingRefs);
-  const { next: nextWatchedThreads } = applyToMap(watchedThreads, n, now, pendingWatchedRefs);
+  const {
+    next: nextThreads,
+    changedRefs: changedThreads,
+    acceptedRefs: acceptedThreads,
+  } = applyToMap(threads, n, now, pendingRefs);
+  const { next: nextWatchedThreads, acceptedRefs: acceptedWatchedThreads } = applyToMap(
+    watchedThreads,
+    n,
+    now,
+    pendingWatchedRefs,
+  );
+  if (n.method === "evener/goal/updated") {
+    for (const ref of acceptedThreads) acceptedGoalRefs.add(ref);
+    for (const ref of acceptedWatchedThreads) acceptedGoalRefs.add(ref);
+    for (const ref of acceptedGoalRefs) invalidateGoalResponseFallback(ref);
+  }
   if (!nextThreads && !nextWatchedThreads) return;
 
   const patch: Partial<ThreadsStoreState> = {};
@@ -1145,6 +1166,7 @@ function storeWatchedModel(ref: string, model: ThreadModel, includeTurns: boolea
   const hydratedRich = watchHydratedIncludeTurns.get(ref) ?? false;
   if (!includeTurns && hydratedRich) return;
   watchHydratedIncludeTurns.set(ref, hydratedRich || includeTurns);
+  invalidateGoalResponseFallback(ref);
   threadsStore.setState((s) => ({ watchedThreads: new Map(s.watchedThreads).set(ref, model) }));
 }
 

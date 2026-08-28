@@ -22,7 +22,7 @@
 // never painted (live-verified). Popover portals the panel to document.body
 // at a position: fixed coordinate computed off the trigger's own
 // getBoundingClientRect(), so the clipping ancestor can't cut it off.
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { sessionActionError } from "../../../protocol/errors";
 import type { ThreadModel } from "../../../protocol/model";
 import { threadsStore } from "../../../stores/threads";
@@ -54,6 +54,14 @@ export function GoalControl({ sessionRef, model }: GoalControlProps) {
   const goal = model.goal;
   const [popoverOpen, setPopoverOpen] = useState(false);
   const canSetGoal = model.capabilities.goal;
+
+  // A different session and a goal presence transition are fresh transient-UI
+  // lifetimes. Keeping the dependency at presence (rather than goal identity)
+  // leaves an already-open popover visible through status/iteration updates.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: these are the deliberate popover reset boundaries
+  useEffect(() => {
+    setPopoverOpen(false);
+  }, [sessionRef, goal !== null]);
 
   async function handleClear() {
     try {
