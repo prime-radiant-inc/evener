@@ -12,6 +12,11 @@
  */
 
 import { rpcURLFromLocation } from "../../../cmd/evener-hub/frontend/src/protocol/transport";
+import type {
+  AnyNotification,
+  MethodName,
+  MethodTypes,
+} from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type { ConceptStorage } from "../live-concepts/live-ui-store";
 import type { NativeBridge } from "../native/client";
 import { createNativeBridge } from "../native/client";
@@ -37,10 +42,14 @@ import { createTauriNativeTransport } from "./production-transport";
 
 const CONCEPT_STORAGE_KEY = "evener.live-concept";
 
-export interface ProfileAppwireClient extends ConversationClientLike {
+export interface ProfileClientTransport extends ConversationClientLike {
   connect(): Promise<unknown>;
   close(): void;
   onStateChange(handler: (state: string) => void): () => void;
+}
+
+export interface ProfileAppwireClient extends ProfileClientTransport {
+  setActive(active: boolean): void;
 }
 
 export interface ProfileScopedServices {
@@ -53,7 +62,7 @@ export interface ProfileScopedServices {
 
 export type ProfileClientFactory = (
   profile: ProfileRedacted,
-) => ProfileAppwireClient;
+) => ProfileClientTransport;
 
 /**
  * Build all server-scoped services around one AppWire client. The client owns
@@ -65,7 +74,7 @@ export function createProfileScopedServices(
   profile: ProfileRedacted,
   createClient: ProfileClientFactory,
 ): ProfileScopedServices {
-  const client = createClient(profile);
+  const client = new LeaseAwareProfileClient(createClient(profile));
   return {
     client,
     rosterService: createRosterService(client),
@@ -73,6 +82,47 @@ export function createProfileScopedServices(
     newSessionService: createNewSessionService(client),
     conversationService: createConversationService(client),
   };
+}
+
+class LeaseAwareProfileClient implements ProfileAppwireClient {
+  private active = true;
+
+  constructor(private readonly transport: ProfileClientTransport) {}
+
+  setActive(active: boolean): void {
+    this.active = active;
+  }
+
+  request<M extends MethodName>(
+    method: M,
+    params: MethodTypes[M]["params"],
+    opts?: { timeoutMs?: number },
+  ): Promise<MethodTypes[M]["result"]> {
+    if (!this.active) {
+      return Promise.reject(new Error("profile scope is inactive"));
+    }
+    return this.transport.request(method, params, opts);
+  }
+
+  onNotification(handler: (notification: AnyNotification) => void): () => void {
+    return this.transport.onNotification((notification) => {
+      if (this.active) handler(notification);
+    });
+  }
+
+  connect(): Promise<unknown> {
+    return this.transport.connect();
+  }
+
+  close(): void {
+    this.transport.close();
+  }
+
+  onStateChange(handler: (state: string) => void): () => void {
+    return this.transport.onStateChange((state) => {
+      if (this.active) handler(state);
+    });
+  }
 }
 
 export interface ProductionServices {

@@ -14,6 +14,8 @@ import type {
   MethodTypes,
   Thread,
   ThreadCapabilities,
+  ThreadItem,
+  Turn,
 } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type { LiveConceptRendererProps } from "../live-concepts/contract";
 import { liveConceptRegistry } from "../live-concepts/registry";
@@ -25,7 +27,8 @@ import type { FakeProfileService } from "../test/fakeProfileService";
 import { createShellServices } from "./fixture-services";
 import {
   createProfileScopedServices,
-  type ProfileAppwireClient,
+  type ProfileClientTransport,
+  type ProfileScopedServices,
 } from "./production-services";
 import { RootShell } from "./RootShell";
 
@@ -115,7 +118,23 @@ function makeThread({
   };
 }
 
-class ProductionClientFake implements ProfileAppwireClient {
+function makeTextTurn(id: string, itemId: string, text: string): Turn {
+  return {
+    id,
+    itemsView: "default",
+    status: "completed",
+    items: [
+      {
+        id: itemId,
+        turnId: id,
+        type: "userMessage",
+        text,
+      } as ThreadItem,
+    ],
+  };
+}
+
+class ProductionClientFake implements ProfileClientTransport {
   readonly connect;
   readonly close;
   readonly closed = createDeferred<void>();
@@ -219,10 +238,13 @@ function renderProductionShell(
     activeProfileId: "p1",
   });
   const clients: ProductionClientFake[] = [];
+  const scopedServices: ProfileScopedServices[] = [];
   const createScoped = vi.fn((profile: ProfileRedacted) => {
     const client = makeClient(profile, clients.length);
     clients.push(client);
-    return createProfileScopedServices(profile, () => client);
+    const scoped = createProfileScopedServices(profile, () => client);
+    scopedServices.push(scoped);
+    return scoped;
   });
   const services = {
     ...base,
@@ -255,6 +277,7 @@ function renderProductionShell(
     services,
     stores,
     clients,
+    scopedServices,
     createScoped,
     rerenderShell: () =>
       rendered.rerender(
@@ -326,6 +349,147 @@ function VoiceRouteRenderer({
       Open canonical Voice
     </button>
   );
+}
+
+function LifecycleObservationRenderer({
+  state,
+  dispatch,
+}: LiveConceptRendererProps): ReactElement {
+  const rows = state.roster.groups.flatMap((group) => group.rows);
+  return (
+    <div
+      data-testid="lifecycle-observation"
+      data-surface={state.surface}
+      data-work-open={state.ui.workOpen ? "true" : "false"}
+      data-conversation={state.conversation === null ? "absent" : "present"}
+      data-activity={state.activity === null ? "absent" : "present"}
+      data-error={state.composer.error ?? ""}
+    >
+      {rows.map((row) => (
+        <button
+          key={row.key}
+          type="button"
+          onClick={() => dispatch({ type: "openConversation", key: row.key })}
+        >
+          Open {row.title}
+        </button>
+      ))}
+      {state.conversation?.items.map((item) => (
+        <p key={item.key}>{item.body}</p>
+      ))}
+      {state.conversation?.olderAvailable === true ? (
+        <button type="button" onClick={() => dispatch({ type: "loadOlder" })}>
+          Load controlled older
+        </button>
+      ) : null}
+      {state.conversation !== null && state.surface === "conversation" ? (
+        <button type="button" onClick={() => dispatch({ type: "openWork" })}>
+          Open controlled Work
+        </button>
+      ) : null}
+    </div>
+  );
+}
+
+function observeLoadingBoundary(): {
+  readonly seen: Promise<void>;
+  readonly disconnect: () => void;
+} {
+  let resolveSeen: () => void = () => {
+    throw new Error("loading observer was not initialized");
+  };
+  const seen = new Promise<void>((resolve) => {
+    resolveSeen = resolve;
+  });
+  const observer = new MutationObserver((records) => {
+    for (const record of records) {
+      for (const node of Array.from(record.addedNodes)) {
+        if (node.textContent?.includes("Loading…") === true) {
+          resolveSeen();
+          observer.disconnect();
+          return;
+        }
+      }
+    }
+  });
+  observer.observe(document.body, { childList: true, subtree: true });
+  return { seen, disconnect: () => observer.disconnect() };
+}
+
+async function preparePendingOlderTransition() {
+  const rendererSpy = vi
+    .spyOn(liveConceptRegistry.stillwater, "Renderer")
+    .mockImplementation(LifecycleObservationRenderer);
+  const threadA: Thread = {
+    ...makeThread({ id: "thread-a", ref: "ref-a", name: "Scope A" }),
+    turns: [
+      makeTextTurn("turn-current-a", "item-current-a", "Current A transcript"),
+    ],
+  };
+  const threadB = makeThread({ id: "thread-b", ref: "ref-b", name: "Scope B" });
+  const connectA = createDeferred<unknown>();
+  const listA = createDeferred<MethodTypes["thread/list"]["result"]>();
+  const readA = createDeferred<MethodTypes["thread/read"]["result"]>();
+  const turnsA = createDeferred<MethodTypes["thread/turns/list"]["result"]>();
+  const connectB = createDeferred<unknown>();
+  const listB = createDeferred<MethodTypes["thread/list"]["result"]>();
+  const harness = renderProductionShell(
+    (profile) =>
+      profile.id === "p1"
+        ? new ProductionClientFake(threadA, {
+            connect: connectA,
+            list: listA,
+            read: readA,
+            turns: turnsA,
+          })
+        : new ProductionClientFake(threadB, {
+            connect: connectB,
+            list: listB,
+          }),
+    { preseedConnection: true },
+  );
+  await act(async () => {
+    await harness.stores.connection.getState().refresh();
+    connectA.resolve({});
+    await connectA.promise;
+    listA.resolve({ data: [threadA] });
+    await listA.promise;
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Open Scope A" }));
+  await act(async () => {
+    readA.resolve({ thread: threadA, olderCursor: "older-a" });
+    await readA.promise;
+  });
+  expect(screen.getByText("Current A transcript")).toBeInTheDocument();
+  fireEvent.click(
+    screen.getByRole("button", { name: "Load controlled older" }),
+  );
+  const clientA = harness.clients[0];
+  const scopedA = harness.scopedServices[0];
+  if (clientA === undefined || scopedA === undefined) {
+    throw new Error("missing controlled A graph");
+  }
+  expect(clientA.requests).toContainEqual({
+    method: "thread/turns/list",
+    params: { ref: "ref-a", cursor: "older-a", limit: 50 },
+  });
+  fireEvent.click(screen.getByRole("button", { name: "Open controlled Work" }));
+  const observation = screen.getByTestId("lifecycle-observation");
+  expect(observation).toHaveAttribute("data-surface", "work");
+  expect(observation).toHaveAttribute("data-work-open", "true");
+  expect(observation).toHaveAttribute("data-activity", "present");
+
+  return {
+    harness,
+    threadA,
+    threadB,
+    turnsA,
+    connectB,
+    listB,
+    clientA,
+    scopedA,
+    rendererSpy,
+  };
 }
 
 describe("RootShell — three-tab bottom bar", () => {
@@ -768,6 +932,13 @@ describe("RootShell — profile-scope ownership", () => {
     if (client === undefined) throw new Error("missing StrictMode client");
     expect(client.connect).toHaveBeenCalledTimes(1);
     expect(client.close).not.toHaveBeenCalled();
+    const stateCallback = client.stateCallbacks[0];
+    if (stateCallback === undefined)
+      throw new Error("missing active state callback");
+    act(() => stateCallback("ready"));
+    expect(harness.stores.connection.getState().reachability.p1).toBe(
+      "reachable",
+    );
 
     harness.rerenderShell();
     expect(harness.createScoped).toHaveBeenCalledTimes(1);
@@ -785,6 +956,163 @@ describe("RootShell — profile-scope ownership", () => {
     expect(client.close).toHaveBeenCalledTimes(1);
     expect(client.notificationUnsubscribes[0]).toHaveBeenCalledTimes(1);
     expect(client.stateUnsubscribes[0]).toHaveBeenCalledTimes(1);
+  });
+
+  it("deactivates callbacks synchronously when unmounted before a pending connect reaction", async () => {
+    const connect = createDeferred<unknown>();
+    const harness = renderProductionShell(
+      () =>
+        new ProductionClientFake(
+          makeThread({ id: "thread-a", ref: "ref-a", name: "Late Alpha" }),
+          { connect },
+        ),
+      { preseedConnection: true },
+    );
+    await act(async () => {
+      await harness.stores.connection.getState().refresh();
+    });
+    const client = harness.clients[0];
+    if (client === undefined) throw new Error("missing pending client");
+    expect(harness.stores.connection.getState().reachability.p1).toBe(
+      "reconnecting",
+    );
+
+    connect.resolve({});
+    harness.unmount();
+    const stateCallback = client.stateCallbacks[0];
+    if (stateCallback === undefined)
+      throw new Error("missing captured state callback");
+    stateCallback("ready");
+    expect(harness.stores.connection.getState().reachability.p1).toBe(
+      "reconnecting",
+    );
+    expect(client.requests).toHaveLength(0);
+
+    await client.closed.promise;
+    expect(client.requests).toHaveLength(0);
+    expect(client.notificationUnsubscribes[0]).toHaveBeenCalledTimes(1);
+    expect(client.stateUnsubscribes[0]).toHaveBeenCalledTimes(1);
+    expect(client.close).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows the fail-closed Loading boundary and ignores a late older-page success after every source resets", async () => {
+    const scenario = await preparePendingOlderTransition();
+    const resetRoster = vi.spyOn(
+      scenario.scopedA.rosterStore.getState(),
+      "reset",
+    );
+    const renderCountBeforeTransition = scenario.rendererSpy.mock.calls.length;
+    const loading = observeLoadingBoundary();
+
+    act(() => {
+      scenario.harness.stores.connection.setState({
+        profiles: PROFILES,
+        activeProfileId: "p2",
+        generation: 1,
+        status: "ready",
+      });
+    });
+    await loading.seen;
+    loading.disconnect();
+
+    expect(resetRoster).toHaveBeenCalledTimes(1);
+    const observation = screen.getByTestId("lifecycle-observation");
+    expect(observation).toHaveAttribute("data-surface", "sessions");
+    expect(observation).toHaveAttribute("data-work-open", "false");
+    expect(observation).toHaveAttribute("data-conversation", "absent");
+    expect(observation).toHaveAttribute("data-activity", "absent");
+    expect(observation).toHaveAttribute("data-error", "");
+    expect(
+      scenario.harness.stores.navigation.getState().conversationStack,
+    ).toHaveLength(0);
+    expect(screen.queryByText("Current A transcript")).toBeNull();
+    expect(screen.queryByText("Scope B")).toBeNull();
+    const resetOrder = resetRoster.mock.invocationCallOrder[0];
+    const acceptedRenderOrder =
+      scenario.rendererSpy.mock.invocationCallOrder[
+        renderCountBeforeTransition
+      ];
+    const acceptedCall =
+      scenario.rendererSpy.mock.calls[renderCountBeforeTransition];
+    if (resetOrder === undefined || acceptedRenderOrder === undefined) {
+      throw new Error("missing reset/render ordering evidence");
+    }
+    if (acceptedCall === undefined) {
+      throw new Error("missing first accepted source render");
+    }
+    expect(resetOrder).toBeLessThan(acceptedRenderOrder);
+    const acceptedState = acceptedCall[0].state;
+    expect(acceptedState.surface).toBe("sessions");
+    expect(acceptedState.roster.groups).toEqual([]);
+    expect(acceptedState.conversation).toBeNull();
+    expect(acceptedState.activity).toBeNull();
+    expect(acceptedState.ui.workOpen).toBe(false);
+
+    const oldRequestCount = scenario.clientA.requests.length;
+    await act(async () => {
+      scenario.turnsA.resolve({
+        data: [
+          makeTextTurn(
+            "turn-older-a",
+            "item-older-a",
+            "Late older A transcript",
+          ),
+        ],
+      });
+      await scenario.turnsA.promise;
+    });
+    expect(scenario.clientA.requests).toHaveLength(oldRequestCount);
+    expect(screen.queryByText("Late older A transcript")).toBeNull();
+    expect(screen.getByTestId("lifecycle-observation")).toHaveAttribute(
+      "data-error",
+      "",
+    );
+
+    const clientB = scenario.harness.clients[1];
+    if (clientB === undefined) throw new Error("missing controlled B graph");
+    await act(async () => {
+      scenario.connectB.resolve({});
+      await scenario.connectB.promise;
+      scenario.listB.resolve({ data: [scenario.threadB] });
+      await scenario.listB.promise;
+    });
+    expect(
+      screen.getByRole("button", { name: "Open Scope B" }),
+    ).toBeInTheDocument();
+    expect(clientB.requests).toEqual([
+      { method: "thread/list", params: { limit: 501 } },
+    ]);
+  });
+
+  it("ignores a late older-page rejection after the profile transition", async () => {
+    const scenario = await preparePendingOlderTransition();
+    act(() => {
+      scenario.harness.stores.connection.setState({
+        profiles: PROFILES,
+        activeProfileId: "p2",
+        generation: 1,
+        status: "ready",
+      });
+    });
+    const oldRequestCount = scenario.clientA.requests.length;
+
+    await act(async () => {
+      scenario.turnsA.reject(
+        new Error("controlled stale older-page rejection"),
+      );
+      try {
+        await scenario.turnsA.promise;
+      } catch {}
+    });
+
+    expect(scenario.clientA.requests).toHaveLength(oldRequestCount);
+    const observation = screen.getByTestId("lifecycle-observation");
+    expect(observation).toHaveAttribute("data-surface", "sessions");
+    expect(observation).toHaveAttribute("data-conversation", "absent");
+    expect(observation).toHaveAttribute("data-activity", "absent");
+    expect(observation).toHaveAttribute("data-work-open", "false");
+    expect(observation).toHaveAttribute("data-error", "");
+    expect(screen.queryByText("Current A transcript")).toBeNull();
   });
 
   it("replaces a pending connect exactly once and ignores its late completion and callback", async () => {
