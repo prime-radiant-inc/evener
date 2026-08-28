@@ -9,7 +9,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync"
 	"testing"
 
@@ -52,7 +51,7 @@ func installDenyTransport(t *testing.T) *denyTransport {
 }
 
 // TestSandboxContainsMutatingHandlers is the B0 containment proof. It drives the
-// hub's MUTATING handlers — spawn, git-head, models, dir-create, an action verb
+// hub's MUTATING handlers — spawn, git-head, models, and an action verb
 // — through the full handler stack and asserts that none of them spawned a real
 // process, shelled out, hit the network, or created a file outside the sandbox.
 func TestSandboxContainsMutatingHandlers(t *testing.T) {
@@ -108,21 +107,7 @@ func TestSandboxContainsMutatingHandlers(t *testing.T) {
 		t.Fatalf("git/head did not use the seam: branch=%q want %q", gh.Branch, sandboxGitBranch)
 	}
 
-	// 3. dir-create: a path OUTSIDE the sandbox root is recorded but never made.
-	forbiddenRoot := t.TempDir() // outside s.Root
-	forbidden := filepath.Join(forbiddenRoot, "should-not-be-created", "deep")
-	rec = do(http.MethodPost, "/api/dirs/create", map[string]any{"path": forbidden})
-	if rec.Code != http.StatusOK {
-		t.Fatalf("dirs/create: want 200, got %d body=%s", rec.Code, rec.Body.String())
-	}
-	if _, err := os.Stat(forbidden); !os.IsNotExist(err) {
-		t.Fatalf("dir-create escaped the sandbox: %s exists on disk (err=%v)", forbidden, err)
-	}
-	if paths := s.Mkdir.Paths(); len(paths) != 1 || !strings.HasPrefix(paths[0], forbiddenRoot) {
-		t.Fatalf("dir-create did not reach the seam: recorded %v", paths)
-	}
-
-	// 5. action verb: clear on a non-live session resolves before any daemon
+	// 3. action verb: clear on a non-live session resolves before any daemon
 	// dial — a contained 404, not a hang or a network call.
 	rec = do(http.MethodPost, "/api/sessions/"+sandboxSessionID+"/clear", nil)
 	if rec.Code != http.StatusNotFound {

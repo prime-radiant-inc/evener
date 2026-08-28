@@ -235,6 +235,16 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
+		{"DirsCreate", MethodEvenerDirsCreate, `{"path":"/tmp/new"}`, DirsCreateResponse{Path: "/tmp/new", Created: true}, func(ctx context.Context, c *Client) error {
+			out, err := c.DirsCreate(ctx, DirsCreateParams{Path: "/tmp/new"})
+			if err != nil {
+				return err
+			}
+			if out.Path != "/tmp/new" || !out.Created {
+				return errors.New("DirsCreate decode mismatch")
+			}
+			return nil
+		}},
 		{"JobsList", MethodEvenerJobsList, `{"ref":"local:th"}`, JobsListResponse{Data: JobActivityTree{
 			Revision: 7,
 			Root: JobActivitySession{

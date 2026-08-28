@@ -1,6 +1,6 @@
 // preflight is the working-directory preflight seam (floor §1.13): validate
-// the cwd via appwire "evener/path/validate" and create it via REST
-// "POST /api/dirs/create" (no appwire method exists for creation - verified).
+// the cwd via appwire "evener/path/validate" and create it via appwire
+// "evener/dirs/create".
 // T1 defines the signatures + a minimal working body; T2 wires them into the
 // real submission flow and adds the "doesn't exist yet -> offer to create"
 // discrimination (the offer-create outcome + the in-form Create&start dialog,
@@ -37,21 +37,6 @@ export async function preflightDir(client: AppwireClientLike, path: string): Pro
   }
 }
 
-export async function createDir(path: string): Promise<void> {
-  const res = await fetch("/api/dirs/create", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "same-origin",
-    body: JSON.stringify({ path }),
-  });
-  if (!res.ok) {
-    let message = `HTTP ${res.status}`;
-    try {
-      const data = (await res.json()) as { error?: string };
-      if (data.error) message = data.error;
-    } catch {
-      // Non-JSON (or empty) error body: keep the HTTP status line.
-    }
-    throw new Error(message);
-  }
+export async function createDir(client: AppwireClientLike, path: string): Promise<void> {
+  await client.request("evener/dirs/create", { path });
 }

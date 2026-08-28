@@ -9781,6 +9781,7 @@ func TestHubRPCRegistersExpectedHandlerSet(t *testing.T) {
 		appwire.MethodEvenerJobsOutput,
 		appwire.MethodEvenerThreadTranscriptsList,
 		appwire.MethodEvenerPathsComplete,
+		appwire.MethodEvenerDirsCreate,
 		appwire.MethodEvenerProjectsRecent,
 		appwire.MethodEvenerPathValidate,
 		appwire.MethodEvenerHarnessesList,

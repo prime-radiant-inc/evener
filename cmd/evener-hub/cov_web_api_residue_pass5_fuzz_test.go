@@ -124,10 +124,6 @@ func FuzzWebAPIResiduePass5(f *testing.F) {
 		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIClear(w, r, "remote:live") }, "POST", "/", "")
 		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIModel(w, r, "remote:live") }, "POST", "/", `{"model":"/"}`)
 		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIReasoningEffort(w, r, "remote:live") }, "POST", "/", `{`)
-		call(web.handleAPIDirCreate, http.MethodGet, "/", "")
-		call(web.handleAPIDirCreate, "POST", "/", `{`)
-		call(web.handleAPIDirCreate, "POST", "/", `{"path":"~"}`)
-
 		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIRename(w, r, "ended") }, "POST", "/", `{"name":""}`)
 		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIRename(w, r, "ended") }, "POST", "/", `{"name":"new"}`)
 		web.refreshRenamedMeta("missing", "fallback")

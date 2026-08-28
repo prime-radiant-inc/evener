@@ -531,6 +531,12 @@ func (c *Client) PathsComplete(ctx context.Context, params PathsCompleteParams) 
 	return out, err
 }
 
+func (c *Client) DirsCreate(ctx context.Context, params DirsCreateParams) (DirsCreateResponse, error) {
+	var out DirsCreateResponse
+	err := c.request(ctx, MethodEvenerDirsCreate, params, &out)
+	return out, err
+}
+
 func (c *Client) ProjectsRecent(ctx context.Context, params ProjectsRecentParams) (ProjectsRecentResponse, error) {
 	var out ProjectsRecentResponse
 	err := c.request(ctx, MethodEvenerProjectsRecent, params, &out)

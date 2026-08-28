@@ -81,7 +81,7 @@ type WebConfig struct {
 	// shelling out, hitting the network, or mutating the real filesystem. These
 	// are the escapes a read-only harness cannot drive: the live-git probe
 	// (/api/git/head), the live-provider model query, and the directory creator
-	// (/api/dirs/create). See cmd/evener-hub's sandbox_test.go.
+	// (evener/dirs/create). See cmd/evener-hub's app_dirs_test.go.
 	GitHeadBranch func(ctx context.Context, dir string) (string, error) // nil → real `git`
 	LiveModels    func(ctx context.Context) []appwire.ModelDescriptor   // nil → real provider query
 	MkdirAll      func(path string, perm os.FileMode) error             // nil → os.MkdirAll

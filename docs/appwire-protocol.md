@@ -114,6 +114,7 @@ no router (reserved).
 | `evener/thread/transcripts/list` | hub | `ThreadTranscriptListParams` | `ThreadTranscriptListResponse` | Lists transcript targets (subagents/related threads) for a ref. |
 | `evener/subagentPreview` | hub | `EvenerSubagentPreviewParams` | `EvenerSubagentPreviewResponse` | Reads a bounded lazy preview of a subagent transcript's latest direct items. |
 | `evener/paths/complete` | hub | `PathsCompleteParams` | `PathsCompleteResponse` | Path autocompletion for a prefix. |
+| `evener/dirs/create` | hub | `DirsCreateParams` | `DirsCreateResponse` | Creates a missing working directory and its parents for Spawn preflight. |
 | `evener/projects/recent` | hub | `ProjectsRecentParams` | `ProjectsRecentResponse` | Lists the most recently used project working directories (session creation path-dropdown options; default cap 15). |
 | `evener/path/validate` | hub | `PathValidateParams` | `PathValidateResponse` | Validates a launch path. |
 | `evener/navigation/read` | hub | `NavigationReadParams` | `NavigationReadResponse` | Reads one bounded, revisioned hub navigation resource, optionally conditional on its ETag. |
@@ -379,6 +380,21 @@ An embedded type contributes its own fields inline.
 | Field | Go type | Omitempty | Embedded |
 |-------|---------|-----------|----------|
 | `commands` | `[]appwire.CommandDescriptor` |  |  |
+
+
+### `DirsCreateParams`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `path` | `string` |  |  |
+
+
+### `DirsCreateResponse`
+
+| Field | Go type | Omitempty | Embedded |
+|-------|---------|-----------|----------|
+| `path` | `string` |  |  |
+| `created` | `bool` |  |  |
 
 
 ### `EmptyParams`

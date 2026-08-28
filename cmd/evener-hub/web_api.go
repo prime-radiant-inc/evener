@@ -19,7 +19,6 @@ import (
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/buildinfo"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubedge"
-	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/hubapi"
 )
 
@@ -419,56 +418,6 @@ func (s *WebServer) handleAPIReasoningEffort(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// handleAPIDirCreate creates a directory (and any missing parents) at an
-// absolute path, so the spawn flow can offer to create a proposed working
-// directory that does not exist yet. POST {"path": "..."}. Idempotent: an
-// existing directory succeeds (created:false); a file at that path is a
-// conflict. The hub already grants the user full filesystem reach for spawning,
-// so creating a directory they are about to launch into adds no new authority.
-func (s *WebServer) handleAPIDirCreate(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
-		writeAPIError(w, http.StatusMethodNotAllowed, "POST required")
-		return
-	}
-	var body struct {
-		Path string `json:"path"`
-	}
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeAPIError(w, http.StatusBadRequest, "invalid JSON body")
-		return
-	}
-	path := strings.TrimSpace(body.Path)
-	if path == "" {
-		writeAPIError(w, http.StatusBadRequest, "path is required")
-		return
-	}
-	if strings.HasPrefix(path, "~/") || path == "~" {
-		path = filepath.Join(envvars.Home.Getenv(), strings.TrimPrefix(path, "~"))
-	}
-	if !filepath.IsAbs(path) {
-		writeAPIError(w, http.StatusBadRequest, "absolute path required")
-		return
-	}
-	path = filepath.Clean(path)
-	if info, err := os.Stat(path); err == nil {
-		if !info.IsDir() {
-			writeAPIError(w, http.StatusConflict, "a file already exists at that path")
-			return
-		}
-		writeAPIJSON(w, http.StatusOK, map[string]any{"path": path, "created": false})
-		return
-	}
-	mkdirAll := os.MkdirAll
-	if s.cfg.MkdirAll != nil {
-		mkdirAll = s.cfg.MkdirAll
-	}
-	if err := mkdirAll(path, 0o755); err != nil {
-		writeAPIError(w, http.StatusInternalServerError, err.Error())
-		return
-	}
-	writeAPIJSON(w, http.StatusOK, map[string]any{"path": path, "created": true})
 }
 
 // gitHeadBranch runs `git rev-parse --abbrev-ref HEAD` in dir and returns

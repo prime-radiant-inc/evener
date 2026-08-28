@@ -99,35 +99,8 @@ func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
 		call(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}")), "missing")
 	}
 
-	// Directory listing and creation remain inside a temp root.
+	// Filesystem-backed API probes remain inside a temp root.
 	root := t.TempDir()
-	t.Setenv("HOME", root)
-	for _, name := range []string{"alpha", "Beta", ".hidden"} {
-		if err := os.Mkdir(filepath.Join(root, name), 0o755); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.Mkdir(filepath.Join(root, "alpha", ".git"), 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.WriteFile(filepath.Join(root, "file"), []byte("x"), 0o644); err != nil {
-		t.Fatal(err)
-	}
-	for _, target := range []string{} {
-		_ = covWebRequest(t, web, http.MethodGet, target, "")
-	}
-	for _, tc := range []struct{ method, body string }{
-		{http.MethodGet, ""}, {http.MethodPost, "{"}, {http.MethodPost, `{}`},
-		{http.MethodPost, `{"path":"relative"}`}, {http.MethodPost, `{"path":"~"}`},
-		{http.MethodPost, `{"path":"` + root + `/file"}`},
-		{http.MethodPost, `{"path":"` + root + `/created"}`},
-		{http.MethodPost, `{"path":"` + root + `/created"}`},
-	} {
-		_ = covWebRequest(t, web, tc.method, "/api/dirs/create", tc.body)
-	}
-
-	failWeb := NewWebServer(hubcore.WebConfig{MkdirAll: func(string, os.FileMode) error { return errors.New("mkdir failed") }})
-	_ = covWebRequest(t, failWeb, http.MethodPost, "/api/dirs/create", `{"path":"`+root+`/fail"}`)
 	gitWeb := NewWebServer(hubcore.WebConfig{GitHeadBranch: func(context.Context, string) (string, error) { return "branch", nil }})
 	_ = covWebRequest(t, gitWeb, http.MethodGet, "/api/git/head?cwd="+root, "")
 	gitWeb.cfg.GitHeadBranch = func(context.Context, string) (string, error) { return "", errors.New("git failed") }

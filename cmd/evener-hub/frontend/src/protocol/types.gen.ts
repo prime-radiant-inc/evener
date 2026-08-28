@@ -157,6 +157,15 @@ export interface DiagnosticCause {
   status?: number;
 }
 
+export interface DirsCreateParams {
+  path: string;
+}
+
+export interface DirsCreateResponse {
+  path: string;
+  created: boolean;
+}
+
 export interface EmptyParams {
 }
 
@@ -1754,6 +1763,7 @@ export const METHOD_NAMES = [
   "evener/thread/transcripts/list",
   "evener/subagentPreview",
   "evener/paths/complete",
+  "evener/dirs/create",
   "evener/projects/recent",
   "evener/path/validate",
   "evener/navigation/read",
@@ -1912,6 +1922,7 @@ export interface MethodTypes {
   "evener/thread/transcripts/list": { params: ThreadTranscriptListParams; result: ThreadTranscriptListResponse };
   "evener/subagentPreview": { params: EvenerSubagentPreviewParams; result: EvenerSubagentPreviewResponse };
   "evener/paths/complete": { params: PathsCompleteParams; result: PathsCompleteResponse };
+  "evener/dirs/create": { params: DirsCreateParams; result: DirsCreateResponse };
   "evener/projects/recent": { params: ProjectsRecentParams; result: ProjectsRecentResponse };
   "evener/path/validate": { params: PathValidateParams; result: PathValidateResponse };
   "evener/navigation/read": { params: NavigationReadParams; result: NavigationReadResponse };
