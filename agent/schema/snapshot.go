@@ -217,12 +217,11 @@ type SessionMeta struct {
 	// longer exists lands the session here instead, with a notice.
 	WorktreeRestoreRoot string `json:"worktree_restore_root,omitempty"`
 	// CumulativeUsage carries the session's running self-only token totals so
-	// they survive restart/resume. omitzero: legacy metas without it round-trip
-	// unchanged (WS2 working-state-metrics).
+	// they survive restart/resume.
 	CumulativeUsage CumulativeUsage `json:"cumulative_usage,omitzero"`
 	// WorkMillis is the accumulated wall-clock work time (sum of every turn's
 	// duration, interrupted and failed included), persisted so the total
-	// survives restart/resume. omitzero for legacy round-trip.
+	// survives restart/resume.
 	WorkMillis int64 `json:"work_millis,omitzero"`
 	// JobTreeRootSessionID identifies the root session whose shared job/activity
 	// lifecycle revision this session participates in. For standalone/root
@@ -240,7 +239,7 @@ type SessionMeta struct {
 // CumulativeUsage is a deliberately lossy snapshot of an llm.Usage kept in
 // SessionMeta so per-session token totals survive daemon restart and resume.
 // Conversion from llm.Usage drops Raw and the reasoning/cache-write pointers;
-// nil pointers map to 0. Tagged omitzero so legacy metas round-trip untouched.
+// nil pointers map to 0.
 type CumulativeUsage struct {
 	InputTokens     int64 `json:"input_tokens,omitzero"`
 	OutputTokens    int64 `json:"output_tokens,omitzero"`
@@ -263,28 +262,9 @@ type GoalSnapshot struct {
 	UpdatedAt        time.Time `json:"updated_at,omitzero"`
 }
 
-// UnmarshalJSON decodes a SessionMeta from JSON, falling back to the legacy
-// "original_task" field for OriginalPrompt when the current "original_prompt"
-// field is empty or absent.
-func (m *SessionMeta) UnmarshalJSON(data []byte) error {
-	type sessionMetaAlias SessionMeta
-	var aux struct {
-		sessionMetaAlias
-		LegacyOriginalPrompt string `json:"original_task,omitempty"`
-	}
-	if err := json.Unmarshal(data, &aux); err != nil {
-		return err
-	}
-	*m = SessionMeta(aux.sessionMetaAlias)
-	if m.OriginalPrompt == "" {
-		m.OriginalPrompt = aux.LegacyOriginalPrompt
-	}
-	return nil
-}
-
 // SessionDisplayName returns the best available human-readable title for a
-// session. Generated names are preferred, with OriginalPrompt retained as the
-// backward-compatible fallback for sessions written before naming existed.
+// session: the generated name if set, otherwise the original prompt, falling
+// back to the session ID.
 func SessionDisplayName(meta SessionMeta) string {
 	if name := strings.TrimSpace(meta.Name); name != "" {
 		return name

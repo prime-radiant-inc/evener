@@ -664,18 +664,6 @@ func TestSessionDisplayName(t *testing.T) {
 	}
 }
 
-func TestSessionMeta_OriginalPrompt_ReadsLegacyOriginalTask(t *testing.T) {
-	t.Parallel()
-	data := []byte(`{"id":"01TEST0001","original_task":"fix the bug in handler"}`)
-	var got schema.SessionMeta
-	if err := json.Unmarshal(data, &got); err != nil {
-		t.Fatalf("unmarshal: %v", err)
-	}
-	if got.OriginalPrompt != "fix the bug in handler" {
-		t.Fatalf("OriginalPrompt: got %q, want %q", got.OriginalPrompt, "fix the bug in handler")
-	}
-}
-
 func TestSessionMeta_OriginalPrompt_OmitEmpty(t *testing.T) {
 	t.Parallel()
 	meta := schema.SessionMeta{ID: "01TEST0001"}
