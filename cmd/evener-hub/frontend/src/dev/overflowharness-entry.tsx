@@ -22,6 +22,7 @@ import "../panes/sessionPanels";
 import { hydrateThread } from "../protocol/reducer";
 import { FakeClient } from "../protocol/testing/fakeClient";
 import type { ThreadCapabilities, ThreadReadResponse } from "../protocol/types.gen";
+import { ClientProvider } from "../shell/clientContext";
 import { DockHost } from "../shell/DockHost";
 import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
@@ -236,22 +237,28 @@ document.body.style.background = "var(--surface-0)";
 
 if (settingsMode) {
   createRoot(rootEl).render(
-    <div id="oh-pane" style={{ width, height: 900 }}>
-      <Settings params={{ section: "transcript" }} paneId="oh-settings" focused />
-    </div>,
+    <ClientProvider client={fake}>
+      <div id="oh-pane" style={{ width, height: 900 }}>
+        <Settings params={{ section: "transcript" }} paneId="oh-settings" focused />
+      </div>
+    </ClientProvider>,
   );
 } else if (params.get("panels") === "1") {
   workspaceStore.getState().openPane("session", { ref: REF });
   createRoot(rootEl).render(
-    <div id="oh-pane" style={{ width, height: 900 }}>
-      <DockHost />
-    </div>,
+    <ClientProvider client={fake}>
+      <div id="oh-pane" style={{ width, height: 900 }}>
+        <DockHost />
+      </div>
+    </ClientProvider>,
   );
 } else {
   createRoot(rootEl).render(
-    <div id="oh-pane" style={{ width, height: 900 }}>
-      <Session params={{ ref: REF }} paneId="oh" focused />
-    </div>,
+    <ClientProvider client={fake}>
+      <div id="oh-pane" style={{ width, height: 900 }}>
+        <Session params={{ ref: REF }} paneId="oh" focused />
+      </div>
+    </ClientProvider>,
   );
 }
 
