@@ -119,7 +119,7 @@ func exerciseResidualCallbacks(s *residualServeServer, sessionID string) {
 	_ = s.envelopeSource.DetailedStatus()
 	_, _ = s.envelopeSource.ClientMutationProjection()
 	_ = s.envelopeSource.TaskAggregate()
-	_, _, _ = s.envelopeSource.GoalStatus()
+	_, _, _, _ = s.envelopeSource.GoalStatus()
 	_, _, _ = s.envelopeSource.WorkMetrics()
 	_, _ = s.envelopeSource.FailedToolCalls()
 	_ = s.envelopeSource.AskPending()

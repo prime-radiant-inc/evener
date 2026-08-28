@@ -173,7 +173,7 @@ func sclRun(t *testing.T, p sclProgram) sclTrace {
 	}
 
 	goalSteering := sclCountSteeringContaining(history, sclGoalObjective)
-	status, _, goalPresent := sess.GoalStatus()
+	_, status, _, goalPresent := sess.GoalStatus()
 	if p.withGoal {
 		if !goalPresent || status != "active" {
 			t.Fatalf("compaction changed active goal: present=%v status=%q", goalPresent, status)

@@ -377,6 +377,7 @@ func pastEntryThread(cfg hubcore.WebConfig, entry hubcore.PastEntry, includeTurn
 			Kind:         kind,
 			Profile:      entry.Meta.ProfileID,
 			Tasks:        persistedTaskAggregate(entry.StateDir, entry.Meta.ID),
+			Goal:         persistedGoalState(entry.Meta.Goal),
 			Capabilities: pastThreadCapabilities(),
 			WorkMillis:   entry.Meta.WorkMillis,
 			Usage:        cumulativeUsage,
@@ -497,12 +498,24 @@ func persistedTaskAggregate(stateDir, sessionID string) *appwire.TaskAggregate {
 	}
 	items := tasks.View()
 	done := 0
+	aggregate := &appwire.TaskAggregate{Total: len(items)}
 	for _, task := range items {
 		if task.Status == taskpkg.TaskDone {
 			done++
 		}
+		if aggregate.Current == nil && task.Status == taskpkg.TaskInProgress {
+			aggregate.Current = &appwire.TaskSummary{ID: task.ID, Description: task.Description}
+		}
 	}
-	return &appwire.TaskAggregate{Total: len(items), Done: done}
+	aggregate.Done = done
+	return aggregate
+}
+
+func persistedGoalState(goal *schema.GoalSnapshot) *appwire.GoalState {
+	if goal == nil {
+		return nil
+	}
+	return &appwire.GoalState{Objective: goal.Objective, Status: goal.Status, Iterations: goal.Iterations}
 }
 
 // windowedReadResponse bounds a thread's turns to the latest TurnLimit for a

@@ -326,6 +326,28 @@ func TestThreadEnvelopeFacetsRefreshOnTheEventsThatMoveThem(t *testing.T) {
 	}
 }
 
+func TestThreadEnvelopeProjectsCurrentTaskAndGoalObjective(t *testing.T) {
+	srv := NewServer(ServerConfig{})
+	srv.SetAppIdentity("local", "th_1")
+	source := &stubThreadEnvelopeSource{}
+	source.tasks = &appwire.TaskAggregate{
+		Total:   2,
+		Current: &appwire.TaskSummary{ID: 2, Description: "wire current work"},
+	}
+	source.goalObjective = "wire goal objective"
+	source.goalStatus = "active"
+	source.goalSet = true
+	publishEnvelope(srv, source)
+
+	thread := readThreadOverWire(t, srv, "local:th_1")
+	if thread.Evener.Tasks == nil || thread.Evener.Tasks.Current == nil || thread.Evener.Tasks.Current.ID != 2 || thread.Evener.Tasks.Current.Description != "wire current work" {
+		t.Fatalf("thread.Evener.Tasks.Current = %+v, want task 2", thread.Evener.Tasks)
+	}
+	if thread.Evener.Goal == nil || thread.Evener.Goal.Objective != "wire goal objective" {
+		t.Fatalf("thread.Evener.Goal = %+v, want objective", thread.Evener.Goal)
+	}
+}
+
 // TestThreadReadUnderTheCutReachesNoSession is the structural claim, asserted
 // behaviorally: a subscribing thread/read touches the materialized envelope and
 // nothing else.
@@ -590,8 +612,11 @@ func (c *countingThreadEnvelopeSource) SessionMeta() schema.SessionMeta {
 	c.hit()
 	return schema.SessionMeta{}
 }
-func (c *countingThreadEnvelopeSource) GoalStatus() (string, int, bool) { c.hit(); return "", 0, false }
-func (c *countingThreadEnvelopeSource) FailedToolCalls() (int, bool)    { c.hit(); return 0, false }
+func (c *countingThreadEnvelopeSource) GoalStatus() (string, string, int, bool) {
+	c.hit()
+	return "", "", 0, false
+}
+func (c *countingThreadEnvelopeSource) FailedToolCalls() (int, bool) { c.hit(); return 0, false }
 func (c *countingThreadEnvelopeSource) ReasoningInfo() (string, []string, bool) {
 	c.hit()
 	return "", nil, false

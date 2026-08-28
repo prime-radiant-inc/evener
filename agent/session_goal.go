@@ -86,12 +86,12 @@ func (s *Session) ClearGoal() {
 // set. It returns primitives rather than the internal goal.Snapshot so callers
 // outside the agent module (which cannot import agent/internal/goal) can consume
 // it.
-func (s *Session) GoalStatus() (status string, iterations int, ok bool) {
+func (s *Session) GoalStatus() (objective, status string, iterations int, ok bool) {
 	snap, ok := s.getOrCreateGoalStore().Snapshot()
 	if !ok {
-		return "", 0, false
+		return "", "", 0, false
 	}
-	return string(snap.Status), snap.Iterations, true
+	return snap.Objective, string(snap.Status), snap.Iterations, true
 }
 
 // goalCompactionSteering returns the active goal's rendered objective as a
