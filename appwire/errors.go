@@ -14,6 +14,7 @@ type ErrorInfo string
 
 const (
 	ErrorInvalidParams          ErrorInfo = "invalidParams"
+	ErrorResourceNotFound       ErrorInfo = "resourceNotFound"
 	ErrorMethodNotFound         ErrorInfo = "methodNotFound"
 	ErrorProviderUnavailable    ErrorInfo = "providerUnavailable"
 	ErrorSessionUnavailable     ErrorInfo = "sessionUnavailable"
@@ -64,6 +65,14 @@ func InvalidParams(message string) WireError {
 		Code:    CodeInvalidParams,
 		Message: message,
 		Data:    ErrorData{EvenerErrorInfo: ErrorInvalidParams},
+	}
+}
+
+func ResourceNotFound(message string) WireError {
+	return WireError{
+		Code:    CodeInvalidParams,
+		Message: message,
+		Data:    ErrorData{EvenerErrorInfo: ErrorResourceNotFound},
 	}
 }
 

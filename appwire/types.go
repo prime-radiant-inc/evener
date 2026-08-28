@@ -62,6 +62,10 @@ const (
 	MethodEvenerArchiveSet            = "evener/archive/set"
 	MethodEvenerProjectDelete         = "evener/project/delete"
 	MethodEvenerSessionDelete         = "evener/session/delete"
+	MethodEvenerPinSectionRename      = "evener/pin-section/rename"
+	MethodEvenerPinSectionDelete      = "evener/pin-section/delete"
+	MethodEvenerSessionPinAssign      = "evener/session-pin/assign"
+	MethodEvenerSessionPinUnpin       = "evener/session-pin/unpin"
 	MethodEvenerSearch                = "evener/search"
 	MethodEvenerHarnessesList         = "evener/harnesses/list"
 	MethodEvenerUpgrade               = "evener/upgrade"
@@ -353,6 +357,58 @@ type SessionDeleteResponse struct {
 	Deleted    []string           `json:"deleted"`
 	Skipped    []DeletionSkip     `json:"skipped"`
 	Navigation NavigationMutation `json:"navigation"`
+}
+
+// PinSection is one named navigation group and its current durable membership.
+type PinSection struct {
+	ID          string `json:"id"`
+	Name        string `json:"name"`
+	MemberCount int    `json:"member_count"`
+}
+
+type PinSectionRenameParams struct {
+	SectionID string `json:"section_id"`
+	Name      string `json:"name"`
+}
+
+type PinSectionRenameResponse struct {
+	OK         bool               `json:"ok"`
+	Changed    bool               `json:"changed"`
+	Section    PinSection         `json:"section"`
+	Navigation NavigationMutation `json:"navigation"`
+}
+
+type PinSectionDeleteParams struct {
+	SectionID string `json:"section_id"`
+}
+
+type PinSectionDeleteResponse struct {
+	OK          bool               `json:"ok"`
+	Changed     bool               `json:"changed"`
+	MemberCount int                `json:"member_count"`
+	Navigation  NavigationMutation `json:"navigation"`
+}
+
+type SessionPinAssignParams struct {
+	SessionRef  string  `json:"session_ref"`
+	SectionID   *string `json:"section_id,omitempty"`
+	SectionName *string `json:"section_name,omitempty"`
+}
+
+type SessionPinUnpinParams struct {
+	SessionRef string `json:"session_ref"`
+}
+
+type SessionPinAssignment struct {
+	SessionRef string      `json:"session_ref"`
+	Section    *PinSection `json:"section,omitempty"`
+}
+
+type SessionPinMutationResponse struct {
+	OK         bool                 `json:"ok"`
+	Changed    bool                 `json:"changed"`
+	Assignment SessionPinAssignment `json:"assignment"`
+	Navigation NavigationMutation   `json:"navigation"`
 }
 
 // SearchParams selects matching live and past sessions for the hub command

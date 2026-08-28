@@ -17,6 +17,7 @@ func TestWireErrorConstructors(t *testing.T) {
 		{"InvalidRequest", InvalidRequest("bad r"), -32600, ErrorInvalidParams, "bad r"},
 		{"MethodNotFound", MethodNotFound("foo"), -32601, ErrorMethodNotFound, "method not found: foo"},
 		{"InternalError", InternalError("boom"), -32603, ErrorInternal, "boom"},
+		{"ResourceNotFound", ResourceNotFound("pin section not found"), -32602, ErrorResourceNotFound, "pin section not found"},
 		{"Conflict", Conflict("clash"), -32013, ErrorConflict, "clash"},
 		{"Unavailable", Unavailable("down"), -32014, ErrorActionUnavailable, "down"},
 		{"SessionUnavailable", SessionUnavailable("no sess"), -32014, ErrorSessionUnavailable, "no sess"},
