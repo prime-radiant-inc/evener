@@ -46,6 +46,14 @@ func dispatchThreadNameSet(t *testing.T, server *appserver.Server, params appwir
 	return err
 }
 
+func drainRenamePublications(t *testing.T, navigation *NavigationService) []appwire.NavigationInvalidatedPayload {
+	t.Helper()
+	// completeThreadNameMutation only Invalidate(s) the hint; the service's
+	// Start loop consumes it through refreshPending. Drive that exact path.
+	navigation.refreshPending(t.Context())
+	return navigation.DrainPublications()
+}
+
 func TestAppWireNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 	t.Run("live changed and repeat no-op", func(t *testing.T) {
 		source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
@@ -67,7 +75,7 @@ func TestAppWireNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 		if err := dispatchThreadNameSet(t, server, appwire.ThreadNameSetParams{Ref: "local:live-rename", Name: "  renamed-live  "}); err != nil {
 			t.Fatalf("thread name set: %v", err)
 		}
-		generation := assertRenameNavigation(t, navigation, 1, []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetProject, ProjectKey: "p1"}, {Kind: appwire.NavigationTargetAllLoadedProjects}}, "")
+		assertRenameTargets(t, drainRenamePublications(t, navigation), []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetProject, ProjectKey: "p1"}, {Kind: appwire.NavigationTargetAllLoadedProjects}})
 		if live.got.Ref != "local:live-rename" || live.got.Name != "renamed-live" {
 			t.Fatalf("SetThreadName params=%+v", live.got)
 		}
@@ -75,7 +83,9 @@ func TestAppWireNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 		if err := dispatchThreadNameSet(t, server, appwire.ThreadNameSetParams{Ref: "local:live-rename", Name: "renamed-live"}); err != nil {
 			t.Fatalf("repeat thread name set: %v", err)
 		}
-		assertRenameNavigation(t, navigation, 0, nil, generation)
+		if events := drainRenamePublications(t, navigation); len(events) != 0 {
+			t.Fatalf("repeat rename published events=%+v", events)
+		}
 	})
 
 	t.Run("ended changed and repeat no-op", func(t *testing.T) {
@@ -110,7 +120,7 @@ func TestAppWireNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 		if err := dispatchThreadNameSet(t, server, appwire.ThreadNameSetParams{Ref: "local:" + original.ID, Name: "  renamed-ended  "}); err != nil {
 			t.Fatalf("thread name set: %v", err)
 		}
-		generation := assertRenameNavigation(t, navigation, 1, []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetProject, ProjectKey: projectKey}}, "")
+		assertRenameTargets(t, drainRenamePublications(t, navigation), []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetProject, ProjectKey: projectKey}})
 		got, err := schema.LoadSessionMeta(stateDir, original.ID)
 		if err != nil {
 			t.Fatal(err)
@@ -122,7 +132,9 @@ func TestAppWireNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 		if err := dispatchThreadNameSet(t, server, appwire.ThreadNameSetParams{Ref: "local:" + original.ID, Name: "renamed-ended"}); err != nil {
 			t.Fatalf("repeat thread name set: %v", err)
 		}
-		assertRenameNavigation(t, navigation, 0, nil, generation)
+		if events := drainRenamePublications(t, navigation); len(events) != 0 {
+			t.Fatalf("repeat ended rename published events=%+v", events)
+		}
 	})
 }
 
@@ -142,6 +154,80 @@ func TestAppWireRenameValidatesRefAndName(t *testing.T) {
 				t.Fatalf("error=%v, want invalid params", err)
 			}
 		})
+	}
+}
+
+func TestAppWireRenameReturnsBeforeNavigationRebuildCompletes(t *testing.T) {
+	root := t.TempDir()
+	stateDir := filepath.Join(root, "projects", "project-async-rename-0123456789")
+	original := schema.SessionMeta{ID: "02wMz5Txv1C3Hut0M8GCeB", Name: "old", NameSource: "generated", UpdatedAt: time.Unix(1_700_000_000, 0).UTC()}
+	if err := schema.SaveSessionMeta(stateDir, original); err != nil {
+		t.Fatal(err)
+	}
+	past := hubcore.NewPastIndexWithDB(filepath.Join(root, "projects", "*"), filepath.Join(root, "index.db"))
+	if _, err := past.Rebuild(); err != nil {
+		t.Fatal(err)
+	}
+	source := newTestNavigationSource(time.Unix(1_700_000_000, 0).UTC())
+	projectKey := filepath.Base(stateDir)
+	source.inputs.Tree.Projects[0].Key = projectKey
+	source.inputs.Tree.Projects[0].Name = projectKey
+	source.inputs.Tree.Projects[0].Current[0].Project = projectKey
+	navigation := newTestNavigationService(t, source)
+	if _, err := navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
+		t.Fatal(err)
+	}
+	// From here on, every capture blocks until released: a navigation rebuild
+	// that never completes on its own. The rename RPC must still return.
+	source.entered = make(chan struct{})
+	source.release = make(chan struct{})
+	oldSave := saveSessionMetaForRename
+	saveSessionMetaForRename = func(dir string, meta schema.SessionMeta) error {
+		source.changeTitle(meta.Name)
+		return oldSave(dir, meta)
+	}
+	defer func() { saveSessionMetaForRename = oldSave }()
+	registry := appsource.NewRegistry()
+	server := newHubAppServerWithNavigation(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()}, registry, navigation, nil)
+
+	dispatched := make(chan error, 1)
+	go func() {
+		dispatched <- dispatchThreadNameSet(t, server, appwire.ThreadNameSetParams{Ref: "local:" + original.ID, Name: "renamed-async"})
+	}()
+	select {
+	case err := <-dispatched:
+		if err != nil {
+			t.Fatalf("thread name set: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("rename RPC blocked on the navigation rebuild")
+	}
+	// The rename must be durably committed before the RPC returned.
+	meta, err := schema.LoadSessionMeta(stateDir, original.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if meta.Name != "renamed-async" || meta.NameSource != "user" {
+		t.Fatalf("renamed meta=%+v", meta)
+	}
+	// The rebuild the rename kicked off is still pending, and any capture it
+	// triggers is stuck on the gate. Drive it the way the scheduler would
+	// (refreshPending) and only then let the capture finish.
+	events := make(chan []appwire.NavigationInvalidatedPayload, 1)
+	go func() {
+		events <- drainRenamePublications(t, navigation)
+	}()
+	select {
+	case <-source.entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("pending rename hint did not start a rebuild")
+	}
+	close(source.release)
+	select {
+	case publications := <-events:
+		assertRenameTargets(t, publications, []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetProject, ProjectKey: projectKey}})
+	case <-time.After(5 * time.Second):
+		t.Fatal("pending rename hint never committed an invalidation")
 	}
 }
 
@@ -290,18 +376,10 @@ func TestAppWireRenameDoesNotEditMetaWhenEndedSessionBecomesLive(t *testing.T) {
 	}
 }
 
-func assertRenameNavigation(t *testing.T, navigation *NavigationService, wantEvents int, wantTargets []appwire.NavigationInvalidationTarget, wantGeneration string) string {
+func assertRenameTargets(t *testing.T, events []appwire.NavigationInvalidatedPayload, wantTargets []appwire.NavigationInvalidationTarget) {
 	t.Helper()
-	events := navigation.DrainPublications()
-	if len(events) != wantEvents {
-		t.Fatalf("typed events=%d, want %d: %+v", len(events), wantEvents, events)
-	}
-	if wantEvents == 0 {
-		capability := navigation.Capability()
-		if capability == nil || capability.GenerationID != wantGeneration {
-			t.Fatalf("no-op capability=%+v, want generation %q", capability, wantGeneration)
-		}
-		return capability.GenerationID
+	if len(events) != 1 {
+		t.Fatalf("typed events=%d, want 1: %+v", len(events), events)
 	}
 	if len(events[0].Targets) != len(wantTargets) {
 		t.Fatalf("rename target count=%d, want %d: %+v", len(events[0].Targets), len(wantTargets), events[0].Targets)
@@ -318,8 +396,4 @@ func assertRenameNavigation(t *testing.T, navigation *NavigationService, wantEve
 			t.Fatalf("rename wildcard target[%d] revision=%d, want 0", i, got.Revision)
 		}
 	}
-	if replay := navigation.DrainPublications(); len(replay) != 0 {
-		t.Fatalf("second typed event=%+v", replay)
-	}
-	return events[0].GenerationID
 }

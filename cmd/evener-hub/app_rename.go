@@ -19,7 +19,6 @@ var (
 
 type threadNameMutation struct {
 	projectKey string
-	notified   bool
 }
 
 func registerThreadNameSetHandler(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService) {
@@ -72,7 +71,11 @@ func mutateThreadName(ctx context.Context, cfg hubcore.WebConfig, sources *appso
 	if err := saveSessionMetaForRename(entry.StateDir, meta); err != nil {
 		return threadNameMutation{}, appwire.InternalError("save meta: " + err.Error())
 	}
-	return threadNameMutation{projectKey: projectKeyForStateDir(entry.StateDir), notified: cfg.Past.UpdateMeta(entry.ID, meta)}, nil
+	// UpdateMeta keeps the past index entry coherent with the saved meta; the
+	// OnChange notification it fires is consumed by the main wiring (see
+	// main.go), not by the rename completion below.
+	cfg.Past.UpdateMeta(entry.ID, meta)
+	return threadNameMutation{projectKey: projectKeyForStateDir(entry.StateDir)}, nil
 }
 
 func renameLiveThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, ref appwire.Ref, params appwire.ThreadNameSetParams) (threadNameMutation, error) {
@@ -105,7 +108,7 @@ func refreshThreadNameMeta(cfg hubcore.WebConfig, ref appwire.Ref, name string) 
 		meta.Name = name
 		meta.NameSource = "user"
 	}
-	mutation.notified = cfg.Past.UpdateMeta(entry.ID, meta)
+	cfg.Past.UpdateMeta(entry.ID, meta)
 	return mutation
 }
 
@@ -114,16 +117,19 @@ func completeThreadNameMutation(ctx context.Context, cfg hubcore.WebConfig, navi
 	if navigation == nil {
 		return nil
 	}
-	if !mutation.notified {
-		navigation.Invalidate(navigationChangeHint{})
-	}
 	hint := navigationChangeHint{AllLoadedProjects: true}
 	if mutation.projectKey != "" {
 		hint = navigationChangeHint{Projects: []string{mutation.projectKey}}
 	}
-	if _, err := navigation.Refresh(ctx, hint); err != nil {
-		return appwire.Unavailable(err.Error())
-	}
+	// The rename is durably committed above; rebuild navigation off the RPC
+	// path. Invalidate records the hint and wakes the service's scheduler,
+	// whose refreshPending commits the rebuild and appends the resulting
+	// NavigationInvalidated publications to the FIFO that the publisher loop
+	// broadcasts as evener/navigation/invalidated. If the rebuild fails, the
+	// scheduler re-arms the pending hint and retries, so the invalidation is
+	// still eventually published. The rpc's context is not used: nothing here
+	// depends on the request outliving the async rebuild.
+	navigation.Invalidate(hint)
 	return nil
 }
 
