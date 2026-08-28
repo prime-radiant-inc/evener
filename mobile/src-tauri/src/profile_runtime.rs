@@ -6,10 +6,13 @@
 //! lifecycle commands serialize through the async mutex.
 
 use std::sync::Arc;
+use std::time::Duration;
 
+use futures_util::{SinkExt, StreamExt};
 use serde::{Deserialize, Serialize};
+use tokio_tungstenite::tungstenite::Message;
 
-use crate::appwire_transport::AppwireManager;
+use crate::appwire_transport::{AppwireManager, PinnedAppwireBoundary};
 use crate::error::{ProfileError, ReleaseMode};
 use crate::http_transport::PinnedHttpBoundary;
 use crate::network_policy::NetworkPolicy;
@@ -168,61 +171,72 @@ impl<S: SecureStore> SecureStore for KeychainBridge<S> {
 }
 
 // ---------------------------------------------------------------------------
-// Real pairing probe — HTTP-based health + authenticated harmless probe
+// Real pairing probe — HTTP health + authenticated AppWire upgrade
 // ---------------------------------------------------------------------------
 
 /// A real `PairingProbe` that probes `/api/health` (unauthenticated, for
-/// mobile API version) and then an authenticated harmless endpoint. Both
-/// requests use the shared pinned reqwest boundary: the original hostname
-/// remains in the URL for Host/TLS SNI/certificate identity while DNS is
-/// overridden with the policy-approved socket address. Blocking reqwest runs
-/// on a dedicated OS thread, never re-entering Tokio. Never logs bodies, URLs,
-/// or tokens.
+/// mobile API version) and then proves the token through an authenticated
+/// AppWire `/rpc` WebSocket upgrade. Both transports resolve through the same
+/// NetworkPolicy and preserve the original hostname for Host/TLS
+/// SNI/certificate identity while connecting to the policy-approved socket.
+/// The blocking health client and short-lived Tokio runtime run on a dedicated
+/// OS thread, never re-entering Tauri's runtime. Never logs bodies, URLs, or
+/// tokens.
 pub struct RealPairingProbe {
-    boundary: PinnedHttpBoundary,
+    http_boundary: PinnedHttpBoundary,
+    appwire_boundary: PinnedAppwireBoundary,
 }
 
 impl RealPairingProbe {
     pub fn new(policy: Arc<NetworkPolicy>) -> Self {
         Self {
-            boundary: PinnedHttpBoundary::new(policy, ReleaseMode::Release),
+            http_boundary: PinnedHttpBoundary::new(policy.clone(), ReleaseMode::Release),
+            appwire_boundary: PinnedAppwireBoundary::new(policy, ReleaseMode::Release),
         }
     }
 
-    pub fn with_root_certificate(mut self, certificate: reqwest::Certificate) -> Self {
-        self.boundary = self.boundary.with_root_certificate(certificate);
-        self
+    pub fn with_root_certificate_der(
+        mut self,
+        certificate: Vec<u8>,
+    ) -> Result<Self, reqwest::Error> {
+        self.http_boundary = self
+            .http_boundary
+            .with_root_certificate(reqwest::Certificate::from_der(&certificate)?);
+        self.appwire_boundary = self.appwire_boundary.with_root_certificate_der(certificate);
+        Ok(self)
     }
 }
 
 impl Default for RealPairingProbe {
     fn default() -> Self {
-        Self {
-            boundary: PinnedHttpBoundary::new(
-                Arc::new(NetworkPolicy::new(Box::new(SystemDnsResolver))),
-                ReleaseMode::Release,
-            ),
-        }
+        Self::new(Arc::new(NetworkPolicy::new(Box::new(SystemDnsResolver))))
     }
 }
 
 impl PairingProbe for RealPairingProbe {
     fn probe(&self, origin: &str, token: &str, mode: ReleaseMode) -> Result<i64, ProfileError> {
-        // reqwest's blocking client owns a runtime, so execute it on a fresh
-        // OS thread rather than constructing/dropping it inside Tauri's Tokio
-        // runtime. The thread receives only an immutable boundary/origin/token.
-        // Preserve the resolver and any additional roots configured on this
-        // probe while applying the caller's release/debug address policy.
-        let boundary = self.boundary.clone_with_mode(mode);
+        // reqwest's blocking client owns a runtime and the AppWire proof needs
+        // a short-lived Tokio runtime, so execute both on a fresh OS thread
+        // rather than constructing/dropping either inside Tauri's runtime.
+        // Preserve the resolver and additional roots while applying the
+        // caller's release/debug address policy.
+        let http_boundary = self.http_boundary.clone_with_mode(mode);
+        let appwire_boundary = self.appwire_boundary.clone_with_mode(mode);
         let origin_owned = origin.to_owned();
         let token_owned = token.to_owned();
-        let result =
-            std::thread::spawn(move || probe_blocking(&boundary, &origin_owned, &token_owned))
-                .join()
-                .map_err(|_| ProfileError::ProbeFailed {
-                    origin: origin.to_owned(),
-                    message: "probe worker failed".to_owned(),
-                })?;
+        let result = std::thread::spawn(move || {
+            probe_blocking(
+                &http_boundary,
+                &appwire_boundary,
+                &origin_owned,
+                &token_owned,
+            )
+        })
+        .join()
+        .map_err(|_| ProfileError::ProbeFailed {
+            origin: origin.to_owned(),
+            message: "probe worker failed".to_owned(),
+        })?;
         result.map_err(|message| ProfileError::ProbeFailed {
             origin: origin.to_owned(),
             message,
@@ -230,8 +244,13 @@ impl PairingProbe for RealPairingProbe {
     }
 }
 
-fn probe_blocking(boundary: &PinnedHttpBoundary, origin: &str, token: &str) -> Result<i64, String> {
-    let health_body = blocking_http_get(boundary, origin, "/api/health", None)
+fn probe_blocking(
+    http_boundary: &PinnedHttpBoundary,
+    appwire_boundary: &PinnedAppwireBoundary,
+    origin: &str,
+    token: &str,
+) -> Result<i64, String> {
+    let health_body = blocking_http_get(http_boundary, origin, "/api/health")
         .map_err(|e| format!("health request failed: {e}"))?;
     let health_json: serde_json::Value =
         serde_json::from_slice(&health_body).map_err(|_| "health body parse failed".to_owned())?;
@@ -240,11 +259,57 @@ fn probe_blocking(boundary: &PinnedHttpBoundary, origin: &str, token: &str) -> R
         .and_then(|v| v.as_i64())
         .ok_or_else(|| "mobile_api_version missing".to_owned())?;
 
-    // Authenticated harmless probe.
-    let _pairing_body = blocking_http_get(boundary, origin, "/api/mobile/pairing", Some(token))
+    authenticated_appwire_probe(appwire_boundary, origin, token)
         .map_err(|e| format!("auth probe failed: {e}"))?;
 
     Ok(version)
+}
+
+const APPWIRE_PROBE_TIMEOUT: Duration = Duration::from_secs(10);
+const APPWIRE_CLOSE_TIMEOUT: Duration = Duration::from_secs(1);
+
+fn authenticated_appwire_probe(
+    boundary: &PinnedAppwireBoundary,
+    origin: &str,
+    token: &str,
+) -> Result<(), String> {
+    let mut url = url::Url::parse(origin).map_err(|_| "origin invalid".to_owned())?;
+    let websocket_scheme = match url.scheme() {
+        "http" => "ws",
+        "https" => "wss",
+        _ => return Err("origin invalid".to_owned()),
+    };
+    url.set_scheme(websocket_scheme)
+        .map_err(|_| "origin invalid".to_owned())?;
+    url.set_path("/rpc");
+    url.set_query(None);
+    url.set_fragment(None);
+
+    let runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_io()
+        .enable_time()
+        .build()
+        .map_err(|_| "runtime creation failed".to_owned())?;
+    runtime.block_on(async {
+        let mut websocket =
+            tokio::time::timeout(APPWIRE_PROBE_TIMEOUT, boundary.connect(url.as_str(), token))
+                .await
+                .map_err(|_| "handshake timed out".to_owned())?
+                .map_err(|_| "handshake failed".to_owned())?;
+
+        let close = tokio_tungstenite::tungstenite::protocol::CloseFrame {
+            code: tokio_tungstenite::tungstenite::protocol::frame::coding::CloseCode::Normal,
+            reason: String::new().into(),
+        };
+        // A successful pinned upgrade is the token proof. Send a normal close
+        // and give the Hub a bounded opportunity to acknowledge it, but do not
+        // turn close-path failure into an authentication failure after the
+        // authenticated upgrade already succeeded.
+        if websocket.send(Message::Close(Some(close))).await.is_ok() {
+            let _ = tokio::time::timeout(APPWIRE_CLOSE_TIMEOUT, websocket.next()).await;
+        }
+        Ok(())
+    })
 }
 
 /// Blocking HTTP GET through the same pinned resolver/TLS boundary as HubHttp.
@@ -253,7 +318,6 @@ fn blocking_http_get(
     boundary: &PinnedHttpBoundary,
     origin: &str,
     path: &str,
-    token: Option<&str>,
 ) -> Result<Vec<u8>, String> {
     let (mut url, pinned) = boundary
         .resolve(origin)
@@ -263,11 +327,10 @@ fn blocking_http_get(
     let client = boundary
         .blocking_client(&pinned)
         .map_err(|_| "client creation failed".to_owned())?;
-    let mut request = client.get(url);
-    if let Some(token) = token {
-        request = request.bearer_auth(token);
-    }
-    let response = request.send().map_err(|_| "request failed".to_owned())?;
+    let response = client
+        .get(url)
+        .send()
+        .map_err(|_| "request failed".to_owned())?;
     let status_code = response.status().as_u16();
     if (300..400).contains(&status_code) {
         return Err("redirect rejected".to_owned());
