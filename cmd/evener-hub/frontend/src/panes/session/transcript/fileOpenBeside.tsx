@@ -75,8 +75,6 @@ export function FileOpenBesideButton({ absPath, sessionRef }: { absPath: string;
   // own affordance tests among them - still finds this control unchanged;
   // the path is appended for the same specificity the old dynamic title had.
   const name = `Open beside: ${docParams.path}`;
-  // The presentation is the standard open affordance (widgets/openbutton),
-  // which owns the glyph and the stopPropagation this row's disclosure needs.
   return (
     <OpenButton
       iconOnly

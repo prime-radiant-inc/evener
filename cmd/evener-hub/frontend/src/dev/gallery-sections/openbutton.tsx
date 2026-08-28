@@ -2,9 +2,6 @@ import { OpenButton } from "../../widgets/openbutton";
 import styles from "../gallery-section.module.css";
 import { ThemeFlip } from "../ThemeFlip";
 
-// The standard "open out of this surface" affordance, in every documented
-// form. NOTE: its rendering is planned to change - every surface routes
-// through this one widget so the change lands here, once.
 export default function OpenButtonGallerySection() {
   return (
     <section>

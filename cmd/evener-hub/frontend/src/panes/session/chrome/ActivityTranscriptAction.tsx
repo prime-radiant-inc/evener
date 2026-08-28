@@ -12,8 +12,6 @@ export function ActivityTranscriptAction({
   if (!trimmedTranscriptRef) return null;
   const resolvedTranscriptRef = trimmedTranscriptRef;
 
-  // The standard open affordance (widgets/openbutton) owns the glyph and the
-  // stopPropagation; this wrapper only wires it to transcript navigation.
   return (
     <OpenButton
       iconOnly

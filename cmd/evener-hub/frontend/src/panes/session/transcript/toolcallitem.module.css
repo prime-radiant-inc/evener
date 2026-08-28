@@ -64,12 +64,10 @@
   flex: 1 1 100%;
 }
 
-/* A purpose-only row's trailing affordance (the delegate card's "open")
- * rides the DISCLOSURE line - the one line it has (ToolRow.tsx's grammar).
- * The trigger gives up the full-width basis the rule above assigns, so
- * trigger and control share line 1, the trigger's own grow springing the
- * control to the line's end - the placement the notification card's head
- * gives "Open subagent" (notificationcard.module.css's .action). */
+/* data-purpose-trailing marks a purpose-only row whose trailing affordance
+ * rides the disclosure line (ToolRow.tsx's grammar): the trigger gives up
+ * the full-width basis the rule above assigns, so trigger and control share
+ * line 1, the trigger's own grow springing the control to the line's end. */
 .row[data-purpose-trailing="true"] .trigger {
   flex: 1 1 auto;
 }
