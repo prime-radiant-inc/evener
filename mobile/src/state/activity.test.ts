@@ -149,6 +149,57 @@ function delegateNotification(
   } as AnyNotification;
 }
 
+// Build a thread/status/changed notification. `over` may carry an optional
+// `capabilities` and a `status` object; both threadId/ref come from `id`.
+function statusChangedNotification(
+  over: Record<string, unknown> = {},
+  id: ActivityIdentity = identity(),
+): AnyNotification {
+  return {
+    method: "thread/status/changed",
+    params: {
+      threadId: id.threadId,
+      ref: id.ref,
+      status: { type: "running" },
+      ...over,
+    },
+  } as AnyNotification;
+}
+
+// Build a thread/model/changed notification. `over` may carry
+// reasoningEffortLevels / supportsReasoning; threadId/ref come from `id`.
+function modelChangedNotification(
+  over: Record<string, unknown> = {},
+  id: ActivityIdentity = identity(),
+): AnyNotification {
+  return {
+    method: "thread/model/changed",
+    params: {
+      threadId: id.threadId,
+      ref: id.ref,
+      modelProvider: "openai",
+      model: "gpt-5",
+      ...over,
+    },
+  } as AnyNotification;
+}
+
+// Build a thread/reasoning-effort/changed notification. `over` may carry an
+// optional `reasoningEffort`; threadId/ref come from `id`.
+function reasoningEffortChangedNotification(
+  over: Record<string, unknown> = {},
+  id: ActivityIdentity = identity(),
+): AnyNotification {
+  return {
+    method: "thread/reasoning-effort/changed",
+    params: {
+      threadId: id.threadId,
+      ref: id.ref,
+      ...over,
+    },
+  } as AnyNotification;
+}
+
 // Build an evener/job/started (or finished) notification for a job.
 function jobNotification(
   jobId: string,
@@ -1160,6 +1211,507 @@ describe("ActivityStore", () => {
       expect(store.getState().view).toBeNull();
     });
   });
+
+  // --- I2: thread/status/changed + thread/model/changed + reasoning-effort ---
+  // ActivityView control copies stay exact under the shared stream. These
+  // notifications patch ONLY the named control fields; tasks/work/usage are
+  // preserved. A wrong identity/ref stays ignored (validated before patchLive).
+
+  describe("control-copy notifications (I2)", () => {
+    it("thread/status/changed with capabilities replaces capabilities, preserves rest", () => {
+      const store = createActivityStore();
+      const view: ActivityView = {
+        tasks: [{ status: "done", count: 3 }],
+        work: [
+          {
+            kind: "job",
+            label: "shell",
+            tone: "running",
+            outputSummary: "0 B",
+            diagnostics: {
+              rawId: "job-1",
+              operationName: "shell",
+              statusClass: "running",
+            },
+          },
+        ],
+        usage: { totalTokens: 500 },
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+      };
+      store.getState().setLiveView(view, identity({ generation: 1 }));
+      const newCaps: ThreadCapabilities = {
+        send: true,
+        steer: false,
+        interrupt: true,
+        compact: false,
+        clear: true,
+        forkFromTurn: false,
+        shutdown: true,
+        changeModel: false,
+        queue: true,
+        goal: false,
+        rename: true,
+      };
+      const result = store
+        .getState()
+        .applyLiveNotification(
+          statusChangedNotification({ capabilities: newCaps }),
+          identity({ generation: 1 }),
+        );
+      expect(result).toBe("applied");
+      const v = store.getState().view;
+      // capabilities replaced exactly.
+      expect(v?.capabilities).toEqual(newCaps as MobileCapabilities);
+      // tasks/work/usage preserved.
+      expect(v?.tasks).toHaveLength(1);
+      expect(v?.tasks[0]?.count).toBe(3);
+      expect(v?.work).toHaveLength(1);
+      expect(v?.work[0]?.diagnostics?.rawId).toBe("job-1");
+      expect(v?.usage.totalTokens).toBe(500);
+    });
+
+    it("thread/status/changed WITHOUT capabilities preserves existing capabilities", () => {
+      const store = createActivityStore();
+      const view: ActivityView = {
+        tasks: [],
+        work: [],
+        usage: {},
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+      };
+      store.getState().setLiveView(view, identity({ generation: 1 }));
+      const result = store.getState().applyLiveNotification(
+        // No capabilities field supplied.
+        statusChangedNotification({ status: { type: "idle" } }),
+        identity({ generation: 1 }),
+      );
+      expect(result).toBe("applied");
+      const v = store.getState().view;
+      // Capabilities untouched when not supplied.
+      expect(v?.capabilities).toEqual(ALL_TRUE_CAPS as MobileCapabilities);
+    });
+
+    it("thread/status/changed is ignored for wrong identity", () => {
+      const store = createActivityStore();
+      store.getState().setLiveView(emptyView(), identity({ generation: 1 }));
+      const result = store.getState().applyLiveNotification(
+        statusChangedNotification({
+          capabilities: { ...ALL_TRUE_CAPS, steer: false },
+        }),
+        identity({ generation: 2 }),
+      );
+      expect(result).toBe("ignored");
+      // capabilities unchanged.
+      expect(store.getState().view?.capabilities).toEqual(
+        ALL_TRUE_CAPS as MobileCapabilities,
+      );
+    });
+
+    it("thread/status/changed ignored when payload ref mismatches identity", () => {
+      const store = createActivityStore();
+      store
+        .getState()
+        .setLiveView(emptyView(), identity({ ref: "ref-1", generation: 1 }));
+      const result = store
+        .getState()
+        .applyLiveNotification(
+          statusChangedNotification(
+            { capabilities: { ...ALL_TRUE_CAPS, steer: false } },
+            identity({ ref: "ref-OTHER", generation: 1 }),
+          ),
+          identity({ ref: "ref-1", generation: 1 }),
+        );
+      expect(result).toBe("ignored");
+      expect(store.getState().view?.capabilities).toEqual(
+        ALL_TRUE_CAPS as MobileCapabilities,
+      );
+    });
+
+    it("thread/model/changed sets reasoningEffortLevels + supportsReasoning exactly, preserves rest", () => {
+      const store = createActivityStore();
+      const view: ActivityView = {
+        tasks: [{ status: "done", count: 2 }],
+        work: [],
+        usage: { totalTokens: 100 },
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        reasoningEffort: "high",
+        reasoningEffortLevels: ["low", "high"],
+        supportsReasoning: true,
+      };
+      store.getState().setLiveView(view, identity({ generation: 1 }));
+      const result = store.getState().applyLiveNotification(
+        modelChangedNotification({
+          reasoningEffortLevels: ["low", "medium", "high"],
+          supportsReasoning: false,
+        }),
+        identity({ generation: 1 }),
+      );
+      expect(result).toBe("applied");
+      const v = store.getState().view;
+      expect(v?.reasoningEffortLevels).toEqual(["low", "medium", "high"]);
+      expect(v?.supportsReasoning).toBe(false);
+      // reasoningEffort (not part of this notification) is preserved.
+      expect(v?.reasoningEffort).toBe("high");
+      // tasks/usage/capabilities preserved.
+      expect(v?.tasks[0]?.count).toBe(2);
+      expect(v?.usage.totalTokens).toBe(100);
+      expect(v?.capabilities).toEqual(ALL_TRUE_CAPS as MobileCapabilities);
+    });
+
+    it("thread/model/changed with explicit undefined supportsReasoning clears it to undefined", () => {
+      const store = createActivityStore();
+      const view: ActivityView = {
+        tasks: [],
+        work: [],
+        usage: {},
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        supportsReasoning: true,
+      };
+      store.getState().setLiveView(view, identity({ generation: 1 }));
+      const result = store.getState().applyLiveNotification(
+        modelChangedNotification({
+          reasoningEffortLevels: ["low"],
+          // Explicitly undefined — must clear supportsReasoning, not preserve.
+          supportsReasoning: undefined,
+        }),
+        identity({ generation: 1 }),
+      );
+      expect(result).toBe("applied");
+      const v = store.getState().view;
+      expect(v?.reasoningEffortLevels).toEqual(["low"]);
+      expect(v?.supportsReasoning).toBeUndefined();
+    });
+
+    it("thread/model/changed never infers anything from the model label", () => {
+      const store = createActivityStore();
+      const view: ActivityView = {
+        tasks: [],
+        work: [],
+        usage: {},
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+      };
+      store.getState().setLiveView(view, identity({ generation: 1 }));
+      // A model label that "looks" reasoning-capable must not cause the store
+      // to invent supportsReasoning or reasoningEffortLevels.
+      const result = store.getState().applyLiveNotification(
+        modelChangedNotification({
+          model: "o3-reasoning-pro",
+          // Neither field supplied.
+        }),
+        identity({ generation: 1 }),
+      );
+      expect(result).toBe("applied");
+      const v = store.getState().view;
+      expect(v?.supportsReasoning).toBeUndefined();
+      expect(v?.reasoningEffortLevels).toBeUndefined();
+    });
+
+    it("thread/model/changed is ignored for wrong identity", () => {
+      const store = createActivityStore();
+      const view: ActivityView = {
+        tasks: [],
+        work: [],
+        usage: {},
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        reasoningEffortLevels: ["low"],
+        supportsReasoning: true,
+      };
+      store.getState().setLiveView(view, identity({ generation: 1 }));
+      const result = store.getState().applyLiveNotification(
+        modelChangedNotification({
+          reasoningEffortLevels: ["high"],
+          supportsReasoning: false,
+        }),
+        identity({ generation: 2 }),
+      );
+      expect(result).toBe("ignored");
+      const v = store.getState().view;
+      expect(v?.reasoningEffortLevels).toEqual(["low"]);
+      expect(v?.supportsReasoning).toBe(true);
+    });
+
+    it("thread/reasoning-effort/changed sets reasoningEffort exactly, preserves rest", () => {
+      const store = createActivityStore();
+      const view: ActivityView = {
+        tasks: [{ status: "done", count: 1 }],
+        work: [],
+        usage: { totalTokens: 50 },
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        reasoningEffort: "high",
+        reasoningEffortLevels: ["low", "high"],
+        supportsReasoning: true,
+      };
+      store.getState().setLiveView(view, identity({ generation: 1 }));
+      const result = store
+        .getState()
+        .applyLiveNotification(
+          reasoningEffortChangedNotification({ reasoningEffort: "medium" }),
+          identity({ generation: 1 }),
+        );
+      expect(result).toBe("applied");
+      const v = store.getState().view;
+      expect(v?.reasoningEffort).toBe("medium");
+      // reasoningEffortLevels / supportsReasoning preserved.
+      expect(v?.reasoningEffortLevels).toEqual(["low", "high"]);
+      expect(v?.supportsReasoning).toBe(true);
+      // tasks/usage/capabilities preserved.
+      expect(v?.tasks[0]?.count).toBe(1);
+      expect(v?.usage.totalTokens).toBe(50);
+      expect(v?.capabilities).toEqual(ALL_TRUE_CAPS as MobileCapabilities);
+    });
+
+    it("thread/reasoning-effort/changed with undefined reasoningEffort clears it to undefined", () => {
+      const store = createActivityStore();
+      const view: ActivityView = {
+        tasks: [],
+        work: [],
+        usage: {},
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        reasoningEffort: "high",
+      };
+      store.getState().setLiveView(view, identity({ generation: 1 }));
+      const result = store
+        .getState()
+        .applyLiveNotification(
+          reasoningEffortChangedNotification({ reasoningEffort: undefined }),
+          identity({ generation: 1 }),
+        );
+      expect(result).toBe("applied");
+      expect(store.getState().view?.reasoningEffort).toBeUndefined();
+    });
+
+    it("thread/reasoning-effort/changed is ignored for wrong identity", () => {
+      const store = createActivityStore();
+      const view: ActivityView = {
+        tasks: [],
+        work: [],
+        usage: {},
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        reasoningEffort: "high",
+      };
+      store.getState().setLiveView(view, identity({ generation: 1 }));
+      const result = store
+        .getState()
+        .applyLiveNotification(
+          reasoningEffortChangedNotification({ reasoningEffort: "low" }),
+          identity({ generation: 2 }),
+        );
+      expect(result).toBe("ignored");
+      expect(store.getState().view?.reasoningEffort).toBe("high");
+    });
+  });
+
+  // --- I4: setLiveCapabilities narrow strict sink --------------------------
+  // The seam the conversation cap-refresh writer calls independently. Updates
+  // ONLY view.capabilities for the exact current identity + open view; returns
+  // false on stale/missing/wrong identity; preserves tasks/work/usage/reasoning.
+
+  describe("setLiveCapabilities (I4)", () => {
+    it("updates only capabilities for exact current identity", () => {
+      const store = createActivityStore();
+      const view: ActivityView = {
+        tasks: [{ status: "done", count: 3 }],
+        work: [
+          {
+            kind: "job",
+            label: "shell",
+            tone: "running",
+            outputSummary: "0 B",
+            diagnostics: {
+              rawId: "job-1",
+              operationName: "shell",
+              statusClass: "running",
+            },
+          },
+        ],
+        usage: { totalTokens: 500 },
+        capabilities: ALL_TRUE_CAPS as MobileCapabilities,
+        reasoningEffort: "high",
+        reasoningEffortLevels: ["low", "high"],
+        supportsReasoning: true,
+      };
+      store.getState().setLiveView(view, identity({ generation: 1 }));
+      const newCaps: ThreadCapabilities = {
+        send: true,
+        steer: false,
+        interrupt: true,
+        compact: false,
+        clear: true,
+        forkFromTurn: false,
+        shutdown: true,
+        changeModel: false,
+        queue: true,
+        goal: false,
+        rename: true,
+      };
+      const ok = store
+        .getState()
+        .setLiveCapabilities(newCaps, identity({ generation: 1 }));
+      expect(ok).toBe(true);
+      const v = store.getState().view;
+      expect(v?.capabilities).toEqual(newCaps as MobileCapabilities);
+      // Everything else preserved.
+      expect(v?.tasks[0]?.count).toBe(3);
+      expect(v?.work[0]?.diagnostics?.rawId).toBe("job-1");
+      expect(v?.usage.totalTokens).toBe(500);
+      expect(v?.reasoningEffort).toBe("high");
+      expect(v?.reasoningEffortLevels).toEqual(["low", "high"]);
+      expect(v?.supportsReasoning).toBe(true);
+    });
+
+    it("returns false and preserves view when identity is wrong (different generation)", () => {
+      const store = createActivityStore();
+      store.getState().setLiveView(emptyView(), identity({ generation: 1 }));
+      const ok = store
+        .getState()
+        .setLiveCapabilities(
+          { ...ALL_TRUE_CAPS, steer: false },
+          identity({ generation: 2 }),
+        );
+      expect(ok).toBe(false);
+      expect(store.getState().view?.capabilities).toEqual(
+        ALL_TRUE_CAPS as MobileCapabilities,
+      );
+    });
+
+    it("returns false and preserves view when identity is wrong (different thread)", () => {
+      const store = createActivityStore();
+      store
+        .getState()
+        .setLiveView(
+          emptyView(),
+          identity({ threadId: "thread-1", generation: 1 }),
+        );
+      const ok = store
+        .getState()
+        .setLiveCapabilities(
+          { ...ALL_TRUE_CAPS, steer: false },
+          identity({ threadId: "thread-OTHER", generation: 1 }),
+        );
+      expect(ok).toBe(false);
+      expect(store.getState().view?.capabilities).toEqual(
+        ALL_TRUE_CAPS as MobileCapabilities,
+      );
+    });
+
+    it("returns false and preserves view when identity is wrong (different ref)", () => {
+      const store = createActivityStore();
+      store
+        .getState()
+        .setLiveView(emptyView(), identity({ ref: "ref-1", generation: 1 }));
+      const ok = store
+        .getState()
+        .setLiveCapabilities(
+          { ...ALL_TRUE_CAPS, steer: false },
+          identity({ ref: "ref-OTHER", generation: 1 }),
+        );
+      expect(ok).toBe(false);
+      expect(store.getState().view?.capabilities).toEqual(
+        ALL_TRUE_CAPS as MobileCapabilities,
+      );
+    });
+
+    it("returns false when view is null (no open view)", () => {
+      const store = createActivityStore();
+      const ok = store
+        .getState()
+        .setLiveCapabilities(ALL_TRUE_CAPS, identity({ generation: 1 }));
+      expect(ok).toBe(false);
+      expect(store.getState().view).toBeNull();
+    });
+
+    it("returns false after reset (stale identity)", () => {
+      const store = createActivityStore();
+      store.getState().setLiveView(emptyView(), identity({ generation: 5 }));
+      store.getState().reset();
+      const ok = store
+        .getState()
+        .setLiveCapabilities(ALL_TRUE_CAPS, identity({ generation: 5 }));
+      expect(ok).toBe(false);
+      expect(store.getState().view).toBeNull();
+    });
+  });
+
+  // --- reset idempotency (I3) ----------------------------------------------
+  // A real reset invalidates the current accepted generation and clears the
+  // view. Repeated/external/reset-before-open calls must NOT advance the
+  // rejection boundary. Late old identities stay rejected.
+
+  describe("reset idempotency (I3)", () => {
+    it("double reset after open does not advance the rejection boundary", () => {
+      const store = createActivityStore();
+      store.getState().setLiveView(emptyView(), identity({ generation: 5 }));
+      const genBefore = store.getState().generationForTest();
+      store.getState().reset();
+      store.getState().reset();
+      const genAfter = store.getState().generationForTest();
+      // Two resets, but only ONE boundary advance: the second reset found
+      // identity === null and must not advance generation or invalidatedAt.
+      expect(genAfter).toBe(genBefore + 1);
+      // Stale gen5 still rejected (boundary is exactly at 5).
+      const ok5 = store
+        .getState()
+        .setLiveView(emptyView(), identity({ generation: 5 }));
+      expect(ok5).toBe(false);
+      // gen6 accepted (strictly newer than the single invalidated boundary 5).
+      const ok6 = store
+        .getState()
+        .setLiveView(emptyView(), identity({ generation: 6 }));
+      expect(ok6).toBe(true);
+    });
+
+    it("reset before open does not advance the rejection boundary", () => {
+      const store = createActivityStore();
+      // No view ever set — identity is null.
+      store.getState().reset();
+      // generation should not have advanced past 0.
+      expect(store.getState().generationForTest()).toBe(0);
+      // A subsequent setLiveView at generation 1 must still be accepted.
+      const ok = store
+        .getState()
+        .setLiveView(emptyView(), identity({ generation: 1 }));
+      expect(ok).toBe(true);
+    });
+
+    it("set gen5 -> reset -> reset -> set gen6 accepted; stale gen5 rejected", () => {
+      const store = createActivityStore();
+      store.getState().setLiveView(emptyView(), identity({ generation: 5 }));
+      store.getState().reset();
+      store.getState().reset();
+      // Stale gen5 rejected.
+      expect(
+        store.getState().setLiveView(emptyView(), identity({ generation: 5 })),
+      ).toBe(false);
+      // gen6 accepted — strictly newer than the single invalidated boundary.
+      expect(
+        store.getState().setLiveView(emptyView(), identity({ generation: 6 })),
+      ).toBe(true);
+      expect(store.getState().generationForTest()).toBe(6);
+    });
+
+    it("open reset accepts next strictly newer identity; then reset is idempotent again", () => {
+      const store = createActivityStore();
+      store.getState().setLiveView(emptyView(), identity({ generation: 5 }));
+      store.getState().reset();
+      // Idempotent reset while already reset.
+      store.getState().reset();
+      // Open a new view at gen6.
+      expect(
+        store.getState().setLiveView(emptyView(), identity({ generation: 6 })),
+      ).toBe(true);
+      // A reset now (identity !== null) must invalidate gen6 and advance.
+      store.getState().reset();
+      const genAfter = store.getState().generationForTest();
+      // gen6 rejected, gen7 accepted.
+      expect(
+        store.getState().setLiveView(emptyView(), identity({ generation: 6 })),
+      ).toBe(false);
+      expect(
+        store.getState().setLiveView(emptyView(), identity({ generation: 7 })),
+      ).toBe(true);
+      expect(store.getState().generationForTest()).toBe(7);
+      expect(genAfter).toBe(7);
+    });
+  });
 });
 
 // Ensure the strict type is exported and shaped as a Zustand store.
@@ -1175,6 +1727,11 @@ function _liveTypeCheck(state: LiveActivityState): void {
     generation: 1,
   });
   state.reset();
+  state.setLiveCapabilities({} as ThreadCapabilities, {
+    threadId: "t",
+    ref: "r",
+    generation: 1,
+  });
 }
 void _liveTypeCheck;
 
