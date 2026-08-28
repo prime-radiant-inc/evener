@@ -671,12 +671,15 @@ func TestWorkspaceDataProjectsStoppedInProcessSubagentEnded(t *testing.T) {
 	}
 }
 
-func webWithLiveAppWireStatus(t *testing.T, thread appwire.Thread) (*WebServer, <-chan appwire.ThreadReadParams) {
+func webWithLiveAppWireResponse(t *testing.T, live hubcore.LiveEntry, thread appwire.Thread) (*WebServer, <-chan appwire.ThreadReadParams) {
 	t.Helper()
 	reads := make(chan appwire.ThreadReadParams, 1)
 	app := appserver.NewServer(appserver.ServerConfig{ServerName: "daemon", SourceID: "local"})
 	appserver.HandleTyped(app.Router(), appwire.MethodThreadRead, func(_ context.Context, params appwire.ThreadReadParams) (appwire.ThreadReadResponse, error) {
-		reads <- params
+		select {
+		case reads <- params:
+		default:
+		}
 		return appwire.ThreadReadResponse{Thread: thread}, nil
 	})
 	daemon := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -687,20 +690,68 @@ func webWithLiveAppWireStatus(t *testing.T, thread appwire.Thread) (*WebServer, 
 		app.ServeWebSocket(w, r)
 	}))
 	t.Cleanup(daemon.Close)
-	entry := rendezvous.Entry{
-		Address:    strings.TrimPrefix(daemon.URL, "http://"),
-		Protocol:   appwire.ProtocolVersion,
-		Endpoint:   "ws" + daemon.URL[len("http"):] + "/rpc",
-		SourceID:   "local",
-		ThreadID:   thread.ID,
-		SessionID:  thread.SessionID,
-		Model:      thread.ModelProvider,
-		WorkingDir: thread.CWD,
-	}
-	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
-		Entry: entry, SessionID: thread.SessionID, Status: thread.Status.Type,
-	})
+	live.Address = strings.TrimPrefix(daemon.URL, "http://")
+	live.Protocol = appwire.ProtocolVersion
+	live.Endpoint = "ws" + daemon.URL[len("http"):] + "/rpc"
+	live.SourceID = "local"
+	roster := hubcore.NewRosterWithEntries(live)
 	return NewWebServer(hubcore.WebConfig{Roster: roster}), reads
+}
+
+func webWithLiveAppWireStatus(t *testing.T, thread appwire.Thread) (*WebServer, <-chan appwire.ThreadReadParams) {
+	t.Helper()
+	return webWithLiveAppWireResponse(t, hubcore.LiveEntry{
+		Entry: rendezvous.Entry{
+			ThreadID: thread.ID, SessionID: thread.SessionID, Model: thread.ModelProvider, WorkingDir: thread.CWD,
+		},
+		SessionID: thread.SessionID,
+		Status:    thread.Status.Type,
+	}, thread)
+}
+
+func TestWorkspaceDataRejectsEmptyOrMismatchedDaemonStatus(t *testing.T) {
+	sessionID := hubtest.SessionID(t)
+	differentSessionID := hubtest.SessionID(t)
+	tests := []struct {
+		name   string
+		thread appwire.Thread
+	}{
+		{name: "empty response"},
+		{
+			name: "different root",
+			thread: appwire.Thread{
+				ID: differentSessionID, SessionID: differentSessionID, ModelProvider: "wrong-model", CWD: "/wrong/root",
+				Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle},
+				Evener: appwire.EvenerThread{
+					Ref: localAppRef(differentSessionID), TurnCount: 99, WorkMillis: 3000,
+					Usage: &appwire.EvenerUsage{InputTokens: 100, OutputTokens: 50},
+				},
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			live := hubcore.LiveEntry{
+				Entry: rendezvous.Entry{
+					ThreadID: sessionID, SessionID: sessionID, Model: "roster-model", WorkingDir: "/roster/work",
+				},
+				SessionID: sessionID,
+				Status:    appwire.ThreadStatusActive,
+			}
+			web, _ := webWithLiveAppWireResponse(t, live, tc.thread)
+
+			if got := web.fetchStatus(live); got != nil {
+				t.Fatalf("fetchStatus = %+v, want nil for an unverified root", got)
+			}
+			got := web.workspaceData(sessionID)
+			if got.State != appwire.ThreadStatusActive || got.Model != "roster-model" || got.WorkingDir != "/roster/work" {
+				t.Fatalf("workspace live fallback = state %q model %q dir %q, want roster-backed values", got.State, got.Model, got.WorkingDir)
+			}
+			if got.TurnCount != 0 || got.WorkMillis != 0 || got.Usage != nil {
+				t.Fatalf("workspace accepted unverified hydration metrics: turns=%d workMillis=%d usage=%+v", got.TurnCount, got.WorkMillis, got.Usage)
+			}
+		})
+	}
 }
 
 func TestWorkspaceDataUsesDaemonStatusTurnCountForLiveLocalSession(t *testing.T) {

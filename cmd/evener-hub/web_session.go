@@ -30,8 +30,12 @@ func (s *WebServer) fetchStatus(le hubcore.LiveEntry) *daemonStatus {
 		return nil
 	}
 	thread := resp.Thread
+	responseThreadID := strutil.FirstNonEmpty(thread.SessionID, thread.ID)
+	if responseThreadID != threadID {
+		return nil
+	}
 	return &daemonStatus{
-		SessionID:           strutil.FirstNonEmpty(thread.SessionID, thread.ID),
+		SessionID:           responseThreadID,
 		Model:               thread.ModelProvider,
 		Profile:             thread.Evener.Profile,
 		State:               thread.Status.Type,
