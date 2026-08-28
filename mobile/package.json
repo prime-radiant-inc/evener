@@ -13,6 +13,7 @@
     "build": "tsc --noEmit --incremental false && vite build",
     "boundary:live-concepts": "node scripts/check-live-concepts-boundary.mjs",
     "boundary": "node scripts/check-boundary.mjs && node scripts/check-live-concepts-boundary.mjs",
+    "smoke:live-concepts": "node scripts/smoke-live-concepts.mjs",
     "tauri": "tauri"
   },
   "dependencies": {
