@@ -11,6 +11,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-tui/internal/launchconfig"
 	pendingpkg "primeradiant.com/evener/cmd/evener-tui/internal/pending"
 	"primeradiant.com/evener/cmd/evener-tui/internal/transcript"
+	"primeradiant.com/evener/envvars"
 )
 
 func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.Cmd {
@@ -167,7 +168,7 @@ func (m *hubModel) applyHubNotification(notification appwire.Notification) tea.C
 	case appwire.NotifyTurnCompleted:
 		var params appwire.TurnCompletedParams
 		if json.Unmarshal(notification.Params, &params) == nil {
-			turnID := firstNonEmptyString(params.TurnID, params.Turn.ID)
+			turnID := envvars.FirstNonEmpty(params.TurnID, params.Turn.ID)
 			for _, item := range params.Turn.Items {
 				if item.TurnID == "" {
 					item.TurnID = turnID

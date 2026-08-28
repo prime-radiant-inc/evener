@@ -8,6 +8,7 @@ import (
 	"primeradiant.com/evener/cmd/evener-tui/internal/clipboard"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuiprim"
 	"primeradiant.com/evener/cmd/evener-tui/internal/tuitheme"
+	"primeradiant.com/evener/envvars"
 )
 
 type composerPanel struct {
@@ -140,7 +141,7 @@ func (m hubModel) sessionComposerPanel() composerPanel {
 			WorkingDir: m.detail.WorkingDir,
 			Connected:  m.hubConnected(),
 			HubAddr:    m.hubURL,
-			Provider:   firstNonEmptyString(m.detail.Profile, providerFromModel(m.detail.Model)),
+			Provider:   envvars.FirstNonEmpty(m.detail.Profile, providerFromModel(m.detail.Model)),
 			Width:      m.width,
 			Retry:      composerRetryChip(m.modelRetry, m.detail.Model, m.modelRetryInProgress),
 		},

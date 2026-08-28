@@ -1074,15 +1074,6 @@ func (a *Adapter) codexBackendURL(path string) string {
 	return base + "/backend-api/codex/" + strings.TrimLeft(path, "/")
 }
 
-func firstNonEmpty(values ...string) string {
-	for _, value := range values {
-		if strings.TrimSpace(value) != "" {
-			return value
-		}
-	}
-	return ""
-}
-
 func parseUsage(u map[string]any) llm.Usage {
 	// OpenAI's Responses API reports input_tokens as total-including-cached,
 	// with cached_tokens a subset in input_tokens_details. The llm.Usage

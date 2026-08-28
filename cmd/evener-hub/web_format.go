@@ -10,7 +10,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/cmd/evener-hub/internal/strutil"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/hubapi"
 )
 
@@ -36,7 +36,7 @@ func workspaceDataFromAppThread(thread appwire.Thread) WorkspaceData {
 		title = thread.Preview
 	}
 	if title == "" {
-		title = strutil.FirstNonEmpty(thread.SessionID, thread.ID)
+		title = envvars.FirstNonEmpty(thread.SessionID, thread.ID)
 	}
 	state := hubcore.NormalizeState(thread.Status.Type)
 	data := WorkspaceData{

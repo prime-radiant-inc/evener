@@ -10,7 +10,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/cmd/evener-hub/internal/strutil"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/rendezvous"
@@ -446,7 +446,7 @@ func (s *WebServer) refreshRemoteThreadSnapshot(ctx context.Context) remoteThrea
 			}
 			thread.Source = source.ID()
 			if thread.Evener.Ref == "" {
-				threadID := strutil.FirstNonEmpty(thread.ID, thread.SessionID)
+				threadID := envvars.FirstNonEmpty(thread.ID, thread.SessionID)
 				if threadID != "" {
 					thread.Evener.Ref = appwire.Ref{SourceID: source.ID(), ThreadID: threadID}.String()
 					if sourceConflict {
@@ -566,7 +566,7 @@ func appThreadTreeEntries(thread appwire.Thread) (schema.SessionMeta, hubcore.Li
 		project = identifier.Project{ID: thread.ProjectID, CanonicalPath: thread.ProjectPath}
 	}
 	refText := ref.String()
-	title := strutil.FirstNonEmpty(thread.Name, thread.Preview, thread.SessionID, thread.ID, refText)
+	title := envvars.FirstNonEmpty(thread.Name, thread.Preview, thread.SessionID, thread.ID, refText)
 	createdAt := hubcore.UnixTime(thread.CreatedAt)
 	updatedAt := hubcore.UnixTime(thread.UpdatedAt)
 	meta := schema.SessionMeta{
@@ -633,7 +633,7 @@ func appThreadTreeRef(thread appwire.Thread) (appwire.Ref, bool) {
 		}
 	}
 	sourceID := strings.TrimSpace(thread.Source)
-	threadID := strutil.FirstNonEmpty(thread.ID, thread.SessionID)
+	threadID := envvars.FirstNonEmpty(thread.ID, thread.SessionID)
 	if sourceID == "" || threadID == "" {
 		return appwire.Ref{}, false
 	}

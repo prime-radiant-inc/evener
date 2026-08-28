@@ -12,6 +12,7 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/agent/transcript"
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
 )
 
@@ -944,7 +945,7 @@ func TestFirstNonEmpty(t *testing.T) {
 		{[]string{"  ", "x"}, "x"},
 	}
 	for _, tc := range tests {
-		got := firstNonEmpty(tc.values...)
+		got := envvars.FirstNonEmpty(tc.values...)
 		if got != tc.want {
 			t.Errorf("firstNonEmpty(%v) = %q, want %q", tc.values, got, tc.want)
 		}

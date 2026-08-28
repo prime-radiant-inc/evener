@@ -14,6 +14,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"primeradiant.com/evener/envvars"
 )
 
 func TestResolveTargetUnknownTarget(t *testing.T) {
@@ -57,10 +59,10 @@ func TestInstallPrefix(t *testing.T) {
 }
 
 func TestFirstNonEmpty(t *testing.T) {
-	if got := firstNonEmpty("", "", "x"); got != "x" {
+	if got := envvars.FirstNonEmpty("", "", "x"); got != "x" {
 		t.Fatalf("firstNonEmpty=%q", got)
 	}
-	if got := firstNonEmpty("", ""); got != "" {
+	if got := envvars.FirstNonEmpty("", ""); got != "" {
 		t.Fatalf("firstNonEmpty all-empty=%q", got)
 	}
 }

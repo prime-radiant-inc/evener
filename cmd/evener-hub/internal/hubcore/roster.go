@@ -14,7 +14,7 @@ import (
 	"github.com/fsnotify/fsnotify"
 	"github.com/spf13/afero"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/strutil"
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -312,7 +312,7 @@ func (r *Roster) Refresh() {
 			// written before the daemon could die, so this needs no in-memory
 			// history and survives a hub restart discovering an
 			// already-stale file just as well as watching the crash live.
-			sessionID := strutil.FirstNonEmpty(e.SessionID, e.ThreadID)
+			sessionID := envvars.FirstNonEmpty(e.SessionID, e.ThreadID)
 			if sessionID == "" {
 				// Never resolved an id; nothing to attribute the crash to. The
 				// file on disk is pure garbage, so reclaim it instead of
@@ -400,7 +400,7 @@ func (r *Roster) List() []LiveEntry {
 	for _, e := range r.byPID {
 		e.RunningSubagentIDs = append([]string(nil), e.RunningSubagentIDs...)
 		e.RunningSubagentStates = cloneSubagentStates(e.RunningSubagentStates)
-		sessionID := strutil.FirstNonEmpty(e.SessionID, e.Entry.SessionID, e.ThreadID)
+		sessionID := envvars.FirstNonEmpty(e.SessionID, e.Entry.SessionID, e.ThreadID)
 		if sessionID == "" {
 			out = append(out, e)
 			continue

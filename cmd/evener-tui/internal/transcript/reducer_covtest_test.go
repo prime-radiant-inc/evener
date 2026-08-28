@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"primeradiant.com/evener/appwire"
+	"primeradiant.com/evener/envvars"
 )
 
 // --- Empty deltas preserve all observable reducer state ---
@@ -1015,10 +1016,10 @@ func TestCovSubagentTerminalStatus(t *testing.T) {
 // --- firstNonEmptyString ---
 
 func TestCovFirstNonEmptyString(t *testing.T) {
-	if got := firstNonEmptyString("", "", "x"); got != "x" {
+	if got := envvars.FirstNonEmpty("", "", "x"); got != "x" {
 		t.Fatalf("firstNonEmpty = %q", got)
 	}
-	if got := firstNonEmptyString("", "  ", ""); got != "" {
+	if got := envvars.FirstNonEmpty("", "  ", ""); got != "" {
 		t.Fatalf("all empty = %q", got)
 	}
 }

@@ -9,6 +9,7 @@ import (
 	"strings"
 	"testing"
 
+	"primeradiant.com/evener/envvars"
 	"primeradiant.com/evener/llm"
 )
 
@@ -326,7 +327,7 @@ func adapterRuntimeExerciseHelpers(t *testing.T) {
 	if firstPositiveInt(-1, 0, 3, 4) != 3 || firstPositiveInt(-1, 0) != 0 {
 		t.Fatal("firstPositiveInt mismatch")
 	}
-	if firstNonEmpty("", "  ", "x", "y") != "x" || firstNonEmpty("", " ") != "" {
+	if envvars.FirstNonEmpty("", "  ", "x", "y") != "x" || envvars.FirstNonEmpty("", " ") != "" {
 		t.Fatal("firstNonEmpty mismatch")
 	}
 
