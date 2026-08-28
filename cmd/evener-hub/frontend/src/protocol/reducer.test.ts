@@ -2871,15 +2871,31 @@ test("hydrateThread preserves task aggregate through notification mutation and r
     ref: "ref_t",
     capabilities: CAPABILITIES,
     queue: { revision: 0 },
-    tasks: { total: 7, done: 6 },
+    tasks: { total: 7, done: 6, current: { id: 6, description: "hydrated current task" } },
   };
   let model = testHydrate({ evener: snapshot });
-  expect(model.tasks).toEqual({ total: 7, done: 6 });
+  expect(model.tasks).toEqual({ total: 7, done: 6, current: { id: 6, description: "hydrated current task" } });
+
+  model = applyNotification(
+    model,
+    {
+      method: "evener/task/updated",
+      params: {
+        threadId: "thr_t",
+        ref: "ref_t",
+        total: 7,
+        done: 7,
+        current: { id: 7, description: "replacement task" },
+      },
+    },
+    2000,
+  );
+  expect(model.tasks).toEqual({ total: 7, done: 7, current: { id: 7, description: "replacement task" } });
 
   model = applyNotification(
     model,
     { method: "evener/task/updated", params: { threadId: "thr_t", ref: "ref_t", total: 7, done: 7 } },
-    2000,
+    3000,
   );
   expect(model.tasks).toEqual({ total: 7, done: 7 });
 
@@ -2888,10 +2904,10 @@ test("hydrateThread preserves task aggregate through notification mutation and r
       ref: "ref_t",
       capabilities: CAPABILITIES,
       queue: { revision: 0 },
-      tasks: { total: 7, done: 7 },
+      tasks: { total: 7, done: 7, current: { id: 7, description: "replacement task" } },
     },
   });
-  expect(rehydrated.tasks).toEqual({ total: 7, done: 7 });
+  expect(rehydrated.tasks).toEqual({ total: 7, done: 7, current: { id: 7, description: "replacement task" } });
 });
 
 test("hydrateThread keeps absent task aggregate null and distinguishes an authoritative zero", () => {

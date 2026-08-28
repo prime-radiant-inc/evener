@@ -105,3 +105,56 @@ func TestTaskTool_UpdateToDoneEmitsTaskUpdated(t *testing.T) {
 		t.Fatalf("TaskUpdatedData = %+v, want Total=1 Done=1", *found)
 	}
 }
+
+func TestTaskTool_UpdateToInProgressEmitsTaskUpdated(t *testing.T) {
+	t.Parallel()
+	dir := t.TempDir()
+	store := taskpkg.NewTaskStore(dir, "emit-test-3")
+	store.Load()
+	store.Append([]taskpkg.TaskInput{
+		{Type: taskpkg.TaskTypeImplement, Description: "first task", Prompt: "p"},
+		{Type: taskpkg.TaskTypeImplement, Description: "live current task", Prompt: "p"},
+	})
+
+	var emitted []events.EventData
+	deps := &toolDeps{
+		emit:           func(kind events.EventKind, data events.EventData) { emitted = append(emitted, data) },
+		steer:          func(string, string) {},
+		resultToolName: func() string { return "communicate" },
+		taskGuard: taskGuard{
+			getOrCreateTaskStore: func() *taskpkg.TaskStore { return store },
+			markUsed:             func() {},
+		},
+	}
+	reg := tool.NewRegistry()
+	registerTaskTools(reg, deps)
+
+	args, _ := json.Marshal(map[string]any{
+		"action":  "update",
+		"updates": []map[string]any{{"id": 2, "status": "in_progress"}},
+	})
+	res := reg.ExecuteCall(context.Background(), nil, llm.ToolCallData{ID: "c1", Name: "task_list", Arguments: args})
+	if res.IsError {
+		t.Fatalf("unexpected error: %q", res.Output)
+	}
+
+	for _, event := range emitted {
+		data, ok := event.(events.TaskUpdatedData)
+		if !ok || data.Current == nil || data.Current.ID != 2 || data.Current.Description != "live current task" {
+			continue
+		}
+		return
+	}
+	t.Fatalf("TASK_UPDATED = %#v", emitted)
+}
+
+func TestTaskUpdatedDataUsesFirstInProgressTask(t *testing.T) {
+	data := taskUpdatedData([]taskpkg.Task{
+		{ID: 1, Status: taskpkg.TaskDone},
+		{ID: 2, Status: taskpkg.TaskInProgress, Description: "first current task"},
+		{ID: 3, Status: taskpkg.TaskInProgress, Description: "later current task"},
+	})
+	if data.Total != 3 || data.Done != 1 || data.Current == nil || data.Current.ID != 2 || data.Current.Description != "first current task" {
+		t.Fatalf("taskUpdatedData() = %+v", data)
+	}
+}

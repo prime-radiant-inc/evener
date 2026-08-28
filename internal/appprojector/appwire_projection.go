@@ -926,6 +926,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Ref:      p.ref,
 			Total:    data.Total,
 			Done:     data.Done,
+			Current:  taskSummary(data.Current),
 		})}
 	case events.EventSandboxEscalationRequested:
 		// A harness-raised sandbox-exemption approval card (M7). It rides the event
@@ -1147,6 +1148,13 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 	default:
 		return nil
 	}
+}
+
+func taskSummary(data *events.TaskSummaryData) *appwire.TaskSummary {
+	if data == nil {
+		return nil
+	}
+	return &appwire.TaskSummary{ID: data.ID, Description: data.Description}
 }
 
 func appwireDelegateInfo(data events.DelegateUpdatedData) appwire.EvenerDelegateInfo {

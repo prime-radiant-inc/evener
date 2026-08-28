@@ -12,6 +12,7 @@ import type {
   PendingMutation,
   QueueState,
   SandboxEscalationRequested,
+  TaskAggregate,
   ThreadCapabilities,
   ThreadStatus,
 } from "./types.gen";
@@ -222,7 +223,7 @@ export interface ThreadModel {
   activeTurnId?: string;
   queue: QueueState | null;
   pendingMutations?: PendingMutation[];
-  tasks: { total: number; done: number } | null;
+  tasks: TaskAggregate | null;
   // Snapshot-only plugin diagnostics from thread/read. The palette uses this
   // inventory to scope the global command catalog to the active session.
   diagnostics?: ThreadDiagnostics;

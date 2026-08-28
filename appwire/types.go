@@ -693,10 +693,11 @@ type ThreadQueueChangedParams struct {
 // task-list progress after a change, so a client refreshes the status row
 // event-driven instead of polling evener/tasks/list.
 type TaskUpdatedParams struct {
-	ThreadID string `json:"threadId"`
-	Ref      string `json:"ref"`
-	Total    int    `json:"total"`
-	Done     int    `json:"done"`
+	ThreadID string       `json:"threadId"`
+	Ref      string       `json:"ref"`
+	Total    int          `json:"total"`
+	Done     int          `json:"done"`
+	Current  *TaskSummary `json:"current,omitempty"`
 }
 
 // TurnCompletedParams is the payload of a turn/completed notification: the

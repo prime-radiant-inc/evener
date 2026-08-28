@@ -426,12 +426,20 @@ type QueueChangedData struct {
 	Texts             []string `json:"texts,omitempty"`
 }
 
+// TaskSummaryData is the current task summary carried by a TaskUpdatedData
+// snapshot. It deliberately exposes only enough state for a status row.
+type TaskSummaryData struct {
+	ID          int    `json:"id"`
+	Description string `json:"description"`
+}
+
 // TaskUpdatedData is the payload for an EventTaskUpdated event: the current
 // task-list progress after an append or status change, so subscribers refresh
 // the task-status row without re-polling.
 type TaskUpdatedData struct {
-	Total int `json:"total"`
-	Done  int `json:"done"`
+	Total   int              `json:"total"`
+	Done    int              `json:"done"`
+	Current *TaskSummaryData `json:"current,omitempty"`
 }
 
 // SessionNameChangedData is the payload for an EventSessionNameChanged event.
