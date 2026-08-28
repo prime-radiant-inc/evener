@@ -933,13 +933,13 @@ func TestAgentToServerDetailedStatus_Partial(t *testing.T) {
 	// produces a detectable mismatch rather than silently passing.
 	exitCode := 42
 	ds := agent.DetailedStatus{
-		Tools:   []agent.ToolInfo{{Name: "shell", Source: "core"}},
-		MCP:     []mcpconfig.ServerInfo{{Name: "test-server", Tools: []string{"tool1", "tool2"}, Status: "degraded", Error: "boom"}},
-		Skills:  []skill.SkillMeta{{Name: "test-skill", Description: "A test skill"}},
-		Plugins: []agent.PluginInfo{{Name: "test-plugin", Version: "1.0.0", SkillCount: 2, AgentCount: 3, HookCount: 4, MCPCount: 5}},
+		Tools:      []agent.ToolInfo{{Name: "shell", Source: "core"}},
+		MCP:        []mcpconfig.ServerInfo{{Name: "test-server", Tools: []string{"tool1", "tool2"}, Status: "degraded", Error: "boom"}},
+		Skills:     []skill.SkillMeta{{Name: "test-skill", Description: "A test skill"}},
+		Plugins:    []agent.PluginInfo{{Name: "test-plugin", Version: "1.0.0", SkillCount: 2, AgentCount: 3, HookCount: 4, MCPCount: 5}},
 		HookEvents: []agent.HookEventStatus{{Event: plugin.HookPreToolUse, Count: 1}, {Event: plugin.HookPostToolUse, Count: 7}},
-		Jobs:    []agent.JobStatusInfo{{JobID: "job1", JobType: "delegate", Status: "done", Reason: "finished", ExitCode: &exitCode, TranscriptRef: "ref1", OutputBytes: 100}},
-		Agents:  []string{"explorer", "default"},
+		Jobs:       []agent.JobStatusInfo{{JobID: "job1", JobType: "delegate", Status: "done", Reason: "finished", ExitCode: &exitCode, TranscriptRef: "ref1", OutputBytes: 100}},
+		Agents:     []string{"explorer", "default"},
 	}
 	got := agentToServerDetailedStatus(ds)
 

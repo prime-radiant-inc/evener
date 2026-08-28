@@ -791,7 +791,7 @@ type EvenerDiagnostics struct {
 	MCP        []EvenerMCPServerInfo   `json:"mcp,omitempty"`
 	Skills     []EvenerSkillInfo       `json:"skills,omitempty"`
 	Plugins    []EvenerPluginInfo      `json:"plugins,omitempty"`
-	HookEvents []EvenerHookEventStatus `json:"hook_events,omitempty"`
+	HookEvents []EvenerHookEventStatus `json:"hookEvents,omitempty"`
 	Jobs       []EvenerJobInfo         `json:"jobs,omitempty"`
 	Delegates  []EvenerDelegateInfo    `json:"delegates,omitempty"`
 	TurnSlots  *EvenerTurnSlots        `json:"turnSlots,omitempty"`

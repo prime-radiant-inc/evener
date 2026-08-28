@@ -196,12 +196,12 @@ func TestDetailsDrawerShowsHubDiagnostics(t *testing.T) {
 				{Name: "shell", Source: "core"},
 				{Name: "linear__search", Source: "mcp:linear"},
 			},
-			MCP:     []appwire.EvenerMCPServerInfo{{Name: "linear", Tools: []string{"search"}}},
-			Skills:  []appwire.EvenerSkillInfo{{Name: "superpowers:systematic-debugging"}},
-			Plugins: []appwire.EvenerPluginInfo{{Name: "superpowers", Version: "4.3.0", SkillCount: 12, AgentCount: 2, HookCount: 4}},
+			MCP:        []appwire.EvenerMCPServerInfo{{Name: "linear", Tools: []string{"search"}}},
+			Skills:     []appwire.EvenerSkillInfo{{Name: "superpowers:systematic-debugging"}},
+			Plugins:    []appwire.EvenerPluginInfo{{Name: "superpowers", Version: "4.3.0", SkillCount: 12, AgentCount: 2, HookCount: 4}},
 			HookEvents: []appwire.EvenerHookEventStatus{{Event: "PreToolUse", Count: 3}},
-			Jobs:    []appwire.EvenerJobInfo{{JobID: "job-1", JobType: "delegate", Status: "completed"}},
-			Agents:  []string{"explorer"},
+			Jobs:       []appwire.EvenerJobInfo{{JobID: "job-1", JobType: "delegate", Status: "completed"}},
+			Agents:     []string{"explorer"},
 		},
 	}
 

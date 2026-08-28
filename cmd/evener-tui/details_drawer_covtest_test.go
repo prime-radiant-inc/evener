@@ -111,8 +111,8 @@ func TestCovWriteEvenerDiagnostics_SkillsPluginsHooksJobsAgents(t *testing.T) {
 			{Name: "my-plugin", Version: "1.0", SkillCount: 2, AgentCount: 1, HookCount: 3},
 		},
 		HookEvents: []appwire.EvenerHookEventStatus{{Event: "PreToolCall", Count: 2}, {Event: "PostToolCall", Count: 5}},
-		Jobs:   []appwire.EvenerJobInfo{{JobID: "job_1", JobType: "shell", Status: "running"}},
-		Agents: []string{"agent_one"},
+		Jobs:       []appwire.EvenerJobInfo{{JobID: "job_1", JobType: "shell", Status: "running"}},
+		Agents:     []string{"agent_one"},
 	}
 	writeEvenerDiagnostics(&b, diag)
 	got := b.String()

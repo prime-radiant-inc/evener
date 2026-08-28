@@ -256,11 +256,18 @@ export interface EvenerDiagnostics {
   mcp?: EvenerMCPServerInfo[];
   skills?: EvenerSkillInfo[];
   plugins?: EvenerPluginInfo[];
-  hooks?: Record<string, number>;
+  hookEvents?: EvenerHookEventStatus[];
   jobs?: EvenerJobInfo[];
   delegates?: EvenerDelegateInfo[];
   turnSlots?: EvenerTurnSlots;
   agents?: string[];
+}
+
+export interface EvenerHookEventStatus {
+  event: string;
+  count: number;
+  tier?: string;
+  supported: boolean;
 }
 
 export interface EvenerJobInfo {

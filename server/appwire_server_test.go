@@ -888,7 +888,7 @@ func TestServerAppWireThreadReadReturnsStatus(t *testing.T) {
 			Skills: []SkillInfo{
 				{Name: "superpowers:systematic-debugging", Description: "debug"},
 			},
-			Plugins: []PluginStatusInfo{{Name: "superpowers", Version: "4.3.0", SkillCount: 12, AgentCount: 2, HookCount: 4}},
+			Plugins:    []PluginStatusInfo{{Name: "superpowers", Version: "4.3.0", SkillCount: 12, AgentCount: 2, HookCount: 4}},
 			HookEvents: []HookEventStatus{{Event: "PreToolUse", Count: 3}},
 			Jobs: []JobStatusInfo{{
 				JobID:         "job-1",
