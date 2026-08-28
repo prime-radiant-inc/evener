@@ -89,6 +89,10 @@ function epochMsToISO(ms: number | undefined): string | undefined {
 // work on it, Array.isArray is true, and every mutating trap throws). A
 // delta appends the chunk to the backing (O(1)) and mints a fresh view one
 // longer (O(1)) — no copy of any earlier chunk ever happens.
+// The view's brand also carries the running JOINED text (`brand.text`,
+// maintained per append), so the hot readers of a live view (settleItem,
+// AgentMessageItem's per-render markdown source) get the full text in O(1)
+// instead of paying the per-element Proxy-trap cost of a join.
 //
 // Purity: the reducer's contract is immutable updates, and this preserves
 // it OBSERVATIONALLY. The one deliberate alias — new views share the
@@ -111,16 +115,26 @@ function epochMsToISO(ms: number | undefined): string | undefined {
 // reference after the fact, which is exactly the purity violation this
 // design exists to avoid; the view keeps each state's snapshot frozen.
 
-// Brands a view so appendDelta can recognize its own kind. Stored as a
+// Brands a view so appendChunk can recognize its own kind. Stored as a
 // non-enumerable symbol-keyed prop that ownKeys does not report, keeping
 // the view structurally identical to a plain string[] for every consumer
 // (toEqual, JSON.stringify, spread, iteration) while appendChunk still has
 // a way to check "is this one of mine" without an O(1)-breaking lookup.
 const CHUNK_VIEW = Symbol("evener.chunkView");
 
-interface ChunkView {
-  [CHUNK_VIEW]: { backing: string[]; length: number };
+// The per-view brand, carried ON THE PROXY TARGET as a non-enumerable
+// symbol-keyed prop (so the traps — one shared module-level handler, not a
+// fresh closure set per view — can read it with Reflect.get on the raw
+// target). `text` is the cached join of backing[0..length); it is only
+// current while the view is the backing's newest (length ===
+// backing.length), which is exactly when the O(1) readers use it.
+interface ChunkViewBrand {
+  backing: string[];
+  length: number;
+  text: string;
 }
+
+type ChunkView = string[] & { [CHUNK_VIEW]?: ChunkViewBrand };
 
 // "5" | "12" -> 5 | 12; anything else (including "length", symbols,
 // negatives, fractions) -> undefined. Canonical numeric-string form only.
@@ -129,81 +143,94 @@ function chunkIndex(prop: string): number | undefined {
   return Number.isInteger(n) && n >= 0 && String(n) === prop ? n : undefined;
 }
 
-// The backing a view reads. A view created by chunkView is read back here;
-// anything else (a plain array from tests or hydrate) returns undefined.
-function viewBacking(chunks: string[]): string[] | undefined {
-  return (chunks as string[] & Partial<ChunkView>)[CHUNK_VIEW]?.backing;
+// A view's brand, in ONE trap hit (a view created by chunkView answers
+// here; anything else — a plain array from tests or hydrate — returns
+// undefined). Callers that need both the backing and the length read them
+// off this single result rather than paying the get trap twice.
+function chunkBrand(chunks: string[]): ChunkViewBrand | undefined {
+  return (chunks as ChunkView)[CHUNK_VIEW];
 }
 
-function viewLength(chunks: string[]): number | undefined {
-  return (chunks as string[] & Partial<ChunkView>)[CHUNK_VIEW]?.length;
-}
+// Every view shares this ONE handler (module-level, not minted per view):
+// the per-view state it needs — the brand — rides on the target, where the
+// traps read it with Reflect.get on the raw target (no closure capture, no
+// per-delta handler allocation). Every trap mirrors the exact descriptor
+// semantics of a real Array of that length so structural equality with a
+// plain string[] holds.
+const CHUNK_VIEW_HANDLER: ProxyHandler<string[]> = {
+  get(t, prop, receiver) {
+    const brand = Reflect.get(t, CHUNK_VIEW) as ChunkViewBrand | undefined;
+    if (prop === CHUNK_VIEW) return brand;
+    if (prop === "length") return brand?.length;
+    if (typeof prop === "string" && brand !== undefined) {
+      const i = chunkIndex(prop);
+      if (i !== undefined) return i < brand.length ? brand.backing[i] : undefined;
+    }
+    return Reflect.get(t, prop, receiver);
+  },
+  has(t, prop) {
+    if (prop === CHUNK_VIEW) return false;
+    const brand = Reflect.get(t, CHUNK_VIEW) as ChunkViewBrand | undefined;
+    if (typeof prop === "string" && brand !== undefined) {
+      const i = chunkIndex(prop);
+      if (i !== undefined) return i < brand.length;
+    }
+    return Reflect.has(t, prop);
+  },
+  ownKeys(t) {
+    const brand = Reflect.get(t, CHUNK_VIEW) as ChunkViewBrand | undefined;
+    const length = brand?.length ?? 0;
+    const keys: string[] = [];
+    for (let i = 0; i < length; i++) keys.push(String(i));
+    keys.push("length");
+    return keys;
+  },
+  getOwnPropertyDescriptor(t, prop) {
+    if (prop === CHUNK_VIEW) return undefined;
+    const brand = Reflect.get(t, CHUNK_VIEW) as ChunkViewBrand | undefined;
+    if (brand !== undefined) {
+      if (prop === "length") return { value: brand.length, writable: true, enumerable: false, configurable: false };
+      if (typeof prop === "string") {
+        const i = chunkIndex(prop);
+        if (i !== undefined) {
+          if (i >= brand.length) return undefined;
+          return { value: brand.backing[i], writable: true, enumerable: true, configurable: true };
+        }
+      }
+    }
+    return Reflect.getOwnPropertyDescriptor(t, prop);
+  },
+  set() {
+    throw new TypeError("pendingText views are immutable (append via the reducer)");
+  },
+  deleteProperty() {
+    throw new TypeError("pendingText views are immutable (append via the reducer)");
+  },
+  defineProperty() {
+    throw new TypeError("pendingText views are immutable (append via the reducer)");
+  },
+  preventExtensions() {
+    throw new TypeError("pendingText views are immutable (append via the reducer)");
+  },
+};
 
-// Returns a fresh immutable view of backing[0..length). Every trap below
-// mirrors the exact descriptor semantics of a real Array of that length so
-// structural equality with a plain string[] holds.
-function chunkView(backing: string[], length: number): string[] {
+// Returns a fresh immutable view of backing[0..length). `text` (the cached
+// join of that prefix) may be passed by a caller that already knows it —
+// the append fast path does, saving the O(length) recompute.
+function chunkView(backing: string[], length: number, text?: string): string[] {
   // A zero-length view has nothing to protect; an empty plain array is
   // cheaper than a Proxy and toEqual-identical. Also keeps RawItemView's
   // `chunks.length === 0` and AgentMessageItem's empty-array fallback on
   // their existing code paths.
   if (length === 0) return [];
-  const brand: ChunkView[typeof CHUNK_VIEW] = { backing, length };
+  const brand: ChunkViewBrand = { backing, length, text: text ?? backing.slice(0, length).join("") };
   const target: string[] = [];
-  return new Proxy(target, {
-    get(t, prop, receiver) {
-      if (prop === CHUNK_VIEW) return brand;
-      if (prop === "length") return length;
-      if (typeof prop === "string") {
-        const i = chunkIndex(prop);
-        if (i !== undefined) return i < length ? backing[i] : undefined;
-      }
-      return Reflect.get(t, prop, receiver);
-    },
-    has(t, prop) {
-      if (typeof prop === "string") {
-        const i = chunkIndex(prop);
-        if (i !== undefined) return i < length;
-      }
-      return Reflect.has(t, prop);
-    },
-    ownKeys() {
-      const keys: string[] = [];
-      for (let i = 0; i < length; i++) keys.push(String(i));
-      keys.push("length");
-      return keys;
-    },
-    getOwnPropertyDescriptor(t, prop) {
-      if (prop === "length") return { value: length, writable: true, enumerable: false, configurable: false };
-      if (typeof prop === "string") {
-        const i = chunkIndex(prop);
-        if (i !== undefined) {
-          if (i >= length) return undefined;
-          return { value: backing[i], writable: true, enumerable: true, configurable: true };
-        }
-      }
-      return Reflect.getOwnPropertyDescriptor(t, prop);
-    },
-    set() {
-      throw new TypeError("pendingText views are immutable (append via the reducer)");
-    },
-    deleteProperty() {
-      throw new TypeError("pendingText views are immutable (append via the reducer)");
-    },
-    defineProperty() {
-      throw new TypeError("pendingText views are immutable (append via the reducer)");
-    },
-    preventExtensions() {
-      throw new TypeError("pendingText views are immutable (append via the reducer)");
-    },
-  });
-}
-
-// The first chunk of an item. Owns a fresh backing — the item had no
-// chunks, so there is nothing to share.
-function firstChunkView(delta: string): string[] {
-  const backing: string[] = [delta];
-  return chunkView(backing, 1);
+  // configurable (not frozen) is REQUIRED by the Proxy invariants: a
+  // non-configurable target prop would force ownKeys to report the symbol,
+  // breaking toEqual/spread/JSON structural invisibility. Configurable, the
+  // traps below may hide it — exactly like the old closure-carried brand.
+  Object.defineProperty(target, CHUNK_VIEW, { value: brand, enumerable: false, writable: true, configurable: true });
+  return new Proxy(target, CHUNK_VIEW_HANDLER);
 }
 
 // Appends `delta` to `item.pendingText`, O(1). Fast path: the item's view
@@ -214,15 +241,34 @@ function firstChunkView(delta: string): string[] {
 // only correct option there: pushing onto the old view's backing would
 // overwrite a chunk some other view already reads, and pushing onto a plain
 // array would mutate an array the caller may still hold.
-function appendChunk(item: { pendingText?: string[] }, delta: string): string[] {
-  const current = item.pendingText;
-  if (current === undefined) return firstChunkView(delta);
-  const backing = viewBacking(current);
-  if (backing !== undefined && viewLength(current) === backing.length) {
-    backing.push(delta);
-    return chunkView(backing, backing.length);
+function appendChunk(current: string[] | undefined, delta: string): string[] {
+  if (current === undefined) return copyChunkPrefix([], delta);
+  const brand = chunkBrand(current);
+  if (brand !== undefined && brand.length === brand.backing.length) {
+    brand.backing.push(delta);
+    return chunkView(brand.backing, brand.backing.length, brand.text + delta);
   }
   return copyChunkPrefix(current, delta);
+}
+
+// The joined text of a pendingText value, O(1) for a live view (the brand
+// caches it per append) and a plain join for anything else (a plain array
+// from tests or hydrate). THE one read both hot consumers — settleItem's
+// finalize and AgentMessageItem's per-render markdown source — go through,
+// so the O(1) brand-cache read lives in exactly one place.
+export function pendingTextJoined(chunks: string[]): string {
+  const brand = chunkBrand(chunks);
+  if (brand !== undefined && brand.length === brand.backing.length) return brand.text;
+  return chunks.join("");
+}
+
+// Test-only white-box accessor: the backing array a view reads (undefined
+// for a plain array). The O(1) test discriminates append from copy by
+// asserting this reference is IDENTICAL across consecutive folds — the one
+// property a per-delta copy cannot fake (chunk strings are primitives, so
+// element-level Object.is survives a copy).
+export function chunkViewBackingForTests(chunks: string[]): string[] | undefined {
+  return chunkBrand(chunks)?.backing;
 }
 
 // Detached append: copies `chunks` (a plain array or a view) and appends.
@@ -392,7 +438,7 @@ function settleItem(item: ItemModel, now: number): ItemModel {
   if (pending === undefined && !stale && !needsObservedCompletion) return item;
   return {
     ...item,
-    text: pending === undefined ? item.text : item.text + pending.join(""),
+    text: pending === undefined ? item.text : item.text + pendingTextJoined(pending),
     pendingText: undefined,
     status: stale ? "completed" : item.status,
     observedCompletedAt: needsObservedCompletion ? epochMsToISO(now) : item.observedCompletedAt,
@@ -734,7 +780,7 @@ function appendReasoningDelta(item: ItemModel, summaryIndex: number, delta: stri
   const summaries = item.reasoningSummaries ? item.reasoningSummaries.slice() : [];
   while (summaries.length <= summaryIndex) summaries.push([]);
   const chunks = summaries[summaryIndex] ?? [];
-  summaries[summaryIndex] = appendChunk({ pendingText: chunks }, delta);
+  summaries[summaryIndex] = appendChunk(chunks, delta);
   return { ...item, reasoningSummaries: summaries, observedStartedAt: item.observedStartedAt ?? epochMsToISO(now) };
 }
 
@@ -928,12 +974,8 @@ function applyNotificationToThread(model: ThreadModel, n: AnyNotification, now: 
           ...turn,
           items: mapItem(turn.items, params.itemId, (item) => ({
             ...item,
-            // O(1): appends to the item's chunk backing without copying
-            // the accumulated chunks (appendChunk's copy-on-branch slow
-            // path handles the divergent-replay cases). The item spread
-            // above stays O(1) too: appendChunk returns a fresh view, and
-            // no other prop here reads pendingText.
-            pendingText: appendChunk(item, params.delta),
+            // O(1) — see appendChunk's doc comment.
+            pendingText: appendChunk(item.pendingText, params.delta),
           })),
         })),
         lastFrameAt: now,
