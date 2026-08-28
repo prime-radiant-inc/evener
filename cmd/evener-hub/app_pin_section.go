@@ -3,6 +3,7 @@ package hub
 import (
 	"context"
 	"errors"
+	"strings"
 	"time"
 
 	"primeradiant.com/evener/appwire"
@@ -44,16 +45,16 @@ func registerPinSectionHandlers(server *appserver.Server, cfg hubcore.WebConfig,
 		return appwire.PinSectionDeleteResponse{OK: true, Changed: changed, MemberCount: memberCount, Navigation: mutation}, nil
 	})
 
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionPinAssign, func(ctx context.Context, params appwire.SessionPinAssignParams) (appwire.SessionPinMutationResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionPinAssign, func(ctx context.Context, params appwire.SessionPinAssignParams) (appwire.SessionPinAssignResponse, error) {
 		if (params.SectionID == nil) == (params.SectionName == nil) {
-			return appwire.SessionPinMutationResponse{}, appwire.InvalidParams("exactly one of section_id or section_name is required")
+			return appwire.SessionPinAssignResponse{}, appwire.InvalidParams("exactly one of section_id or section_name is required")
 		}
 		if cfg.PinSections == nil {
-			return appwire.SessionPinMutationResponse{}, appwire.InternalError("pin section store not configured")
+			return appwire.SessionPinAssignResponse{}, appwire.InternalError("pin section store not configured")
 		}
 		sessionID, err := resolvePinSession(ctx, resolve, params.SessionRef, "session_ref")
 		if err != nil {
-			return appwire.SessionPinMutationResponse{}, err
+			return appwire.SessionPinAssignResponse{}, err
 		}
 
 		var section hubcore.PinSection
@@ -64,38 +65,37 @@ func registerPinSectionHandlers(server *appserver.Server, cfg hubcore.WebConfig,
 			section, changed, err = cfg.PinSections.CreateOrReuseAndAssign(*params.SectionName, sessionID, time.Now())
 		}
 		if err != nil {
-			return appwire.SessionPinMutationResponse{}, pinSectionAppWireError(err)
+			return appwire.SessionPinAssignResponse{}, pinSectionAppWireError(err)
 		}
 		mutation, err := commitPinNavigation(ctx, cfg, navigation, changed)
 		if err != nil {
-			return appwire.SessionPinMutationResponse{}, err
+			return appwire.SessionPinAssignResponse{}, err
 		}
-		wireSection := pinSectionForAppWire(section)
-		return appwire.SessionPinMutationResponse{
+		return appwire.SessionPinAssignResponse{
 			OK: true, Changed: changed, Navigation: mutation,
-			Assignment: appwire.SessionPinAssignment{SessionRef: hubRefFromTreeNodeID(sessionID).String(), Section: &wireSection},
+			Assignment: appwire.SessionPinAssignment{SessionRef: hubRefFromTreeNodeID(sessionID).String(), Section: pinSectionForAppWire(section)},
 		}, nil
 	})
 
-	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionPinUnpin, func(ctx context.Context, params appwire.SessionPinUnpinParams) (appwire.SessionPinMutationResponse, error) {
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSessionPinUnpin, func(ctx context.Context, params appwire.SessionPinUnpinParams) (appwire.SessionPinUnpinResponse, error) {
 		if cfg.PinSections == nil {
-			return appwire.SessionPinMutationResponse{}, appwire.InternalError("pin section store not configured")
+			return appwire.SessionPinUnpinResponse{}, appwire.InternalError("pin section store not configured")
 		}
-		sessionID, err := resolvePinSession(ctx, resolve, params.SessionRef, "ref")
+		sessionID, err := resolvePinSession(ctx, resolve, params.SessionRef, "session_ref")
 		if err != nil {
-			return appwire.SessionPinMutationResponse{}, err
+			return appwire.SessionPinUnpinResponse{}, err
 		}
 		changed, err := cfg.PinSections.Unpin(sessionID)
 		if err != nil {
-			return appwire.SessionPinMutationResponse{}, pinSectionAppWireError(err)
+			return appwire.SessionPinUnpinResponse{}, pinSectionAppWireError(err)
 		}
 		mutation, err := commitPinNavigation(ctx, cfg, navigation, changed)
 		if err != nil {
-			return appwire.SessionPinMutationResponse{}, err
+			return appwire.SessionPinUnpinResponse{}, err
 		}
-		return appwire.SessionPinMutationResponse{
+		return appwire.SessionPinUnpinResponse{
 			OK: true, Changed: changed, Navigation: mutation,
-			Assignment: appwire.SessionPinAssignment{SessionRef: hubRefFromTreeNodeID(sessionID).String()},
+			Assignment: appwire.SessionPinUnpinAssignment{SessionRef: hubRefFromTreeNodeID(sessionID).String()},
 		}, nil
 	})
 }
@@ -144,7 +144,7 @@ func pinSectionAppWireError(err error) error {
 }
 
 func (s *WebServer) resolveTopLevelSessionRef(ctx context.Context, requested string) (string, bool) {
-	if len(requested) >= len("cluster:") && requested[:len("cluster:")] == "cluster:" {
+	if strings.HasPrefix(requested, "cluster:") {
 		return "", false
 	}
 	metas, live, _ := s.navigationTreeInputs(ctx)

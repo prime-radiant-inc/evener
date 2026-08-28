@@ -86,7 +86,7 @@ func TestAppWireArchiveNavigationNoOpAndUnknownProjectSemantics(t *testing.T) {
 		Archive:  hubcore.NewArchiveStore(dir + "/archive.db"),
 	})
 	web.navigation = newTestNavigationService(t, source)
-	web.appRPC = newHubAppServerWithNavigation(web.cfg, web.sources, web.navigation)
+	web.appRPC = newHubAppServerWithNavigation(web.cfg, web.sources, web.navigation, web.resolveTopLevelSessionRef)
 	if _, err := web.navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
 		t.Fatal(err)
 	}

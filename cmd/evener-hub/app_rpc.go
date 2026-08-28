@@ -134,10 +134,10 @@ func hubLaunchConfigRoot(cfg hubcore.WebConfig) string {
 }
 
 func newHubAppServer(cfg hubcore.WebConfig, sources *appsource.Registry) *appserver.Server {
-	return newHubAppServerWithNavigation(cfg, sources, nil)
+	return newHubAppServerWithNavigation(cfg, sources, nil, nil)
 }
 
-func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService) *appserver.Server {
+func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Registry, navigation *NavigationService, resolve topLevelSessionResolver) *appserver.Server {
 	capability := &appwire.NavigationCapability{Version: 1}
 	var capabilityProvider func() *appwire.NavigationCapability
 	if navigation != nil {
@@ -206,7 +206,7 @@ func newHubAppServerWithNavigation(cfg hubcore.WebConfig, sources *appsource.Reg
 	registerFavoriteHandler(server, cfg, navigation)
 	registerArchiveHandler(server, cfg, func() *NavigationService { return navigation })
 	registerSessionDeleteHandler(server, nil)
-	registerPinSectionHandlers(server, cfg, navigation, nil)
+	registerPinSectionHandlers(server, cfg, navigation, resolve)
 	registerMiscHandlers(server, cfg, sources)
 	registerPluginAutoUpgradeHandlers(server, plugins.NewManager(cfg.PluginRoot))
 	registerTranscriptDisplayHandlers(server, cfg.TranscriptDisplayStore)

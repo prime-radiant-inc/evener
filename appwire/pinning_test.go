@@ -13,8 +13,8 @@ func TestPinningMethodsAreHubScopedWithTypedContracts(t *testing.T) {
 	}{
 		MethodEvenerPinSectionRename: {PinSectionRenameParams{}, PinSectionRenameResponse{}},
 		MethodEvenerPinSectionDelete: {PinSectionDeleteParams{}, PinSectionDeleteResponse{}},
-		MethodEvenerSessionPinAssign: {SessionPinAssignParams{}, SessionPinMutationResponse{}},
-		MethodEvenerSessionPinUnpin:  {SessionPinUnpinParams{}, SessionPinMutationResponse{}},
+		MethodEvenerSessionPinAssign: {SessionPinAssignParams{}, SessionPinAssignResponse{}},
+		MethodEvenerSessionPinUnpin:  {SessionPinUnpinParams{}, SessionPinUnpinResponse{}},
 	}
 	for _, method := range Methods {
 		contract, ok := want[method.Name]
@@ -51,8 +51,8 @@ func TestPinningWireShapes(t *testing.T) {
 		{"unpin params", SessionPinUnpinParams{SessionRef: "local:session-a"}, `{"session_ref":"local:session-a"}`},
 		{"rename response", PinSectionRenameResponse{OK: true, Changed: true, Section: PinSection{ID: "section-a", Name: "Research", MemberCount: 2}, Navigation: navigation}, `{"ok":true,"changed":true,"section":{"id":"section-a","name":"Research","member_count":2},"navigation":{"generation_id":"generation-a","targets":[]}}`},
 		{"delete response", PinSectionDeleteResponse{OK: true, Changed: true, MemberCount: 2, Navigation: navigation}, `{"ok":true,"changed":true,"member_count":2,"navigation":{"generation_id":"generation-a","targets":[]}}`},
-		{"assign response", SessionPinMutationResponse{OK: true, Changed: true, Assignment: SessionPinAssignment{SessionRef: "local:session-a", Section: &PinSection{ID: "section-a", Name: "Research", MemberCount: 1}}, Navigation: navigation}, `{"ok":true,"changed":true,"assignment":{"session_ref":"local:session-a","section":{"id":"section-a","name":"Research","member_count":1}},"navigation":{"generation_id":"generation-a","targets":[]}}`},
-		{"unpin response", SessionPinMutationResponse{OK: true, Assignment: SessionPinAssignment{SessionRef: "local:session-a"}, Navigation: navigation}, `{"ok":true,"changed":false,"assignment":{"session_ref":"local:session-a"},"navigation":{"generation_id":"generation-a","targets":[]}}`},
+		{"assign response", SessionPinAssignResponse{OK: true, Changed: true, Assignment: SessionPinAssignment{SessionRef: "local:session-a", Section: PinSection{ID: "section-a", Name: "Research", MemberCount: 1}}, Navigation: navigation}, `{"ok":true,"changed":true,"assignment":{"session_ref":"local:session-a","section":{"id":"section-a","name":"Research","member_count":1}},"navigation":{"generation_id":"generation-a","targets":[]}}`},
+		{"unpin response", SessionPinUnpinResponse{OK: true, Assignment: SessionPinUnpinAssignment{SessionRef: "local:session-a"}, Navigation: navigation}, `{"ok":true,"changed":false,"assignment":{"session_ref":"local:session-a"},"navigation":{"generation_id":"generation-a","targets":[]}}`},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {

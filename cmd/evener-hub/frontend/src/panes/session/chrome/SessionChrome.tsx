@@ -31,7 +31,6 @@ import { SessionMenu } from "../../../shell/sessionMenu/SessionMenu";
 import { useIsMobile } from "../../../shell/useIsMobile";
 import { isPaneOpen, useWorkspaceStore, workspaceStore } from "../../../shell/workspace";
 import { useActivitySummaryStore } from "../../../stores/activitySummary";
-import { useConnectionStore } from "../../../stores/connection";
 import { selectLocation } from "../../../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../../../stores/navigation/store";
 import { isNavigationUnavailable } from "../../../stores/navigation/types";
@@ -77,7 +76,7 @@ export function SessionChrome({ ref: sessionRef, placement = "footer" }: Session
   const tasksOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionTasks", { ref: sessionRef }));
   const activityOpen = useWorkspaceStore((s) => isPaneOpen(s, "sessionActivity", { ref: sessionRef }));
   const activitySummary = useActivitySummaryStore((s) => s.entries.get(sessionRef));
-  const client = useConnectionStore((s) => s.client);
+  const client = useClient();
   // Route-demanded locations carry the authoritative owner/tier/pin metadata;
   // no project is expanded merely to decide menu eligibility.
   const navigation = useNavigationStore();
@@ -236,7 +235,6 @@ export function SessionChrome({ ref: sessionRef, placement = "footer" }: Session
             },
             onPin: async (target) => {
               try {
-                if (!client) throw new Error("pin action: no AppWire client connected");
                 const result = await assignSessionPin(client, sessionRef, target);
                 if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
               } catch (err) {
@@ -246,7 +244,6 @@ export function SessionChrome({ ref: sessionRef, placement = "footer" }: Session
             },
             onUnpin: async () => {
               try {
-                if (!client) throw new Error("unpin action: no AppWire client connected");
                 const result = await unpinSession(client, sessionRef);
                 if (result.navigation) await navigationStore.getState().applyNavigationMutation(result.navigation);
               } catch (err) {

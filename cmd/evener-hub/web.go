@@ -90,8 +90,7 @@ func NewWebServer(cfg hubcore.WebConfig) *WebServer {
 		web.cfg.LiveModels = web.fetchLiveModels
 	}
 	web.navigation = newNavigationService(navigationServiceConfig{Source: webNavigationSource{web: web}})
-	web.appRPC = newHubAppServerWithNavigation(web.cfg, sources, web.navigation)
-	registerPinSectionHandlers(web.appRPC, web.cfg, web.navigation, web.resolveTopLevelSessionRef)
+	web.appRPC = newHubAppServerWithNavigation(web.cfg, sources, web.navigation, web.resolveTopLevelSessionRef)
 	registerArchiveHandler(web.appRPC, web.cfg, func() *NavigationService { return web.navigation })
 	registerProjectDeleteHandler(web.appRPC, web)
 	registerSessionDeleteHandler(web.appRPC, web.sessionDelete)

@@ -13,7 +13,8 @@ import type {
   PinSectionRenameResponse,
   ProjectDeleteResponse,
   SessionDeleteResponse,
-  SessionPinMutationResponse,
+  SessionPinAssignResponse,
+  SessionPinUnpinResponse,
 } from "../../protocol/types.gen";
 import { connectionStore } from "../../stores/connection";
 
@@ -44,11 +45,11 @@ export async function assignSessionPin(
   client: AppwireClientLike,
   ref: string,
   target: { section_id: string } | { section_name: string },
-): Promise<SessionPinMutationResponse> {
+): Promise<SessionPinAssignResponse> {
   return client.request("evener/session-pin/assign", { session_ref: ref, ...target });
 }
 
-export async function unpinSession(client: AppwireClientLike, ref: string): Promise<SessionPinMutationResponse> {
+export async function unpinSession(client: AppwireClientLike, ref: string): Promise<SessionPinUnpinResponse> {
   return client.request("evener/session-pin/unpin", { session_ref: ref });
 }
 

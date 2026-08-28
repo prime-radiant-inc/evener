@@ -51,7 +51,7 @@ func TestHubFavoriteSetPersistsProjectAndPublishesNavigation(t *testing.T) {
 		PokeAttention: func() {
 			attentionCalls++
 		},
-	}, nil, navigation)
+	}, nil, navigation, nil)
 
 	response, err := dispatchFavoriteSet(t, server, appwire.FavoriteSetParams{
 		Kind:      "project",
@@ -88,7 +88,7 @@ func TestHubFavoriteSetPersistsProjectAndPublishesNavigation(t *testing.T) {
 }
 
 func TestHubFavoriteSetRejectsObsoleteOrInvalidKinds(t *testing.T) {
-	server := newHubAppServerWithNavigation(hubcore.WebConfig{Favorite: hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db"))}, nil, nil)
+	server := newHubAppServerWithNavigation(hubcore.WebConfig{Favorite: hubcore.NewFavoriteStore(filepath.Join(t.TempDir(), "favorites.db"))}, nil, nil, nil)
 	tests := []struct {
 		name    string
 		params  appwire.FavoriteSetParams
@@ -122,7 +122,7 @@ func TestHubFavoriteSetRejectsObsoleteOrInvalidKinds(t *testing.T) {
 }
 
 func TestHubFavoriteSetRequiresFavoriteStore(t *testing.T) {
-	server := newHubAppServerWithNavigation(hubcore.WebConfig{}, nil, nil)
+	server := newHubAppServerWithNavigation(hubcore.WebConfig{}, nil, nil, nil)
 	_, err := dispatchFavoriteSet(t, server, appwire.FavoriteSetParams{Kind: "project", ID: "p1", Favorited: true})
 	if err == nil {
 		t.Fatal("favorite set succeeded without a favorite store")

@@ -111,45 +111,45 @@ func TestHubSessionPinAssignAndUnpinPreserveCanonicalIdempotentReceipts(t *testi
 	}
 
 	name := "Research"
-	assigned, err := dispatchPinning[appwire.SessionPinMutationResponse](t, web, appwire.MethodEvenerSessionPinAssign, appwire.SessionPinAssignParams{SessionRef: "local:session-a", SectionName: &name})
+	assigned, err := dispatchPinning[appwire.SessionPinAssignResponse](t, web, appwire.MethodEvenerSessionPinAssign, appwire.SessionPinAssignParams{SessionRef: "local:session-a", SectionName: &name})
 	if err != nil {
 		t.Fatalf("assign by name: %v", err)
 	}
-	if !assigned.OK || !assigned.Changed || assigned.Assignment.SessionRef != "local:session-a" || assigned.Assignment.Section == nil || assigned.Assignment.Section.Name != "Research" || assigned.Assignment.Section.MemberCount != 1 {
+	if !assigned.OK || !assigned.Changed || assigned.Assignment.SessionRef != "local:session-a" || assigned.Assignment.Section.Name != "Research" || assigned.Assignment.Section.MemberCount != 1 {
 		t.Fatalf("assign response=%+v", assigned)
 	}
 	sectionID := assigned.Assignment.Section.ID
 	assertAppWirePinNavigationPublication(t, web, assigned.Navigation, []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetManifest}, {Kind: appwire.NavigationTargetPinCatalog}, {Kind: appwire.NavigationTargetPinSection, SectionID: sectionID}, {Kind: appwire.NavigationTargetProject, ProjectKey: "no-project"}})
 
 	normalized := " research "
-	repeat, err := dispatchPinning[appwire.SessionPinMutationResponse](t, web, appwire.MethodEvenerSessionPinAssign, appwire.SessionPinAssignParams{SessionRef: "session-a", SectionName: &normalized})
+	repeat, err := dispatchPinning[appwire.SessionPinAssignResponse](t, web, appwire.MethodEvenerSessionPinAssign, appwire.SessionPinAssignParams{SessionRef: "session-a", SectionName: &normalized})
 	if err != nil {
 		t.Fatalf("repeat assign: %v", err)
 	}
-	if !repeat.OK || repeat.Changed || repeat.Assignment.Section == nil || repeat.Assignment.Section.ID != sectionID || repeat.Assignment.Section.MemberCount != 1 {
+	if !repeat.OK || repeat.Changed || repeat.Assignment.Section.ID != sectionID || repeat.Assignment.Section.MemberCount != 1 {
 		t.Fatalf("repeat assign response=%+v", repeat)
 	}
 	assertAppWirePinNoNavigation(t, web, repeat.Navigation, assigned.Navigation.GenerationID)
 
-	byID, err := dispatchPinning[appwire.SessionPinMutationResponse](t, web, appwire.MethodEvenerSessionPinAssign, appwire.SessionPinAssignParams{SessionRef: "local:session-b", SectionID: &sectionID})
+	byID, err := dispatchPinning[appwire.SessionPinAssignResponse](t, web, appwire.MethodEvenerSessionPinAssign, appwire.SessionPinAssignParams{SessionRef: "local:session-b", SectionID: &sectionID})
 	if err != nil {
 		t.Fatalf("assign by id: %v", err)
 	}
-	if !byID.Changed || byID.Assignment.Section == nil || byID.Assignment.Section.MemberCount != 2 {
+	if !byID.Changed || byID.Assignment.Section.MemberCount != 2 {
 		t.Fatalf("assign by id response=%+v", byID)
 	}
 	assertAppWirePinNavigationPublication(t, web, byID.Navigation, []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetPinCatalog}, {Kind: appwire.NavigationTargetPinSection, SectionID: sectionID}, {Kind: appwire.NavigationTargetProject, ProjectKey: "no-project"}})
 
-	unpinned, err := dispatchPinning[appwire.SessionPinMutationResponse](t, web, appwire.MethodEvenerSessionPinUnpin, appwire.SessionPinUnpinParams{SessionRef: "local:session-a"})
+	unpinned, err := dispatchPinning[appwire.SessionPinUnpinResponse](t, web, appwire.MethodEvenerSessionPinUnpin, appwire.SessionPinUnpinParams{SessionRef: "local:session-a"})
 	if err != nil {
 		t.Fatalf("unpin: %v", err)
 	}
-	if !unpinned.OK || !unpinned.Changed || unpinned.Assignment.SessionRef != "local:session-a" || unpinned.Assignment.Section != nil {
+	if !unpinned.OK || !unpinned.Changed || unpinned.Assignment.SessionRef != "local:session-a" {
 		t.Fatalf("unpin response=%+v", unpinned)
 	}
 	assertAppWirePinNavigationPublication(t, web, unpinned.Navigation, []appwire.NavigationInvalidationTarget{{Kind: appwire.NavigationTargetPinCatalog}, {Kind: appwire.NavigationTargetPinSection, SectionID: sectionID}, {Kind: appwire.NavigationTargetProject, ProjectKey: "no-project"}})
 
-	repeatUnpin, err := dispatchPinning[appwire.SessionPinMutationResponse](t, web, appwire.MethodEvenerSessionPinUnpin, appwire.SessionPinUnpinParams{SessionRef: "local:session-a"})
+	repeatUnpin, err := dispatchPinning[appwire.SessionPinUnpinResponse](t, web, appwire.MethodEvenerSessionPinUnpin, appwire.SessionPinUnpinParams{SessionRef: "local:session-a"})
 	if err != nil {
 		t.Fatalf("repeat unpin: %v", err)
 	}

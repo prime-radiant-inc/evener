@@ -1317,20 +1317,31 @@ export interface SessionPinAssignParams {
   section_name?: string;
 }
 
-export interface SessionPinAssignment {
-  session_ref: string;
-  section?: PinSection;
-}
-
-export interface SessionPinMutationResponse {
+export interface SessionPinAssignResponse {
   ok: boolean;
   changed: boolean;
   assignment: SessionPinAssignment;
   navigation: NavigationMutation;
 }
 
+export interface SessionPinAssignment {
+  session_ref: string;
+  section: PinSection;
+}
+
+export interface SessionPinUnpinAssignment {
+  session_ref: string;
+}
+
 export interface SessionPinUnpinParams {
   session_ref: string;
+}
+
+export interface SessionPinUnpinResponse {
+  ok: boolean;
+  changed: boolean;
+  assignment: SessionPinUnpinAssignment;
+  navigation: NavigationMutation;
 }
 
 export interface SettingsAgentEntry {
@@ -2141,8 +2152,8 @@ export interface MethodTypes {
   "evener/session/delete": { params: SessionDeleteParams; result: SessionDeleteResponse };
   "evener/pin-section/rename": { params: PinSectionRenameParams; result: PinSectionRenameResponse };
   "evener/pin-section/delete": { params: PinSectionDeleteParams; result: PinSectionDeleteResponse };
-  "evener/session-pin/assign": { params: SessionPinAssignParams; result: SessionPinMutationResponse };
-  "evener/session-pin/unpin": { params: SessionPinUnpinParams; result: SessionPinMutationResponse };
+  "evener/session-pin/assign": { params: SessionPinAssignParams; result: SessionPinAssignResponse };
+  "evener/session-pin/unpin": { params: SessionPinUnpinParams; result: SessionPinUnpinResponse };
   "evener/search": { params: SearchParams; result: SearchResponse };
   "evener/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };
   "evener/upgrade": { params: UpgradeParams; result: UpgradeResponse };

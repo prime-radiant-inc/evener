@@ -12,6 +12,7 @@ import {
   selectNeedsYouCount,
   selectNeedsYouRows,
   selectNextSectionOffset,
+  selectPinSectionSummaries,
   selectPinSections,
   selectProjectPage,
   selectProjectResource,
@@ -672,6 +673,7 @@ test("selectors expose every loaded global/pin page, location, project/page reso
   await navigationStore.getState().lookupLocation("loc");
   const state = navigationStore.getState();
   expect(selectGlobalRows(state).map((row) => row.ref)).toEqual(["s", "s2"]);
+  expect(selectPinSectionSummaries(state)).toEqual([{ id: "pin", name: "Pinned", member_count: 2 }]);
   expect(selectPinSections(state).map((section) => [section.id, section.sessions.map((row) => row.ref)])).toEqual([
     ["pin", ["p1", "p2"]],
   ]);

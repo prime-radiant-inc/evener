@@ -3,7 +3,7 @@ import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { act, cleanup, render as renderUI, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import type { ReactElement } from "react";
+import type { ComponentProps, ReactElement } from "react";
 import { afterEach, beforeEach, expect, test, vi } from "vitest";
 import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type {
@@ -22,7 +22,7 @@ import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads
 import "../../sessionPanels";
 import { ActivityPanelBody } from "./ActivityPanel";
 import { resetGoalOverridesForTests } from "./GoalControl";
-import { SessionChrome } from "./SessionChrome";
+import { SessionChrome as SessionChromeView } from "./SessionChrome";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -125,8 +125,19 @@ function setLocation(ref: string): void {
   });
 }
 
+let chromeClient = new FakeClient("ready");
+
+function SessionChrome(props: ComponentProps<typeof SessionChromeView>) {
+  return (
+    <ClientProvider client={chromeClient}>
+      <SessionChromeView {...props} />
+    </ClientProvider>
+  );
+}
+
 function connectFakeClient(): FakeClient {
   const fake = new FakeClient("ready");
+  chromeClient = fake;
   connectionStore.getState().connect(fake);
   return fake;
 }
@@ -137,6 +148,7 @@ function render(ui: ReactElement) {
 }
 
 beforeEach(() => {
+  chromeClient = new FakeClient("ready");
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
   resetWorkspaceStoreForTests();
@@ -349,6 +361,7 @@ test("session-menu pin assignment uses typed AppWire and converges its navigatio
   });
   await threadsStore.getState().ensureThread("ref_pin");
   setLocation("ref_pin");
+  connectionStore.setState({ client: new FakeClient("ready") });
   const pinKey = { kind: "pin_catalog", offset: 0, limit: 100 } as const;
   const pinCatalog = {
     key: pinKey,

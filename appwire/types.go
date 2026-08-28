@@ -400,15 +400,26 @@ type SessionPinUnpinParams struct {
 }
 
 type SessionPinAssignment struct {
-	SessionRef string      `json:"session_ref"`
-	Section    *PinSection `json:"section,omitempty"`
+	SessionRef string     `json:"session_ref"`
+	Section    PinSection `json:"section"`
 }
 
-type SessionPinMutationResponse struct {
+type SessionPinAssignResponse struct {
 	OK         bool                 `json:"ok"`
 	Changed    bool                 `json:"changed"`
 	Assignment SessionPinAssignment `json:"assignment"`
 	Navigation NavigationMutation   `json:"navigation"`
+}
+
+type SessionPinUnpinAssignment struct {
+	SessionRef string `json:"session_ref"`
+}
+
+type SessionPinUnpinResponse struct {
+	OK         bool                      `json:"ok"`
+	Changed    bool                      `json:"changed"`
+	Assignment SessionPinUnpinAssignment `json:"assignment"`
+	Navigation NavigationMutation        `json:"navigation"`
 }
 
 // SearchParams selects matching live and past sessions for the hub command

@@ -9,7 +9,11 @@ import type {
   NavigationSessionSummary,
 } from "../../protocol/types.gen";
 import { useConnectionStore } from "../../stores/connection";
-import { selectAttentionSummary, selectPinSections } from "../../stores/navigation/selectors";
+import {
+  selectAttentionSummary,
+  selectPinSectionSummaries,
+  selectPinSections,
+} from "../../stores/navigation/selectors";
 import { navigationStore, useNavigationStore } from "../../stores/navigation/store";
 import { keyID, type ResourceKey, type ResourceState } from "../../stores/navigation/types";
 import { threadsStore } from "../../stores/threads";
@@ -813,15 +817,12 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
               source: session,
               section: { ...section, member_count: section.member_count },
             }
-          : (result) => {
-              if (!result.assignment.section) throw new Error("pin assignment response omitted its section");
-              return {
-                kind: "sessionPin",
-                ref: session.ref,
-                source: session,
-                section: { ...result.assignment.section },
-              };
-            },
+          : (result) => ({
+              kind: "sessionPin",
+              ref: session.ref,
+              source: session,
+              section: { ...result.assignment.section },
+            }),
         true,
       ),
     onUnpinRequest: (session) =>
@@ -963,7 +964,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
     try {
       await navigationStore.getState().loadPinCatalog();
       if (token !== sectionDeleteRequestToken.current) return;
-      const summaries = selectPinSections(navigationStore.getState());
+      const summaries = selectPinSectionSummaries(navigationStore.getState());
       const durable = summaries.find((candidate) => candidate.id === section.id);
       if (!durable) throw new Error("pin section not found");
       setSectionDeleteTarget({ section, memberCount: durable.member_count });
