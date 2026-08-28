@@ -14,6 +14,10 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 )
 
+func topLevelMeta(id string) schema.SessionMeta {
+	return schema.SessionMeta{ID: id, UpdatedAt: timeNowForTest()}
+}
+
 func newPinNavigationAppWireWeb(t *testing.T, withSection bool) (*WebServer, *hubcore.PinSection) {
 	t.Helper()
 	past := hubcore.NewPastIndex("")

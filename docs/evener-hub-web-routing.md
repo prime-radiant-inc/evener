@@ -52,8 +52,9 @@ left to fragment-route.
 - Project identity is the full working directory, not its basename — two
   same-named projects at different paths get distinct slug-based keys
   instead of colliding into one node.
-- Project favorites use the typed `evener/favorite/set` method; favorited
-  sessions surface in a Pinned tier through the separate session-pin API.
+- Project favorites use the typed `evener/favorite/set` method; session pins
+  use the typed `evener/session-pin/assign` and `evener/session-pin/unpin`
+  methods plus the navigation pin catalog.
 - A project and every session under it can be deleted in one action
   (`evener/project/delete`).
 - Test-run sessions are classified into their own tier server-side, in

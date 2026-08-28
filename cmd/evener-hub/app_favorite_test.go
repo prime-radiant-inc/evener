@@ -97,7 +97,7 @@ func TestHubFavoriteSetRejectsObsoleteOrInvalidKinds(t *testing.T) {
 		{
 			name:    "session",
 			params:  appwire.FavoriteSetParams{Kind: "session", ID: "local:s1", Favorited: true},
-			message: "/api/session-pin",
+			message: "evener/session-pin/assign",
 		},
 		{
 			name:    "unknown kind",
