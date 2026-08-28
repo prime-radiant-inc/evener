@@ -205,20 +205,13 @@ test("shutdown failure toasts an error", async () => {
   expect(screen.getByRole("dialog", { name: "Shut down this session?" })).toBeTruthy();
 });
 
-// --- v1 rename convergence (R49 finding 1) ---
+// --- v1 rename transport ---
 
-test("v1 rename uses HTTP renameSession and applies the navigation mutation", async () => {
+test("v1 navigation mode still renames through AppWire", async () => {
   const user = userEvent.setup();
-  const fetchMock = vi.fn();
-  fetchMock.mockResolvedValue(
-    okResponse({
-      navigation: { generation_id: "generation_test", targets: [{ kind: "all_loaded_projects" }] },
-    }),
-  );
-  vi.stubGlobal("fetch", fetchMock);
-
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_v1rename", { name: "Old" }));
+  fake.on("evener/thread/name/set", () => ({}));
   await threadsStore.getState().ensureThread("ref_v1rename");
   setLocation("ref_v1rename");
 
@@ -233,37 +226,11 @@ test("v1 rename uses HTTP renameSession and applies the navigation mutation", as
   await user.click(screen.getByRole("button", { name: "Rename" }));
 
   await waitFor(() => {
-    expect(fetchMock).toHaveBeenCalledWith(
-      "/api/sessions/ref_v1rename/rename",
-      expect.objectContaining({ method: "POST", body: JSON.stringify({ name: "New Name" }) }),
-    );
+    expect(fake.calls).toContainEqual({
+      method: "evener/thread/name/set",
+      params: { ref: "ref_v1rename", name: "New Name" },
+    });
   });
-});
-
-test("v1 rename failure toasts an error and leaves the dialog open", async () => {
-  const user = userEvent.setup();
-  const fetchMock = vi.fn();
-  fetchMock.mockResolvedValue(failResponse(500, { error: "rename blocked" }));
-  vi.stubGlobal("fetch", fetchMock);
-
-  const fake = connectFakeClient();
-  fake.on("thread/read", () => readResponse("ref_v1rfail", { name: "Old" }));
-  await threadsStore.getState().ensureThread("ref_v1rfail");
-  setLocation("ref_v1rfail");
-
-  renderWithToast(<SessionChrome ref="ref_v1rfail" />);
-  await user.click(screen.getByRole("button", { name: /session actions/i }));
-  await user.click(screen.getByRole("menuitem", { name: "Rename" }));
-  const dialog = await screen.findByRole("dialog");
-  const input = dialog.querySelector("input");
-  if (!input) throw new Error("rename dialog missing its input");
-  await user.clear(input);
-  await user.type(input, "New Name");
-  await user.click(screen.getByRole("button", { name: "Rename" }));
-
-  expect(await screen.findByText("Couldn't rename session: rename blocked")).toBeTruthy();
-  const openDialog = screen.getByRole("dialog", { name: "Rename session" });
-  expect(within(openDialog).getByRole("button", { name: "Rename" }).hasAttribute("disabled")).toBe(false);
 });
 
 // --- v1 shutdown convergence (R49 finding 1) ---

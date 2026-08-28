@@ -51,9 +51,7 @@ async function requestJSON<T>(url: string, init: RequestInit): Promise<T> {
   return (await res.json()) as T;
 }
 
-// postJSON POSTs `body` as JSON and returns the parsed JSON response - except
-// for a 204 No Content (handleAPIRename's success path), which resolves to
-// undefined rather than attempting to parse an empty body as JSON.
+// postJSON POSTs `body` as JSON and returns the parsed JSON response.
 async function postJSON<T>(url: string, body: unknown): Promise<T> {
   const res = await fetch(url, {
     method: "POST",
@@ -62,7 +60,6 @@ async function postJSON<T>(url: string, body: unknown): Promise<T> {
     body: JSON.stringify(body),
   });
   if (!res.ok) throw new RailRequestError(await parseErrorBody(res), res.status);
-  if (res.status === 204) return undefined as T;
   return (await res.json()) as T;
 }
 
@@ -131,14 +128,6 @@ export async function deletePinSection(
   id: string,
 ): Promise<NavigationMutationReceipt & { ok: true; changed: boolean; member_count: number }> {
   return requestJSON(`/api/pin-sections/${encodeURIComponent(id)}`, { method: "DELETE" });
-}
-
-/** POST /api/sessions/{ref}/rename. Body: {name}. ref is URL-escaped - the
- * dispatcher (handleAPISession) url.PathUnescape()s the first path segment
- * after /api/sessions/, which is how a ref containing "/" or ":" survives
- * routing intact. */
-export async function renameSession(ref: string, name: string): Promise<NavigationMutationReceipt> {
-  return postJSON(`/api/sessions/${encodeURIComponent(ref)}/rename`, { name });
 }
 
 /** Sets an archive decision through evener/archive/set. workingDir is required

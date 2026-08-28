@@ -1199,8 +1199,6 @@ func (s *WebServer) handleAPISession(w http.ResponseWriter, r *http.Request) {
 		s.handleAPIModel(w, r, routeID)
 	case "reasoning-effort":
 		s.handleAPIReasoningEffort(w, r, routeID)
-	case "rename":
-		s.handleAPIRename(w, r, routeID)
 	case "delete":
 		s.handleAPISessionDelete(w, r, routeID)
 	case "interrupt", "compact", "shutdown":

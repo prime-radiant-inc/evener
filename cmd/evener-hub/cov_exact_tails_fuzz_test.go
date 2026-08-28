@@ -180,20 +180,6 @@ func FuzzExactTails(f *testing.F) {
 		liveWeb.sources = appsource.NewRegistry()
 		liveWeb.handleAPIModel(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"model":"p/m"}`)), "live-a")
 		liveWeb.handleAPIReasoningEffort(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"reasoning_effort":"high"}`)), "live-a")
-		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
-
-		// Model a rename race: the first liveness check is stale, while the
-		// pre-write roster recheck observes the resumed session.
-		oldRenameLive := isLiveForRename
-		isLiveForRename = func(*WebServer, string) bool { return false }
-		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
-		liveWeb.sources.Add(&scriptedAppSource{id: "local"})
-		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
-		liveWeb.sources = appsource.NewRegistry()
-		liveWeb.sources.Add(&exactNameSource{scriptedAppSource: &scriptedAppSource{id: "local"}})
-		liveWeb.cfg.Past = past
-		liveWeb.handleAPIRename(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader(`{"name":"new"}`)), "live-a")
-		isLiveForRename = oldRenameLive
 
 		oldManagedList := ensureManagedCodexSourcesForList
 		ensureManagedCodexSourcesForList = func(context.Context, hubcore.WebConfig, *appsource.Registry, appwire.ThreadListParams) error {

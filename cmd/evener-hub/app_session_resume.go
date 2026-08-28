@@ -45,19 +45,6 @@ func withSessionResume[R any](
 	return attempt()
 }
 
-func setThreadNameWithResume(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, params appwire.ThreadNameSetParams) (appwire.EmptyResponse, error) {
-	return withSessionResume(ctx, cfg, sources, params.Ref, func() (appwire.EmptyResponse, error) {
-		source, err := sourceForThreadWithManagedLaunchUnlocked(ctx, cfg, sources, params.Ref, "")
-		if err != nil {
-			return appwire.EmptyResponse{}, err
-		}
-		if err := ensureThreadActionAvailable(ctx, source, params.Ref, "", "rename"); err != nil {
-			return appwire.EmptyResponse{}, err
-		}
-		return appwire.EmptyResponse{}, source.SetThreadName(ctx, params)
-	})
-}
-
 // shutdownThreadTolerateExited runs thread/shutdown and treats an
 // already-exited session as a no-op success. Shutdown's goal is a stopped
 // daemon; if the session the hub knows is already gone, that goal is met, so

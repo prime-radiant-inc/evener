@@ -41,7 +41,6 @@ import {
   listPinSections,
   type NavigationMutationReceipt,
   renamePinSection,
-  renameSession,
   setArchived,
   setFavorite,
   unpinSession,
@@ -767,7 +766,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
     },
     onRenameSession: (session, name) =>
       runAction(
-        () => renameSession(session.ref, name),
+        () => threadsStore.getState().rename(session.ref, name),
         "Couldn't rename session",
         { kind: "sessionTitle", ref: session.ref, title: name },
         true,

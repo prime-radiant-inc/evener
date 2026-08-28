@@ -160,7 +160,7 @@ func FuzzSessionResiduePass5(f *testing.F) {
 				"/api/sessions/remote%3Athread-5", "/api/sessions/remote%3Athread-5/details",
 				"/api/sessions/remote%3Athread-5/tasks", "/api/sessions/remote%3Athread-5/fork",
 				"/api/sessions/remote%3Athread-5/clear", "/api/sessions/remote%3Athread-5/model",
-				"/api/sessions/remote%3Athread-5/reasoning-effort", "/api/sessions/remote%3Athread-5/rename",
+				"/api/sessions/remote%3Athread-5/reasoning-effort",
 				"/api/sessions/remote%3Athread-5/interrupt", "/api/sessions/remote%3Athread-5/compact",
 			} {
 				web.handleAPISession(httptest.NewRecorder(), httptest.NewRequest(http.MethodPut, target, strings.NewReader(`{}`)))

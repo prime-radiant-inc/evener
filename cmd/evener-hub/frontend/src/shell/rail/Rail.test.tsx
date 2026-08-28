@@ -584,22 +584,20 @@ describe("resource-backed Rail", () => {
     expect(screen.queryByRole("treeitem", { name: /keyboard child/i })).toBeNull();
   });
   test("routes rename through the rendered session menu and dialog", async () => {
-    const applyNavigationMutation = vi.fn().mockResolvedValue(undefined);
     installState([sectionResource("live", [summary({ title: "Rename me", rename: true })])]);
-    navigationStore.setState({ applyNavigationMutation });
-    const fetchMock = vi.fn().mockResolvedValue(jsonResponse({ navigation: { generation_id: "g1", targets: [] } }));
-    vi.stubGlobal("fetch", fetchMock);
-    render(<Rail />);
+    const client = new FakeClient();
+    client.on("evener/thread/name/set", () => ({}));
+    connectionStore.getState().connect(client);
+    render(<Rail />, client);
     fireEvent.click(screen.getByRole("button", { name: /actions for rename me/i }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Rename" }));
     fireEvent.change(screen.getByLabelText("Name"), { target: { value: "Renamed" } });
     fireEvent.click(screen.getByRole("button", { name: "Rename" }));
     await act(async () => undefined);
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/api/sessions/local%3Aa/rename"),
-      expect.anything(),
-    );
-    expect(applyNavigationMutation).toHaveBeenCalledTimes(1);
+    expect(client.calls).toContainEqual({
+      method: "evener/thread/name/set",
+      params: { ref: "local:a", name: "Renamed" },
+    });
   });
   test("routes project favorite through the rendered project menu", async () => {
     const applyNavigationMutation = vi.fn().mockResolvedValue(undefined);
