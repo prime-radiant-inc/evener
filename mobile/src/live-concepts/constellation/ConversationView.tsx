@@ -7,6 +7,7 @@ import type { LiveTranscriptItem } from "../model";
 import { Disclosure } from "../shared/Disclosure";
 import { Icon } from "../shared/Icon";
 import { StatusLabel } from "../shared/StatusLabel";
+import { mutationAxLabel, transcriptItemAxLabel } from "../smoke-semantics";
 
 export interface ConversationViewProps {
   state: LiveConceptState;
@@ -308,6 +309,7 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
                   ? "true"
                   : undefined
               }
+              aria-label={transcriptItemAxLabel(item)}
               tabIndex={ui.focusedItemKey === item.key ? -1 : undefined}
               key={item.key}
             >
@@ -327,11 +329,22 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
           data-pending-mutation="true"
           role="status"
           aria-live="polite"
+          aria-label={mutationAxLabel(composer) ?? undefined}
         >
           <span>
             {composer.pending.status === "failed" ? "Failed" : "Sending"}{" "}
             {composer.pending.kind}…
           </span>
+        </section>
+      ) : null}
+
+      {composer.pending === null && composer.accepted ? (
+        <section
+          className="co-pending-mutation"
+          role="status"
+          aria-label={mutationAxLabel(composer) ?? undefined}
+        >
+          {composer.accepted.kind} accepted
         </section>
       ) : null}
 
@@ -347,6 +360,7 @@ export function ConversationView({ state, dispatch }: ConversationViewProps) {
           {COMPOSER_MODES.map((mode) => (
             <button
               type="button"
+              aria-label={`Use ${mode} mode`}
               aria-pressed={ui.composerMode === mode}
               disabled={pending || !capabilityForMode(composer, mode)}
               key={mode}

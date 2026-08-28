@@ -2,6 +2,7 @@ import type { CSSProperties, ReactNode } from "react";
 import type { LiveConceptIntent, LiveConceptState } from "../contract";
 import type { LiveConceptSurface } from "../model";
 import { Icon } from "../shared/Icon";
+import { conceptRootAxLabel } from "../smoke-semantics";
 
 // Live adaptation of the Field Notes shell. Carries the live platform,
 // appearance, text-scale, and reduced-motion state; renders the topbar with
@@ -55,7 +56,7 @@ export function FieldNotesShell({
       : "max(0.75rem, var(--fn-edge-top))";
 
   return (
-    <div
+    <section
       className="concept-field-notes"
       data-concept-root
       data-platform={platform}
@@ -72,6 +73,7 @@ export function FieldNotesShell({
           ? "reduced"
           : "full"
       }
+      aria-label={conceptRootAxLabel(state)}
       style={edgeStyles(platform)}
     >
       <main
@@ -143,6 +145,6 @@ export function FieldNotesShell({
           {children}
         </div>
       </main>
-    </div>
+    </section>
   );
 }

@@ -1,6 +1,7 @@
 import type { LiveConceptIntent, LiveConceptState } from "../contract";
 import type { LiveRosterView } from "../model";
 import { StatusLabel } from "../shared/StatusLabel";
+import { rosterAxLabel, rosterRowAxLabel } from "../smoke-semantics";
 
 export interface SessionsViewProps {
   state: LiveConceptState;
@@ -75,6 +76,7 @@ export function SessionsView({ state, dispatch }: SessionsViewProps) {
         data-refresh-state={roster.status}
         role="status"
         aria-live="polite"
+        aria-label={rosterAxLabel(state.concept, roster)}
       >
         <span>{rosterStatusLabel(roster.status)}</span>
       </div>
@@ -126,6 +128,7 @@ export function SessionsView({ state, dispatch }: SessionsViewProps) {
                     >
                       <button
                         type="button"
+                        aria-label={rosterRowAxLabel(row)}
                         onClick={() =>
                           dispatch({ type: "openConversation", key: row.key })
                         }

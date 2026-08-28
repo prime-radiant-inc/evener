@@ -1,5 +1,8 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
-import type { AnyNotification } from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
+import type {
+  AnyNotification,
+  InitializeResponse,
+} from "../../../cmd/evener-hub/frontend/src/protocol/types.gen";
 import type {
   ConversationClientLike,
   LiveConversationService,
@@ -20,6 +23,26 @@ const PROFILE: ProfileRedacted = {
   origin: "http://192.168.1.10:9180",
 };
 
+const TEST_INITIALIZE_RESULT: InitializeResponse = {
+  serverInfo: { name: "test-hub", version: "0.0.0-test" },
+  protocolVersion: "evener-appwire-v3",
+  sourceId: "test-source",
+  features: {
+    threadList: true,
+    threadTurnsList: true,
+    turnStart: true,
+    turnSteer: true,
+    threadClear: true,
+    threadShutdown: true,
+    forkFromTurn: true,
+    tasks: true,
+    transcriptList: true,
+    modelList: true,
+    directoryComplete: true,
+    auth: true,
+  },
+};
+
 function createDeferred<T>() {
   let resolvePromise: (value: T) => void = () => {
     throw new Error("deferred resolve was not initialized");
@@ -37,13 +60,13 @@ function createDeferred<T>() {
 describe("createProfileScopedServices", () => {
   it("builds every live session service around one profile-scoped AppWire client", () => {
     const client: ConversationClientLike & {
-      connect: () => Promise<unknown>;
+      connect: () => Promise<InitializeResponse>;
       close: () => void;
       onStateChange: (handler: (state: string) => void) => () => void;
     } = {
       request: vi.fn(),
       onNotification: vi.fn(() => () => {}),
-      connect: vi.fn(() => Promise.resolve({})),
+      connect: vi.fn(() => Promise.resolve(TEST_INITIALIZE_RESULT)),
       close: vi.fn(),
       onStateChange: vi.fn(() => () => {}),
     };
@@ -69,7 +92,7 @@ describe("createProfileScopedServices", () => {
     } = {};
     const request = vi.fn(() => Promise.resolve({}));
     const client: ConversationClientLike & {
-      connect: () => Promise<unknown>;
+      connect: () => Promise<InitializeResponse>;
       close: () => void;
       onStateChange: (handler: (state: string) => void) => () => void;
     } = {
@@ -78,7 +101,7 @@ describe("createProfileScopedServices", () => {
         callbacks.notification = handler;
         return () => {};
       }),
-      connect: vi.fn(() => Promise.resolve({})),
+      connect: vi.fn(() => Promise.resolve(TEST_INITIALIZE_RESULT)),
       close: vi.fn(),
       onStateChange: vi.fn((handler) => {
         callbacks.state = handler;
@@ -131,13 +154,13 @@ describe("createProfileScopedServices", () => {
       .mockImplementationOnce(() => finalRequest.promise);
     const close = vi.fn();
     const client: ConversationClientLike & {
-      connect: () => Promise<unknown>;
+      connect: () => Promise<InitializeResponse>;
       close: () => void;
       onStateChange: (handler: (state: string) => void) => () => void;
     } = {
       request,
       onNotification: vi.fn(() => () => {}),
-      connect: vi.fn(() => Promise.resolve({})),
+      connect: vi.fn(() => Promise.resolve(TEST_INITIALIZE_RESULT)),
       close,
       onStateChange: vi.fn(() => () => {}),
     };
@@ -169,13 +192,13 @@ describe("createProfileScopedServices", () => {
       .mockImplementationOnce(() => rejectingRawRequest.promise);
     const close = vi.fn();
     const client: ConversationClientLike & {
-      connect: () => Promise<unknown>;
+      connect: () => Promise<InitializeResponse>;
       close: () => void;
       onStateChange: (handler: (state: string) => void) => () => void;
     } = {
       request,
       onNotification: vi.fn(() => () => {}),
-      connect: vi.fn(() => Promise.resolve({})),
+      connect: vi.fn(() => Promise.resolve(TEST_INITIALIZE_RESULT)),
       close,
       onStateChange: vi.fn(() => () => {}),
     };

@@ -3,6 +3,7 @@ import type { LiveWorkItem } from "../model";
 import { Disclosure } from "../shared/Disclosure";
 import { formatDuration, formatUsage } from "../shared/format";
 import { StatusLabel } from "../shared/StatusLabel";
+import { usageAxLabel, workItemAxLabel } from "../smoke-semantics";
 
 export interface WorkViewProps {
   state: LiveConceptState;
@@ -27,6 +28,7 @@ function WorkTree({
             className="sw-work-node"
             data-work-node-id={item.key}
             data-work-kind={item.kind}
+            aria-label={workItemAxLabel(item)}
           >
             <Disclosure
               summary={<span>{item.title}</span>}
@@ -107,7 +109,7 @@ export function WorkView({ state, dispatch }: WorkViewProps) {
       <section
         className="sw-usage"
         data-work-usage
-        aria-labelledby="sw-usage-title"
+        aria-label={usageAxLabel(usage)}
       >
         <header>
           <p className="sw-eyebrow">Resource view</p>

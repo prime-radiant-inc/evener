@@ -295,9 +295,11 @@ export interface CreateAppwireClientInput {
   readonly now?: () => number;
 }
 
+export const MOBILE_APP_BUNDLE_ID = "com.primeradiant.evener";
+export const MOBILE_APP_VERSION = "0.1.0";
 export const MOBILE_CLIENT_INFO = {
   name: "evener-mobile",
-  version: "0.1.0",
+  version: MOBILE_APP_VERSION,
 } as const;
 
 export type AppwireClientWithUrl = InstanceType<typeof AppwireClient>;

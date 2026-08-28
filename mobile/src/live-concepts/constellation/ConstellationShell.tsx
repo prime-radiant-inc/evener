@@ -5,6 +5,7 @@ import type {
   LiveConceptState,
 } from "../contract";
 import { Icon } from "../shared/Icon";
+import { conceptRootAxLabel } from "../smoke-semantics";
 
 export interface ConstellationShellProps {
   state: LiveConceptState;
@@ -38,7 +39,7 @@ export function ConstellationShell({
     document.documentElement.dataset.reducedMotion === "true";
 
   return (
-    <div
+    <section
       className="concept-constellation"
       data-concept-root
       data-testid="concept-root"
@@ -49,6 +50,7 @@ export function ConstellationShell({
       data-motion={reducedMotion ? "reduced" : "full"}
       data-surface={surface}
       data-thread-key={state.conversation?.threadKey}
+      aria-label={conceptRootAxLabel(state)}
     >
       <main className="co-scroll" data-route={surface}>
         <header className="co-topbar">
@@ -86,7 +88,7 @@ export function ConstellationShell({
         </header>
         <div className="co-route-content">{children}</div>
       </main>
-    </div>
+    </section>
   );
 }
 

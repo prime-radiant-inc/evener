@@ -57,7 +57,20 @@ function baseState(
     textScale: "standard",
     reducedMotion: false,
     surface: "sessions",
-    connection: { status: "connected" } satisfies LiveConnectionView,
+    connection: {
+      status: "connected",
+      evidence: {
+        serverVersion: "hub-commit-1",
+        protocolVersion: "evener-appwire-v3",
+        appVersion: "0.1.0",
+        bundleId: "com.primeradiant.evener",
+        originDigest: `sha256:${"a".repeat(64)}`,
+        profileGeneration: 7,
+        lifecycleGeneration: 3,
+        lifecyclePhase: "foreground",
+        handshakeGeneration: 2,
+      },
+    } satisfies LiveConnectionView,
     roster: emptyRoster(),
     conversation: null,
     activity: null,
@@ -94,6 +107,7 @@ function baseComposer(): LiveComposerView {
     canQueue: true,
     canInterrupt: false,
     pending: null,
+    accepted: null,
     error: null,
   };
 }
@@ -363,6 +377,25 @@ describe("Field Notes concept-switch trigger", () => {
 // ---------------------------------------------------------------------------
 
 describe("Field Notes sessions surface", () => {
+  it("exposes the same opaque roster identities through tappable AX labels", () => {
+    renderState(baseState({ surface: "sessions", roster: rosterWithRows() }));
+    expect(
+      screen.getByRole("region", {
+        name: /Evener concept; concept Field Notes; surface sessions; connection connected; server hub-commit-1/,
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", {
+        name: "Session session-a; Refactor renderer module; project evener-mobile; status attention",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("status", {
+        name: "Evener roster; concept Field Notes; retained 2; has-more false",
+      }),
+    ).toBeVisible();
+  });
+
   it("renders roster groups and rows from the live contract", () => {
     renderState(baseState({ surface: "sessions", roster: rosterWithRows() }));
     const main = mainFor("sessions");
@@ -761,7 +794,7 @@ describe("Field Notes conversation surface", () => {
       }),
       dispatch,
     );
-    const steer = screen.getByRole("button", { name: /^Steer$/i });
+    const steer = screen.getByRole("button", { name: "Use steer mode" });
     expect(steer).toHaveAttribute("aria-pressed", "false");
     fireEvent.click(steer);
     expect(dispatch).toHaveBeenCalledWith({
@@ -784,9 +817,13 @@ describe("Field Notes conversation surface", () => {
         },
       }),
     );
-    expect(screen.getByRole("button", { name: /^Send$/i })).toBeEnabled();
-    expect(screen.getByRole("button", { name: /^Steer$/i })).toBeDisabled();
-    expect(screen.getByRole("button", { name: /^Queue$/i })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "Use send mode" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Use steer mode" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Use queue mode" }),
+    ).toBeEnabled();
   });
 
   it("disables mode buttons while a mutation is pending", () => {
@@ -807,7 +844,9 @@ describe("Field Notes conversation surface", () => {
     );
     for (const mode of ["Send", "Steer", "Queue"] as const) {
       expect(
-        screen.getByRole("button", { name: new RegExp(`^${mode}$`, "i") }),
+        screen.getByRole("button", {
+          name: `Use ${mode.toLowerCase()} mode`,
+        }),
       ).toBeDisabled();
     }
   });

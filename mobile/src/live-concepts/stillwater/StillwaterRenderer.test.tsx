@@ -36,7 +36,20 @@ function buildState(
     textScale: "standard",
     reducedMotion: false,
     surface: "sessions",
-    connection: { status: "connected" },
+    connection: {
+      status: "connected",
+      evidence: {
+        serverVersion: "hub-commit-1",
+        protocolVersion: "evener-appwire-v3",
+        appVersion: "0.1.0",
+        bundleId: "com.primeradiant.evener",
+        originDigest: `sha256:${"a".repeat(64)}`,
+        profileGeneration: 7,
+        lifecycleGeneration: 3,
+        lifecyclePhase: "foreground",
+        handshakeGeneration: 2,
+      },
+    },
     roster: {
       status: "ready",
       query: "",
@@ -253,6 +266,7 @@ function buildState(
       canQueue: true,
       canInterrupt: false,
       pending: null,
+      accepted: { kind: "send", receipt: 9 },
       error: null,
     },
     ui: {
@@ -322,6 +336,25 @@ describe.each(surfaces)("StillwaterRenderer on %s surface", (surface) => {
 });
 
 describe("StillwaterRenderer sessions surface", () => {
+  it("exposes a user-meaningful AX root, roster result, and tappable opaque row identity", () => {
+    renderSurface(buildState({ surface: "sessions" }));
+    expect(
+      screen.getByRole("region", {
+        name: /Evener concept; concept Stillwater; surface sessions; connection connected; server hub-commit-1; protocol evener-appwire-v3; profile generation 7; lifecycle foreground 3; handshake 2; app com\.primeradiant\.evener 0\.1\.0; origin sha256:/,
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("status", {
+        name: "Evener roster; concept Stillwater; retained 3; has-more false",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("button", {
+        name: "Session sess-1; Fix auth flow; project evener/mobile; status attention",
+      }),
+    ).toBeVisible();
+  });
+
   it("renders grouped roster rows and opens a conversation by key", () => {
     const state = buildState({ surface: "sessions" });
     const { dispatch, container } = renderSurface(state);
@@ -439,6 +472,37 @@ describe("StillwaterRenderer sessions surface", () => {
 });
 
 describe("StillwaterRenderer conversation surface", () => {
+  it("exposes draft, accepted receipt, and real transcript lifecycle AX semantics", () => {
+    renderSurface(
+      buildState({
+        surface: "conversation",
+        composer: {
+          ...buildState().composer,
+          draft: "draft-sentinel",
+          accepted: { kind: "send", receipt: 9 },
+        },
+      }),
+    );
+    expect(screen.getByRole("textbox", { name: "Message" })).toHaveValue(
+      "draft-sentinel",
+    );
+    expect(
+      screen.getByRole("status", {
+        name: "Evener mutation; kind send; status accepted; receipt 9",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("article", {
+        name: "Evener transcript item; id msg-2; kind assistant; status streaming; label 2; content Looking into it...",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("article", {
+        name: "Evener transcript item; id msg-3; kind tool; status completed; label read_file; content Read auth.ts — 240 lines",
+      }),
+    ).toBeVisible();
+  });
+
   it("renders transcript items with streaming and truncated markers", () => {
     const state = buildState({ surface: "conversation" });
     const { container } = renderSurface(state);
@@ -699,7 +763,7 @@ describe("StillwaterRenderer conversation surface", () => {
   it("dispatches setComposerMode from mode buttons with accurate aria-pressed", () => {
     const state = buildState({ surface: "conversation" });
     const { dispatch } = renderSurface(state);
-    fireEvent.click(screen.getByRole("button", { name: "Steer" }));
+    fireEvent.click(screen.getByRole("button", { name: "Use steer mode" }));
     expect(dispatch).toHaveBeenCalledWith({
       type: "setComposerMode",
       mode: "steer",
@@ -712,18 +776,15 @@ describe("StillwaterRenderer conversation surface", () => {
       ui: { ...buildState().ui, composerMode: "queue" },
     });
     renderSurface(state);
-    expect(screen.getByRole("button", { name: "Queue" })).toHaveAttribute(
-      "aria-pressed",
-      "true",
-    );
-    expect(screen.getByRole("button", { name: "Send" })).toHaveAttribute(
-      "aria-pressed",
-      "false",
-    );
-    expect(screen.getByRole("button", { name: "Steer" })).toHaveAttribute(
-      "aria-pressed",
-      "false",
-    );
+    expect(
+      screen.getByRole("button", { name: "Use queue mode" }),
+    ).toHaveAttribute("aria-pressed", "true");
+    expect(
+      screen.getByRole("button", { name: "Use send mode" }),
+    ).toHaveAttribute("aria-pressed", "false");
+    expect(
+      screen.getByRole("button", { name: "Use steer mode" }),
+    ).toHaveAttribute("aria-pressed", "false");
   });
 
   it("dispatches submit with the selected ui.composerMode from the primary submit", () => {
@@ -733,14 +794,16 @@ describe("StillwaterRenderer conversation surface", () => {
       ui: { ...buildState().ui, composerMode: "steer" },
     });
     const { dispatch } = renderSurface(state);
-    fireEvent.click(screen.getByRole("button", { name: "Submit" }));
+    fireEvent.click(screen.getByRole("button", { name: "Submit message" }));
     expect(dispatch).toHaveBeenCalledWith({ type: "submit", mode: "steer" });
   });
 
   it("disables the primary submit when draft is empty", () => {
     const state = buildState({ surface: "conversation" });
     renderSurface(state);
-    expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Submit message" }),
+    ).toBeDisabled();
   });
 
   it("disables the primary submit when a mutation is pending", () => {
@@ -758,7 +821,9 @@ describe("StillwaterRenderer conversation surface", () => {
       },
     });
     renderSurface(state);
-    expect(screen.getByRole("button", { name: "Submit" })).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Submit message" }),
+    ).toBeDisabled();
   });
 
   it("disables mode buttons per capability flags", () => {
@@ -772,9 +837,13 @@ describe("StillwaterRenderer conversation surface", () => {
       },
     });
     renderSurface(state);
-    expect(screen.getByRole("button", { name: "Send" })).toBeEnabled();
-    expect(screen.getByRole("button", { name: "Steer" })).toBeDisabled();
-    expect(screen.getByRole("button", { name: "Queue" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "Use send mode" })).toBeEnabled();
+    expect(
+      screen.getByRole("button", { name: "Use steer mode" }),
+    ).toBeDisabled();
+    expect(
+      screen.getByRole("button", { name: "Use queue mode" }),
+    ).toBeDisabled();
   });
 
   it("enables textarea when any text mode is available and no pending", () => {
@@ -939,6 +1008,20 @@ describe("StillwaterRenderer conversation surface", () => {
 });
 
 describe("StillwaterRenderer work surface", () => {
+  it("exposes work kinds and usage through AX labels", () => {
+    renderSurface(buildState({ surface: "work" }));
+    expect(
+      screen.getByRole("article", {
+        name: /Evener work item; id task-1; kind task; status running; title Fix auth flow/,
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("region", {
+        name: /Evener usage; tokens 12,500; cost \$0\.42; duration 2m; context 65%/,
+      }),
+    ).toBeVisible();
+  });
+
   it("renders work hierarchy with nested children", () => {
     const state = buildState({ surface: "work" });
     const { container } = renderSurface(state);

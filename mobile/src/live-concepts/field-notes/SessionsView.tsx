@@ -1,6 +1,7 @@
 import type { LiveConceptIntent, LiveConceptState } from "../contract";
 import type { LiveRosterRow } from "../model";
 import { StatusLabel } from "../shared/StatusLabel";
+import { rosterAxLabel, rosterRowAxLabel } from "../smoke-semantics";
 
 // Live adaptation of the Field Notes sessions surface. Renders the live
 // roster view (groups and rows) with current-record state markers, the live
@@ -70,6 +71,7 @@ export function SessionsView({ state, dispatch }: SessionsViewProps) {
         data-refresh-state={roster.status}
         role="status"
         aria-live="polite"
+        aria-label={rosterAxLabel(state.concept, roster)}
       >
         {roster.status === "loading" ? (
           <span>Refreshing the roster…</span>
@@ -121,6 +123,7 @@ export function SessionsView({ state, dispatch }: SessionsViewProps) {
                     >
                       <button
                         type="button"
+                        aria-label={rosterRowAxLabel(row)}
                         onClick={() =>
                           dispatch({ type: "openConversation", key: row.key })
                         }
