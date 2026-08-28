@@ -1,5 +1,5 @@
 // @vitest-environment node
-import { afterEach, beforeEach, describe, expect, test, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, test } from "vitest";
 import { WireError } from "../../protocol/errors";
 import { FakeClient } from "../../protocol/testing/fakeClient";
 import { connectionStore } from "../../stores/connection";
@@ -15,34 +15,12 @@ import {
   unpinSession,
 } from "./actions";
 
-function jsonResponse(body: unknown, status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    statusText: status === 200 ? "OK" : "Error",
-    json: () => Promise.resolve(body),
-  } as Response;
-}
-
-let fetchMock: ReturnType<typeof vi.fn>;
-
 beforeEach(() => {
-  fetchMock = vi.fn();
-  vi.stubGlobal("fetch", fetchMock);
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
 });
 
 afterEach(() => {
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
-  vi.unstubAllGlobals();
-  vi.restoreAllMocks();
-});
-
-const JSON_INIT = (body: unknown) => ({
-  method: "POST",
-  headers: { "Content-Type": "application/json" },
-  credentials: "same-origin",
-  body: JSON.stringify(body),
 });
 
 describe("named pin sections", () => {

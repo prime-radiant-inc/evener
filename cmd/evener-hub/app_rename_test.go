@@ -62,7 +62,7 @@ func TestAppWireNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 		if _, err := navigation.Representation(t.Context(), navigationResourceKey{Kind: navigationResourceManifest}); err != nil {
 			t.Fatal(err)
 		}
-		server := newHubAppServerWithNavigation(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, registry, navigation)
+		server := newHubAppServerWithNavigation(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, registry, navigation, nil)
 
 		if err := dispatchThreadNameSet(t, server, appwire.ThreadNameSetParams{Ref: "local:live-rename", Name: "  renamed-live  "}); err != nil {
 			t.Fatalf("thread name set: %v", err)
@@ -99,7 +99,7 @@ func TestAppWireNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 			t.Fatal(err)
 		}
 		registry := appsource.NewRegistry()
-		server := newHubAppServerWithNavigation(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()}, registry, navigation)
+		server := newHubAppServerWithNavigation(hubcore.WebConfig{Past: past, Roster: hubcore.NewRosterWithEntries()}, registry, navigation, nil)
 		oldSave := saveSessionMetaForRename
 		saveSessionMetaForRename = func(dir string, meta schema.SessionMeta) error {
 			source.changeTitle(meta.Name)
@@ -127,7 +127,7 @@ func TestAppWireNavigationRenameConvergesLiveAndEnded(t *testing.T) {
 }
 
 func TestAppWireRenameValidatesRefAndName(t *testing.T) {
-	server := newHubAppServerWithNavigation(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, appsource.NewRegistry(), nil)
+	server := newHubAppServerWithNavigation(hubcore.WebConfig{Past: hubcore.NewPastIndex("")}, appsource.NewRegistry(), nil, nil)
 	for _, tc := range []struct {
 		name   string
 		params appwire.ThreadNameSetParams
@@ -167,7 +167,7 @@ func TestAppWireRenameKeepsNonLocalRefSeparateFromMatchingLocalSession(t *testin
 	}}
 	registry := appsource.NewRegistry()
 	registry.Add(remote)
-	server := newHubAppServerWithNavigation(hubcore.WebConfig{Past: past}, registry, nil)
+	server := newHubAppServerWithNavigation(hubcore.WebConfig{Past: past}, registry, nil, nil)
 
 	originalLoad := loadSessionMetaForRename
 	loadSessionMetaForRename = func(string, string) (schema.SessionMeta, error) {
@@ -202,7 +202,7 @@ func TestAppWireRenameReportsEndedMetadataFailures(t *testing.T) {
 	if _, err := past.Rebuild(); err != nil {
 		t.Fatal(err)
 	}
-	server := newHubAppServerWithNavigation(hubcore.WebConfig{Past: past}, appsource.NewRegistry(), nil)
+	server := newHubAppServerWithNavigation(hubcore.WebConfig{Past: past}, appsource.NewRegistry(), nil, nil)
 
 	originalLoad := loadSessionMetaForRename
 	originalSave := saveSessionMetaForRename
@@ -261,7 +261,7 @@ func TestAppWireRenameDoesNotEditMetaWhenEndedSessionBecomesLive(t *testing.T) {
 			Capabilities: appwire.ThreadCapabilities{Rename: true},
 		}},
 	})
-	server := newHubAppServerWithNavigation(hubcore.WebConfig{Past: past, Roster: roster}, registry, nil)
+	server := newHubAppServerWithNavigation(hubcore.WebConfig{Past: past, Roster: roster}, registry, nil, nil)
 
 	originalLoad := loadSessionMetaForRename
 	loadSessionMetaForRename = func(dir, id string) (schema.SessionMeta, error) {

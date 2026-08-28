@@ -57,14 +57,6 @@ function resource<T>(key: ResourceKey, data: T): ResourceState<T> {
     generationID: "g1",
   };
 }
-function jsonResponse(body: unknown, status = 200): Response {
-  return {
-    ok: status >= 200 && status < 300,
-    status,
-    statusText: status === 200 ? "OK" : "Error",
-    json: () => Promise.resolve(body),
-  } as Response;
-}
 function deferred<T>() {
   let resolve!: (value: T | PromiseLike<T>) => void;
   let reject!: (reason?: unknown) => void;
@@ -709,7 +701,6 @@ describe("resource-backed Rail", () => {
         navigation: { generation_id: "g1", targets: [] },
       };
     });
-    const client = new FakeClient();
     client.on("evener/session/delete", () => ({
       deleted: ["a"],
       skipped: [],
