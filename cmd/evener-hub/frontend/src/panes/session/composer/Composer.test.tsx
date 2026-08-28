@@ -26,7 +26,7 @@ import iconButtonStyles from "../../../widgets/iconbutton/iconbutton.module.css"
 import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
-import { Composer } from "./Composer";
+import { Composer as ComposerView } from "./Composer";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composerFocus";
 import { draftStorageKey } from "./draft";
 import {
@@ -35,6 +35,16 @@ import {
   resetPendingTurnsStoreForTests,
 } from "./queue/pendingTurnsStore";
 import { requestQuoteInsert, resetQuoteInsertStoreForTests } from "./quoteInsert";
+
+function Composer(props: React.ComponentProps<typeof ComposerView>) {
+  const client = connectionStore.getState().client;
+  if (!client) throw new Error("Composer test rendered without a connected client");
+  return (
+    <ClientProvider client={client}>
+      <ComposerView {...props} />
+    </ClientProvider>
+  );
+}
 
 // See draft.test.ts's identical comment: Node 26 shadows jsdom's real
 // window.localStorage with its own (non-functional under vitest) global.

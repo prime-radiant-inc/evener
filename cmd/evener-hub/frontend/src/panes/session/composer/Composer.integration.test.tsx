@@ -20,9 +20,19 @@ import { resetThreadsStoreForTests, setMutationStorageForTests, threadsStore } f
 import { Toast } from "../../../widgets";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
-import { Composer } from "./Composer";
+import { Composer as ComposerView } from "./Composer";
 import { usePendingTurnEntries } from "./queue";
 import { flushPendingTurnsProjectionForTests, resetPendingTurnsStoreForTests } from "./queue/pendingTurnsStore";
+
+function Composer(props: React.ComponentProps<typeof ComposerView>) {
+  const client = connectionStore.getState().client;
+  if (!client) throw new Error("Composer integration test rendered without a connected client");
+  return (
+    <ClientProvider client={client}>
+      <ComposerView {...props} />
+    </ClientProvider>
+  );
+}
 
 // See draft.test.ts's identical comment: Node 26 shadows jsdom's real
 // window.localStorage with its own (non-functional under vitest) global.

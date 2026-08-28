@@ -58,7 +58,7 @@ function fixtureThread(ref: string, overrides: Partial<Thread> = {}): Thread {
 const RESTING_REF = "dev-surface-composer-resting";
 const DRAFTED_REF = "dev-surface-composer-drafted";
 const ASK_REF = "dev-surface-composer-ask";
-const CLIENT = new FakeClient("ready");
+const client = new FakeClient("ready");
 
 // AskDock reconciles from live ask_user questions in the transcript
 // (deriveAskQuestions.ts's liveAskQuestions): a completed, unanswered
@@ -120,7 +120,7 @@ export default function ComposerSurfaceSection() {
         Resting, with drafted text, and with a pending ask_user question (AskDock reconciles itself off the seeded
         thread's transcript, the same way it would off a live ask_user call).
       </p>
-      <ClientProvider client={CLIENT}>
+      <ClientProvider client={client}>
         <ThemeFlip>
           <div className={styles.row}>
             <p className={styles.rowLabel}>resting</p>
