@@ -395,6 +395,14 @@ export interface FeatureSet {
   auth: boolean;
 }
 
+export interface GitHeadParams {
+  cwd: string;
+}
+
+export interface GitHeadResponse {
+  head: string;
+}
+
 export interface GitInfo {
   sha?: string;
   branch?: string;
@@ -1791,6 +1799,7 @@ export const METHOD_NAMES = [
   "evener/dirs/create",
   "evener/projects/recent",
   "evener/path/validate",
+  "evener/git/head",
   "evener/navigation/read",
   "evener/favorite/set",
   "evener/search",
@@ -1953,6 +1962,7 @@ export interface MethodTypes {
   "evener/dirs/create": { params: DirsCreateParams; result: DirsCreateResponse };
   "evener/projects/recent": { params: ProjectsRecentParams; result: ProjectsRecentResponse };
   "evener/path/validate": { params: PathValidateParams; result: PathValidateResponse };
+  "evener/git/head": { params: GitHeadParams; result: GitHeadResponse };
   "evener/navigation/read": { params: NavigationReadParams; result: NavigationReadResponse };
   "evener/favorite/set": { params: FavoriteSetParams; result: FavoriteSetResponse };
   "evener/search": { params: SearchParams; result: SearchResponse };

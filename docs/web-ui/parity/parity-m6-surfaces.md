@@ -109,10 +109,8 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 
 ### 1.7 Branch/worktree chip
 
-- [ ] Free-text picker is seeded from the chip's current display text, blanked out if that text is literally the placeholder string `"(default)"` (`spawn.js:1391-1392`)
-- [ ] Setting `working_dir` (whether via chip pick or sticky-default replay) triggers `resolveAndSetHeadBranch`, which fetches `GET /api/git/head?cwd=` and fills the branch chip's DISPLAY text (not its hidden wire value) with the resolved HEAD ref, stashing the raw value in `display.dataset.resolvedHead` so "(default)" can later be explained (`spawn.js:365-367, 372-393`)
-- [ ] Branch auto-resolution is skipped once an explicit branch value exists — checked once before firing the fetch, and checked AGAIN after the fetch resolves, so a value the user picked while the request was in flight can't be clobbered by a late response (`spawn.js:375, 383-384`)
-- [ ] Branch auto-resolution is REST-only: when `window.EvenerAppwire` is present the function no-ops entirely, because appwire has no `git/head` RPC yet (`spawn.js:376-379`)
+- [ ] Setting the working directory resolves `evener/git/head` and displays the returned HEAD beside the directory; it is read-only and is neither persisted nor sent when starting a thread (`Spawn.tsx`, `branch.ts`)
+- [ ] Resolution failures and directories without a readable git HEAD leave the readout empty; stale responses are ignored after the working directory changes (`Spawn.tsx`, `branch.ts`)
 
 ### 1.8 Access-mode chip
 
@@ -122,7 +120,7 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 ### 1.9 Sticky defaults / prefill layering (localStorage)
 
 - [ ] Per-project sticky-defaults key is `evener-hub.spawn-defaults.<workingDir|"global">`, a JSON blob (`spawn.js:51-53`)
-- [ ] On load, `harness`/`branch`/`access_mode` defaults are applied BEFORE `working_dir`, specifically so the HEAD-branch auto-resolution that `working_dir` triggers can already see whether an explicit branch default won (`spawn.js:1132-1138`, code comment at 1133-1134)
+- [ ] On load, project defaults restore harness, model, access mode, and reasoning effort; branch is derived from the current working directory rather than storage (`Spawn.tsx`, `spawnDefaults.ts`)
 - [ ] Model sticky-default is applied only when the current harness uses evener models AND a stored default value exists; otherwise `applyHarnessModelPolicy` runs instead to decide whether the chip should be blanked (`spawn.js:1145-1149`)
 - [ ] If the server didn't prefill `working_dir` (no `?dir=` etc.) and no stored default supplies one either, the GLOBAL `evener-hub.spawn-defaults.global.working_dir` key is consulted as a last resort (`spawn.js:84-88`)
 - [ ] The global model default (`evener-hub.spawn-defaults.global.model`) layers UNDER a more specific per-project model default when both exist (`spawn.js:81-83`)
@@ -178,7 +176,7 @@ These are the findings most likely to bite a rewrite that "looks equivalent." Ea
 ### 1.14 Submission & result handling
 
 - [ ] Submit handler always calls `e.preventDefault()` and rebuilds the entire payload from `FormData` — there is no native form POST path (`spawn.js:1243-1245`)
-- [ ] Payload shape: `{launch_overrides, prompt, harness, model, working_dir, branch, access_mode, agent, reasoning_effort, attachments}` (`spawn.js:1270-1288`)
+- [ ] AppWire `thread/start` sends the prompt/input, working directory, harness, model/provider, reasoning effort, and launch overrides; the resolved HEAD remains display-only (`startThread.ts`)
 - [ ] Prefers `window.EvenerAppwire.startThread(body)`; REST fallback POSTs `/api/spawn` with `attachments` re-encoded into `items: [{type:"image", mediaType, data(base64), name}]` and the raw `attachments` key stripped from the body first (`spawn.js:1305-1330`)
 - [ ] `spawnEncodeAttachmentData` base64-encodes in `0x8000`-byte chunks (avoids `String.fromCharCode.apply` argument-count blowups on large images) and duck-types ArrayBuffer/typed-array/cross-realm buffers rather than using `instanceof`, specifically to survive JSDOM-originated buffers in tests (`spawn.js:11-38`, code comment at 11-15)
 - [ ] REST failure path parses the response body as JSON looking for an `.error` field, falling back to the raw text for older plain-text error responses (`spawn.js:419-427, 1327`)

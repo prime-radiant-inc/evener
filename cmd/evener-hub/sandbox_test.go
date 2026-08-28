@@ -25,9 +25,9 @@ const sandboxSessionID = "01FUZZDOCSESSION0000000000"
 // supplies; finding it in a response body is a path-escape defect.
 const sandboxOutOfRootSecret = "FUZZ-OUT-OF-ROOT-SECRET-do-not-serve-9c1f2a"
 
-// sandboxGitBranch is the fixed branch the git-head seam reports. Its presence
-// in an /api/git/head response proves the seam ran instead of a real `git`.
-const sandboxGitBranch = "sandbox-branch"
+// sandboxGitHead is the fixed HEAD the git-head seam reports. Its presence
+// in an AppWire response proves the seam ran instead of a real `git`.
+const sandboxGitHead = "sandbox-branch"
 
 // sandbox is a fully contained hub for fuzzing/testing the MUTATING handlers.
 // The backend it wires cannot spawn a real agent, shell out, hit the network,
@@ -36,7 +36,7 @@ const sandboxGitBranch = "sandbox-branch"
 //
 //   - spawn (/api/spawn, thread/start) → Spawner records the request and returns
 //     a synthetic rendezvous entry with no address; no subprocess, no dial.
-//   - /api/git/head → GitHeadBranch seam returns sandboxGitBranch; no `git`.
+//   - evener/git/head → ResolveGitHead seam returns sandboxGitHead; no `git`.
 //   - model/list → LiveModels seam returns a fixed list; no provider network.
 //   - the action verbs (send/steer/queue/clear/...) → an empty Roster and an
 //     empty live-source set, so every verb resolves "thread not found" before it
@@ -124,8 +124,8 @@ func newSandbox(tb testing.TB) *sandbox {
 		ProvidersConfigPath: providersPath,
 		PluginRoot:          filepath.Join(root, "plugins"), // contain the marketplace/plugin store; "" would resolve to the real ~/.config/evener/plugins
 		Spawner:             spawner,
-		GitHeadBranch: func(context.Context, string) (string, error) {
-			return sandboxGitBranch, nil
+		ResolveGitHead: func(context.Context, string) (string, error) {
+			return sandboxGitHead, nil
 		},
 		LiveModels: func(context.Context) []appwire.ModelDescriptor {
 			return []appwire.ModelDescriptor{{Provider: "sandbox", Model: "fake-model"}}

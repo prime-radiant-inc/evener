@@ -90,7 +90,7 @@ func FuzzCoreAPIPass4(f *testing.F) {
 		web := NewWebServer(hubcore.WebConfig{
 			HubAddr: "127.0.0.1:9180", Past: past, Roster: hubcore.NewRosterWithEntries(),
 			PokeAttention: func() { poke++ },
-			GitHeadBranch: func(context.Context, string) (string, error) {
+			ResolveGitHead: func(context.Context, string) (string, error) {
 				if variant&1 != 0 {
 					return "", errors.New("git failed")
 				}
@@ -126,9 +126,9 @@ func FuzzCoreAPIPass4(f *testing.F) {
 		direct(func(w http.ResponseWriter, r *http.Request) { web.handleAPIReasoningEffort(w, r, "local:missing") }, http.MethodPost, "/effort", `{}`)
 		call(http.MethodPost, "/api/sessions/remote:thread/rename", `{"name":" renamed "}`)
 		call(http.MethodPost, "/api/sessions/remote:thread/model", `{`)
-		call(http.MethodGet, "/api/git/head?cwd="+workingDir, "")
-		call(http.MethodGet, "/api/git/head?cwd=/definitely/missing/pass4", "")
-		call(http.MethodPost, "/api/git/head", "")
+		_ = hubGitHead(context.Background(), web.cfg, appwire.GitHeadParams{CWD: workingDir})
+		_ = hubGitHead(context.Background(), web.cfg, appwire.GitHeadParams{CWD: "/definitely/missing/pass4"})
+		_ = hubGitHead(context.Background(), web.cfg, appwire.GitHeadParams{})
 		filePath := filepath.Join(root, "already-file")
 		if err := os.WriteFile(filePath, []byte("x"), 0o644); err != nil {
 			t.Fatal(err)
@@ -164,12 +164,12 @@ func FuzzCoreAPIPass4(f *testing.F) {
 				t.Fatalf("git %v: %v: %s", args, err, out)
 			}
 		}
-		_, _ = gitHeadBranch(context.Background(), repo)
+		_, _ = resolveGitHead(context.Background(), repo)
 		if out, err := exec.Command("git", "-C", repo, "checkout", "-q", "--detach").CombinedOutput(); err != nil {
 			t.Fatalf("detach: %v: %s", err, out)
 		}
-		_, _ = gitHeadBranch(context.Background(), repo)
-		_, _ = gitHeadBranch(context.Background(), filepath.Join(root, "missing"))
+		_, _ = resolveGitHead(context.Background(), repo)
+		_, _ = resolveGitHead(context.Background(), filepath.Join(root, "missing"))
 
 		_ = warningPayload([]byte(`{"warning":{"message":"nested"},"source":"daemon","title":"Title","hint":"Hint"}`))
 		_ = warningPayload([]byte(`{"message":"plain"}`))

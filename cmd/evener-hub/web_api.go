@@ -1,15 +1,11 @@
 package hub
 
 import (
-	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/netip"
 	"net/url"
-	"os"
-	"os/exec"
-	"path/filepath"
 	"strconv"
 	"strings"
 
@@ -23,7 +19,6 @@ import (
 )
 
 var (
-	gitCommand               = exec.CommandContext
 	mobileHostnameProfile    = idna.New(idna.MapForLookup(), idna.StrictDomainName(false), idna.CheckHyphens(false))
 	ensureAPIActionAvailable = func(s *WebServer, id, action string) error {
 		return s.ensureSessionActionAvailable(id, action)
@@ -418,49 +413,4 @@ func (s *WebServer) handleAPIReasoningEffort(w http.ResponseWriter, r *http.Requ
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
-}
-
-// gitHeadBranch runs `git rev-parse --abbrev-ref HEAD` in dir and returns
-// the branch name. In detached HEAD state it falls back to the short SHA.
-func gitHeadBranch(ctx context.Context, dir string) (string, error) {
-	out, err := gitCommand(ctx, "git", "-C", dir, "rev-parse", "--abbrev-ref", "HEAD").Output()
-	if err != nil {
-		return "", err
-	}
-	branch := strings.TrimSpace(string(out))
-	if branch == "HEAD" {
-		// Detached HEAD — return short SHA instead.
-		out2, err2 := gitCommand(ctx, "git", "-C", dir, "rev-parse", "--short", "HEAD").Output()
-		if err2 != nil {
-			return branch, nil //nolint:nilerr // detached HEAD: short-SHA refinement is best-effort; the literal "HEAD" is a valid fallback
-		}
-		branch = strings.TrimSpace(string(out2))
-	}
-	return branch, nil
-}
-
-// handleApiGitHead returns the current git HEAD branch name for a given cwd.
-// Query param: cwd=<absolute path>. Returns {"branch": "<name>"} or {"branch": ""} on error.
-func (s *WebServer) handleApiGitHead(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
-		return
-	}
-	cwd := strings.TrimSpace(r.URL.Query().Get("cwd"))
-	gitHead := gitHeadBranch
-	if s.cfg.GitHeadBranch != nil {
-		gitHead = s.cfg.GitHeadBranch
-	}
-	branch := ""
-	if cwd != "" {
-		if abs, err := filepath.Abs(cwd); err == nil {
-			cwd = abs
-		}
-		if _, err := os.Stat(cwd); err == nil {
-			if out, err := gitHead(r.Context(), cwd); err == nil {
-				branch = out
-			}
-		}
-	}
-	writeAPIJSON(w, http.StatusOK, map[string]string{"branch": branch})
 }

@@ -773,9 +773,8 @@ func notifyPluginUpdated(server *appserver.Server) {
 // count (issue #35): the 15 most recently used projects.
 const recentProjectDirsLimit = 15
 
-// registerMiscHandlers registers the remaining hub RPC handlers: search,
-// model list, task list, transcript list, directory operations, path
-// validation, and the harness descriptor list.
+// registerMiscHandlers registers hub RPC handlers that are not owned by a
+// focused controller registration.
 func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sources *appsource.Registry) {
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerUpgrade, hubUpgrade)
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerSearch, func(_ context.Context, params appwire.SearchParams) (appwire.SearchResponse, error) {
@@ -818,6 +817,9 @@ func registerMiscHandlers(server *appserver.Server, cfg hubcore.WebConfig, sourc
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerPathValidate, func(_ context.Context, params appwire.PathValidateParams) (appwire.PathValidateResponse, error) {
 		return fspaths.ValidateLaunchPath(params), nil
+	})
+	appserver.HandleTyped(server.Router(), appwire.MethodEvenerGitHead, func(ctx context.Context, params appwire.GitHeadParams) (appwire.GitHeadResponse, error) {
+		return hubGitHead(ctx, cfg, params), nil
 	})
 	appserver.HandleTyped(server.Router(), appwire.MethodEvenerHarnessesList, func(context.Context, appwire.HarnessListParams) (appwire.HarnessListResponse, error) {
 		return appwire.HarnessListResponse{Data: launchHarnessDescriptors(cfg)}, nil

@@ -1,7 +1,6 @@
 package hub
 
 import (
-	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -90,7 +89,6 @@ func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
 		{http.MethodGet, "/_partials/s/id/unknown"},
 		{http.MethodGet, "/manifest.webmanifest"},
 		{http.MethodPost, "/api/health"}, {http.MethodGet, "/api/health"},
-		{http.MethodPost, "/api/git/head"},
 	} {
 		_ = covWebRequest(t, web, tc.method, tc.target, "")
 	}
@@ -99,12 +97,6 @@ func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
 		call(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}")), "missing")
 	}
 
-	// Filesystem-backed API probes remain inside a temp root.
-	root := t.TempDir()
-	gitWeb := NewWebServer(hubcore.WebConfig{GitHeadBranch: func(context.Context, string) (string, error) { return "branch", nil }})
-	_ = covWebRequest(t, gitWeb, http.MethodGet, "/api/git/head?cwd="+root, "")
-	gitWeb.cfg.GitHeadBranch = func(context.Context, string) (string, error) { return "", errors.New("git failed") }
-	_ = covWebRequest(t, gitWeb, http.MethodGet, "/api/git/head?cwd="+root, "")
 }
 
 func TestCovWebCoreAPIDecisionValidation(t *testing.T) {

@@ -51,9 +51,10 @@ func installDenyTransport(t *testing.T) *denyTransport {
 }
 
 // TestSandboxContainsMutatingHandlers is the B0 containment proof. It drives the
-// hub's MUTATING handlers — spawn, git-head, models, and an action verb
-// — through the full handler stack and asserts that none of them spawned a real
-// process, shelled out, hit the network, or created a file outside the sandbox.
+// hub's mutating handlers — spawn, models, directory creation, and an action
+// verb — through the full handler stack and exercises the git-head AppWire
+// handler directly; none may spawn a real process, shell out, hit the network,
+// or create a file outside the sandbox.
 func TestSandboxContainsMutatingHandlers(t *testing.T) {
 	deny := installDenyTransport(t)
 	s := newSandbox(t)
@@ -94,17 +95,18 @@ func TestSandboxContainsMutatingHandlers(t *testing.T) {
 		t.Fatalf("spawn did not reach the recording spawner: recorded %d spawns", got)
 	}
 
-	// 2. git-head: the response carries the seam's sentinel branch, proving no
-	// real `git` ran.
-	rec = do(http.MethodGet, "/api/git/head?cwd="+s.CWD, nil)
-	var gh struct {
-		Branch string `json:"branch"`
+	// 2. git-head: the AppWire response carries the seam's sentinel branch,
+	// proving no real `git` ran.
+	out, err := exactDispatch(context.Background(), t, s.Web.appRPC, appwire.MethodEvenerGitHead, appwire.GitHeadParams{CWD: s.CWD})
+	if err != nil {
+		t.Fatalf("git/head dispatch: %v", err)
 	}
-	if err := json.Unmarshal(rec.Body.Bytes(), &gh); err != nil {
-		t.Fatalf("git/head body: %v", err)
+	gh, ok := out.(appwire.GitHeadResponse)
+	if !ok {
+		t.Fatalf("git/head response=%T, want appwire.GitHeadResponse", out)
 	}
-	if gh.Branch != sandboxGitBranch {
-		t.Fatalf("git/head did not use the seam: branch=%q want %q", gh.Branch, sandboxGitBranch)
+	if gh.Head != sandboxGitHead {
+		t.Fatalf("git/head did not use the seam: head=%q want %q", gh.Head, sandboxGitHead)
 	}
 
 	// 3. action verb: clear on a non-live session resolves before any daemon

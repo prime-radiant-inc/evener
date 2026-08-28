@@ -1,7 +1,7 @@
 // startThread is the thread/start seam: it starts a real session over appwire
 // "thread/start" (NOT the REST /api/spawn shim) and returns the created
 // thread's ref. T1 defines the signature + a minimal working body (bare
-// prompt + cwd -> real session); T2 fills the rest (branch/access-mode ->
+// prompt + cwd -> real session); T2 fills the rest (access-mode ->
 // launchOverrides, the schema engine, sticky defaults).
 import type { AppwireClientLike } from "../../protocol/testing/fakeClient";
 import type { InputItem, LaunchConfigLayer, ThreadStartParams } from "../../protocol/types.gen";
@@ -17,13 +17,6 @@ export interface SpawnRequest {
   modelProvider?: string; // evener-model harness: "<provider>/<model>" split -> provider half
   model?: string; // model id (bare id for a non-evener harness - floor §1.4)
   reasoningEffort?: string; // wire camelCase - floor §1.11
-  // branch is DISPLAY-ONLY (floor §1.7): the branch chip shows the resolved
-  // HEAD ref, but the wire has nowhere to carry it - appwire ThreadStartParams
-  // and LaunchConfigLayer both lack a branch field, and the legacy REST
-  // /api/spawn dropped req.Branch on the floor too (web_spawn.go:135-144, never
-  // threaded into ThreadStartParams). Accepted here so callers can pass the
-  // form value uniformly; startThread never sends it.
-  branch?: string;
   accessMode?: string; // merged -> launchOverrides.sandbox unless schema set it (floor §1.8)
   launchOverrides?: LaunchConfigLayer;
 }
