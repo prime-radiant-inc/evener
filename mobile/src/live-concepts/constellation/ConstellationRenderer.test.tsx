@@ -253,15 +253,10 @@ function buildState(
     connection: {
       status: "connected",
       evidence: {
+        serverName: "test-hub",
         serverVersion: "hub-commit-1",
         protocolVersion: "evener-appwire-v3",
         appVersion: "0.1.0",
-        bundleId: "com.primeradiant.evener",
-        originDigest: `sha256:${"a".repeat(64)}`,
-        profileGeneration: 7,
-        lifecycleGeneration: 3,
-        lifecyclePhase: "foreground",
-        handshakeGeneration: 2,
       },
     },
     roster: rosterView(),
@@ -316,23 +311,27 @@ describe("constellationModule", () => {
 /* --------------------------------- sessions -------------------------------- */
 
 describe("Constellation sessions surface", () => {
-  it("exposes the same opaque roster identities through tappable AX labels", () => {
-    renderConstellation(buildState({ surface: "sessions" }));
+  it("exposes concise landmarks and title-based roster actions", () => {
+    const { container } = renderConstellation(
+      buildState({ surface: "sessions" }),
+    );
     expect(
       screen.getByRole("region", {
-        name: /Evener concept; concept Constellation; surface sessions; connection connected; server hub-commit-1/,
+        name: "Constellation sessions",
       }),
     ).toBeVisible();
     expect(
       screen.getByRole("button", {
-        name: /Session session-a; Wire handshake; project .*; status attention/,
+        name: "Open Wire handshake; status attention",
       }),
     ).toBeVisible();
     expect(
       screen.getByRole("status", {
-        name: /Evener roster; concept Constellation; retained \d+; has-more (true|false)/,
+        name: "Constellation sessions; 3 sessions; complete list",
       }),
     ).toBeVisible();
+    expect(container.querySelector("[aria-label*='session-a']")).toBeNull();
+    expect(container.querySelector("[aria-label*='sha256:']")).toBeNull();
   });
 
   it("renders grouped roster rows with group headers and counts", () => {
@@ -509,6 +508,31 @@ describe("Constellation sessions surface", () => {
 /* ------------------------------ conversation ------------------------------- */
 
 describe("Constellation conversation surface", () => {
+  it("names the visible conversation and transcript lifecycle without keys or bodies", () => {
+    const { container } = renderConstellation(
+      buildState({ surface: "conversation" }),
+    );
+    expect(
+      screen.getByRole("region", { name: "Session Wire handshake" }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("article", {
+        name: "Assistant response; streaming",
+      }),
+    ).toBeVisible();
+    expect(
+      screen.getByRole("article", { name: "Tool run_audit; completed" }),
+    ).toBeVisible();
+    expect(container.querySelector("[aria-label*='m2']")).toBeNull();
+    expect(
+      container.querySelector("[aria-label*='Investigating the AppWire']"),
+    ).toBeNull();
+    expect(
+      container.querySelector("[aria-label*='Audited 12 files']"),
+    ).toBeNull();
+    expect(screen.queryByText("Audited 12 files.")).toBeNull();
+  });
+
   it("renders transcript items keyed by kind", () => {
     renderConstellation(buildState({ surface: "conversation" }));
     const main = screen.getByRole("main");
@@ -598,6 +622,7 @@ describe("Constellation conversation surface", () => {
     const main = screen.getByRole("main");
     const toolItem = within(main).getByTestId("transcript-item-m3");
     expect(within(toolItem).getByRole("region")).toBeInTheDocument();
+    expect(within(toolItem).getByText("Audited 12 files.")).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: /run_audit/i }));
     expect(dispatch).toHaveBeenCalledWith({ type: "toggleTool", key: "m3" });
   });
@@ -1004,7 +1029,7 @@ describe("Constellation composer modes", () => {
         },
       }),
     );
-    expect(screen.getByText(/sending/i)).toBeInTheDocument();
+    expect(screen.getByText("Send pending")).toBeInTheDocument();
   });
 
   it("surfaces a composer error state with the actual error text", () => {

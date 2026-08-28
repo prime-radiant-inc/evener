@@ -1,8 +1,8 @@
 import type { ReactNode } from "react";
+import { conceptRootAxLabel } from "../accessibility-semantics";
 import type { LiveConceptRendererProps } from "../contract";
 import type { LiveConceptSurface } from "../model";
 import { Icon } from "../shared/Icon";
-import { conceptRootAxLabel } from "../smoke-semantics";
 import { ConversationView } from "./ConversationView";
 import { SessionsView } from "./SessionsView";
 import { WorkView } from "./WorkView";

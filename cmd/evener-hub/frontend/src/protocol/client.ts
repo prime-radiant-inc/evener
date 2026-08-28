@@ -6,27 +6,13 @@
 // (sendHeartbeat / ensureHeartbeat), but — unlike that fixed-250ms retry —
 // backs off exponentially up to a cap.
 
-import {
-  ConnectionClosedError,
-  RequestTimeoutError,
-  WireError,
-} from "./errors";
+import { ConnectionClosedError, RequestTimeoutError, WireError } from "./errors";
 import type { WebSocketLike } from "./transport";
-import type {
-  AnyNotification,
-  InitializeResponse,
-  MethodName,
-  MethodTypes,
-} from "./types.gen";
+import type { AnyNotification, InitializeResponse, MethodName, MethodTypes } from "./types.gen";
 
 export type { AnyNotification };
 
-export type ConnectionState =
-  | "idle"
-  | "connecting"
-  | "ready"
-  | "reconnecting"
-  | "closed";
+export type ConnectionState = "idle" | "connecting" | "ready" | "reconnecting" | "closed";
 
 export interface AppwireClientOptions {
   url: string;
@@ -42,9 +28,7 @@ const DEFAULT_CAPABILITIES = { experimentalApi: false };
 
 class ProtocolVersionMismatchError extends Error {
   constructor(received: string) {
-    super(
-      `AppwireClient: expected protocol ${APPWIRE_PROTOCOL_VERSION}, received ${received}`,
-    );
+    super(`AppwireClient: expected protocol ${APPWIRE_PROTOCOL_VERSION}, received ${received}`);
     this.name = "ProtocolVersionMismatchError";
   }
 }
@@ -84,10 +68,7 @@ export const RECONNECT_MAX_MS = 5_000;
 // Methods allowed before the client reaches "ready": initialize is how it
 // gets there, and ping is an app-level liveness probe the heartbeat needs to
 // send even while connecting/reconnecting.
-const READY_EXEMPT_METHODS: ReadonlySet<MethodName> = new Set<MethodName>([
-  "initialize",
-  "ping",
-]);
+const READY_EXEMPT_METHODS: ReadonlySet<MethodName> = new Set<MethodName>(["initialize", "ping"]);
 
 function defaultSocketFactory(url: string): WebSocketLike {
   // The DOM WebSocket type is structurally richer than WebSocketLike (its
@@ -118,12 +99,7 @@ interface PendingRequest {
   timer: ReturnType<typeof setTimeout>;
 }
 
-const INITIALIZE_RESPONSE_KEYS = [
-  "serverInfo",
-  "protocolVersion",
-  "sourceId",
-  "features",
-] as const;
+const INITIALIZE_RESPONSE_KEYS = ["serverInfo", "protocolVersion", "sourceId", "features"] as const;
 
 const FEATURE_KEYS = [
   "threadList",
@@ -144,16 +120,10 @@ function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
 
-function hasExactKeys(
-  value: Record<string, unknown>,
-  expected: readonly string[],
-): boolean {
+function hasExactKeys(value: Record<string, unknown>, expected: readonly string[]): boolean {
   const actual = Object.keys(value).sort();
   const wanted = [...expected].sort();
-  return (
-    actual.length === wanted.length &&
-    actual.every((key, index) => key === wanted[index])
-  );
+  return actual.length === wanted.length && actual.every((key, index) => key === wanted[index]);
 }
 
 /** Runtime boundary for the untyped JSON-RPC initialize result. */
@@ -207,6 +177,7 @@ export class AppwireClient {
   private handshakeReject: ((err: Error) => void) | null = null;
   private readonly notificationHandlers = new Set<(n: AnyNotification) => void>();
   private readonly stateChangeHandlers = new Set<(s: ConnectionState) => void>();
+  private readonly handshakeResultHandlers = new Set<(result: InitializeResponse) => void>();
   private readonly readyHandlers = new Set<(initialize: InitializeResponse) => void>();
   private connectPromise: Promise<InitializeResponse> | null = null;
   private latestInitialize: InitializeResponse | null = null;
@@ -367,27 +338,19 @@ export class AppwireClient {
   ): Promise<MethodTypes[M]["result"]> {
     if (this.connectionState !== "ready" && !READY_EXEMPT_METHODS.has(method)) {
       return Promise.reject(
-        new Error(
-          `AppwireClient: cannot call "${method}" while state is "${this.connectionState}"`,
-        ),
+        new Error(`AppwireClient: cannot call "${method}" while state is "${this.connectionState}"`),
       );
     }
     const socket = this.socket;
     if (!socket) {
-      return Promise.reject(
-        new Error(`AppwireClient: cannot call "${method}"; not connected`),
-      );
+      return Promise.reject(new Error(`AppwireClient: cannot call "${method}"; not connected`));
     }
     const timeoutMs = opts?.timeoutMs ?? DEFAULT_REQUEST_TIMEOUT_MS;
     const id = this.nextId++;
     return new Promise<MethodTypes[M]["result"]>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pending.delete(id);
-        reject(
-          new RequestTimeoutError(
-            `AppwireClient: "${method}" timed out after ${timeoutMs}ms`,
-          ),
-        );
+        reject(new RequestTimeoutError(`AppwireClient: "${method}" timed out after ${timeoutMs}ms`));
       }, timeoutMs);
       this.pending.set(id, { method, resolve: resolve as (result: unknown) => void, reject, timer });
       try {
@@ -414,6 +377,16 @@ export class AppwireClient {
     };
   }
 
+  // Publishes the strictly decoded initialize result for every socket that
+  // completes the handshake, including automatic reconnects. Results are
+  // emitted only while that socket is still the client's current generation.
+  onHandshakeResult(cb: (result: InitializeResponse) => void): () => void {
+    this.handshakeResultHandlers.add(cb);
+    return () => {
+      this.handshakeResultHandlers.delete(cb);
+    };
+  }
+
   // onReady fires on every transition into "ready", including future
   // reconnects.
   onReady(cb: (initialize: InitializeResponse) => void): () => void {
@@ -434,8 +407,7 @@ export class AppwireClient {
   // sequence over" - if this attempt also fails, scheduleReconnect()
   // computes its delay from the same count it would have anyway.
   retryNow(): void {
-    if (this.connectionState !== "reconnecting" || this.reconnectInFlight)
-      return;
+    if (this.connectionState !== "reconnecting" || this.reconnectInFlight) return;
     this.disarmReconnect();
     void this.attemptReconnect();
   }
@@ -462,10 +434,7 @@ export class AppwireClient {
   // connect (performHandshake) and every reconnect attempt, so both paths
   // leave the same evidence for ConnectionBanner's "reload this page" copy.
   private noteProtocolFailure(error: unknown): boolean {
-    if (
-      error instanceof ProtocolVersionMismatchError ||
-      error instanceof HandshakeRejectedError
-    ) {
+    if (error instanceof ProtocolVersionMismatchError || error instanceof HandshakeRejectedError) {
       this.terminalReasonValue = "protocol";
       return true;
     }
@@ -515,11 +484,25 @@ export class AppwireClient {
     }
     this.sendFrame({ method: "initialized", params: {} });
     this.enterReady(result);
+    if (!this.isClosed() && this.socket === socket) {
+      this.publishHandshakeResult(result);
+    }
     // The handshake itself genuinely succeeded, so this still resolves with
     // `result` even if a reentrant close() just ran: only the side effect
     // (arming a timer this client will never get to disarm again) is guarded.
     if (!this.isClosed()) this.armHeartbeat();
     return result;
+  }
+
+  private publishHandshakeResult(result: InitializeResponse): void {
+    for (const cb of Array.from(this.handshakeResultHandlers)) {
+      try {
+        cb(result);
+      } catch {
+        // A subscriber cannot turn a successful protocol handshake into a
+        // connection failure.
+      }
+    }
   }
 
   // teardownFailedSocket clears a socket that dialAndHandshake failed to
@@ -547,10 +530,7 @@ export class AppwireClient {
   // attempt, capped at RECONNECT_MAX_MS, until one finally succeeds.
   private scheduleReconnect(): void {
     if (this.isClosed()) return;
-    const delay = Math.min(
-      RECONNECT_BASE_MS * 2 ** this.reconnectAttempts,
-      RECONNECT_MAX_MS,
-    );
+    const delay = Math.min(RECONNECT_BASE_MS * 2 ** this.reconnectAttempts, RECONNECT_MAX_MS);
     this.reconnectAttempts += 1;
     this.reconnectTimer = setTimeout(() => {
       this.reconnectTimer = null;
@@ -572,8 +552,7 @@ export class AppwireClient {
   // second, concurrent call from either caller from dialing a second socket
   // on top of this one.
   private async attemptReconnect(): Promise<void> {
-    if (this.connectionState !== "reconnecting" || this.reconnectInFlight)
-      return;
+    if (this.connectionState !== "reconnecting" || this.reconnectInFlight) return;
     this.reconnectInFlight = true;
     try {
       await this.dialAndHandshake();
@@ -617,10 +596,7 @@ export class AppwireClient {
 
   private armHeartbeat(): void {
     this.disarmHeartbeat();
-    this.heartbeatIntervalTimer = setInterval(
-      () => this.sendHeartbeat(),
-      HEARTBEAT_INTERVAL_MS,
-    );
+    this.heartbeatIntervalTimer = setInterval(() => this.sendHeartbeat(), HEARTBEAT_INTERVAL_MS);
   }
 
   private disarmHeartbeat(): void {
@@ -676,14 +652,8 @@ export class AppwireClient {
       };
       this.handshakeReject = (err) => settle(err);
       socket.onopen = () => settle(null);
-      socket.onerror = () =>
-        settle(new Error("AppwireClient: socket error while connecting"));
-      socket.onclose = (ev) =>
-        settle(
-          new Error(
-            `AppwireClient: socket closed while connecting (code ${ev.code})`,
-          ),
-        );
+      socket.onerror = () => settle(new Error("AppwireClient: socket error while connecting"));
+      socket.onclose = (ev) => settle(new Error(`AppwireClient: socket closed while connecting (code ${ev.code})`));
     });
   }
 
@@ -701,9 +671,7 @@ export class AppwireClient {
     if (this.socket !== socket || this.connectionState === "closed") return;
     this.socket = null;
     this.detachSocketHandlers(socket);
-    this.failAllPending(
-      new Error(`AppwireClient: socket closed (code ${code})`),
-    );
+    this.failAllPending(new Error(`AppwireClient: socket closed (code ${code})`));
     if (this.connectionState === "ready") {
       // A previously-healthy connection just dropped (server-initiated close,
       // or sendHeartbeat's retirement after an unanswered ping): try to get
@@ -744,13 +712,7 @@ export class AppwireClient {
       this.pending.delete(msg.id);
       clearTimeout(slot.timer);
       if (msg.error) {
-        slot.reject(
-          new WireError(
-            msg.error.message ?? "appwire error",
-            msg.error.code,
-            msg.error.data,
-          ),
-        );
+        slot.reject(new WireError(msg.error.message ?? "appwire error", msg.error.code, msg.error.data));
       } else {
         slot.resolve(msg.result ?? {});
       }

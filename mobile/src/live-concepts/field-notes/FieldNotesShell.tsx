@@ -1,8 +1,8 @@
 import type { CSSProperties, ReactNode } from "react";
+import { conceptRootAxLabel } from "../accessibility-semantics";
 import type { LiveConceptIntent, LiveConceptState } from "../contract";
 import type { LiveConceptSurface } from "../model";
 import { Icon } from "../shared/Icon";
-import { conceptRootAxLabel } from "../smoke-semantics";
 
 // Live adaptation of the Field Notes shell. Carries the live platform,
 // appearance, text-scale, and reduced-motion state; renders the topbar with

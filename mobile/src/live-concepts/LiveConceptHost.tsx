@@ -13,6 +13,7 @@ import type { UseBoundStore } from "zustand/react";
 import type { LiveConversationService } from "../services/conversation";
 import type { RosterEntry } from "../services/roster";
 import type { LiveConversationState } from "../state/conversation";
+import { connectionStatusAxLabel } from "./accessibility-semantics";
 import type {
   LiveComposerView,
   LiveConceptRuntime,
@@ -490,5 +491,17 @@ export function LiveConceptHost({
     },
   };
   const Renderer = liveConceptRegistry[concept].Renderer;
-  return <Renderer state={state} dispatch={dispatch} />;
+  const connectionLabel = connectionStatusAxLabel(state.connection);
+  return (
+    <>
+      <p
+        className="live-concept-connection-status"
+        role="status"
+        aria-label={connectionLabel}
+      >
+        {connectionLabel}
+      </p>
+      <Renderer state={state} dispatch={dispatch} />
+    </>
+  );
 }

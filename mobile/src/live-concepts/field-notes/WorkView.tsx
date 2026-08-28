@@ -1,7 +1,7 @@
+import { usageAxLabel, workItemAxLabel } from "../accessibility-semantics";
 import type { LiveConceptIntent, LiveConceptState } from "../contract";
 import type { LiveWorkItem } from "../model";
 import { formatDuration, formatUsage } from "../shared/format";
-import { usageAxLabel, workItemAxLabel } from "../smoke-semantics";
 import { StatusDisclosure } from "./StatusDisclosure";
 
 // Live adaptation of the Field Notes work surface. Renders the live work tree
@@ -152,11 +152,7 @@ export function WorkView({ state, dispatch }: WorkViewProps) {
         </section>
       )}
 
-      <section
-        className="fn-usage"
-        data-work-usage
-        aria-label={usageAxLabel(usage)}
-      >
+      <section className="fn-usage" data-work-usage aria-label={usageAxLabel()}>
         <header>
           <p className="fn-eyebrow">Resource view</p>
           <h2 id="fn-usage-title">Usage</h2>

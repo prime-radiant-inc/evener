@@ -4,7 +4,9 @@
 //
 // Exact mapping (from the brief):
 //   initial or loading                       => connecting
-//   ready + reachable/reconnecting/unknown   => connected
+//   ready + reachable                        => connected
+//   ready + reconnecting                     => reconnecting
+//   ready + unknown                          => connecting
 //   ready + unreachable                       => offline
 //   error                                     => error
 
@@ -20,9 +22,11 @@ export function projectLiveConnection(
     case "loading":
       return { status: "connecting" };
     case "ready":
-      return _reachability === "unreachable"
-        ? { status: "offline" }
-        : { status: "connected" };
+      if (_reachability === "unreachable") return { status: "offline" };
+      if (_reachability === "reconnecting") return { status: "reconnecting" };
+      return _reachability === "reachable"
+        ? { status: "connected" }
+        : { status: "connecting" };
     case "error":
       return { status: "error" };
   }
