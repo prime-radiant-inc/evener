@@ -476,7 +476,7 @@ async fn pairing_probe_bounds_stalled_health_request() {
     fixture.script.health_release.notify_one();
 
     let message = error.to_string();
-    assert!(message.contains("health request timed out"), "{message}");
+    assert_eq!(message, "pairing probe timed out");
     assert!(!message.contains("stalled-health-token"));
 }
 
