@@ -72,7 +72,7 @@ func mutateThreadName(ctx context.Context, cfg hubcore.WebConfig, sources *appso
 	if err := saveSessionMetaForRename(entry.StateDir, meta); err != nil {
 		return threadNameMutation{}, appwire.InternalError("save meta: " + err.Error())
 	}
-	return threadNameMutation{projectKey: peProjectKey(entry.StateDir), notified: cfg.Past.UpdateMeta(entry.ID, meta)}, nil
+	return threadNameMutation{projectKey: projectKeyForStateDir(entry.StateDir), notified: cfg.Past.UpdateMeta(entry.ID, meta)}, nil
 }
 
 func renameLiveThread(ctx context.Context, cfg hubcore.WebConfig, sources *appsource.Registry, ref appwire.Ref, params appwire.ThreadNameSetParams) (threadNameMutation, error) {
@@ -98,7 +98,7 @@ func refreshThreadNameMeta(cfg hubcore.WebConfig, ref appwire.Ref, name string) 
 	if !ok {
 		return mutation
 	}
-	mutation.projectKey = peProjectKey(entry.StateDir)
+	mutation.projectKey = projectKeyForStateDir(entry.StateDir)
 	meta, err := loadSessionMetaForRename(entry.StateDir, entry.ID)
 	if err != nil {
 		meta = entry.Meta

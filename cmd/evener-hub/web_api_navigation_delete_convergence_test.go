@@ -1,9 +1,7 @@
 package hub
 
 import (
-	"encoding/json"
 	"errors"
-	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
