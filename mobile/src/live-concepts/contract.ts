@@ -38,6 +38,7 @@ export interface LiveComposerView {
   pending: ConversationMutationState | null;
   accepted?: {
     kind: "send" | "steer" | "queue" | "interrupt";
+    disposition: "applied" | "replayed";
   } | null;
   error: string | null;
 }

@@ -122,6 +122,15 @@ function projectPendingMutation(
   };
 }
 
+function projectAcceptedMutation(
+  accepted: LiveConversationState["lastAcceptedMutation"],
+): NonNullable<LiveComposerView["accepted"]> | null {
+  if (accepted === null || accepted === undefined) return null;
+  const disposition = accepted.receipt.disposition;
+  if (disposition !== "applied" && disposition !== "replayed") return null;
+  return { kind: accepted.kind, disposition };
+}
+
 function findRosterLabels(
   projector: RosterProjector,
   entries: readonly RosterEntry[],
@@ -456,7 +465,7 @@ export function LiveConceptHost({
     accepted:
       profileBlocked || acceptedMutation === null
         ? null
-        : { kind: acceptedMutation.kind },
+        : projectAcceptedMutation(acceptedMutation),
     error: profileBlocked
       ? null
       : conversationResult.failed

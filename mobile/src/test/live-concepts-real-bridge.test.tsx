@@ -683,11 +683,12 @@ function receiptFor(
   const params = request.params as { clientMutationId: string };
   const receipt: MutationReceipt = {
     clientMutationId: params.clientMutationId,
-    disposition: "accepted",
+    disposition: kind === "queue" ? "replayed" : "applied",
     threadId: ATTENTION_THREAD_ID,
-    projectionState: "current",
+    projectionState: kind === "interrupt" ? "reflected" : "pending",
   };
-  if (kind === "send" || kind === "steer") receipt.turnId = "turn-receipt";
+  if (kind === "send" || kind === "steer" || kind === "interrupt")
+    receipt.turnId = "turn-receipt";
   if (kind === "queue") receipt.queueEntryIds = ["queue-entry-live"];
   return receipt;
 }
@@ -706,10 +707,12 @@ function expectReceiptCorrelation(
   kind: "send" | "steer" | "queue" | "interrupt",
 ): void {
   expect(receipt.clientMutationId).toBe(clientMutationId(request));
-  expect(receipt.disposition).toBe("accepted");
+  expect(receipt.disposition).toBe(kind === "queue" ? "replayed" : "applied");
   expect(receipt.threadId).toBe(ATTENTION_THREAD_ID);
-  expect(receipt.projectionState).toBe("current");
-  if (kind === "send" || kind === "steer")
+  expect(receipt.projectionState).toBe(
+    kind === "interrupt" ? "reflected" : "pending",
+  );
+  if (kind === "send" || kind === "steer" || kind === "interrupt")
     expect(receipt.turnId).toBe("turn-receipt");
   else expect(receipt.turnId).toBeUndefined();
   if (kind === "queue") {
@@ -944,6 +947,11 @@ async function submitMutation(
     });
   });
   expectComposerReady("");
+  expect(
+    screen.getByRole("status", {
+      name: `${mode} ${receipt.disposition} by Hub`,
+    }),
+  ).toBeVisible();
   return request;
 }
 
