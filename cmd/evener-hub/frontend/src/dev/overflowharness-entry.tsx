@@ -28,7 +28,7 @@ import { workspaceStore } from "../shell/workspace";
 import { connectionStore } from "../stores/connection";
 import { navigationStore } from "../stores/navigation/store";
 import { keyID } from "../stores/navigation/types";
-import { threadsStore } from "../stores/threads";
+import { putThreadModel } from "../stores/threads";
 import { initTranscriptDisplay, transcriptDisplayStore } from "../stores/transcriptDisplay";
 import { makeTranscriptDisplayConfig } from "../transcriptDisplay/config";
 import "../styles/tokens.css";
@@ -213,9 +213,9 @@ const fake = new FakeClient("ready");
 fake.on("thread/read", () => snapshot);
 fake.on("evener/tasks/list", () => ({ data: [] }));
 connectionStore.getState().connect(fake);
-threadsStore.setState((s) => ({
-  threads: new Map(s.threads).set(REF, hydrateThread(snapshot, REF, 1000)),
-}));
+// putThreadModel keeps the routing index in step with the seeded map
+// entry (the store's membership path for threads).
+putThreadModel(REF, hydrateThread(snapshot, REF, 1000));
 const locationKey = { kind: "location", ref: REF } as const;
 const location: NavigationSessionLocation = {
   generation_id: "overflow_generation",

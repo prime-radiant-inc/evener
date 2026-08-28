@@ -13,6 +13,7 @@ import { ClientNotReadyError, errorKind, RequestTimeoutError, WireError } from "
 import type { ThreadModel } from "../protocol/model";
 import { applyNotification, hydrateThread, notificationTargetsThread } from "../protocol/reducer";
 import { FakeClient, type RequestHandler } from "../protocol/testing/fakeClient";
+import { mulberry32 } from "../protocol/testing/tokenFlood";
 import type {
   AnyNotification,
   MethodName,
@@ -2996,55 +2997,50 @@ describe("notification routing differential (randomized: index vs scan reference
     };
   }
 
-  // assertIndexesConsistent checks the routing indexes agree with the maps
-  // they claim to index: every map entry's model is exactly the model its
-  // index points at (identity, not just equal content — a stale index that
-  // still routes onto a superseded model must fail here), and no ref/threadId
-  // the map no longer holds survives in an index. Without this, a skipped
-  // re-index after a fold only fails when a random notification sequence
-  // happens to observe the staleness.
+  // assertIndexesConsistent checks the thread-id routing index agrees with
+  // the maps it indexes, by KEY SET: every tracked model's threadId is
+  // indexed under exactly the model's ref, and nothing the maps dropped
+  // lingers in an index. Identity needs no assertion any more — a
+  // threadId-routed frame resolves its refs back through the map at route
+  // time, so a stale model object cannot exist in the index at all; only a
+  // stale ref could, and key-set equality is precisely the property that
+  // rules it out. Without this, a skipped index update only fails when a
+  // random notification sequence happens to observe the staleness.
   function assertIndexesConsistent(): void {
     const indexes = threadRoutingIndexesForTests();
     const check = (
       name: string,
       map: Map<string, ThreadModel>,
-      byRef: ReadonlyMap<string, ThreadModel>,
-      byThreadId: ReadonlyMap<string, ReadonlySet<ThreadModel>>,
+      byThreadId: ReadonlyMap<string, ReadonlySet<string>>,
     ): void => {
-      expect(byRef.size, `${name}: byRef size matches map size`).toBe(map.size);
-      const seenThreadIds = new Set<string>();
+      const expected = new Map<string, Set<string>>();
       for (const [ref, model] of map) {
-        expect(byRef.get(ref), `${name}: byRef holds the map's model for ${ref}`).toBe(model);
-        const models = byThreadId.get(model.threadId);
-        expect(models?.has(model), `${name}: byThreadId holds the map's model for ${ref}`).toBe(true);
-        seenThreadIds.add(model.threadId);
-      }
-      for (const ref of byRef.keys()) {
-        expect(map.has(ref), `${name}: byRef entry ${ref} exists in the map`).toBe(true);
-      }
-      expect(byThreadId.size, `${name}: byThreadId keys match the models' thread ids`).toBe(seenThreadIds.size);
-      for (const [threadId, models] of byThreadId) {
-        expect(seenThreadIds.has(threadId), `${name}: byThreadId key ${threadId} exists in the map`).toBe(true);
-        for (const model of models) {
-          expect(map.get(model.ref), `${name}: byThreadId model ${model.ref} exists in the map`).toBe(model);
+        let refs = expected.get(model.threadId);
+        if (!refs) {
+          refs = new Set();
+          expected.set(model.threadId, refs);
         }
+        refs.add(ref);
+      }
+      expect(byThreadId.size, `${name}: byThreadId key set matches the models' thread ids`).toBe(expected.size);
+      for (const [threadId, refs] of expected) {
+        const indexed = byThreadId.get(threadId);
+        expect(indexed, `${name}: byThreadId holds ${threadId}`).toBeDefined();
+        expect([...(indexed ?? [])].sort(), `${name}: byThreadId refs for ${threadId}`).toEqual([...refs].sort());
+      }
+      for (const threadId of byThreadId.keys()) {
+        expect(expected.has(threadId), `${name}: byThreadId key ${threadId} exists in the map`).toBe(true);
       }
     };
-    check("threads", threadsStore.getState().threads, indexes.threadsByRef, indexes.threadsByThreadId);
-    check("watchedThreads", threadsStore.getState().watchedThreads, indexes.watchedByRef, indexes.watchedByThreadId);
+    check("threads", threadsStore.getState().threads, indexes.threadsByThreadId);
+    check("watchedThreads", threadsStore.getState().watchedThreads, indexes.watchedByThreadId);
   }
 
   test("folding random catalog notifications through the store matches the scan reference exactly", async () => {
-    // Deterministic PRNG (mulberry32) so a failure is reproducible from the
-    // seed printed in the assertion message.
-    const makePrng = (seed: number) => () => {
-      seed |= 0;
-      seed = (seed + 0x6d2b79f5) | 0;
-      let t = Math.imul(seed ^ (seed >>> 15), 1 | seed);
-      t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-      return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-    };
-    const prng = makePrng(20260828);
+    // Deterministic PRNG so a failure is reproducible from the seed printed
+    // in the assertion message (mulberry32, shared with the token-flood
+    // harness).
+    const prng = mulberry32(20260828);
     const pick = <T>(items: readonly T[]): T => {
       const item = items[Math.floor(prng() * items.length)];
       if (item === undefined) throw new Error("pick: empty list");
@@ -3186,27 +3182,28 @@ describe("notification routing differential (randomized: index vs scan reference
   });
 });
 
-describe("notification routing fallback (out-of-catalog methods)", () => {
-  test("an unknown method carrying a matching ref routes through the full scan and updates the map", async () => {
+describe("notification routing for out-of-catalog methods", () => {
+  test("an unknown method carrying a matching ref still routes by that ref", async () => {
     const fake = connectFakeClient();
     fake.on("thread/read", () => readResponse("ref_a"));
     await threadsStore.getState().ensureThread("ref_a");
+    await threadsStore.getState().ensureThread("ref_b");
 
-    // A method this build predates: applyToMap must fall back to the
-    // original full-scan behavior (notificationTargetsThread on every
-    // tracked model) rather than the ref/threadId index, whose assumptions
-    // about the params shape do not hold for a name it has never seen.
-    // The reducer's default case returns the model unchanged, so pin the
-    // observable through the fast path's own probe instead: the store's
-    // routing must at least have selected the model and left the index
-    // consistent — and, decisively, a KNOWN catalog method still routes
-    // correctly afterwards (no fallback residue).
+    const beforeB = threadsStore.getState().threads.get("ref_b");
+    const before = threadsStore.getState().threads;
+
+    // A method this build predates. Routing reads only the frame's own
+    // ref/threadId (notificationRoutingKey is method-agnostic), so an
+    // out-of-catalog frame routes exactly like a catalog frame: the
+    // ref-routed model is selected, and no full-scan fallback exists to
+    // behave differently. The reducer's default case returns the same
+    // reference, so the pin here is selection-plus-no-side-effect: the
+    // map is untouched for the sibling and the map reference is identical,
+    // and a follow-up catalog frame still lands on the selected model.
     fake.emitUnknownNotification({ method: "totally/unknown", params: { ref: "ref_a" } });
 
-    // The unknown frame selected exactly ref_a (scan semantics: ref match)
-    // and left no trace elsewhere. The reducer returned the same reference,
-    // so the map is unchanged — assert via a follow-up catalog frame that
-    // the index and the map still agree, and the frame lands.
+    expect(threadsStore.getState().threads).toBe(before);
+    expect(threadsStore.getState().threads.get("ref_b")).toBe(beforeB);
     fake.emitNotification({
       method: "thread/status/changed",
       params: { threadId: "thr_ref_a", ref: "ref_a", status: { type: "active" } },

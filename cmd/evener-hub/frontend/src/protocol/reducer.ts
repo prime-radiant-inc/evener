@@ -404,11 +404,25 @@ export function resolvePendingEscalation(model: ThreadModel, escalationId: strin
   return { ...model, pendingEscalations: model.pendingEscalations.filter((e) => e.escalationId !== escalationId) };
 }
 
+// notificationRoutingKey extracts the identity a frame routes by, from the
+// frame's own params alone: ref before threadId, else nothing. It is the ONE
+// source of truth for that precedence — notificationTargetsThread answers
+// per-model matches from it, and the threads store's routing index keys off
+// it directly — so the two layers cannot drift apart.
+export type NotificationRoutingKey = { ref: string } | { threadId: string };
+
+export function notificationRoutingKey(n: AnyNotification): NotificationRoutingKey | null {
+  const params = n.params as { ref?: unknown; threadId?: unknown };
+  if (typeof params.ref === "string") return { ref: params.ref };
+  if (typeof params.threadId === "string") return { threadId: params.threadId };
+  return null;
+}
+
 export function notificationTargetsThread(n: AnyNotification, model: ThreadModel): boolean {
-  const params = n.params as { ref?: string; threadId?: string };
-  if (params.ref !== undefined) return params.ref === model.ref;
-  if (params.threadId !== undefined) return params.threadId === model.threadId;
-  return false;
+  const key = notificationRoutingKey(n);
+  if (!key) return false;
+  if ("ref" in key) return key.ref === model.ref;
+  return key.threadId === model.threadId;
 }
 
 // Replaces the turn identified by turnId with `fn(turn)`; turns not matching
