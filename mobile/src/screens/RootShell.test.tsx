@@ -634,9 +634,18 @@ describe("RootShell — live connection evidence", () => {
     await screen.findByRole("status", {
       name: /Connected to test-hub 0\.0\.0-test/,
     });
+    fireEvent.click(
+      await screen.findByRole("button", { name: /Open Known live session/ }),
+    );
+    await screen.findByRole("region", { name: "Stillwater conversation" });
+    const client = harness.clients[0];
+    expect(client).toBeDefined();
+    expect(
+      client?.requests.filter((request) => request.method === "thread/read"),
+    ).toHaveLength(1);
 
     act(() => {
-      harness.clients[0]?.emitHandshake(handshakeVersion("2.0.0", "new-hub"));
+      client?.emitHandshake(handshakeVersion("2.0.0", "new-hub"));
     });
 
     expect(
@@ -649,6 +658,21 @@ describe("RootShell — live connection evidence", () => {
         name: /Connected to test-hub 0\.0\.0-test/,
       }),
     ).toBeNull();
+    await vi.waitFor(() =>
+      expect(
+        client?.requests.filter((request) => request.method === "thread/read"),
+      ).toHaveLength(2),
+    );
+    expect(
+      client?.requests.filter((request) => request.method === "thread/read")[1]
+        ?.params,
+    ).toEqual({
+      ref: "ref-a",
+      includeTurns: true,
+      subscribe: true,
+      replaceSubscription: true,
+      turnLimit: 50,
+    });
   });
 
   it("ignores handshake results from a deactivated profile graph", async () => {

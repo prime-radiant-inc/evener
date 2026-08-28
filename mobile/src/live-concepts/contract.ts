@@ -38,7 +38,6 @@ export interface LiveComposerView {
   pending: ConversationMutationState | null;
   accepted?: {
     kind: "send" | "steer" | "queue" | "interrupt";
-    receipt: number;
   } | null;
   error: string | null;
 }
@@ -50,8 +49,7 @@ export interface QuestionDraft {
 }
 
 export interface ScrollAnchor {
-  itemKey: string;
-  offset: number;
+  scrollTop: number;
 }
 
 export interface LiveConceptUiState {

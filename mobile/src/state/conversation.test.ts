@@ -452,7 +452,7 @@ describe("ConversationStore", () => {
         expect(store.getState().pendingMutation).toBeNull();
         expect(store.getState().lastAcceptedMutation).toEqual({
           kind,
-          receipt: expect.any(Number),
+          receipt: expect.objectContaining({ disposition: "accepted" }),
         });
       });
 

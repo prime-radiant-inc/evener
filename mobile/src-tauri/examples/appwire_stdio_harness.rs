@@ -156,6 +156,16 @@ enum ManualServerFrame {
 }
 
 impl ManualProtocol {
+    fn exact_keys(frame: &Value, expected: &[&str], label: &str) -> Result<(), String> {
+        let object = frame
+            .as_object()
+            .ok_or_else(|| format!("{label} must be a JSON object"))?;
+        if object.len() != expected.len() || expected.iter().any(|key| !object.contains_key(*key)) {
+            return Err(format!("{label} contains missing or unknown keys"));
+        }
+        Ok(())
+    }
+
     fn enable(&mut self) -> Result<(), String> {
         if self.enabled {
             return Err("manual server is already enabled".to_owned());
@@ -196,17 +206,26 @@ impl ManualProtocol {
 
     fn classify_client_frame(frame: &Value) -> Result<ManualClientFrame<'_>, String> {
         let id = frame.get("id");
-        let method = frame.get("method").and_then(Value::as_str);
+        let raw_method = frame.get("method");
+        let method = raw_method.and_then(Value::as_str);
         let has_result = frame.get("result").is_some();
         let has_error = frame.get("error").is_some();
         match (id, method, has_result, has_error) {
             (Some(raw_id), Some(method), false, false) => {
+                Self::exact_keys(frame, &["id", "method", "params"], "manual client request")?;
+                if !frame.get("params").is_some_and(Value::is_object) {
+                    return Err("manual client request params must be an object".to_owned());
+                }
                 let id = raw_id.as_u64().ok_or_else(|| {
                     "manual client request id must be an unsigned integer".to_owned()
                 })?;
                 Ok(ManualClientFrame::Request { id, method })
             }
             (None, Some(method), false, false) => {
+                Self::exact_keys(frame, &["method", "params"], "manual client notification")?;
+                if !frame.get("params").is_some_and(Value::is_object) {
+                    return Err("manual client notification params must be an object".to_owned());
+                }
                 Ok(ManualClientFrame::Notification { method })
             }
             _ => Err(
@@ -299,6 +318,13 @@ impl ManualProtocol {
             let id = raw_id.as_u64().ok_or_else(|| {
                 "manual server response id must be an unsigned integer".to_owned()
             })?;
+            let response_key = if has_result { "result" } else { "error" };
+            Self::exact_keys(frame, &["id", response_key], "manual server response")?;
+            if !frame.get(response_key).is_some_and(Value::is_object) {
+                return Err(format!(
+                    "manual server response {response_key} must be an object"
+                ));
+            }
             let method = self
                 .pending
                 .get(&id)
@@ -317,6 +343,10 @@ impl ManualProtocol {
         }
         if raw_id.is_none() && raw_method.is_some_and(Value::is_string) && !has_result && !has_error
         {
+            Self::exact_keys(frame, &["method", "params"], "manual server notification")?;
+            if !frame.get("params").is_some_and(Value::is_object) {
+                return Err("manual server notification params must be an object".to_owned());
+            }
             if self.phase != ManualProtocolPhase::Ready {
                 return Err(
                     "notifications are unavailable before initialized is observed".to_owned(),
@@ -505,6 +535,7 @@ async fn run_scripted_hub(
     }
 }
 
+#[allow(clippy::result_large_err)]
 async fn reject_connection(stream: TcpStream, error: String) {
     let _ = tokio_tungstenite::accept_hdr_async(
         stream,
@@ -517,6 +548,7 @@ async fn reject_connection(stream: TcpStream, error: String) {
     .await;
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn run_connection(
     connection_id: usize,
     stream: TcpStream,
@@ -629,8 +661,17 @@ async fn handle_client_frame(
     manual_server: &AtomicBool,
     manual_protocol: &Mutex<ManualProtocol>,
     output: &Output,
-) -> Result<(), tokio_tungstenite::tungstenite::Error> {
-    let frame: Value = serde_json::from_str(text).unwrap();
+) -> Result<(), ()> {
+    let frame: Value = match serde_json::from_str(text) {
+        Ok(frame) => frame,
+        Err(error) => {
+            output.send(json!({
+                "kind": "serverProtocolError",
+                "error": format!("malformed client JSON: {error}"),
+            }));
+            return Err(());
+        }
+    };
     let method = frame.get("method").and_then(Value::as_str).unwrap_or("");
     if manual_server.load(Ordering::SeqCst) {
         if let Err(error) = manual_protocol
@@ -690,7 +731,8 @@ async fn handle_client_frame(
                 .to_string()
                 .into(),
             ))
-            .await?;
+            .await
+            .map_err(|_| ())?;
     } else if method == "initialized" {
         socket
             .send(Message::Text(
@@ -698,20 +740,23 @@ async fn handle_client_frame(
                     .to_string()
                     .into(),
             ))
-            .await?;
+            .await
+            .map_err(|_| ())?;
         socket
             .send(Message::Text(
                 json!({ "method": "evener/tree/changed", "params": {} })
                     .to_string()
                     .into(),
             ))
-            .await?;
+            .await
+            .map_err(|_| ())?;
     } else if let Some(id) = frame.get("id") {
         socket
             .send(Message::Text(
                 json!({ "id": id, "result": {} }).to_string().into(),
             ))
-            .await?;
+            .await
+            .map_err(|_| ())?;
     }
     Ok(())
 }

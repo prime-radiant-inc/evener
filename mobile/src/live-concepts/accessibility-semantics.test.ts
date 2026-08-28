@@ -125,9 +125,9 @@ describe("accessible live concept semantics", () => {
     expect(
       mutationAxLabel({
         ...composerBase,
-        accepted: { kind: "queue", receipt: 3 },
+        accepted: { kind: "queue" },
       }),
-    ).toBe("Queue accepted; update 3");
+    ).toBe("Queue accepted by Hub");
 
     const work: LiveWorkItem = {
       key: "opaque-work-key",
