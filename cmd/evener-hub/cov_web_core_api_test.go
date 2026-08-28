@@ -4,7 +4,6 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -104,7 +103,7 @@ func FuzzCovWebCoreAPI(f *testing.F) {
 		f.Add(seed)
 	}
 	f.Fuzz(func(t *testing.T, order byte) {
-		 tests := []func(*testing.T){
+		tests := []func(*testing.T){
 			TestCovWebCoreAPIHelpersAndRoutes,
 			TestProjectDeleteRemovesFilesAndScrubs,
 			TestProjectDeleteRejectsKeyWorkingDirMismatch,

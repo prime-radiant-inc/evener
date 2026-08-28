@@ -7,7 +7,6 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 
 	"primeradiant.com/evener/agent/schema"
@@ -88,11 +87,6 @@ func FuzzWorkspaceMutationsPass6(f *testing.F) {
 		roster := hubcore.NewRosterWithEntries()
 		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: roster})
 		web.sources.Add(source)
-		call := func(fn func(http.ResponseWriter, *http.Request), method, target, body string) *httptest.ResponseRecorder {
-			rr := httptest.NewRecorder()
-			fn(rr, httptest.NewRequest(method, target, strings.NewReader(body)))
-			return rr
-		}
 
 		switch mode % 8 {
 		case 0:
