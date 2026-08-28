@@ -55,13 +55,18 @@ export function GoalControl({ sessionRef, model }: GoalControlProps) {
   const [popoverOpen, setPopoverOpen] = useState(false);
   const canSetGoal = model.capabilities.goal;
 
-  // A different session and a goal presence transition are fresh transient-UI
-  // lifetimes. Keeping the dependency at presence (rather than goal identity)
-  // leaves an already-open popover visible through status/iteration updates.
-  // biome-ignore lint/correctness/useExhaustiveDependencies: these are the deliberate popover reset boundaries
+  // A different session starts a fresh transient-UI lifetime.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: sessionRef is the deliberate popover reset boundary
   useEffect(() => {
     setPopoverOpen(false);
-  }, [sessionRef, goal !== null]);
+  }, [sessionRef]);
+
+  // Clearing the model-owned goal closes the popover. Goal appearance does not
+  // reset state, and goal identity/status/iteration updates do not rerun this.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: goal absence is the deliberate popover reset boundary
+  useEffect(() => {
+    if (goal === null) setPopoverOpen(false);
+  }, [goal === null]);
 
   async function handleClear() {
     try {
