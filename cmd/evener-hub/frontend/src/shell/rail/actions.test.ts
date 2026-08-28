@@ -260,21 +260,40 @@ describe("deleteProject", () => {
 });
 
 describe("deleteSession", () => {
-  test("POSTs /api/sessions/<url-encoded ref>/delete and returns the parsed result", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ deleted: ["local:abc"], skipped: [] }));
-    const result = await deleteSession("local:abc/def");
-    expect(fetchMock).toHaveBeenCalledWith("/api/sessions/local%3Aabc%2Fdef/delete", JSON_INIT({}));
-    expect(result).toEqual({ deleted: ["local:abc"], skipped: [] });
+  test("uses the typed AppWire method and returns its navigation receipt", async () => {
+    const client = new FakeClient();
+    const response = {
+      deleted: ["abc"],
+      skipped: [],
+      navigation: { generation_id: "generation-3", targets: [] },
+    };
+    client.on("evener/session/delete", (params) => {
+      expect(params).toEqual({ ref: "local:abc" });
+      return response;
+    });
+
+    await expect(deleteSession(client, "local:abc")).resolves.toEqual(response);
+    expect(client.calls).toEqual([{ method: "evener/session/delete", params: { ref: "local:abc" } }]);
   });
 
   test("a refused delete (live or reserved target) resolves with the session in skipped, not an error", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ deleted: [], skipped: [{ id: "abc", reason: "resumed live" }] }));
-    const result = await deleteSession("local:abc");
-    expect(result).toEqual({ deleted: [], skipped: [{ id: "abc", reason: "resumed live" }] });
+    const client = new FakeClient();
+    client.on("evener/session/delete", () => ({
+      deleted: [],
+      skipped: [{ id: "abc", reason: "resumed live" }],
+      navigation: { generation_id: "generation-3", targets: [] },
+    }));
+
+    const result = await deleteSession(client, "local:abc");
+    expect(result.skipped).toEqual([{ id: "abc", reason: "resumed live" }]);
   });
 
-  test("rejects with the server's error message on failure", async () => {
-    fetchMock.mockResolvedValueOnce(jsonResponse({ error: "invalid session ID: boom" }, 400));
-    await expect(deleteSession("local:abc")).rejects.toThrow("invalid session ID: boom");
+  test("propagates AppWire failures", async () => {
+    const client = new FakeClient();
+    client.on("evener/session/delete", () => {
+      throw new Error("invalid session ID: boom");
+    });
+
+    await expect(deleteSession(client, "local:abc")).rejects.toThrow("invalid session ID: boom");
   });
 });

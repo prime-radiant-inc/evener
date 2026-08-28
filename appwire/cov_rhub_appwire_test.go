@@ -218,6 +218,23 @@ func TestClientRequestWrappersRoundTrip(t *testing.T) {
 			}
 			return nil
 		}},
+		{"SessionDelete", MethodEvenerSessionDelete, `{"ref":"local:th"}`, SessionDeleteResponse{
+			Deleted: []string{"th"},
+			Skipped: []DeletionSkip{},
+			Navigation: NavigationMutation{
+				GenerationID: "generation-a",
+				Targets:      []NavigationInvalidationTarget{{Kind: NavigationTargetProject, ProjectKey: "project-key", Revision: 4}},
+			},
+		}, func(ctx context.Context, c *Client) error {
+			out, err := c.SessionDelete(ctx, SessionDeleteParams{Ref: "local:th"})
+			if err != nil {
+				return err
+			}
+			if len(out.Deleted) != 1 || out.Deleted[0] != "th" || len(out.Skipped) != 0 || out.Navigation.GenerationID != "generation-a" {
+				return errors.New("SessionDelete decode mismatch")
+			}
+			return nil
+		}},
 		{"TurnInterrupt", MethodTurnInterrupt, `{"ref":"local:th","clientMutationId":"cm_interrupt"}`, EmptyResponse{}, func(ctx context.Context, c *Client) error {
 			return c.TurnInterrupt(ctx, TurnInterruptParams{Ref: "local:th", ClientMutationID: "cm_interrupt"})
 		}},

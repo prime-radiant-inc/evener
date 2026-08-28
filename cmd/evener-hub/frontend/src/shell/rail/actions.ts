@@ -1,10 +1,13 @@
-// actions.ts wraps the application mutations the rail's row menu drives:
-// favorite/rename/archive/delete-project. REST-backed actions retain their
-// handler-specific request helpers below; favorite, archive, and project delete
-// use the typed AppWire client. No optimistic UI: callers await the response's
-// exact navigation targets before removing their overlay.
+// actions.ts wraps the application mutations the rail's row menu drives. The
+// typed AppWire mutations await exact navigation targets before removing an
+// overlay; the remaining REST-backed pin actions retain their request helpers.
 import type { AppwireClientLike } from "../../protocol/testing/fakeClient";
-import type { FavoriteSetResponse, NavigationMutation, ProjectDeleteResponse } from "../../protocol/types.gen";
+import type {
+  FavoriteSetResponse,
+  NavigationMutation,
+  ProjectDeleteResponse,
+  SessionDeleteResponse,
+} from "../../protocol/types.gen";
 import { connectionStore } from "../../stores/connection";
 
 /** Wire shape of GET /api/pin-sections — { id, name, member_count }. */
@@ -47,18 +50,6 @@ export function isRailRequestStatus(error: unknown, status: number): boolean {
 
 async function requestJSON<T>(url: string, init: RequestInit): Promise<T> {
   const res = await fetch(url, { credentials: "same-origin", ...init });
-  if (!res.ok) throw new RailRequestError(await parseErrorBody(res), res.status);
-  return (await res.json()) as T;
-}
-
-// postJSON POSTs `body` as JSON and returns the parsed JSON response.
-async function postJSON<T>(url: string, body: unknown): Promise<T> {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    credentials: "same-origin",
-    body: JSON.stringify(body),
-  });
   if (!res.ok) throw new RailRequestError(await parseErrorBody(res), res.status);
   return (await res.json()) as T;
 }
@@ -158,13 +149,9 @@ export async function deleteProject(key: string, workingDir: string): Promise<Pr
   return client.request("evener/project/delete", { key, workingDir });
 }
 
-/** POST /api/sessions/{ref}/delete. No body - the ref in the URL is the only
- * input the handler reads. Destructive - removes one ended or crashed local
- * session's artifacts, decisions, and rendezvous records without touching
- * project siblings (cmd/evener-hub/web_api_session_delete.go). Same response
- * shape as deleteProject: a live or concurrently-reserved target resolves
- * with itself in `skipped` rather than rejecting - only a validation or
- * server error (400/500) rejects. */
-export async function deleteSession(ref: string): Promise<ProjectDeleteResult> {
-  return postJSON<ProjectDeleteResult>(`/api/sessions/${encodeURIComponent(ref)}/delete`, {});
+/** Deletes one ended or crashed local session through the typed hub method.
+ * Live or concurrently reserved targets resolve in `skipped`; validation and
+ * server failures reject through AppWire. */
+export async function deleteSession(client: AppwireClientLike, ref: string): Promise<SessionDeleteResponse> {
+  return client.request("evener/session/delete", { ref });
 }

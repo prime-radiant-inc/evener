@@ -844,7 +844,7 @@ function NavigationRail({ onHide, width, onWidthChange, revealTarget, onRevealCo
       let converged = false;
       setPending((ops) => [...ops, optimistic]);
       try {
-        const result = await deleteSession(session.ref);
+        const result = await deleteSession(client, session.ref);
         mutationCompleted = true;
         await convergeMutation(result);
         converged = true;

@@ -162,6 +162,11 @@ export interface CommandListResponse {
   commands: CommandDescriptor[];
 }
 
+export interface DeletionSkip {
+  id: string;
+  reason: string;
+}
+
 export interface DiagnosticCause {
   kind: string;
   provider?: string;
@@ -1267,6 +1272,16 @@ export interface ServerInfo {
   version: string;
 }
 
+export interface SessionDeleteParams {
+  ref: string;
+}
+
+export interface SessionDeleteResponse {
+  deleted: string[];
+  skipped: DeletionSkip[];
+  navigation: NavigationMutation;
+}
+
 export interface SettingsAgentEntry {
   name: string;
   editPath?: string;
@@ -1898,6 +1913,7 @@ export const METHOD_NAMES = [
   "evener/favorite/set",
   "evener/archive/set",
   "evener/project/delete",
+  "evener/session/delete",
   "evener/search",
   "evener/harnesses/list",
   "evener/upgrade",
@@ -2067,6 +2083,7 @@ export interface MethodTypes {
   "evener/favorite/set": { params: FavoriteSetParams; result: FavoriteSetResponse };
   "evener/archive/set": { params: ArchiveParams; result: ArchiveResponse };
   "evener/project/delete": { params: ProjectDeleteParams; result: ProjectDeleteResponse };
+  "evener/session/delete": { params: SessionDeleteParams; result: SessionDeleteResponse };
   "evener/search": { params: SearchParams; result: SearchResponse };
   "evener/harnesses/list": { params: HarnessListParams; result: HarnessListResponse };
   "evener/upgrade": { params: UpgradeParams; result: UpgradeResponse };

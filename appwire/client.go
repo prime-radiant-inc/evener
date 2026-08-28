@@ -583,6 +583,12 @@ func (c *Client) ProjectDelete(ctx context.Context, params ProjectDeleteParams) 
 	return out, err
 }
 
+func (c *Client) SessionDelete(ctx context.Context, params SessionDeleteParams) (SessionDeleteResponse, error) {
+	var out SessionDeleteResponse
+	err := c.request(ctx, MethodEvenerSessionDelete, params, &out)
+	return out, err
+}
+
 func (c *Client) Search(ctx context.Context, params SearchParams) (SearchResponse, error) {
 	var out SearchResponse
 	err := c.request(ctx, MethodEvenerSearch, params, &out)

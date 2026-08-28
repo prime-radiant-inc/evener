@@ -26,6 +26,10 @@ func (s *WebServer) emptyNavigationMutation() hubapi.NavigationMutation {
 	return mutation
 }
 
+func projectKeyForStateDir(stateDir string) string {
+	return filepath.Base(filepath.Dir(stateDir))
+}
+
 var (
 	hubBuildNavigationTree       = hubcore.BuildTreeWithProjects
 	hubDeriveNavigationAttention = hubcore.DeriveAttention
@@ -1199,8 +1203,6 @@ func (s *WebServer) handleAPISession(w http.ResponseWriter, r *http.Request) {
 		s.handleAPIModel(w, r, routeID)
 	case "reasoning-effort":
 		s.handleAPIReasoningEffort(w, r, routeID)
-	case "delete":
-		s.handleAPISessionDelete(w, r, routeID)
 	case "interrupt", "compact", "shutdown":
 		s.handleSessionAction(w, r, routeID, sub)
 	default:

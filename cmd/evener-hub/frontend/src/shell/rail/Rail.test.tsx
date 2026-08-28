@@ -635,12 +635,15 @@ describe("resource-backed Rail", () => {
       .fn()
       .mockResolvedValueOnce(
         jsonResponse({ ok: true, changed: true, navigation: { generation_id: "g1", targets: [] } }),
-      )
-      .mockResolvedValueOnce(
-        jsonResponse({ deleted: ["a"], skipped: [], navigation: { generation_id: "g1", targets: [] } }),
       );
     vi.stubGlobal("fetch", fetchMock);
-    render(<Rail />);
+    const client = new FakeClient();
+    client.on("evener/session/delete", () => ({
+      deleted: ["a"],
+      skipped: [],
+      navigation: { generation_id: "g1", targets: [] },
+    }));
+    render(<Rail />, client);
     fireEvent.click(screen.getByRole("button", { name: /actions for pinned delete/i }));
     fireEvent.click(screen.getByRole("menuitem", { name: "Unpin" }));
     await act(async () => undefined);
@@ -652,10 +655,7 @@ describe("resource-backed Rail", () => {
     fireEvent.click(screen.getByRole("menuitem", { name: "Delete…" }));
     fireEvent.click(screen.getByRole("button", { name: "Delete" }));
     await act(async () => undefined);
-    expect(fetchMock).toHaveBeenCalledWith(
-      expect.stringContaining("/api/sessions/"),
-      expect.objectContaining({ method: "POST" }),
-    );
+    expect(client.calls).toContainEqual({ method: "evener/session/delete", params: { ref: "local:a" } });
     expect(applyNavigationMutation).toHaveBeenCalledTimes(2);
   });
   test("keeps AppWire shutdown pending through unrelated invalidation and until relevant target authority", async () => {

@@ -61,6 +61,7 @@ const (
 	MethodEvenerFavoriteSet           = "evener/favorite/set"
 	MethodEvenerArchiveSet            = "evener/archive/set"
 	MethodEvenerProjectDelete         = "evener/project/delete"
+	MethodEvenerSessionDelete         = "evener/session/delete"
 	MethodEvenerSearch                = "evener/search"
 	MethodEvenerHarnessesList         = "evener/harnesses/list"
 	MethodEvenerUpgrade               = "evener/upgrade"
@@ -331,6 +332,27 @@ type ProjectDeleteResponse struct {
 type ProjectDeleteConflictData struct {
 	ErrorData
 	Live []string `json:"live"`
+}
+
+// SessionDeleteParams selects one local session by its qualified AppWire ref.
+type SessionDeleteParams struct {
+	Ref string `json:"ref"`
+}
+
+// DeletionSkip reports a target that could not be deleted without falsely
+// presenting it as deleted. Live and concurrently reserved sessions use this
+// completed response path rather than a wire error.
+type DeletionSkip struct {
+	ID     string `json:"id"`
+	Reason string `json:"reason"`
+}
+
+// SessionDeleteResponse reports the committed single-session deletion outcome
+// and the navigation mutation clients must converge before clearing overlays.
+type SessionDeleteResponse struct {
+	Deleted    []string           `json:"deleted"`
+	Skipped    []DeletionSkip     `json:"skipped"`
+	Navigation NavigationMutation `json:"navigation"`
 }
 
 // SearchParams selects matching live and past sessions for the hub command

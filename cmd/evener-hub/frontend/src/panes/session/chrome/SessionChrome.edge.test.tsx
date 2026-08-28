@@ -15,6 +15,7 @@ import type {
   ThreadCapabilities,
   ThreadReadResponse,
 } from "../../../protocol/types.gen";
+import { ClientProvider } from "../../../shell/clientContext";
 import { resetWorkspaceStoreForTests } from "../../../shell/workspace";
 import { resetActivitySummaryStoreForTests } from "../../../stores/activitySummary";
 import { connectionStore } from "../../../stores/connection";
@@ -113,22 +114,15 @@ function connectFakeClient(): FakeClient {
   return fake;
 }
 
-function failResponse(status = 500, body: unknown = { error: "failed" }): Response {
-  return { ok: false, status, statusText: "Error", json: () => Promise.resolve(body) } as Response;
-}
-
-function okResponse(body: unknown): Response {
-  return { ok: true, status: 200, statusText: "OK", json: () => Promise.resolve(body) } as Response;
-}
-
 // We can't easily spy on the toast store from outside, so we mount Toast
 // and observe DOM output instead.
 function renderWithToast(ui: React.ReactElement) {
+  const client = connectionStore.getState().client ?? new FakeClient("ready");
   return render(
-    <>
+    <ClientProvider client={client}>
       {ui}
       <Toast />
-    </>,
+    </ClientProvider>,
   );
 }
 
@@ -353,13 +347,13 @@ test("archive toggle failure toasts an error", async () => {
 // --- onDelete error (lines 221-222) ---
 
 test("delete failure toasts an error", async () => {
-  const fetchMock = vi.fn();
-  fetchMock.mockResolvedValue(failResponse(500, { error: "delete failed" }));
-  vi.stubGlobal("fetch", fetchMock);
-
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_del", { name: "Del Session" }));
+  fake.on("evener/session/delete", (params) => {
+    expect(params).toEqual({ ref: "ref_del" });
+    throw new Error("delete failed");
+  });
   await threadsStore.getState().ensureThread("ref_del");
   setLocation("ref_del");
 
@@ -384,20 +378,20 @@ test("delete failure toasts an error", async () => {
 // --- onDelete with skipped sessions (lines 216-218) ---
 
 test("delete with skipped sessions shows a warning toast", async () => {
-  const fetchMock = vi.fn();
-  fetchMock.mockResolvedValue(
-    okResponse({
-      deleted: ["other_ref"],
-      skipped: [{ id: "ref_skip", reason: "still in use" }],
-    }),
-  );
-  vi.stubGlobal("fetch", fetchMock);
-
   const user = userEvent.setup();
   const fake = connectFakeClient();
   fake.on("thread/read", () => readResponse("ref_skip", { name: "Skip Session" }));
+  fake.on("evener/session/delete", (params) => {
+    expect(params).toEqual({ ref: "ref_skip" });
+    return {
+      deleted: ["other_ref"],
+      skipped: [{ id: "ref_skip", reason: "still in use" }],
+      navigation: { generation_id: "generation_test", targets: [] },
+    };
+  });
   await threadsStore.getState().ensureThread("ref_skip");
   setLocation("ref_skip");
+  navigationStore.setState({ applyNavigationMutation: vi.fn().mockResolvedValue(undefined) });
 
   renderWithToast(<SessionChrome ref="ref_skip" />);
   await user.click(screen.getByRole("button", { name: /session actions/i }));
