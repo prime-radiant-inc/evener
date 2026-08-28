@@ -2421,18 +2421,21 @@ describe("ConversationStore", () => {
   // doneCount has already reached target.
   function makeControlledRead(service: FakeConversationService): {
     started: (target?: number) => Promise<void>;
+    ready: (target?: number) => Promise<void>;
     release: () => boolean;
     completed: (target?: number) => Promise<void>;
     getStartedCount: () => number;
     getDoneCount: () => number;
   } {
     let startedCount = 0;
+    let readyCount = 0;
     let doneCount = 0;
     const releaseQueue: Array<() => void> = [];
     // Level-triggered waiters: each carries a target count. Resolved when
     // the counter reaches or exceeds the target. If the target is already
     // met when started()/completed() is called, resolve immediately.
     const startedWaiters: Array<{ target: number; resolve: () => void }> = [];
+    const readyWaiters: Array<{ target: number; resolve: () => void }> = [];
     const doneWaiters: Array<{ target: number; resolve: () => void }> = [];
     const orig = service.readProjection.bind(service);
     service.readProjection = async (ref: string) => {
@@ -2448,6 +2451,14 @@ describe("ConversationStore", () => {
       const result = await orig(ref);
       await new Promise<void>((resolve) => {
         releaseQueue.push(resolve);
+        readyCount += 1;
+        for (let i = readyWaiters.length - 1; i >= 0; i--) {
+          const w = readyWaiters[i];
+          if (w !== undefined && readyCount >= w.target) {
+            w.resolve();
+            readyWaiters.splice(i, 1);
+          }
+        }
       });
       doneCount += 1;
       // Resolve all done waiters whose target has been reached.
@@ -2465,6 +2476,12 @@ describe("ConversationStore", () => {
         if (startedCount >= target) return Promise.resolve();
         return new Promise<void>((resolve) => {
           startedWaiters.push({ target, resolve });
+        });
+      },
+      ready: (target = 1) => {
+        if (readyCount >= target) return Promise.resolve();
+        return new Promise<void>((resolve) => {
+          readyWaiters.push({ target, resolve });
         });
       },
       release: () => {
@@ -7471,33 +7488,45 @@ describe("ConversationStore", () => {
       });
     }
 
-    // Fix 3: Event-driven quiescent straggler draining. Every release that
-    // actually frees a queued read must be paired with an awaited completion
-    // and a scheduler microtask cross so the rehydrate effect fully commits.
-    // No fire-and-forget release, no bounded safety loop.
-    //
-    // Algorithm: cross one scheduler microtask so any queued reread dispatches
-    // and reaches the release gate. If release() returns true (a real queued
-    // read was freed), register/await that exact next completed(target),
-    // cross another scheduler microtask so its trailing effect drains, then
-    // repeat. When release() returns false after a scheduler turn, the
-    // queue is quiescent — no reads are pending or in-flight.
+    // Event-driven quiescent straggler draining. Every started read is awaited
+    // at its release gate, then paired with an awaited completion and an exact
+    // reconciliation barrier. A scheduler turn after reconciliation exposes
+    // any trailing read before the next iteration. No sleeps, count polling,
+    // fixed flush counts, or fire-and-forget releases.
     async function drainAndAwaitStragglers(
+      store: ReturnType<typeof createConversationStore>,
       ctrl: ReturnType<typeof makeControlledRead>,
     ): Promise<void> {
-      // Cross a scheduler microtask so any queued reread dispatches and
-      // reaches the controlled release gate.
+      // Expose work queued before cleanup began.
       await yieldMicrotask();
-      // Event-driven loop: release returns true only when it freed a real
-      // queued read. Each freed read is awaited to completion plus a
-      // scheduler drain yield. When release returns false after a scheduler
-      // turn, the queue is quiescent.
-      while (true) {
-        const released = ctrl.release();
-        if (!released) break;
-        await ctrl.completed(ctrl.getDoneCount() + 1);
+
+      while (ctrl.getDoneCount() < ctrl.getStartedCount()) {
+        const target = ctrl.getDoneCount() + 1;
+        await ctrl.ready(target);
+
+        const beforeReconcile = store.getState().conversation;
+        const reconcileP = installReconcileBarrier(store, beforeReconcile);
+        if (!ctrl.release()) {
+          throw new Error(
+            "controlled read was ready but could not be released",
+          );
+        }
+        await ctrl.completed(target);
+        await reconcileP;
+
+        // The completed read's scheduler effect has reconciled. Cross its
+        // dispatch boundary so any trailing request starts before rechecking.
         await yieldMicrotask();
       }
+    }
+
+    async function assertAfterQuiescence(
+      store: ReturnType<typeof createConversationStore>,
+      ctrl: ReturnType<typeof makeControlledRead>,
+      assertions: () => void,
+    ): Promise<void> {
+      await drainAndAwaitStragglers(store, ctrl);
+      assertions();
     }
 
     // --- (A) invalid-only ownership tests ---
@@ -7530,8 +7559,6 @@ describe("ConversationStore", () => {
       await yieldMicrotask();
       await ctrl.started(1);
       // Exactly one controlled read started.
-      expect(ctrl.getStartedCount()).toBe(1);
-      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Synchronous: text/detail unchanged — no mutation, no freeze.
       const item0 = store
         .getState()
@@ -7556,7 +7583,7 @@ describe("ConversationStore", () => {
       await yieldMicrotask();
       // Detect any started read2, release/complete all stragglers BEFORE
       // asserting exact counts — failures cannot leave jobs blocked.
-      try {
+      await assertAfterQuiescence(store, ctrl, () => {
         // Reassert exact counts after reconciliation — queued duplicates
         // cannot hide.
         expect(ctrl.getStartedCount()).toBe(1);
@@ -7567,9 +7594,7 @@ describe("ConversationStore", () => {
           .getState()
           .conversation?.items.find((i) => i.id === "tool-r");
         expect(item1).toBeUndefined();
-      } finally {
-        await drainAndAwaitStragglers(ctrl);
-      }
+      });
     });
 
     it("2A-Family-r2 (A): tool delta to reasoning item — no mutation, target drops (invalid did not mark live ownership)", async () => {
@@ -7598,8 +7623,6 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       await yieldMicrotask();
       await ctrl.started(1);
-      expect(ctrl.getStartedCount()).toBe(1);
-      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Synchronous: text unchanged.
       const item0 = store
         .getState()
@@ -7615,7 +7638,7 @@ describe("ConversationStore", () => {
       await ctrl.completed(1);
       await reconcileP;
       await yieldMicrotask();
-      try {
+      await assertAfterQuiescence(store, ctrl, () => {
         expect(ctrl.getStartedCount()).toBe(1);
         expect(ctrl.getDoneCount()).toBe(1);
         expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
@@ -7624,9 +7647,7 @@ describe("ConversationStore", () => {
           .getState()
           .conversation?.items.find((i) => i.id === "reason-1");
         expect(item1).toBeUndefined();
-      } finally {
-        await drainAndAwaitStragglers(ctrl);
-      }
+      });
     });
 
     it("2A-Family-r2 (A): callId mismatch — no mutation, target drops (invalid did not mark live ownership)", async () => {
@@ -7655,8 +7676,6 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       await yieldMicrotask();
       await ctrl.started(1);
-      expect(ctrl.getStartedCount()).toBe(1);
-      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Synchronous: text unchanged.
       const item0 = store
         .getState()
@@ -7672,7 +7691,7 @@ describe("ConversationStore", () => {
       await ctrl.completed(1);
       await reconcileP;
       await yieldMicrotask();
-      try {
+      await assertAfterQuiescence(store, ctrl, () => {
         expect(ctrl.getStartedCount()).toBe(1);
         expect(ctrl.getDoneCount()).toBe(1);
         expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
@@ -7681,9 +7700,7 @@ describe("ConversationStore", () => {
           .getState()
           .conversation?.items.find((i) => i.id === "tool-mismatch");
         expect(item1).toBeUndefined();
-      } finally {
-        await drainAndAwaitStragglers(ctrl);
-      }
+      });
     });
 
     it("2A-Family-r2 (A): incoming missing callId — no mutation, target drops (invalid did not mark live ownership)", async () => {
@@ -7711,8 +7728,6 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       await yieldMicrotask();
       await ctrl.started(1);
-      expect(ctrl.getStartedCount()).toBe(1);
-      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Synchronous: text unchanged.
       const item0 = store
         .getState()
@@ -7728,7 +7743,7 @@ describe("ConversationStore", () => {
       await ctrl.completed(1);
       await reconcileP;
       await yieldMicrotask();
-      try {
+      await assertAfterQuiescence(store, ctrl, () => {
         expect(ctrl.getStartedCount()).toBe(1);
         expect(ctrl.getDoneCount()).toBe(1);
         expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
@@ -7737,9 +7752,7 @@ describe("ConversationStore", () => {
           .getState()
           .conversation?.items.find((i) => i.id === "tool-hascall");
         expect(item1).toBeUndefined();
-      } finally {
-        await drainAndAwaitStragglers(ctrl);
-      }
+      });
     });
 
     it("2A-Family-r2 (A): stored missing callId — no mutation, target drops (invalid did not mark live ownership)", async () => {
@@ -7769,8 +7782,6 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       await yieldMicrotask();
       await ctrl.started(1);
-      expect(ctrl.getStartedCount()).toBe(1);
-      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Synchronous: text unchanged — no mutation, no freeze.
       const item0 = store
         .getState()
@@ -7786,7 +7797,7 @@ describe("ConversationStore", () => {
       await ctrl.completed(1);
       await reconcileP;
       await yieldMicrotask();
-      try {
+      await assertAfterQuiescence(store, ctrl, () => {
         expect(ctrl.getStartedCount()).toBe(1);
         expect(ctrl.getDoneCount()).toBe(1);
         expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
@@ -7795,9 +7806,7 @@ describe("ConversationStore", () => {
           .getState()
           .conversation?.items.find((i) => i.id === "tool-nocall");
         expect(item1).toBeUndefined();
-      } finally {
-        await drainAndAwaitStragglers(ctrl);
-      }
+      });
     });
 
     it("2A-Family-r2 (A): unknown family rejects reasoning delta — no mutation, target drops", async () => {
@@ -7827,8 +7836,6 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       await yieldMicrotask();
       await ctrl.started(1);
-      expect(ctrl.getStartedCount()).toBe(1);
-      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Synchronous: text unchanged.
       const item0 = store
         .getState()
@@ -7844,7 +7851,7 @@ describe("ConversationStore", () => {
       await ctrl.completed(1);
       await reconcileP;
       await yieldMicrotask();
-      try {
+      await assertAfterQuiescence(store, ctrl, () => {
         expect(ctrl.getStartedCount()).toBe(1);
         expect(ctrl.getDoneCount()).toBe(1);
         expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
@@ -7853,9 +7860,7 @@ describe("ConversationStore", () => {
           .getState()
           .conversation?.items.find((i) => i.id === "unk-1");
         expect(item1).toBeUndefined();
-      } finally {
-        await drainAndAwaitStragglers(ctrl);
-      }
+      });
     });
 
     it("2A-Family-r2 (A): unknown family rejects tool delta — no mutation, target drops", async () => {
@@ -7885,8 +7890,6 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       await yieldMicrotask();
       await ctrl.started(1);
-      expect(ctrl.getStartedCount()).toBe(1);
-      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Synchronous: text unchanged.
       const item0 = store
         .getState()
@@ -7902,7 +7905,7 @@ describe("ConversationStore", () => {
       await ctrl.completed(1);
       await reconcileP;
       await yieldMicrotask();
-      try {
+      await assertAfterQuiescence(store, ctrl, () => {
         expect(ctrl.getStartedCount()).toBe(1);
         expect(ctrl.getDoneCount()).toBe(1);
         expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
@@ -7911,9 +7914,7 @@ describe("ConversationStore", () => {
           .getState()
           .conversation?.items.find((i) => i.id === "unk-2");
         expect(item1).toBeUndefined();
-      } finally {
-        await drainAndAwaitStragglers(ctrl);
-      }
+      });
     });
 
     // --- (B) invalid-then-valid freeze tests ---
@@ -7946,8 +7947,6 @@ describe("ConversationStore", () => {
       await yieldMicrotask();
       await ctrl.started(1);
       // Exactly one controlled read started.
-      expect(ctrl.getStartedCount()).toBe(1);
-      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Synchronous: text unchanged — invalid did not mutate or freeze.
       const item0 = store
         .getState()
@@ -7989,7 +7988,7 @@ describe("ConversationStore", () => {
       await ctrl.completed(1);
       await reconcileP;
       await yieldMicrotask();
-      try {
+      await assertAfterQuiescence(store, ctrl, () => {
         // Reassert exact counts after reconciliation — queued duplicates
         // cannot hide.
         expect(ctrl.getStartedCount()).toBe(1);
@@ -8004,9 +8003,7 @@ describe("ConversationStore", () => {
         if (item2?.kind === "activity") {
           expect(item2.detail.output).toBe("out0\nappended");
         }
-      } finally {
-        await drainAndAwaitStragglers(ctrl);
-      }
+      });
     });
 
     it("2A-Family-r2 (B): tool delta to reasoning item — valid reasoning delta applies while reread blocked (invalid did not freeze)", async () => {
@@ -8035,8 +8032,6 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       await yieldMicrotask();
       await ctrl.started(1);
-      expect(ctrl.getStartedCount()).toBe(1);
-      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Synchronous: text unchanged — invalid did not mutate or freeze.
       const item0 = store
         .getState()
@@ -8075,7 +8070,7 @@ describe("ConversationStore", () => {
       await ctrl.completed(1);
       await reconcileP;
       await yieldMicrotask();
-      try {
+      await assertAfterQuiescence(store, ctrl, () => {
         expect(ctrl.getStartedCount()).toBe(1);
         expect(ctrl.getDoneCount()).toBe(1);
         expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
@@ -8087,9 +8082,7 @@ describe("ConversationStore", () => {
         if (item2?.kind === "activity") {
           expect(item2.detail.output).toBe("Thinking more");
         }
-      } finally {
-        await drainAndAwaitStragglers(ctrl);
-      }
+      });
     });
 
     it("2A-Family-r2 (B): callId mismatch — valid matching callId applies while reread blocked (invalid did not freeze)", async () => {
@@ -8118,8 +8111,6 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       await yieldMicrotask();
       await ctrl.started(1);
-      expect(ctrl.getStartedCount()).toBe(1);
-      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Synchronous: text unchanged — invalid did not mutate or freeze.
       const item0 = store
         .getState()
@@ -8158,7 +8149,7 @@ describe("ConversationStore", () => {
       await ctrl.completed(1);
       await reconcileP;
       await yieldMicrotask();
-      try {
+      await assertAfterQuiescence(store, ctrl, () => {
         expect(ctrl.getStartedCount()).toBe(1);
         expect(ctrl.getDoneCount()).toBe(1);
         expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
@@ -8170,9 +8161,7 @@ describe("ConversationStore", () => {
         if (item2?.kind === "activity") {
           expect(item2.detail.output).toBe("base\nappended");
         }
-      } finally {
-        await drainAndAwaitStragglers(ctrl);
-      }
+      });
     });
 
     it("2A-Family-r2 (B): incoming missing callId — valid matching callId applies while reread blocked (invalid did not freeze)", async () => {
@@ -8200,8 +8189,6 @@ describe("ConversationStore", () => {
       } as AnyNotification);
       await yieldMicrotask();
       await ctrl.started(1);
-      expect(ctrl.getStartedCount()).toBe(1);
-      expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
       // Synchronous: text unchanged — invalid did not mutate or freeze.
       const item0 = store
         .getState()
@@ -8240,7 +8227,7 @@ describe("ConversationStore", () => {
       await ctrl.completed(1);
       await reconcileP;
       await yieldMicrotask();
-      try {
+      await assertAfterQuiescence(store, ctrl, () => {
         expect(ctrl.getStartedCount()).toBe(1);
         expect(ctrl.getDoneCount()).toBe(1);
         expect(service.readProjectionCalls.length).toBe(readsAfterOpen + 1);
@@ -8252,9 +8239,7 @@ describe("ConversationStore", () => {
         if (item2?.kind === "activity") {
           expect(item2.detail.output).toBe("base\nappended");
         }
-      } finally {
-        await drainAndAwaitStragglers(ctrl);
-      }
+      });
     });
 
     // --- positive controls (no reread) ---
@@ -8288,16 +8273,17 @@ describe("ConversationStore", () => {
       // sync count is insufficient — a queued reread would dispatch on the
       // next microtask.
       await yieldMicrotask();
-      // No reread — exact match accepted.
-      expect(ctrl.getStartedCount()).toBe(0);
-      expect(service.readProjectionCalls.length).toBe(readsAfterOpen);
-      const item = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "tool-exact");
-      if (item?.kind === "activity") {
-        expect(item.detail.output).toBe("base\nappended");
-      }
-      await drainAndAwaitStragglers(ctrl);
+      await assertAfterQuiescence(store, ctrl, () => {
+        // No reread — exact match accepted.
+        expect(ctrl.getStartedCount()).toBe(0);
+        expect(service.readProjectionCalls.length).toBe(readsAfterOpen);
+        const item = store
+          .getState()
+          .conversation?.items.find((i) => i.id === "tool-exact");
+        if (item?.kind === "activity") {
+          expect(item.detail.output).toBe("base\nappended");
+        }
+      });
     });
 
     it("2A-Family-r2: exact reasoning match appends reasoning delta synchronously", async () => {
@@ -8327,16 +8313,17 @@ describe("ConversationStore", () => {
       // Fix 2: cross an actual scheduler dispatch turn/barrier before
       // asserting zero controlled reads/unchanged service count.
       await yieldMicrotask();
-      // No reread — exact family match accepted.
-      expect(ctrl.getStartedCount()).toBe(0);
-      expect(service.readProjectionCalls.length).toBe(readsAfterOpen);
-      const item = store
-        .getState()
-        .conversation?.items.find((i) => i.id === "reason-exact");
-      if (item?.kind === "activity") {
-        expect(item.detail.output).toBe("base appended");
-      }
-      await drainAndAwaitStragglers(ctrl);
+      await assertAfterQuiescence(store, ctrl, () => {
+        // No reread — exact family match accepted.
+        expect(ctrl.getStartedCount()).toBe(0);
+        expect(service.readProjectionCalls.length).toBe(readsAfterOpen);
+        const item = store
+          .getState()
+          .conversation?.items.find((i) => i.id === "reason-exact");
+        if (item?.kind === "activity") {
+          expect(item.detail.output).toBe("base appended");
+        }
+      });
     });
   });
 
