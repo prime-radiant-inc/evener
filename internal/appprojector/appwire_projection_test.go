@@ -177,6 +177,7 @@ func TestProject_TaskUpdated(t *testing.T) {
 		Data: events.TaskUpdatedData{
 			TaskStateData:           events.TaskStateData{Total: 3, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "live current task"}},
 			TaskStoreOwnerSessionID: "owner-session",
+			TaskPublicationRevision: 42,
 		},
 	})
 	if len(out) != 1 || out[0].Method != appwire.NotifyEvenerTaskUpdated {
@@ -189,12 +190,15 @@ func TestProject_TaskUpdated(t *testing.T) {
 	if out[0].TaskStoreOwnerSessionID != "owner-session" {
 		t.Fatalf("notification owner = %q, want owner-session", out[0].TaskStoreOwnerSessionID)
 	}
+	if out[0].TaskPublicationRevision != 42 || p.TaskPublicationRevision() != 42 {
+		t.Fatalf("notification/projector revision = %d/%d, want 42", out[0].TaskPublicationRevision, p.TaskPublicationRevision())
+	}
 	wired, err := json.Marshal(params)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(wired), "owner") || strings.Contains(string(wired), "taskStoreOwnerSessionId") {
-		t.Fatalf("public task params leaked internal owner metadata: %s", wired)
+	if strings.Contains(string(wired), "owner") || strings.Contains(string(wired), "revision") || strings.Contains(string(wired), "taskStoreOwnerSessionId") {
+		t.Fatalf("public task params leaked internal routing metadata: %s", wired)
 	}
 }
 
@@ -202,6 +206,7 @@ func TestProject_SessionStartCarriesCurrentWorkSeed(t *testing.T) {
 	p := NewAppEventProjector("th1", "local:th1")
 	out := p.Project(events.SessionEvent{Kind: events.EventSessionStart, Data: events.SessionStartData{
 		TaskStoreOwnerSessionID: "owner-session",
+		TaskPublicationRevision: 41,
 		CurrentWork: &events.CurrentWorkSeedData{
 			Tasks: &events.TaskStateData{Total: 3, Done: 1, Current: &events.TaskSummaryData{ID: 2, Description: "seeded task"}},
 			Goal:  &events.GoalStateData{Objective: "seeded objective", Status: "active", Iterations: 2},
@@ -218,6 +223,17 @@ func TestProject_SessionStartCarriesCurrentWorkSeed(t *testing.T) {
 	}
 	if out[0].TaskStoreOwnerSessionID != "owner-session" {
 		t.Fatalf("started notification owner = %q, want owner-session", out[0].TaskStoreOwnerSessionID)
+	}
+	if out[0].TaskPublicationRevision != 41 || p.TaskPublicationRevision() != 41 {
+		t.Fatalf("started notification/projector revision = %d/%d, want 41", out[0].TaskPublicationRevision, p.TaskPublicationRevision())
+	}
+	wired, err := json.Marshal(out[0].Params)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(wired), "taskPublication") || strings.Contains(string(wired), "task_publication") ||
+		strings.Contains(string(wired), `"revision":41`) || strings.Contains(string(wired), "owner") {
+		t.Fatalf("public thread-start params leaked internal routing metadata: %s", wired)
 	}
 }
 

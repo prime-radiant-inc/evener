@@ -82,6 +82,9 @@ func TestRootSessionStartSeedsPostTemplateCurrentTask(t *testing.T) {
 	if start.TaskStoreOwnerSessionID != session.id {
 		t.Fatalf("SessionStart owner = %q, want root %q", start.TaskStoreOwnerSessionID, session.id)
 	}
+	if start.TaskPublicationRevision == 0 {
+		t.Fatal("SessionStart publication revision = 0, want new-producer revision")
+	}
 }
 
 func TestFreshChildStartThenTemplatePopulationEmitsTaskCorrection(t *testing.T) {
@@ -135,6 +138,9 @@ func TestFreshChildStartThenTemplatePopulationEmitsTaskCorrection(t *testing.T) 
 	if update.TaskStoreOwnerSessionID != prepared.sub.id {
 		t.Fatalf("post-population owner = %q, want child %q", update.TaskStoreOwnerSessionID, prepared.sub.id)
 	}
+	if start.TaskPublicationRevision == 0 || update.TaskPublicationRevision <= start.TaskPublicationRevision {
+		t.Fatalf("child start/update publication revisions = %d/%d, want increasing nonzero", start.TaskPublicationRevision, update.TaskPublicationRevision)
+	}
 }
 
 func TestSharedChildStartAndTaskUpdateNameRootOwner(t *testing.T) {
@@ -175,6 +181,9 @@ func TestSharedChildStartAndTaskUpdateNameRootOwner(t *testing.T) {
 	if start.TaskStoreOwnerSessionID != root.id {
 		t.Fatalf("shared child start owner = %q, want root %q", start.TaskStoreOwnerSessionID, root.id)
 	}
+	if start.TaskPublicationRevision == 0 {
+		t.Fatal("shared child start publication revision = 0")
+	}
 	if start.CurrentWork == nil || start.CurrentWork.Tasks == nil || start.CurrentWork.Tasks.Current == nil || start.CurrentWork.Tasks.Current.Description != "Shared root task" {
 		t.Fatalf("shared child start task state = %+v", start.CurrentWork)
 	}
@@ -206,6 +215,9 @@ func TestSharedChildStartAndTaskUpdateNameRootOwner(t *testing.T) {
 	}
 	if update.TaskStoreOwnerSessionID != root.id || update.Total != 2 || update.Current == nil || update.Current.Description != "Shared root task" {
 		t.Fatalf("shared child TaskUpdated = %+v, want owner root and shared summary", *update)
+	}
+	if update.TaskPublicationRevision <= start.TaskPublicationRevision {
+		t.Fatalf("shared child start/update publication revisions = %d/%d, want increasing", start.TaskPublicationRevision, update.TaskPublicationRevision)
 	}
 }
 

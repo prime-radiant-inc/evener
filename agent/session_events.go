@@ -141,13 +141,21 @@ func (s *Session) ConsumeEventsLossless(consume func(events.SessionEvent), onDra
 // buffering them here means they now fire it, for the first time, once
 // hookRunner exists.
 func (s *Session) emitSessionStartEnvelope(start events.SessionStartData, promptSources []promptSource) {
-	if start.CurrentWork == nil {
-		start.CurrentWork = s.currentWorkSeedData()
-	}
-	if start.TaskStoreOwnerSessionID == "" {
-		start.TaskStoreOwnerSessionID = s.taskStoreOwnerSessionID()
-	}
-	s.emit(events.EventSessionStart, start)
+	store := s.getOrCreateTaskStore()
+	_ = store.MutateAndPublish(func(revision uint64) error {
+		// Sample current work only after entering the shared store's publication
+		// order. Otherwise a newer mutation could publish between the sample and
+		// this start seed, giving an old snapshot a newer revision.
+		if start.CurrentWork == nil {
+			start.CurrentWork = s.currentWorkSeedData()
+		}
+		if start.TaskStoreOwnerSessionID == "" {
+			start.TaskStoreOwnerSessionID = s.taskStoreOwnerSessionID()
+		}
+		start.TaskPublicationRevision = revision
+		s.emit(events.EventSessionStart, start)
+		return nil
+	})
 	// Collected transcript-health failures (NewSession's transcript create, and
 	// attachTranscript's held-turn flush) are genuine, model-facing warnings —
 	// unlike the diagnostic buffers below, they run through emit (not

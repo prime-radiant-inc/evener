@@ -13,12 +13,16 @@ func TestTaskUpdatedData_CurrentJSON(t *testing.T) {
 			Done:    1,
 			Current: &TaskSummaryData{ID: 2, Description: "live current task"},
 		},
+		TaskPublicationRevision: 17,
 	})
 	if err != nil {
 		t.Fatalf("marshal TaskUpdatedData with current: %v", err)
 	}
 	if !strings.Contains(string(withCurrent), `"current":{"id":2,"description":"live current task"}`) {
 		t.Fatalf("TaskUpdatedData JSON = %s", withCurrent)
+	}
+	if strings.Contains(string(withCurrent), "revision") {
+		t.Fatalf("TaskUpdatedData JSON leaked internal publication revision: %s", withCurrent)
 	}
 
 	withoutCurrent, err := json.Marshal(TaskUpdatedData{TaskStateData: TaskStateData{Total: 3, Done: 1}})
@@ -81,6 +85,20 @@ func TestSessionStartCurrentWorkSeedTriStateJSON(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSessionStartInternalTaskRevisionDoesNotLeakToJSON(t *testing.T) {
+	encoded, err := json.Marshal(SessionStartData{
+		Profile:                 "openai",
+		Model:                   "gpt-5",
+		TaskPublicationRevision: 23,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(encoded), "revision") {
+		t.Fatalf("SessionStartData JSON leaked internal publication revision: %s", encoded)
 	}
 }
 

@@ -22,6 +22,7 @@ type AppNotification struct {
 	Method                  string
 	Params                  any
 	TaskStoreOwnerSessionID string
+	TaskPublicationRevision uint64
 }
 
 type skillActivationCandidate struct {
@@ -41,6 +42,9 @@ type AppEventProjector struct {
 	// taskStoreOwnerSessionID is routing metadata for the server's cached
 	// descendant projection. It never enters an AppWire params shape.
 	taskStoreOwnerSessionID string
+	// taskPublicationRevision is the newest internal task publication observed
+	// by this source projector. It never enters an AppWire params shape.
+	taskPublicationRevision uint64
 
 	nextTurn       int
 	nextItem       int
@@ -171,6 +175,12 @@ func (p *AppEventProjector) TaskStoreOwnerSessionID() string {
 	return p.taskStoreOwnerSessionID
 }
 
+// TaskPublicationRevision returns the newest internal task publication learned
+// from typed task carriers. It is not part of any public AppWire params shape.
+func (p *AppEventProjector) TaskPublicationRevision() uint64 {
+	return p.taskPublicationRevision
+}
+
 func (p *AppEventProjector) clearSkillCandidate() {
 	p.skillCandidate = skillActivationCandidate{}
 }
@@ -185,6 +195,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		data := eventData[events.SessionStartData](event.Data)
 		if data.TaskStoreOwnerSessionID != "" {
 			p.taskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
+		}
+		if data.TaskPublicationRevision > p.taskPublicationRevision {
+			p.taskPublicationRevision = data.TaskPublicationRevision
 		}
 		// A resumed session's turn ids must not reuse the "turn_%d" namespace
 		// the transcript projection (internal/apptranscript) already assigned by
@@ -233,6 +246,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		}
 		for i := range out {
 			out[i].TaskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
+			out[i].TaskPublicationRevision = data.TaskPublicationRevision
 		}
 		return out
 	case events.EventTurnStarted:
@@ -964,6 +978,9 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 		if data.TaskStoreOwnerSessionID != "" {
 			p.taskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
 		}
+		if data.TaskPublicationRevision > p.taskPublicationRevision {
+			p.taskPublicationRevision = data.TaskPublicationRevision
+		}
 		notification := p.notification(appwire.NotifyEvenerTaskUpdated, appwire.TaskUpdatedParams{
 			ThreadID: p.threadID,
 			Ref:      p.ref,
@@ -972,6 +989,7 @@ func (p *AppEventProjector) Project(event events.SessionEvent) []AppNotification
 			Current:  taskSummary(data.Current),
 		})
 		notification.TaskStoreOwnerSessionID = data.TaskStoreOwnerSessionID
+		notification.TaskPublicationRevision = data.TaskPublicationRevision
 		return []AppNotification{notification}
 	case events.EventSandboxEscalationRequested:
 		// A harness-raised sandbox-exemption approval card (M7). It rides the event

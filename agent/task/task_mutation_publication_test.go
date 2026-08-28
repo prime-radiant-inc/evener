@@ -16,7 +16,11 @@ func TestTaskStoreMutationPublicationSerializesSharedProducers(t *testing.T) {
 	rootCommitted := make(chan struct{})
 	childWaiting := make(chan struct{})
 	releaseRoot := make(chan struct{})
-	emitted := make(chan ListSummary, 2)
+	type publication struct {
+		revision uint64
+		summary  ListSummary
+	}
+	emitted := make(chan publication, 2)
 
 	var waitingOnce sync.Once
 	store.beforeMutationPublicationWait = func() {
@@ -25,14 +29,14 @@ func TestTaskStoreMutationPublicationSerializesSharedProducers(t *testing.T) {
 
 	rootDone := make(chan error, 1)
 	go func() {
-		rootDone <- store.MutateAndPublish(func() error {
+		rootDone <- store.MutateAndPublish(func(revision uint64) error {
 			if _, err := store.Append([]TaskInput{{Description: "root mutation", Prompt: "root"}}); err != nil {
 				return err
 			}
 			summary := Summarize(store.View())
 			close(rootCommitted)
 			<-releaseRoot
-			emitted <- summary
+			emitted <- publication{revision: revision, summary: summary}
 			return nil
 		})
 	}()
@@ -40,11 +44,11 @@ func TestTaskStoreMutationPublicationSerializesSharedProducers(t *testing.T) {
 
 	childDone := make(chan error, 1)
 	go func() {
-		childDone <- store.MutateAndPublish(func() error {
+		childDone <- store.MutateAndPublish(func(revision uint64) error {
 			if _, err := store.Append([]TaskInput{{Description: "child mutation", Prompt: "child"}}); err != nil {
 				return err
 			}
-			emitted <- Summarize(store.View())
+			emitted <- publication{revision: revision, summary: Summarize(store.View())}
 			return nil
 		})
 	}()
@@ -59,8 +63,11 @@ func TestTaskStoreMutationPublicationSerializesSharedProducers(t *testing.T) {
 	}
 
 	first, second := <-emitted, <-emitted
-	if first.Total != 1 || second.Total != 2 {
-		t.Fatalf("emitted totals = [%d, %d], want commit order [1, 2]", first.Total, second.Total)
+	if first.summary.Total != 1 || second.summary.Total != 2 {
+		t.Fatalf("emitted totals = [%d, %d], want commit order [1, 2]", first.summary.Total, second.summary.Total)
+	}
+	if first.revision != 1 || second.revision != 2 {
+		t.Fatalf("publication revisions = [%d, %d], want [1, 2]", first.revision, second.revision)
 	}
 	if final := Summarize(store.View()); final.Total != 2 {
 		t.Fatalf("final total = %d, want 2", final.Total)
