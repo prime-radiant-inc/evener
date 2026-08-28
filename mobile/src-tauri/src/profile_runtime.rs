@@ -185,6 +185,7 @@ pub struct RealPairingProbe {
     http_boundary: PinnedHttpBoundary,
     appwire_boundary: PinnedAppwireBoundary,
     pairing_timeout: Duration,
+    worker_in_flight: Arc<std::sync::atomic::AtomicBool>,
 }
 
 const PAIRING_REQUEST_TIMEOUT: Duration = Duration::from_secs(10);
@@ -197,6 +198,7 @@ impl RealPairingProbe {
             http_boundary: PinnedHttpBoundary::new(policy.clone(), ReleaseMode::Release),
             appwire_boundary: PinnedAppwireBoundary::new(policy, ReleaseMode::Release),
             pairing_timeout: PAIRING_REQUEST_TIMEOUT,
+            worker_in_flight: Arc::new(std::sync::atomic::AtomicBool::new(false)),
         }
     }
 
@@ -234,8 +236,12 @@ impl PairingProbe for RealPairingProbe {
         // explicit request rather than re-entering Tauri's runtime. The caller
         // owns the total deadline: a synchronous OS resolver may finish later,
         // but dropping a timed-out worker handle detaches it and releases the
-        // serialized profile lifecycle. There is no implicit retry or second
-        // worker. A dropped result receiver makes any later send harmless.
+        // serialized profile lifecycle. A shared permit prevents another
+        // explicit request from accumulating a worker while a timed-out worker
+        // remains blocked. A dropped result receiver makes any later send
+        // harmless.
+        let worker_permit = PairingWorkerPermit::acquire(self.worker_in_flight.clone())
+            .ok_or(ProfileError::ProbeTimedOut)?;
         let http_boundary = self.http_boundary.clone_with_mode(mode);
         let appwire_boundary = self.appwire_boundary.clone_with_mode(mode);
         let pairing_timeout = self.pairing_timeout;
@@ -247,6 +253,9 @@ impl PairingProbe for RealPairingProbe {
         let worker = std::thread::Builder::new()
             .name("evener-pairing-probe".to_owned())
             .spawn(move || {
+                // Keep the permit through the worker's entire lifetime. If
+                // spawning fails, the closure (and permit) is dropped instead.
+                let _worker_permit = worker_permit;
                 let remaining = pairing_timeout.saturating_sub(worker_started.elapsed());
                 let result = if remaining.is_zero() {
                     Err(ProbeWorkerError::TimedOut)
@@ -290,6 +299,31 @@ impl PairingProbe for RealPairingProbe {
                 message,
             }),
         }
+    }
+}
+
+struct PairingWorkerPermit {
+    in_flight: Arc<std::sync::atomic::AtomicBool>,
+}
+
+impl PairingWorkerPermit {
+    fn acquire(in_flight: Arc<std::sync::atomic::AtomicBool>) -> Option<Self> {
+        in_flight
+            .compare_exchange(
+                false,
+                true,
+                std::sync::atomic::Ordering::AcqRel,
+                std::sync::atomic::Ordering::Acquire,
+            )
+            .ok()
+            .map(|_| Self { in_flight })
+    }
+}
+
+impl Drop for PairingWorkerPermit {
+    fn drop(&mut self) {
+        self.in_flight
+            .store(false, std::sync::atomic::Ordering::Release);
     }
 }
 
@@ -1909,12 +1943,14 @@ mod tests {
 
     struct HangingResolver {
         gate: Arc<HangingResolverGate>,
+        calls: Arc<AtomicUsize>,
         entered: std::sync::mpsc::Sender<()>,
         finished: std::sync::mpsc::Sender<()>,
     }
 
     impl crate::network_policy::DnsResolver for HangingResolver {
         fn resolve(&self, _host: &str) -> Result<Vec<std::net::IpAddr>, String> {
+            self.calls.fetch_add(1, Ordering::SeqCst);
             let _ = self.entered.send(());
             let mut released = self.gate.released.lock().unwrap();
             while !*released {
@@ -1926,27 +1962,31 @@ mod tests {
     }
 
     #[test]
-    fn pairing_timeout_releases_profile_lifecycle_while_dns_worker_is_still_blocked() {
+    fn pairing_timeout_bounds_one_shared_policy_worker_and_recovers_after_exit() {
         let gate = Arc::new(HangingResolverGate::new());
+        let calls = Arc::new(AtomicUsize::new(0));
         let (entered_tx, entered_rx) = std::sync::mpsc::channel();
         let (finished_tx, finished_rx) = std::sync::mpsc::channel();
+        let policy = Arc::new(NetworkPolicy::new(Box::new(HangingResolver {
+            gate: gate.clone(),
+            calls: calls.clone(),
+            entered: entered_tx,
+            finished: finished_tx,
+        })));
         let probe = Arc::new(
-            RealPairingProbe::new(Arc::new(NetworkPolicy::new(Box::new(HangingResolver {
-                gate: gate.clone(),
-                entered: entered_tx,
-                finished: finished_tx,
-            }))))
-            .with_pairing_timeout(Duration::from_millis(100)),
+            RealPairingProbe::new(policy.clone()).with_pairing_timeout(Duration::from_millis(100)),
         );
-        // The store's independent policy is deterministic; only the real
-        // probe's DNS worker hangs. That isolates caller-bound probe timeout
-        // and proves the lifecycle mutex is released while that worker remains.
-        let (runtime, _) = make_runtime(
+        // Production passes this exact policy Arc to both the store and the
+        // real probe. Policy enforcement must happen only inside the bounded
+        // probe worker, not synchronously on the profile lifecycle caller.
+        let store = Arc::new(ProfileStore::new(
             Arc::new(MemoryPreferences::new()),
             Arc::new(MemorySecureStore::new()),
             probe,
             Arc::new(StepClock::new(0)),
-        );
+            policy,
+        ));
+        let runtime = ProfileRuntime::new(store);
         let preview = runtime
             .store()
             .preview_pairing(&auth_url("hung.example.test"))
@@ -1954,13 +1994,14 @@ mod tests {
         let runtime = Arc::new(runtime);
         let (result_tx, result_rx) = std::sync::mpsc::channel();
         let started = std::time::Instant::now();
+        let caller_runtime = runtime.clone();
         let caller = std::thread::spawn(move || {
             let executor = tokio::runtime::Builder::new_current_thread()
                 .enable_all()
                 .build()
                 .unwrap();
             let observation = executor.block_on(async {
-                let confirm = runtime
+                let confirm = caller_runtime
                     .serialized(|store| {
                         store.confirm_pairing(
                             &preview.preview_id,
@@ -1970,7 +2011,7 @@ mod tests {
                         )
                     })
                     .await;
-                let list = runtime.serialized(|store| store.list()).await;
+                let list = caller_runtime.serialized(|store| store.list()).await;
                 (confirm, list)
             });
             let _ = result_tx.send(observation);
@@ -1985,6 +2026,21 @@ mod tests {
             finished_rx.try_recv(),
             Err(std::sync::mpsc::TryRecvError::Empty)
         );
+        let second = bounded.as_ref().ok().map(|_| {
+            let preview = runtime
+                .store()
+                .preview_pairing(&auth_url("second.example.test"))
+                .unwrap();
+            let started = std::time::Instant::now();
+            let result = runtime.store().confirm_pairing(
+                &preview.preview_id,
+                "Second Hub",
+                false,
+                ReleaseMode::Release,
+            );
+            (result, started.elapsed())
+        });
+        let calls_before_release = calls.load(Ordering::SeqCst);
 
         // Always release and reap the deterministic resolver/caller before an
         // assertion can fail, so a red test never strands a worker.
@@ -2003,5 +2059,40 @@ mod tests {
         assert!(elapsed < Duration::from_secs(2), "elapsed: {elapsed:?}");
         assert!(resolver_still_blocked);
         assert!(list.unwrap().is_empty(), "lifecycle remained usable");
+
+        let (second, second_elapsed) = second.expect("first pairing caller was bounded");
+        let second_error = second.unwrap_err();
+        assert!(matches!(second_error, ProfileError::ProbeTimedOut));
+        assert!(second_elapsed < Duration::from_secs(1));
+        assert_eq!(calls_before_release, 1, "second attempt spawned a worker");
+        assert!(!format!("{second_error}").contains(TOKEN));
+        assert!(!format!("{second_error:?}").contains("second.example.test"));
+
+        let retry_deadline = std::time::Instant::now() + Duration::from_secs(1);
+        let later_error = loop {
+            let preview = runtime
+                .store()
+                .preview_pairing(&auth_url("later.example.test"))
+                .unwrap();
+            let error = runtime
+                .store()
+                .confirm_pairing(
+                    &preview.preview_id,
+                    "Later Hub",
+                    false,
+                    ReleaseMode::Release,
+                )
+                .unwrap_err();
+            if calls.load(Ordering::SeqCst) > calls_before_release {
+                break error;
+            }
+            assert!(
+                std::time::Instant::now() < retry_deadline,
+                "guard did not clear"
+            );
+            std::thread::yield_now();
+        };
+        assert!(matches!(later_error, ProfileError::ProbeFailed { .. }));
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
     }
 }
