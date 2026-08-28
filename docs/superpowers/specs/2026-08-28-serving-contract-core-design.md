@@ -69,8 +69,8 @@ Exact wire IDs take precedence over aliases. Alias cycles, duplicate aliases wit
 
 A serving surface is a named API contract such as:
 
-- `openai-completions`;
-- `openai-responses`;
+- `openai.responses.v1`;
+- `openai.chat.v1`;
 - `anthropic-messages`;
 - `google-generative-ai`.
 
@@ -81,7 +81,8 @@ A surface identifies the adapter family and API version. It does not authorize a
 A serving variant is the executable selection unit:
 
 ```
-provider instance + wire model ID + surface
+provider instance + normalized origin + credential scope
+  + wire model ID + surface + API version
 ```
 
 It contains:
@@ -94,7 +95,21 @@ It contains:
 - the model limits and capabilities relevant to that surface;
 - a stable effective-contract revision.
 
+Each operation is a subidentity of the variant. A buffered generation,
+streaming generation, token-count, or model-list operation has its own
+operation contract and API-log identity.
+
 The base URL and authentication remain trusted instance configuration. A catalog cannot replace them.
+
+### Operation contract
+
+A serving variant has a contract for every network operation it exposes. At
+minimum this covers buffered generation, streaming generation, provider-side
+input-token counting, and provider model listing when the adapter implements
+them. Each operation names its stable endpoint family and path, request shape,
+response or stream grammar, timeout policy, and API-log identity. A generation
+contract cannot be reused for token counting merely because both operations use
+the same provider or model.
 
 ### Request contract
 
@@ -125,6 +140,11 @@ A field policy also declares whether a requested value is:
 
 For example, dropping a prompt-cache optimization may be optional; dropping a requested structured-output schema, tool, modality, stop sequence, or output cap is semantic and must fail unless the contract explicitly defines an equivalent representation.
 
+The semantic request has no untyped provider-options escape hatch. Provider
+extensions are typed, surface-scoped contract fields. Core fields such as the
+wire model, input, tools, and operation cannot be overwritten by an extension.
+Unknown extension keys and values fail before dispatch.
+
 ## Configuration model
 
 The clean configuration schema is versioned independently of the current `providers.toml` shape. Old configuration is not migrated silently; it is rejected with an instruction to author the new form.
@@ -139,16 +159,16 @@ default = "groq"
 adapter = "openai"
 base_url = "https://api.groq.com/openai/v1"
 credential = "groq-api-key"
-default_surface = "openai-responses"
+default_surface = "openai.responses.v1"
 
 [instances.groq.models."qwen/qwen3.8-27b"]
 canonical_id = "qwen/qwen3.8-27b"
-default_surface = "openai-responses"
+default_surface = "openai.responses.v1"
 
-[instances.groq.models."qwen/qwen3.8-27b".surfaces.openai-responses]
+[instances.groq.models."qwen/qwen3.8-27b".surfaces."openai.responses.v1"]
 contract = "groq-responses"
 
-[instances.groq.models."qwen/qwen3.8-27b".surfaces.openai-responses.compat]
+[instances.groq.models."qwen/qwen3.8-27b".surfaces."openai.responses.v1".compat]
 include = "unsupported"
 store = "unsupported"
 server_search = "unsupported"
@@ -175,7 +195,15 @@ The selection algorithm is fixed:
 4. exactly one surface defined for the model;
 5. otherwise fail with an ambiguous-or-missing-surface error.
 
-Auxiliary calls, model switches, forks, and resume use the same algorithm only when they create a new request identity. A resumed session uses its persisted serving-variant identity and does not silently re-resolve a changed default.
+An explicit surface must be one of the surfaces configured for that exact
+instance/model. An instance default is eligible only when it is also present in
+the model's surface set or when the model has no model-local surface table and
+the instance explicitly allowlists it. A globally known surface is not enough.
+
+The selected surface is carried as a structured field through launch, hub
+materialization, model switching, auxiliary calls, forks, and resume. A resumed
+session uses its persisted serving-variant identity and does not silently
+re-resolve a changed default.
 
 ### Trust and credential binding
 
@@ -187,7 +215,17 @@ Only user-global/state-root provider configuration is loaded implicitly. A proje
 - a parent directory that is not group/world writable;
 - explicit user selection when the path is outside the default state root.
 
-The resolved credential reference is bound to the instance and normalized origin. First-party provider credentials and OAuth records are valid only for their curated first-party origins. A custom base URL requires an instance-scoped credential or explicit credential header. Missing or mismatched binding fails before transport. Redirects cannot carry credentials across origins.
+These checks apply to the implicit default path as well as explicitly supplied
+paths. The file and every parent in the resolved path are checked before the
+configuration becomes executable authority.
+
+The resolved credential reference is bound to the instance and normalized
+origin, including scheme, host, and effective port. First-party provider
+credentials and OAuth records are valid only for their curated first-party
+origins. A custom base URL requires an instance-scoped credential or explicit
+credential header. Missing or mismatched binding fails before transport.
+The HTTP client rejects redirects in v1; it does not forward a prompt body or
+headers to either a same-origin alternate path or a cross-origin target.
 
 ## Authority and resolution
 
@@ -195,7 +233,7 @@ There is no global source precedence. Resolution is domain-specific.
 
 ### Executable behavior
 
-For adapter, protocol, endpoint path, request fields, and transforms:
+For adapter, protocol, operation endpoint, request fields, and transforms:
 
 1. explicit trusted instance/model/surface configuration;
 2. exact curated Evener serving profile;
@@ -203,6 +241,10 @@ For adapter, protocol, endpoint path, request fields, and transforms:
 4. conservative default or pre-dispatch failure, according to field policy.
 
 External catalogs cannot select executable behavior without an allowlisted curated mapping.
+
+The operation contract is part of the selected variant. Buffered generation,
+streaming generation, provider-side token counting, and model listing cannot
+borrow one another's endpoint or body shape.
 
 ### Capabilities and limits
 
@@ -226,19 +268,27 @@ Aliases are resolved before profile lookup. Exact IDs beat aliases. A duplicate 
 
 The first release must enumerate every retained adapter. Each row has one or more typed surfaces and baseline request/response/error/stream tests.
 
-| Adapter family | Surface(s) in v1 | Contract source |
+| Adapter family | Stable v1 surface ID | Endpoint/API family |
 |---|---|---|
-| OpenAI | `openai-responses`, `openai-completions` | Curated Evener adapter contracts |
-| OpenAI-compatible | `openai-completions` | Curated compatible contract plus model/surface overrides |
-| Anthropic | `anthropic-messages` | Curated Anthropic contract |
-| Google/Gemini | `google-generative-ai` | Curated Gemini contract |
-| Kimi | Kimi's current chat surface | Curated Kimi contract |
-| Kimi Anthropic | `anthropic-messages` variant | Curated Kimi-Anthropic contract |
-| MiniMax | MiniMax's current chat surface | Curated MiniMax contract |
-| OpenRouter | OpenAI-compatible chat surface | Curated OpenRouter contract |
-| OpenRouter Anthropic | `anthropic-messages` variant | Curated OpenRouter-Anthropic contract |
+| OpenAI public API | `openai.responses.v1` | `/v1/responses` |
+| OpenAI public API | `openai.chat.v1` | `/v1/chat/completions` |
+| OpenAI ChatGPT/Codex | `openai.codex-responses.v1` | `/backend-api/codex/responses` |
+| OpenAI ChatGPT/Codex | `openai.codex-responses-lite.v1` | Codex Responses-lite request shape |
+| OpenAI-compatible | `openai-compatible.chat.v1` | configured `/chat/completions` |
+| Anthropic | `anthropic.messages.v1` | `/v1/messages` |
+| Google/Gemini | `google.generate-content.v1` | `generateContent` |
+| Kimi | `kimi.chat.v1` | Kimi OpenAI-compatible chat |
+| Kimi Anthropic | `kimi.anthropic-messages.v1` | Kimi Anthropic-compatible messages |
+| MiniMax | `minimax.chat.v1` | MiniMax OpenAI-compatible chat |
+| OpenRouter | `openrouter.chat.v1` | OpenRouter OpenAI-compatible chat |
+| OpenRouter Anthropic | `openrouter.anthropic-messages.v1` | OpenRouter Anthropic-compatible messages |
+| GLM | `glm.chat.v1` | z.ai OpenAI-compatible chat |
+| Ollama | `ollama.chat.v1` | Ollama OpenAI-compatible chat |
 
-If an adapter cannot be given a v1 contract and tests, it is explicitly removed from the new configuration schema; it is not silently accepted outside the resolver.
+This table is the registry oracle. Every production adapter factory and every
+auth-selected backend branch must map to exactly one row. If an adapter cannot
+be given a stable surface ID, operation contracts, and tests, it is removed
+from the new configuration schema rather than accepted outside the resolver.
 
 ### OpenAI public Responses
 
@@ -376,10 +426,14 @@ All tests use fake transports or pure functions. No provider credentials or netw
 - operation selection and distinct generation, streaming, token-count, and model-list contracts;
 - unknown surface and unknown adapter fail before dispatch;
 - unknown model on a known surface uses only its defined core contract;
+- launch, hub, model-switch, fork, and resume boundaries carry the selected
+  surface and reject a known-but-unconfigured surface;
 - alias exact-match precedence, one-way mapping, duplicate/cycle rejection, and wire-ID recording;
 - custom-origin credential binding, credential mismatch, symlink/permission rejection, and cross-origin redirect rejection;
 - default-path and explicit-path trust checks;
 - persisted variant identity, origin/auth/adapter comparison, and resume failure when any revision is unavailable.
+- schema 1, missing schema, unsupported schema, and legacy session metadata are
+  rejected before adapter construction.
 
 ### Request-shape tests
 
