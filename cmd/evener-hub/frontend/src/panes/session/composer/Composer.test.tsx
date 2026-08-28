@@ -10,6 +10,7 @@ import { FakeClient } from "../../../protocol/testing/fakeClient";
 import type { Thread, ThreadCapabilities, ThreadReadResponse } from "../../../protocol/types.gen";
 import { ClientProvider } from "../../../shell/clientContext";
 import { paletteStore } from "../../../shell/palette/paletteController";
+import { isPaneOpen, resetWorkspaceStoreForTests, workspaceStore } from "../../../shell/workspace";
 import { useCommandCatalog } from "../../../stores/commandCatalog";
 import { connectionStore } from "../../../stores/connection";
 import { MutationOutboxIndexedDB } from "../../../stores/mutationOutboxIndexedDB";
@@ -25,6 +26,7 @@ import buttonStyles from "../../../widgets/button/button.module.css";
 import iconButtonStyles from "../../../widgets/iconbutton/iconbutton.module.css";
 import promptCardStyles from "../../../widgets/promptcard/promptcard.module.css";
 import { resetToastStoreForTests } from "../../../widgets/toast/store";
+import { installMobileViewport } from "../testing/mobileViewport";
 import { resetAskDockStoreForTests } from "./askDock/askDockStore";
 import { Composer as ComposerView } from "./Composer";
 import { requestComposerFocus, resetComposerFocusStoreForTests } from "./composerFocus";
@@ -367,16 +369,22 @@ function pendingAskTurns(): Pick<Thread, "turns"> {
   };
 }
 
+function currentWorkEvener({ task = false, goal = false }: { task?: boolean; goal?: boolean }) {
+  return {
+    ref: "ref_a",
+    capabilities: FULL_CAPABILITIES,
+    queue: { revision: 0 },
+    ...(task
+      ? { tasks: { total: 1, done: 0, current: { id: 1, description: "Finish the focused composer test" } } }
+      : {}),
+    ...(goal ? { goal: { objective: "Keep the session focused", status: "active" as const, iterations: 1 } } : {}),
+  };
+}
+
 test("while ask_pending is open, the AskDock replacement surface is exposed and the message textbox is hidden", async () => {
   await mountComposer("ref_a", {
     ...pendingAskTurns(),
-    evener: {
-      ref: "ref_a",
-      capabilities: FULL_CAPABILITIES,
-      queue: { revision: 0 },
-      tasks: { total: 1, done: 0, current: { id: 1, description: "Finish the focused composer test" } },
-      goal: { objective: "Keep the session focused", status: "active", iterations: 1 },
-    },
+    evener: currentWorkEvener({ task: true, goal: true }),
   });
 
   expect(screen.getByText("Answer the agent’s questions.")).toBeTruthy();
@@ -387,18 +395,74 @@ test("while ask_pending is open, the AskDock replacement surface is exposed and 
 
 test("renders current work directly before the compose card", async () => {
   await mountComposer("ref_a", {
-    evener: {
-      ref: "ref_a",
-      capabilities: FULL_CAPABILITIES,
-      queue: { revision: 0 },
-      tasks: { total: 1, done: 0, current: { id: 1, description: "Finish the focused composer test" } },
-      goal: { objective: "Keep the session focused", status: "active", iterations: 1 },
-    },
+    evener: currentWorkEvener({ task: true, goal: true }),
   });
 
   const currentWork = screen.getByTestId("current-work");
   const composerCard = screen.getByTestId("composer-input-card");
   expect(currentWork.compareDocumentPosition(composerCard) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+});
+
+test("clicking the current goal fills and focuses an empty composer with an editable goal command", async () => {
+  const user = userEvent.setup();
+  await mountComposer("ref_a", {
+    evener: currentWorkEvener({ goal: true }),
+  });
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+
+  expect(textarea().value).toBe("/goal Keep the session focused");
+  expect(document.activeElement).toBe(textarea());
+  expect(screen.queryByRole("dialog", { name: "Replace draft?" })).toBeNull();
+});
+
+test("clicking the current goal confirms before replacing an existing draft", async () => {
+  const user = userEvent.setup();
+  await mountComposer("ref_a", {
+    evener: currentWorkEvener({ goal: true }),
+  });
+  await user.type(textarea(), "Unsent draft");
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+  expect(screen.getByRole("dialog", { name: "Replace draft?" })).toBeTruthy();
+  expect(textarea().value).toBe("Unsent draft");
+
+  await user.click(screen.getByRole("button", { name: "Keep draft" }));
+  expect(screen.queryByRole("dialog", { name: "Replace draft?" })).toBeNull();
+  expect(textarea().value).toBe("Unsent draft");
+
+  await user.click(screen.getByRole("button", { name: "Edit goal: Keep the session focused" }));
+  await user.click(screen.getByRole("button", { name: "Replace draft" }));
+  expect(textarea().value).toBe("/goal Keep the session focused");
+  expect(document.activeElement).toBe(textarea());
+});
+
+test("clicking the current task toggles the desktop tasks pane for this session", async () => {
+  const user = userEvent.setup();
+  await mountComposer("ref_a", {
+    evener: currentWorkEvener({ task: true }),
+  });
+
+  await user.click(screen.getByRole("button", { name: "Open tasks: Finish the focused composer test" }));
+  expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(true);
+});
+
+test("clicking the current task opens the existing mobile tasks sheet for this session", async () => {
+  const restoreViewport = installMobileViewport();
+  const user = userEvent.setup();
+  const fake = await mountComposer("ref_a", {
+    evener: currentWorkEvener({ task: true }),
+  });
+  let calledRef: unknown;
+  fake.on("evener/tasks/list", (params) => {
+    calledRef = params.ref;
+    return { data: [] };
+  });
+
+  await user.click(screen.getByRole("button", { name: "Open tasks: Finish the focused composer test" }));
+  await waitFor(() => expect(calledRef).toBe("ref_a"));
+  expect(isPaneOpen(workspaceStore.getState(), "sessionTasks", { ref: "ref_a" })).toBe(false);
+  restoreViewport();
 });
 
 test("the composer region fills pane height and bottom-anchors the replacement slot", () => {
@@ -425,6 +489,7 @@ beforeEach(() => {
   resetPrefsStoreForTests();
   connectionStore.setState({ state: "idle", serverInfo: undefined, client: null });
   resetThreadsStoreForTests();
+  resetWorkspaceStoreForTests();
   resetPendingTurnsStoreForTests();
   // askDockStore reconciles reactively off threadsStore (registered once at
   // module load - askDockStore.ts's own header comment), so its byRef map

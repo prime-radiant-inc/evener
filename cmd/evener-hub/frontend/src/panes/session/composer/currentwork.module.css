@@ -59,6 +59,41 @@
   white-space: nowrap;
 }
 
+.link {
+  appearance: none;
+  border: 0;
+  padding: 0;
+  background: none;
+  color: inherit;
+  cursor: pointer;
+  font: inherit;
+  text-align: left;
+  text-decoration: underline;
+  text-decoration-color: var(--edge-hi);
+  text-underline-offset: 2px;
+}
+
+.link:hover {
+  text-decoration-color: currentColor;
+}
+
+.link:focus-visible {
+  border-radius: var(--radius-sm);
+  outline: var(--focus-ring);
+  outline-offset: 2px;
+}
+
+.visuallyHidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .divider {
   flex: none;
   width: 1px;
@@ -76,11 +111,7 @@
   .task,
   .goal {
     min-width: 0;
-  }
-
-  .goal {
-    grid-column: 1;
-    padding-left: calc(6px + var(--space-1));
+    justify-content: flex-start;
   }
 
   .divider {

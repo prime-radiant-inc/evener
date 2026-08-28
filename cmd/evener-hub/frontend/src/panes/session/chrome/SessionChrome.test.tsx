@@ -21,6 +21,7 @@ import { keyID } from "../../../stores/navigation/types";
 import { resetThreadsStoreForTests, threadsStore } from "../../../stores/threads";
 import { resetTranscriptDisplayStoreForTests, transcriptDisplayStore } from "../../../stores/transcriptDisplay";
 import { makeTranscriptDisplayConfig } from "../../../transcriptDisplay/config";
+import { installMobileViewport } from "../testing/mobileViewport";
 import "../../sessionPanels";
 import { ActivityPanelBody } from "./ActivityPanel";
 import { SessionChrome as SessionChromeView } from "./SessionChrome";
@@ -172,19 +173,6 @@ afterEach(() => {
   resetThreadsStoreForTests();
   resetTranscriptDisplayStoreForTests();
 });
-
-function installMobileViewport(): () => void {
-  const original = window.matchMedia;
-  window.matchMedia = (() => ({
-    matches: true,
-    media: "(max-width: 899px)",
-    addEventListener() {},
-    removeEventListener() {},
-  })) as unknown as typeof window.matchMedia;
-  return () => {
-    window.matchMedia = original;
-  };
-}
 
 // Wave 5 T1 carved this slot as an empty placeholder ("renders nothing (T1
 // placeholder - T5 fills this in)"); this file supersedes that pin now that
