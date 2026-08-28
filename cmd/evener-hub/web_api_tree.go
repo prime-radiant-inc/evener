@@ -29,12 +29,7 @@ func projectKeyForStateDir(stateDir string) string {
 var (
 	hubBuildNavigationTree       = hubcore.BuildTreeWithProjects
 	hubDeriveNavigationAttention = hubcore.DeriveAttention
-	hubNormalizeTreeState        = hubcore.NormalizeState
-	hubAppThreadRef              = hubRefFromAppThread
 	hubNavigationInputs          = (*WebServer).navigationSnapshotInputs
-	hubLiveTreeTitle             = liveTitle
-	hubIsSessionLive             = (*WebServer).isLive
-	hubTreeWorkspaceData         = (*WebServer).workspaceData
 	hubTreeAttentionRank         = hubapi.AttentionRank
 )
 
@@ -686,18 +681,6 @@ func (s *WebServer) apiTreeSources() []hubapi.Source {
 	return sources
 }
 
-func hubRefFromAppThread(thread appwire.Thread) hubapi.Ref {
-	refText := thread.Evener.Ref
-	if refText == "" {
-		refText = appwire.Ref{SourceID: thread.Source, ThreadID: thread.ID}.String()
-	}
-	ref, err := hubapi.ParseRef(refText)
-	if err != nil {
-		return hubapi.LocalRef(thread.ID)
-	}
-	return ref
-}
-
 func hubCapabilitiesFromAppwire(caps appwire.ThreadCapabilities) hubapi.SessionCapabilities {
 	return hubapi.SessionCapabilities{
 		Send:        caps.Send,
@@ -710,72 +693,6 @@ func hubCapabilitiesFromAppwire(caps appwire.ThreadCapabilities) hubapi.SessionC
 		ChangeModel: caps.ChangeModel,
 		Queue:       caps.Queue,
 	}
-}
-
-// hubUsageFromAppwire maps appwire.EvenerUsage to hubapi's flattened Usage type
-// so hubapi need not depend on appwire (mirrors the GoalStatus flattening
-// precedent on hubapi.SessionDetail). Returns nil when u is nil.
-func hubUsageFromAppwire(u *appwire.EvenerUsage) *hubapi.Usage {
-	if u == nil {
-		return nil
-	}
-	return &hubapi.Usage{
-		InputTokens:     u.InputTokens,
-		OutputTokens:    u.OutputTokens,
-		CacheReadTokens: u.CacheReadTokens,
-		TotalTokens:     u.TotalTokens,
-	}
-}
-
-func hubDetailFromAppThread(thread appwire.Thread) hubapi.SessionDetail {
-	ref := hubAppThreadRef(thread)
-	state := hubNormalizeTreeState(thread.Status.Type)
-	if state == "" {
-		state = "idle"
-	}
-	title := thread.Name
-	if title == "" {
-		title = thread.Preview
-	}
-	if title == "" {
-		title = thread.SessionID
-	}
-	project := filepath.Base(thread.CWD)
-	if project == "" || project == "." {
-		project = "(no project)"
-	}
-	live := state != "ended" && state != "closed"
-	detail := hubapi.SessionDetail{
-		Ref:                 ref.String(),
-		HostID:              ref.HostID,
-		SessionID:           ref.SessionID,
-		Title:               title,
-		State:               state,
-		Live:                live,
-		Project:             project,
-		WorkingDir:          thread.CWD,
-		Model:               thread.ModelProvider,
-		Profile:             thread.Evener.Profile,
-		TurnCount:           completedTurnCount(thread.Turns),
-		ActiveTurnID:        activeTurnIDFromAppwireThread(thread),
-		ContextPressure:     thread.Evener.ContextPressure,
-		ContextUsed:         thread.Evener.ContextUsed,
-		ContextWindow:       thread.Evener.ContextWindow,
-		ContextRemaining:    thread.Evener.ContextRemaining,
-		Capabilities:        hubCapabilitiesFromAppwire(thread.Evener.Capabilities),
-		WorkMillis:          thread.Evener.WorkMillis,
-		Usage:               hubUsageFromAppwire(thread.Evener.Usage),
-		ActiveTurnStartedAt: thread.Evener.ActiveTurnStartedAt,
-		FailedToolCalls:     thread.Evener.FailedToolCalls,
-	}
-	if detail.SessionID == "" {
-		detail.SessionID = thread.ID
-	}
-	if goal := thread.Evener.Goal; goal != nil {
-		detail.GoalStatus = goal.Status
-		detail.GoalIterations = goal.Iterations
-	}
-	return detail
 }
 
 func (s *WebServer) isLive(sessionID string) bool {
@@ -1161,210 +1078,13 @@ func (s *WebServer) handleAPISession(w http.ResponseWriter, r *http.Request) {
 	}
 
 	switch sub {
-	case "":
-		if r.Method != http.MethodGet {
-			writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
-			return
-		}
-		detail, ok := s.apiSessionDetail(routeID)
-		if !ok {
-			writeAPIError(w, http.StatusNotFound, "session not found")
-			return
-		}
-		writeAPIJSON(w, http.StatusOK, detail)
-	case "details":
-		if r.Method != http.MethodGet {
-			writeAPIError(w, http.StatusMethodNotAllowed, "GET required")
-			return
-		}
-		detail, ok := s.apiSessionDetail(routeID)
-		if !ok {
-			writeAPIError(w, http.StatusNotFound, "session not found")
-			return
-		}
-		writeAPIJSON(w, http.StatusOK, detail)
-	case "send":
-		s.handleSend(w, r, routeID)
-	case "tasks":
-		s.renderSessionTasks(w, r, routeID)
-	case "fork":
-		s.handleAPIFork(w, r, routeID)
-	case "clear":
-		s.handleAPIClear(w, r, routeID)
-	case "model":
-		s.handleAPIModel(w, r, routeID)
-	case "reasoning-effort":
-		s.handleAPIReasoningEffort(w, r, routeID)
-	case "interrupt", "compact", "shutdown":
-		s.handleSessionAction(w, r, routeID, sub)
+	case "rename":
+		s.handleAPIRename(w, r, routeID)
+	case "delete":
+		s.handleAPISessionDelete(w, r, routeID)
 	default:
 		writeAPIError(w, http.StatusNotFound, "session not found")
 	}
-}
-
-func (s *WebServer) apiSessionDetail(id string) (hubapi.SessionDetail, bool) {
-	wd := hubTreeWorkspaceData(s, id)
-	if wd.ID == "" {
-		return hubapi.SessionDetail{}, false
-	}
-	// appRefFromRouteID canonicalizes malformed route IDs to a local ref.
-	ref, _ := hubapi.ParseRef(appRefFromRouteID(id))
-	live := hubIsSessionLive(s, id)
-	detail := hubapi.SessionDetail{
-		Ref:            ref.String(),
-		HostID:         ref.HostID,
-		SessionID:      ref.SessionID,
-		Title:          wd.Title,
-		State:          wd.State,
-		Live:           live,
-		Project:        filepath.Base(wd.WorkingDir),
-		WorkingDir:     wd.WorkingDir,
-		Branch:         wd.Branch,
-		Model:          wd.Model,
-		TurnCount:      wd.TurnCount,
-		ForkLabel:      wd.ForkLabel,
-		DivergenceTurn: wd.DivergenceTurn,
-		Capabilities:   s.apiSessionCapabilities(id, live),
-		// Seeded from wd here so the ended path (no live source to override
-		// them below) still carries these; the live branch's hubDetailFromAppThread
-		// replacement keeps its own values from thread.Evener — no clobber.
-		WorkMillis:          wd.WorkMillis,
-		Usage:               hubUsageFromAppwire(wd.Usage),
-		ActiveTurnStartedAt: wd.ActiveTurnStartedAt,
-	}
-	if detail.Project == "" || detail.Project == "." {
-		detail.Project = "(no project)"
-	}
-	if live {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		appRef := appRefFromRouteID(id)
-		if source, err := sourceForThreadWithManagedLaunch(ctx, s.cfg, s.sources, appRef, ""); err == nil {
-			if resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: appRef, IncludeTurns: true, ItemsView: "full"}); err == nil {
-				appDetail := hubDetailFromAppThread(resp.Thread)
-				if isLocalRouteID(id) && detail.TurnCount > 0 {
-					appDetail.TurnCount = detail.TurnCount
-				}
-				appDetail.ParentSessionID = detail.ParentSessionID
-				appDetail.DivergenceTurn = detail.DivergenceTurn
-				appDetail.ForkLabel = detail.ForkLabel
-				appDetail.IsSubagent = detail.IsSubagent
-				detail = appDetail
-			}
-		}
-		// A live rename lands in the persisted meta before the daemon thread
-		// reports the new Name; if the live thread carried no name (detail.Title
-		// fell back to the session id), prefer the resolved meta name so the
-		// session-detail endpoint agrees with the navigation projection (WS3 T25
-		// Bug 2).
-		if detail.Title == "" || detail.Title == detail.SessionID {
-			if s.cfg.Roster != nil {
-				le, _ := s.cfg.Roster.Find(canonicalRouteID(id))
-				if resolved := hubLiveTreeTitle(id, le, s.cfg.Past); resolved != "" {
-					detail.Title = resolved
-				}
-			}
-		}
-	}
-	if s.cfg.Past != nil {
-		if pe, ok := s.cfg.Past.Find(id); ok {
-			if detail.Title == "" {
-				detail.Title = pastTitle(pe)
-			}
-			if detail.Model == "" {
-				detail.Model = pe.Meta.Model
-			}
-			if detail.Profile == "" {
-				detail.Profile = pe.Meta.ProfileID
-			}
-			if detail.TurnCount == 0 {
-				detail.TurnCount = pe.Meta.TurnCount
-			}
-			detail.ParentSessionID = pe.Meta.ParentSessionID
-			detail.DivergenceTurn = pe.Meta.DivergenceTurn
-			detail.ForkLabel = pe.Meta.ForkLabel
-			detail.IsSubagent = pe.Meta.IsSubagent
-		}
-	}
-	return detail, true
-}
-
-// apiSessionState is a lean counterpart to apiSessionDetail for the polled
-// /state input-strip render. It calls workspaceData once — the polled render
-// previously called workspaceData directly AND again transitively through
-// apiSessionDetail — and, for a live session, refreshes context/goal/usage/
-// work-time fields via a ReadThread that skips the turns array (IncludeTurns:
-// false): the input strip never needs the transcript, only the EvenerThread
-// status fields that ride alongside it regardless of IncludeTurns.
-// completedTurnCount(thread.Turns) is always 0 without turns, so TurnCount is
-// always taken from wd (which the roster path sets from daemonStatus.Turns,
-// and the ended path from the persisted SessionMeta) rather than from the
-// lean thread. Branch, ForkLabel, and DivergenceTurn are carried over from
-// the wd-seed across the live replacement too: hubDetailFromAppThread never
-// sets them from a thread, unlike Model/WorkingDir, which it does set and
-// which only fall back to the wd-seed when the live thread's value is empty.
-//
-// The shared apiSessionDetail (and its IncludeTurns: true) is untouched by
-// this function — its JSON-API/action callers keep fetching the full
-// transcript and so keep a correct TurnCount independent of this lean path.
-func (s *WebServer) apiSessionState(id string) (hubapi.SessionDetail, bool) {
-	wd := hubTreeWorkspaceData(s, id)
-	if wd.ID == "" {
-		return hubapi.SessionDetail{}, false
-	}
-	// appRefFromRouteID canonicalizes malformed route IDs to a local ref.
-	ref, _ := hubapi.ParseRef(appRefFromRouteID(id))
-	live := hubIsSessionLive(s, id)
-	detail := hubapi.SessionDetail{
-		Ref:            ref.String(),
-		HostID:         ref.HostID,
-		SessionID:      ref.SessionID,
-		Title:          wd.Title,
-		State:          wd.State,
-		Live:           live,
-		Project:        filepath.Base(wd.WorkingDir),
-		WorkingDir:     wd.WorkingDir,
-		Branch:         wd.Branch,
-		Model:          wd.Model,
-		TurnCount:      wd.TurnCount,
-		ForkLabel:      wd.ForkLabel,
-		DivergenceTurn: wd.DivergenceTurn,
-		Capabilities:   s.apiSessionCapabilities(id, live),
-		// Seeded from wd here so the ended path (no live source to override
-		// them below) still carries these; the live branch's
-		// hubDetailFromAppThread replacement keeps its own values from
-		// thread.Evener — no clobber.
-		WorkMillis:          wd.WorkMillis,
-		Usage:               hubUsageFromAppwire(wd.Usage),
-		ActiveTurnStartedAt: wd.ActiveTurnStartedAt,
-	}
-	if detail.Project == "" || detail.Project == "." {
-		detail.Project = "(no project)"
-	}
-	if live {
-		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer cancel()
-		appRef := appRefFromRouteID(id)
-		if source, err := sourceForThreadWithManagedLaunch(ctx, s.cfg, s.sources, appRef, ""); err == nil {
-			// Lean read: skip the turns array. completedTurnCount is always 0
-			// on an empty Turns slice, so TurnCount below always comes from wd.
-			if resp, err := source.ReadThread(ctx, appwire.ThreadReadParams{Ref: appRef, IncludeTurns: false}); err == nil {
-				appDetail := hubDetailFromAppThread(resp.Thread)
-				appDetail.TurnCount = wd.TurnCount
-				appDetail.Branch = detail.Branch
-				appDetail.ForkLabel = detail.ForkLabel
-				appDetail.DivergenceTurn = detail.DivergenceTurn
-				if appDetail.Model == "" {
-					appDetail.Model = detail.Model
-				}
-				if appDetail.WorkingDir == "" {
-					appDetail.WorkingDir = detail.WorkingDir
-				}
-				detail = appDetail
-			}
-		}
-	}
-	return detail, true
 }
 
 func (s *WebServer) apiSessionCapabilities(id string, live bool) hubapi.SessionCapabilities {

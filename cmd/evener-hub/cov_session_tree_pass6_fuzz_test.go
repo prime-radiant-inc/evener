@@ -3,65 +3,17 @@ package hub
 import (
 	"context"
 	"errors"
-	"net/http"
-	"net/http/httptest"
 	"path/filepath"
-	"strings"
 	"testing"
 	"time"
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/cmd/evener-hub/internal/appsource"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/hubapi"
 )
 
-type pass6SessionSource struct {
-	*scriptedAppSource
-	err error
-}
-
-func (s *pass6SessionSource) SteerTurn(context.Context, appwire.TurnSteerParams) (appwire.TurnSteerResponse, error) {
-	return appwire.TurnSteerResponse{}, s.err
-}
-func (s *pass6SessionSource) InterruptTurn(context.Context, appwire.TurnInterruptParams) (appwire.TurnInterruptResponse, error) {
-	return appwire.TurnInterruptResponse{}, s.err
-}
-func (s *pass6SessionSource) QueueTurn(context.Context, appwire.TurnQueueParams) (appwire.TurnQueueResponse, error) {
-	return appwire.TurnQueueResponse{}, s.err
-}
-func (s *pass6SessionSource) DrainAsSteer(context.Context, appwire.TurnDrainAsSteerParams) (appwire.TurnDrainAsSteerResponse, error) {
-	return appwire.TurnDrainAsSteerResponse{}, s.err
-}
-func (s *pass6SessionSource) PromoteQueuedAsSteer(context.Context, appwire.TurnPromoteQueuedAsSteerParams) (appwire.TurnPromoteQueuedAsSteerResponse, error) {
-	return appwire.TurnPromoteQueuedAsSteerResponse{}, s.err
-}
-
-func (s *pass6SessionSource) CancelQueued(context.Context, appwire.TurnCancelQueuedParams) (appwire.TurnCancelQueuedResponse, error) {
-	return appwire.TurnCancelQueuedResponse{}, nil
-}
-func (s *pass6SessionSource) ShutdownThread(context.Context, appwire.ThreadShutdownParams) error {
-	return s.err
-}
-func (s *pass6SessionSource) ClearThread(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
-	return appwire.ThreadClearResponse{}, s.err
-}
-
-func pass6SessionWeb(thread appwire.Thread, actionErr error) *WebServer {
-	source := &pass6SessionSource{scriptedAppSource: &scriptedAppSource{id: "remote", thread: thread}, err: actionErr}
-	source.startTurn = func(context.Context, appwire.TurnStartParams) (appwire.TurnStartResponse, error) {
-		return appwire.TurnStartResponse{}, actionErr
-	}
-	registry := appsource.NewRegistry()
-	registry.Add(source)
-	web := NewWebServer(hubcore.WebConfig{})
-	web.sources = registry
-	return web
-}
-
-// FuzzSessionTreePass6 closes residual handler, detail, action, and tree
-// projection branches using only process-local sources and stores.
+// FuzzSessionTreePass6 closes residual tree projection branches using only
+// process-local sources and stores.
 func FuzzSessionTreePass6(f *testing.F) {
 	for op := range uint8(9) {
 		f.Add(op, "pass6")
@@ -79,56 +31,12 @@ func FuzzSessionTreePass6(f *testing.F) {
 				ForkFromTurn: true, Shutdown: true, ChangeModel: true, Queue: true,
 			}},
 		}
-		ref := "remote:thread-6"
-		web := pass6SessionWeb(thread, nil)
-
 		switch op % 9 {
-		case 0:
-			// Decode, empty-input, missing-live, method, and unknown-action gates.
-			for _, body := range []string{"{", `{}`, `{"text":" "}`} {
-				web.handleSend(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/send", strings.NewReader(body)), ref)
-			}
-			web.handleSessionAction(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/action", nil), ref, "clear")
-			web.handleSessionAction(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/action", nil), ref, "unknown")
-
-		case 1:
-			// Success and source-error action paths after capability discovery.
-			for _, err := range []error{nil, appwire.Conflict("busy")} {
-				web = pass6SessionWeb(thread, err)
-				web.handleSend(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/send", strings.NewReader(`{"text":"x"}`)), ref)
-				for _, action := range []string{"interrupt", "clear", "shutdown"} {
-					web.handleSessionAction(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/"+action, strings.NewReader(`{"turn_id":" t "}`)), ref, action)
-				}
-			}
-
-		case 2:
-			// Disabled capabilities, absent source, and every capability selector.
-			for _, action := range []string{"send", "steer", "interrupt", "compact", "clear", "fork", "shutdown", "model", "queue", "other"} {
-				_ = sessionCapabilityAvailable(hubapiCapsAll(), action)
-			}
-			thread.Evener.Capabilities = appwire.ThreadCapabilities{}
-			web = pass6SessionWeb(thread, nil)
-			_ = web.ensureSessionActionAvailable(ref, "send")
-			_ = web.ensureSessionActionAvailable("remote:absent", "send")
-
-		case 3:
-			// Detail conversion fallbacks, usage/goal branches, and state reads.
-			_, _ = web.apiSessionDetail(ref)
-			_, _ = web.apiSessionState(ref)
-			thread.Name, thread.Preview, thread.SessionID, thread.CWD = "", "", "", ""
-			thread.Status.Type = ""
-			thread.Evener.Ref = "broken ref"
-			thread.Evener.Goal = nil
-			thread.Evener.Usage = nil
-			_ = hubDetailFromAppThread(thread)
-			_ = hubRefFromAppThread(thread)
-			_, _, _ = appThreadTreeEntries(thread)
-
 		case 4:
 			// Remote list normalization, local-source skip, and last-good retention.
 			thread.Evener.Ref = ""
 			thread.Source = ""
-			web = pass6SessionWeb(thread, nil)
+			web := NewWebServer(hubcore.WebConfig{})
 			_ = web.refreshRemoteThreads(context.Background())
 			source := &stubThreadLister{id: "remote", resp: appwire.ThreadListResponse{Data: []appwire.Thread{thread}}}
 			_ = web.listThreadsWithFallback(context.Background(), source)
@@ -157,14 +65,6 @@ func FuzzSessionTreePass6(f *testing.F) {
 			}
 			_ = NewWebServer(hubcore.WebConfig{Past: past, Archive: archive, Favorite: favorite})
 
-		case 7:
-			// Session API parse/method/subroute matrix and fork decode failures.
-			for _, target := range []string{"/api/sessions/x%3Ay%3Az", "/api/sessions/bad", "/api/sessions/remote%3Athread-6", "/api/sessions/remote%3Athread-6/details", "/api/sessions/remote%3Athread-6/nope"} {
-				web.handleAPISession(httptest.NewRecorder(), httptest.NewRequest(http.MethodPut, target, nil))
-			}
-			web.handleAPIFork(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/fork", nil), ref)
-			web.handleAPIFork(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/fork", strings.NewReader("{")), ref)
-
 		case 8:
 			// No-roster/no-source helpers and fetchStatus transport failures.
 			empty := NewWebServer(hubcore.WebConfig{})
@@ -177,13 +77,8 @@ func FuzzSessionTreePass6(f *testing.F) {
 			_ = appThreadTreeLive(appwire.Thread{Status: appwire.ThreadStatus{Type: appwire.ThreadStatusClosed}})
 			_ = appThreadTreeLive(appwire.Thread{Status: appwire.ThreadStatus{Type: appwire.ThreadStatusNotLoaded}})
 			_ = appThreadTreeLive(thread)
-			_ = hubUsageFromAppwire(&appwire.EvenerUsage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, TotalTokens: 6})
 			_ = hubRefFromTreeNodeID("remote:thread-6")
 			_ = hubRefFromTreeNodeID("local-id")
 		}
 	})
-}
-
-func hubapiCapsAll() hubapi.SessionCapabilities {
-	return hubapi.SessionCapabilities{Send: true, Steer: true, Interrupt: true, Compact: true, Clear: true, Fork: true, Shutdown: true, ChangeModel: true, Queue: true}
 }

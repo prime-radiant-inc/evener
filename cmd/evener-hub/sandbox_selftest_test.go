@@ -118,13 +118,6 @@ func TestSandboxContainsMutatingHandlers(t *testing.T) {
 		t.Fatalf("git/head did not use the seam: head=%q want %q", gh.Head, sandboxGitHead)
 	}
 
-	// 3. action verb: clear on a non-live session resolves before any daemon
-	// dial — a contained 404, not a hang or a network call.
-	rec = do(http.MethodPost, "/api/sessions/"+sandboxSessionID+"/clear", nil)
-	if rec.Code != http.StatusNotFound {
-		t.Fatalf("clear on non-live session: want 404, got %d body=%s", rec.Code, rec.Body.String())
-	}
-
 	// Network tripwire: nothing above may have dialed.
 	if attempts := deny.Attempts(); len(attempts) != 0 {
 		t.Fatalf("sandbox made %d network attempt(s): %v", len(attempts), attempts)

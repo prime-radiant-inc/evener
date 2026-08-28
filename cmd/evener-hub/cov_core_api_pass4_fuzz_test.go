@@ -115,16 +115,7 @@ func FuzzCoreAPIPass4(f *testing.F) {
 			fn(rec, req)
 			return rec
 		}
-		call(http.MethodPost, "/api/sessions/remote:thread/clear", "")
-		direct(func(w http.ResponseWriter, r *http.Request) { web.handleAPIClear(w, r, "remote:thread") }, http.MethodGet, "/clear", "")
-		direct(func(w http.ResponseWriter, r *http.Request) { web.handleAPIClear(w, r, "local:missing") }, http.MethodPost, "/clear", "")
-		call(http.MethodPost, "/api/sessions/remote:thread/model", `{"model":"openai/gpt-pass4"}`)
-		direct(func(w http.ResponseWriter, r *http.Request) { web.handleAPIModel(w, r, "remote:thread") }, http.MethodGet, "/model", "")
-		direct(func(w http.ResponseWriter, r *http.Request) { web.handleAPIModel(w, r, "local:missing") }, http.MethodPost, "/model", `{}`)
-		call(http.MethodPost, "/api/sessions/remote:thread/reasoning-effort", `{"reasoning_effort":" high "}`)
-		direct(func(w http.ResponseWriter, r *http.Request) { web.handleAPIReasoningEffort(w, r, "remote:thread") }, http.MethodGet, "/effort", "")
-		direct(func(w http.ResponseWriter, r *http.Request) { web.handleAPIReasoningEffort(w, r, "local:missing") }, http.MethodPost, "/effort", `{}`)
-		call(http.MethodPost, "/api/sessions/remote:thread/model", `{`)
+		call(http.MethodPost, "/api/sessions/remote:thread/rename", `{"name":" renamed "}`)
 		_ = hubGitHead(context.Background(), web.cfg, appwire.GitHeadParams{CWD: workingDir})
 		_ = hubGitHead(context.Background(), web.cfg, appwire.GitHeadParams{CWD: "/definitely/missing/pass4"})
 		_ = hubGitHead(context.Background(), web.cfg, appwire.GitHeadParams{})

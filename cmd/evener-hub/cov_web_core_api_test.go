@@ -88,11 +88,6 @@ func TestCovWebCoreAPIHelpersAndRoutes(t *testing.T) {
 	} {
 		_ = covWebRequest(t, web, tc.method, tc.target, "")
 	}
-	for _, call := range []func(http.ResponseWriter, *http.Request, string){web.handleAPIClear, web.handleAPIModel, web.handleAPIReasoningEffort} {
-		call(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/", nil), "missing")
-		call(httptest.NewRecorder(), httptest.NewRequest(http.MethodPost, "/", strings.NewReader("{}")), "missing")
-	}
-
 }
 
 // FuzzCovWebCoreAPI replays the deterministic core handler matrix under the

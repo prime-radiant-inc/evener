@@ -6,7 +6,6 @@ import (
 
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
-	"primeradiant.com/evener/hubapi"
 )
 
 // TestActiveTurnRunningForReadsStartedAtAsMillis locks the wire unit for
@@ -97,21 +96,6 @@ func TestEvenerUsageFromCumulative(t *testing.T) {
 	want := &appwire.EvenerUsage{InputTokens: 100, OutputTokens: 50, CacheReadTokens: 10, TotalTokens: 150}
 	if got == nil || *got != *want {
 		t.Fatalf("evenerUsageFromCumulative = %+v, want %+v", got, want)
-	}
-}
-
-// TestHubUsageFromAppwire pins hubUsageFromAppwire's nil-safety (a thread with
-// no token data carries a nil *appwire.EvenerUsage) and its field-for-field
-// mapping into hubapi's flattened Usage type.
-func TestHubUsageFromAppwire(t *testing.T) {
-	if got := hubUsageFromAppwire(nil); got != nil {
-		t.Fatalf("hubUsageFromAppwire(nil) = %+v, want nil", got)
-	}
-
-	got := hubUsageFromAppwire(&appwire.EvenerUsage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, TotalTokens: 6})
-	want := &hubapi.Usage{InputTokens: 1, OutputTokens: 2, CacheReadTokens: 3, TotalTokens: 6}
-	if got == nil || *got != *want {
-		t.Fatalf("hubUsageFromAppwire = %+v, want %+v", got, want)
 	}
 }
 

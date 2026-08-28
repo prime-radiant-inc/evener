@@ -10,7 +10,6 @@ import (
 	"primeradiant.com/evener/agent/schema"
 	"primeradiant.com/evener/appwire"
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
-	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -154,57 +153,6 @@ func TestArchiveDecisionsHelperWithStore(t *testing.T) {
 	}
 }
 
-// TestAPISessionDetailCarriesWorkMetricsForEndedSession asserts that an ended
-// (past-index-only, no live daemon) session's persisted WorkMillis and
-// CumulativeUsage flow through workspaceData into apiSessionDetail's
-// WorkMillis and flattened Usage fields (WS2 B2).
-func TestAPISessionDetailCarriesWorkMetricsForEndedSession(t *testing.T) {
-	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "project-metrics-0000000000")
-	sessionID := "02wMz5Txv47YP64RR3B9YJ"
-	if err := os.MkdirAll(proj, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID:             sessionID,
-		UpdatedAt:      time.Now(),
-		OriginalPrompt: "work metrics task",
-		Model:          "gpt-5",
-		ProfileID:      "openai",
-		TurnCount:      2,
-		EnvInfo:        schema.EnvironmentInfo{WorkingDir: "/projects/evener"},
-		WorkMillis:     7000,
-		CumulativeUsage: schema.CumulativeUsage{
-			InputTokens:     100,
-			OutputTokens:    50,
-			CacheReadTokens: 10,
-			TotalTokens:     150,
-		},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Past: idx})
-
-	detail, ok := web.apiSessionDetail(sessionID)
-	if !ok {
-		t.Fatal("apiSessionDetail: session not found")
-	}
-	if detail.WorkMillis != 7000 {
-		t.Fatalf("WorkMillis=%d, want 7000", detail.WorkMillis)
-	}
-	want := &hubapi.Usage{InputTokens: 100, OutputTokens: 50, CacheReadTokens: 10, TotalTokens: 150}
-	if detail.Usage == nil {
-		t.Fatalf("Usage=nil, want %+v", want)
-	}
-	if *detail.Usage != *want {
-		t.Fatalf("Usage=%+v, want %+v", detail.Usage, want)
-	}
-}
-
 func TestLiveSessionGroupsBeforePastIndex(t *testing.T) {
 	projectDir := filepath.Join(t.TempDir(), "foo")
 	if err := os.MkdirAll(projectDir, 0o755); err != nil {
@@ -282,49 +230,5 @@ func TestAppThreadTreeEntriesPreserveRemoteLineageAndKind(t *testing.T) {
 	}
 	if meta.ID != "remote:child" || meta.ParentSessionID != "remote:parent" || !meta.IsSubagent {
 		t.Fatalf("remote subagent metadata = %+v", meta)
-	}
-}
-
-// TestAPISessionDetailHonorsRenamedMetaForLiveThread asserts that a live
-// session's detail prefers the renamed meta name when the daemon thread
-// reports no name (WS3 T25 Bug 2).
-func TestAPISessionDetailHonorsRenamedMetaForLiveThread(t *testing.T) {
-	root := t.TempDir()
-	proj := filepath.Join(root, "projects", "project-renamed-0000000000")
-	sessionID := "02wMz5Txv5aIxgf9yVdd0N"
-	if err := os.MkdirAll(proj, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	if err := schema.SaveSessionMeta(proj, schema.SessionMeta{
-		ID: sessionID, UpdatedAt: time.Now(),
-		Name: "my chosen name", NameSource: "user",
-		Model: "gpt-5", EnvInfo: schema.EnvironmentInfo{WorkingDir: proj},
-	}); err != nil {
-		t.Fatal(err)
-	}
-	idx := hubcore.NewPastIndex(filepath.Join(root, "projects", "*"))
-	if _, err := idx.Rebuild(); err != nil {
-		t.Fatal(err)
-	}
-	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{PID: 88, Address: "127.0.0.1:4588", WorkingDir: proj, Model: "gpt-5"})
-	r := hubcore.NewRoster(runDir, fakeProber{sessionID: sessionID, status: appwire.ThreadStatusIdle})
-	r.Refresh()
-	web := NewWebServer(hubcore.WebConfig{HubAddr: "127.0.0.1:9180", Roster: r, Past: idx})
-	// Live daemon thread reports NO name (the rename lives only in meta).
-	web.sources.Add(&scriptedAppSource{
-		id: "local",
-		thread: appwire.Thread{
-			ID: sessionID, SessionID: sessionID, Source: "local",
-			Status: appwire.ThreadStatus{Type: appwire.ThreadStatusIdle}, CWD: proj,
-			Evener: appwire.EvenerThread{Ref: "local:" + sessionID, Capabilities: appwire.ThreadCapabilities{Send: true}},
-		},
-	})
-	detail, ok := web.apiSessionDetail(sessionID)
-	if !ok {
-		t.Fatal("apiSessionDetail: not found")
-	}
-	if detail.Title != "my chosen name" {
-		t.Fatalf("Title=%q, want the renamed meta name (not the raw id)", detail.Title)
 	}
 }

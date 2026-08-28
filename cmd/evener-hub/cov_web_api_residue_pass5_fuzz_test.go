@@ -23,24 +23,6 @@ type residueSource struct {
 	fail bool
 }
 
-func (s *residueSource) ClearThread(context.Context, appwire.ThreadClearParams) (appwire.ThreadClearResponse, error) {
-	if s.fail {
-		return appwire.ThreadClearResponse{}, errors.New("clear")
-	}
-	return appwire.ThreadClearResponse{Thread: appwire.Thread{ID: "renamed"}}, nil
-}
-func (s *residueSource) SetThreadModel(context.Context, appwire.ThreadModelSetParams) error {
-	if s.fail {
-		return errors.New("model")
-	}
-	return nil
-}
-func (s *residueSource) SetThreadReasoningEffort(context.Context, appwire.ThreadReasoningEffortSetParams) error {
-	if s.fail {
-		return errors.New("effort")
-	}
-	return nil
-}
 func (s *residueSource) SetThreadName(context.Context, appwire.ThreadNameSetParams) error {
 	if s.fail {
 		return errors.New("rename")
@@ -120,10 +102,10 @@ func FuzzWebAPIResiduePass5(f *testing.F) {
 		webNil := NewWebServer(hubcore.WebConfig{})
 		_ = webNil.apiStateGlob()
 		_ = warningMessage([]byte(`{"warning":{}}`))
-		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIClear(w, r, "missing") }, "POST", "/", "")
-		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIClear(w, r, "remote:live") }, "POST", "/", "")
-		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIModel(w, r, "remote:live") }, "POST", "/", `{"model":"/"}`)
-		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIReasoningEffort(w, r, "remote:live") }, "POST", "/", `{`)
+		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIRename(w, r, "ended") }, "POST", "/", `{"name":""}`)
+		call(func(w http.ResponseWriter, r *http.Request) { web.handleAPIRename(w, r, "ended") }, "POST", "/", `{"name":"new"}`)
+		web.refreshRenamedMeta("missing", "fallback")
+		web.refreshRenamedMeta("ended", "fallback")
 		if err := os.Remove(filepath.Join(state, "sessions", "ended.meta.json")); err != nil && !os.IsNotExist(err) {
 			t.Fatal(err)
 		}

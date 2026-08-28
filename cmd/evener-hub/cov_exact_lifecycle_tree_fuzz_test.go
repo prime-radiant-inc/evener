@@ -16,7 +16,6 @@ import (
 	"primeradiant.com/evener/cmd/evener-hub/internal/hubcore"
 	"primeradiant.com/evener/cmd/evener-hub/internal/launchconfig"
 	"primeradiant.com/evener/cmdutil"
-	"primeradiant.com/evener/hubapi"
 	"primeradiant.com/evener/identifier"
 	"primeradiant.com/evener/rendezvous"
 )
@@ -51,7 +50,10 @@ func FuzzExactLifecycleTree(f *testing.F) {
 		fallbackLaunch.Running["remote"] = &codexlaunch.LaunchedCodex{Exited: make(chan struct{})}
 		_, _ = hubThreadStart(ctx, hubcore.WebConfig{CodexLauncher: fallbackLaunch}, missing, appwire.ThreadStartParams{Harness: "remote"})
 		_, _ = hubThreadResume(ctx, hubcore.WebConfig{CodexLauncher: fallbackLaunch}, missing, appwire.ThreadResumeParams{Ref: "remote:r"})
-		_, _ = hubThreadResume(ctx, hubcore.WebConfig{Spawner: finalSessionSpawner{entry: rendezvous.Entry{SessionID: "r"}}}, reg, appwire.ThreadResumeParams{Ref: "local:r"})
+		resumeSpawner := &fakeRPCSpawner{resume: func(context.Context, hubcore.ResumeRequest) (rendezvous.Entry, error) {
+			return rendezvous.Entry{SessionID: "r"}, nil
+		}}
+		_, _ = hubThreadResume(ctx, hubcore.WebConfig{Spawner: resumeSpawner}, reg, appwire.ThreadResumeParams{Ref: "local:r"})
 
 		oldCanonicalize, oldResolve, oldParse := hubCanonicalizeDir, hubResolveLaunch, hubParseModelRef
 		oldRefresh, oldList, oldFork, oldEnsure := hubRosterRefresh, hubRosterList, hubForkSession, hubEnsureSource
@@ -117,14 +119,10 @@ func FuzzExactLifecycleTree(f *testing.F) {
 		web := NewWebServer(hubcore.WebConfig{Past: past, Roster: treeRoster, Favorite: fav})
 
 		oldBuild, oldDerive := hubBuildNavigationTree, hubDeriveNavigationAttention
-		oldNormalize, oldRef, oldNavigation, oldLiveTitle, oldIsLive, oldWorkspace, oldRank := hubNormalizeTreeState, hubAppThreadRef, hubNavigationInputs, hubLiveTreeTitle, hubIsSessionLive, hubTreeWorkspaceData, hubTreeAttentionRank
+		oldNavigation, oldRank := hubNavigationInputs, hubTreeAttentionRank
 		t.Cleanup(func() {
 			hubBuildNavigationTree, hubDeriveNavigationAttention = oldBuild, oldDerive
-			hubNormalizeTreeState, hubAppThreadRef = oldNormalize, oldRef
 			hubNavigationInputs = oldNavigation
-			hubLiveTreeTitle = oldLiveTitle
-			hubIsSessionLive = oldIsLive
-			hubTreeWorkspaceData = oldWorkspace
 			hubTreeAttentionRank = oldRank
 		})
 		key := testProjectID(t, "/work/p")
@@ -164,27 +162,9 @@ func FuzzExactLifecycleTree(f *testing.F) {
 		hubNavigationInputs = oldNavigation
 		hubTreeAttentionRank = oldRank
 
-		hubNormalizeTreeState = func(string) string { return "" }
-		hubAppThreadRef = func(appwire.Thread) hubapi.Ref { return hubapi.Ref{HostID: "remote"} }
-		_ = hubDetailFromAppThread(appwire.Thread{ID: "fallback"})
-		hubNormalizeTreeState, hubAppThreadRef = oldNormalize, oldRef
-
 		invalidCache := &hubcore.RemoteThreadCache{}
 		invalidCache.Store([]appwire.Thread{{}})
 		_, _, _ = NewWebServer(hubcore.WebConfig{RemoteThreadCache: invalidCache}).navigationTreeInputs(ctx)
-
-		detailPast := hubcore.NewPastIndex("")
-		detailPast.SeedForTest([]schema.SessionMeta{{ID: "r", Name: "past title", TurnCount: 3, CreatedAt: now, UpdatedAt: now}})
-		detailRoster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{Entry: rendezvous.Entry{SessionID: "r"}, SessionID: "r", Status: "idle"})
-		detailThread := appwire.Thread{ID: "r", Source: "local", Evener: appwire.EvenerThread{Ref: "local:r"}}
-		detailWeb := finalSessionWeb(hubcore.WebConfig{Past: detailPast, Roster: detailRoster}, detailThread)
-		hubLiveTreeTitle = func(string, hubcore.LiveEntry, *hubcore.PastIndex) string { return "" }
-		hubIsSessionLive = func(*WebServer, string) bool { return true }
-		hubTreeWorkspaceData = func(*WebServer, string) WorkspaceData { return WorkspaceData{ID: "r", TurnCount: 3} }
-		_, _ = detailWeb.apiSessionDetail("r")
-		hubLiveTreeTitle = oldLiveTitle
-		hubIsSessionLive = oldIsLive
-		hubTreeWorkspaceData = oldWorkspace
 
 		// Invalid remote rows are ignored, local sources are skipped, successful
 		// empty lists clear last-good data, and nil registries are valid.
@@ -204,8 +184,5 @@ func FuzzExactLifecycleTree(f *testing.F) {
 		_ = web.listThreadsWithFallback(ctx, lister)
 		_ = web.apiTreeSources()
 
-		_ = hubDetailFromAppThread(appwire.Thread{ID: "fallback", Source: "bad source"})
-		_, _ = web.apiSessionDetail("bad ref value")
-		_, _ = web.apiSessionState("bad ref value")
 	})
 }

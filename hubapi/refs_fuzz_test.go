@@ -77,12 +77,8 @@ func coverClient(t *testing.T) {
 	if _, err := NewClient("/relative", nil); err == nil {
 		t.Fatal("relative URL accepted")
 	}
-	client, err := NewClient("seed.invalid/base/", &http.Client{Transport: fuzzRoundTripper(func(req *http.Request) (*http.Response, error) {
-		body := `{}`
-		if req.URL.Path == "/base/api/sessions/local:seed/tasks" {
-			body = `[]`
-		}
-		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(body)), Header: make(http.Header)}, nil
+	client, err := NewClient("seed.invalid/base/", &http.Client{Transport: fuzzRoundTripper(func(*http.Request) (*http.Response, error) {
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader(`{}`)), Header: make(http.Header)}, nil
 	})})
 	if err != nil {
 		t.Fatal(err)
@@ -90,14 +86,6 @@ func coverClient(t *testing.T) {
 	_ = client.URL("plain")
 	_ = client.URL("query?a=b")
 	_, _ = client.Health(ctx)
-	_, _ = client.Session(ctx, ref)
-	_ = client.Send(ctx, ref, "hello")
-	_, _ = client.Tasks(ctx, ref)
-	_ = client.Interrupt(ctx, ref)
-	_ = client.Compact(ctx, ref)
-	_, _ = client.Clear(ctx, ref)
-	_, _ = client.Fork(ctx, ref, ForkRequest{})
-	_ = client.SetModel(ctx, ref, "model")
 
 	defaultClient, err := NewClient("seed.invalid", nil)
 	if err != nil || defaultClient.httpClient != http.DefaultClient {
@@ -110,9 +98,6 @@ func coverClient(t *testing.T) {
 	if err := failing.get(ctx, "/get", &struct{}{}); !errors.Is(err, transportErr) {
 		t.Fatalf("get transport error = %v", err)
 	}
-	if err := failing.post(ctx, "/post", nil, nil); !errors.Is(err, transportErr) {
-		t.Fatalf("post transport error = %v", err)
-	}
 
 	badStatus := &Client{baseURL: client.baseURL, httpClient: &http.Client{Transport: fuzzRoundTripper(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusTeapot, Body: io.NopCloser(strings.NewReader("{}")), Header: make(http.Header)}, nil
@@ -120,26 +105,15 @@ func coverClient(t *testing.T) {
 	if err := badStatus.get(ctx, "/get", &struct{}{}); err == nil {
 		t.Fatal("get accepted error status")
 	}
-	if err := badStatus.post(ctx, "/post", nil, nil); err == nil {
-		t.Fatal("post accepted error status")
-	}
 
 	badJSON := &Client{baseURL: client.baseURL, httpClient: &http.Client{Transport: fuzzRoundTripper(func(*http.Request) (*http.Response, error) {
 		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(strings.NewReader("{")), Header: make(http.Header)}, nil
 	})}}
 	_ = badJSON.get(ctx, "/get", &struct{}{})
-	_ = badJSON.post(ctx, "/post", nil, &struct{}{})
-	if err := client.post(ctx, "/post", make(chan int), nil); err == nil {
-		t.Fatal("post marshaled unsupported body")
-	}
 	// A control character in the host survives url.URL.String() unescaped, so the
-	// request builder rejects the endpoint before any transport work. Both paths
-	// must surface that error rather than swallow it.
+	// request builder rejects the endpoint before any transport work.
 	unbuildable := &Client{baseURL: &url.URL{Scheme: "http", Host: "h\x7fost"}, httpClient: client.httpClient}
 	if err := unbuildable.get(ctx, "/get", &struct{}{}); err == nil {
 		t.Fatal("get accepted an unbuildable request")
-	}
-	if err := unbuildable.post(ctx, "/post", nil, nil); err == nil {
-		t.Fatal("post accepted an unbuildable request")
 	}
 }

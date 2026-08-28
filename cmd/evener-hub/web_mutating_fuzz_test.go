@@ -20,16 +20,16 @@ type mutRoute struct {
 }
 
 // mutatingRoutes are exactly the routes the Phase-4 read-only handler fuzz
-// excluded: the append-only retired /api/spawn slot and the live-git
-// seam reads, and the session/turn action verbs (clear/model/effort/interrupt/
-// compact/shutdown/send/fork under /api/sessions, and steer/queue/drain-as-steer
-// under /s). The retired spawn slot stays in this position so route-indexed
-// fuzz corpora remain compatible; it now exercises ordinary unknown-route
-// handling. Under the B0 sandbox, the live routes are contained: git-head its
-// seam, and action verbs resolve "not live" before any daemon dial.
+// excluded: the append-only retired /api/spawn and /api/sessions slots, the
+// live-git seam reads, and the live steer/queue/drain-as-steer actions under
+// /s. Retired slots stay in place so route-indexed fuzz corpora remain
+// compatible; they now exercise ordinary unknown-route handling. Under the B0
+// sandbox, the live routes are contained: git-head uses its seam, and action
+// verbs resolve "not live" before any daemon dial.
 var mutatingRoutes = []mutRoute{
 	{http.MethodPost, "/api/spawn", true},
 	{http.MethodGet, "/api/models?harness={id}", false},
+	// Former session REST routes retained for corpus-index stability.
 	{http.MethodPost, "/api/sessions/{id}/clear", false},
 	{http.MethodPost, "/api/sessions/{id}/model", true},
 	{http.MethodPost, "/api/sessions/{id}/reasoning-effort", true},
@@ -38,6 +38,7 @@ var mutatingRoutes = []mutRoute{
 	{http.MethodPost, "/api/sessions/{id}/shutdown", false},
 	{http.MethodPost, "/api/sessions/{id}/send", true},
 	{http.MethodPost, "/api/sessions/{id}/fork", true},
+	// Active form-action routes.
 	{http.MethodPost, "/s/{id}/steer", true},
 	{http.MethodPost, "/s/{id}/queue", true},
 	{http.MethodPost, "/s/{id}/drain-as-steer", true},
@@ -104,6 +105,7 @@ func FuzzWebMutatingHandler(f *testing.F) {
 		{"/api/spawn", "", `{"harness":"evener","working_dir":"` + s.CWD + `","items":[{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"},{"type":"image"}]}`},
 		{"/api/models?harness={id}", "evener", ""},
 		{"/api/models?harness={id}", "codex", ""},
+		// Former session REST seeds retained for corpus-index stability.
 		{"/api/sessions/{id}/clear", sandboxSessionID, ""},
 		{"/api/sessions/{id}/model", sandboxSessionID, `{"model":"openai/gpt-5.5"}`},
 		{"/api/sessions/{id}/reasoning-effort", sandboxSessionID, `{"reasoning_effort":"high"}`},
