@@ -52,16 +52,21 @@ func TestHubRPCPluginPreviewRoute(t *testing.T) {
 
 func TestHubRPCThreadListUsesAppWireRendezvous(t *testing.T) {
 	runDir := t.TempDir()
-	writeRendezvous(t, runDir, rendezvous.Entry{
+	entry := rendezvous.Entry{
 		PID:       101,
 		Protocol:  appwire.ProtocolVersion,
 		Endpoint:  "ws://127.0.0.1:1/rpc",
 		SourceID:  "local",
 		ThreadID:  "th_1",
 		SessionID: "sess_1",
+	}
+	roster := hubcore.NewRosterWithEntries(hubcore.LiveEntry{
+		Entry:  entry,
+		Status: appwire.ThreadStatusActive,
+		RunningJobs: []appwire.EvenerJobInfo{{
+			JobID: "job_shell", JobType: "shell", Status: "running",
+		}},
 	})
-	roster := hubcore.NewRoster(runDir, nil)
-	roster.Refresh()
 
 	hub := newHubRPCTestServer(t, hubcore.WebConfig{
 		RunDir: runDir,
@@ -86,6 +91,13 @@ func TestHubRPCThreadListUsesAppWireRendezvous(t *testing.T) {
 	}
 	if len(resp.Data) != 1 || resp.Data[0].ID != "th_1" || resp.Data[0].Evener.Ref != "local:th_1" {
 		t.Fatalf("threads=%+v", resp.Data)
+	}
+	if resp.Data[0].Evener.Diagnostics == nil || len(resp.Data[0].Evener.Diagnostics.Jobs) != 1 {
+		t.Fatalf("typed hub status omitted running non-agent jobs: %+v", resp.Data[0].Evener.Diagnostics)
+	}
+	job := resp.Data[0].Evener.Diagnostics.Jobs[0]
+	if job.JobID != "job_shell" || job.JobType != "shell" || job.Status != "running" {
+		t.Fatalf("typed hub running job = %+v, want shell identity and status", job)
 	}
 }
 
